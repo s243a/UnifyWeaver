@@ -373,6 +373,10 @@ python3 scripts/mindmap/mst_folder_grouping.py \
 python3 scripts/mindmap/mst_folder_grouping.py \
   --trees-only --target-size 10 --max-depth 8 \
   --internal-cost arithmetic --verbose
+
+# Use curated hierarchy (respects Pearltrees parent-child structure)
+python3 scripts/mindmap/mst_folder_grouping.py \
+  --subset physics --tree-source curated --target-size 8 --max-depth 3 --verbose
 ```
 
 **Options Summary:**
@@ -385,8 +389,18 @@ python3 scripts/mindmap/mst_folder_grouping.py \
 | `--subdivision-method` | `multilevel`, `bisection` | `multilevel` | How to split oversized folders |
 | `--size-cost` | `gm_maximize`, `quadratic`, `geometric` | `gm_maximize` | Size cost (gm_maximize is scale-invariant) |
 | `--internal-cost` | `none`, `arithmetic`, `geometric` | `none` | Cost function for internal edges |
+| `--tree-source` | `mst`, `curated` | `mst` | Tree source for partitioning |
 | `--stats`, `-s` | flag | off | Print statistics tables (markdown format) |
 | `--verbose`, `-v` | flag | off | Print detailed progress |
+
+**Tree Source Modes:**
+
+| Mode | Description | Compute Cost | Best For |
+|------|-------------|--------------|----------|
+| `mst` | Build MST from embeddings | O(N²) or O(N*k) | Fresh organization, items without clear hierarchy |
+| `curated` | Use Pearltrees parent-child hierarchy | O(N) | Respecting existing curation, enhancing structure |
+
+The `curated` mode skips MST computation entirely, using the actual Pearltrees hierarchy paths from the JSONL `target_text` field. Edge weights are still computed from embedding distances for subdivision decisions.
 
 **Subdivision Methods:**
 

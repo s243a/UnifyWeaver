@@ -63,7 +63,9 @@ class MSTFolderGrouper:
         verbose: bool = False,
         subdivision_method: str = 'multilevel',
         internal_cost_mode: str = 'none',
-        size_cost_mode: str = 'gm_maximize'
+        size_cost_mode: str = 'gm_maximize',
+        tree_source: str = 'mst',
+        hierarchy_paths: Optional[Dict[str, str]] = None
     ):
         """
         Args:
@@ -77,6 +79,9 @@ class MSTFolderGrouper:
             subdivision_method: 'multilevel' (default) or 'bisection'
             internal_cost_mode: 'none' (default), 'arithmetic', or 'geometric'
             size_cost_mode: 'gm_maximize' (default, scale-invariant) or 'quadratic'
+            tree_source: 'mst' (compute from embeddings) or 'curated' (use hierarchy_paths)
+            hierarchy_paths: Dict[tree_id] -> path string (e.g., '/id1/id2/.../idn')
+                            Required when tree_source='curated'
         """
         self.embeddings = embeddings
         self.titles = titles
@@ -89,6 +94,8 @@ class MSTFolderGrouper:
         self.subdivision_method = subdivision_method
         self.internal_cost_mode = internal_cost_mode  # 'none', 'arithmetic', or 'geometric'
         self.size_cost_mode = size_cost_mode  # 'quadratic' or 'geometric'
+        self.tree_source = tree_source  # 'mst' or 'curated'
+        self.hierarchy_paths = hierarchy_paths or {}
 
         # Track circles where subdivision was attempted but failed
         self._subdivision_failed: Set[int] = set()
@@ -226,6 +233,91 @@ class MSTFolderGrouper:
             print(f"MST has {mst_edges} edges (expected {self.n_items - 1} for connected graph)")
             if len(self.mst_adjacency) < self.n_items:
                 print(f"  WARNING: Only {len(self.mst_adjacency)} nodes in MST adjacency")
+
+    def _build_curated_tree(self):
+        """Build tree adjacency from curated hierarchy paths.
+
+        Uses self.hierarchy_paths (dict tree_id -> path string like '/id1/id2/.../idn')
+        to construct parent-child relationships. Edge weights are computed from
+        embedding distances for subdivision decisions.
+        """
+        if self.verbose:
+            print("Building curated tree from hierarchy paths...")
+
+        # Build tree_id -> index mapping
+        tree_id_to_idx = {tid: i for i, tid in enumerate(self.tree_ids)}
+
+        # Parse paths to extract parent-child relationships
+        # Path format: /ancestor1/ancestor2/.../parent/self
+        parent_child_pairs = []  # [(parent_idx, child_idx), ...]
+
+        for tree_id, path in self.hierarchy_paths.items():
+            if tree_id not in tree_id_to_idx:
+                continue  # Skip trees not in our subset
+
+            child_idx = tree_id_to_idx[tree_id]
+
+            # Parse path to get parent
+            parts = [p for p in path.strip('/').split('/') if p]
+            if len(parts) >= 2:
+                parent_id = parts[-2]  # Second to last is parent
+                if parent_id in tree_id_to_idx:
+                    parent_idx = tree_id_to_idx[parent_id]
+                    parent_child_pairs.append((parent_idx, child_idx))
+
+        if self.verbose:
+            print(f"  Found {len(parent_child_pairs)} parent-child pairs")
+
+        # Build adjacency list with embedding-based edge weights
+        self.mst_adjacency = defaultdict(list)
+
+        # Normalize embeddings for cosine distance
+        norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
+        normalized = self.embeddings / (norms + 1e-8)
+
+        for parent_idx, child_idx in parent_child_pairs:
+            # Compute edge weight from embedding cosine distance
+            similarity = np.dot(normalized[parent_idx], normalized[child_idx])
+            weight = max(0, 1 - similarity)  # Cosine distance
+
+            # Add bidirectional edges
+            self.mst_adjacency[parent_idx].append((child_idx, weight))
+            self.mst_adjacency[child_idx].append((parent_idx, weight))
+
+        # Find orphan nodes (no parent in our subset) and connect them
+        connected_nodes = set()
+        for node, neighbors in self.mst_adjacency.items():
+            connected_nodes.add(node)
+            for neighbor, _ in neighbors:
+                connected_nodes.add(neighbor)
+
+        orphans = set(range(self.n_items)) - connected_nodes
+
+        if orphans and self.verbose:
+            print(f"  Found {len(orphans)} orphan nodes (no parent in subset)")
+
+        # For orphans, find their nearest connected neighbor by embedding distance
+        if orphans and connected_nodes:
+            connected_list = list(connected_nodes)
+            connected_embeddings = normalized[connected_list]
+
+            for orphan in orphans:
+                # Find nearest connected node
+                similarities = np.dot(connected_embeddings, normalized[orphan])
+                best_idx = np.argmax(similarities)
+                best_neighbor = connected_list[best_idx]
+                weight = max(0, 1 - similarities[best_idx])
+
+                self.mst_adjacency[orphan].append((best_neighbor, weight))
+                self.mst_adjacency[best_neighbor].append((orphan, weight))
+
+        if self.verbose:
+            n_edges = sum(len(v) for v in self.mst_adjacency.values()) // 2
+            print(f"  Curated tree has {n_edges} edges")
+            print(f"  {len(self.mst_adjacency)} nodes in adjacency")
+
+        # Set mst to None (not computed for curated tree)
+        self.mst = None
 
     def _find_mst_root(self) -> int:
         """Find a good root for MST traversal (node with highest degree or most central)."""
@@ -1022,16 +1114,22 @@ class MSTFolderGrouper:
 
     def partition(self, sparse_threshold: int = 5000, knn_k: int = 50) -> List[Circle]:
         """Run the full partitioning algorithm."""
-        # Step 1: Compute distances (sparse for large datasets)
-        if self.n_items > sparse_threshold:
-            if self.verbose:
-                print(f"Using sparse k-NN mode (n={self.n_items} > {sparse_threshold})")
-            distances = self._compute_sparse_knn_graph(k=knn_k)
+        # Step 1-2: Build tree structure (MST or curated)
+        if self.tree_source == 'curated':
+            # Use curated hierarchy paths directly (no MST computation)
+            if not self.hierarchy_paths:
+                raise ValueError("hierarchy_paths required when tree_source='curated'")
+            self._build_curated_tree()
         else:
-            distances = self._compute_distance_matrix()
+            # Compute MST from embeddings
+            if self.n_items > sparse_threshold:
+                if self.verbose:
+                    print(f"Using sparse k-NN mode (n={self.n_items} > {sparse_threshold})")
+                distances = self._compute_sparse_knn_graph(k=knn_k)
+            else:
+                distances = self._compute_distance_matrix()
 
-        # Step 2: Build MST
-        self._build_mst(distances)
+            self._build_mst(distances)
 
         # Step 3: Partition into circles
         circles = self._incremental_partition()
@@ -1569,6 +1667,27 @@ def load_trees_only(embeddings_path: Path, limit: Optional[int] = None) -> Tuple
     return embeddings, titles, tree_ids
 
 
+def load_hierarchy_paths(targets_path: Path) -> Dict[str, str]:
+    """Load hierarchy paths from JSONL file.
+
+    Returns dict mapping tree_id -> path string (e.g., '/id1/id2/.../idn').
+    The path is extracted from the first line of target_text.
+    """
+    hierarchy_paths = {}
+    with open(targets_path) as f:
+        for line in f:
+            data = json.loads(line)
+            tree_id = data.get('tree_id')
+            target_text = data.get('target_text', '')
+
+            # First line of target_text is the path
+            path = target_text.split('\n')[0].strip()
+            if tree_id and path.startswith('/'):
+                hierarchy_paths[tree_id] = path
+
+    return hierarchy_paths
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='MST Circle-Based Folder Grouping',
@@ -1604,6 +1723,9 @@ def main():
     parser.add_argument('--size-cost', type=str, default='gm_maximize',
                         choices=['gm_maximize', 'quadratic', 'geometric'],
                         help='Size cost: gm_maximize (default, scale-invariant), quadratic, or geometric (deprecated)')
+    parser.add_argument('--tree-source', type=str, default='mst',
+                        choices=['mst', 'curated'],
+                        help='Tree source: mst (compute from embeddings) or curated (use hierarchy paths)')
 
     parser.add_argument('--output', '-o', type=Path, default=None,
                         help='Output JSON file for folder structure')
@@ -1621,17 +1743,31 @@ def main():
     embeddings_path = project_root / args.embeddings
 
     # Load data
+    hierarchy_paths = {}
     if args.subset == 'physics':
         targets_path = project_root / args.targets
         print(f"Loading physics subset from {targets_path}...")
         embeddings, titles, tree_ids = load_physics_subset(embeddings_path, targets_path)
+        if args.tree_source == 'curated':
+            hierarchy_paths = load_hierarchy_paths(targets_path)
     elif args.trees_only:
         print(f"Loading trees-only from {embeddings_path}...")
         embeddings, titles, tree_ids = load_trees_only(embeddings_path, limit=args.limit)
+        if args.tree_source == 'curated':
+            # For trees-only mode with curated, need a targets file
+            # Default to the combined trees file
+            trees_targets = project_root / 'reports/pearltrees_targets_combined_2026-01-02_trees_fixed.jsonl'
+            if trees_targets.exists():
+                hierarchy_paths = load_hierarchy_paths(trees_targets)
+                print(f"Loaded {len(hierarchy_paths)} hierarchy paths from {trees_targets}")
+            else:
+                parser.error("--tree-source curated requires a targets file with hierarchy paths")
     else:
         parser.error("Must specify --subset or --trees-only")
 
     print(f"Loaded {len(embeddings)} items")
+    if args.tree_source == 'curated':
+        print(f"Using curated hierarchy ({len(hierarchy_paths)} paths)")
 
     # Run grouping
     grouper = MSTFolderGrouper(
@@ -1644,7 +1780,9 @@ def main():
         verbose=args.verbose or args.dry_run,
         subdivision_method=args.subdivision_method,
         internal_cost_mode=args.internal_cost,
-        size_cost_mode=args.size_cost
+        size_cost_mode=args.size_cost,
+        tree_source=args.tree_source,
+        hierarchy_paths=hierarchy_paths
     )
 
     circles = grouper.partition()
