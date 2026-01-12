@@ -34,6 +34,7 @@ This example shows how UnifyWeaver can:
 | `compile_vue_examples.pl` | Vue SFC code generation from Prolog |
 | `vue/PearltreesHierarchy.vue` | Example Vue hierarchy visualization |
 | `vue/MindMapViewport.vue` | Reusable Vue viewport component |
+| `test_vue_codegen.pl` | 43 plunit tests for Vue code generation |
 
 ## Source Definitions
 
@@ -577,6 +578,37 @@ For targets like Go, Rust, or C# that don't run in browsers, use glue to provide
 % Generates HTTP handler for the same predicate
 ```
 
+### Vue Renderers
+
+Two renderers support Vue output:
+
+1. **D3 Renderer** (`d3_renderer.pl`): Force-directed with D3.js
+   ```prolog
+   ?- render_d3_vue(Nodes, Edges, [], [component_name('MyMap')], VueCode).
+   ```
+
+2. **Cytoscape Renderer** (`graph_interactive_renderer.pl`): Multiple layouts with Cytoscape.js
+   ```prolog
+   ?- generate_mindmap_vue_component(my_map, [layout(hierarchical)], VueCode).
+   ```
+
+### TypeScript Target
+
+The existing TypeScript target (`typescript_target.pl`) generates type-safe code with:
+- Multiple runtime support (Node.js, Deno, Bun, browser)
+- Binding system integration
+- Express/HTTP service generation
+- Interface and generic type support
+
+```prolog
+?- use_module('src/unifyweaver/targets/typescript_target'),
+   compile_predicate_to_typescript(my_module:my_pred/2, [], TSCode).
+% Generates TypeScript function with types
+
+?- compile_express_service(my_service, TSCode).
+% Generates Express.js HTTP service
+```
+
 ### Running Vue Examples
 
 ```bash
@@ -586,8 +618,8 @@ swipl -g "compile_all_vue_examples" compile_vue_examples.pl
 # Show target capabilities
 swipl -g "show_target_capabilities" compile_vue_examples.pl
 
-# Run Vue codegen tests
-swipl -g "test_vue_codegen" compile_vue_examples.pl
+# Run Vue codegen tests (43 tests)
+swipl -g "run_tests" -t halt test_vue_codegen.pl
 ```
 
 ## Educational Value
