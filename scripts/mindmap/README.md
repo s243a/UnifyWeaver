@@ -346,3 +346,202 @@ Options:
 - `--llm-folder-descriptions`: Save descriptions to JSON file
 
 The LLM uses abbreviations (Corp_Intel, Econ, Tech, Govt) and considers parent folder context to avoid redundant naming
+
+## MST Semantic Clustering
+
+Tools for organizing mindmaps into semantically coherent folder hierarchies using Minimum Spanning Tree (MST) partitioning.
+
+### mst_folder_grouping.py
+
+Compute MST-based folder groupings from embeddings.
+
+```bash
+# Test on physics subset
+python3 scripts/mindmap/mst_folder_grouping.py \
+  --subset physics --target-size 8 --max-depth 3 --verbose
+
+# Run on all trees
+python3 scripts/mindmap/mst_folder_grouping.py \
+  --trees-only --target-size 10 --max-depth 8 \
+  -o output/mst_folder_structure_trees.json
+
+# Limit for testing
+python3 scripts/mindmap/mst_folder_grouping.py \
+  --trees-only --limit 2000 --target-size 10 --verbose
+
+# Use arithmetic internal cost for tighter semantic grouping
+python3 scripts/mindmap/mst_folder_grouping.py \
+  --trees-only --target-size 10 --max-depth 8 \
+  --internal-cost arithmetic --verbose
+```
+
+**Options Summary:**
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `--target-size` | int | 8 | Target items per folder |
+| `--max-depth` | int | 4 | Maximum folder hierarchy depth (soft constraint) |
+| `--min-size` | int | 2 | Minimum items per folder |
+| `--subdivision-method` | `multilevel`, `bisection` | `multilevel` | How to split oversized folders |
+| `--size-cost` | `gm_maximize`, `quadratic`, `geometric` | `gm_maximize` | Size cost (gm_maximize is scale-invariant) |
+| `--internal-cost` | `none`, `arithmetic`, `geometric` | `none` | Cost function for internal edges |
+| `--stats`, `-s` | flag | off | Print statistics tables (markdown format) |
+| `--verbose`, `-v` | flag | off | Print detailed progress |
+
+**Subdivision Methods:**
+
+| Method | Description | Best For |
+|--------|-------------|----------|
+| `multilevel` | Top-cut/bottom-cuts approach, grows bands from tree root | Flexible partitioning, uneven clusters |
+| `bisection` | Removes highest-weight edges for balanced splits | Even splits, simpler structure |
+
+**Size Cost Modes:**
+
+| Mode | Formula | Scale-Invariant | Effect |
+|------|---------|-----------------|--------|
+| `quadratic` | (size - target)² | No | Fixed target, aggressive splitting. Requires tuning. |
+| `gm_maximize` | split if size > 4×GM | **Yes** | Derived from maximizing GM. Threshold adapts dynamically. |
+| `geometric` | *(deprecated)* | — | Incorrect implementation; use gm_maximize instead. |
+
+**Internal Cost Modes:**
+
+| Mode | Formula | Effect |
+|------|---------|--------|
+| `none` | — | No internal edge cost (fastest) |
+| `arithmetic` | Σ(edge weights) | Favors tight clusters (low total distance) |
+| `geometric` | n / GM(weights) | Detects uneven clusters (low GM = natural cut points) |
+
+**Algorithm:**
+1. Computes pairwise cosine distances between embeddings
+2. Builds Minimum Spanning Tree (MST) from distance matrix
+3. Partitions MST into "circles" (folders) using incremental growth
+4. Recursively subdivides oversized circles using cost-based decisions
+5. Uses soft depth penalty (exponential) to balance depth vs folder size
+
+**Memory modes:**
+- Dense (N < 5000): Full N×N distance matrix
+- Sparse (N >= 5000): k-NN graph with 50 neighbors
+
+**Output:** JSON hierarchy with folder names, tree IDs, and nested children.
+
+**Method Comparison** (13,279 trees, target=10, max-depth=8):
+
+| Method | Size Cost | Folders | GM | Max Size | Scale-Invariant |
+|--------|-----------|---------|-----|----------|-----------------|
+| Default | quadratic | 1,073 | 5.31 | 20 | No |
+| GM-maximize | gm_maximize | 1,077 | 5.29 | 20 | **Yes** |
+
+*Note: Similar results but different reasoning. Quadratic has slightly higher GM with fewer folders, but this isn't necessarily better - higher GM could just mean larger folders on average. For a balanced tree, the key is appropriate folder counts, not maximizing GM alone.*
+
+**Tradeoffs:**
+- **Quadratic**: Fixed target, aggressive splitting. Requires tuning `target_size`.
+- **GM-maximize**: Scale-invariant, derived from maximizing geometric mean. Threshold `4×GM` adapts dynamically. Less parameter tuning needed.
+- **Arithmetic internal**: Favors tight semantic clusters (low total edge distance).
+- **Geometric internal**: Detects uneven clusters with natural cut points (low GM = outlier edges).
+
+**Parameter Scaling Note:**
+If using `quadratic` mode, the `target_size` parameter needs tuning per dataset. In principle, if you know the expected geometric mean for your dataset, you could scale the quadratic parameters to match. However, `gm_maximize` avoids this problem entirely by computing the threshold dynamically from the current folder distribution.
+
+**Future Work:**
+- **Branch permutation for better boundaries**: Currently, the MST subdivision finds cut points but doesn't optimize which subtrees go to which child folder. Branch permutation would try swapping subtrees between sibling folders to improve semantic coherence at folder boundaries. This could reduce cases where semantically similar items end up in different folders due to arbitrary cut ordering.
+
+**Example Statistics** (13,279 trees, target=10, max-depth=8, multilevel, none):
+
+| Metric | Value |
+|--------|-------|
+| Total items | 13,279 |
+| Total folders | 1,073 |
+| Max depth | 8 |
+| Folder size range | 3–20 |
+| Average folder size | 6.5 |
+
+| Depth | Folders |
+|-------|---------|
+| 0 | 1 |
+| 1 | 103 |
+| 2 | 13 |
+| 3 | 18 |
+| 4 | 72 |
+| 5 | 104 |
+| 6 | 164 |
+| 7 | 231 |
+| 8 | 383 |
+
+| Size | Folders |
+|------|---------|
+| 3 | 414 |
+| 4 | 130 |
+| 5 | 107 |
+| 6 | 60 |
+| 7 | 51 |
+| 8 | 26 |
+| 9 | 25 |
+| 10 | 140 |
+| 11–19 | 49 |
+| 20 | 71 |
+
+### generate_mst_mindmaps.py
+
+Generate mindmaps organized by MST folder structure with cloudmapref cross-links.
+
+```bash
+# Generate all mindmaps
+python3 scripts/mindmap/generate_mst_mindmaps.py \
+  --mst-structure output/mst_folder_structure_trees.json \
+  --output output/mst_mindmaps/ \
+  --root-name "Pearltrees_Collection"
+
+# Test with limit
+python3 scripts/mindmap/generate_mst_mindmaps.py \
+  --mst-structure output/mst_folder_structure_trees.json \
+  --output output/mst_mindmaps/ \
+  --limit 100
+
+# Dry run
+python3 scripts/mindmap/generate_mst_mindmaps.py \
+  --mst-structure output/mst_folder_structure_trees.json \
+  --output output/mst_mindmaps/ \
+  --dry-run
+```
+
+**Features:**
+- Extracts tree→pearl relationships from embedding URIs
+- Creates one mindmap per tree (tree as root, pearls as children)
+- Organizes mindmaps into MST folder hierarchy
+- Adds `cloudmapref` links between sibling mindmaps in same folder
+- Shows related maps with dashed lines
+
+**Example output structure:**
+```
+output/mst_mindmaps/
+└── Pearltrees_Collection/
+    ├── Quantum_Mechanics/
+    │   ├── Quantum_Mechanics_id10380971.smmx
+    │   ├── Quantum_Invariant_id10381234.smmx
+    │   └── ...
+    ├── Thermodynamics/
+    │   └── ...
+    └── ...
+```
+
+### Workflow: MST-Organized Mindmaps
+
+1. **Generate MST folder structure:**
+   ```bash
+   python3 scripts/mindmap/mst_folder_grouping.py \
+     --trees-only --target-size 10 --max-depth 5 \
+     -o output/mst_folder_structure_trees.json --verbose
+   ```
+
+2. **Generate mindmaps with cross-links:**
+   ```bash
+   python3 scripts/mindmap/generate_mst_mindmaps.py \
+     --mst-structure output/mst_folder_structure_trees.json \
+     --output output/mst_mindmaps/ \
+     --root-name "My_Collection"
+   ```
+
+3. **Open in SimpleMind:**
+   - Open any .smmx file
+   - Click on "→ Related Map" nodes to navigate
+   - Cross-links work offline via cloudmapref
