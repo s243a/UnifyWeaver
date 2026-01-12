@@ -2238,13 +2238,24 @@ namespace UnifyWeaver.QueryRuntime
 
                                     var pivotPos = 0;
                                     var bestDistinct = distinctKeys[0].Count;
+                                    var bestCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[0]));
                                     for (var i = 1; i < joinKeyCount; i++)
                                     {
-                                        var candidate = distinctKeys[i].Count;
-                                        if (candidate > bestDistinct)
+                                        var candidateDistinct = distinctKeys[i].Count;
+                                        var candidateCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[i]));
+
+                                        if (candidateCached && !bestCached)
                                         {
-                                            bestDistinct = candidate;
                                             pivotPos = i;
+                                            bestDistinct = candidateDistinct;
+                                            bestCached = true;
+                                            continue;
+                                        }
+
+                                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                                        {
+                                            pivotPos = i;
+                                            bestDistinct = candidateDistinct;
                                         }
                                     }
 
@@ -2407,13 +2418,24 @@ namespace UnifyWeaver.QueryRuntime
 
                                     var pivotPos = 0;
                                     var bestDistinct = distinctKeys[0].Count;
+                                    var bestCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[0]));
                                     for (var i = 1; i < joinKeyCount; i++)
                                     {
-                                        var candidate = distinctKeys[i].Count;
-                                        if (candidate > bestDistinct)
+                                        var candidateDistinct = distinctKeys[i].Count;
+                                        var candidateCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[i]));
+
+                                        if (candidateCached && !bestCached)
                                         {
-                                            bestDistinct = candidate;
                                             pivotPos = i;
+                                            bestDistinct = candidateDistinct;
+                                            bestCached = true;
+                                            continue;
+                                        }
+
+                                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                                        {
+                                            pivotPos = i;
+                                            bestDistinct = candidateDistinct;
                                         }
                                     }
 
@@ -2578,24 +2600,35 @@ namespace UnifyWeaver.QueryRuntime
                                     probeRows.Add((leftTuple, keyValues));
                                 }
 
-                                if (probeRows.Count == 0)
-                                {
-                                    yield break;
-                                }
-
-                                var pivotPos = 0;
-                                var bestDistinct = distinctKeys[0].Count;
-                                for (var i = 1; i < joinKeyCount; i++)
-                                {
-                                    var candidate = distinctKeys[i].Count;
-                                    if (candidate > bestDistinct)
+                                    if (probeRows.Count == 0)
                                     {
-                                        bestDistinct = candidate;
-                                        pivotPos = i;
+                                        yield break;
                                     }
-                                }
 
-                                var pivotRightKey = join.RightKeys[pivotPos];
+                                    var pivotPos = 0;
+                                    var bestDistinct = distinctKeys[0].Count;
+                                    var bestCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[0]));
+                                    for (var i = 1; i < joinKeyCount; i++)
+                                    {
+                                        var candidateDistinct = distinctKeys[i].Count;
+                                        var candidateCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[i]));
+
+                                        if (candidateCached && !bestCached)
+                                        {
+                                            pivotPos = i;
+                                            bestDistinct = candidateDistinct;
+                                            bestCached = true;
+                                            continue;
+                                        }
+
+                                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                                        {
+                                            pivotPos = i;
+                                            bestDistinct = candidateDistinct;
+                                        }
+                                    }
+
+                                    var pivotRightKey = join.RightKeys[pivotPos];
 
                                 var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
                                 foreach (var probeRow in probeRows)
@@ -2755,24 +2788,35 @@ namespace UnifyWeaver.QueryRuntime
                                     probeRows.Add((rightTuple, keyValues));
                                 }
 
-                                if (probeRows.Count == 0)
-                                {
-                                    yield break;
-                                }
-
-                                var pivotPos = 0;
-                                var bestDistinct = distinctKeys[0].Count;
-                                for (var i = 1; i < joinKeyCount; i++)
-                                {
-                                    var candidate = distinctKeys[i].Count;
-                                    if (candidate > bestDistinct)
+                                    if (probeRows.Count == 0)
                                     {
-                                        bestDistinct = candidate;
-                                        pivotPos = i;
+                                        yield break;
                                     }
-                                }
 
-                                var pivotLeftKey = join.LeftKeys[pivotPos];
+                                    var pivotPos = 0;
+                                    var bestDistinct = distinctKeys[0].Count;
+                                    var bestCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[0]));
+                                    for (var i = 1; i < joinKeyCount; i++)
+                                    {
+                                        var candidateDistinct = distinctKeys[i].Count;
+                                        var candidateCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[i]));
+
+                                        if (candidateCached && !bestCached)
+                                        {
+                                            pivotPos = i;
+                                            bestDistinct = candidateDistinct;
+                                            bestCached = true;
+                                            continue;
+                                        }
+
+                                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                                        {
+                                            pivotPos = i;
+                                            bestDistinct = candidateDistinct;
+                                        }
+                                    }
+
+                                    var pivotLeftKey = join.LeftKeys[pivotPos];
 
                                 var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
                                 foreach (var probeRow in probeRows)
