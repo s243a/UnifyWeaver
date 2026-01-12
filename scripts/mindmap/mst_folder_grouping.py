@@ -115,6 +115,7 @@ class MSTFolderGrouper:
         # Computed structures
         self.mst = None
         self.mst_adjacency = None
+        self.curated_adjacency = None  # Original curated structure (for tangent deviation)
         self.circles: List[Circle] = []
 
     def _compute_distance_matrix(self) -> np.ndarray:
@@ -290,6 +291,9 @@ class MSTFolderGrouper:
             self.mst_adjacency[parent_idx].append((child_idx, weight))
             self.mst_adjacency[child_idx].append((parent_idx, weight))
 
+        # Store curated adjacency (before orphan attachment) for tangent deviation
+        self.curated_adjacency = {k: list(v) for k, v in self.mst_adjacency.items()}
+
         # Find orphan nodes (no parent in our subset) and connect them
         connected_nodes = set()
         for node, neighbors in self.mst_adjacency.items():
@@ -382,6 +386,9 @@ class MSTFolderGrouper:
             self.mst_adjacency[parent_idx].append((child_idx, weight))
             self.mst_adjacency[child_idx].append((parent_idx, weight))
 
+        # Store curated adjacency (before orphan attachment) for tangent deviation
+        self.curated_adjacency = {k: list(v) for k, v in self.mst_adjacency.items()}
+
         # Find orphan nodes (not in curated structure)
         orphans = set(range(self.n_items)) - curated_nodes
 
@@ -447,6 +454,78 @@ class MSTFolderGrouper:
             print(f"  {len(self.mst_adjacency)} nodes in adjacency")
 
         self.mst = None
+
+    def compute_tangent_deviation(self) -> Dict[str, float]:
+        """Compute tangent deviation between final tree and curated structure.
+
+        For each node, computes tangent vectors (average direction to neighbors)
+        from both the final tree (mst_adjacency) and the curated structure
+        (curated_adjacency). Deviation = 1 - cosine_similarity of tangent vectors.
+
+        Returns dict with:
+            - mean_deviation: Average deviation across all nodes with curated neighbors
+            - max_deviation: Maximum deviation for any node
+            - n_nodes_compared: Number of nodes with both curated and final neighbors
+            - deviations: List of per-node deviations
+        """
+        if self.curated_adjacency is None:
+            return {"mean_deviation": 0.0, "max_deviation": 0.0,
+                    "n_nodes_compared": 0, "deviations": []}
+
+        # Normalize embeddings for computing tangent vectors
+        norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
+        normalized = self.embeddings / (norms + 1e-8)
+
+        deviations = []
+
+        for node in range(self.n_items):
+            # Get curated neighbors
+            curated_neighbors = [n for n, _ in self.curated_adjacency.get(node, [])]
+            if not curated_neighbors:
+                continue  # Skip nodes without curated structure
+
+            # Get final tree neighbors
+            final_neighbors = [n for n, _ in self.mst_adjacency.get(node, [])]
+            if not final_neighbors:
+                continue  # Skip isolated nodes
+
+            # Compute tangent vectors (average direction to neighbors)
+            node_vec = normalized[node]
+
+            # Curated tangent: average direction to curated neighbors
+            curated_dirs = normalized[curated_neighbors] - node_vec
+            t_curated = curated_dirs.mean(axis=0)
+            t_curated_norm = np.linalg.norm(t_curated)
+            if t_curated_norm < 1e-8:
+                continue  # Degenerate case
+
+            # Final tangent: average direction to final neighbors
+            final_dirs = normalized[final_neighbors] - node_vec
+            t_final = final_dirs.mean(axis=0)
+            t_final_norm = np.linalg.norm(t_final)
+            if t_final_norm < 1e-8:
+                continue  # Degenerate case
+
+            # Normalize tangent vectors
+            t_curated = t_curated / t_curated_norm
+            t_final = t_final / t_final_norm
+
+            # Deviation = 1 - cosine_similarity
+            cos_sim = np.dot(t_curated, t_final)
+            deviation = 1 - cos_sim
+
+            deviations.append(deviation)
+
+        if not deviations:
+            return {"mean_deviation": 0.0, "max_deviation": 0.0,
+                    "n_nodes_compared": 0, "deviations": []}
+
+        return {
+            "mean_deviation": float(np.mean(deviations)),
+            "max_deviation": float(np.max(deviations)),
+            "n_nodes_compared": len(deviations),
+            "deviations": deviations
+        }
 
     def _find_mst_root(self) -> int:
         """Find a good root for MST traversal (node with highest degree or most central)."""
@@ -1721,6 +1800,16 @@ class MSTFolderGrouper:
         print(f"|------|---------|")
         for size in sorted(size_counts.keys()):
             print(f"| {size} | {size_counts[size]} |")
+
+        # Tangent deviation (if curated structure exists)
+        if self.curated_adjacency is not None:
+            deviation = self.compute_tangent_deviation()
+            if deviation["n_nodes_compared"] > 0:
+                print(f"\n| Tangent Deviation | Value |")
+                print(f"|-------------------|-------|")
+                print(f"| Mean deviation | {deviation['mean_deviation']:.4f} |")
+                print(f"| Max deviation | {deviation['max_deviation']:.4f} |")
+                print(f"| Nodes compared | {deviation['n_nodes_compared']} |")
 
     def _print_circle_tree(self, circle: Circle, indent: int):
         """Print circle hierarchy as tree."""
