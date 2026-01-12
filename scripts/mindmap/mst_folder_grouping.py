@@ -409,8 +409,9 @@ class MSTFolderGrouper:
 
         # Greedy orphan attachment with permutation optimization
         # Sort orphans by their minimum distance to curated nodes (attach closest first)
-        connected_nodes = list(curated_nodes)
-        connected_embeddings = normalized[connected_nodes]
+        connected_nodes = set(curated_nodes)
+        connected_list_for_sort = list(curated_nodes)
+        connected_embeddings = normalized[connected_list_for_sort]
 
         orphan_list = list(orphans)
         orphan_embeddings = normalized[orphan_list]
