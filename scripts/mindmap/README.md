@@ -416,6 +416,22 @@ python3 scripts/mindmap/mst_folder_grouping.py \
   - Attachment order optimized (closest orphans attached first)
   - Newly attached orphans become valid attachment points for subsequent orphans
 
+**Tangent Deviation Metric:**
+
+When using `curated` or `hybrid` modes, the `--stats` output includes a tangent deviation metric that measures how much the final tree differs from the original curated structure:
+
+| Metric | Description |
+|--------|-------------|
+| Mean deviation | Average deviation across all nodes (0 = identical, 2 = opposite) |
+| Max deviation | Worst-case node deviation |
+| Nodes compared | Number of nodes with both curated and final neighbors |
+
+The deviation is computed as `1 - cosine_similarity(t_curated, t_final)` where:
+- `t_curated` = average direction to curated neighbors (tangent vector)
+- `t_final` = average direction to final tree neighbors
+
+**Intuition**: "Do the two graphs point you in the same direction at each point?" Low deviation means the final tree preserves the curated structure's local geometry.
+
 **Subdivision Methods:**
 
 | Method | Description | Best For |
