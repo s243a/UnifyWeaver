@@ -25,10 +25,18 @@
     rn_platform_specific/4,
     rn_capabilities/1,
     % Style generation
-    generate_rn_styles/2
+    generate_rn_styles/2,
+    % Pattern-based generation (from ui_patterns)
+    generate_rn_navigation/3,
+    generate_rn_query_hook/3,
+    generate_rn_storage_hook/3
 ]).
 
 :- use_module(library(lists)).
+
+% Optional: Load bindings and patterns if available
+:- catch(use_module('../bindings/react_native_bindings'), _, true).
+:- catch(use_module('../patterns/ui_patterns'), _, true).
 
 % ============================================================================
 % INITIALIZATION
@@ -737,6 +745,186 @@ capitalize_first(Str, Cap) :-
     upcase_atom(H, HU),
     atom_chars(HU, [HUC]),
     string_chars(Cap, [HUC|T]).
+
+% ============================================================================
+% PATTERN-BASED GENERATION (integrates with ui_patterns module)
+% ============================================================================
+
+%% generate_rn_navigation(+Screens, +Options, -Code)
+%
+%  Generate React Native navigation from screen specifications.
+%  Uses ui_patterns module if available, otherwise falls back to basic generation.
+%
+%  Screens: list of screen(Name, Component, ScreenOpts)
+%  Options: [type(stack|tab|drawer), component_name(Name)]
+%
+generate_rn_navigation(Screens, Options, Code) :-
+    option_value(Options, type, stack, Type),
+    option_value(Options, component_name, 'AppNavigator', Name),
+    (   catch(ui_patterns:navigation_pattern(Type, Screens, Pattern), _, fail),
+        catch(ui_patterns:define_pattern(temp_nav, Pattern, []), _, fail),
+        catch(ui_patterns:compile_pattern(temp_nav, react_native, [component_name(Name)], Code), _, fail)
+    ->  true
+    ;   % Fallback: basic stack navigator
+        generate_basic_navigation(Type, Screens, Name, Code)
+    ).
+
+generate_basic_navigation(stack, Screens, Name, Code) :-
+    findall(Import, (
+        member(screen(_, Component, _), Screens),
+        format(string(Import), "import { ~w } from './screens/~w';", [Component, Component])
+    ), Imports),
+    atomic_list_concat(Imports, '\n', ImportsStr),
+    findall(Screen, (
+        member(screen(SName, Component, _), Screens),
+        format(string(Screen), "        <Stack.Screen name=\"~w\" component={~w} />", [SName, Component])
+    ), ScreenDefs),
+    atomic_list_concat(ScreenDefs, '\n', ScreensStr),
+    format(string(Code),
+"import React from 'react';
+import { createStackNavigator } from '@react-navigation/stack';
+import { NavigationContainer } from '@react-navigation/native';
+~w
+
+const Stack = createStackNavigator();
+
+export const ~w: React.FC = () => {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator>
+~w
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+};
+
+export default ~w;
+", [ImportsStr, Name, ScreensStr, Name]).
+
+generate_basic_navigation(tab, Screens, Name, Code) :-
+    findall(Import, (
+        member(screen(_, Component, _), Screens),
+        format(string(Import), "import { ~w } from './screens/~w';", [Component, Component])
+    ), Imports),
+    atomic_list_concat(Imports, '\n', ImportsStr),
+    findall(Screen, (
+        member(screen(SName, Component, _), Screens),
+        format(string(Screen), "        <Tab.Screen name=\"~w\" component={~w} />", [SName, Component])
+    ), ScreenDefs),
+    atomic_list_concat(ScreenDefs, '\n', ScreensStr),
+    format(string(Code),
+"import React from 'react';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { NavigationContainer } from '@react-navigation/native';
+~w
+
+const Tab = createBottomTabNavigator();
+
+export const ~w: React.FC = () => {
+  return (
+    <NavigationContainer>
+      <Tab.Navigator>
+~w
+      </Tab.Navigator>
+    </NavigationContainer>
+  );
+};
+
+export default ~w;
+", [ImportsStr, Name, ScreensStr, Name]).
+
+generate_basic_navigation(drawer, Screens, Name, Code) :-
+    findall(Import, (
+        member(screen(_, Component, _), Screens),
+        format(string(Import), "import { ~w } from './screens/~w';", [Component, Component])
+    ), Imports),
+    atomic_list_concat(Imports, '\n', ImportsStr),
+    findall(Screen, (
+        member(screen(SName, Component, _), Screens),
+        format(string(Screen), "        <Drawer.Screen name=\"~w\" component={~w} />", [SName, Component])
+    ), ScreenDefs),
+    atomic_list_concat(ScreenDefs, '\n', ScreensStr),
+    format(string(Code),
+"import React from 'react';
+import { createDrawerNavigator } from '@react-navigation/drawer';
+import { NavigationContainer } from '@react-navigation/native';
+~w
+
+const Drawer = createDrawerNavigator();
+
+export const ~w: React.FC = () => {
+  return (
+    <NavigationContainer>
+      <Drawer.Navigator>
+~w
+      </Drawer.Navigator>
+    </NavigationContainer>
+  );
+};
+
+export default ~w;
+", [ImportsStr, Name, ScreensStr, Name]).
+
+%% generate_rn_query_hook(+Name, +Endpoint, -Code)
+%
+%  Generate React Query hook for data fetching.
+%
+generate_rn_query_hook(Name, Endpoint, Code) :-
+    (   catch(ui_patterns:query_pattern(Name, Endpoint, [], _Pattern), _, fail),
+        catch(ui_patterns:compile_pattern(Name, react_native, [], Code), _, fail)
+    ->  true
+    ;   % Fallback: basic query hook
+        capitalize_first(Name, HookName),
+        format(string(Code),
+"import { useQuery } from '@tanstack/react-query';
+
+export const use~w = () => {
+  return useQuery({
+    queryKey: ['~w'],
+    queryFn: async () => {
+      const response = await fetch('~w');
+      if (!response.ok) throw new Error('Network error');
+      return response.json();
+    },
+  });
+};
+", [HookName, Name, Endpoint])
+    ).
+
+%% generate_rn_storage_hook(+Key, +Schema, -Code)
+%
+%  Generate AsyncStorage hook for persistence.
+%
+generate_rn_storage_hook(Key, Schema, Code) :-
+    (   catch(ui_patterns:local_storage(Key, Schema, _Pattern), _, fail),
+        catch(ui_patterns:compile_pattern(Key, react_native, [], Code), _, fail)
+    ->  true
+    ;   % Fallback: basic storage hook
+        capitalize_first(Key, HookName),
+        format(string(Code),
+"import { useState, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+export const use~w = () => {
+  const [data, setData] = useState<~w | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    AsyncStorage.getItem('~w').then(stored => {
+      if (stored) setData(JSON.parse(stored));
+      setLoading(false);
+    });
+  }, []);
+
+  const save = async (value: ~w) => {
+    await AsyncStorage.setItem('~w', JSON.stringify(value));
+    setData(value);
+  };
+
+  return { data, loading, save };
+};
+", [HookName, Schema, Key, Schema, Key])
+    ).
 
 % ============================================================================
 % TESTING
