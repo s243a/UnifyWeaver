@@ -377,6 +377,10 @@ python3 scripts/mindmap/mst_folder_grouping.py \
 # Use curated hierarchy (respects Pearltrees parent-child structure)
 python3 scripts/mindmap/mst_folder_grouping.py \
   --subset physics --tree-source curated --target-size 8 --max-depth 3 --verbose
+
+# Use hybrid mode (curated + greedy orphan attachment with blended embeddings)
+python3 scripts/mindmap/mst_folder_grouping.py \
+  --subset physics --tree-source hybrid --embed-blend 0.3 --target-size 8 --max-depth 3 --verbose
 ```
 
 **Options Summary:**
@@ -389,7 +393,8 @@ python3 scripts/mindmap/mst_folder_grouping.py \
 | `--subdivision-method` | `multilevel`, `bisection` | `multilevel` | How to split oversized folders |
 | `--size-cost` | `gm_maximize`, `quadratic`, `geometric` | `gm_maximize` | Size cost (gm_maximize is scale-invariant) |
 | `--internal-cost` | `none`, `arithmetic`, `geometric` | `none` | Cost function for internal edges |
-| `--tree-source` | `mst`, `curated` | `mst` | Tree source for partitioning |
+| `--tree-source` | `mst`, `curated`, `hybrid` | `mst` | Tree source for partitioning |
+| `--embed-blend` | 0.0–1.0 | 0.3 | Blend weight for hybrid mode (0.3 = 30% input, 70% output) |
 | `--stats`, `-s` | flag | off | Print statistics tables (markdown format) |
 | `--verbose`, `-v` | flag | off | Print detailed progress |
 
@@ -399,8 +404,17 @@ python3 scripts/mindmap/mst_folder_grouping.py \
 |------|-------------|--------------|----------|
 | `mst` | Build MST from embeddings | O(N²) or O(N*k) | Fresh organization, items without clear hierarchy |
 | `curated` | Use Pearltrees parent-child hierarchy | O(N) | Respecting existing curation, enhancing structure |
+| `hybrid` | Curated structure + greedy orphan attachment | O(N) | Mixed content with orphans from other accounts |
 
-The `curated` mode skips MST computation entirely, using the actual Pearltrees hierarchy paths from the JSONL `target_text` field. Edge weights are still computed from embedding distances for subdivision decisions.
+**Tree Source Details:**
+
+- `curated`: Uses hierarchy paths from JSONL `target_text` field. Edge weights computed from embedding distances.
+
+- `hybrid`: Combines curated hierarchy (fixed) with greedy orphan attachment:
+  - Uses blended embeddings: `embed_blend * input + (1 - embed_blend) * output`
+  - Orphan nodes attach to minimize semantic distance (non-binary, can attach to any node)
+  - Attachment order optimized (closest orphans attached first)
+  - Newly attached orphans become valid attachment points for subsequent orphans
 
 **Subdivision Methods:**
 

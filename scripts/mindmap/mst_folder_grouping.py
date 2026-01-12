@@ -65,11 +65,13 @@ class MSTFolderGrouper:
         internal_cost_mode: str = 'none',
         size_cost_mode: str = 'gm_maximize',
         tree_source: str = 'mst',
-        hierarchy_paths: Optional[Dict[str, str]] = None
+        hierarchy_paths: Optional[Dict[str, str]] = None,
+        output_embeddings: Optional[np.ndarray] = None,
+        embed_blend: float = 0.3
     ):
         """
         Args:
-            embeddings: (N, D) array of embedding vectors
+            embeddings: (N, D) array of embedding vectors (input embeddings)
             titles: List of item titles
             tree_ids: List of tree IDs
             target_size: Target number of items per folder (used as initial estimate for gm_maximize)
@@ -79,9 +81,11 @@ class MSTFolderGrouper:
             subdivision_method: 'multilevel' (default) or 'bisection'
             internal_cost_mode: 'none' (default), 'arithmetic', or 'geometric'
             size_cost_mode: 'gm_maximize' (default, scale-invariant) or 'quadratic'
-            tree_source: 'mst' (compute from embeddings) or 'curated' (use hierarchy_paths)
+            tree_source: 'mst', 'curated', or 'hybrid'
             hierarchy_paths: Dict[tree_id] -> path string (e.g., '/id1/id2/.../idn')
-                            Required when tree_source='curated'
+                            Required when tree_source='curated' or 'hybrid'
+            output_embeddings: (N, D) array of output embeddings for blending (hybrid mode)
+            embed_blend: Weight for input embeddings in blend (default 0.3 = 30% input, 70% output)
         """
         self.embeddings = embeddings
         self.titles = titles
@@ -94,8 +98,10 @@ class MSTFolderGrouper:
         self.subdivision_method = subdivision_method
         self.internal_cost_mode = internal_cost_mode  # 'none', 'arithmetic', or 'geometric'
         self.size_cost_mode = size_cost_mode  # 'quadratic' or 'geometric'
-        self.tree_source = tree_source  # 'mst' or 'curated'
+        self.tree_source = tree_source  # 'mst', 'curated', or 'hybrid'
         self.hierarchy_paths = hierarchy_paths or {}
+        self.output_embeddings = output_embeddings
+        self.embed_blend = embed_blend  # Weight for input embeddings (1 - this = output weight)
 
         # Track circles where subdivision was attempted but failed
         self._subdivision_failed: Set[int] = set()
@@ -317,6 +323,129 @@ class MSTFolderGrouper:
             print(f"  {len(self.mst_adjacency)} nodes in adjacency")
 
         # Set mst to None (not computed for curated tree)
+        self.mst = None
+
+    def _build_hybrid_tree(self):
+        """Build hybrid tree: curated structure + greedy orphan attachment.
+
+        Uses blended embeddings (embed_blend * input + (1-embed_blend) * output)
+        for computing distances. Curated hierarchy is fixed; orphan nodes are
+        attached greedily to minimize semantic distance, with permutation to
+        optimize attachment order.
+        """
+        if self.verbose:
+            print("Building hybrid tree...")
+            print(f"  Embedding blend: {self.embed_blend:.0%} input, {1-self.embed_blend:.0%} output")
+
+        # Compute blended embeddings
+        if self.output_embeddings is None:
+            raise ValueError("output_embeddings required for hybrid mode")
+
+        blended = (self.embed_blend * self.embeddings +
+                   (1 - self.embed_blend) * self.output_embeddings)
+
+        # Normalize blended embeddings for cosine distance
+        norms = np.linalg.norm(blended, axis=1, keepdims=True)
+        normalized = blended / (norms + 1e-8)
+
+        # Build tree_id -> index mapping
+        tree_id_to_idx = {tid: i for i, tid in enumerate(self.tree_ids)}
+
+        # Parse paths to extract parent-child relationships (curated structure)
+        parent_child_pairs = []
+        curated_nodes = set()
+
+        for tree_id, path in self.hierarchy_paths.items():
+            if tree_id not in tree_id_to_idx:
+                continue
+
+            child_idx = tree_id_to_idx[tree_id]
+            curated_nodes.add(child_idx)
+
+            parts = [p for p in path.strip('/').split('/') if p]
+            if len(parts) >= 2:
+                parent_id = parts[-2]
+                if parent_id in tree_id_to_idx:
+                    parent_idx = tree_id_to_idx[parent_id]
+                    parent_child_pairs.append((parent_idx, child_idx))
+                    curated_nodes.add(parent_idx)
+
+        if self.verbose:
+            print(f"  Curated structure: {len(parent_child_pairs)} edges, {len(curated_nodes)} nodes")
+
+        # Build initial adjacency from curated structure
+        self.mst_adjacency = defaultdict(list)
+
+        for parent_idx, child_idx in parent_child_pairs:
+            similarity = np.dot(normalized[parent_idx], normalized[child_idx])
+            weight = max(0, 1 - similarity)
+            self.mst_adjacency[parent_idx].append((child_idx, weight))
+            self.mst_adjacency[child_idx].append((parent_idx, weight))
+
+        # Find orphan nodes (not in curated structure)
+        orphans = set(range(self.n_items)) - curated_nodes
+
+        if not orphans:
+            if self.verbose:
+                print("  No orphan nodes to attach")
+            self.mst = None
+            return
+
+        if self.verbose:
+            print(f"  Orphan nodes to attach: {len(orphans)}")
+
+        # Greedy orphan attachment with permutation optimization
+        # Sort orphans by their minimum distance to curated nodes (attach closest first)
+        connected_nodes = list(curated_nodes)
+        connected_embeddings = normalized[connected_nodes]
+
+        orphan_list = list(orphans)
+        orphan_embeddings = normalized[orphan_list]
+
+        # Compute distances from each orphan to each connected node
+        # Shape: (n_orphans, n_connected)
+        similarities = orphan_embeddings @ connected_embeddings.T
+        min_distances = 1 - similarities.max(axis=1)  # Min distance to any connected node
+
+        # Sort orphans by minimum distance (closest first for better attachment)
+        sorted_indices = np.argsort(min_distances)
+        orphan_order = [orphan_list[i] for i in sorted_indices]
+
+        if self.verbose:
+            print(f"  Attaching orphans in optimized order (closest first)...")
+
+        # Greedily attach orphans
+        attached_count = 0
+        for orphan in orphan_order:
+            # Find best attachment point among all connected nodes
+            connected_list = list(connected_nodes)
+            if not connected_list:
+                # First orphan with no curated nodes - shouldn't happen but handle it
+                connected_nodes.add(orphan)
+                continue
+
+            connected_emb = normalized[connected_list]
+            orphan_emb = normalized[orphan]
+
+            similarities = np.dot(connected_emb, orphan_emb)
+            best_idx = np.argmax(similarities)
+            best_neighbor = connected_list[best_idx]
+            weight = max(0, 1 - similarities[best_idx])
+
+            # Attach orphan (non-binary: can attach to any node)
+            self.mst_adjacency[orphan].append((best_neighbor, weight))
+            self.mst_adjacency[best_neighbor].append((orphan, weight))
+
+            # Orphan is now connected and can receive future attachments
+            connected_nodes.add(orphan)
+            attached_count += 1
+
+        if self.verbose:
+            n_edges = sum(len(v) for v in self.mst_adjacency.values()) // 2
+            print(f"  Attached {attached_count} orphans")
+            print(f"  Hybrid tree has {n_edges} edges")
+            print(f"  {len(self.mst_adjacency)} nodes in adjacency")
+
         self.mst = None
 
     def _find_mst_root(self) -> int:
@@ -1114,12 +1243,19 @@ class MSTFolderGrouper:
 
     def partition(self, sparse_threshold: int = 5000, knn_k: int = 50) -> List[Circle]:
         """Run the full partitioning algorithm."""
-        # Step 1-2: Build tree structure (MST or curated)
+        # Step 1-2: Build tree structure (MST, curated, or hybrid)
         if self.tree_source == 'curated':
             # Use curated hierarchy paths directly (no MST computation)
             if not self.hierarchy_paths:
                 raise ValueError("hierarchy_paths required when tree_source='curated'")
             self._build_curated_tree()
+        elif self.tree_source == 'hybrid':
+            # Curated structure + greedy orphan attachment with blended embeddings
+            if not self.hierarchy_paths:
+                raise ValueError("hierarchy_paths required when tree_source='hybrid'")
+            if self.output_embeddings is None:
+                raise ValueError("output_embeddings required when tree_source='hybrid'")
+            self._build_hybrid_tree()
         else:
             # Compute MST from embeddings
             if self.n_items > sparse_threshold:
@@ -1619,8 +1755,16 @@ class MSTFolderGrouper:
         return {}
 
 
-def load_physics_subset(embeddings_path: Path, targets_path: Path) -> Tuple[np.ndarray, List[str], List[str]]:
-    """Load physics trees subset with embeddings."""
+def load_physics_subset(embeddings_path: Path, targets_path: Path,
+                        include_output: bool = False) -> Tuple[np.ndarray, List[str], List[str], Optional[np.ndarray]]:
+    """Load physics trees subset with embeddings.
+
+    Returns:
+        embeddings: Input embeddings (N, D)
+        titles: List of titles
+        tree_ids: List of tree IDs
+        output_embeddings: Output embeddings (N, D) if include_output=True, else None
+    """
     # Load targets to get tree IDs
     tree_ids = []
     titles = []
@@ -1634,6 +1778,7 @@ def load_physics_subset(embeddings_path: Path, targets_path: Path) -> Tuple[np.n
     full_data = np.load(embeddings_path, allow_pickle=True)
     full_tree_ids = list(full_data['tree_ids'])
     full_embeddings = full_data['input_nomic']
+    full_output_embeddings = full_data['output_nomic'] if include_output else None
 
     # Create lookup
     id_to_idx = {tid: i for i, tid in enumerate(full_tree_ids)}
@@ -1644,18 +1789,28 @@ def load_physics_subset(embeddings_path: Path, targets_path: Path) -> Tuple[np.n
     filtered_titles = [titles[i] for i, tid in enumerate(tree_ids) if tid in id_to_idx]
 
     embeddings = full_embeddings[indices]
+    output_embeddings = full_output_embeddings[indices] if include_output else None
 
-    return embeddings, filtered_titles, filtered_tree_ids
+    return embeddings, filtered_titles, filtered_tree_ids, output_embeddings
 
 
-def load_trees_only(embeddings_path: Path, limit: Optional[int] = None) -> Tuple[np.ndarray, List[str], List[str]]:
-    """Load only Tree items from embeddings."""
+def load_trees_only(embeddings_path: Path, limit: Optional[int] = None,
+                    include_output: bool = False) -> Tuple[np.ndarray, List[str], List[str], Optional[np.ndarray]]:
+    """Load only Tree items from embeddings.
+
+    Returns:
+        embeddings: Input embeddings (N, D)
+        titles: List of titles
+        tree_ids: List of tree IDs
+        output_embeddings: Output embeddings (N, D) if include_output=True, else None
+    """
     data = np.load(embeddings_path, allow_pickle=True)
 
     item_types = data['item_types']
     tree_mask = item_types == 'Tree'
 
     embeddings = data['input_nomic'][tree_mask]
+    output_embeddings = data['output_nomic'][tree_mask] if include_output else None
     titles = list(data['titles'][tree_mask])
     tree_ids = list(data['tree_ids'][tree_mask])
 
@@ -1663,8 +1818,10 @@ def load_trees_only(embeddings_path: Path, limit: Optional[int] = None) -> Tuple
         embeddings = embeddings[:limit]
         titles = titles[:limit]
         tree_ids = tree_ids[:limit]
+        if include_output:
+            output_embeddings = output_embeddings[:limit]
 
-    return embeddings, titles, tree_ids
+    return embeddings, titles, tree_ids, output_embeddings
 
 
 def load_hierarchy_paths(targets_path: Path) -> Dict[str, str]:
@@ -1724,8 +1881,10 @@ def main():
                         choices=['gm_maximize', 'quadratic', 'geometric'],
                         help='Size cost: gm_maximize (default, scale-invariant), quadratic, or geometric (deprecated)')
     parser.add_argument('--tree-source', type=str, default='mst',
-                        choices=['mst', 'curated'],
-                        help='Tree source: mst (compute from embeddings) or curated (use hierarchy paths)')
+                        choices=['mst', 'curated', 'hybrid'],
+                        help='Tree source: mst (compute from embeddings), curated (use hierarchy paths), or hybrid (curated + greedy orphan attachment)')
+    parser.add_argument('--embed-blend', type=float, default=0.3,
+                        help='Embedding blend for hybrid mode: weight for input embeddings (default: 0.3 = 30%% input, 70%% output)')
 
     parser.add_argument('--output', '-o', type=Path, default=None,
                         help='Output JSON file for folder structure')
@@ -1744,30 +1903,39 @@ def main():
 
     # Load data
     hierarchy_paths = {}
+    output_embeddings = None
+    need_output = args.tree_source == 'hybrid'
+    need_hierarchy = args.tree_source in ('curated', 'hybrid')
+
     if args.subset == 'physics':
         targets_path = project_root / args.targets
         print(f"Loading physics subset from {targets_path}...")
-        embeddings, titles, tree_ids = load_physics_subset(embeddings_path, targets_path)
-        if args.tree_source == 'curated':
+        embeddings, titles, tree_ids, output_embeddings = load_physics_subset(
+            embeddings_path, targets_path, include_output=need_output)
+        if need_hierarchy:
             hierarchy_paths = load_hierarchy_paths(targets_path)
     elif args.trees_only:
         print(f"Loading trees-only from {embeddings_path}...")
-        embeddings, titles, tree_ids = load_trees_only(embeddings_path, limit=args.limit)
-        if args.tree_source == 'curated':
-            # For trees-only mode with curated, need a targets file
+        embeddings, titles, tree_ids, output_embeddings = load_trees_only(
+            embeddings_path, limit=args.limit, include_output=need_output)
+        if need_hierarchy:
+            # For trees-only mode with curated/hybrid, need a targets file
             # Default to the combined trees file
             trees_targets = project_root / 'reports/pearltrees_targets_combined_2026-01-02_trees_fixed.jsonl'
             if trees_targets.exists():
                 hierarchy_paths = load_hierarchy_paths(trees_targets)
                 print(f"Loaded {len(hierarchy_paths)} hierarchy paths from {trees_targets}")
             else:
-                parser.error("--tree-source curated requires a targets file with hierarchy paths")
+                parser.error(f"--tree-source {args.tree_source} requires a targets file with hierarchy paths")
     else:
         parser.error("Must specify --subset or --trees-only")
 
     print(f"Loaded {len(embeddings)} items")
     if args.tree_source == 'curated':
         print(f"Using curated hierarchy ({len(hierarchy_paths)} paths)")
+    elif args.tree_source == 'hybrid':
+        print(f"Using hybrid mode: {len(hierarchy_paths)} hierarchy paths, "
+              f"{args.embed_blend:.0%} input / {1-args.embed_blend:.0%} output blend")
 
     # Run grouping
     grouper = MSTFolderGrouper(
@@ -1782,7 +1950,9 @@ def main():
         internal_cost_mode=args.internal_cost,
         size_cost_mode=args.size_cost,
         tree_source=args.tree_source,
-        hierarchy_paths=hierarchy_paths
+        hierarchy_paths=hierarchy_paths,
+        output_embeddings=output_embeddings,
+        embed_blend=args.embed_blend
     )
 
     circles = grouper.partition()
