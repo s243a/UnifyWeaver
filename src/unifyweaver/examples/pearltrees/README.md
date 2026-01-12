@@ -35,6 +35,9 @@ This example shows how UnifyWeaver can:
 | `vue/PearltreesHierarchy.vue` | Example Vue hierarchy visualization |
 | `vue/MindMapViewport.vue` | Reusable Vue viewport component |
 | `test_vue_codegen.pl` | 43 plunit tests for Vue code generation |
+| `test_react_native_codegen.pl` | 55 plunit tests for React Native code generation |
+| `react_native/PearltreesMindMap.tsx` | Example React Native mindmap component |
+| `react_native/README.md` | React Native setup and usage guide |
 
 ## Source Definitions
 
@@ -620,6 +623,74 @@ swipl -g "show_target_capabilities" compile_vue_examples.pl
 
 # Run Vue codegen tests (43 tests)
 swipl -g "run_tests" -t halt test_vue_codegen.pl
+```
+
+## React Native Target
+
+Generate React Native components for mobile applications using:
+- `react-native-svg` for vector graphics
+- `react-native-gesture-handler` for touch interactions
+- `react-native-reanimated` for smooth animations
+
+### React Native Files
+
+| File | Description |
+|------|-------------|
+| `react_native/PearltreesMindMap.tsx` | Example mindmap component for mobile |
+| `react_native/README.md` | React Native setup and usage guide |
+| `test_react_native_codegen.pl` | 55 plunit tests for React Native code generation |
+
+### React Native Code Generation
+
+Generate mobile components from Prolog:
+
+```prolog
+?- use_module('src/unifyweaver/targets/react_native_target'),
+   generate_rn_mindmap_component(Nodes, Edges, [theme(dark)], RNCode).
+% Generates React Native component with SVG and gestures
+
+?- compile_predicate_to_react_native(my_module:my_pred/2, [], Code).
+% Generates basic React Native component
+
+?- generate_rn_list_component(Items, [component_name('MyList')], Code).
+% Generates FlatList component
+
+?- generate_rn_card_component([title('My Card')], [], Code).
+% Generates card component with shadow styles
+```
+
+### React Native Capabilities
+
+**Supported Features:**
+- `svg_graphics` - Vector rendering via react-native-svg
+- `animated_transitions` - Smooth animations via Reanimated
+- `gesture_handling` - Pan, pinch, tap via gesture handler
+- `platform_specific_code` - iOS/Android conditional code
+- `expo_compatibility` - Works with Expo projects
+- `typescript` - Full TypeScript support
+
+**Limitations:**
+- `no_dom_apis` - No direct DOM manipulation
+- `no_css_animations` - Use Animated/Reanimated instead
+- `limited_svg_filters` - Some SVG filters not supported
+
+### Platform-Specific Code
+
+Generate platform-specific code for iOS and Android:
+
+```prolog
+?- rn_platform_specific(both, "ios_value", "android_value", Code).
+% Generates Platform.select({ ios: ..., android: ... })
+```
+
+### Running React Native Tests
+
+```bash
+# Run React Native codegen tests (55 tests)
+swipl -g "run_tests" -t halt test_react_native_codegen.pl
+
+# Run inline target tests
+swipl -g "test_react_native_target" -t halt src/unifyweaver/targets/react_native_target.pl
 ```
 
 ## Educational Value
