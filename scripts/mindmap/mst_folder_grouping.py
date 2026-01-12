@@ -67,7 +67,9 @@ class MSTFolderGrouper:
         tree_source: str = 'mst',
         hierarchy_paths: Optional[Dict[str, str]] = None,
         output_embeddings: Optional[np.ndarray] = None,
-        embed_blend: float = 0.3
+        embed_blend: float = 0.3,
+        attachment_cost: str = 'semantic',
+        tangent_lambda: float = 1.0
     ):
         """
         Args:
@@ -86,6 +88,8 @@ class MSTFolderGrouper:
                             Required when tree_source='curated' or 'hybrid'
             output_embeddings: (N, D) array of output embeddings for blending (hybrid mode)
             embed_blend: Weight for input embeddings in blend (default 0.3 = 30% input, 70% output)
+            attachment_cost: 'semantic' (distance only) or 'integrated' (distance + tangent deviation)
+            tangent_lambda: Weight for tangent deviation in integrated cost (default 1.0)
         """
         self.embeddings = embeddings
         self.titles = titles
@@ -102,6 +106,8 @@ class MSTFolderGrouper:
         self.hierarchy_paths = hierarchy_paths or {}
         self.output_embeddings = output_embeddings
         self.embed_blend = embed_blend  # Weight for input embeddings (1 - this = output weight)
+        self.attachment_cost = attachment_cost  # 'semantic' or 'integrated'
+        self.tangent_lambda = tangent_lambda  # Weight for tangent deviation in integrated cost
 
         # Track circles where subdivision was attempted but failed
         self._subdivision_failed: Set[int] = set()
@@ -419,7 +425,9 @@ class MSTFolderGrouper:
         orphan_order = [orphan_list[i] for i in sorted_indices]
 
         if self.verbose:
+            cost_mode = "integrated (semantic + tangent)" if self.attachment_cost == 'integrated' else "semantic only"
             print(f"  Attaching orphans in optimized order (closest first)...")
+            print(f"  Attachment cost mode: {cost_mode}")
 
         # Greedily attach orphans
         attached_count = 0
@@ -431,13 +439,31 @@ class MSTFolderGrouper:
                 connected_nodes.add(orphan)
                 continue
 
-            connected_emb = normalized[connected_list]
-            orphan_emb = normalized[orphan]
+            if self.attachment_cost == 'integrated':
+                # Use integrated cost: semantic distance + tangent deviation over ellipse
+                best_cost = float('inf')
+                best_neighbor = connected_list[0]
 
-            similarities = np.dot(connected_emb, orphan_emb)
-            best_idx = np.argmax(similarities)
-            best_neighbor = connected_list[best_idx]
-            weight = max(0, 1 - similarities[best_idx])
+                for candidate in connected_list:
+                    cost = self._compute_integrated_attachment_cost(
+                        orphan, candidate, normalized, connected_nodes
+                    )
+                    if cost < best_cost:
+                        best_cost = cost
+                        best_neighbor = candidate
+
+                # Compute weight for the chosen attachment
+                cos_sim = np.dot(normalized[orphan], normalized[best_neighbor])
+                weight = max(0, 1 - cos_sim)
+            else:
+                # Semantic only: attach to nearest by cosine similarity
+                connected_emb = normalized[connected_list]
+                orphan_emb = normalized[orphan]
+
+                similarities = np.dot(connected_emb, orphan_emb)
+                best_idx = np.argmax(similarities)
+                best_neighbor = connected_list[best_idx]
+                weight = max(0, 1 - similarities[best_idx])
 
             # Attach orphan (non-binary: can attach to any node)
             self.mst_adjacency[orphan].append((best_neighbor, weight))
@@ -526,6 +552,124 @@ class MSTFolderGrouper:
             "n_nodes_compared": len(deviations),
             "deviations": deviations
         }
+
+    def _compute_integrated_attachment_cost(
+        self,
+        orphan: int,
+        candidate: int,
+        normalized_embeddings: np.ndarray,
+        connected_nodes: Set[int],
+        a_factor: float = 1.0
+    ) -> float:
+        """Compute integrated attachment cost over ellipse region.
+
+        Based on the theoretical framework: cost = d_g + λ * E_integrated
+        where E_integrated is the weighted average of θ·r²/2 over the ellipse
+        with foci at orphan and candidate.
+
+        Args:
+            orphan: Index of orphan node to attach
+            candidate: Index of candidate attachment point
+            normalized_embeddings: Normalized embedding matrix
+            connected_nodes: Set of currently connected node indices
+            a_factor: Semi-major axis as multiple of geodesic distance
+
+        Returns:
+            Combined cost (lower is better)
+        """
+        # Geodesic distance between orphan and candidate
+        cos_sim = np.clip(normalized_embeddings[orphan] @ normalized_embeddings[candidate], -1, 1)
+        d_g = np.arccos(cos_sim)
+
+        if d_g < 1e-8:
+            return 0.0  # Same point
+
+        # Semantic cost (geodesic distance)
+        semantic_cost = d_g
+
+        if self.curated_adjacency is None:
+            # No curated structure to compare against
+            return semantic_cost
+
+        # Semi-major axis of ellipse
+        a = a_factor * d_g
+
+        # Find nodes in ellipse region (connected nodes only)
+        weighted_error = 0.0
+        weight_sum = 0.0
+
+        for P in connected_nodes:
+            if P == orphan:
+                continue
+
+            # Geodesic distances to foci
+            cos_PN = np.clip(normalized_embeddings[P] @ normalized_embeddings[candidate], -1, 1)
+            cos_PO = np.clip(normalized_embeddings[P] @ normalized_embeddings[orphan], -1, 1)
+            d_PN = np.arccos(cos_PN)
+            d_PO = np.arccos(cos_PO)
+
+            # Check if inside ellipse: d(P,N) + d(P,O) <= 2a
+            ellipse_dist = d_PN + d_PO
+            if ellipse_dist > 2 * a:
+                continue
+
+            # Weight: 1 at center (on line segment), 0 at boundary
+            # Center points have ellipse_dist ≈ d_g
+            if 2 * a - d_g > 1e-8:
+                w = 1 - (ellipse_dist - d_g) / (2 * a - d_g)
+                w = max(0.0, min(1.0, w))
+            else:
+                w = 1.0
+
+            # Tangent deviation at P (if P has curated neighbors)
+            curated_neighbors = [n for n, _ in self.curated_adjacency.get(P, [])]
+            if not curated_neighbors:
+                continue
+
+            # Current neighbors (before this attachment)
+            current_neighbors = [n for n, _ in self.mst_adjacency.get(P, [])]
+            if not current_neighbors:
+                continue
+
+            # Compute tangent vectors
+            P_vec = normalized_embeddings[P]
+
+            # Curated tangent
+            curated_dirs = normalized_embeddings[curated_neighbors] - P_vec
+            t_curated = curated_dirs.mean(axis=0)
+            t_curated_norm = np.linalg.norm(t_curated)
+            if t_curated_norm < 1e-8:
+                continue
+
+            # Current tangent
+            current_dirs = normalized_embeddings[current_neighbors] - P_vec
+            t_current = current_dirs.mean(axis=0)
+            t_current_norm = np.linalg.norm(t_current)
+            if t_current_norm < 1e-8:
+                continue
+
+            # Normalize and compute deviation
+            t_curated = t_curated / t_curated_norm
+            t_current = t_current / t_current_norm
+            theta_P = 1 - np.dot(t_curated, t_current)
+
+            # Distance to edge (min distance to either focus)
+            r_P = min(d_PN, d_PO)
+
+            # Error contribution: θ · r² / 2
+            error_P = theta_P * r_P**2 / 2
+
+            weighted_error += error_P * w
+            weight_sum += w
+
+        # Integrated error (average over ellipse)
+        if weight_sum > 0:
+            E_integrated = weighted_error / weight_sum
+        else:
+            E_integrated = 0.0
+
+        # Combined cost: d_g + λ * E_integrated
+        return semantic_cost + self.tangent_lambda * E_integrated
 
     def _find_mst_root(self) -> int:
         """Find a good root for MST traversal (node with highest degree or most central)."""
@@ -1974,6 +2118,11 @@ def main():
                         help='Tree source: mst (compute from embeddings), curated (use hierarchy paths), or hybrid (curated + greedy orphan attachment)')
     parser.add_argument('--embed-blend', type=float, default=0.3,
                         help='Embedding blend for hybrid mode: weight for input embeddings (default: 0.3 = 30%% input, 70%% output)')
+    parser.add_argument('--attachment-cost', type=str, default='semantic',
+                        choices=['semantic', 'integrated'],
+                        help='Attachment cost mode: semantic (distance only) or integrated (distance + tangent deviation over ellipse)')
+    parser.add_argument('--tangent-lambda', type=float, default=1.0,
+                        help='Weight for tangent deviation in integrated cost (default: 1.0)')
 
     parser.add_argument('--output', '-o', type=Path, default=None,
                         help='Output JSON file for folder structure')
@@ -2041,7 +2190,9 @@ def main():
         tree_source=args.tree_source,
         hierarchy_paths=hierarchy_paths,
         output_embeddings=output_embeddings,
-        embed_blend=args.embed_blend
+        embed_blend=args.embed_blend,
+        attachment_cost=args.attachment_cost,
+        tangent_lambda=args.tangent_lambda
     )
 
     circles = grouper.partition()
