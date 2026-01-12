@@ -381,6 +381,10 @@ python3 scripts/mindmap/mst_folder_grouping.py \
 # Use hybrid mode (curated + greedy orphan attachment with blended embeddings)
 python3 scripts/mindmap/mst_folder_grouping.py \
   --subset physics --tree-source hybrid --embed-blend 0.3 --target-size 8 --max-depth 3 --verbose
+
+# Use hybrid with integrated cost (structure-preserving attachment)
+python3 scripts/mindmap/mst_folder_grouping.py \
+  --subset physics --tree-source hybrid --attachment-cost integrated --tangent-lambda 1.0 --verbose
 ```
 
 **Options Summary:**
@@ -395,6 +399,8 @@ python3 scripts/mindmap/mst_folder_grouping.py \
 | `--internal-cost` | `none`, `arithmetic`, `geometric` | `none` | Cost function for internal edges |
 | `--tree-source` | `mst`, `curated`, `hybrid` | `mst` | Tree source for partitioning |
 | `--embed-blend` | 0.0–1.0 | 0.3 | Blend weight for hybrid mode (0.3 = 30% input, 70% output) |
+| `--attachment-cost` | `semantic`, `integrated` | `semantic` | Cost mode for orphan attachment in hybrid mode |
+| `--tangent-lambda` | float | 1.0 | Weight for tangent deviation in integrated cost |
 | `--stats`, `-s` | flag | off | Print statistics tables (markdown format) |
 | `--verbose`, `-v` | flag | off | Print detailed progress |
 
@@ -431,6 +437,24 @@ The deviation is computed as `1 - cosine_similarity(t_curated, t_final)` where:
 - `t_final` = average direction to final tree neighbors
 
 **Intuition**: "Do the two graphs point you in the same direction at each point?" Low deviation means the final tree preserves the curated structure's local geometry.
+
+**Attachment Cost Modes (Hybrid Only):**
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `semantic` | Attach to nearest node by cosine distance | Fast, good default |
+| `integrated` | Minimize `d_g + λ × E_integrated` over ellipse region | Structure-preserving attachment |
+
+The `integrated` mode uses the theoretically-derived criterion from `docs/proposals/tangent_deviation_integral_criterion.md`:
+
+- **Cost function**: `cost = d_g + λ × E_integrated`
+- **d_g**: Geodesic distance on unit sphere (normalized embeddings)
+- **E_integrated**: Weighted average of `θ·r²/2` over ellipse with foci at orphan and candidate
+- **λ**: Trade-off parameter (`--tangent-lambda`, default 1.0)
+
+The ellipse region represents the "zone of influence" for the attachment. Points closer to the edge center contribute more to the integrated error. This ensures attachments that:
+1. Are semantically close (low d_g)
+2. Don't distort the local curated geometry (low E_integrated)
 
 **Subdivision Methods:**
 
