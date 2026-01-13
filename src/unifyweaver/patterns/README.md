@@ -4,7 +4,14 @@ Generalizable, composable UI patterns for multi-target code generation.
 
 ## Overview
 
-The `ui_patterns.pl` module provides abstract UI patterns that compile to multiple targets (React Native, Vue, etc.). Patterns are:
+The `ui_patterns.pl` module provides abstract UI patterns that compile to multiple targets:
+
+- **React Native** - React Navigation, Zustand, React Query, AsyncStorage
+- **Vue 3** - Vue Router, Pinia, Vue Query, localStorage
+- **Flutter** - GoRouter, Riverpod, FutureProvider, SharedPreferences
+- **SwiftUI** - NavigationStack, ObservableObject, async/await, AppStorage
+
+Patterns are:
 
 - **Generalizable**: Same pattern specification works across targets
 - **Composable**: Patterns can be combined together
@@ -79,10 +86,31 @@ persistence_pattern(mmkv, [key(cache), schema(object)], Pattern).
 Compile patterns to target-specific code:
 
 ```prolog
-%% Define and compile a navigation pattern
+%% Define a navigation pattern once
 ?- navigation_pattern(stack, [screen(home, 'HomeScreen', [])], P),
-   define_pattern(my_nav, P, []),
-   compile_pattern(my_nav, react_native, [], Code).
+   define_pattern(my_nav, P, []).
+
+%% Compile to different targets
+?- compile_pattern(my_nav, react_native, [], RNCode).   % React Navigation
+?- compile_pattern(my_nav, vue, [], VueCode).           % Vue Router
+?- compile_pattern(my_nav, flutter, [], FlutterCode).   % GoRouter
+?- compile_pattern(my_nav, swiftui, [], SwiftCode).     % NavigationStack
+```
+
+### Multi-Target Compilation
+
+```prolog
+%% Load target modules
+:- use_module('targets/vue_target', []).
+:- use_module('targets/flutter_target', []).
+:- use_module('targets/swiftui_target', []).
+
+%% Compile state pattern to all targets
+?- test_state([store(appStore), slices([...])]),
+   ui_patterns:compile_state_pattern(global, Shape, [], react_native, [], RN),
+   vue_target:compile_state_pattern(global, Shape, [], vue, [], Vue),
+   flutter_target:compile_state_pattern(global, Shape, [], flutter, [], Flutter),
+   swiftui_target:compile_state_pattern(global, Shape, [], swiftui, [], SwiftUI).
 ```
 
 ## Pattern Composition
@@ -105,27 +133,38 @@ Check pattern compatibility:
 # Run all pattern tests (38 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/patterns/test_ui_patterns.pl
 
+# Run multi-target tests (34 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/targets/test_multi_target.pl
+
 # Run inline tests
 swipl -g "test_ui_patterns" -t halt src/unifyweaver/patterns/ui_patterns.pl
 ```
 
-## Integration with React Native Target
+## Target-Specific Features
 
-The React Native target provides convenience predicates:
+### React Native
+- React Navigation (stack, tab, drawer)
+- Zustand for global state
+- React Query for data fetching
+- AsyncStorage/MMKV for persistence
 
-```prolog
-%% Generate navigation
-generate_rn_navigation([
-    screen(home, 'HomeScreen', []),
-    screen(settings, 'SettingsScreen', [])
-], [type(tab)], Code).
+### Vue 3
+- Vue Router with TypeScript
+- Pinia stores with actions
+- Vue Query composables
+- localStorage with reactive refs
 
-%% Generate query hook
-generate_rn_query_hook(fetch_data, '/api/data', Code).
+### Flutter
+- GoRouter for declarative navigation
+- Riverpod StateNotifier/StateNotifierProvider
+- FutureProvider for async data
+- SharedPreferences and Hive
 
-%% Generate storage hook
-generate_rn_storage_hook(user_prefs, '{ theme: string }', Code).
-```
+### SwiftUI
+- NavigationStack and TabView
+- ObservableObject with @Published
+- async/await with URLSession
+- @AppStorage and Keychain
 
 ## Files
 
@@ -133,17 +172,20 @@ generate_rn_storage_hook(user_prefs, '{ theme: string }', Code).
 |------|-------------|
 | `ui_patterns.pl` | Main patterns module |
 | `test_ui_patterns.pl` | 38 plunit tests |
-| `README.md` | This documentation |
+| `../targets/target_interface.pl` | Target contract documentation |
+| `../targets/vue_target.pl` | Vue 3 code generation |
+| `../targets/flutter_target.pl` | Flutter/Dart code generation |
+| `../targets/swiftui_target.pl` | SwiftUI/Swift code generation |
+| `../targets/test_multi_target.pl` | 34 cross-framework tests |
 
 ## Extending to New Targets
 
-To add a new target (e.g., Flutter):
+To add a new target, create a module implementing:
 
-1. Add `compile_pattern_spec/4` clauses for the target
-2. Implement target-specific code generators
-3. Register target capabilities in `target_has_capability/2`
+1. `target_capabilities/1` - List supported features
+2. `compile_navigation_pattern/6` - Generate navigation code
+3. `compile_state_pattern/6` - Generate state management code
+4. `compile_data_pattern/5` - Generate data fetching code
+5. `compile_persistence_pattern/5` - Generate persistence code
 
-```prolog
-compile_pattern_spec(navigation(Type, Screens, Config), flutter, Options, Code) :-
-    compile_flutter_navigation(Type, Screens, Config, Options, Code).
-```
+See `target_interface.pl` for the full contract.
