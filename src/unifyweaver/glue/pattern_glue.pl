@@ -15,6 +15,8 @@
 % Supported Backend Targets:
 %   - Express (JavaScript) - express.Router handlers
 %   - Go (Golang) - net/http handlers
+%   - FastAPI (Python) - async handlers with Pydantic
+%   - Flask (Python) - classic handlers with flask-cors
 %
 % Features:
 %   - Auto-detect patterns requiring backend services
@@ -32,6 +34,8 @@
     generate_backend_for_pattern/4,     % +PatternName, +Target, +Options, -Code
     generate_express_routes/3,          % +Patterns, +Options, -Code
     generate_go_handlers/3,             % +Patterns, +Options, -Code
+    generate_fastapi_routes/3,          % +Patterns, +Options, -Code
+    generate_flask_routes/3,            % +Patterns, +Options, -Code
 
     % Full stack generation
     generate_full_stack/4,              % +Patterns, +Options, -Frontend, -Backend
@@ -54,6 +58,10 @@
 :- catch(use_module('../targets/vue_target', []), _, true).
 :- catch(use_module('../targets/flutter_target', []), _, true).
 :- catch(use_module('../targets/swiftui_target', []), _, true).
+
+% Load Python backend generators
+:- catch(use_module('./fastapi_generator'), _, true).
+:- catch(use_module('./flask_generator'), _, true).
 
 % ============================================================================
 % PATTERN ANALYSIS
@@ -120,7 +128,7 @@ pattern_dependency(_, Opts, dep(capability, C)) :-
 %
 %  Generate backend code for a pattern.
 %
-%  Target: express | go | python
+%  Target: express | go | fastapi | flask
 %
 generate_backend_for_pattern(PatternName, express, Options, Code) :-
     catch(ui_patterns:pattern(PatternName, Spec, _), _, fail),
@@ -128,6 +136,12 @@ generate_backend_for_pattern(PatternName, express, Options, Code) :-
 generate_backend_for_pattern(PatternName, go, Options, Code) :-
     catch(ui_patterns:pattern(PatternName, Spec, _), _, fail),
     generate_go_handler(PatternName, Spec, Options, Code).
+generate_backend_for_pattern(PatternName, fastapi, Options, Code) :-
+    catch(ui_patterns:pattern(PatternName, Spec, _), _, fail),
+    catch(fastapi_generator:generate_fastapi_handler(PatternName, Spec, Options, Code), _, fail).
+generate_backend_for_pattern(PatternName, flask, Options, Code) :-
+    catch(ui_patterns:pattern(PatternName, Spec, _), _, fail),
+    catch(flask_generator:generate_flask_handler(PatternName, Spec, Options, Code), _, fail).
 
 generate_express_handler(Name, data(query, Config), _Options, Code) :-
     member(endpoint(Endpoint), Config),
@@ -409,7 +423,29 @@ generate_backend_code(Patterns, express, Options, Code) :-
     generate_express_routes(Patterns, Options, Code).
 generate_backend_code(Patterns, go, Options, Code) :-
     generate_go_handlers(Patterns, Options, Code).
+generate_backend_code(Patterns, fastapi, Options, Code) :-
+    generate_fastapi_routes(Patterns, Options, Code).
+generate_backend_code(Patterns, flask, Options, Code) :-
+    generate_flask_routes(Patterns, Options, Code).
 generate_backend_code(_, _, _, "// Backend code generation not implemented for this target").
+
+%% generate_fastapi_routes(+Patterns, +Options, -Code)
+%
+%  Generate FastAPI application with all pattern handlers.
+%
+generate_fastapi_routes(Patterns, Options, Code) :-
+    catch(fastapi_generator:generate_fastapi_app(Patterns, Options, Code), _, fail),
+    !.
+generate_fastapi_routes(_, _, "# FastAPI generation failed").
+
+%% generate_flask_routes(+Patterns, +Options, -Code)
+%
+%  Generate Flask application with all pattern handlers.
+%
+generate_flask_routes(Patterns, Options, Code) :-
+    catch(flask_generator:generate_flask_app(Patterns, Options, Code), _, fail),
+    !.
+generate_flask_routes(_, _, "# Flask generation failed").
 
 %% generate_api_client(+Endpoints, +Options, -Code)
 %
