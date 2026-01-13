@@ -4,14 +4,24 @@
 % pattern_glue.pl - Connect UI Patterns to Backend Services
 %
 % Bridges the ui_patterns module with backend services via glue infrastructure.
-% Generates both frontend (React Native, Vue) and backend (Express, Go) code
-% for patterns that require server-side data.
+% Generates both frontend and backend code for patterns that require server-side data.
+%
+% Supported Frontend Targets:
+%   - React Native (TypeScript) - @tanstack/react-query
+%   - Vue 3 (TypeScript) - Vue composables with ref/reactive
+%   - Flutter (Dart) - http package with async/await
+%   - SwiftUI (Swift) - URLSession with async/await
+%
+% Supported Backend Targets:
+%   - Express (JavaScript) - express.Router handlers
+%   - Go (Golang) - net/http handlers
 %
 % Features:
 %   - Auto-detect patterns requiring backend services
 %   - Generate API endpoints for data patterns
 %   - Generate Express routes for query/mutation patterns
-%   - Cross-runtime support (JS frontend + Go/Python backend)
+%   - Generate API client code for all frontend targets
+%   - Cross-runtime support (multiple frontend + backend combinations)
 
 :- module(pattern_glue, [
     % Pattern analysis
@@ -39,6 +49,11 @@
 
 % Try to load ui_patterns if available
 :- catch(use_module('../patterns/ui_patterns'), _, true).
+
+% Load target modules for multi-framework support
+:- catch(use_module('../targets/vue_target', []), _, true).
+:- catch(use_module('../targets/flutter_target', []), _, true).
+:- catch(use_module('../targets/swiftui_target', []), _, true).
 
 % ============================================================================
 % PATTERN ANALYSIS
@@ -304,8 +319,91 @@ generate_frontend_code(Patterns, react_native, Options, Code) :-
         member(P, Patterns),
         catch(ui_patterns:compile_pattern(P, react_native, Options, PatternCode), _, fail)
     ), Codes),
+    Codes \= [],
     atomic_list_concat(Codes, '\n\n// ============\n\n', Code).
+
+generate_frontend_code(Patterns, vue, Options, Code) :-
+    findall(PatternCode, (
+        member(P, Patterns),
+        generate_vue_frontend_for_pattern(P, Options, PatternCode)
+    ), Codes),
+    Codes \= [],
+    atomic_list_concat(Codes, '\n\n// ============\n\n', Code).
+
+generate_frontend_code(Patterns, flutter, Options, Code) :-
+    findall(PatternCode, (
+        member(P, Patterns),
+        generate_flutter_frontend_for_pattern(P, Options, PatternCode)
+    ), Codes),
+    Codes \= [],
+    atomic_list_concat(Codes, '\n\n// ============\n\n', Code).
+
+generate_frontend_code(Patterns, swiftui, Options, Code) :-
+    findall(PatternCode, (
+        member(P, Patterns),
+        generate_swiftui_frontend_for_pattern(P, Options, PatternCode)
+    ), Codes),
+    Codes \= [],
+    atomic_list_concat(Codes, '\n\n// ============\n\n', Code).
+
 generate_frontend_code(_, _, _, "// Frontend code generation not implemented for this target").
+
+%% generate_vue_frontend_for_pattern(+PatternName, +Options, -Code)
+%
+%  Generate Vue 3 frontend code for a pattern.
+%
+generate_vue_frontend_for_pattern(PatternName, Options, Code) :-
+    catch(ui_patterns:pattern(PatternName, Spec, _), _, fail),
+    generate_vue_for_spec(PatternName, Spec, Options, Code).
+
+generate_vue_for_spec(_Name, data(query, Config), Options, Code) :-
+    catch(vue_target:compile_data_pattern(query, Config, vue, Options, Code), _, fail).
+generate_vue_for_spec(_Name, data(mutation, Config), Options, Code) :-
+    catch(vue_target:compile_data_pattern(mutation, Config, vue, Options, Code), _, fail).
+generate_vue_for_spec(_Name, state(global, Shape, StateConfig), Options, Code) :-
+    catch(vue_target:compile_state_pattern(global, Shape, StateConfig, vue, Options, Code), _, fail).
+generate_vue_for_spec(_Name, navigation(Type, Screens, NavConfig), Options, Code) :-
+    catch(vue_target:compile_navigation_pattern(Type, Screens, NavConfig, vue, Options, Code), _, fail).
+generate_vue_for_spec(_Name, persistence(Type, Config), Options, Code) :-
+    catch(vue_target:compile_persistence_pattern(Type, Config, vue, Options, Code), _, fail).
+
+%% generate_flutter_frontend_for_pattern(+PatternName, +Options, -Code)
+%
+%  Generate Flutter/Dart frontend code for a pattern.
+%
+generate_flutter_frontend_for_pattern(PatternName, Options, Code) :-
+    catch(ui_patterns:pattern(PatternName, Spec, _), _, fail),
+    generate_flutter_for_spec(PatternName, Spec, Options, Code).
+
+generate_flutter_for_spec(_Name, data(query, Config), Options, Code) :-
+    catch(flutter_target:compile_data_pattern(query, Config, flutter, Options, Code), _, fail).
+generate_flutter_for_spec(_Name, data(mutation, Config), Options, Code) :-
+    catch(flutter_target:compile_data_pattern(mutation, Config, flutter, Options, Code), _, fail).
+generate_flutter_for_spec(_Name, state(global, Shape, StateConfig), Options, Code) :-
+    catch(flutter_target:compile_state_pattern(global, Shape, StateConfig, flutter, Options, Code), _, fail).
+generate_flutter_for_spec(_Name, navigation(Type, Screens, NavConfig), Options, Code) :-
+    catch(flutter_target:compile_navigation_pattern(Type, Screens, NavConfig, flutter, Options, Code), _, fail).
+generate_flutter_for_spec(_Name, persistence(Type, Config), Options, Code) :-
+    catch(flutter_target:compile_persistence_pattern(Type, Config, flutter, Options, Code), _, fail).
+
+%% generate_swiftui_frontend_for_pattern(+PatternName, +Options, -Code)
+%
+%  Generate SwiftUI/Swift frontend code for a pattern.
+%
+generate_swiftui_frontend_for_pattern(PatternName, Options, Code) :-
+    catch(ui_patterns:pattern(PatternName, Spec, _), _, fail),
+    generate_swiftui_for_spec(PatternName, Spec, Options, Code).
+
+generate_swiftui_for_spec(_Name, data(query, Config), Options, Code) :-
+    catch(swiftui_target:compile_data_pattern(query, Config, swiftui, Options, Code), _, fail).
+generate_swiftui_for_spec(_Name, data(mutation, Config), Options, Code) :-
+    catch(swiftui_target:compile_data_pattern(mutation, Config, swiftui, Options, Code), _, fail).
+generate_swiftui_for_spec(_Name, state(global, Shape, StateConfig), Options, Code) :-
+    catch(swiftui_target:compile_state_pattern(global, Shape, StateConfig, swiftui, Options, Code), _, fail).
+generate_swiftui_for_spec(_Name, navigation(Type, Screens, NavConfig), Options, Code) :-
+    catch(swiftui_target:compile_navigation_pattern(Type, Screens, NavConfig, swiftui, Options, Code), _, fail).
+generate_swiftui_for_spec(_Name, persistence(Type, Config), Options, Code) :-
+    catch(swiftui_target:compile_persistence_pattern(Type, Config, swiftui, Options, Code), _, fail).
 
 generate_backend_code(Patterns, express, Options, Code) :-
     generate_express_routes(Patterns, Options, Code).
@@ -315,10 +413,16 @@ generate_backend_code(_, _, _, "// Backend code generation not implemented for t
 
 %% generate_api_client(+Endpoints, +Options, -Code)
 %
-%  Generate API client for React Native to call backend.
+%  Generate API client for frontend to call backend.
+%  Supports: react_native (TypeScript), vue (TypeScript), flutter (Dart), swiftui (Swift)
 %
 generate_api_client(Endpoints, Options, Code) :-
+    option_value(Options, target, react_native, Target),
     option_value(Options, base_url, 'http://localhost:3000', BaseUrl),
+    generate_api_client_for_target(Target, Endpoints, BaseUrl, Options, Code).
+
+%% React Native / TypeScript API client
+generate_api_client_for_target(react_native, Endpoints, BaseUrl, _Options, Code) :-
     findall(Method, (
         member(endpoint(Name, HttpMethod, Path, _), Endpoints),
         generate_api_method(Name, HttpMethod, Path, BaseUrl, Method)
@@ -340,6 +444,106 @@ export const api = {
   // Add methods here
 };
 ", [BaseUrl, MethodsStr]).
+
+%% Vue 3 / TypeScript API client
+generate_api_client_for_target(vue, Endpoints, BaseUrl, _Options, Code) :-
+    findall(Method, (
+        member(endpoint(Name, HttpMethod, Path, _), Endpoints),
+        generate_vue_api_method(Name, HttpMethod, Path, BaseUrl, Method)
+    ), Methods),
+    atomic_list_concat(Methods, '\n\n', MethodsStr),
+    format(string(Code),
+"// Auto-generated Vue API client
+import { ref } from 'vue';
+import type { Ref } from 'vue';
+
+const BASE_URL = '~w';
+
+interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+interface ApiState<T> {
+  data: Ref<T | null>;
+  loading: Ref<boolean>;
+  error: Ref<string | null>;
+}
+
+~w
+", [BaseUrl, MethodsStr]).
+
+%% Flutter / Dart API client
+generate_api_client_for_target(flutter, Endpoints, BaseUrl, _Options, Code) :-
+    findall(Method, (
+        member(endpoint(Name, HttpMethod, Path, _), Endpoints),
+        generate_flutter_api_method(Name, HttpMethod, Path, BaseUrl, Method)
+    ), Methods),
+    atomic_list_concat(Methods, '\n\n', MethodsStr),
+    format(string(Code),
+"// Auto-generated Flutter API client
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class ApiClient {
+  static const String baseUrl = '~w';
+
+  static Future<ApiResponse<T>> _handleResponse<T>(
+    http.Response response,
+    T Function(Map<String, dynamic>) fromJson,
+  ) async {
+    final body = json.decode(response.body);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return ApiResponse(success: true, data: fromJson(body));
+    }
+    return ApiResponse(success: false, error: body['error'] ?? 'Unknown error');
+  }
+
+~w
+}
+
+class ApiResponse<T> {
+  final bool success;
+  final T? data;
+  final String? error;
+
+  ApiResponse({required this.success, this.data, this.error});
+}
+", [BaseUrl, MethodsStr]).
+
+%% SwiftUI / Swift API client
+generate_api_client_for_target(swiftui, Endpoints, BaseUrl, _Options, Code) :-
+    findall(Method, (
+        member(endpoint(Name, HttpMethod, Path, _), Endpoints),
+        generate_swift_api_method(Name, HttpMethod, Path, BaseUrl, Method)
+    ), Methods),
+    atomic_list_concat(Methods, '\n\n', MethodsStr),
+    format(string(Code),
+"// Auto-generated SwiftUI API client
+import Foundation
+
+struct ApiResponse<T: Decodable>: Decodable {
+    let success: Bool
+    let data: T?
+    let error: String?
+}
+
+enum ApiError: Error {
+    case networkError(Error)
+    case decodingError(Error)
+    case serverError(String)
+}
+
+class ApiClient {
+    static let shared = ApiClient()
+    private let baseURL = \"~w\"
+
+~w
+}
+", [BaseUrl, MethodsStr]).
+
+generate_api_client_for_target(_, _, _, _, "// API client generation not implemented for this target").
 
 generate_api_method(Name, get, Path, BaseUrl, Code) :-
     atom_string(Name, NameStr),
@@ -366,6 +570,155 @@ generate_api_method(Name, post, Path, BaseUrl, Code) :-
   return response.json();
 };
 ", [NameStr, BaseUrl, Path]).
+
+%% Vue API method generators
+generate_vue_api_method(Name, get, Path, BaseUrl, Code) :-
+    atom_string(Name, NameStr),
+    capitalize_first(NameStr, CapName),
+    format(string(Code),
+"export function use~w<T>() {
+  const data = ref<T | null>(null);
+  const loading = ref(false);
+  const error = ref<string | null>(null);
+
+  const fetch~w = async (params?: Record<string, string>) => {
+    loading.value = true;
+    error.value = null;
+    try {
+      const url = new URL('~w~w');
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => url.searchParams.append(key, value));
+      }
+      const response = await fetch(url.toString());
+      const result: ApiResponse<T> = await response.json();
+      if (result.success) {
+        data.value = result.data ?? null;
+      } else {
+        error.value = result.error ?? 'Unknown error';
+      }
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Unknown error';
+    } finally {
+      loading.value = false;
+    }
+  };
+
+  return { data, loading, error, fetch~w };
+}
+", [CapName, CapName, BaseUrl, Path, CapName]).
+
+generate_vue_api_method(Name, post, Path, BaseUrl, Code) :-
+    atom_string(Name, NameStr),
+    capitalize_first(NameStr, CapName),
+    format(string(Code),
+"export function use~w<T, TInput>() {
+  const data = ref<T | null>(null);
+  const loading = ref(false);
+  const error = ref<string | null>(null);
+
+  const mutate = async (body: TInput) => {
+    loading.value = true;
+    error.value = null;
+    try {
+      const response = await fetch('~w~w', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result: ApiResponse<T> = await response.json();
+      if (result.success) {
+        data.value = result.data ?? null;
+      } else {
+        error.value = result.error ?? 'Unknown error';
+      }
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Unknown error';
+    } finally {
+      loading.value = false;
+    }
+  };
+
+  return { data, loading, error, mutate };
+}
+", [CapName, BaseUrl, Path]).
+
+%% Flutter API method generators
+generate_flutter_api_method(Name, get, Path, BaseUrl, Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+"  static Future<ApiResponse<T>> ~w<T>({
+    Map<String, String>? params,
+    required T Function(Map<String, dynamic>) fromJson,
+  }) async {
+    try {
+      final uri = Uri.parse('~w~w').replace(queryParameters: params);
+      final response = await http.get(uri);
+      return _handleResponse(response, fromJson);
+    } catch (e) {
+      return ApiResponse(success: false, error: e.toString());
+    }
+  }
+", [NameStr, BaseUrl, Path]).
+
+generate_flutter_api_method(Name, post, Path, BaseUrl, Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+"  static Future<ApiResponse<T>> ~w<T>({
+    required Map<String, dynamic> body,
+    required T Function(Map<String, dynamic>) fromJson,
+  }) async {
+    try {
+      final uri = Uri.parse('~w~w');
+      final response = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(body),
+      );
+      return _handleResponse(response, fromJson);
+    } catch (e) {
+      return ApiResponse(success: false, error: e.toString());
+    }
+  }
+", [NameStr, BaseUrl, Path]).
+
+%% Swift API method generators
+generate_swift_api_method(Name, get, Path, _BaseUrl, Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+"    func ~w<T: Decodable>(params: [String: String]? = nil) async throws -> T {
+        var components = URLComponents(string: \"\\(baseURL)~w\")!
+        if let params = params {
+            components.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let response = try JSONDecoder().decode(ApiResponse<T>.self, from: data)
+
+        if response.success, let result = response.data {
+            return result
+        }
+        throw ApiError.serverError(response.error ?? \"Unknown error\")
+    }
+", [NameStr, Path]).
+
+generate_swift_api_method(Name, post, Path, _BaseUrl, Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+"    func ~w<T: Decodable, TInput: Encodable>(body: TInput) async throws -> T {
+        var request = URLRequest(url: URL(string: \"\\(baseURL)~w\")!)
+        request.httpMethod = \"POST\"
+        request.setValue(\"application/json\", forHTTPHeaderField: \"Content-Type\")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(ApiResponse<T>.self, from: data)
+
+        if response.success, let result = response.data {
+            return result
+        }
+        throw ApiError.serverError(response.error ?? \"Unknown error\")
+    }
+", [NameStr, Path]).
 
 % ============================================================================
 % ENDPOINT SPECIFICATION
