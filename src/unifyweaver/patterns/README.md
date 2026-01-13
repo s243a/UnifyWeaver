@@ -170,11 +170,137 @@ define_pattern(user_profile_screen,
 - **exclusion**: Patterns that explicitly exclude each other
 - **requirements**: Incompatible library versions
 
+## Extended Patterns (ui_patterns_extended.pl)
+
+The `ui_patterns_extended` module provides additional high-level patterns for common UI scenarios.
+
+### Form Patterns
+
+```prolog
+%% Create a form with validation
+form_pattern(login_form, [
+    field(email, email, [required], []),
+    field(password, password, [required, min_length(8)], [])
+], Pattern).
+
+%% Create individual fields
+form_field(username, text, [required, min_length(3)], Spec).
+
+%% Validation rules
+validation_rule(required, [], required).
+validation_rule(min_length, [5], min_length(5)).
+validation_rule(pattern, ['^[a-z]+$'], pattern('^[a-z]+$')).
+validation_rule(matches, [password], matches(password)).
+```
+
+Generated code includes:
+- **React Native**: react-hook-form + Zod validation + TextInput components
+- **Vue 3**: vee-validate + Zod schema + native form elements
+- **Flutter**: Form widget + TextFormField + validators
+- **SwiftUI**: @State bindings + TextField/SecureField
+
+### List Patterns
+
+```prolog
+%% Infinite scroll list
+infinite_list(items_list, '/api/items', Pattern).
+
+%% Selectable list (single or multi)
+selectable_list(select_list, [mode(single)], Pattern).
+selectable_list(multi_list, [mode(multi)], Pattern).
+
+%% Grouped list
+grouped_list(contacts, category, Pattern).
+```
+
+Generated code includes:
+- **React Native**: FlatList + useInfiniteQuery + onEndReached
+- **Vue 3**: IntersectionObserver + useInfiniteQuery + virtual scrolling
+- **Flutter**: infinite_scroll_pagination + PagingController + RefreshIndicator
+- **SwiftUI**: List + refreshable + .onAppear pagination
+
+### Modal Patterns
+
+```prolog
+%% Alert modal
+alert_modal(my_alert, [title('Alert'), message('Something happened')], Pattern).
+
+%% Confirm modal with custom buttons
+confirm_modal(delete_confirm, [
+    title('Delete Item'),
+    message('Are you sure?'),
+    confirm_text('Delete'),
+    cancel_text('Keep')
+], Pattern).
+
+%% Bottom sheet
+bottom_sheet(my_sheet, 'SheetContent', Pattern).
+
+%% Action sheet with options
+action_sheet(actions, [
+    action(edit, 'Edit'),
+    action(delete, 'Delete')
+], Pattern).
+```
+
+Generated code includes:
+- **React Native**: Alert.alert + @gorhom/bottom-sheet + ActionSheetIOS
+- **Vue 3**: Teleport + transition + modal composables
+- **Flutter**: showDialog + showModalBottomSheet + AlertDialog
+- **SwiftUI**: .alert modifier + .sheet + .confirmationDialog
+
+### Auth Flow Patterns
+
+```prolog
+%% Login flow
+login_flow([endpoint('/api/login')], Pattern).
+
+%% Registration with password confirmation
+register_flow([endpoint('/api/register')], Pattern).
+
+%% Forgot password
+forgot_password_flow([endpoint('/api/forgot-password')], Pattern).
+
+%% OAuth provider
+oauth_flow(google, [client_id('your-client-id')], Pattern).
+
+%% MFA verification
+auth_flow(mfa, [endpoint('/api/mfa/verify')], Pattern).
+
+%% Password reset
+auth_flow(reset_password, [endpoint('/api/reset-password')], Pattern).
+```
+
+Generated code includes:
+- Form with appropriate fields (email, password, confirm_password)
+- useMutation for API calls with error handling
+- Loading states and validation feedback
+- OAuth integration patterns
+
+### Extended Pattern Compilation
+
+```prolog
+%% Compile form pattern
+ui_patterns_extended:compile_form_pattern(login, Fields, react_native, [], Code).
+
+%% Compile list pattern
+ui_patterns_extended:compile_list_pattern(infinite, items, '/api/items', vue, [], Code).
+
+%% Compile modal pattern
+ui_patterns_extended:compile_modal_pattern(confirm, my_confirm, Config, flutter, [], Code).
+
+%% Compile auth pattern
+ui_patterns_extended:compile_auth_pattern(login, [endpoint('/api/login')], swiftui, [], Code).
+```
+
 ## Testing
 
 ```bash
 # Run all pattern tests (38 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/patterns/test_ui_patterns.pl
+
+# Run extended pattern tests (50 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/patterns/test_ui_patterns_extended.pl
 
 # Run composition tests (30 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/patterns/test_pattern_composition.pl
@@ -184,6 +310,7 @@ swipl -g "run_tests" -t halt src/unifyweaver/targets/test_multi_target.pl
 
 # Run inline tests
 swipl -g "test_ui_patterns" -t halt src/unifyweaver/patterns/ui_patterns.pl
+swipl -g "test_extended_patterns" -t halt src/unifyweaver/patterns/ui_patterns_extended.pl
 ```
 
 ## Target-Specific Features
@@ -217,8 +344,10 @@ swipl -g "test_ui_patterns" -t halt src/unifyweaver/patterns/ui_patterns.pl
 | File | Description |
 |------|-------------|
 | `ui_patterns.pl` | Main patterns module |
+| `ui_patterns_extended.pl` | Extended patterns (forms, lists, modals, auth) |
 | `pattern_composition.pl` | Dependency resolution and conflict detection |
 | `test_ui_patterns.pl` | 38 plunit tests |
+| `test_ui_patterns_extended.pl` | 50 extended pattern tests |
 | `test_pattern_composition.pl` | 30 composition tests |
 | `../targets/target_interface.pl` | Target contract documentation |
 | `../targets/vue_target.pl` | Vue 3 code generation |
