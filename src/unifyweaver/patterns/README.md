@@ -115,6 +115,8 @@ Compile patterns to target-specific code:
 
 ## Pattern Composition
 
+### Basic Composition
+
 Combine multiple patterns:
 
 ```prolog
@@ -127,11 +129,55 @@ Check pattern compatibility:
 ?- pattern_compatible(nav_pattern, state_pattern).
 ```
 
+### Advanced Composition (pattern_composition.pl)
+
+The `pattern_composition` module provides dependency resolution, conflict detection, and validation:
+
+```prolog
+:- use_module('pattern_composition').
+
+%% Compose with automatic dependency resolution
+?- compose_with_deps([screen_user_profile], react_native, [], Result).
+% Result includes all dependencies (store_user, query_users, etc.)
+
+%% Detect conflicts between patterns
+?- detect_conflicts([store1, store2], Conflicts).
+% Finds: name clashes, singleton conflicts, exclusions
+
+%% Validate for a specific target
+?- validate_for_target([patterns], flutter, Errors).
+% Checks if all required capabilities are available
+
+%% Get composition summary
+?- composition_summary([nav, store, query], Summary).
+% Returns: pattern count, type breakdown, required capabilities
+```
+
+#### Pattern Dependencies
+
+Patterns can declare dependencies:
+
+```prolog
+define_pattern(user_profile_screen,
+    navigation(stack, [screen(profile, 'Profile', [])], []),
+    [depends_on([user_store, fetch_user_query])]).
+```
+
+#### Conflict Types
+
+- **name_clash**: Two patterns generate the same artifact name
+- **singleton**: Multiple singletons of same type with same name
+- **exclusion**: Patterns that explicitly exclude each other
+- **requirements**: Incompatible library versions
+
 ## Testing
 
 ```bash
 # Run all pattern tests (38 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/patterns/test_ui_patterns.pl
+
+# Run composition tests (30 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/patterns/test_pattern_composition.pl
 
 # Run multi-target tests (34 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/targets/test_multi_target.pl
@@ -171,7 +217,9 @@ swipl -g "test_ui_patterns" -t halt src/unifyweaver/patterns/ui_patterns.pl
 | File | Description |
 |------|-------------|
 | `ui_patterns.pl` | Main patterns module |
+| `pattern_composition.pl` | Dependency resolution and conflict detection |
 | `test_ui_patterns.pl` | 38 plunit tests |
+| `test_pattern_composition.pl` | 30 composition tests |
 | `../targets/target_interface.pl` | Target contract documentation |
 | `../targets/vue_target.pl` | Vue 3 code generation |
 | `../targets/flutter_target.pl` | Flutter/Dart code generation |
