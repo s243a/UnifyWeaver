@@ -613,3 +613,104 @@ output/mst_mindmaps/
    - Open any .smmx file
    - Click on "→ Related Map" nodes to navigate
    - Cross-links work offline via cloudmapref
+
+## Hierarchy Quality Evaluation
+
+### hierarchy_objective.py
+
+Evaluate hierarchy quality using an objective function combining semantic distance and entropy.
+
+```bash
+# Evaluate a hierarchy
+python3 scripts/mindmap/hierarchy_objective.py \
+  --tree hierarchy.json \
+  --embeddings embeddings.npy
+
+# With entropy from transformer logits
+python3 scripts/mindmap/hierarchy_objective.py \
+  --tree hierarchy.json \
+  --embeddings embeddings.npy \
+  --entropy-source logits \
+  --entropy-model bert-base-uncased
+```
+
+**Objective Function:**
+
+```
+J(T) = D / (1 + H)
+```
+
+Where:
+- **D** = Average semantic distance (cosine) from child to parent
+- **H** = Entropy gain between levels (Fisher criterion or logits-based)
+
+Lower J = better hierarchy (tight clusters with informative splits).
+
+**Key Features:**
+
+| Feature | Description |
+|---------|-------------|
+| Depth normalization | Same distance penalized more at deeper levels |
+| Decoupled models | Use Nomic for D, BERT/ModernBERT for H |
+| Entropy sources | `fisher` (geometric proxy) or `logits` (transformer) |
+| Text sources | `raw_phrase`, `embedding_text`, or `mixed` |
+| Depth-surprisal | Correlation between depth and -log(p) |
+
+**Decoupled Architecture:**
+
+The embedding model (for distance D) and entropy model (for H) are independent:
+
+```python
+from hierarchy_objective import HierarchyObjective
+
+obj = HierarchyObjective(
+    entropy_source='logits',
+    entropy_model='bert-base-uncased'  # or 'answerdotai/ModernBERT-base'
+)
+
+stats = obj.compute(
+    tree,
+    nomic_embeddings,  # D from Nomic
+    texts={'node1': 'Quantum Mechanics', ...}  # H from text
+)
+
+print(f"J={stats.objective:.4f}, D={stats.semantic_distance:.4f}, H={stats.entropy_gain:.4f}")
+print(f"Depth-surprisal correlation: {stats.depth_surprisal_correlation:.4f}")
+```
+
+**Hierarchy Ranking:**
+
+The objective correctly discriminates hierarchy quality:
+
+| Hierarchy | J | Interpretation |
+|-----------|---|----------------|
+| CORRECT | 0.28 | Best - leaves under correct parents |
+| FLAT | 1.00 | Degenerate - no hierarchical structure |
+| WRONG | 1.01 | Worst - leaves under wrong parents |
+
+**Branching Factor:**
+
+The depth-surprisal slope reveals effective branching:
+
+```
+slope = 0.34 nats/level → branching factor = e^0.34 ≈ 1.4
+```
+
+Meaning ~0.5 bits of information gained per hierarchy level.
+
+### test_hierarchy_objective.py
+
+Test suite for hierarchy objective function.
+
+```bash
+# Run tests (use hf-env for ModernBERT support)
+/home/s243a/.hf-env/bin/python3 scripts/mindmap/test_hierarchy_objective.py
+
+# Or with system Python (falls back to bert-base-uncased)
+python3 scripts/mindmap/test_hierarchy_objective.py
+```
+
+Tests:
+1. **Fisher entropy proxy**: Ranks CORRECT < FLAT < WRONG
+2. **Logits-based entropy**: Same ranking with transformer model
+3. **Depth-surprisal correlation**: Positive correlation (deeper = less probable)

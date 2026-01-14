@@ -33,6 +33,128 @@ import numpy as np
 SmoothingMethod = Literal['none', 'add_one', 'dirichlet', 'jeffreys']
 CombineMethod = Literal['product', 'sum', 'log_product']
 ProbabilitySource = Literal['subtree_size', 'density_knn', 'density_kernel', 'logits']
+EntropySource = Literal['fisher', 'logits']
+EntropyTextSource = Literal['raw_phrase', 'embedding_text', 'mixed']
+
+# Optional transformer support for computing logits from text
+_transformer_model = None
+_transformer_tokenizer = None
+
+
+def load_transformer_model(model_name: str = "answerdotai/ModernBERT-base"):
+    """
+    Load a transformer model for computing logits from text.
+
+    Args:
+        model_name: HuggingFace model name (default: ModernBERT-base)
+
+    Returns:
+        (model, tokenizer) tuple
+    """
+    global _transformer_model, _transformer_tokenizer
+
+    if _transformer_model is not None:
+        return _transformer_model, _transformer_tokenizer
+
+    try:
+        from transformers import AutoModelForMaskedLM, AutoTokenizer
+        import torch
+    except ImportError:
+        raise ImportError(
+            "transformers and torch required for logits computation. "
+            "Install with: pip install transformers torch"
+        )
+
+    _transformer_tokenizer = AutoTokenizer.from_pretrained(model_name)
+    _transformer_model = AutoModelForMaskedLM.from_pretrained(model_name)
+    _transformer_model.eval()
+
+    return _transformer_model, _transformer_tokenizer
+
+
+def compute_logits_from_text(
+    texts: List[str],
+    model_name: str = "answerdotai/ModernBERT-base",
+    batch_size: int = 32
+) -> np.ndarray:
+    """
+    Compute logits from text using a transformer model.
+
+    Args:
+        texts: List of text strings (one per node)
+        model_name: HuggingFace model name
+        batch_size: Batch size for inference
+
+    Returns:
+        Logits array of shape [n_texts, seq_len, vocab_size]
+        or [n_texts, vocab_size] if using CLS token only
+    """
+    try:
+        import torch
+    except ImportError:
+        raise ImportError("torch required. Install with: pip install torch")
+
+    model, tokenizer = load_transformer_model(model_name)
+
+    all_logits = []
+
+    with torch.no_grad():
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+
+            # Tokenize
+            inputs = tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt"
+            )
+
+            # Forward pass
+            outputs = model(**inputs)
+
+            # Get logits - shape [batch, seq_len, vocab_size]
+            batch_logits = outputs.logits.numpy()
+
+            # Average over sequence length to get per-node logits
+            # Or use CLS token position (index 0)
+            # Using mean for now - could be configurable
+            mean_logits = batch_logits.mean(axis=1)  # [batch, vocab_size]
+            all_logits.append(mean_logits)
+
+    return np.vstack(all_logits)
+
+
+def compute_entropy_from_text(
+    texts: List[str],
+    model_name: str = "answerdotai/ModernBERT-base",
+    batch_size: int = 32
+) -> np.ndarray:
+    """
+    Compute Shannon entropy for each text using a transformer model.
+
+    Lower entropy = more predictable/common concept = should be higher in hierarchy
+    Higher entropy = less predictable/specific concept = should be deeper
+
+    Args:
+        texts: List of text strings (one per node)
+        model_name: HuggingFace model name
+        batch_size: Batch size for inference
+
+    Returns:
+        Entropy array of shape [n_texts]
+    """
+    logits = compute_logits_from_text(texts, model_name, batch_size)
+
+    # Softmax to get probabilities
+    exp_logits = np.exp(logits - logits.max(axis=-1, keepdims=True))
+    probs = exp_logits / exp_logits.sum(axis=-1, keepdims=True)
+
+    # Shannon entropy
+    entropy = -np.sum(probs * np.log(probs + 1e-10), axis=-1)
+
+    return entropy
 
 
 def estimate_density_knn(
@@ -134,6 +256,9 @@ class HierarchyStats:
     n_nodes: int
     n_levels: int
     level_stats: Dict[int, dict]  # Per-level statistics
+    # Depth-probability alignment (if logits available)
+    depth_surprisal_correlation: Optional[float] = None  # corr(depth, -log(p))
+    depth_surprisal_slope: Optional[float] = None        # Does surprisal increase with depth?
 
 
 class HierarchyObjective:
@@ -145,6 +270,24 @@ class HierarchyObjective:
     - H(T): Entropy gain between levels (want large - informative splits)
 
     Supports smoothing for robust estimation from finite samples.
+
+    Decoupled Model Architecture:
+        The embedding model (for distance D) and entropy model (for H) are
+        INDEPENDENT. This allows using:
+
+        - Nomic/MiniLM embeddings for semantic distance computation
+        - ModernBERT for entropy/probability estimation from text
+
+        Example:
+            obj = HierarchyObjective(
+                entropy_source='logits',        # Use actual entropy, not proxy
+                entropy_model='answerdotai/ModernBERT-base'
+            )
+            stats = obj.compute(
+                tree,
+                nomic_embeddings,               # Distances from Nomic
+                texts={'node1': 'machine learning', ...}  # Entropy from text
+            )
 
     Probability Source Options:
         Different embedding models provide different ways to estimate probability:
@@ -161,6 +304,16 @@ class HierarchyObjective:
         For embedding-only models, density estimation is the only option for
         "model-aware" probability. Otherwise, use subtree_size which is
         purely structural.
+
+    Entropy Text Source Options:
+        When using logits-based entropy, choose what text to feed to the model:
+
+        - raw_phrase: Just the topic name (e.g., "machine learning")
+            Captures inherent concept specificity
+        - embedding_text: Full text used for embedding (may include context)
+            Captures specificity in context
+        - mixed: Average of both
+            Balances inherent specificity with contextual specificity
     """
 
     def __init__(
@@ -174,6 +327,14 @@ class HierarchyObjective:
         kernel_bandwidth: Optional[float] = None,
         entropy_smoothing: SmoothingMethod = 'dirichlet',
         entropy_alpha: float = 1.0,
+        depth_normalize: bool = True,
+        depth_decay: float = 0.5,
+        depth_scale_mode: str = 'exponential',
+        entropy_source: EntropySource = 'fisher',
+        entropy_text_source: EntropyTextSource = 'raw_phrase',
+        entropy_model: str = "answerdotai/ModernBERT-base",
+        min_probability_threshold: float = 0.0,
+        min_samples_for_std: int = 30,
     ):
         """
         Initialize the objective function.
@@ -199,6 +360,35 @@ class HierarchyObjective:
             kernel_bandwidth: Bandwidth for KDE (auto if None)
             entropy_smoothing: Smoothing method for entropy estimation
             entropy_alpha: Alpha for entropy smoothing
+            depth_normalize: Normalize distances by depth-expected values
+                At higher depths (more specific), expect tighter clustering
+            depth_decay: λ controlling how fast expected distance shrinks with depth
+                D_expected(d) = D_base * exp(-λd)
+                Higher λ = stricter requirements at depth (default 0.5)
+            depth_scale_mode: How to compute depth penalty for distances
+                - 'exponential': penalty = exp(λd) - same distance penalized more at depth
+                NOTE: 'level_std' and 'subtree_std' are for kernel bandwidth selection
+                in density manifold computation, not for distance normalization here.
+                See estimate_density_kernel() and kernel_methods_flux.md.
+            entropy_source: How to compute entropy for hierarchy quality
+                - 'fisher': geometric proxy using between/within cluster variance
+                - 'logits': actual entropy from model output logits
+                  Lower probability nodes should be at lower (deeper) levels.
+                  depth(node) should correlate with -log(p(node)) = surprisal
+            entropy_text_source: What text to use for logits-based entropy computation
+                - 'raw_phrase': Just the topic/node name (e.g., "machine learning")
+                - 'embedding_text': The full text used for embedding (may include context)
+                - 'mixed': Average of both (balance inherent specificity with context)
+                NOTE: Entropy model is independent of embedding model. You can use
+                Nomic for distances (D) while using ModernBERT for entropy (H).
+            entropy_model: HuggingFace model name for logits-based entropy
+                Default: "answerdotai/ModernBERT-base"
+                Any transformer with a masked LM head can work (BERT, RoBERTa, etc.)
+            min_probability_threshold: Prune subtrees with cumulative probability below this
+                When probability-weighted, small branches contribute negligibly.
+                Default 0.0 (no pruning). Typical value: 0.01 (prune <1% branches).
+            min_samples_for_std: Minimum samples needed for stable std estimate (default 30)
+                Once enough samples collected at a level, can stop traversing negligible branches.
         """
         self.smoothing = smoothing
         self.alpha = alpha
@@ -209,6 +399,14 @@ class HierarchyObjective:
         self.kernel_bandwidth = kernel_bandwidth
         self.entropy_smoothing = entropy_smoothing
         self.entropy_alpha = entropy_alpha
+        self.depth_normalize = depth_normalize
+        self.depth_decay = depth_decay
+        self.depth_scale_mode = depth_scale_mode
+        self.entropy_source = entropy_source
+        self.entropy_text_source = entropy_text_source
+        self.entropy_model = entropy_model
+        self.min_probability_threshold = min_probability_threshold
+        self.min_samples_for_std = min_samples_for_std
         self._density_cache = None  # Cache for density estimates
 
     def get_node_probabilities(
@@ -284,6 +482,94 @@ class HierarchyObjective:
 
         else:
             raise ValueError(f"Unknown probability_source: {self.probability_source}")
+
+    def compute_entropy_from_logits(
+        self,
+        logits: np.ndarray
+    ) -> np.ndarray:
+        """
+        Compute Shannon entropy from model output logits.
+
+        NOTE: The text used to generate logits affects entropy estimates:
+        - Raw phrase (e.g., "machine learning"): inherent concept specificity
+        - Embedding text (with context): specificity in context
+        - Mix: balance both signals
+
+        Longer/contextualized text may have higher entropy due to more tokens.
+        Raw phrases may be too short for reliable estimates.
+        The choice should match how embeddings were computed.
+
+        Args:
+            logits: Shape [n_nodes, seq_len, vocab_size] or [n_nodes, vocab_size]
+
+        Returns:
+            Per-node entropy values
+        """
+        # Softmax to get probabilities
+        if logits.ndim == 3:
+            # [n_nodes, seq_len, vocab_size] - average over sequence
+            exp_logits = np.exp(logits - logits.max(axis=-1, keepdims=True))
+            probs = exp_logits / exp_logits.sum(axis=-1, keepdims=True)
+            # Per-token entropy, then average over sequence
+            token_entropy = -np.sum(probs * np.log(probs + 1e-10), axis=-1)
+            return token_entropy.mean(axis=-1)
+        else:
+            # [n_nodes, vocab_size]
+            exp_logits = np.exp(logits - logits.max(axis=-1, keepdims=True))
+            probs = exp_logits / exp_logits.sum(axis=-1, keepdims=True)
+            return -np.sum(probs * np.log(probs + 1e-10), axis=-1)
+
+    def compute_depth_probability_correlation(
+        self,
+        levels: Dict[str, int],
+        node_probs: Dict[str, float]
+    ) -> Tuple[float, float]:
+        """
+        Compute correlation between depth and surprisal (-log p).
+
+        A good hierarchy should have: depth(node) ∝ -log(p(node))
+        - High probability (common) concepts near root
+        - Low probability (specific) concepts at leaves
+
+        Returns:
+            (correlation, mean_surprisal_per_depth_ratio)
+            correlation: Pearson correlation between depth and surprisal
+            ratio: How well depth tracks surprisal (1.0 = perfect)
+        """
+        depths = []
+        surprisals = []
+
+        for node_id, level in levels.items():
+            if node_id in node_probs and node_probs[node_id] > 0:
+                depths.append(level)
+                surprisals.append(-np.log(node_probs[node_id]))
+
+        if len(depths) < 2:
+            return 0.0, 0.0
+
+        depths = np.array(depths)
+        surprisals = np.array(surprisals)
+
+        # Pearson correlation
+        if np.std(depths) > 0 and np.std(surprisals) > 0:
+            correlation = np.corrcoef(depths, surprisals)[0, 1]
+        else:
+            correlation = 0.0
+
+        # Mean surprisal per depth level
+        unique_depths = np.unique(depths)
+        if len(unique_depths) > 1:
+            mean_surprisal_by_depth = []
+            for d in sorted(unique_depths):
+                mask = depths == d
+                mean_surprisal_by_depth.append(surprisals[mask].mean())
+            # Check if surprisal increases with depth (should be positive slope)
+            slope = np.polyfit(range(len(mean_surprisal_by_depth)), mean_surprisal_by_depth, 1)[0]
+            ratio = slope / (np.mean(surprisals) + 1e-10)  # Normalized slope
+        else:
+            ratio = 0.0
+
+        return correlation, ratio
 
     def smooth_counts(
         self,
@@ -496,12 +782,27 @@ class HierarchyObjective:
         embeddings: np.ndarray,
         node_to_idx: Dict[str, int],
         parent_of: Dict[str, str],
-        subtree_sizes: Dict[str, int]
+        subtree_sizes: Dict[str, int],
+        depth_normalize: bool = True,
+        depth_decay: float = 0.5,
+        depth_scale_mode: str = 'exponential'
     ) -> Tuple[float, Dict[int, float]]:
         """
         Compute average semantic distance D(T).
 
-        D = weighted average of cosine distance from each node to its parent.
+        D = weighted average of cosine distance from each node to its parent,
+        normalized by expected distance at that depth.
+
+        At higher depths (more specific nodes), we expect tighter clustering,
+        so the same raw distance is penalized more heavily.
+
+        Args:
+            depth_normalize: If True, normalize distances by depth-expected values
+            depth_decay: λ parameter for exponential mode (higher = stricter at depth)
+            depth_scale_mode: How to compute expected scale at each depth
+                - 'exponential': σ(d) = exp(-λd) - simple exponential decay
+                - 'subtree_std': σ(d) = std of distances within subtrees at depth d
+                - 'level_std': σ(d) = std of all distances at level d
 
         Returns:
             (overall_D, per_level_D)
@@ -511,7 +812,15 @@ class HierarchyObjective:
         level_distances = defaultdict(list)
         level_weights = defaultdict(list)
 
-        levels = self.compute_level_assignments(parent_of, {})
+        # Build children_of from parent_of for level assignment
+        children_of_local = defaultdict(list)
+        for child, parent in parent_of.items():
+            children_of_local[parent].append(child)
+        levels = self.compute_level_assignments(parent_of, dict(children_of_local))
+
+        # Collect raw distances by level and by parent (for subtree_std mode)
+        raw_distances_by_level = defaultdict(list)
+        raw_distances_by_parent = defaultdict(list)
 
         for node_id, parent_id in parent_of.items():
             if node_id not in node_to_idx or parent_id not in node_to_idx:
@@ -525,19 +834,52 @@ class HierarchyObjective:
                 np.linalg.norm(node_emb) * np.linalg.norm(parent_emb) + 1e-10
             )
             dist = 1 - cos_sim
-
-            # Weight by subtree size (probability proxy)
-            if self.use_probability_weight:
-                weight = subtree_sizes.get(node_id, 1)
-            else:
-                weight = 1
-
-            distances.append(dist)
-            weights.append(weight)
-
             level = levels.get(node_id, 0)
-            level_distances[level].append(dist)
-            level_weights[level].append(weight)
+            raw_distances_by_level[level].append((node_id, parent_id, dist))
+            raw_distances_by_parent[parent_id].append(dist)
+
+        if not raw_distances_by_level:
+            return 0.0, {}
+
+        # Compute depth penalty
+        # For exponential: scale(d) = exp(-λd), so D_normalized = D_raw / scale = D_raw * exp(λd)
+        # Penalty grows with depth: same distance is penalized more at deeper levels
+        level_scales = {}
+        if depth_normalize:
+            if depth_scale_mode == 'exponential':
+                for level in raw_distances_by_level:
+                    level_scales[level] = np.exp(-depth_decay * level)
+            else:
+                raise ValueError(
+                    f"Unknown depth_scale_mode: {depth_scale_mode}. "
+                    f"Only 'exponential' is supported for distance normalization. "
+                    f"'level_std' and 'subtree_std' are for kernel bandwidth selection."
+                )
+        else:
+            for level in raw_distances_by_level:
+                level_scales[level] = 1.0
+
+        # Compute depth-weighted distances
+        for level, node_dists in raw_distances_by_level.items():
+            scale = level_scales.get(level, 1.0)
+
+            for node_id, parent_id, raw_dist in node_dists:
+                if depth_normalize:
+                    # D / exp(-λd) = D * exp(λd): penalty grows with depth
+                    dist = raw_dist / scale
+                else:
+                    dist = raw_dist
+
+                # Weight by subtree size (probability proxy)
+                if self.use_probability_weight:
+                    weight = subtree_sizes.get(node_id, 1)
+                else:
+                    weight = 1
+
+                distances.append(dist)
+                weights.append(weight)
+                level_distances[level].append(dist)
+                level_weights[level].append(weight)
 
         if not distances:
             return 0.0, {}
@@ -563,13 +905,16 @@ class HierarchyObjective:
         self,
         parent_of: Dict[str, str],
         children_of: Dict[str, List[str]],
-        subtree_sizes: Dict[str, int]
+        subtree_sizes: Dict[str, int],
+        embeddings: Optional[np.ndarray] = None,
+        node_to_idx: Optional[Dict[str, int]] = None
     ) -> Tuple[float, Dict[int, float]]:
         """
         Compute entropy gain H(T) between levels.
 
         Measures how informative the refinement is at each level.
-        Uses mutual information between parent and child cluster assignments.
+        If embeddings provided, uses semantic cluster quality (within/between variance ratio).
+        Otherwise falls back to mutual information between structural labels.
 
         Returns:
             (overall_H, per_level_H)
@@ -585,6 +930,9 @@ class HierarchyObjective:
         total_H = 0.0
         n_transitions = 0
 
+        # Use semantic entropy if embeddings available
+        use_semantic = embeddings is not None and node_to_idx is not None
+
         for level in range(max_level):
             # Get nodes at this level and next level
             nodes_this = [n for n, l in levels.items() if l == level]
@@ -593,35 +941,129 @@ class HierarchyObjective:
             if not nodes_this or not nodes_next:
                 continue
 
-            # Create label arrays
-            # Parent label = which node at level k
-            # Child label = which node at level k+1
-            parent_labels = []
-            child_labels = []
+            if use_semantic:
+                # Semantic entropy: measure how well children cluster under parents
+                # Higher = children are well-separated between parent groups
+                h = self._compute_semantic_entropy_gain(
+                    nodes_this, nodes_next, parent_of, embeddings, node_to_idx
+                )
+            else:
+                # Structural mutual information
+                parent_labels = []
+                child_labels = []
 
-            for child_id in nodes_next:
-                if child_id in parent_of:
-                    parent_id = parent_of[child_id]
-                    if parent_id in nodes_this:
-                        parent_labels.append(nodes_this.index(parent_id))
-                        child_labels.append(nodes_next.index(child_id))
+                for child_id in nodes_next:
+                    if child_id in parent_of:
+                        parent_id = parent_of[child_id]
+                        if parent_id in nodes_this:
+                            parent_labels.append(nodes_this.index(parent_id))
+                            child_labels.append(nodes_next.index(child_id))
 
-            if len(parent_labels) < 2:
-                continue
+                if len(parent_labels) < 2:
+                    continue
 
-            # Compute mutual information
-            mi = self.compute_mutual_information(
-                np.array(parent_labels),
-                np.array(child_labels)
-            )
+                h = self.compute_mutual_information(
+                    np.array(parent_labels),
+                    np.array(child_labels)
+                )
 
-            per_level_H[level] = mi
-            total_H += mi
+            per_level_H[level] = h
+            total_H += h
             n_transitions += 1
 
         overall_H = total_H / n_transitions if n_transitions > 0 else 0.0
 
         return overall_H, per_level_H
+
+    def _compute_semantic_entropy_gain(
+        self,
+        parent_nodes: List[str],
+        child_nodes: List[str],
+        parent_of: Dict[str, str],
+        embeddings: np.ndarray,
+        node_to_idx: Dict[str, int]
+    ) -> float:
+        """
+        Compute semantic entropy gain using embedding-based cluster quality.
+
+        Uses the ratio of between-cluster variance to within-cluster variance.
+        Higher ratio = better separation = more informative split.
+
+        This is related to Fisher's criterion / Linear Discriminant Analysis.
+        """
+        # Group children by parent
+        children_by_parent = defaultdict(list)
+        for child_id in child_nodes:
+            if child_id in parent_of and child_id in node_to_idx:
+                parent_id = parent_of[child_id]
+                if parent_id in parent_nodes:
+                    children_by_parent[parent_id].append(child_id)
+
+        if len(children_by_parent) < 2:
+            return 0.0
+
+        # Compute global centroid
+        all_child_embeds = []
+        for children in children_by_parent.values():
+            for c in children:
+                if c in node_to_idx:
+                    all_child_embeds.append(embeddings[node_to_idx[c]])
+
+        if len(all_child_embeds) < 2:
+            return 0.0
+
+        all_child_embeds = np.array(all_child_embeds)
+        global_centroid = all_child_embeds.mean(axis=0)
+
+        # Compute within-cluster variance (average distance to cluster centroid)
+        within_var = 0.0
+        n_within = 0
+
+        # Compute between-cluster variance (cluster centroids to global centroid)
+        cluster_centroids = []
+
+        for parent_id, children in children_by_parent.items():
+            child_embeds = []
+            for c in children:
+                if c in node_to_idx:
+                    child_embeds.append(embeddings[node_to_idx[c]])
+
+            if not child_embeds:
+                continue
+
+            child_embeds = np.array(child_embeds)
+            cluster_centroid = child_embeds.mean(axis=0)
+            cluster_centroids.append((cluster_centroid, len(child_embeds)))
+
+            # Within-cluster: sum of squared distances to cluster centroid
+            for emb in child_embeds:
+                within_var += np.sum((emb - cluster_centroid) ** 2)
+                n_within += 1
+
+        if n_within == 0 or len(cluster_centroids) < 2:
+            return 0.0
+
+        within_var /= n_within
+
+        # Between-cluster: weighted sum of squared distances from cluster centroids to global
+        between_var = 0.0
+        total_weight = 0
+        for centroid, weight in cluster_centroids:
+            between_var += weight * np.sum((centroid - global_centroid) ** 2)
+            total_weight += weight
+
+        if total_weight == 0:
+            return 0.0
+
+        between_var /= total_weight
+
+        # Return ratio (with epsilon for numerical stability)
+        # Log transform to get entropy-like scaling
+        eps = 1e-10
+        ratio = between_var / (within_var + eps)
+
+        # Map to [0, ~2] range like entropy (log1p to handle ratio < 1)
+        return np.log1p(ratio)
 
     def normalize_to_01(
         self,
@@ -644,18 +1086,35 @@ class HierarchyObjective:
         self,
         tree: Dict,
         embeddings: np.ndarray,
-        reference_stats: Optional[Dict] = None
+        reference_stats: Optional[Dict] = None,
+        logits: Optional[np.ndarray] = None,
+        texts: Optional[Dict[str, str]] = None,
+        embedding_texts: Optional[Dict[str, str]] = None
     ) -> HierarchyStats:
         """
         Compute the full hierarchy objective.
 
         Args:
             tree: Hierarchy structure dict
-            embeddings: Node embeddings array
+            embeddings: Node embeddings array (can be from any model: Nomic, MiniLM, etc.)
             reference_stats: Optional stats from baseline for normalization
+            logits: Optional pre-computed model output logits for entropy-based metrics
+                    If provided, used directly for depth-surprisal correlation
+            texts: Optional dict mapping node_id to raw phrase/name
+                   Used for on-the-fly entropy computation via entropy_model
+                   Independent of embedding model - can use ModernBERT for entropy
+                   even when using Nomic embeddings for distances
+            embedding_texts: Optional dict mapping node_id to full embedding text
+                   (with any context used during embedding). If entropy_text_source
+                   is 'embedding_text' or 'mixed', this is used.
 
         Returns:
             HierarchyStats with all computed metrics
+
+        Note:
+            The embedding model (used for D/distances) and entropy model are
+            independent. You can compute distances with Nomic embeddings while
+            using ModernBERT to compute entropy from the original text.
         """
         # Extract structure
         node_to_idx, parent_of, children_of = self.build_tree_structure(tree, embeddings)
@@ -664,10 +1123,12 @@ class HierarchyObjective:
 
         # Compute D and H
         D_raw, D_per_level = self.compute_semantic_distance(
-            tree, embeddings, node_to_idx, parent_of, subtree_sizes
+            tree, embeddings, node_to_idx, parent_of, subtree_sizes,
+            depth_normalize=self.depth_normalize, depth_decay=self.depth_decay,
+            depth_scale_mode=self.depth_scale_mode
         )
         H_raw, H_per_level = self.compute_entropy_gain(
-            parent_of, children_of, subtree_sizes
+            parent_of, children_of, subtree_sizes, embeddings, node_to_idx
         )
 
         # Normalize
@@ -681,22 +1142,37 @@ class HierarchyObjective:
                 H_raw
             )
         else:
-            # Use raw values scaled by typical ranges
-            D_hat = min(1.0, D_raw / 0.5)  # Assume max distance ~0.5
-            H_hat = min(1.0, H_raw / 2.0)  # Assume max entropy ~2.0 nats
+            # D is average of cosine distances, bounded [0, 2]
+            # No transformation needed - just use raw values
+            D_hat = D_raw
+            H_hat = H_raw
 
         # Combine
         eps = 1e-10
-        if self.combine == 'product':
-            # J = D̂(1 - Ĥ) - minimize
+        n_levels = max(levels.values()) + 1 if levels else 0
+
+        # Handle degenerate cases: if no measurable structure (H=0, D=0, or no real hierarchy)
+        # A flat tree with no measured edges should not be considered "best"
+        is_degenerate = (
+            (H_hat < eps and D_raw < eps) or  # No measured structure at all
+            (H_hat < eps and n_levels <= 2)    # Flat tree (root + leaves only)
+        )
+        if is_degenerate:
+            # Degenerate: no hierarchical structure worth measuring
+            # Return maximum penalty
+            objective = 1.0
+        elif self.combine == 'product':
+            # J = D̂ / (1 + Ĥ) - minimize
             # Small when D small AND H large
-            objective = D_hat * (1 - H_hat)
+            # Unlike D(1-H), this doesn't break when H >= 1
+            objective = D_hat / (1 + H_hat)
         elif self.combine == 'sum':
             # J = D̂ - Ĥ - minimize
             objective = D_hat - H_hat
         elif self.combine == 'log_product':
-            # log(J) = log(D̂) + log(1 - Ĥ)
-            objective = np.log(D_hat + eps) + np.log(1 - H_hat + eps)
+            # J = D̂ * exp(-Ĥ) - minimize
+            # Exponential reward for high entropy
+            objective = D_hat * np.exp(-H_hat)
         else:
             raise ValueError(f"Unknown combine method: {self.combine}")
 
@@ -709,6 +1185,50 @@ class HierarchyObjective:
                 'n_nodes': sum(1 for n, l in levels.items() if l == level)
             }
 
+        # Compute depth-surprisal correlation if logits or texts available
+        depth_corr = None
+        depth_slope = None
+        computed_logits = logits
+
+        # If no pre-computed logits but texts provided, compute from texts
+        if computed_logits is None and texts is not None and self.entropy_source == 'logits':
+            # Determine which texts to use based on entropy_text_source
+            if self.entropy_text_source == 'raw_phrase':
+                text_list = [texts.get(node_id, "") for node_id in node_to_idx.keys()]
+            elif self.entropy_text_source == 'embedding_text':
+                if embedding_texts is None:
+                    raise ValueError(
+                        "entropy_text_source='embedding_text' requires embedding_texts dict"
+                    )
+                text_list = [embedding_texts.get(node_id, "") for node_id in node_to_idx.keys()]
+            elif self.entropy_text_source == 'mixed':
+                # Average entropy from both sources (computed separately, then averaged)
+                if embedding_texts is None:
+                    raise ValueError(
+                        "entropy_text_source='mixed' requires embedding_texts dict"
+                    )
+                # For mixed, we'll compute separately and average entropies
+                # First get raw phrase logits
+                text_list = [texts.get(node_id, "") for node_id in node_to_idx.keys()]
+            else:
+                raise ValueError(f"Unknown entropy_text_source: {self.entropy_text_source}")
+
+            # Compute logits from texts using the entropy model (independent of embedding model)
+            if text_list and any(t for t in text_list):
+                computed_logits = compute_logits_from_text(
+                    text_list,
+                    model_name=self.entropy_model
+                )
+
+        if computed_logits is not None:
+            # Get probability estimates from logits
+            node_probs = self.get_node_probabilities(
+                embeddings, node_to_idx, subtree_sizes, logits=computed_logits
+            )
+            depth_corr, depth_slope = self.compute_depth_probability_correlation(
+                levels, node_probs
+            )
+
         return HierarchyStats(
             semantic_distance=D_hat,
             semantic_distance_raw=D_raw,
@@ -717,7 +1237,9 @@ class HierarchyObjective:
             objective=objective,
             n_nodes=len(node_to_idx),
             n_levels=max(levels.values()) + 1 if levels else 0,
-            level_stats=level_stats
+            level_stats=level_stats,
+            depth_surprisal_correlation=depth_corr,
+            depth_surprisal_slope=depth_slope
         )
 
 
@@ -812,6 +1334,34 @@ def main():
                         help='Smoothing for entropy estimation (default: dirichlet)')
     parser.add_argument('--entropy-alpha', type=float, default=1.0,
                         help='Alpha for entropy smoothing (default: 1.0)')
+    parser.add_argument('--no-depth-normalize', action='store_true',
+                        help='Disable depth-dependent distance normalization')
+    parser.add_argument('--depth-decay', type=float, default=0.5,
+                        help='Decay rate for expected distance with depth (default: 0.5). '
+                             'Higher = stricter requirements at deeper levels.')
+    parser.add_argument('--depth-scale-mode',
+                        choices=['exponential', 'subtree_std', 'level_std'],
+                        default='exponential',
+                        help='How to compute expected scale at each depth: '
+                             'exponential (exp(-λd)), subtree_std (from within-subtree variance), '
+                             'level_std (from all distances at level). Default: exponential.')
+    parser.add_argument('--entropy-source',
+                        choices=['fisher', 'logits'],
+                        default='fisher',
+                        help='How to compute entropy for hierarchy quality: '
+                             'fisher (geometric proxy using cluster variance) or '
+                             'logits (actual entropy from transformer model). Default: fisher.')
+    parser.add_argument('--entropy-text-source',
+                        choices=['raw_phrase', 'embedding_text', 'mixed'],
+                        default='raw_phrase',
+                        help='What text to use for logits-based entropy: '
+                             'raw_phrase (just topic name), embedding_text (full context), '
+                             'or mixed (average of both). Default: raw_phrase.')
+    parser.add_argument('--entropy-model', type=str,
+                        default='answerdotai/ModernBERT-base',
+                        help='HuggingFace model for logits-based entropy computation. '
+                             'Independent of embedding model - can use ModernBERT for '
+                             'entropy even with Nomic embeddings for distances.')
     parser.add_argument('--output', '-o', type=Path,
                         help='Output JSON file for stats')
     parser.add_argument('--quiet', '-q', action='store_true',
@@ -829,7 +1379,13 @@ def main():
         knn_k=args.knn_k,
         kernel_bandwidth=args.kernel_bandwidth,
         entropy_smoothing=args.entropy_smoothing,
-        entropy_alpha=args.entropy_alpha
+        entropy_alpha=args.entropy_alpha,
+        depth_normalize=not args.no_depth_normalize,
+        depth_decay=args.depth_decay,
+        depth_scale_mode=args.depth_scale_mode,
+        entropy_source=args.entropy_source,
+        entropy_text_source=args.entropy_text_source,
+        entropy_model=args.entropy_model
     )
 
     # Load data
