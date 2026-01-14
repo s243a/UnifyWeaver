@@ -219,6 +219,9 @@ def main():
     parser.add_argument("--use-bert", action="store_true", help="Use BERT for entropy (slow)")
     parser.add_argument("--intermediate-threshold", type=float, default=0.5,
                         help="Threshold for intermediate node suggestions")
+    parser.add_argument("--distance-metric", type=str, default="cosine",
+                        choices=["cosine", "angular", "euclidean", "sqeuclidean"],
+                        help="Distance metric for tree construction")
     args = parser.parse_args()
 
     # Load data
@@ -258,6 +261,7 @@ def main():
         titles=titles,
         use_bert_entropy=args.use_bert,
         intermediate_threshold=args.intermediate_threshold,
+        distance_metric=args.distance_metric,
         verbose=True
     )
 

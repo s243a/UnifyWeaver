@@ -1550,6 +1550,10 @@ def main():
         print(f"\nStats written to: {args.output}")
 
 
+# Distance metric types for tree construction
+DistanceMetric = Literal['cosine', 'angular', 'euclidean', 'sqeuclidean']
+
+
 class JGuidedTreeBuilder:
     """
     Build hierarchical trees using J = D/(1+H) to guide attachment decisions.
@@ -1565,6 +1569,12 @@ class JGuidedTreeBuilder:
     - Each attachment optimally balances semantic distance and entropy gain
     - Structure naturally emerges from information-theoretic principles
 
+    Distance Metrics:
+        - cosine: 1 - cos(θ) ≈ θ²/2 for small θ (poor small-angle resolution)
+        - angular: arccos(a·b) = θ (linear in angle, best theoretical)
+        - euclidean: ||a-b|| = 2·sin(θ/2) ≈ θ for small θ (fast, good resolution)
+        - sqeuclidean: ||a-b||² = 2(1-cos(θ)) ≈ θ² (avoids sqrt, quadratic)
+
     Usage:
         builder = JGuidedTreeBuilder(embeddings, texts)
         tree = builder.build()
@@ -1579,6 +1589,7 @@ class JGuidedTreeBuilder:
         use_bert_entropy: bool = True,
         entropy_model: str = "answerdotai/ModernBERT-base",
         intermediate_threshold: float = 0.5,
+        distance_metric: DistanceMetric = 'cosine',
         verbose: bool = False
     ):
         """
@@ -1591,6 +1602,11 @@ class JGuidedTreeBuilder:
             use_bert_entropy: If True, use BERT logits for entropy; else use density
             entropy_model: HuggingFace model for entropy computation
             intermediate_threshold: Entropy residual threshold for suggesting intermediate nodes
+            distance_metric: Distance metric for parent selection:
+                - 'cosine': 1 - cos(θ), default, range [0, 2]
+                - 'angular': arccos(similarity), range [0, π], linear in angle
+                - 'euclidean': ||a-b|| on normalized vectors, range [0, 2]
+                - 'sqeuclidean': ||a-b||², range [0, 4], avoids sqrt
             verbose: Print progress during construction
         """
         self.embeddings = embeddings
@@ -1600,15 +1616,18 @@ class JGuidedTreeBuilder:
         self.use_bert_entropy = use_bert_entropy
         self.entropy_model = entropy_model
         self.intermediate_threshold = intermediate_threshold
+        self.distance_metric = distance_metric
         self.verbose = verbose
 
         # Normalize embeddings
         norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
         self.embeddings_norm = self.embeddings / (norms + 1e-8)
 
-        # Precompute cosine distance matrix
+        # Precompute similarity matrix
         similarity = self.embeddings_norm @ self.embeddings_norm.T
-        self.cos_dist = 1 - similarity
+
+        # Compute distance matrix based on metric
+        self.dist_matrix = self._compute_distance_matrix(similarity)
 
         # Computed during build
         self.parent: Dict[int, Optional[int]] = {}  # node -> parent
@@ -1619,6 +1638,38 @@ class JGuidedTreeBuilder:
         self.entropy_slope: float = 0.0             # Entropy vs depth slope
         self.entropy_intercept: float = 0.0         # Entropy vs depth intercept
         self.intermediate_suggestions: List[Dict] = []  # Suggested intermediate nodes
+
+    def _compute_distance_matrix(self, similarity: np.ndarray) -> np.ndarray:
+        """
+        Compute distance matrix from similarity matrix using configured metric.
+
+        Args:
+            similarity: Cosine similarity matrix (N x N)
+
+        Returns:
+            Distance matrix using the configured metric
+        """
+        if self.distance_metric == 'cosine':
+            # d = 1 - cos(θ), range [0, 2]
+            return 1 - similarity
+
+        elif self.distance_metric == 'angular':
+            # d = arccos(similarity) = θ, range [0, π]
+            # Clip to [-1, 1] for numerical stability
+            similarity_clipped = np.clip(similarity, -1.0, 1.0)
+            return np.arccos(similarity_clipped)
+
+        elif self.distance_metric == 'euclidean':
+            # d = ||a - b|| = sqrt(2 - 2*cos(θ)) = sqrt(2*(1 - similarity))
+            # For normalized vectors: ||a-b||² = |a|² + |b|² - 2a·b = 2 - 2*cos(θ)
+            return np.sqrt(np.maximum(0, 2 * (1 - similarity)))
+
+        elif self.distance_metric == 'sqeuclidean':
+            # d = ||a - b||² = 2*(1 - cos(θ)), range [0, 4]
+            return 2 * (1 - similarity)
+
+        else:
+            raise ValueError(f"Unknown distance metric: {self.distance_metric}")
 
     def _compute_probabilities(self) -> np.ndarray:
         """
@@ -1658,7 +1709,7 @@ class JGuidedTreeBuilder:
             densities = np.zeros(self.n_nodes)
 
             for i in range(self.n_nodes):
-                dists = self.cos_dist[i].copy()
+                dists = self.dist_matrix[i].copy()
                 dists[i] = np.inf
                 kth_dist = np.partition(dists, k)[k]
                 densities[i] = 1.0 / (kth_dist + 1e-8)
@@ -1683,7 +1734,7 @@ class JGuidedTreeBuilder:
         Lower J = better attachment.
         """
         # Distance to candidate parent
-        d_parent = self.cos_dist[node_idx, candidate_parent]
+        d_parent = self.dist_matrix[node_idx, candidate_parent]
 
         # Depth of attachment
         new_depth = self.depth.get(candidate_parent, 0) + 1
@@ -1957,6 +2008,7 @@ def build_j_guided_tree(
     use_bert_entropy: bool = False,
     entropy_model: str = "answerdotai/ModernBERT-base",
     intermediate_threshold: float = 0.5,
+    distance_metric: DistanceMetric = 'cosine',
     verbose: bool = True
 ) -> Tuple[Dict, HierarchyStats, List[Dict]]:
     """
@@ -1971,6 +2023,7 @@ def build_j_guided_tree(
         use_bert_entropy: Use BERT for entropy computation
         entropy_model: HuggingFace model name
         intermediate_threshold: Threshold for intermediate node suggestions
+        distance_metric: Distance metric ('cosine', 'angular', 'euclidean', 'sqeuclidean')
         verbose: Print progress
 
     Returns:
@@ -1981,6 +2034,7 @@ def build_j_guided_tree(
         texts=texts,
         titles=titles,
         use_bert_entropy=use_bert_entropy,
+        distance_metric=distance_metric,
         entropy_model=entropy_model,
         intermediate_threshold=intermediate_threshold,
         verbose=verbose
