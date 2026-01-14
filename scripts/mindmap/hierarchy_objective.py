@@ -1550,5 +1550,453 @@ def main():
         print(f"\nStats written to: {args.output}")
 
 
+class JGuidedTreeBuilder:
+    """
+    Build hierarchical trees using J = D/(1+H) to guide attachment decisions.
+
+    Instead of MST (which optimizes total edge weight), this algorithm:
+    1. Orders nodes by probability (general/high-density first, specific/low-density last)
+    2. For each node, evaluates all possible attachment points
+    3. Selects the parent that minimizes incremental J
+    4. Optionally detects large surprisal jumps that suggest intermediate nodes
+
+    This produces trees where:
+    - Depth correlates with surprisal (-log p)
+    - Each attachment optimally balances semantic distance and entropy gain
+    - Structure naturally emerges from information-theoretic principles
+
+    Usage:
+        builder = JGuidedTreeBuilder(embeddings, texts)
+        tree = builder.build()
+        stats = builder.evaluate()
+    """
+
+    def __init__(
+        self,
+        embeddings: np.ndarray,
+        texts: Optional[List[str]] = None,
+        titles: Optional[List[str]] = None,
+        use_bert_entropy: bool = True,
+        entropy_model: str = "answerdotai/ModernBERT-base",
+        intermediate_threshold: float = 0.5,
+        verbose: bool = False
+    ):
+        """
+        Initialize the J-guided tree builder.
+
+        Args:
+            embeddings: Node embeddings (N x D), normalized for cosine distance
+            texts: Optional text for each node (for BERT-based entropy)
+            titles: Optional titles for each node (for display)
+            use_bert_entropy: If True, use BERT logits for entropy; else use density
+            entropy_model: HuggingFace model for entropy computation
+            intermediate_threshold: Entropy residual threshold for suggesting intermediate nodes
+            verbose: Print progress during construction
+        """
+        self.embeddings = embeddings
+        self.n_nodes = len(embeddings)
+        self.texts = texts or [f"node_{i}" for i in range(self.n_nodes)]
+        self.titles = titles or self.texts
+        self.use_bert_entropy = use_bert_entropy
+        self.entropy_model = entropy_model
+        self.intermediate_threshold = intermediate_threshold
+        self.verbose = verbose
+
+        # Normalize embeddings
+        norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
+        self.embeddings_norm = self.embeddings / (norms + 1e-8)
+
+        # Precompute cosine distance matrix
+        similarity = self.embeddings_norm @ self.embeddings_norm.T
+        self.cos_dist = 1 - similarity
+
+        # Computed during build
+        self.parent: Dict[int, Optional[int]] = {}  # node -> parent
+        self.children: Dict[int, List[int]] = {}    # node -> [children]
+        self.depth: Dict[int, int] = {}             # node -> depth
+        self.node_entropy: Dict[int, float] = {}    # node -> entropy
+        self.node_probability: Dict[int, float] = {}  # node -> probability
+        self.entropy_slope: float = 0.0             # Entropy vs depth slope
+        self.entropy_intercept: float = 0.0         # Entropy vs depth intercept
+        self.intermediate_suggestions: List[Dict] = []  # Suggested intermediate nodes
+
+    def _compute_probabilities(self) -> np.ndarray:
+        """
+        Compute probability estimates for each node.
+
+        Uses centroid similarity as proxy for generality/probability.
+        Higher similarity to centroid = more general = higher probability.
+        """
+        centroid = self.embeddings_norm.mean(axis=0)
+        centroid = centroid / (np.linalg.norm(centroid) + 1e-8)
+
+        # Similarity to centroid (higher = more general)
+        generality = self.embeddings_norm @ centroid
+
+        # Convert to probabilities (softmax-like)
+        # Use temperature to control spread
+        temperature = 0.5
+        exp_gen = np.exp(generality / temperature)
+        probabilities = exp_gen / exp_gen.sum()
+
+        return probabilities
+
+    def _compute_entropies(self) -> np.ndarray:
+        """
+        Compute entropy for each node.
+
+        Uses BERT logits if use_bert_entropy=True, else uses k-NN density.
+        """
+        if self.use_bert_entropy and self.texts:
+            # Use BERT-based entropy
+            entropies = compute_entropy_from_text(
+                self.texts, model_name=self.entropy_model
+            )
+        else:
+            # Use density-based proxy (k-NN)
+            k = min(10, self.n_nodes - 1)
+            densities = np.zeros(self.n_nodes)
+
+            for i in range(self.n_nodes):
+                dists = self.cos_dist[i].copy()
+                dists[i] = np.inf
+                kth_dist = np.partition(dists, k)[k]
+                densities[i] = 1.0 / (kth_dist + 1e-8)
+
+            # Entropy inversely related to density (sparse = high entropy = specific)
+            entropies = -np.log(densities / densities.sum() + 1e-10)
+
+        return entropies
+
+    def _compute_incremental_j(
+        self,
+        node_idx: int,
+        candidate_parent: int
+    ) -> float:
+        """
+        Compute incremental J for attaching node to candidate parent.
+
+        J = D / (1 + H)
+        - D: Average distance from node to ancestors (semantic coherence)
+        - H: Entropy gain from this attachment (information structure)
+
+        Lower J = better attachment.
+        """
+        # Distance to candidate parent
+        d_parent = self.cos_dist[node_idx, candidate_parent]
+
+        # Depth of attachment
+        new_depth = self.depth.get(candidate_parent, 0) + 1
+
+        # Entropy at this node
+        node_ent = self.node_entropy.get(node_idx, 0)
+
+        # Expected entropy at new_depth (from slope/intercept)
+        expected_ent = self.entropy_intercept + self.entropy_slope * new_depth
+
+        # Entropy contribution: how well this node matches expected entropy at depth
+        # Smaller |node_ent - expected_ent| = better fit = higher H contribution
+        entropy_fit = np.exp(-abs(node_ent - expected_ent))
+
+        # Approximate H as entropy fit (normalized)
+        H = entropy_fit
+
+        # J = D / (1 + H)
+        J = d_parent / (1 + H)
+
+        return J
+
+    def _check_intermediate_needed(
+        self,
+        node_idx: int,
+        parent_idx: int
+    ) -> Optional[Dict]:
+        """
+        Check if an intermediate node is needed based on entropy residual.
+
+        Returns suggestion dict if intermediate needed, None otherwise.
+        """
+        parent_depth = self.depth.get(parent_idx, 0)
+        child_depth = parent_depth + 1
+
+        node_ent = self.node_entropy.get(node_idx, 0)
+        expected_ent = self.entropy_intercept + self.entropy_slope * child_depth
+
+        residual = node_ent - expected_ent
+
+        if residual > self.intermediate_threshold:
+            # Suggest intermediate node
+            return {
+                "child_idx": node_idx,
+                "parent_idx": parent_idx,
+                "child_text": self.titles[node_idx],
+                "parent_text": self.titles[parent_idx],
+                "child_entropy": float(node_ent),
+                "expected_entropy": float(expected_ent),
+                "residual": float(residual),
+                "suggested_depth": child_depth,
+                "message": f"Node '{self.titles[node_idx][:30]}' has entropy {node_ent:.2f} "
+                          f"(expected {expected_ent:.2f} at depth {child_depth}). "
+                          f"Consider adding intermediate category."
+            }
+        return None
+
+    def build(self) -> Dict:
+        """
+        Build the J-guided tree.
+
+        Returns:
+            Tree structure dict with nodes, parents, depths, and metadata.
+        """
+        if self.verbose:
+            print("Computing node probabilities...")
+
+        # Step 1: Compute probabilities and entropies
+        probabilities = self._compute_probabilities()
+        for i, p in enumerate(probabilities):
+            self.node_probability[i] = p
+
+        if self.verbose:
+            print("Computing node entropies...")
+
+        entropies = self._compute_entropies()
+        for i, e in enumerate(entropies):
+            self.node_entropy[i] = e
+
+        # Step 2: Order nodes by probability (high to low = general to specific)
+        order = np.argsort(-probabilities)
+
+        if self.verbose:
+            print(f"Building tree with {self.n_nodes} nodes...")
+            print(f"  Root: '{self.titles[order[0]][:40]}' (prob={probabilities[order[0]]:.4f})")
+
+        # Step 3: Initialize with root (most general node)
+        root_idx = order[0]
+        self.parent[root_idx] = None
+        self.children[root_idx] = []
+        self.depth[root_idx] = 0
+
+        in_tree = {root_idx}
+
+        # Initial entropy slope estimate (will be refined as tree grows)
+        self.entropy_slope = 0.1  # Small positive slope expected
+        self.entropy_intercept = entropies[root_idx]
+
+        # Step 4: Attach remaining nodes in probability order
+        for i, node_idx in enumerate(order[1:], 1):
+            # Find best parent by minimizing J
+            best_parent = None
+            best_j = float('inf')
+
+            for candidate in in_tree:
+                j = self._compute_incremental_j(node_idx, candidate)
+                if j < best_j:
+                    best_j = j
+                    best_parent = candidate
+
+            # Attach to best parent
+            self.parent[node_idx] = best_parent
+            self.depth[node_idx] = self.depth[best_parent] + 1
+
+            if best_parent not in self.children:
+                self.children[best_parent] = []
+            self.children[best_parent].append(node_idx)
+            self.children[node_idx] = []
+
+            in_tree.add(node_idx)
+
+            # Check if intermediate node is needed
+            suggestion = self._check_intermediate_needed(node_idx, best_parent)
+            if suggestion:
+                self.intermediate_suggestions.append(suggestion)
+
+            # Update entropy slope estimate periodically
+            if i % max(1, self.n_nodes // 10) == 0:
+                self._update_entropy_slope()
+
+            if self.verbose and i % max(1, self.n_nodes // 5) == 0:
+                print(f"  Attached {i}/{self.n_nodes-1} nodes (depth range: 0-{max(self.depth.values())})")
+
+        # Final slope update
+        self._update_entropy_slope()
+
+        if self.verbose:
+            print(f"\nTree built:")
+            print(f"  Max depth: {max(self.depth.values())}")
+            print(f"  Entropy slope: {self.entropy_slope:.4f}")
+            print(f"  Intermediate suggestions: {len(self.intermediate_suggestions)}")
+
+        return self._to_tree_dict()
+
+    def _update_entropy_slope(self):
+        """Update entropy vs depth slope from current tree structure."""
+        if len(self.depth) < 3:
+            return
+
+        depths = np.array(list(self.depth.values()))
+        entropies = np.array([self.node_entropy[i] for i in self.depth.keys()])
+
+        if len(np.unique(depths)) < 2:
+            return
+
+        # Linear regression: entropy = intercept + slope * depth
+        try:
+            slope, intercept = np.polyfit(depths, entropies, 1)
+            self.entropy_slope = slope
+            self.entropy_intercept = intercept
+        except np.linalg.LinAlgError:
+            pass  # Keep previous values
+
+    def _to_tree_dict(self) -> Dict:
+        """Convert internal structure to tree dict format."""
+        def build_node(idx: int) -> Dict:
+            return {
+                "id": str(idx),
+                "idx": idx,
+                "text": self.titles[idx],
+                "embedding_idx": idx,
+                "depth": self.depth[idx],
+                "entropy": self.node_entropy.get(idx, 0),
+                "probability": self.node_probability.get(idx, 0),
+                "children": [build_node(c) for c in self.children.get(idx, [])]
+            }
+
+        # Find root (node with parent=None)
+        root_idx = [i for i, p in self.parent.items() if p is None][0]
+
+        return {
+            "root": build_node(root_idx),
+            "metadata": {
+                "n_nodes": self.n_nodes,
+                "max_depth": max(self.depth.values()),
+                "entropy_slope": self.entropy_slope,
+                "entropy_intercept": self.entropy_intercept,
+                "n_intermediate_suggestions": len(self.intermediate_suggestions)
+            }
+        }
+
+    def evaluate(self) -> HierarchyStats:
+        """
+        Evaluate the built tree using HierarchyObjective.
+
+        Returns:
+            HierarchyStats with D, H, J, and depth-surprisal correlation.
+        """
+        tree_dict = self._to_tree_dict()
+
+        # Use HierarchyObjective for evaluation
+        obj = HierarchyObjective(
+            entropy_source='logits' if self.use_bert_entropy else 'fisher',
+            entropy_model=self.entropy_model,
+            knn_k=min(10, self.n_nodes - 1)
+        )
+
+        texts_dict = {str(i): self.texts[i] for i in range(self.n_nodes)}
+
+        stats = obj.compute(
+            tree_dict,
+            self.embeddings,
+            texts=texts_dict if self.use_bert_entropy else None
+        )
+
+        return stats
+
+    def get_depth_surprisal_correlation(self) -> Tuple[float, float]:
+        """
+        Compute correlation between depth and surprisal (-log p).
+
+        Returns:
+            (correlation, slope)
+        """
+        depths = np.array(list(self.depth.values()))
+        surprisals = np.array([-np.log(self.node_probability[i] + 1e-10)
+                              for i in self.depth.keys()])
+
+        if len(depths) < 3 or np.std(depths) < 1e-8:
+            return 0.0, 0.0
+
+        correlation = np.corrcoef(depths, surprisals)[0, 1]
+        slope = np.polyfit(depths, surprisals, 1)[0]
+
+        return float(correlation), float(slope)
+
+    def print_summary(self):
+        """Print summary of the built tree."""
+        print("\n=== J-Guided Tree Summary ===")
+        print(f"Nodes: {self.n_nodes}")
+        print(f"Max depth: {max(self.depth.values())}")
+
+        # Depth distribution
+        from collections import Counter
+        depth_counts = Counter(self.depth.values())
+        print("\nDepth distribution:")
+        for d in sorted(depth_counts.keys()):
+            print(f"  Depth {d}: {depth_counts[d]} nodes")
+
+        # Depth-surprisal correlation
+        corr, slope = self.get_depth_surprisal_correlation()
+        print(f"\nDepth-surprisal correlation: {corr:.4f}")
+        print(f"Depth-surprisal slope: {slope:.4f}")
+
+        # Entropy slope
+        print(f"Entropy slope: {self.entropy_slope:.4f}")
+
+        # Intermediate suggestions
+        if self.intermediate_suggestions:
+            print(f"\n{len(self.intermediate_suggestions)} intermediate node suggestions:")
+            for sugg in self.intermediate_suggestions[:5]:
+                print(f"  - {sugg['message']}")
+            if len(self.intermediate_suggestions) > 5:
+                print(f"  ... and {len(self.intermediate_suggestions) - 5} more")
+
+
+def build_j_guided_tree(
+    embeddings: np.ndarray,
+    texts: Optional[List[str]] = None,
+    titles: Optional[List[str]] = None,
+    use_bert_entropy: bool = False,
+    entropy_model: str = "answerdotai/ModernBERT-base",
+    intermediate_threshold: float = 0.5,
+    verbose: bool = True
+) -> Tuple[Dict, HierarchyStats, List[Dict]]:
+    """
+    Build a J-guided hierarchical tree from embeddings.
+
+    Convenience function wrapping JGuidedTreeBuilder.
+
+    Args:
+        embeddings: Node embeddings (N x D)
+        texts: Optional text for each node (for BERT entropy)
+        titles: Optional titles for display
+        use_bert_entropy: Use BERT for entropy computation
+        entropy_model: HuggingFace model name
+        intermediate_threshold: Threshold for intermediate node suggestions
+        verbose: Print progress
+
+    Returns:
+        (tree_dict, stats, intermediate_suggestions)
+    """
+    builder = JGuidedTreeBuilder(
+        embeddings=embeddings,
+        texts=texts,
+        titles=titles,
+        use_bert_entropy=use_bert_entropy,
+        entropy_model=entropy_model,
+        intermediate_threshold=intermediate_threshold,
+        verbose=verbose
+    )
+
+    tree = builder.build()
+    stats = builder.evaluate()
+
+    if verbose:
+        builder.print_summary()
+        print(f"\nObjective J: {stats.objective:.4f}")
+        print(f"Semantic Distance D: {stats.semantic_distance:.4f}")
+        print(f"Entropy Gain H: {stats.entropy_gain:.4f}")
+
+    return tree, stats, builder.intermediate_suggestions
+
+
 if __name__ == '__main__':
     main()

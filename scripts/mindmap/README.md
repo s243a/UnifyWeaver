@@ -792,3 +792,84 @@ Tests:
 1. **Fisher entropy proxy**: Ranks CORRECT < FLAT < WRONG
 2. **Logits-based entropy**: Same ranking with transformer model
 3. **Depth-surprisal correlation**: Positive correlation (deeper = less probable)
+
+### J-Guided Tree Construction
+
+Build hierarchical trees using J = D/(1+H) to guide attachment decisions, instead of greedy MST.
+
+```bash
+# Test J-guided construction on Wikipedia physics data
+python3 scripts/mindmap/test_j_guided_tree.py --top-k 300
+
+# With BERT-based entropy (slower, more accurate)
+python3 scripts/mindmap/test_j_guided_tree.py --top-k 300 --use-bert
+```
+
+**Algorithm:**
+
+1. **Probability ordering**: Nodes sorted by centroid similarity (general concepts first)
+2. **J-based parent selection**: For each node, evaluate all attachment points, select parent that minimizes J = D/(1+H)
+3. **Entropy residual checking**: Detect large surprisal jumps that suggest intermediate nodes
+
+**Why not greedy MST?**
+
+Greedy MST optimizes *total edge weight*, but creates uneven structures:
+
+| Method | Branching Factor | Max Depth | Issue |
+|--------|-----------------|-----------|-------|
+| Greedy MST | 1.94 | 21 | Long chains in dense regions |
+| J-Guided | 2.25 | 9 | Balanced branching |
+
+MST's average branching of ~2 is fine, but max depth of 21 reveals the problem: some subtrees become long chains while others branch properly. J-guided fixes this by:
+
+1. Attaching nodes in probability order (general → specific)
+2. Selecting parents that optimize J, not just nearest neighbor
+3. This naturally creates depth ∝ surprisal alignment
+
+**Intermediate Node Detection:**
+
+When a node's entropy significantly exceeds expected entropy for its depth, the algorithm suggests adding intermediate categories:
+
+```
+Node 'Compton scattering' has entropy 6.51 (expected 5.68 at depth 5).
+Consider adding intermediate category.
+```
+
+This happens when the surprisal jump is too large—the node is "too surprising" for its position in the hierarchy.
+
+**Usage:**
+
+```python
+from hierarchy_objective import JGuidedTreeBuilder, build_j_guided_tree
+
+# Simple usage
+tree, stats, suggestions = build_j_guided_tree(embeddings, texts=titles)
+
+# With more control
+builder = JGuidedTreeBuilder(
+    embeddings=embeddings,
+    texts=titles,  # For BERT entropy
+    use_bert_entropy=True,
+    intermediate_threshold=0.5,  # Entropy residual threshold
+    verbose=True
+)
+tree = builder.build()
+
+# Check depth-surprisal alignment
+corr, slope = builder.get_depth_surprisal_correlation()
+print(f"Depth-surprisal correlation: {corr:.4f}")
+
+# Show intermediate suggestions
+for sugg in builder.intermediate_suggestions:
+    print(sugg['message'])
+```
+
+**Results on Wikipedia Physics (300 articles):**
+
+| Metric | Greedy MST | Probability-Ordered | J-Guided |
+|--------|-----------|---------------------|----------|
+| Max Depth | 21 | 9 | 9 |
+| Depth-Surprisal Corr | 0.14 | 0.30 | **0.30** |
+| Branching Factor | 1.94 | 2.23 | **2.25** |
+
+J-guided doubles the depth-surprisal correlation compared to greedy MST, ensuring depth tracks concept specificity.
