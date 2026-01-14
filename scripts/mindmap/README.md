@@ -798,11 +798,14 @@ Tests:
 Build hierarchical trees using J = D/(1+H) to guide attachment decisions, instead of greedy MST.
 
 ```bash
-# Test J-guided construction on Wikipedia physics data
+# Test J-guided construction on Wikipedia physics data (uses Fisher entropy by default)
 python3 scripts/mindmap/test_j_guided_tree.py --top-k 300
 
-# With BERT-based entropy (slower, more accurate)
+# With BERT-based entropy (slower, theoretically purer)
 python3 scripts/mindmap/test_j_guided_tree.py --top-k 300 --use-bert
+
+# Compare distance metrics
+python3 scripts/mindmap/test_j_guided_tree.py --top-k 300 --distance-metric angular
 ```
 
 **Algorithm:**
@@ -811,20 +814,40 @@ python3 scripts/mindmap/test_j_guided_tree.py --top-k 300 --use-bert
 2. **J-based parent selection**: For each node, evaluate all attachment points, select parent that minimizes J = D/(1+H)
 3. **Entropy residual checking**: Detect large surprisal jumps that suggest intermediate nodes
 
-**Why not greedy MST?**
+**Why J-Guided instead of MST?**
 
-Greedy MST optimizes *total edge weight*, but creates uneven structures:
+Greedy MST optimizes *total edge weight* but **cannot control tree depth**. It creates long chains in dense regions:
 
-| Method | Branching Factor | Max Depth | Issue |
-|--------|-----------------|-----------|-------|
-| Greedy MST | 1.94 | 21 | Long chains in dense regions |
-| J-Guided | 2.25 | 9 | Balanced branching |
+| Method | Branching Factor | Max Depth | Depth Control |
+|--------|-----------------|-----------|---------------|
+| Greedy MST | 1.94 | 21 | Poor - long chains |
+| J-Guided | 2.25 | 9 | Good - balanced |
 
 MST's average branching of ~2 is fine, but max depth of 21 reveals the problem: some subtrees become long chains while others branch properly. J-guided fixes this by:
 
 1. Attaching nodes in probability order (general → specific)
 2. Selecting parents that optimize J, not just nearest neighbor
 3. This naturally creates depth ∝ surprisal alignment
+
+**Entropy Sources:**
+
+| Source | Default | Speed | Requirements | Notes |
+|--------|---------|-------|--------------|-------|
+| Fisher | **Yes** | Fast | Embeddings only | Geometric proxy (between/within cluster variance) |
+| BERT | No | Slow | Text + transformer | Theoretically purer (actual Shannon entropy) |
+
+Fisher is the default because it's faster and produces equivalent tree structures in practice. BERT is available for users who want the information-theoretically correct entropy measure.
+
+**Distance Metrics:**
+
+| Metric | Formula | Default | Notes |
+|--------|---------|---------|-------|
+| euclidean | ‖a-b‖ | **Yes** | Linear in angle, stable |
+| angular | arccos(sim) | No | Linear in angle, no subtraction |
+| cosine | 1-cos(θ) | No | Poor small-angle resolution |
+| sqeuclidean | ‖a-b‖² | No | Quadratic, avoids sqrt |
+
+All metrics produce identical tree structures (monotonic transformations), but differ in numerical precision for edge cases with near-equal distances.
 
 **Intermediate Node Detection:**
 
@@ -842,15 +865,23 @@ This happens when the surprisal jump is too large—the node is "too surprising"
 ```python
 from hierarchy_objective import JGuidedTreeBuilder, build_j_guided_tree
 
-# Simple usage
-tree, stats, suggestions = build_j_guided_tree(embeddings, texts=titles)
+# Simple usage (Fisher entropy, euclidean distance)
+tree, stats, suggestions = build_j_guided_tree(embeddings)
+
+# With BERT entropy (slower, needs text)
+tree, stats, suggestions = build_j_guided_tree(
+    embeddings,
+    texts=titles,
+    use_bert_entropy=True
+)
 
 # With more control
 builder = JGuidedTreeBuilder(
     embeddings=embeddings,
-    texts=titles,  # For BERT entropy
-    use_bert_entropy=True,
-    intermediate_threshold=0.5,  # Entropy residual threshold
+    texts=titles,
+    use_bert_entropy=False,  # Fisher (default)
+    distance_metric='euclidean',  # default
+    intermediate_threshold=0.5,
     verbose=True
 )
 tree = builder.build()
@@ -858,10 +889,6 @@ tree = builder.build()
 # Check depth-surprisal alignment
 corr, slope = builder.get_depth_surprisal_correlation()
 print(f"Depth-surprisal correlation: {corr:.4f}")
-
-# Show intermediate suggestions
-for sugg in builder.intermediate_suggestions:
-    print(sugg['message'])
 ```
 
 **Results on Wikipedia Physics (300 articles):**

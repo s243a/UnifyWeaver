@@ -1586,7 +1586,7 @@ class JGuidedTreeBuilder:
         embeddings: np.ndarray,
         texts: Optional[List[str]] = None,
         titles: Optional[List[str]] = None,
-        use_bert_entropy: bool = True,
+        use_bert_entropy: bool = False,
         entropy_model: str = "answerdotai/ModernBERT-base",
         intermediate_threshold: float = 0.5,
         distance_metric: DistanceMetric = 'euclidean',
@@ -1599,8 +1599,11 @@ class JGuidedTreeBuilder:
             embeddings: Node embeddings (N x D), normalized for cosine distance
             texts: Optional text for each node (for BERT-based entropy)
             titles: Optional titles for each node (for display)
-            use_bert_entropy: If True, use BERT logits for entropy; else use density
-            entropy_model: HuggingFace model for entropy computation
+            use_bert_entropy: If True, use BERT logits for entropy; else use Fisher
+                (geometric proxy). Default False - Fisher is faster and produces
+                equivalent tree structures. BERT is theoretically purer but requires
+                text and transformer inference.
+            entropy_model: HuggingFace model for entropy computation (when use_bert_entropy=True)
             intermediate_threshold: Entropy residual threshold for suggesting intermediate nodes
             distance_metric: Distance metric for parent selection:
                 - 'cosine': 1 - cos(θ), range [0, 2]
