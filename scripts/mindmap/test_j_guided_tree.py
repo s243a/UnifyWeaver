@@ -219,9 +219,9 @@ def main():
     parser.add_argument("--use-bert", action="store_true", help="Use BERT for entropy (slow)")
     parser.add_argument("--intermediate-threshold", type=float, default=0.5,
                         help="Threshold for intermediate node suggestions")
-    parser.add_argument("--distance-metric", type=str, default="cosine",
+    parser.add_argument("--distance-metric", type=str, default="euclidean",
                         choices=["cosine", "angular", "euclidean", "sqeuclidean"],
-                        help="Distance metric for tree construction")
+                        help="Distance metric for tree construction (default: euclidean)")
     args = parser.parse_args()
 
     # Load data

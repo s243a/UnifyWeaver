@@ -1589,7 +1589,7 @@ class JGuidedTreeBuilder:
         use_bert_entropy: bool = True,
         entropy_model: str = "answerdotai/ModernBERT-base",
         intermediate_threshold: float = 0.5,
-        distance_metric: DistanceMetric = 'cosine',
+        distance_metric: DistanceMetric = 'euclidean',
         verbose: bool = False
     ):
         """
@@ -1603,9 +1603,9 @@ class JGuidedTreeBuilder:
             entropy_model: HuggingFace model for entropy computation
             intermediate_threshold: Entropy residual threshold for suggesting intermediate nodes
             distance_metric: Distance metric for parent selection:
-                - 'cosine': 1 - cos(θ), default, range [0, 2]
+                - 'cosine': 1 - cos(θ), range [0, 2]
                 - 'angular': arccos(similarity), range [0, π], linear in angle
-                - 'euclidean': ||a-b|| on normalized vectors, range [0, 2]
+                - 'euclidean': ||a-b|| on normalized vectors, range [0, 2] (default)
                 - 'sqeuclidean': ||a-b||², range [0, 4], avoids sqrt
             verbose: Print progress during construction
         """
@@ -2008,7 +2008,7 @@ def build_j_guided_tree(
     use_bert_entropy: bool = False,
     entropy_model: str = "answerdotai/ModernBERT-base",
     intermediate_threshold: float = 0.5,
-    distance_metric: DistanceMetric = 'cosine',
+    distance_metric: DistanceMetric = 'euclidean',
     verbose: bool = True
 ) -> Tuple[Dict, HierarchyStats, List[Dict]]:
     """
@@ -2023,7 +2023,7 @@ def build_j_guided_tree(
         use_bert_entropy: Use BERT for entropy computation
         entropy_model: HuggingFace model name
         intermediate_threshold: Threshold for intermediate node suggestions
-        distance_metric: Distance metric ('cosine', 'angular', 'euclidean', 'sqeuclidean')
+        distance_metric: Distance metric ('cosine', 'angular', 'euclidean', 'sqeuclidean'), default 'euclidean'
         verbose: Print progress
 
     Returns:
