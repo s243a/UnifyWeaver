@@ -582,6 +582,8 @@ final routerProvider = Provider<GoRouter>((ref) {
 ", [RoutesStr]).
 
 generate_nav_code(router, Screens, vue, Code) :-
+    % Get first screen for default redirect
+    (Screens = [screen(FirstName, _, _)|_] -> true ; FirstName = home),
     findall(RouteCode, (
         member(screen(Name, Component, _), Screens),
         format(atom(RouteCode), "  { path: '/~w', component: () => import('../views/~w.vue') },", [Name, Component])
@@ -591,6 +593,7 @@ generate_nav_code(router, Screens, vue, Code) :-
 "import { createRouter, createWebHistory } from 'vue-router';
 
 const routes = [
+  { path: '/', redirect: '/~w' },
 ~w
 ];
 
@@ -598,7 +601,7 @@ export const router = createRouter({
   history: createWebHistory(),
   routes,
 });
-", [RoutesStr]).
+", [FirstName, RoutesStr]).
 
 generate_nav_code(_, _, Target, Code) :-
     generate_default_nav(Target, Code).
