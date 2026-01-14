@@ -304,3 +304,61 @@ Clients decide when to split. Rejected because:
 - [KG_TOPOLOGY_FUTURE_WORK.md](KG_TOPOLOGY_FUTURE_WORK.md) - Integration opportunities
 - B-tree splitting: https://en.wikipedia.org/wiki/B-tree
 - Consistent hashing: https://en.wikipedia.org/wiki/Consistent_hashing
+
+---
+
+## Appendix: Entropy-Guided Intermediate Categories
+
+*Added: 2026-01-13*
+
+### Observation
+
+When computing branching factors from transformer-based entropy:
+- **Information-theoretic branching** can exceed **structural branching**
+- This indicates some nodes are "more surprising" than their depth warrants
+- Example: branching factor 2.32 with structural branching of 2
+
+### Proposal: Adaptive Subdivision Based on Entropy Residuals
+
+When attaching orphans or reorganizing hierarchies, check if entropy jumps are too large:
+
+```python
+def should_add_intermediate(parent, child, slope, intercept, threshold=0.5):
+    """Check if an intermediate category is needed."""
+    parent_depth = get_depth(parent)
+    child_entropy = compute_entropy(child.text)
+    
+    expected_entropy = intercept + slope * (parent_depth + 1)
+    residual = child_entropy - expected_entropy
+    
+    if residual > threshold:
+        # Child is too surprising for depth → needs intermediate
+        return True
+    return False
+```
+
+### Algorithm Sketch
+
+1. Compute entropy slope from existing hierarchy
+2. When attaching node N to parent P:
+   - Compute entropy(N) and expected entropy at depth(P)+1
+   - If residual > threshold:
+     - Find or create intermediate category
+     - Attach N under intermediate instead
+3. Intermediate categories could be:
+   - LLM-generated from N's text ("Quantum Entanglement" from "Quantum Entanglement Theory")
+   - Clustered siblings with similar high residuals
+   - Existing nodes that better match expected entropy
+
+### Expected Benefits
+
+- Smoother entropy gradient across levels
+- Branching factor closer to structural branching
+- More navigable hierarchies (consistent information gain per click)
+- Lower objective J (higher effective H from more contributing levels)
+
+### Open Questions
+
+- How to generate good intermediate category names?
+- Threshold selection (fixed vs adaptive)?
+- Should this be integrated into MST partitioning or post-processing?

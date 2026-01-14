@@ -332,6 +332,7 @@ def test_branch_reconstruction_logits():
                 entropy_source='logits',
                 entropy_text_source='raw_phrase',
                 entropy_model=model_name,
+                entropy_diagnostic_source='logits',  # Enable diagnostic
                 depth_normalize=True,
                 depth_decay=0.5
             )
@@ -446,14 +447,20 @@ def test_depth_surprisal_correlation():
 
     obj = HierarchyObjective(
         entropy_source='fisher',  # Use fisher for H computation
+        entropy_diagnostic_source='density',  # Use density for diagnostic
+        knn_k=3,  # Small k for small test set
         depth_normalize=True
     )
 
     stats = obj.compute(tree, embeddings, logits=logits)
 
     print(f"\nResults:")
-    print(f"  Depth-surprisal correlation: {stats.depth_surprisal_correlation:.4f}")
-    print(f"  Depth-surprisal slope: {stats.depth_surprisal_slope:.4f}")
+    corr = stats.depth_surprisal_correlation
+    slope = stats.depth_surprisal_slope
+    corr_str = f"{corr:.4f}" if corr is not None else "N/A"
+    slope_str = f"{slope:.4f}" if slope is not None else "N/A"
+    print(f"  Depth-surprisal correlation: {corr_str}")
+    print(f"  Depth-surprisal slope: {slope_str}")
 
     # With our synthetic data, deeper nodes should have lower probability
     # So correlation should be positive

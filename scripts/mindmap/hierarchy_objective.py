@@ -35,6 +35,7 @@ CombineMethod = Literal['product', 'sum', 'log_product']
 ProbabilitySource = Literal['subtree_size', 'density_knn', 'density_kernel', 'logits']
 EntropySource = Literal['fisher', 'logits']
 EntropyTextSource = Literal['raw_phrase', 'embedding_text', 'mixed']
+DiagnosticSource = Literal['none', 'logits', 'density']
 
 # Optional transformer support for computing logits from text
 _transformer_model = None
@@ -333,6 +334,7 @@ class HierarchyObjective:
         entropy_source: EntropySource = 'fisher',
         entropy_text_source: EntropyTextSource = 'raw_phrase',
         entropy_model: str = "answerdotai/ModernBERT-base",
+        entropy_diagnostic_source: DiagnosticSource = 'none',
         min_probability_threshold: float = 0.0,
         min_samples_for_std: int = 30,
     ):
@@ -370,11 +372,11 @@ class HierarchyObjective:
                 NOTE: 'level_std' and 'subtree_std' are for kernel bandwidth selection
                 in density manifold computation, not for distance normalization here.
                 See estimate_density_kernel() and kernel_methods_flux.md.
-            entropy_source: How to compute entropy for hierarchy quality
+            entropy_source: How to compute H (entropy) for the objective function J = D/(1+H)
                 - 'fisher': geometric proxy using between/within cluster variance
-                - 'logits': actual entropy from model output logits
-                  Lower probability nodes should be at lower (deeper) levels.
-                  depth(node) should correlate with -log(p(node)) = surprisal
+                - 'logits': actual entropy from transformer model output logits
+                  Computes per-node entropy, aggregates by level, uses entropy
+                  gain (slope of entropy vs depth) as H in the objective.
             entropy_text_source: What text to use for logits-based entropy computation
                 - 'raw_phrase': Just the topic/node name (e.g., "machine learning")
                 - 'embedding_text': The full text used for embedding (may include context)
@@ -384,6 +386,12 @@ class HierarchyObjective:
             entropy_model: HuggingFace model name for logits-based entropy
                 Default: "answerdotai/ModernBERT-base"
                 Any transformer with a masked LM head can work (BERT, RoBERTa, etc.)
+            entropy_diagnostic_source: Independent sanity check for depth-surprisal correlation
+                - 'none': No diagnostic (default)
+                - 'logits': Compute depth-surprisal correlation from transformer logits
+                - 'density': Compute from embedding density estimates
+                This is separate from entropy_source - allows checking that depth
+                tracks probability regardless of which H is used in the objective.
             min_probability_threshold: Prune subtrees with cumulative probability below this
                 When probability-weighted, small branches contribute negligibly.
                 Default 0.0 (no pruning). Typical value: 0.01 (prune <1% branches).
@@ -405,6 +413,7 @@ class HierarchyObjective:
         self.entropy_source = entropy_source
         self.entropy_text_source = entropy_text_source
         self.entropy_model = entropy_model
+        self.entropy_diagnostic_source = entropy_diagnostic_source
         self.min_probability_threshold = min_probability_threshold
         self.min_samples_for_std = min_samples_for_std
         self._density_cache = None  # Cache for density estimates
@@ -570,6 +579,63 @@ class HierarchyObjective:
             ratio = 0.0
 
         return correlation, ratio
+
+    def compute_entropy_gain_from_logits(
+        self,
+        levels: Dict[str, int],
+        node_entropies: Dict[str, float]
+    ) -> Tuple[float, Dict[int, float]]:
+        """
+        Compute entropy gain H for the objective using per-node entropies from logits.
+
+        H represents how much entropy (specificity) increases with depth.
+        A good hierarchy has increasing entropy at deeper levels (more specific concepts).
+
+        The entropy gain is the slope of mean entropy vs depth, normalized to be
+        comparable with Fisher entropy scale.
+
+        Args:
+            levels: Dict mapping node_id to depth level
+            node_entropies: Dict mapping node_id to Shannon entropy from logits
+
+        Returns:
+            (overall_H, per_level_H) where H is entropy gain (higher = better hierarchy)
+        """
+        if not levels or not node_entropies:
+            return 0.0, {}
+
+        # Group entropies by level
+        entropy_by_level = defaultdict(list)
+        for node_id, level in levels.items():
+            if node_id in node_entropies:
+                entropy_by_level[level].append(node_entropies[node_id])
+
+        if len(entropy_by_level) < 2:
+            return 0.0, {}
+
+        # Compute mean entropy per level
+        per_level_H = {}
+        level_means = []
+        level_indices = []
+
+        for level in sorted(entropy_by_level.keys()):
+            entropies = entropy_by_level[level]
+            mean_entropy = np.mean(entropies)
+            per_level_H[level] = mean_entropy
+            level_means.append(mean_entropy)
+            level_indices.append(level)
+
+        # Entropy gain = slope of entropy vs depth
+        # Positive slope means deeper nodes have higher entropy (more specific)
+        if len(level_means) >= 2:
+            slope, _ = np.polyfit(level_indices, level_means, 1)
+            # Normalize: scale so it's comparable to Fisher entropy (~0-2 range)
+            # Use log1p to handle negative slopes gracefully
+            overall_H = np.log1p(max(0, slope))
+        else:
+            overall_H = 0.0
+
+        return overall_H, per_level_H
 
     def smooth_counts(
         self,
@@ -1121,15 +1187,60 @@ class HierarchyObjective:
         subtree_sizes = self.compute_subtree_sizes(children_of)
         levels = self.compute_level_assignments(parent_of, children_of)
 
-        # Compute D and H
+        # Compute D
         D_raw, D_per_level = self.compute_semantic_distance(
             tree, embeddings, node_to_idx, parent_of, subtree_sizes,
             depth_normalize=self.depth_normalize, depth_decay=self.depth_decay,
             depth_scale_mode=self.depth_scale_mode
         )
-        H_raw, H_per_level = self.compute_entropy_gain(
-            parent_of, children_of, subtree_sizes, embeddings, node_to_idx
-        )
+
+        # Compute H based on entropy_source
+        if self.entropy_source == 'logits':
+            # Use transformer logits for H
+            if texts is None:
+                raise ValueError(
+                    "entropy_source='logits' requires texts dict. "
+                    "Provide texts={'node_id': 'node text', ...}"
+                )
+            # Get text list in node order
+            node_ids = list(node_to_idx.keys())
+            if self.entropy_text_source == 'raw_phrase':
+                text_list = [texts.get(nid, "") for nid in node_ids]
+            elif self.entropy_text_source == 'embedding_text':
+                if embedding_texts is None:
+                    raise ValueError(
+                        "entropy_text_source='embedding_text' requires embedding_texts dict"
+                    )
+                text_list = [embedding_texts.get(nid, "") for nid in node_ids]
+            elif self.entropy_text_source == 'mixed':
+                # For mixed, we average the entropies from both sources later
+                if embedding_texts is None:
+                    raise ValueError(
+                        "entropy_text_source='mixed' requires embedding_texts dict"
+                    )
+                text_list = [texts.get(nid, "") for nid in node_ids]
+            else:
+                raise ValueError(f"Unknown entropy_text_source: {self.entropy_text_source}")
+
+            # Compute per-node entropy from text
+            if text_list and any(t for t in text_list):
+                node_entropy_array = compute_entropy_from_text(
+                    text_list, model_name=self.entropy_model
+                )
+                node_entropies = {
+                    nid: node_entropy_array[i]
+                    for i, nid in enumerate(node_ids)
+                }
+                H_raw, H_per_level = self.compute_entropy_gain_from_logits(
+                    levels, node_entropies
+                )
+            else:
+                H_raw, H_per_level = 0.0, {}
+        else:
+            # Use Fisher criterion (geometric proxy)
+            H_raw, H_per_level = self.compute_entropy_gain(
+                parent_of, children_of, subtree_sizes, embeddings, node_to_idx
+            )
 
         # Normalize
         if reference_stats:
@@ -1185,49 +1296,46 @@ class HierarchyObjective:
                 'n_nodes': sum(1 for n, l in levels.items() if l == level)
             }
 
-        # Compute depth-surprisal correlation if logits or texts available
+        # Compute depth-surprisal diagnostic (independent sanity check)
         depth_corr = None
         depth_slope = None
-        computed_logits = logits
 
-        # If no pre-computed logits but texts provided, compute from texts
-        if computed_logits is None and texts is not None and self.entropy_source == 'logits':
-            # Determine which texts to use based on entropy_text_source
-            if self.entropy_text_source == 'raw_phrase':
-                text_list = [texts.get(node_id, "") for node_id in node_to_idx.keys()]
-            elif self.entropy_text_source == 'embedding_text':
-                if embedding_texts is None:
-                    raise ValueError(
-                        "entropy_text_source='embedding_text' requires embedding_texts dict"
+        if self.entropy_diagnostic_source == 'logits':
+            # Use transformer logits for diagnostic
+            if texts is not None:
+                node_ids = list(node_to_idx.keys())
+                text_list = [texts.get(nid, "") for nid in node_ids]
+                if text_list and any(t for t in text_list):
+                    diag_logits = compute_logits_from_text(
+                        text_list, model_name=self.entropy_model
                     )
-                text_list = [embedding_texts.get(node_id, "") for node_id in node_to_idx.keys()]
-            elif self.entropy_text_source == 'mixed':
-                # Average entropy from both sources (computed separately, then averaged)
-                if embedding_texts is None:
-                    raise ValueError(
-                        "entropy_text_source='mixed' requires embedding_texts dict"
+                    node_probs = self.get_node_probabilities(
+                        embeddings, node_to_idx, subtree_sizes, logits=diag_logits
                     )
-                # For mixed, we'll compute separately and average entropies
-                # First get raw phrase logits
-                text_list = [texts.get(node_id, "") for node_id in node_to_idx.keys()]
-            else:
-                raise ValueError(f"Unknown entropy_text_source: {self.entropy_text_source}")
-
-            # Compute logits from texts using the entropy model (independent of embedding model)
-            if text_list and any(t for t in text_list):
-                computed_logits = compute_logits_from_text(
-                    text_list,
-                    model_name=self.entropy_model
+                    depth_corr, depth_slope = self.compute_depth_probability_correlation(
+                        levels, node_probs
+                    )
+            elif logits is not None:
+                # Use pre-computed logits if available
+                node_probs = self.get_node_probabilities(
+                    embeddings, node_to_idx, subtree_sizes, logits=logits
+                )
+                depth_corr, depth_slope = self.compute_depth_probability_correlation(
+                    levels, node_probs
                 )
 
-        if computed_logits is not None:
-            # Get probability estimates from logits
+        elif self.entropy_diagnostic_source == 'density':
+            # Use embedding density for diagnostic
+            old_prob_source = self.probability_source
+            self.probability_source = 'density_knn'
             node_probs = self.get_node_probabilities(
-                embeddings, node_to_idx, subtree_sizes, logits=computed_logits
+                embeddings, node_to_idx, subtree_sizes
             )
+            self.probability_source = old_prob_source
             depth_corr, depth_slope = self.compute_depth_probability_correlation(
                 levels, node_probs
             )
+        # else: entropy_diagnostic_source == 'none', skip diagnostic
 
         return HierarchyStats(
             semantic_distance=D_hat,
@@ -1362,6 +1470,12 @@ def main():
                         help='HuggingFace model for logits-based entropy computation. '
                              'Independent of embedding model - can use ModernBERT for '
                              'entropy even with Nomic embeddings for distances.')
+    parser.add_argument('--entropy-diagnostic-source',
+                        choices=['none', 'logits', 'density'],
+                        default='none',
+                        help='Independent sanity check for depth-surprisal correlation: '
+                             'none (skip), logits (transformer), density (embedding k-NN). '
+                             'Separate from entropy_source used in objective.')
     parser.add_argument('--output', '-o', type=Path,
                         help='Output JSON file for stats')
     parser.add_argument('--quiet', '-q', action='store_true',
@@ -1385,7 +1499,8 @@ def main():
         depth_scale_mode=args.depth_scale_mode,
         entropy_source=args.entropy_source,
         entropy_text_source=args.entropy_text_source,
-        entropy_model=args.entropy_model
+        entropy_model=args.entropy_model,
+        entropy_diagnostic_source=args.entropy_diagnostic_source
     )
 
     # Load data
