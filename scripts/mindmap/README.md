@@ -646,6 +646,60 @@ Where:
 
 Lower J = better hierarchy (tight clusters with informative splits).
 
+#### Theoretical Foundation
+
+The objective function is derived from information-theoretic principles for hierarchical clustering:
+
+**Why D/(1+H) instead of D·(1-H)?**
+
+The ratio form `D/(1+H)` is more robust because:
+- H can exceed 1 (high-entropy datasets), which breaks the product form
+- The ratio naturally balances the trade-off: small D alone isn't sufficient without informative splits
+- As H → ∞, J → 0 (perfect hierarchy), while D·(1-H) would go negative
+
+**Depth-Surprisal Relationship:**
+
+A well-formed hierarchy satisfies:
+```
+depth(node) ∝ -log(p(node)) = surprisal
+```
+
+This means:
+- Root nodes are high-probability (common concepts like "Science")
+- Leaf nodes are low-probability (specific concepts like "Quantum Chromodynamics")
+- Each level adds ~0.5-0.7 bits of information (branching factor 1.4-1.6)
+
+The slope of entropy vs depth reveals the effective branching factor:
+```
+branching_factor = e^slope
+```
+
+A slope of 0.34 nats/level → e^0.34 ≈ 1.4 effective children per node.
+
+**Fisher Criterion as Entropy Proxy:**
+
+When transformer logits aren't available, the Fisher criterion provides a geometric proxy:
+```
+H_fisher = log(1 + between_cluster_variance / within_cluster_variance)
+```
+
+This measures how well children separate into distinct clusters under their parent.
+High ratio = children are well-separated = informative split.
+
+**Why Cosine Distance is Correct:**
+
+Normalized embeddings lie on a unit hypersphere. Cosine distance is:
+1. **Density-invariant**: Measures direction, not magnitude
+2. **Bounded**: Always in [0, 2], comparable across datasets
+3. **Geometrically meaningful**: Corresponds to geodesic distance on the sphere
+
+The tangent deviation metric (see `docs/proposals/tangent_deviation_integral_criterion.md`) provides theoretical bounds:
+```
+θ_max = d_g² = [arccos(1 - d_cosine)]²
+```
+
+This connects embedding geometry to graph structure preservation.
+
 **Key Features:**
 
 | Feature | Description |
@@ -657,6 +711,24 @@ Lower J = better hierarchy (tight clusters with informative splits).
 | Depth-surprisal | Correlation between depth and -log(p) |
 
 **Decoupled Architecture:**
+
+A key insight is that D and H measure fundamentally different properties:
+
+| Component | Measures | Model Type | Example |
+|-----------|----------|------------|---------|
+| D (distance) | Technical/semantic similarity | Embedding model | Nomic, MiniLM |
+| H (entropy) | Concept probability/specificity | Language model | BERT, ModernBERT |
+
+This decoupling is valid because:
+1. **D captures local structure**: How semantically close are parent and child?
+2. **H captures global probability**: How common/specific is this concept?
+
+Embedding models (Nomic) are trained on semantic similarity but don't directly model probability.
+Language models (BERT) output token probabilities that reflect concept frequency.
+
+Using both gives complementary signals:
+- D ensures tight semantic clusters (children near parents)
+- H ensures meaningful splits (deeper = more specific)
 
 The embedding model (for distance D) and entropy model (for H) are independent:
 
@@ -697,6 +769,12 @@ slope = 0.34 nats/level → branching factor = e^0.34 ≈ 1.4
 ```
 
 Meaning ~0.5 bits of information gained per hierarchy level.
+
+**Future Work:**
+
+- **Combined objective**: `J = D / (1 + α·H_fisher + β·H_bert)` could capture both geometric clustering and information structure, but requires validation data to tune weights
+- **Entropy-guided subdivision**: Insert intermediate categories when entropy jump exceeds threshold (see `docs/proposals/ADAPTIVE_NODE_SUBDIVISION.md`)
+- **Benchmark dataset**: Human-curated hierarchies for objective validation
 
 ### test_hierarchy_objective.py
 
