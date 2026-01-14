@@ -166,7 +166,8 @@ create_directory_structure(react_native, OutputDir, Dirs) :-
 
 create_directory_structure(vue, OutputDir, Dirs) :-
     Subdirs = ['src', 'src/components', 'src/views', 'src/stores',
-               'src/composables', 'src/router', 'src/api', 'src/types'],
+               'src/composables', 'src/router', 'src/api', 'src/types',
+               'src/navigation', 'src/styles', 'src/locales', 'public'],
     create_subdirectories(OutputDir, Subdirs, Dirs).
 
 create_directory_structure(flutter, OutputDir, Dirs) :-
@@ -243,8 +244,18 @@ write_project_file(Path, Content, _Options) :-
 write_project_files([], _).
 write_project_files([file(RelPath, Content)|Rest], OutputDir) :-
     atomic_list_concat([OutputDir, '/', RelPath], FullPath),
+    ensure_parent_directory(FullPath),
     write_project_file(FullPath, Content, []),
     write_project_files(Rest, OutputDir).
+
+%% ensure_parent_directory(+FilePath)
+%
+%  Ensure the parent directory of a file exists.
+%
+ensure_parent_directory(FilePath) :-
+    (   atom(FilePath) -> PathAtom = FilePath ; atom_string(PathAtom, FilePath) ),
+    file_directory_name(PathAtom, DirPath),
+    ensure_directory(DirPath).
 
 % ============================================================================
 % CONFIG FILE GENERATION

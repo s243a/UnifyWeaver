@@ -161,6 +161,13 @@ generate_frontend_project(AppSpec, Target, OutputDir, Files) :-
     config_file_path(Target, ConfigPath),
     atom_concat(OutputDir, ConfigPath, _FullConfigPath),
 
+    % Generate target-specific files
+    (Target = vue ->
+        generate_vue_specific_files(AppSpec, VueFiles)
+    ;
+        VueFiles = []
+    ),
+
     % Collect all files
     append([
         [file(EntryPath, EntryCode), file(ConfigPath, ConfigContent)],
@@ -168,7 +175,8 @@ generate_frontend_project(AppSpec, Target, OutputDir, Files) :-
         [file('/src/api/client.ts', ApiCode)],
         ThemeFiles,
         LocaleFiles,
-        ScreenFiles
+        ScreenFiles,
+        VueFiles
     ], AllFiles),
 
     % Write all files
@@ -235,15 +243,14 @@ generate_vue_entry(AppSpec, Code) :-
 "import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import { VueQueryPlugin } from '@tanstack/vue-query';
-import { router } from './router';
-import { i18n } from './i18n';
+import { router } from './navigation';
 import App from './App.vue';
+import './styles/theme.css';
 
 const app = createApp(App);
 
 app.use(createPinia());
 app.use(router);
-app.use(i18n);
 app.use(VueQueryPlugin);
 
 app.mount('#app');
@@ -653,15 +660,37 @@ struct ContentView: View {
 % ============================================================================
 
 %! generate_screen_files(+AppSpec, +Target, -Files)
+%
+%  Generate screen files from both explicit screens config and navigation.
+%
 generate_screen_files(AppSpec, Target, Files) :-
-    app_screens(AppSpec, Screens),
-    (   Screens \= []
-    ->  findall(file(Path, Code), (
-            member(screen(Name, Config), Screens),
+    % Get screens from screens config
+    app_screens(AppSpec, ExplicitScreens),
+    % Get screens from navigation
+    app_navigation(AppSpec, Nav),
+    (Nav = navigation(_, NavScreens, _) ->
+        findall(Name, member(screen(Name, _, _), NavScreens), NavScreenNames)
+    ;
+        NavScreenNames = []
+    ),
+    % Combine screen names (navigation screens + explicit screens)
+    (ExplicitScreens \= [] ->
+        findall(Name, member(screen(Name, _), ExplicitScreens), ExplicitNames)
+    ;
+        ExplicitNames = []
+    ),
+    append(NavScreenNames, ExplicitNames, AllScreenNames),
+    sort(AllScreenNames, UniqueScreenNames),  % Remove duplicates
+    (UniqueScreenNames \= [] ->
+        findall(file(Path, Code), (
+            member(Name, UniqueScreenNames),
+            % Use explicit config if available, otherwise empty
+            (member(screen(Name, Config), ExplicitScreens) -> true ; Config = []),
             generate_screen_code(Name, Config, Target, Code),
             screen_file_path(Name, Target, Path)
         ), Files)
-    ;   % Generate default home screen
+    ;
+        % Generate default home screen if no screens defined
         generate_default_screen(Target, Code),
         screen_file_path(home, Target, Path),
         Files = [file(Path, Code)]
@@ -986,6 +1015,145 @@ screen_file_path(Name, flutter, Path) :-
 screen_file_path(Name, swiftui, Path) :-
     capitalize_first(Name, ClassName),
     format(atom(Path), '/Sources/Views/~wView.swift', [ClassName]).
+
+% ============================================================================
+% VUE-SPECIFIC FILE GENERATION
+% ============================================================================
+
+%! generate_vue_index_html(+AppSpec, -Code)
+%
+%  Generate index.html for Vue/Vite project.
+%
+generate_vue_index_html(AppSpec, Code) :-
+    app_name(AppSpec, Name),
+    format(atom(Code),
+'<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <link rel="icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>~w</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+', [Name]).
+
+%! generate_vue_app_component(+AppSpec, -Code)
+%
+%  Generate App.vue root component.
+%
+generate_vue_app_component(_AppSpec, Code) :-
+    Code = '<script setup lang="ts">
+import { RouterView } from "vue-router";
+</script>
+
+<template>
+  <div id="app">
+    <RouterView />
+  </div>
+</template>
+
+<style>
+#app {
+  font-family: system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+</style>
+'.
+
+%! generate_vue_vite_config(-Code)
+%
+%  Generate vite.config.ts for Vue project.
+%
+generate_vue_vite_config(Code) :-
+    Code = 'import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
+import { resolve } from "path";
+
+export default defineConfig({
+  plugins: [vue()],
+  resolve: {
+    alias: {
+      "@": resolve(__dirname, "src"),
+    },
+  },
+  server: {
+    port: 5173,
+    open: true,
+  },
+});
+'.
+
+%! generate_vue_tsconfig(-Code)
+%
+%  Generate tsconfig.json for Vue project.
+%
+generate_vue_tsconfig(Code) :-
+    Code = '{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
+'.
+
+%! generate_vue_tsconfig_node(-Code)
+%
+%  Generate tsconfig.node.json for Vue/Vite project.
+%
+generate_vue_tsconfig_node(Code) :-
+    Code = '{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+'.
+
+%! generate_vue_specific_files(+AppSpec, -Files)
+%
+%  Generate all Vue-specific config files.
+%
+generate_vue_specific_files(AppSpec, Files) :-
+    generate_vue_index_html(AppSpec, IndexHtml),
+    generate_vue_app_component(AppSpec, AppVue),
+    generate_vue_vite_config(ViteConfig),
+    generate_vue_tsconfig(TsConfig),
+    generate_vue_tsconfig_node(TsConfigNode),
+    Files = [
+        file('/index.html', IndexHtml),
+        file('/src/App.vue', AppVue),
+        file('/vite.config.ts', ViteConfig),
+        file('/tsconfig.json', TsConfig),
+        file('/tsconfig.node.json', TsConfigNode)
+    ].
 
 % ============================================================================
 % UTILITY PREDICATES
