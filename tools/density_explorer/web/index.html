@@ -1,0 +1,2420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Density Manifold Explorer</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        .sidebar {
+            width: 300px;
+            background: #16213e;
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid #0f3460;
+        }
+
+        .sidebar h1 {
+            font-size: 1.4rem;
+            margin-bottom: 20px;
+            color: #e94560;
+        }
+
+        .sidebar h2 {
+            font-size: 1rem;
+            margin: 20px 0 10px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .sidebar h2:first-child {
+            margin-top: 0;
+        }
+
+        /* Tabs */
+        .tab-container {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .tab-buttons {
+            display: flex;
+            gap: 2px;
+            margin-bottom: 15px;
+            background: #0f3460;
+            border-radius: 6px;
+            padding: 3px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 8px 10px;
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            font-size: 0.8rem;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            background: rgba(233, 69, 96, 0.2);
+            color: #eee;
+        }
+
+        .tab-btn.active {
+            background: #e94560;
+            color: #fff;
+        }
+
+        .tab-panel {
+            display: none;
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 5px;
+        }
+
+        .tab-panel.active {
+            display: block;
+        }
+
+        /* Search results */
+        .search-results {
+            max-height: 150px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+
+        .search-result {
+            padding: 6px 8px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: #94a3b8;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .search-result:hover {
+            background: rgba(233, 69, 96, 0.2);
+            color: #eee;
+        }
+
+        .search-result.selected {
+            background: #e94560;
+            color: #fff;
+        }
+
+        .search-no-results {
+            font-size: 0.8rem;
+            color: #666;
+            padding: 8px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.85rem;
+            color: #a0aec0;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+            accent-color: #e94560;
+        }
+
+        .control-group input[type="range"]:disabled {
+            opacity: 0.5;
+        }
+
+        .control-group select {
+            width: 100%;
+            padding: 8px;
+            background: #1a1a2e;
+            border: 1px solid #0f3460;
+            color: #eee;
+            border-radius: 4px;
+        }
+
+        .control-group .value {
+            text-align: right;
+            font-size: 0.85rem;
+            color: #e94560;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            accent-color: #e94560;
+            width: 18px;
+            height: 18px;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #e94560;
+            border: none;
+            color: white;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: background 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            background: #ff6b6b;
+        }
+
+        button:disabled {
+            background: #4a5568;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: #0f3460;
+            margin-top: 5px;
+        }
+
+        button.secondary:hover:not(:disabled) {
+            background: #1a4a7a;
+        }
+
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #plot {
+            flex: 1;
+            min-height: 0;
+        }
+
+        .info-bar {
+            padding: 10px 20px;
+            background: #16213e;
+            display: flex;
+            gap: 30px;
+            border-top: 1px solid #0f3460;
+            flex-wrap: wrap;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .info-item .label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+
+        .info-item .value {
+            font-size: 1.1rem;
+            color: #e94560;
+            font-weight: bold;
+        }
+
+        .status {
+            padding: 10px 20px;
+            background: #0f3460;
+            font-size: 0.9rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status.loading {
+            background: #e94560;
+        }
+
+        .status.error {
+            background: #c0392b;
+        }
+
+        .pyodide-status {
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.1);
+        }
+
+        .pyodide-status.ready {
+            background: #27ae60;
+        }
+
+        .pyodide-status.loading {
+            background: #f39c12;
+        }
+
+        .peaks-list {
+            margin-top: 20px;
+        }
+
+        .peak-item {
+            padding: 8px 12px;
+            background: #1a1a2e;
+            border-radius: 4px;
+            margin-bottom: 5px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .peak-item:hover {
+            background: #0f3460;
+        }
+
+        .peak-item .name {
+            color: #e94560;
+        }
+
+        .peak-item .density {
+            color: #94a3b8;
+            font-size: 0.75rem;
+        }
+
+        .mode-indicator {
+            padding: 8px 12px;
+            background: #0f3460;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 0.85rem;
+            text-align: center;
+        }
+
+        .mode-indicator.interactive {
+            background: #27ae60;
+        }
+
+        .tree-toggle {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+        }
+
+        .tree-toggle button {
+            flex: 1;
+            padding: 8px;
+            font-size: 0.85rem;
+            margin: 0;
+        }
+
+        .tree-toggle button.active {
+            background: #e94560;
+        }
+
+        .tree-toggle button:not(.active) {
+            background: #0f3460;
+        }
+
+        /* Loading overlay - only for initial load */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(26, 26, 46, 0.95);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            transition: opacity 0.3s;
+        }
+
+        .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #0f3460;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            margin-top: 20px;
+            font-size: 1.2rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <div class="loading-text" id="loadingText">Loading visualization...</div>
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <h1>Density Manifold Explorer</h1>
+
+            <div class="mode-indicator" id="modeIndicator">
+                Static Mode - Loading Pyodide...
+            </div>
+
+            <div class="tab-container">
+                <div class="tab-buttons">
+                    <button class="tab-btn active" data-tab="view">View</button>
+                    <button class="tab-btn" data-tab="data">Data</button>
+                    <button class="tab-btn" data-tab="compute">Compute</button>
+                </div>
+
+                <!-- VIEW TAB -->
+                <div class="tab-panel active" id="tab-view">
+                    <h2>Search</h2>
+                    <div class="control-group">
+                        <input type="text" id="nodeSearch" placeholder="Search nodes..." style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
+                    </div>
+                    <div id="searchResults" class="search-results"></div>
+
+                    <h2>Display</h2>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="showPoints" checked>
+                        <label for="showPoints">Show Points</label>
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="showPeaks" checked>
+                        <label for="showPeaks">Show Peaks</label>
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="showContours" checked>
+                        <label for="showContours">Show Contours</label>
+                    </div>
+
+                    <h2>Tree Overlay</h2>
+                    <div class="tree-toggle" id="treeToggle">
+                        <!-- Populated dynamically based on available trees -->
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="showTree" checked>
+                        <label for="showTree">Show Tree</label>
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="showArrows">
+                        <label for="showArrows">Show Arrows</label>
+                    </div>
+
+                    <div class="control-group" id="arrowModeGroup" style="display: none;">
+                        <label for="arrowMode">Arrow Mode</label>
+                        <select id="arrowMode">
+                            <option value="hierarchical">Hierarchical (general → specific)</option>
+                            <option value="radial">Radial (away from root)</option>
+                        </select>
+                    </div>
+
+                    <div class="control-group">
+                        <label for="maxDepth">Max Depth: <span class="value" id="maxDepthValue">10</span></label>
+                        <input type="range" id="maxDepth" min="1" max="20" value="10">
+                    </div>
+
+                    <div class="control-group" id="rootNodeGroup">
+                        <label>Root Node</label>
+                        <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 8px;">
+                            Click a node to select, then set as root
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                            <span id="selectedNodeLabel" style="color: #e94560; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">None selected</span>
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="secondary" id="setRootBtn" disabled style="flex: 1;">Set as Root</button>
+                            <button class="secondary" id="resetRootBtn" style="flex: 1;">Reset</button>
+                        </div>
+                    </div>
+
+                    <h2>Peaks</h2>
+                    <div class="peaks-list" id="peaksList"></div>
+
+                    <h2>Export</h2>
+                    <div class="control-group">
+                        <label for="exportFormat">Format</label>
+                        <select id="exportFormat">
+                            <option value="vue">VUE (.vue) - Open source concept map</option>
+                            <option value="mm">FreeMind (.mm) - Open source mindmap</option>
+                            <option value="mermaid">Mermaid (.md) - GitHub/GitLab/Obsidian</option>
+                            <option value="opml">OPML (.opml) - Outline format</option>
+                            <option value="graphml">GraphML (.graphml) - For yEd/Gephi</option>
+                            <option value="smmx">SimpleMind (.smmx)</option>
+                            <option value="json">JSON (.json) - Raw data</option>
+                        </select>
+                    </div>
+                    <button class="secondary" id="exportMindmapBtn">Export Mindmap</button>
+                    <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 8px;">
+                        Exports current tree view with max depth filter applied
+                    </div>
+                </div>
+
+                <!-- DATA TAB -->
+                <div class="tab-panel" id="tab-data">
+                    <h2>Dataset</h2>
+                    <div class="control-group">
+                        <select id="datasetSelect">
+                            <option value="data/physics.json">Physics (pre-computed)</option>
+                            <option value="demo">Demo clusters (Pyodide)</option>
+                            <option value="custom">Custom URL...</option>
+                        </select>
+                    </div>
+                    <div class="control-group" id="customUrlGroup" style="display: none;">
+                        <label for="customUrl">JSON URL</label>
+                        <input type="text" id="customUrl" placeholder="https://..." style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
+                        <button class="secondary" id="loadCustomBtn" style="margin-top:5px;">Load</button>
+                    </div>
+
+                    <h2>Projection</h2>
+                    <div class="control-group">
+                        <select id="projectionMode">
+                            <option value="svd">SVD (max variance)</option>
+                            <option value="custom">Custom axis</option>
+                        </select>
+                    </div>
+                    <div id="customProjectionPanel" style="display: none;">
+                        <div class="projection-instruction" style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 10px;">
+                            Click two points to define X-axis
+                        </div>
+                        <div class="control-group">
+                            <label>Axis Start: <span id="axisStartLabel" style="color: #e94560;">-</span></label>
+                        </div>
+                        <div class="control-group">
+                            <label>Axis End: <span id="axisEndLabel" style="color: #e94560;">-</span></label>
+                        </div>
+                        <button class="secondary" id="clearAxisBtn">Clear Selection</button>
+                        <button class="secondary" id="applyProjectionBtn" disabled>Apply Projection</button>
+                    </div>
+
+                    <h2>Embeddings</h2>
+                    <div class="control-group">
+                        <label for="embeddingSelect">Model</label>
+                        <select id="embeddingSelect">
+                            <option value="current">Current (from dataset)</option>
+                        </select>
+                    </div>
+                    <div class="control-group" style="font-size: 0.8rem; color: #94a3b8;">
+                        <span id="embeddingModelLabel">MiniLM (384D)</span> ·
+                        <span id="embeddingsCountLabel">-</span> vectors
+                    </div>
+                    <div id="embeddingLoadingStatus" style="font-size: 0.8rem; color: #e94560; display: none;">
+                        Loading embeddings...
+                    </div>
+                </div>
+
+                <!-- COMPUTE TAB -->
+                <div class="tab-panel" id="tab-compute">
+                    <h2>Pyodide Computation</h2>
+                    <div class="control-group">
+                        <label for="nPoints">Points: <span class="value" id="nPointsValue">200</span></label>
+                        <input type="range" id="nPoints" min="50" max="500" value="200" step="50" disabled>
+                    </div>
+
+                    <div class="control-group">
+                        <label for="bandwidth">Bandwidth: <span class="value" id="bandwidthValue">0.10</span></label>
+                        <input type="range" id="bandwidth" min="0.01" max="1.0" value="0.1" step="0.01" disabled>
+                    </div>
+
+                    <div class="control-group">
+                        <label for="gridSize">Grid Size: <span class="value" id="gridSizeValue">100</span></label>
+                        <input type="range" id="gridSize" min="50" max="200" value="100" step="10" disabled>
+                    </div>
+
+                    <button id="computeBtn" disabled>Recompute (Pyodide loading...)</button>
+
+                    <h2>Tree Algorithm</h2>
+                    <div class="control-group">
+                        <select id="treeAlgorithm" disabled>
+                            <option value="both">Both (MST + J-guided)</option>
+                            <option value="mst">MST only</option>
+                            <option value="j-guided">J-guided only</option>
+                        </select>
+                    </div>
+                    <div class="control-group" style="font-size: 0.8rem; color: #94a3b8;">
+                        Tree algorithm used when recomputing with Pyodide
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="main">
+            <div id="plot"></div>
+            <div class="info-bar" id="infoBar">
+                <div class="info-item">
+                    <span class="label">Points</span>
+                    <span class="value" id="infoPoints">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">Bandwidth</span>
+                    <span class="value" id="infoBandwidth">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">Tree</span>
+                    <span class="value" id="infoTree">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">SVD Var 1</span>
+                    <span class="value" id="infoVar1">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">SVD Var 2</span>
+                    <span class="value" id="infoVar2">-</span>
+                </div>
+            </div>
+            <div class="status" id="status">
+                <span id="statusText">Loading...</span>
+                <span class="pyodide-status loading" id="pyodideStatus">Pyodide: pending</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================
+        // State
+        // ============================================================
+        let currentData = null;      // Current manifold data
+        let originalData = null;     // Original data (before custom projection)
+        let activeTreeType = 'mst';  // Currently displayed tree
+        let selectedNode = null;     // Currently selected node (for root setting)
+        let originalTrees = null;    // Original tree structures (before re-rooting)
+        let pyodide = null;          // Pyodide instance (null until loaded)
+        let pyodideReady = false;
+
+        // Custom projection state
+        let projectionMode = 'svd';
+        let axisStartNode = null;
+        let axisEndNode = null;
+
+        // ============================================================
+        // DOM Elements
+        // ============================================================
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = document.getElementById('loadingText');
+        const modeIndicator = document.getElementById('modeIndicator');
+        const statusText = document.getElementById('statusText');
+        const pyodideStatus = document.getElementById('pyodideStatus');
+        const computeBtn = document.getElementById('computeBtn');
+        const treeToggle = document.getElementById('treeToggle');
+
+        const datasetSelect = document.getElementById('datasetSelect');
+        const customUrlGroup = document.getElementById('customUrlGroup');
+        const customUrlInput = document.getElementById('customUrl');
+        const loadCustomBtn = document.getElementById('loadCustomBtn');
+
+        const projectionModeSelect = document.getElementById('projectionMode');
+        const customProjectionPanel = document.getElementById('customProjectionPanel');
+        const axisStartLabel = document.getElementById('axisStartLabel');
+        const axisEndLabel = document.getElementById('axisEndLabel');
+        const clearAxisBtn = document.getElementById('clearAxisBtn');
+        const applyProjectionBtn = document.getElementById('applyProjectionBtn');
+
+        // Root node elements
+        const selectedNodeLabel = document.getElementById('selectedNodeLabel');
+        const setRootBtn = document.getElementById('setRootBtn');
+        const resetRootBtn = document.getElementById('resetRootBtn');
+
+        // Search elements
+        const nodeSearchInput = document.getElementById('nodeSearch');
+        const searchResultsDiv = document.getElementById('searchResults');
+        let highlightedNodeId = null;  // Currently highlighted node on plot
+
+        // Export elements
+        const exportMindmapBtn = document.getElementById('exportMindmapBtn');
+        const exportFormatSelect = document.getElementById('exportFormat');
+
+        const controls = {
+            nPoints: document.getElementById('nPoints'),
+            bandwidth: document.getElementById('bandwidth'),
+            gridSize: document.getElementById('gridSize'),
+            showTree: document.getElementById('showTree'),
+            showArrows: document.getElementById('showArrows'),
+            arrowMode: document.getElementById('arrowMode'),
+            maxDepth: document.getElementById('maxDepth'),
+            showPoints: document.getElementById('showPoints'),
+            showPeaks: document.getElementById('showPeaks'),
+            showContours: document.getElementById('showContours'),
+            treeAlgorithm: document.getElementById('treeAlgorithm'),
+        };
+
+        const arrowModeGroup = document.getElementById('arrowModeGroup');
+
+        // Tab elements
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabPanels = document.querySelectorAll('.tab-panel');
+
+        // Embeddings elements
+        const embeddingSelect = document.getElementById('embeddingSelect');
+        const embeddingModelLabel = document.getElementById('embeddingModelLabel');
+        const embeddingsCountLabel = document.getElementById('embeddingsCountLabel');
+        const embeddingLoadingStatus = document.getElementById('embeddingLoadingStatus');
+
+        // Dataset configuration with available embeddings
+        // Each dataset can have multiple embedding options
+        const datasetEmbeddings = {
+            'data/physics.json': {
+                name: 'Physics (Wikipedia)',
+                embeddings: {
+                    'minilm': {
+                        label: 'MiniLM (384D) - Fast',
+                        url: null,  // null = included in main JSON
+                        dim: 384
+                    },
+                    'nomic': {
+                        label: 'Nomic (768D) - Better clustering',
+                        url: 'data/physics_nomic_embeddings.json',
+                        dim: 768
+                    }
+                },
+                default: 'minilm'
+            }
+        };
+
+        // Track current embedding state
+        let currentDatasetUrl = 'data/physics.json';
+        let currentEmbeddingType = 'minilm';
+        let originalEmbeddings = null;  // Store original embeddings from dataset
+
+        const valueDisplays = {
+            nPoints: document.getElementById('nPointsValue'),
+            bandwidth: document.getElementById('bandwidthValue'),
+            gridSize: document.getElementById('gridSizeValue'),
+            maxDepth: document.getElementById('maxDepthValue'),
+        };
+
+        // ============================================================
+        // Initialization
+        // ============================================================
+        async function init() {
+            // Step 1: Load pre-computed data (fast!)
+            try {
+                loadingText.textContent = 'Loading pre-computed data...';
+                await loadPrecomputedData();
+                loadingOverlay.classList.add('hidden');
+                setStatus('Ready (static mode)');
+            } catch (error) {
+                loadingText.textContent = 'Failed to load data. Initializing Pyodide...';
+                console.error('Pre-computed data not available:', error);
+            }
+
+            // Step 2: Load Pyodide in background (slow, but non-blocking)
+            loadPyodideInBackground();
+
+            // Step 3: Set up event listeners
+            setupEventListeners();
+        }
+
+        async function loadPrecomputedData() {
+            const response = await fetch('data/physics.json');
+            if (!response.ok) throw new Error('Data not found');
+            currentData = await response.json();
+            currentDatasetUrl = 'data/physics.json';
+            currentEmbeddingType = 'minilm';
+
+            // Store original embeddings for restoration
+            if (currentData.embeddings) {
+                originalEmbeddings = currentData.embeddings;
+            }
+
+            renderPlot();
+            updateInfo();
+            updateTreeToggle();
+            updatePeaksList();
+            updateEmbeddingsInfo();
+            updateEmbeddingSelector();
+        }
+
+        async function loadPyodideInBackground() {
+            pyodideStatus.textContent = 'Pyodide: loading...';
+            pyodideStatus.className = 'pyodide-status loading';
+
+            try {
+                // Dynamically load Pyodide script
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js';
+                script.onload = async () => {
+                    try {
+                        pyodide = await loadPyodide();
+                        await pyodide.loadPackage(['numpy', 'scipy']);
+                        await loadDensityCore();
+
+                        pyodideReady = true;
+                        await enableInteractiveMode();
+                    } catch (error) {
+                        console.error('Pyodide init error:', error);
+                        pyodideStatus.textContent = 'Pyodide: failed';
+                        pyodideStatus.className = 'pyodide-status';
+                    }
+                };
+                document.head.appendChild(script);
+            } catch (error) {
+                console.error('Failed to load Pyodide:', error);
+            }
+        }
+
+        async function loadDensityCore() {
+            await pyodide.runPythonAsync(`
+import numpy as np
+from scipy.stats import gaussian_kde
+from scipy.sparse.csgraph import minimum_spanning_tree
+from scipy.ndimage import maximum_filter
+
+def project_to_2d(embeddings):
+    mean = embeddings.mean(axis=0)
+    centered = embeddings - mean
+    U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+    V_2d = Vt[:2].T
+    points_2d = centered @ V_2d
+    var = S[:2] ** 2
+    var_explained = (var / var.sum() * 100).tolist()
+    return points_2d, S[:2].tolist(), var_explained
+
+def compute_density_grid(points_2d, bandwidth=None, grid_size=100, padding=0.1):
+    x, y = points_2d[:, 0], points_2d[:, 1]
+    x_range, y_range = x.max() - x.min(), y.max() - y.min()
+    x_min, x_max = x.min() - padding * x_range, x.max() + padding * x_range
+    y_min, y_max = y.min() - padding * y_range, y.max() + padding * y_range
+    xi, yi = np.linspace(x_min, x_max, grid_size), np.linspace(y_min, y_max, grid_size)
+    X, Y = np.meshgrid(xi, yi)
+    values = np.vstack([x, y])
+    kde = gaussian_kde(values, bw_method=bandwidth) if bandwidth else gaussian_kde(values)
+    if not bandwidth: bandwidth = kde.factor
+    Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
+    return {'x_min': float(x_min), 'x_max': float(x_max), 'y_min': float(y_min), 'y_max': float(y_max),
+            'grid_size': grid_size, 'values': Z.tolist(), 'bandwidth': float(bandwidth)}
+
+def build_mst_tree(embeddings, points_2d, titles=None):
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    emb_norm = embeddings / (norms + 1e-8)
+    cos_dist = 1 - emb_norm @ emb_norm.T
+    np.fill_diagonal(cos_dist, 0)
+    mst = minimum_spanning_tree(cos_dist)
+    cx = mst.tocoo()
+    adj = {}
+    for i, j, w in zip(cx.row, cx.col, cx.data):
+        i, j = int(i), int(j)
+        adj.setdefault(i, []).append((j, w))
+        adj.setdefault(j, []).append((i, w))
+    degrees = [(len(adj.get(i, [])), i) for i in range(len(embeddings))]
+    _, root = max(degrees)
+    root = int(root)
+    parent, depth, visited, queue = {root: None}, {root: 0}, {root}, [root]
+    while queue:
+        node = queue.pop(0)
+        for neighbor, _ in adj.get(node, []):
+            if neighbor not in visited:
+                visited.add(neighbor)
+                parent[neighbor], depth[neighbor] = node, depth[node] + 1
+                queue.append(neighbor)
+    nodes, edges = [], []
+    for i in range(len(embeddings)):
+        p_id = parent.get(i)
+        nodes.append({'id': i, 'title': titles[i] if titles else f"Node {i}",
+                      'parent_id': int(p_id) if p_id is not None else None,
+                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])})
+        if p_id is not None:
+            edges.append({'source_id': int(p_id), 'target_id': i, 'weight': float(cos_dist[i, p_id])})
+    return {'nodes': nodes, 'edges': edges, 'root_id': root, 'tree_type': 'mst'}
+
+def build_j_guided_tree(embeddings, points_2d, titles=None, k_neighbors=10):
+    n = len(embeddings)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    emb_norm = embeddings / (norms + 1e-8)
+    diff = emb_norm[:, np.newaxis, :] - emb_norm[np.newaxis, :, :]
+    dist_matrix = np.sqrt((diff ** 2).sum(axis=2))
+    k = min(k_neighbors, n - 1)
+    knn_dists = np.sort(dist_matrix, axis=1)[:, k]
+    density = 1.0 / (knn_dists + 1e-8)
+    order = np.argsort(-density)
+    root = int(order[0])
+    parent, depth, placed = {root: None}, {root: 0}, {root}
+    for idx in order[1:]:
+        idx = int(idx)
+        min_dist, best_parent = float('inf'), root
+        for placed_node in placed:
+            d = dist_matrix[idx, placed_node]
+            if d < min_dist: min_dist, best_parent = d, placed_node
+        parent[idx], depth[idx] = best_parent, depth[best_parent] + 1
+        placed.add(idx)
+    nodes, edges = [], []
+    for i in range(n):
+        p_id = parent.get(i)
+        nodes.append({'id': i, 'title': titles[i] if titles else f"Node {i}",
+                      'parent_id': int(p_id) if p_id is not None else None,
+                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])})
+        if p_id is not None:
+            edges.append({'source_id': int(p_id), 'target_id': i, 'weight': float(dist_matrix[i, p_id])})
+    return {'nodes': nodes, 'edges': edges, 'root_id': root, 'tree_type': 'j-guided'}
+
+def find_density_peaks(density_grid, points_2d, titles=None, n_peaks=5, min_distance=5):
+    Z = np.array(density_grid['values'])
+    local_max = maximum_filter(Z, size=min_distance*2+1) == Z
+    peak_mask = local_max & (Z > Z.mean())
+    peak_indices = np.argwhere(peak_mask)
+    if len(peak_indices) == 0: return []
+    xi = np.linspace(density_grid['x_min'], density_grid['x_max'], density_grid['grid_size'])
+    yi = np.linspace(density_grid['y_min'], density_grid['y_max'], density_grid['grid_size'])
+    sorted_idx = np.argsort(-Z[peak_mask])[:n_peaks]
+    peaks = []
+    for idx in sorted_idx:
+        i, j = peak_indices[idx]
+        peak_x, peak_y = xi[j], yi[i]
+        distances = np.sqrt((points_2d[:, 0] - peak_x)**2 + (points_2d[:, 1] - peak_y)**2)
+        nearest_idx = int(np.argmin(distances))
+        peaks.append({'x': float(peak_x), 'y': float(peak_y), 'density': float(Z[i, j]),
+                      'nearest_node_id': nearest_idx, 'title': titles[nearest_idx] if titles else f"Node {nearest_idx}"})
+    return peaks
+
+def compute_density_manifold(embeddings, titles=None, bandwidth=None, grid_size=100, n_peaks=5):
+    points_2d, singular_values, var_explained = project_to_2d(embeddings)
+    density_grid = compute_density_grid(points_2d, bandwidth, grid_size)
+    trees = {
+        'mst': build_mst_tree(embeddings, points_2d, titles),
+        'j-guided': build_j_guided_tree(embeddings, points_2d, titles)
+    }
+    peaks = find_density_peaks(density_grid, points_2d, titles, n_peaks)
+    points = [{'id': i, 'title': titles[i] if titles else f"Node {i}",
+               'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])} for i in range(len(embeddings))]
+    return {'points': points, 'density_grid': density_grid, 'tree': trees['mst'], 'trees': trees,
+            'peaks': peaks, 'projection': {'variance_explained': var_explained, 'singular_values': singular_values},
+            'n_points': int(len(embeddings))}
+
+def generate_demo_data(n_points=200, n_clusters=5, n_dims=64):
+    np.random.seed(42)
+    pts_per = n_points // n_clusters
+    names = ['Quantum', 'Relativity', 'Thermodynamics', 'Electromagnetism', 'Mechanics']
+    embeddings, titles = [], []
+    for i in range(n_clusters):
+        center = np.random.randn(n_dims) * 3
+        embeddings.append(center + np.random.randn(pts_per, n_dims) * 0.5)
+        titles.extend([f"{names[i % len(names)]} Concept {j+1}" for j in range(pts_per)])
+    return np.vstack(embeddings), titles
+
+# Storage for real embeddings loaded from JSON
+_real_embeddings = None
+_real_titles = None
+
+def set_real_embeddings(embeddings_list, titles_list):
+    """Store real embeddings from JSON for recomputation."""
+    global _real_embeddings, _real_titles
+    _real_embeddings = np.array(embeddings_list)
+    _real_titles = titles_list
+    print(f"Loaded {len(_real_titles)} real embeddings ({_real_embeddings.shape[1]}D)")
+
+def get_embeddings(n_points, root_title=None):
+    """Get embeddings - real if available, otherwise demo.
+
+    If root_title is provided, selects the n_points nearest neighbors
+    to the root node in embedding space (always including the root).
+    """
+    global _real_embeddings, _real_titles
+    if _real_embeddings is not None:
+        if root_title is not None:
+            # Find root index
+            try:
+                root_idx = _real_titles.index(root_title)
+            except ValueError:
+                # Root not found, fall back to first n
+                n = min(n_points, len(_real_titles))
+                return _real_embeddings[:n], _real_titles[:n]
+
+            # Compute cosine similarity to root
+            root_emb = _real_embeddings[root_idx]
+            root_norm = np.linalg.norm(root_emb)
+
+            similarities = []
+            for i, emb in enumerate(_real_embeddings):
+                sim = np.dot(root_emb, emb) / (root_norm * np.linalg.norm(emb) + 1e-8)
+                similarities.append((i, sim))
+
+            # Sort by similarity (descending) and take top n
+            similarities.sort(key=lambda x: -x[1])
+            top_indices = [idx for idx, _ in similarities[:n_points]]
+
+            # Ensure root is included (should be first anyway)
+            if root_idx not in top_indices:
+                top_indices[-1] = root_idx
+
+            selected_embeddings = _real_embeddings[top_indices]
+            selected_titles = [_real_titles[i] for i in top_indices]
+            return selected_embeddings, selected_titles
+        else:
+            n = min(n_points, len(_real_titles))
+            return _real_embeddings[:n], _real_titles[:n]
+    return generate_demo_data(n_points)
+
+def has_real_embeddings():
+    """Check if real embeddings are loaded."""
+    return _real_embeddings is not None
+
+print("Density core loaded")
+            `);
+        }
+
+        async function enableInteractiveMode() {
+            pyodideStatus.textContent = 'Pyodide: ready';
+            pyodideStatus.className = 'pyodide-status ready';
+            modeIndicator.textContent = 'Interactive Mode';
+            modeIndicator.className = 'mode-indicator interactive';
+
+            // Enable computation controls
+            controls.nPoints.disabled = false;
+            controls.bandwidth.disabled = false;
+            controls.gridSize.disabled = false;
+            controls.treeAlgorithm.disabled = false;
+            computeBtn.disabled = false;
+            computeBtn.textContent = 'Recompute with Pyodide';
+
+            // Load real embeddings into Pyodide if available
+            if (currentData && currentData.embeddings) {
+                await loadEmbeddingsIntoPyodide();
+            }
+
+            setStatus('Ready (interactive mode)');
+        }
+
+        async function loadEmbeddingsIntoPyodide() {
+            console.log('loadEmbeddingsIntoPyodide called');
+            console.log('pyodideReady:', pyodideReady);
+            console.log('currentData:', currentData ? 'exists' : 'null');
+            console.log('currentData.embeddings:', currentData?.embeddings ? currentData.embeddings.length : 'none');
+
+            if (!pyodideReady || !currentData || !currentData.embeddings) {
+                console.log('Skipping - conditions not met');
+                return;
+            }
+
+            try {
+                const titles = currentData.points.map(p => p.title);
+                console.log('Titles sample:', titles.slice(0, 3));
+                console.log('Embeddings shape:', currentData.embeddings.length, 'x', currentData.embeddings[0]?.length);
+
+                pyodide.globals.set('_js_embeddings', currentData.embeddings);
+                pyodide.globals.set('_js_titles', titles);
+                await pyodide.runPythonAsync(`
+set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
+                `);
+                console.log('Embeddings loaded into Pyodide successfully');
+                setStatus('Ready (real embeddings loaded)');
+            } catch (error) {
+                console.error('Failed to load embeddings into Pyodide:', error);
+                setStatus('Failed to load embeddings: ' + error.message, 'error');
+            }
+        }
+
+        // ============================================================
+        // Event Listeners
+        // ============================================================
+        function setupEventListeners() {
+            // Tab switching
+            tabButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const tabId = btn.dataset.tab;
+                    tabButtons.forEach(b => b.classList.remove('active'));
+                    tabPanels.forEach(p => p.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById(`tab-${tabId}`).classList.add('active');
+                });
+            });
+
+            // Value display updates
+            for (const [key, input] of Object.entries(controls)) {
+                if (input && input.type === 'range' && valueDisplays[key]) {
+                    input.addEventListener('input', () => {
+                        valueDisplays[key].textContent =
+                            key === 'bandwidth' ? parseFloat(input.value).toFixed(2) : input.value;
+                    });
+                }
+            }
+
+            // Display toggles (instant, no recomputation)
+            ['showTree', 'showPoints', 'showPeaks', 'showContours', 'maxDepth'].forEach(key => {
+                controls[key].addEventListener('change', () => {
+                    if (currentData) renderPlot();
+                });
+            });
+
+            // Arrow controls with mode visibility toggle
+            controls.showArrows.addEventListener('change', () => {
+                arrowModeGroup.style.display = controls.showArrows.checked ? 'block' : 'none';
+                if (currentData) renderPlot();
+            });
+
+            controls.arrowMode.addEventListener('change', () => {
+                if (currentData) renderPlot();
+            });
+
+            // Compute button
+            computeBtn.addEventListener('click', recompute);
+
+            // Dataset selector
+            datasetSelect.addEventListener('change', handleDatasetChange);
+            loadCustomBtn.addEventListener('click', loadCustomUrl);
+
+            // Projection mode
+            projectionModeSelect.addEventListener('change', handleProjectionModeChange);
+            clearAxisBtn.addEventListener('click', clearAxisSelection);
+            applyProjectionBtn.addEventListener('click', applyCustomProjection);
+
+            // Embedding selector
+            embeddingSelect.addEventListener('change', handleEmbeddingChange);
+
+            // Root node controls
+            setRootBtn.addEventListener('click', setSelectedAsRoot);
+            resetRootBtn.addEventListener('click', resetTreeRoot);
+
+            // Search
+            nodeSearchInput.addEventListener('input', handleSearchInput);
+
+            // Export
+            exportMindmapBtn.addEventListener('click', exportMindmap);
+        }
+
+        function updateEmbeddingsInfo() {
+            if (currentData && currentData.embeddings) {
+                const dim = currentData.embeddings[0]?.length || 0;
+                const count = currentData.embeddings.length;
+                embeddingsCountLabel.textContent = count;
+                // Infer model from dimension
+                if (dim === 384) {
+                    embeddingModelLabel.textContent = 'MiniLM (384D)';
+                } else if (dim === 768) {
+                    embeddingModelLabel.textContent = 'Nomic (768D)';
+                } else if (dim === 1024) {
+                    embeddingModelLabel.textContent = 'Large (1024D)';
+                } else {
+                    embeddingModelLabel.textContent = `Unknown (${dim}D)`;
+                }
+            } else {
+                embeddingsCountLabel.textContent = '0';
+                embeddingModelLabel.textContent = 'None loaded';
+            }
+        }
+
+        function updateEmbeddingSelector() {
+            // Clear existing options
+            embeddingSelect.innerHTML = '';
+
+            const config = datasetEmbeddings[currentDatasetUrl];
+            if (config) {
+                // Add options for this dataset
+                for (const [key, emb] of Object.entries(config.embeddings)) {
+                    const option = document.createElement('option');
+                    option.value = key;
+                    option.textContent = emb.label;
+                    if (key === currentEmbeddingType) {
+                        option.selected = true;
+                    }
+                    embeddingSelect.appendChild(option);
+                }
+            } else {
+                // Unknown dataset - just show current
+                const option = document.createElement('option');
+                option.value = 'current';
+                option.textContent = 'Current (from dataset)';
+                embeddingSelect.appendChild(option);
+            }
+
+            // Always add clear option
+            const clearOption = document.createElement('option');
+            clearOption.value = 'clear';
+            clearOption.textContent = '🗑️ Clear embeddings (save memory)';
+            embeddingSelect.appendChild(clearOption);
+        }
+
+        async function handleEmbeddingChange() {
+            const selected = embeddingSelect.value;
+
+            if (selected === 'clear') {
+                // Clear embeddings to save memory
+                currentData.embeddings = null;
+                originalEmbeddings = null;
+                currentEmbeddingType = 'none';
+
+                // Clear from Pyodide too
+                if (pyodideReady) {
+                    await pyodide.runPythonAsync(`
+_real_embeddings = None
+_real_titles = None
+                    `);
+                }
+
+                updateEmbeddingsInfo();
+                setStatus('Embeddings cleared (memory freed)');
+
+                // Reset selector to show cleared state
+                embeddingSelect.value = 'clear';
+                return;
+            }
+
+            const config = datasetEmbeddings[currentDatasetUrl];
+            if (!config || !config.embeddings[selected]) {
+                return;
+            }
+
+            const embConfig = config.embeddings[selected];
+
+            // If URL is null, use original embeddings from dataset
+            if (embConfig.url === null) {
+                if (originalEmbeddings) {
+                    currentData.embeddings = originalEmbeddings;
+                    currentEmbeddingType = selected;
+                    updateEmbeddingsInfo();
+
+                    if (pyodideReady) {
+                        await loadEmbeddingsIntoPyodide();
+                    }
+                    setStatus(`Restored ${embConfig.label}`);
+                }
+                return;
+            }
+
+            // Fetch embeddings from URL
+            embeddingLoadingStatus.style.display = 'block';
+            embeddingLoadingStatus.textContent = `Loading ${embConfig.label}...`;
+            setStatus(`Fetching ${embConfig.label}...`, 'loading');
+
+            try {
+                const response = await fetch(embConfig.url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                const embData = await response.json();
+
+                // Validate embedding count matches points
+                if (embData.embeddings && embData.embeddings.length === currentData.points.length) {
+                    currentData.embeddings = embData.embeddings;
+                    currentEmbeddingType = selected;
+
+                    if (pyodideReady) {
+                        await loadEmbeddingsIntoPyodide();
+                    }
+
+                    updateEmbeddingsInfo();
+                    setStatus(`Loaded ${embConfig.label}`);
+                } else {
+                    throw new Error(`Embedding count mismatch: expected ${currentData.points.length}, got ${embData.embeddings?.length || 0}`);
+                }
+            } catch (error) {
+                setStatus(`Failed to load embeddings: ${error.message}`, 'error');
+                console.error('Embedding fetch error:', error);
+                // Reset selector
+                embeddingSelect.value = currentEmbeddingType;
+            } finally {
+                embeddingLoadingStatus.style.display = 'none';
+            }
+        }
+
+        function handleProjectionModeChange() {
+            projectionMode = projectionModeSelect.value;
+            if (projectionMode === 'custom') {
+                customProjectionPanel.style.display = 'block';
+                // Store original data for reset
+                if (!originalData && currentData) {
+                    originalData = JSON.parse(JSON.stringify(currentData));
+                }
+            } else {
+                customProjectionPanel.style.display = 'none';
+                // Restore original SVD projection
+                if (originalData) {
+                    currentData = JSON.parse(JSON.stringify(originalData));
+                    renderPlot();
+                    updateInfo();
+                }
+            }
+        }
+
+        function handlePlotClick(eventData) {
+            if (!eventData.points || eventData.points.length === 0) return;
+
+            const clickedPoint = eventData.points[0];
+            let clickedNode = null;
+
+            // Check if this is from the Points trace (has customdata with node info)
+            // The points trace has name starting with "Points"
+            if (!clickedPoint.data.name || !clickedPoint.data.name.startsWith('Points')) {
+                // Try to find nearest point manually
+                let minDist = Infinity;
+                for (const p of currentData.points) {
+                    const dist = Math.sqrt(Math.pow(p.x - clickedPoint.x, 2) + Math.pow(p.y - clickedPoint.y, 2));
+                    if (dist < minDist) {
+                        minDist = dist;
+                        clickedNode = p;
+                    }
+                }
+            } else {
+                // Direct point click - use pointIndex
+                const pointIndex = clickedPoint.pointIndex;
+                clickedNode = currentData.points[pointIndex];
+            }
+
+            if (!clickedNode) return;
+
+            // Always update selected node for root feature
+            selectNodeForRoot(clickedNode);
+
+            // Handle custom projection mode
+            if (projectionMode === 'custom') {
+                selectNode(clickedNode);
+            }
+        }
+
+        function selectNode(node) {
+            if (!axisStartNode) {
+                axisStartNode = node;
+                axisStartLabel.textContent = node.title.substring(0, 25);
+            } else if (!axisEndNode && node.id !== axisStartNode.id) {
+                axisEndNode = node;
+                axisEndLabel.textContent = node.title.substring(0, 25);
+                applyProjectionBtn.disabled = !pyodideReady;
+            }
+        }
+
+        // ============================================================
+        // Root Node Functions
+        // ============================================================
+        function selectNodeForRoot(node) {
+            selectedNode = node;
+            selectedNodeLabel.textContent = node.title;
+            selectedNodeLabel.title = node.title;  // Tooltip for long names
+            setRootBtn.disabled = false;
+        }
+
+        function setSelectedAsRoot() {
+            if (!selectedNode || !currentData) return;
+
+            // Store original trees if not already stored
+            if (!originalTrees && currentData.trees) {
+                originalTrees = JSON.parse(JSON.stringify(currentData.trees));
+            } else if (!originalTrees && currentData.tree) {
+                originalTrees = { [activeTreeType]: JSON.parse(JSON.stringify(currentData.tree)) };
+            }
+
+            // Re-root each tree
+            if (currentData.trees) {
+                for (const [treeType, tree] of Object.entries(currentData.trees)) {
+                    rerootTree(tree, selectedNode.id);
+                }
+            } else if (currentData.tree) {
+                rerootTree(currentData.tree, selectedNode.id);
+            }
+
+            renderPlot();
+            setStatus(`Tree re-rooted at "${selectedNode.title}"`);
+        }
+
+        function rerootTree(tree, newRootId) {
+            // Build adjacency list from edges (undirected)
+            const adj = {};
+            for (const edge of tree.edges) {
+                if (!adj[edge.source_id]) adj[edge.source_id] = [];
+                if (!adj[edge.target_id]) adj[edge.target_id] = [];
+                adj[edge.source_id].push({ id: edge.target_id, weight: edge.weight });
+                adj[edge.target_id].push({ id: edge.source_id, weight: edge.weight });
+            }
+
+            // BFS from new root to reassign parents and depths
+            const newParent = { [newRootId]: null };
+            const newDepth = { [newRootId]: 0 };
+            const visited = new Set([newRootId]);
+            const queue = [newRootId];
+
+            while (queue.length > 0) {
+                const nodeId = queue.shift();
+                for (const neighbor of (adj[nodeId] || [])) {
+                    if (!visited.has(neighbor.id)) {
+                        visited.add(neighbor.id);
+                        newParent[neighbor.id] = nodeId;
+                        newDepth[neighbor.id] = newDepth[nodeId] + 1;
+                        queue.push(neighbor.id);
+                    }
+                }
+            }
+
+            // Update nodes
+            for (const node of tree.nodes) {
+                node.parent_id = newParent[node.id] !== undefined ? newParent[node.id] : null;
+                node.depth = newDepth[node.id] !== undefined ? newDepth[node.id] : 0;
+            }
+
+            // Rebuild edges with new parent relationships
+            tree.edges = [];
+            for (const node of tree.nodes) {
+                if (node.parent_id !== null) {
+                    // Find weight from adjacency
+                    const neighbors = adj[node.id] || [];
+                    const parentNeighbor = neighbors.find(n => n.id === node.parent_id);
+                    tree.edges.push({
+                        source_id: node.parent_id,
+                        target_id: node.id,
+                        weight: parentNeighbor ? parentNeighbor.weight : 0
+                    });
+                }
+            }
+
+            tree.root_id = newRootId;
+        }
+
+        function resetTreeRoot() {
+            if (originalTrees) {
+                if (currentData.trees) {
+                    currentData.trees = JSON.parse(JSON.stringify(originalTrees));
+                } else if (currentData.tree) {
+                    currentData.tree = JSON.parse(JSON.stringify(originalTrees[activeTreeType]));
+                }
+                originalTrees = null;
+                renderPlot();
+                setStatus('Tree root reset to original');
+            }
+
+            // Clear selection
+            selectedNode = null;
+            selectedNodeLabel.textContent = 'None selected';
+            setRootBtn.disabled = true;
+        }
+
+        // ============================================================
+        // Search Functions
+        // ============================================================
+        function handleSearchInput() {
+            const query = nodeSearchInput.value.trim().toLowerCase();
+            searchResultsDiv.innerHTML = '';
+
+            if (!query || !currentData || !currentData.points) {
+                highlightedNodeId = null;
+                renderPlot();  // Remove highlight
+                return;
+            }
+
+            // Find matching nodes
+            const matches = currentData.points.filter(p =>
+                p.title.toLowerCase().includes(query)
+            ).slice(0, 10);  // Limit to 10 results
+
+            if (matches.length === 0) {
+                searchResultsDiv.innerHTML = '<div class="search-no-results">No matches found</div>';
+                highlightedNodeId = null;
+                renderPlot();
+                return;
+            }
+
+            // Create result items
+            matches.forEach(node => {
+                const div = document.createElement('div');
+                div.className = 'search-result';
+                div.textContent = node.title;
+                div.title = node.title;  // Tooltip
+                div.addEventListener('click', () => selectSearchResult(node));
+                div.addEventListener('mouseenter', () => highlightNode(node.id));
+                searchResultsDiv.appendChild(div);
+            });
+
+            // Highlight first match
+            if (matches.length > 0) {
+                highlightNode(matches[0].id);
+            }
+        }
+
+        function selectSearchResult(node) {
+            // Select for root
+            selectNodeForRoot(node);
+
+            // Highlight on plot
+            highlightNode(node.id);
+
+            // Center view on node
+            centerOnNode(node);
+
+            // Clear search
+            nodeSearchInput.value = '';
+            searchResultsDiv.innerHTML = '';
+        }
+
+        function highlightNode(nodeId) {
+            highlightedNodeId = nodeId;
+            renderPlot();
+        }
+
+        function centerOnNode(node) {
+            // Get current plot layout
+            const plotDiv = document.getElementById('plot');
+            const currentLayout = plotDiv.layout || {};
+
+            // Calculate new range centered on node with some padding
+            const padding = 0.05;  // 5% of current range
+            const xRange = currentLayout.xaxis?.range || [node.x - 0.5, node.x + 0.5];
+            const yRange = currentLayout.yaxis?.range || [node.y - 0.5, node.y + 0.5];
+
+            const xSpan = (xRange[1] - xRange[0]) / 2;
+            const ySpan = (yRange[1] - yRange[0]) / 2;
+
+            // Animate to center on node
+            Plotly.relayout('plot', {
+                'xaxis.range': [node.x - xSpan, node.x + xSpan],
+                'yaxis.range': [node.y - ySpan, node.y + ySpan]
+            });
+        }
+
+        function clearAxisSelection() {
+            axisStartNode = null;
+            axisEndNode = null;
+            axisStartLabel.textContent = '-';
+            axisEndLabel.textContent = '-';
+            applyProjectionBtn.disabled = true;
+        }
+
+        async function applyCustomProjection() {
+            if (!pyodideReady || !axisStartNode || !axisEndNode) return;
+
+            setStatus('Computing custom projection...', 'loading');
+            applyProjectionBtn.disabled = true;
+
+            try {
+                const result = await pyodide.runPythonAsync(`
+import json
+import numpy as np
+
+# Get the original data
+data = json.loads('''${JSON.stringify(originalData || currentData)}''')
+
+# We need embeddings - for now use 2D points as proxy
+# In a real implementation, you'd store/reload the original embeddings
+points = np.array([[p['x'], p['y']] for p in data['points']])
+
+# Define custom axis
+start_idx = ${axisStartNode.id}
+end_idx = ${axisEndNode.id}
+
+# Direction vector (in current 2D space as demo)
+direction = points[end_idx] - points[start_idx]
+direction = direction / (np.linalg.norm(direction) + 1e-8)
+
+# Orthogonal direction (90 degrees)
+ortho = np.array([-direction[1], direction[0]])
+
+# Project all points
+x_new = (points - points[start_idx]) @ direction
+y_new = (points - points[start_idx]) @ ortho
+
+# Update point coordinates
+for i, p in enumerate(data['points']):
+    p['x'] = float(x_new[i])
+    p['y'] = float(y_new[i])
+
+# Update tree node coordinates
+if data.get('trees'):
+    for tree_name, tree in data['trees'].items():
+        for node in tree['nodes']:
+            node['x'] = float(x_new[node['id']])
+            node['y'] = float(y_new[node['id']])
+
+if data.get('tree'):
+    for node in data['tree']['nodes']:
+        node['x'] = float(x_new[node['id']])
+        node['y'] = float(y_new[node['id']])
+
+# Update peaks
+if data.get('peaks'):
+    for peak in data['peaks']:
+        idx = peak['nearest_node_id']
+        peak['x'] = float(x_new[idx])
+        peak['y'] = float(y_new[idx])
+
+# Update density grid bounds
+xs, ys = x_new, y_new
+padding = 0.1
+x_range, y_range = xs.max() - xs.min(), ys.max() - ys.min()
+data['density_grid']['x_min'] = float(xs.min() - padding * x_range)
+data['density_grid']['x_max'] = float(xs.max() + padding * x_range)
+data['density_grid']['y_min'] = float(ys.min() - padding * y_range)
+data['density_grid']['y_max'] = float(ys.max() + padding * y_range)
+
+# Update projection info
+data['projection']['variance_explained'] = [50.0, 50.0]  # Custom projection
+
+json.dumps(data)
+                `);
+
+                currentData = JSON.parse(result);
+                currentData.projection.custom_axis = {
+                    start: axisStartNode.title,
+                    end: axisEndNode.title
+                };
+                renderPlot();
+                updateInfo();
+                setStatus('Custom projection applied');
+
+            } catch (error) {
+                setStatus(`Projection error: ${error.message}`, 'error');
+                console.error(error);
+            } finally {
+                applyProjectionBtn.disabled = false;
+            }
+        }
+
+        function handleDatasetChange() {
+            const value = datasetSelect.value;
+
+            if (value === 'custom') {
+                customUrlGroup.style.display = 'block';
+            } else {
+                customUrlGroup.style.display = 'none';
+                if (value === 'demo') {
+                    if (pyodideReady) {
+                        recompute();
+                    } else {
+                        setStatus('Pyodide not ready yet', 'error');
+                    }
+                } else {
+                    loadDatasetUrl(value);
+                }
+            }
+        }
+
+        async function loadDatasetUrl(url) {
+            setStatus('Loading dataset...', 'loading');
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                currentData = await response.json();
+                currentDatasetUrl = url;
+                originalData = null;  // Clear original data for new dataset
+                clearAxisSelection();
+                activeTreeType = currentData.trees ? Object.keys(currentData.trees)[0] : 'mst';
+
+                // Store original embeddings and determine type
+                if (currentData.embeddings) {
+                    originalEmbeddings = currentData.embeddings;
+                    const dim = currentData.embeddings[0]?.length || 0;
+                    currentEmbeddingType = dim === 384 ? 'minilm' : dim === 768 ? 'nomic' : 'current';
+                } else {
+                    originalEmbeddings = null;
+                    currentEmbeddingType = 'none';
+                }
+
+                renderPlot();
+                updateInfo();
+                updateTreeToggle();
+                updatePeaksList();
+                updateEmbeddingsInfo();
+                updateEmbeddingSelector();
+
+                // Load embeddings into Pyodide if available
+                if (pyodideReady && currentData.embeddings) {
+                    await loadEmbeddingsIntoPyodide();
+                    setStatus(`Dataset loaded (${currentData.embeddings.length} embeddings)`);
+                } else {
+                    setStatus('Dataset loaded' + (currentData.embeddings ? '' : ' (no embeddings)'));
+                }
+            } catch (error) {
+                setStatus(`Failed to load: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function loadCustomUrl() {
+            const url = customUrlInput.value.trim();
+            if (!url) {
+                setStatus('Please enter a URL', 'error');
+                return;
+            }
+            await loadDatasetUrl(url);
+        }
+
+        // ============================================================
+        // Tree Toggle
+        // ============================================================
+        function updateTreeToggle() {
+            if (!currentData || !currentData.trees) return;
+
+            treeToggle.innerHTML = '';
+            for (const treeType of Object.keys(currentData.trees)) {
+                const btn = document.createElement('button');
+                btn.textContent = treeType.toUpperCase();
+                btn.className = treeType === activeTreeType ? 'active' : '';
+                btn.onclick = () => selectTree(treeType);
+                treeToggle.appendChild(btn);
+            }
+        }
+
+        function selectTree(treeType) {
+            activeTreeType = treeType;
+            updateTreeToggle();
+            renderPlot();
+            document.getElementById('infoTree').textContent = treeType;
+        }
+
+        // ============================================================
+        // Export Functions
+        // ============================================================
+        function exportMindmap() {
+            if (!currentData) {
+                setStatus('No data to export', 'error');
+                return;
+            }
+
+            // Get the current tree
+            const tree = currentData.trees?.[activeTreeType] || currentData.tree;
+            if (!tree || !tree.nodes || tree.nodes.length === 0) {
+                setStatus('No tree data to export', 'error');
+                return;
+            }
+
+            // Filter by max depth
+            const maxDepth = parseInt(controls.maxDepth.value);
+            const filteredNodes = tree.nodes.filter(n => n.depth <= maxDepth);
+            const nodeIds = new Set(filteredNodes.map(n => n.id));
+
+            // Filter edges to only include filtered nodes
+            const filteredEdges = tree.edges.filter(e =>
+                nodeIds.has(e.source_id) && nodeIds.has(e.target_id)
+            );
+
+            // Get export format
+            const format = exportFormatSelect.value;
+
+            // Generate filename
+            const rootNode = filteredNodes.find(n => n.id === tree.root_id);
+            const rootName = rootNode?.title || 'density_tree';
+            const sanitizedName = rootName.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '_').slice(0, 50);
+            const timestamp = new Date().toISOString().slice(0, 10);
+
+            switch (format) {
+                case 'vue':
+                    exportVUE(filteredNodes, filteredEdges, tree.root_id, sanitizedName, timestamp);
+                    break;
+                case 'mm':
+                    exportFreeMind(filteredNodes, filteredEdges, tree.root_id, sanitizedName, timestamp);
+                    break;
+                case 'mermaid':
+                    exportMermaid(filteredNodes, filteredEdges, tree.root_id, sanitizedName, timestamp);
+                    break;
+                case 'opml':
+                    exportOPML(filteredNodes, filteredEdges, tree.root_id, sanitizedName, timestamp);
+                    break;
+                case 'graphml':
+                    exportGraphML(filteredNodes, filteredEdges, tree.root_id, sanitizedName, timestamp);
+                    break;
+                case 'smmx':
+                    exportSMMX(filteredNodes, filteredEdges, tree.root_id, sanitizedName, timestamp);
+                    break;
+                case 'json':
+                    exportJSON(filteredNodes, filteredEdges, tree.root_id, sanitizedName, timestamp);
+                    break;
+            }
+        }
+
+        function exportVUE(nodes, edges, rootId, name, timestamp) {
+            // VUE format is an XML format used by Visual Understanding Environment
+            // Build a simple VUE document with nodes and links
+
+            const nodeMap = {};
+            nodes.forEach(n => { nodeMap[n.id] = n; });
+
+            // Scale coordinates for VUE (use x,y from projection, scale up)
+            const scale = 200;
+            const offsetX = 500;
+            const offsetY = 400;
+
+            let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+            xml += '<!-- VUE Concept Map - Visual Understanding Environment -->\n';
+            xml += '<!-- Generated by Density Manifold Explorer -->\n';
+            xml += `<LW-MAP xmlns="urn:lw" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ID="1" label="${escapeXml(name)}" created="${timestamp}">\n`;
+
+            // Add nodes as child elements
+            nodes.forEach((node, i) => {
+                const x = Math.round((node.x * scale) + offsetX);
+                const y = Math.round((node.y * scale) + offsetY);
+                const isRoot = node.id === rootId;
+
+                xml += `  <node ID="${node.id}" label="${escapeXml(node.title)}" x="${x}" y="${y}"`;
+                if (isRoot) {
+                    xml += ' shape="roundRect" strokeWidth="2"';
+                } else {
+                    xml += ' shape="ellipse"';
+                }
+                xml += `/>\n`;
+            });
+
+            // Add edges as links
+            edges.forEach((edge, i) => {
+                xml += `  <link ID="link_${i}" ID1="${edge.source_id}" ID2="${edge.target_id}"/>\n`;
+            });
+
+            xml += '</LW-MAP>\n';
+
+            // Download as .vue file
+            downloadFile(xml, `${name}_${timestamp}.vue`, 'application/xml');
+            setStatus(`Exported ${nodes.length} nodes as VUE`);
+        }
+
+        async function exportSMMX(nodes, edges, rootId, name, timestamp) {
+            // SimpleMind format: ZIP containing document/mindmap.xml
+            const nodeMap = {};
+            nodes.forEach(n => { nodeMap[n.id] = n; });
+
+            // Build XML
+            let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+            xml += '<!DOCTYPE simplemind-mindmaps>\n';
+            xml += '<simplemind-mindmaps generator="DensityExplorer" gen-version="1.0.0" doc-version="3">\n';
+            xml += '  <mindmap>\n';
+            xml += '    <meta>\n';
+            xml += `      <guid guid="${generateGuid()}"/>\n`;
+            xml += `      <title text="${escapeXml(name)}"/>\n`;
+            xml += '      <style key="system.soft-palette"/>\n';
+            xml += '      <auto-numbering style="disabled"/>\n';
+            xml += '      <scrollstate zoom="50" x="0" y="0"/>\n';
+            xml += `      <main-centraltheme id="${rootId}"/>\n`;
+            xml += '    </meta>\n';
+            xml += '    <topics>\n';
+
+            // Scale coordinates
+            const scale = 150;
+
+            // Helper to create Wikipedia URL from title
+            function titleToWikipediaUrl(title) {
+                const encoded = encodeURIComponent(title.replace(/ /g, '_'));
+                return `https://en.wikipedia.org/wiki/${encoded}`;
+            }
+
+            // Add topics
+            nodes.forEach(node => {
+                const x = (node.x * scale).toFixed(2);
+                const y = (node.y * scale).toFixed(2);
+                const isRoot = node.id === rootId;
+                const parentId = node.parent_id !== null ? node.parent_id : -1;
+                const palette = (node.depth % 8) + 1;
+                const wikiUrl = titleToWikipediaUrl(node.title);
+
+                xml += `      <topic id="${node.id}" parent="${parentId}" guid="${generateGuid()}" `;
+                xml += `x="${x}" y="${y}" palette="${palette}" colorinfo="${palette}" `;
+                xml += `text="${escapeXml(node.title)}">\n`;
+
+                // Add Wikipedia link
+                xml += `        <link urllink="${escapeXml(wikiUrl)}"/>\n`;
+
+                if (isRoot) {
+                    xml += '        <layout mode="radial" direction="auto" flow="default"/>\n';
+                    xml += '        <style>\n';
+                    xml += '          <font bold="True" scale="2.0"/>\n';
+                    xml += '        </style>\n';
+                }
+                xml += '      </topic>\n';
+            });
+
+            xml += '    </topics>\n';
+            xml += '    <relations/>\n';
+            xml += '  </mindmap>\n';
+            xml += '</simplemind-mindmaps>\n';
+
+            // Create ZIP
+            const zip = new JSZip();
+            zip.file('document/mindmap.xml', xml);
+
+            const blob = await zip.generateAsync({ type: 'blob' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${name}_${timestamp}.smmx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            setStatus(`Exported ${nodes.length} nodes as SimpleMind`);
+        }
+
+        function exportJSON(nodes, edges, rootId, name, timestamp) {
+            const data = {
+                name: name,
+                created: timestamp,
+                tree_type: activeTreeType,
+                root_id: rootId,
+                nodes: nodes.map(n => ({
+                    id: n.id,
+                    title: n.title,
+                    x: n.x,
+                    y: n.y,
+                    depth: n.depth,
+                    parent_id: n.parent_id
+                })),
+                edges: edges.map(e => ({
+                    source_id: e.source_id,
+                    target_id: e.target_id,
+                    weight: e.weight
+                }))
+            };
+
+            downloadFile(JSON.stringify(data, null, 2), `${name}_${timestamp}.json`, 'application/json');
+            setStatus(`Exported ${nodes.length} nodes as JSON`);
+        }
+
+        function exportFreeMind(nodes, edges, rootId, name, timestamp) {
+            // FreeMind/Freeplane format - hierarchical XML
+            const nodeMap = {};
+            nodes.forEach(n => { nodeMap[n.id] = n; });
+
+            // Build children map
+            const children = {};
+            nodes.forEach(n => { children[n.id] = []; });
+            nodes.forEach(n => {
+                if (n.parent_id !== null && children[n.parent_id]) {
+                    children[n.parent_id].push(n);
+                }
+            });
+
+            const rootNode = nodeMap[rootId];
+
+            let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+            xml += '<map version="1.0.1">\n';
+            xml += '<!-- Exported from Density Manifold Explorer -->\n';
+
+            function writeNode(node, indent, isFirst) {
+                const spaces = '  '.repeat(indent);
+                let position = '';
+                if (indent === 1) {
+                    position = isFirst ? ' POSITION="right"' : ' POSITION="left"';
+                }
+                xml += `${spaces}<node TEXT="${escapeXml(node.title)}"${position}>\n`;
+
+                const nodeChildren = children[node.id] || [];
+                nodeChildren.forEach((child, i) => {
+                    writeNode(child, indent + 1, i < nodeChildren.length / 2);
+                });
+
+                xml += `${spaces}</node>\n`;
+            }
+
+            writeNode(rootNode, 0, true);
+            xml += '</map>\n';
+
+            downloadFile(xml, `${name}_${timestamp}.mm`, 'application/xml');
+            setStatus(`Exported ${nodes.length} nodes as FreeMind`);
+        }
+
+        function exportMermaid(nodes, edges, rootId, name, timestamp) {
+            // Mermaid flowchart format for GitHub/GitLab/Obsidian
+            const nodeMap = {};
+            nodes.forEach(n => { nodeMap[n.id] = n; });
+
+            // Build children map
+            const children = {};
+            nodes.forEach(n => { children[n.id] = []; });
+            nodes.forEach(n => {
+                if (n.parent_id !== null && children[n.parent_id]) {
+                    children[n.parent_id].push(n);
+                }
+            });
+
+            // Escape text for Mermaid (avoid special chars)
+            function escapeMermaid(text) {
+                return String(text)
+                    .replace(/"/g, "'")
+                    .replace(/\[/g, '(')
+                    .replace(/\]/g, ')')
+                    .replace(/</g, '(')
+                    .replace(/>/g, ')')
+                    .replace(/#/g, '')
+                    .replace(/\n/g, ' ');
+            }
+
+            let md = `# ${name}\n\n`;
+            md += `Generated: ${timestamp}\n\n`;
+            md += '```mermaid\nflowchart TD\n';
+
+            // Define root node with rounded shape
+            const rootNode = nodeMap[rootId];
+            md += `    ${rootId}(["${escapeMermaid(rootNode.title)}"])\n`;
+
+            // Define other nodes and connections
+            function writeNodes(node, depth) {
+                const nodeChildren = children[node.id] || [];
+                nodeChildren.forEach(child => {
+                    // Different shapes based on depth
+                    let shape;
+                    if (depth === 1) {
+                        shape = `[["${escapeMermaid(child.title)}"]]`; // Square
+                    } else if (depth === 2) {
+                        shape = `{{"${escapeMermaid(child.title)}"}}`; // Hexagon
+                    } else {
+                        shape = `["${escapeMermaid(child.title)}"]`; // Default
+                    }
+                    md += `    ${child.id}${shape}\n`;
+                    md += `    ${node.id} --> ${child.id}\n`;
+                    writeNodes(child, depth + 1);
+                });
+            }
+
+            writeNodes(rootNode, 1);
+            md += '```\n';
+
+            downloadFile(md, `${name}_${timestamp}.md`, 'text/markdown');
+            setStatus(`Exported ${nodes.length} nodes as Mermaid`);
+        }
+
+        function exportOPML(nodes, edges, rootId, name, timestamp) {
+            // OPML - Outline Processor Markup Language
+            const nodeMap = {};
+            nodes.forEach(n => { nodeMap[n.id] = n; });
+
+            // Build children map
+            const children = {};
+            nodes.forEach(n => { children[n.id] = []; });
+            nodes.forEach(n => {
+                if (n.parent_id !== null && children[n.parent_id]) {
+                    children[n.parent_id].push(n);
+                }
+            });
+
+            const rootNode = nodeMap[rootId];
+
+            let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+            xml += '<opml version="2.0">\n';
+            xml += '  <head>\n';
+            xml += `    <title>${escapeXml(name)}</title>\n`;
+            xml += '    <expansionState>0</expansionState>\n';
+            xml += '  </head>\n';
+            xml += '  <body>\n';
+
+            function writeOutline(node, indent) {
+                const spaces = '  '.repeat(indent);
+                const nodeChildren = children[node.id] || [];
+
+                if (nodeChildren.length > 0) {
+                    xml += `${spaces}<outline text="${escapeXml(node.title)}">\n`;
+                    nodeChildren.forEach(child => writeOutline(child, indent + 1));
+                    xml += `${spaces}</outline>\n`;
+                } else {
+                    xml += `${spaces}<outline text="${escapeXml(node.title)}"/>\n`;
+                }
+            }
+
+            writeOutline(rootNode, 2);
+            xml += '  </body>\n';
+            xml += '</opml>\n';
+
+            downloadFile(xml, `${name}_${timestamp}.opml`, 'application/xml');
+            setStatus(`Exported ${nodes.length} nodes as OPML`);
+        }
+
+        function exportGraphML(nodes, edges, rootId, name, timestamp) {
+            // GraphML - yEd compatible
+            const scale = 100;
+            const fillColors = [
+                "#E8E8E8", "#FFD6D6", "#FFE8D6", "#FFFFD6",
+                "#D6FFD6", "#D6FFFF", "#D6D6FF", "#FFD6FF"
+            ];
+
+            let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+            xml += '<graphml xmlns="http://graphml.graphdrawing.org/xmlns"\n';
+            xml += '         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n';
+            xml += '         xmlns:y="http://www.yworks.com/xml/graphml"\n';
+            xml += '         xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://www.yworks.com/xml/schema/graphml/1.1/ygraphml.xsd">\n';
+            xml += '  <key for="node" id="d0" yfiles.type="nodegraphics"/>\n';
+            xml += '  <key for="edge" id="d1" yfiles.type="edgegraphics"/>\n';
+            xml += `  <graph id="${escapeXml(name)}" edgedefault="directed">\n`;
+
+            // Write nodes
+            nodes.forEach(node => {
+                const fill = fillColors[node.depth % fillColors.length];
+                const width = Math.max(80, node.title.length * 7 + 20);
+                const height = 30;
+                const x = node.x * scale;
+                const y = node.y * scale;
+
+                xml += `    <node id="n${node.id}">\n`;
+                xml += '      <data key="d0">\n';
+                xml += '        <y:ShapeNode>\n';
+                xml += `          <y:Geometry x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${width.toFixed(1)}" height="${height.toFixed(1)}"/>\n`;
+                xml += `          <y:Fill color="${fill}" transparent="false"/>\n`;
+                xml += '          <y:BorderStyle type="line" width="1.0" color="#000000"/>\n';
+                xml += `          <y:NodeLabel>${escapeXml(node.title)}</y:NodeLabel>\n`;
+                xml += '          <y:Shape type="roundrectangle"/>\n';
+                xml += '        </y:ShapeNode>\n';
+                xml += '      </data>\n';
+                xml += '    </node>\n';
+            });
+
+            // Write edges
+            edges.forEach((edge, i) => {
+                xml += `    <edge id="e${i}" source="n${edge.source_id}" target="n${edge.target_id}">\n`;
+                xml += '      <data key="d1">\n';
+                xml += '        <y:PolyLineEdge>\n';
+                xml += '          <y:LineStyle type="line" width="1.0" color="#000000"/>\n';
+                xml += '          <y:Arrows source="none" target="standard"/>\n';
+                xml += '        </y:PolyLineEdge>\n';
+                xml += '      </data>\n';
+                xml += '    </edge>\n';
+            });
+
+            xml += '  </graph>\n';
+            xml += '</graphml>\n';
+
+            downloadFile(xml, `${name}_${timestamp}.graphml`, 'application/xml');
+            setStatus(`Exported ${nodes.length} nodes as GraphML`);
+        }
+
+        function escapeXml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
+        }
+
+        function generateGuid() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            }).toUpperCase();
+        }
+
+        function downloadFile(content, filename, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // ============================================================
+        // Rendering
+        // ============================================================
+        function renderPlot() {
+            if (!currentData) return;
+
+            const traces = [];
+            const grid = currentData.density_grid;
+
+            // Grid coordinates
+            const xi = linspace(grid.x_min, grid.x_max, grid.grid_size);
+            const yi = linspace(grid.y_min, grid.y_max, grid.grid_size);
+
+            // Heatmap
+            traces.push({
+                type: 'heatmap', z: grid.values, x: xi, y: yi,
+                colorscale: 'Viridis', showscale: true,
+                colorbar: { title: 'Density' }, hoverinfo: 'skip', opacity: 0.8
+            });
+
+            // Contours
+            if (controls.showContours.checked) {
+                traces.push({
+                    type: 'contour', z: grid.values, x: xi, y: yi,
+                    showscale: false, contours: { coloring: 'lines', showlabels: false },
+                    line: { width: 1, color: 'white' }, opacity: 0.5, hoverinfo: 'skip'
+                });
+            }
+
+            // Tree
+            const tree = currentData.trees ? currentData.trees[activeTreeType] : currentData.tree;
+            if (controls.showTree.checked && tree) {
+                const maxDepth = parseInt(controls.maxDepth.value);
+                const nodeMap = {};
+                tree.nodes.forEach(n => nodeMap[n.id] = n);
+
+                // Collect arrow positions and angles
+                const arrowX = [];
+                const arrowY = [];
+                const arrowAngles = [];
+
+                for (const edge of tree.edges) {
+                    const source = nodeMap[edge.source_id];
+                    const target = nodeMap[edge.target_id];
+                    if (target.depth <= maxDepth) {
+                        traces.push({
+                            type: 'scatter', x: [source.x, target.x], y: [source.y, target.y],
+                            mode: 'lines', line: { color: 'cyan', width: 1 },
+                            opacity: 0.6, hoverinfo: 'skip', showlegend: false
+                        });
+
+                        // Calculate arrow position and angle based on mode
+                        if (controls.showArrows.checked) {
+                            const mode = controls.arrowMode.value;
+                            const t = 0.7;  // Position along edge
+                            const ax = source.x + t * (target.x - source.x);
+                            const ay = source.y + t * (target.y - source.y);
+
+                            let angle;
+                            if (mode === 'radial') {
+                                // Point away from root position
+                                const root = nodeMap[tree.root_id];
+                                angle = Math.atan2(ay - root.y, ax - root.x) * 180 / Math.PI;
+                            } else {
+                                // Hierarchical: point from parent to child (general → specific)
+                                angle = Math.atan2(target.y - source.y, target.x - source.x) * 180 / Math.PI;
+                            }
+
+                            arrowX.push(ax);
+                            arrowY.push(ay);
+                            arrowAngles.push(angle);
+                        }
+                    }
+                }
+
+                // Add arrowheads as a single trace
+                if (controls.showArrows.checked && arrowX.length > 0) {
+                    traces.push({
+                        type: 'scatter',
+                        x: arrowX,
+                        y: arrowY,
+                        mode: 'markers',
+                        marker: {
+                            size: 8,
+                            color: 'cyan',
+                            symbol: arrowAngles.map(a => `triangle-right`),
+                            angle: arrowAngles,
+                            opacity: 0.8
+                        },
+                        hoverinfo: 'skip',
+                        showlegend: false
+                    });
+                }
+
+                // Root
+                const root = nodeMap[tree.root_id];
+                traces.push({
+                    type: 'scatter', x: [root.x], y: [root.y],
+                    mode: 'markers', marker: { size: 15, color: 'cyan', symbol: 'square' },
+                    name: `Root: ${root.title.substring(0, 25)}`,
+                    hoverinfo: 'text', hovertext: root.title
+                });
+            }
+
+            // Points
+            if (controls.showPoints.checked) {
+                traces.push({
+                    type: 'scatter',
+                    x: currentData.points.map(p => p.x),
+                    y: currentData.points.map(p => p.y),
+                    mode: 'markers', marker: { size: 6, color: 'red', opacity: 0.7 },
+                    name: `Points (n=${currentData.n_points})`,
+                    hoverinfo: 'text', hovertext: currentData.points.map(p => p.title)
+                });
+            }
+
+            // Highlighted node (from search)
+            if (highlightedNodeId !== null) {
+                const highlightedNode = currentData.points.find(p => p.id === highlightedNodeId);
+                if (highlightedNode) {
+                    traces.push({
+                        type: 'scatter',
+                        x: [highlightedNode.x],
+                        y: [highlightedNode.y],
+                        mode: 'markers+text',
+                        marker: { size: 16, color: '#00ff00', symbol: 'circle', line: { width: 2, color: 'white' } },
+                        text: [highlightedNode.title],
+                        textposition: 'top center',
+                        textfont: { size: 11, color: '#00ff00' },
+                        name: 'Selected',
+                        hoverinfo: 'text',
+                        hovertext: [highlightedNode.title],
+                        showlegend: false
+                    });
+                }
+            }
+
+            // Peaks
+            if (controls.showPeaks.checked && currentData.peaks) {
+                traces.push({
+                    type: 'scatter',
+                    x: currentData.peaks.map(p => p.x),
+                    y: currentData.peaks.map(p => p.y),
+                    mode: 'markers+text',
+                    marker: { size: 12, color: 'yellow', symbol: 'star' },
+                    text: currentData.peaks.map(p => p.title.substring(0, 20)),
+                    textposition: 'top center',
+                    textfont: { size: 10, color: 'white' },
+                    name: 'Density Peaks',
+                    hoverinfo: 'text',
+                    hovertext: currentData.peaks.map(p => `${p.title} (density: ${p.density.toFixed(2)})`)
+                });
+            }
+
+            const layout = {
+                title: `Density Manifold (${currentData.n_points} points)`,
+                xaxis: { title: `SVD 1 (${currentData.projection.variance_explained[0].toFixed(1)}%)`, scaleanchor: 'y' },
+                yaxis: { title: `SVD 2 (${currentData.projection.variance_explained[1].toFixed(1)}%)` },
+                showlegend: true, legend: { yanchor: 'top', y: 0.99, xanchor: 'right', x: 0.99 },
+                paper_bgcolor: '#1a1a2e', plot_bgcolor: '#1a1a2e', font: { color: '#eee' },
+                uirevision: 'preserve'  // Preserves zoom/pan across updates
+            };
+
+            Plotly.react('plot', traces, layout, { responsive: true });
+
+            // Attach click handler for custom projection mode
+            document.getElementById('plot').removeAllListeners?.('plotly_click');
+            document.getElementById('plot').on('plotly_click', handlePlotClick);
+        }
+
+        function linspace(start, end, num) {
+            const arr = [], step = (end - start) / (num - 1);
+            for (let i = 0; i < num; i++) arr.push(start + step * i);
+            return arr;
+        }
+
+        // ============================================================
+        // Info & Status
+        // ============================================================
+        function updateInfo() {
+            if (!currentData) return;
+            document.getElementById('infoPoints').textContent = currentData.n_points;
+            document.getElementById('infoBandwidth').textContent = currentData.density_grid.bandwidth.toFixed(3);
+            document.getElementById('infoTree').textContent = activeTreeType;
+
+            if (currentData.projection.custom_axis) {
+                document.getElementById('infoVar1').textContent = 'Custom';
+                document.getElementById('infoVar2').textContent = 'Axis';
+            } else {
+                document.getElementById('infoVar1').textContent = currentData.projection.variance_explained[0].toFixed(1) + '%';
+                document.getElementById('infoVar2').textContent = currentData.projection.variance_explained[1].toFixed(1) + '%';
+            }
+        }
+
+        function updatePeaksList() {
+            const list = document.getElementById('peaksList');
+            if (!currentData?.peaks?.length) { list.innerHTML = ''; return; }
+            list.innerHTML = '<h2>Peaks</h2>' + currentData.peaks.map((p, i) => `
+                <div class="peak-item" onclick="focusPeak(${i})">
+                    <span class="name">${i + 1}. ${p.title}</span>
+                    <span class="density">density: ${p.density.toFixed(3)}</span>
+                </div>
+            `).join('');
+        }
+
+        function focusPeak(index) {
+            const peak = currentData.peaks[index];
+            // Could zoom to peak location
+            console.log('Focus peak:', peak);
+        }
+
+        function setStatus(text, type = '') {
+            statusText.textContent = text;
+            document.getElementById('status').className = 'status ' + type;
+        }
+
+        // ============================================================
+        // Recompute (Pyodide)
+        // ============================================================
+        async function recompute() {
+            if (!pyodideReady) return;
+
+            computeBtn.disabled = true;
+            setStatus('Computing...', 'loading');
+
+            try {
+                const nPoints = parseInt(controls.nPoints.value);
+                const bandwidth = parseFloat(controls.bandwidth.value);
+                const gridSize = parseInt(controls.gridSize.value);
+
+                // Pass root title if one is selected
+                const rootTitle = selectedNode ? selectedNode.title : null;
+                const rootArg = rootTitle ? `"${rootTitle.replace(/"/g, '\\"')}"` : 'None';
+
+                const result = await pyodide.runPythonAsync(`
+import json
+embeddings, titles = get_embeddings(${nPoints}, root_title=${rootArg})
+_used_real = has_real_embeddings()
+data = compute_density_manifold(embeddings, titles, bandwidth=${bandwidth}, grid_size=${gridSize}, n_peaks=5)
+json.dumps({'data': data, 'used_real': _used_real})
+                `);
+
+                const parsed = JSON.parse(result);
+                currentData = parsed.data;
+                const usedReal = parsed.used_real;
+
+                // Clear original trees since we have fresh ones
+                originalTrees = null;
+
+                // Re-apply custom root if one was selected
+                if (selectedNode) {
+                    // Find the node in new data (might have different index)
+                    const newNode = currentData.points.find(p => p.title === selectedNode.title);
+                    if (newNode) {
+                        // Store originals before re-rooting
+                        if (currentData.trees) {
+                            originalTrees = JSON.parse(JSON.stringify(currentData.trees));
+                            for (const tree of Object.values(currentData.trees)) {
+                                rerootTree(tree, newNode.id);
+                            }
+                        } else if (currentData.tree) {
+                            originalTrees = { [activeTreeType]: JSON.parse(JSON.stringify(currentData.tree)) };
+                            rerootTree(currentData.tree, newNode.id);
+                        }
+                        // Update selectedNode to new reference
+                        selectedNode = newNode;
+                        selectNodeForRoot(newNode);
+                    }
+                }
+
+                renderPlot();
+                updateInfo();
+                updateTreeToggle();
+                updatePeaksList();
+                const rootMsg = selectedNode ? ` centered on "${selectedNode.title}"` : '';
+                setStatus(`Recomputed ${nPoints} points (${usedReal ? 'real' : 'demo'})${rootMsg}`);
+
+            } catch (error) {
+                setStatus(`Error: ${error.message}`, 'error');
+                console.error(error);
+            } finally {
+                computeBtn.disabled = false;
+            }
+        }
+
+        // ============================================================
+        // Start
+        // ============================================================
+        init();
+    </script>
+</body>
+</html>
