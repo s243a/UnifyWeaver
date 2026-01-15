@@ -838,6 +838,35 @@ MST's average branching of ~2 is fine, but max depth of 21 reveals the problem: 
 
 Fisher is the default because it's faster and produces equivalent tree structures in practice. BERT is available for users who want the information-theoretically correct entropy measure.
 
+**BERT Model Selection:**
+
+When using BERT entropy (`use_bert_entropy=True`), you can specify which transformer model:
+
+```python
+builder = JGuidedTreeBuilder(
+    embeddings=embeddings,
+    texts=titles,
+    use_bert_entropy=True,
+    entropy_model='answerdotai/ModernBERT-base',  # default
+    # Or use older BERT:
+    # entropy_model='bert-base-uncased',
+)
+```
+
+Any HuggingFace model with a masked LM head works (BERT, RoBERTa, ModernBERT, etc.).
+
+**Note:** BERT entropy requires `transformers` and `torch`. On older Linux distributions, the system Python may lack required dependencies. Use a virtual environment:
+
+```bash
+# Create virtual environment (recommended for older Linux)
+python3 -m venv .hf-env
+source .hf-env/bin/activate
+pip install transformers torch
+
+# Run with BERT entropy
+python3 scripts/mindmap/test_j_guided_tree.py --top-k 300 --use-bert
+```
+
 **Distance Metrics:**
 
 | Metric | Formula | Default | Notes |
