@@ -876,7 +876,7 @@ python3 scripts/mindmap/test_j_guided_tree.py --top-k 300 --use-bert
 | cosine | 1-cos(θ) | No | Poor small-angle resolution |
 | sqeuclidean | ‖a-b‖² | No | Quadratic, avoids sqrt |
 
-Test results on the Wikipedia physics subset showed identical tree structures across all metrics. The test (`scripts/mindmap/test_j_guided_tree.py`) used top-300 articles matching "physics" selected using 384-dim MiniLM embeddings from the [Cohere Wikipedia embeddings dataset](https://huggingface.co/datasets/Cohere/wikipedia-22-12-en-embeddings). Since all metrics are monotonic transformations of each other, they produce the same `argmin` for parent selection. Differences only arise in numerical precision for edge cases with near-equal distances.
+Test results on the Wikipedia physics subset showed identical tree structures across all metrics. The test (`scripts/mindmap/test_j_guided_tree.py`) used top-300 articles matching "physics" selected using 384-dim MiniLM embeddings from the [Cohere Wikipedia embeddings dataset](https://huggingface.co/datasets/Cohere/wikipedia-22-12-en-embeddings). While distance values do appear in the cost function J = D/(1+H), empirically the different metrics produced the same parent selections on this dataset. Different metrics may produce different results on other datasets or edge cases, aside from numerical precision differences.
 
 **Intermediate Node Detection:**
 
