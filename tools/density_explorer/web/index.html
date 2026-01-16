@@ -2174,6 +2174,13 @@ json.dumps(data)
                 xml += `x="${x}" y="${y}" palette="${palette}" colorinfo="${palette}" `;
                 xml += `text="${escapeXml(node.title)}">\n`;
 
+                // Add arrow from parent to child (for non-root nodes)
+                if (!isRoot) {
+                    xml += `        <parent-relation guid="${generateGuid()}">\n`;
+                    xml += '          <style target-arrow="filledArrow"/>\n';
+                    xml += '        </parent-relation>\n';
+                }
+
                 // Add Wikipedia link
                 xml += `        <link urllink="${escapeXml(wikiUrl)}"/>\n`;
 
