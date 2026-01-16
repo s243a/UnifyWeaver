@@ -892,6 +892,49 @@ def compute_density_grid(points_2d, bandwidth=None, grid_size=100, padding=0.1):
     return {'x_min': float(x_min), 'x_max': float(x_max), 'y_min': float(y_min), 'y_max': float(y_max),
             'grid_size': grid_size, 'values': Z.tolist(), 'bandwidth': float(bandwidth)}
 
+def compute_fisher_entropy(embeddings, k=10):
+    """
+    Compute Fisher-based entropy for each node using local density.
+    Higher density = more general concept = lower entropy
+    Lower density = more specific concept = higher entropy
+    """
+    n = len(embeddings)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    emb_norm = embeddings / (norms + 1e-8)
+
+    # Compute pairwise distances
+    diff = emb_norm[:, np.newaxis, :] - emb_norm[np.newaxis, :, :]
+    dist_matrix = np.sqrt((diff ** 2).sum(axis=2))
+
+    # k-NN density: inverse of average distance to k nearest neighbors
+    k_actual = min(k, n - 1)
+    knn_dists = np.sort(dist_matrix, axis=1)[:, 1:k_actual+1]  # Exclude self
+    avg_knn_dist = knn_dists.mean(axis=1)
+    density = 1.0 / (avg_knn_dist + 1e-8)
+
+    # Fisher entropy: log(1/density) = -log(density)
+    # Normalize to 0-1 range for easier use
+    entropy = -np.log(density + 1e-8)
+    entropy = (entropy - entropy.min()) / (entropy.max() - entropy.min() + 1e-8)
+
+    return entropy
+
+# Storage for external entropy data (optional)
+_external_entropy = None
+
+def set_external_entropy(entropy_dict):
+    """Set externally computed entropy/probability data."""
+    global _external_entropy
+    _external_entropy = entropy_dict
+    print(f"Loaded external entropy for {len(entropy_dict)} nodes")
+
+def get_node_entropy(node_id, fisher_entropy):
+    """Get entropy for a node, preferring external data if available."""
+    global _external_entropy
+    if _external_entropy is not None and node_id in _external_entropy:
+        return float(_external_entropy[node_id])
+    return float(fisher_entropy[node_id])
+
 def build_mst_tree(embeddings, points_2d, titles=None):
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     emb_norm = embeddings / (norms + 1e-8)
@@ -915,12 +958,18 @@ def build_mst_tree(embeddings, points_2d, titles=None):
                 visited.add(neighbor)
                 parent[neighbor], depth[neighbor] = node, depth[node] + 1
                 queue.append(neighbor)
+
+    # Compute Fisher entropy for each node
+    fisher_entropy = compute_fisher_entropy(embeddings)
+
     nodes, edges = [], []
     for i in range(len(embeddings)):
         p_id = parent.get(i)
+        node_ent = get_node_entropy(i, fisher_entropy)
         nodes.append({'id': i, 'title': titles[i] if titles else f"Node {i}",
                       'parent_id': int(p_id) if p_id is not None else None,
-                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])})
+                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1]),
+                      'entropy': node_ent})
         if p_id is not None:
             edges.append({'source_id': int(p_id), 'target_id': i, 'weight': float(cos_dist[i, p_id])})
     return {'nodes': nodes, 'edges': edges, 'root_id': root, 'tree_type': 'mst'}
@@ -945,12 +994,21 @@ def build_j_guided_tree(embeddings, points_2d, titles=None, k_neighbors=10):
             if d < min_dist: min_dist, best_parent = d, placed_node
         parent[idx], depth[idx] = best_parent, depth[best_parent] + 1
         placed.add(idx)
+
+    # Compute Fisher entropy from density (already computed above)
+    # entropy = -log(density), normalized to 0-1
+    log_density = np.log(density + 1e-8)
+    fisher_entropy = -log_density
+    fisher_entropy = (fisher_entropy - fisher_entropy.min()) / (fisher_entropy.max() - fisher_entropy.min() + 1e-8)
+
     nodes, edges = [], []
     for i in range(n):
         p_id = parent.get(i)
+        node_ent = get_node_entropy(i, fisher_entropy)
         nodes.append({'id': i, 'title': titles[i] if titles else f"Node {i}",
                       'parent_id': int(p_id) if p_id is not None else None,
-                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])})
+                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1]),
+                      'entropy': node_ent})
         if p_id is not None:
             edges.append({'source_id': int(p_id), 'target_id': i, 'weight': float(dist_matrix[i, p_id])})
     return {'nodes': nodes, 'edges': edges, 'root_id': root, 'tree_type': 'j-guided'}
@@ -2174,10 +2232,20 @@ json.dumps(data)
                 xml += `x="${x}" y="${y}" palette="${palette}" colorinfo="${palette}" `;
                 xml += `text="${escapeXml(node.title)}">\n`;
 
-                // Add arrow pointing toward parent/root (for non-root nodes)
-                if (!isRoot) {
+                // Add arrow based on entropy: flows from general (low entropy) to specific (high entropy)
+                if (!isRoot && parentId !== -1) {
+                    const parentNode = nodeMap[parentId];
+                    const childEntropy = node.entropy || 0;
+                    const parentEntropy = parentNode?.entropy || 0;
+
                     xml += `        <parent-relation guid="${generateGuid()}">\n`;
-                    xml += '          <style source-arrow="filledArrow"/>\n';
+                    if (parentEntropy < childEntropy) {
+                        // Parent is more general → arrow points to child (target-arrow)
+                        xml += '          <style target-arrow="filledArrow"/>\n';
+                    } else {
+                        // Child is more general → arrow points to parent (source-arrow)
+                        xml += '          <style source-arrow="filledArrow"/>\n';
+                    }
                     xml += '        </parent-relation>\n';
                 }
 
