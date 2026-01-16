@@ -260,6 +260,128 @@ class ProjectionTransformer:
             'device': str(self.device),
         }
 
+    def export_onnx(self, path: str, opset_version: int = 14) -> dict:
+        """
+        Export model to ONNX format for browser deployment.
+
+        Args:
+            path: Output path for .onnx file
+            opset_version: ONNX opset version (default: 14 for broad compatibility)
+
+        Returns:
+            dict with export info (path, size, input/output shapes)
+        """
+        _import_torch()
+
+        self.eval_mode()
+
+        # Create dummy input matching expected shape
+        dummy_input = torch.randn(1, self.embed_dim).to(self.device)
+
+        # Create a wrapper module that combines all components
+        class ONNXWrapper(nn.Module):
+            def __init__(self, input_proj, encoder, output_proj):
+                super().__init__()
+                self.input_proj = input_proj
+                self.encoder = encoder
+                self.output_proj = output_proj
+
+            def forward(self, x):
+                x = self.input_proj(x).unsqueeze(1)
+                x = self.encoder(x)
+                x = x.squeeze(1)
+                x = self.output_proj(x)
+                return x
+
+        wrapper = ONNXWrapper(self.input_proj, self.encoder, self.output_proj)
+        wrapper.eval()
+
+        # Export to ONNX
+        torch.onnx.export(
+            wrapper,
+            dummy_input,
+            path,
+            export_params=True,
+            opset_version=opset_version,
+            do_constant_folding=True,
+            input_names=['query_embedding'],
+            output_names=['projected_embedding'],
+            dynamic_axes={
+                'query_embedding': {0: 'batch_size'},
+                'projected_embedding': {0: 'batch_size'}
+            }
+        )
+
+        # Get file size
+        import os
+        file_size = os.path.getsize(path)
+
+        info = {
+            'path': path,
+            'size_bytes': file_size,
+            'size_mb': file_size / (1024 * 1024),
+            'opset_version': opset_version,
+            'input_shape': ['batch_size', self.embed_dim],
+            'output_shape': ['batch_size', self.embed_dim],
+        }
+
+        logger.info(f"Exported ONNX model to {path} ({info['size_mb']:.2f} MB)")
+        return info
+
+    def verify_onnx(self, onnx_path: str, test_input: Optional[np.ndarray] = None, rtol: float = 1e-4) -> dict:
+        """
+        Verify ONNX export matches PyTorch output.
+
+        Args:
+            onnx_path: Path to exported .onnx file
+            test_input: Optional test input (default: random)
+            rtol: Relative tolerance for comparison
+
+        Returns:
+            dict with verification results
+        """
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            logger.warning("onnxruntime not installed, skipping verification")
+            return {'verified': False, 'error': 'onnxruntime not installed'}
+
+        _import_torch()
+
+        # Create test input
+        if test_input is None:
+            test_input = np.random.randn(5, self.embed_dim).astype(np.float32)
+
+        # Get PyTorch output
+        self.eval_mode()
+        with torch.no_grad():
+            pt_input = torch.from_numpy(test_input).to(self.device)
+            pt_output = self.forward(pt_input).cpu().numpy()
+
+        # Get ONNX output
+        session = ort.InferenceSession(onnx_path)
+        onnx_output = session.run(None, {'query_embedding': test_input})[0]
+
+        # Compare
+        max_diff = np.max(np.abs(pt_output - onnx_output))
+        mean_diff = np.mean(np.abs(pt_output - onnx_output))
+        matches = np.allclose(pt_output, onnx_output, rtol=rtol)
+
+        result = {
+            'verified': matches,
+            'max_diff': float(max_diff),
+            'mean_diff': float(mean_diff),
+            'rtol': rtol,
+            'test_samples': len(test_input)
+        }
+
+        if matches:
+            logger.info(f"ONNX verification passed (max_diff={max_diff:.6f})")
+        else:
+            logger.warning(f"ONNX verification failed (max_diff={max_diff:.6f})")
+
+        return result
+
 
 def train_distillation(
     transformer: ProjectionTransformer,
