@@ -41,8 +41,8 @@ def suggest_cluster_count(embeddings: np.ndarray, method: str = "effective_rank"
 
     Args:
         embeddings: Data embeddings (N x D)
-        method: One of 'effective_rank', 'covering_80pct', 'sqrt_n', 'auto'
-        target_variance: Variance threshold for covering method
+        method: One of 'effective_rank', 'covering', 'sqrt_n', 'auto'
+        target_variance: Variance threshold for covering method (e.g., 0.80 for 80%)
 
     Returns:
         Dict with 'suggested_k' and analysis details
@@ -65,14 +65,14 @@ def suggest_cluster_count(embeddings: np.ndarray, method: str = "effective_rank"
 
     suggestions = {
         'effective_rank': effective_rank,
-        'covering_80pct': covering_k,
+        'covering': covering_k,
         'sqrt_n': sqrt_k,
     }
 
     # Select based on method
     if method == "effective_rank":
         suggested_k = effective_rank
-    elif method == "covering_80pct":
+    elif method == "covering":
         suggested_k = covering_k
     elif method == "sqrt_n":
         suggested_k = sqrt_k
@@ -84,11 +84,13 @@ def suggest_cluster_count(embeddings: np.ndarray, method: str = "effective_rank"
     return {
         'suggested_k': suggested_k,
         'method': method,
+        'target_variance': target_variance,
         'all_suggestions': suggestions,
         'variance_dims': {
             'r_50pct': int(np.searchsorted(cumvar, 0.50) + 1),
             'r_80pct': int(np.searchsorted(cumvar, 0.80) + 1),
             'r_90pct': int(np.searchsorted(cumvar, 0.90) + 1),
+            f'r_{int(target_variance*100)}pct': r,
         }
     }
 
@@ -769,9 +771,11 @@ def main():
     parser.add_argument("--max-clusters", type=int, default=None,
                        help="Maximum number of clusters (overrides --cluster-criterion)")
     parser.add_argument("--cluster-criterion",
-                       choices=["effective_rank", "covering_80pct", "sqrt_n", "auto"],
+                       choices=["effective_rank", "covering", "sqrt_n", "auto"],
                        default="effective_rank",
-                       help="Method to determine cluster count: 'effective_rank' (recommended), 'covering_80pct', 'sqrt_n', or 'auto'")
+                       help="Method to determine cluster count: 'effective_rank' (recommended), 'covering' (2^r), 'sqrt_n', or 'auto'")
+    parser.add_argument("--target-variance", type=float, default=0.80,
+                       help="Target variance for 'covering' criterion (default: 0.80 = 80%%)")
     parser.add_argument("--min-cluster-size", type=int, default=10,
                        help="Minimum cluster size - smaller clusters are merged (for MST method)")
     parser.add_argument("--model", type=str, default="nomic-ai/nomic-embed-text-v1.5",
@@ -820,13 +824,14 @@ def main():
     else:
         # Use cluster criterion to determine K
         logger.info(f"Analyzing embeddings to determine cluster count (method: {args.cluster_criterion})...")
-        suggestion = suggest_cluster_count(A_emb, method=args.cluster_criterion)
+        suggestion = suggest_cluster_count(A_emb, method=args.cluster_criterion, target_variance=args.target_variance)
         max_clusters = suggestion['suggested_k']
 
+        var_pct = int(args.target_variance * 100)
         logger.info("=" * 50)
         logger.info("Cluster Count Suggestions:")
         logger.info(f"  Effective rank (recommended): {suggestion['all_suggestions']['effective_rank']}")
-        logger.info(f"  Covering (80% variance):      {suggestion['all_suggestions']['covering_80pct']}")
+        logger.info(f"  Covering ({var_pct}% variance):      {suggestion['all_suggestions']['covering']}")
         logger.info(f"  √N heuristic:                 {suggestion['all_suggestions']['sqrt_n']}")
         logger.info(f"  → Using {args.cluster_criterion}: K = {max_clusters}")
         logger.info("=" * 50)

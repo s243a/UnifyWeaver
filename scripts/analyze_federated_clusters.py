@@ -4,15 +4,20 @@ Analyze Federated Model Clusters and Suggest Refinement.
 
 Analyzes centroid similarity and suggests optimal cluster count based on:
 1. Effective rank (recommended) - spectral participation ratio
-2. Covering number - 2^r where r captures 80% variance
+2. Covering number - 2^r where r captures target variance (configurable)
 3. √N heuristic - common K-means rule of thumb
+
+The covering number relates to intrinsic dimensionality:
+- Higher target variance → more dimensions needed (larger r) → more clusters (2^r)
+- Data with more spread variance → more dimensions needed → more clusters
 
 Usage:
     python3 scripts/analyze_federated_clusters.py models/federated.pkl
     python3 scripts/analyze_federated_clusters.py models/federated.pkl --refine
     python3 scripts/analyze_federated_clusters.py models/federated.pkl --refine --target 100
+    python3 scripts/analyze_federated_clusters.py models/federated.pkl --target-variance 0.95
 
-See docs/proposals/DISTILLATION_MODES.md for theory.
+See docs/CLUSTER_COUNT_THEORY.md for theory.
 """
 
 import sys
@@ -31,13 +36,14 @@ if not hasattr(np, '_core'):
     sys.modules['numpy._core.multiarray'] = np.core.multiarray
 
 
-def analyze_centroids(centroids: np.ndarray, temperature: float = 0.1) -> dict:
+def analyze_centroids(centroids: np.ndarray, temperature: float = 0.1, target_variance: float = 0.80) -> dict:
     """
     Analyze centroid distribution and suggest optimal cluster count.
 
     Args:
         centroids: Cluster centroids (K x D)
         temperature: Softmax temperature for routing
+        target_variance: Variance threshold for covering method (default: 0.80)
 
     Returns:
         Analysis results with suggestions
@@ -51,9 +57,10 @@ def analyze_centroids(centroids: np.ndarray, temperature: float = 0.1) -> dict:
     # 1. Effective rank (participation ratio)
     effective_rank = int((np.sum(S)**2) / np.sum(S**2))
 
-    # 2. Covering number (2^r for 80% variance)
-    r_80 = int(np.searchsorted(cumvar, 0.80) + 1)
-    covering_k = 2 ** min(r_80, 10)  # Cap at 2^10=1024
+    # 2. Covering number (2^r for target variance)
+    r_target = int(np.searchsorted(cumvar, target_variance) + 1)
+    covering_k = 2 ** min(r_target, 10)  # Cap at 2^10=1024
+    target_pct = int(target_variance * 100)
 
     # 3. √N heuristic
     sqrt_k = int(np.ceil(np.sqrt(K)))
@@ -93,13 +100,14 @@ def analyze_centroids(centroids: np.ndarray, temperature: float = 0.1) -> dict:
         'temperature': temperature,
         'suggestions': {
             'effective_rank': effective_rank,
-            'covering_80pct': covering_k,
+            'covering': covering_k,  # 2^r where r captures target_variance
             'sqrt_n': sqrt_k,
             'recommended': effective_rank  # Default recommendation
         },
+        'target_variance': target_variance,
         'variance_analysis': {
             'r_50pct': int(np.searchsorted(cumvar, 0.50) + 1),
-            'r_80pct': r_80,
+            'r_target': r_target,  # Dimensions for target_variance
             'r_90pct': int(np.searchsorted(cumvar, 0.90) + 1),
             'r_95pct': int(np.searchsorted(cumvar, 0.95) + 1),
         },
@@ -124,14 +132,15 @@ def print_analysis(analysis: dict):
 
     print("\n--- Suggested Cluster Counts ---")
     sugg = analysis['suggestions']
+    target_pct = int(analysis['target_variance'] * 100)
     print(f"  1. Effective rank (recommended): K = {sugg['effective_rank']}")
-    print(f"  2. Covering (80% variance):      K = {sugg['covering_80pct']}")
+    print(f"  2. Covering ({target_pct}% variance):     K = {sugg['covering']}")
     print(f"  3. √N heuristic:                 K = {sugg['sqrt_n']}")
 
     print("\n--- Variance Analysis ---")
     var = analysis['variance_analysis']
     print(f"  Dimensions for 50% variance: r = {var['r_50pct']}")
-    print(f"  Dimensions for 80% variance: r = {var['r_80pct']}")
+    print(f"  Dimensions for {target_pct}% variance: r = {var['r_target']}")
     print(f"  Dimensions for 90% variance: r = {var['r_90pct']}")
     print(f"  Dimensions for 95% variance: r = {var['r_95pct']}")
 
@@ -268,6 +277,9 @@ def main():
     parser.add_argument("--merge-method", choices=["weighted_avg", "first"],
                        default="weighted_avg",
                        help="How to merge W matrices")
+    parser.add_argument("--target-variance", type=float, default=0.80,
+                       help="Target variance for 'covering' method (default: 0.80 = 80%%). "
+                            "Higher values capture more variance but suggest more clusters.")
 
     args = parser.parse_args()
 
@@ -285,7 +297,7 @@ def main():
     cluster_ids = meta["cluster_ids"]
 
     # Analyze
-    analysis = analyze_centroids(centroids, temperature)
+    analysis = analyze_centroids(centroids, temperature, target_variance=args.target_variance)
     print_analysis(analysis)
 
     if not args.refine:
@@ -300,7 +312,7 @@ def main():
         if args.method == "effective_rank":
             target_k = sugg['effective_rank']
         elif args.method == "covering":
-            target_k = sugg['covering_80pct']
+            target_k = sugg['covering']
         elif args.method == "sqrt_n":
             target_k = sugg['sqrt_n']
         else:
