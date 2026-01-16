@@ -89,13 +89,18 @@ where r is the intrinsic dimensionality (dimensions for target variance).
 
 ### Calculation
 
-We find r such that the top r singular values capture 80% of variance:
+We find r such that the top r singular values capture the target variance (configurable, default 80%):
 
 ```python
 cumvar = cumsum(σ²) / sum(σ²)
-r = argmin(cumvar >= 0.80) + 1
+r = argmin(cumvar >= target_variance) + 1
 K = 2^r  # Binary discretization per dimension
 ```
+
+**Relationship between target variance and cluster count:**
+- Higher target variance (e.g., 95% vs 80%) → more dimensions needed → larger r → **more clusters**
+- Lower target variance (e.g., 50%) → fewer dimensions needed → smaller r → **fewer clusters**
+- This makes intuitive sense: capturing more variance requires finer-grained clustering
 
 ### References
 
@@ -154,8 +159,10 @@ Best for: Quick estimation when you don't need precise intrinsic dimensionality 
 | Method | Formula | Theoretical Grounding | Computational Cost |
 |--------|---------|----------------------|-------------------|
 | Effective rank | (Σσ)²/Σσ² | Spectral theory, information theory | O(K³) for SVD |
-| Covering (2^r) | 2^r where r = dim(80% var) | Metric geometry, manifold theory | O(K³) for SVD |
+| Covering (2^r) | 2^r where r = dim(target_var) | Metric geometry, manifold theory | O(K³) for SVD |
 | √N | √K | Heuristic, model selection | O(1) |
+
+Note: The covering method's target variance is configurable (default: 80%). Use `--target-variance` to adjust.
 
 ## Recommendation
 
