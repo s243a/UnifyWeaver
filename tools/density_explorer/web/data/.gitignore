@@ -1,0 +1,6 @@
+# Large model files - generate locally or download
+*.onnx
+
+# Keep sample data
+!physics.json
+!physics_nomic_embeddings.json

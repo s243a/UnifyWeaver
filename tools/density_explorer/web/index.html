@@ -2702,6 +2702,25 @@ json.dumps(data)
                 const rootTitle = selectedNode ? selectedNode.title : null;
                 const rootArg = rootTitle ? `"${rootTitle.replace(/"/g, '\\"')}"` : 'None';
 
+                // Check if we should apply projection blending
+                const blend = parseFloat(embedBlendSlider.value);
+                const useProjection = projectionSession && blend > 0 && currentData?.embeddings;
+
+                if (useProjection) {
+                    setStatus('Applying projection blend...', 'loading');
+                    const blendedEmbeddings = await applyProjectionToEmbeddings(currentData.embeddings);
+                    const titles = currentData.points.map(p => p.title);
+
+                    // Send blended embeddings to Pyodide
+                    pyodide.globals.set('_js_embeddings', blendedEmbeddings);
+                    pyodide.globals.set('_js_titles', titles);
+                    await pyodide.runPythonAsync(`
+set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
+                    `);
+                    console.log(`Loaded ${blendedEmbeddings.length} blended embeddings (blend=${blend})`);
+                    setStatus('Computing with blended embeddings...', 'loading');
+                }
+
                 const result = await pyodide.runPythonAsync(`
 import json
 embeddings, titles = get_embeddings(${nPoints}, root_title=${rootArg})
@@ -2743,7 +2762,8 @@ json.dumps({'data': data, 'used_real': _used_real})
                 updateTreeToggle();
                 updatePeaksList();
                 const rootMsg = selectedNode ? ` centered on "${selectedNode.title}"` : '';
-                setStatus(`Recomputed ${nPoints} points (${usedReal ? 'real' : 'demo'})${rootMsg}`);
+                const blendMsg = useProjection ? `, blend=${blend.toFixed(2)}` : '';
+                setStatus(`Recomputed ${nPoints} points (${usedReal ? 'real' : 'demo'}${blendMsg})${rootMsg}`);
 
             } catch (error) {
                 setStatus(`Error: ${error.message}`, 'error');
