@@ -35,6 +35,64 @@ from scipy.sparse.csgraph import minimum_spanning_tree, connected_components
 from scipy.sparse import csr_matrix
 
 
+def suggest_cluster_count(embeddings: np.ndarray, method: str = "effective_rank", target_variance: float = 0.80) -> dict:
+    """
+    Suggest optimal cluster count based on embedding structure.
+
+    Args:
+        embeddings: Data embeddings (N x D)
+        method: One of 'effective_rank', 'covering_80pct', 'sqrt_n', 'auto'
+        target_variance: Variance threshold for covering method
+
+    Returns:
+        Dict with 'suggested_k' and analysis details
+    """
+    N, D = embeddings.shape
+
+    # SVD analysis
+    U, S, Vt = np.linalg.svd(embeddings, full_matrices=False)
+    cumvar = np.cumsum(S**2) / np.sum(S**2)
+
+    # 1. Effective rank (participation ratio)
+    effective_rank = int((np.sum(S)**2) / np.sum(S**2))
+
+    # 2. Covering number (2^r for target variance)
+    r = int(np.searchsorted(cumvar, target_variance) + 1)
+    covering_k = 2 ** min(r, 10)  # Cap at 2^10=1024
+
+    # 3. √N heuristic
+    sqrt_k = int(np.ceil(np.sqrt(N)))
+
+    suggestions = {
+        'effective_rank': effective_rank,
+        'covering_80pct': covering_k,
+        'sqrt_n': sqrt_k,
+    }
+
+    # Select based on method
+    if method == "effective_rank":
+        suggested_k = effective_rank
+    elif method == "covering_80pct":
+        suggested_k = covering_k
+    elif method == "sqrt_n":
+        suggested_k = sqrt_k
+    elif method == "auto":
+        suggested_k = effective_rank  # Default to effective rank
+    else:
+        suggested_k = effective_rank
+
+    return {
+        'suggested_k': suggested_k,
+        'method': method,
+        'all_suggestions': suggestions,
+        'variance_dims': {
+            'r_50pct': int(np.searchsorted(cumvar, 0.50) + 1),
+            'r_80pct': int(np.searchsorted(cumvar, 0.80) + 1),
+            'r_90pct': int(np.searchsorted(cumvar, 0.90) + 1),
+        }
+    }
+
+
 class SimpleEmbedder:
     """Wraps SentenceTransformer for embedding."""
     
@@ -708,8 +766,12 @@ def main():
                        help="Transform mode: 'single' (1 W per cluster, ~70MB total) or 'per-query' (N W per cluster, ~15GB)")
     parser.add_argument("--max-memory-mb", type=float, default=800.0,
                        help="Max memory per cluster in MB (for per-query mode)")
-    parser.add_argument("--max-clusters", type=int, default=50,
-                       help="Maximum number of clusters (recommended: 50 for 6GB GPU)")
+    parser.add_argument("--max-clusters", type=int, default=None,
+                       help="Maximum number of clusters (overrides --cluster-criterion)")
+    parser.add_argument("--cluster-criterion",
+                       choices=["effective_rank", "covering_80pct", "sqrt_n", "auto"],
+                       default="effective_rank",
+                       help="Method to determine cluster count: 'effective_rank' (recommended), 'covering_80pct', 'sqrt_n', or 'auto'")
     parser.add_argument("--min-cluster-size", type=int, default=10,
                        help="Minimum cluster size - smaller clusters are merged (for MST method)")
     parser.add_argument("--model", type=str, default="nomic-ai/nomic-embed-text-v1.5",
@@ -750,7 +812,25 @@ def main():
         pass
     
     logger.info("Embedder released, starting training...")
-    
+
+    # Determine cluster count
+    if args.max_clusters is not None:
+        max_clusters = args.max_clusters
+        logger.info(f"Using specified max_clusters={max_clusters}")
+    else:
+        # Use cluster criterion to determine K
+        logger.info(f"Analyzing embeddings to determine cluster count (method: {args.cluster_criterion})...")
+        suggestion = suggest_cluster_count(A_emb, method=args.cluster_criterion)
+        max_clusters = suggestion['suggested_k']
+
+        logger.info("=" * 50)
+        logger.info("Cluster Count Suggestions:")
+        logger.info(f"  Effective rank (recommended): {suggestion['all_suggestions']['effective_rank']}")
+        logger.info(f"  Covering (80% variance):      {suggestion['all_suggestions']['covering_80pct']}")
+        logger.info(f"  √N heuristic:                 {suggestion['all_suggestions']['sqrt_n']}")
+        logger.info(f"  → Using {args.cluster_criterion}: K = {max_clusters}")
+        logger.info("=" * 50)
+
     # Train federated model
     model, cluster_targets, output_dir = train_federated(
         data, Q_emb, A_emb,
@@ -758,7 +838,7 @@ def main():
         cluster_method=args.cluster_method,
         transform_mode=args.transform_mode,
         max_memory_mb=args.max_memory_mb,
-        max_clusters=args.max_clusters,
+        max_clusters=max_clusters,
         min_cluster_size=args.min_cluster_size
     )
     
