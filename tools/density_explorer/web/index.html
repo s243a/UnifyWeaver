@@ -2174,10 +2174,10 @@ json.dumps(data)
                 xml += `x="${x}" y="${y}" palette="${palette}" colorinfo="${palette}" `;
                 xml += `text="${escapeXml(node.title)}">\n`;
 
-                // Add arrow from parent to child (for non-root nodes)
+                // Add arrow pointing toward parent/root (for non-root nodes)
                 if (!isRoot) {
                     xml += `        <parent-relation guid="${generateGuid()}">\n`;
-                    xml += '          <style target-arrow="filledArrow"/>\n';
+                    xml += '          <style source-arrow="filledArrow"/>\n';
                     xml += '        </parent-relation>\n';
                 }
 
