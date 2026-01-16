@@ -37,6 +37,8 @@
 :- dynamic user:test_cache_join_left/2.
 :- dynamic user:test_cache_join_right/2.
 :- dynamic user:test_cache_join_root/1.
+:- dynamic user:test_multi_bound_pattern_fact/3.
+:- dynamic user:test_multi_bound_pattern_cache/1.
 :- dynamic user:test_tiny_probe_fact/2.
 :- dynamic user:test_tiny_probe_param/2.
 :- dynamic user:test_sale_count/1.
@@ -178,6 +180,7 @@ test_csharp_query_target :-
         verify_parameterized_multi_key_join_strategy_partial_index,
         verify_multi_key_both_scan_join_strategy_partial_index,
         verify_both_scan_join_prefers_cached_fact_index,
+        verify_multi_constant_pattern_scan_prefers_fact_index,
         verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
@@ -292,6 +295,14 @@ setup_test_data :-
         ;   test_cache_join_left(Key, _),
             test_cache_join_right(Key, RightValue)
         )
+    )),
+    assertz(user:test_multi_bound_pattern_fact(alice, 1, b1)),
+    assertz(user:test_multi_bound_pattern_fact(alice, 2, b2)),
+    assertz(user:(test_multi_bound_pattern_cache(Value) :-
+        test_multi_bound_pattern_fact(alice, 1, Value)
+    )),
+    assertz(user:(test_multi_bound_pattern_cache(Value) :-
+        test_multi_bound_pattern_fact(alice, 2, Value)
     )),
     assertz(user:(test_sale_count(C) :- aggregate_all(count, test_sale(_, _), C))),
     assertz(user:(test_sale_avg_for_alice(Avg) :-
@@ -569,6 +580,8 @@ cleanup_test_data :-
     retractall(user:test_cache_join_left(_, _)),
     retractall(user:test_cache_join_right(_, _)),
     retractall(user:test_cache_join_root(_)),
+    retractall(user:test_multi_bound_pattern_fact(_, _, _)),
+    retractall(user:test_multi_bound_pattern_cache(_)),
     retractall(user:test_tiny_probe_fact(_, _)),
     retractall(user:test_tiny_probe_param(_, _)),
     retractall(user:test_sale_count(_)),
@@ -1364,6 +1377,17 @@ verify_both_scan_join_prefers_cached_fact_index :-
     sub_term(join{type:join, left:Left, right:Right, left_keys:[0], right_keys:[0], left_width:_, right_width:_, width:_}, Root),
     Left = relation_scan{type:relation_scan, predicate:predicate{name:test_cache_join_left, arity:2}, width:_},
     Right = relation_scan{type:relation_scan, predicate:predicate{name:test_cache_join_right, arity:2}, width:_},
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_hit_flag(ModuleClass, [], 'FactIndex', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['b1',
+         'b2',
+         'CACHE_HIT:FactIndex=true'],
+        [],
+        HarnessSource).
+
+verify_multi_constant_pattern_scan_prefers_fact_index :-
+    csharp_query_target:build_query_plan(test_multi_bound_pattern_cache/1, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     harness_source_with_cache_hit_flag(ModuleClass, [], 'FactIndex', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
