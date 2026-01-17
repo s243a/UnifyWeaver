@@ -289,6 +289,62 @@ Where W_folder is the orthogonal matrix minimizing ||X @ W - Y|| for all trees i
 - W matrices: ~150 MB (lazy-loaded from SQLite)
 - Peak memory: ~11 MB (k=5 candidates)
 
+### link_pearltrees.py
+
+Enrich exported .smmx mindmaps by attaching Pearltrees links to nodes.
+
+```bash
+# Basic usage - link by URL, title, and semantic matching
+python3 scripts/mindmap/link_pearltrees.py \
+  --mindmap output/physics_export.smmx \
+  --trees reports/pearltrees_targets_s243a.jsonl \
+  --pearls reports/pearltrees_targets_full_pearls.jsonl \
+  --url-db data/databases/children_index.db \
+  --threshold 0.7 \
+  --output output/physics_linked.smmx
+
+# With projection model for hierarchical matching
+python3 scripts/mindmap/link_pearltrees.py \
+  --mindmap output/physics_export.smmx \
+  --trees reports/pearltrees_targets_s243a.jsonl \
+  --embeddings datasets/pearltrees_combined_embeddings.npz \
+  --projection-model models/pearltrees_federated_nomic.pkl \
+  --output output/physics_linked.smmx \
+  --verbose
+
+# Dry run to preview matches
+python3 scripts/mindmap/link_pearltrees.py \
+  --mindmap output/physics_export.smmx \
+  --trees reports/pearltrees_targets_s243a.jsonl \
+  --dry-run --verbose
+```
+
+**Matching Priority:**
+1. **URL match** - If a node has a `urllink` matching a PagePearl's external URL, creates a child node labeled "PP" (PearlPage)
+2. **Title match** - Exact normalized title match to trees/pearls, creates child labeled "PT"
+3. **Semantic match** - Embedding similarity above threshold, creates child labeled "PT?"
+
+**Hierarchical Selection:**
+
+When the same URL exists in multiple Pearltrees locations (e.g., bookmarked in different folders), the `--projection-model` option uses hierarchical matching to select the best location. The projection maps queries into the space of materialized paths + structure lists, finding the location that best fits the context.
+
+**Projection Models:**
+
+Two model types are supported:
+- **Federated Procrustes (.pkl)** - Cluster-based projection using routing + W matrices. See [`docs/design/FEDERATED_MODEL_FORMAT.md`](../../docs/design/FEDERATED_MODEL_FORMAT.md) for format details.
+- **Distilled Transformer (.pt)** - Neural network approximation of the federated model
+
+The model auto-selects the appropriate embedder based on its training dimension (384D → MiniLM, 768D → Nomic).
+
+**Output:**
+
+Child nodes are added with:
+- Borderless style (`sbsNone`) for cleaner appearance
+- Labels: PP (URL match), PT (title match), PT? (semantic match)
+- `urllink` pointing to Pearltrees URI
+
+**Note on Models:** Pre-trained models and training documentation are being prepared. See `scripts/infer_pearltrees_federated.py` for the bookmark filing assistant that uses the same projection approach.
+
 ### batch_rename_folders.py
 
 Batch rename folders using LLM-generated names based on folder contents.
