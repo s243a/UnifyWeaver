@@ -89,31 +89,39 @@ See [`docs/design/FEDERATED_MODEL_FORMAT.md`](design/FEDERATED_MODEL_FORMAT.md) 
 
 ## Generating Models
 
-*Note: Pre-trained models and training documentation are being prepared for HuggingFace distribution.*
-
-### Current Training Pipeline
+### Training Pipeline
 
 1. **Prepare JSONL targets** with `target_text` field (materialized paths):
    ```bash
-   python3 scripts/prepare_pearltrees_targets.py \
-     --input data/pearltrees_export.rdf \
+   python3 scripts/pearltrees_multi_account_generator.py \
+     --accounts s243a s243a_groups \
      --output reports/pearltrees_targets.jsonl
    ```
 
-2. **Generate embeddings**:
-   ```bash
-   python3 scripts/embed_pearltrees_targets.py \
-     --input reports/pearltrees_targets.jsonl \
-     --model nomic-ai/nomic-embed-text-v1.5 \
-     --output datasets/pearltrees_embeddings.npz
-   ```
-
-3. **Train federated model**:
+2. **Train federated model** (embeds automatically):
    ```bash
    python3 scripts/train_pearltrees_federated.py \
-     --embeddings datasets/pearltrees_embeddings.npz \
-     --output models/pearltrees_federated.pkl
+     reports/pearltrees_targets.jsonl \
+     models/pearltrees_federated.pkl \
+     --cluster-method mst \
+     --max-clusters 50 \
+     --model nomic-ai/nomic-embed-text-v1.5
    ```
+
+### Get All Training Options
+```bash
+python3 scripts/train_pearltrees_federated.py --help
+```
+
+### Clustering Methods
+
+| Method | Description |
+|--------|-------------|
+| `mst` | MST edge-cutting (recommended) |
+| `embedding` | K-means on embeddings |
+| `per-tree` | One cluster per folder |
+
+See [`docs/design/FEDERATED_MODEL_FORMAT.md`](design/FEDERATED_MODEL_FORMAT.md) for complete format specification.
 
 ## Related Tools
 
