@@ -16,8 +16,31 @@
  *       ])
  *   ]).
  *
+ * Security Level Options:
+ *   - sandbox(Backend)      : Isolation backend (none, app_filter, proot, etc.)
+ *   - commands(List|all)    : Allowed commands or 'all'
+ *   - blocked_commands(List): Commands to block (when commands=all)
+ *   - blocked_patterns(List): Regex patterns to block
+ *   - pty(Bool)             : Enable PTY for interactive programs
+ *   - preserve_home(Bool)   : Use real $HOME (true) or sandbox HOME (false)
+ *   - timeout(Seconds)      : Command timeout
+ *   - root_dir(Path)        : Root directory for proot isolation
+ *
+ * HOME Directory Behavior:
+ *   By default, preserve_home is false, meaning the shell uses a sandboxed
+ *   HOME directory (typically ~/sandbox). This provides isolation for tools
+ *   that store configuration in $HOME (e.g., Claude Code, git, npm).
+ *
+ *   Benefits of sandboxed HOME (preserve_home=false):
+ *   - Isolated tool configurations per shell context
+ *   - Multi-user safety (users don't share configs)
+ *   - Clean separation between web shell and terminal work
+ *
+ *   Set preserve_home(true) if you need access to user's real configurations:
+ *   - level(my_level, [preserve_home(true), ...])
+ *
  * @author UnifyWeaver
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 :- module(shell_sandbox, [
@@ -39,6 +62,8 @@
     level_blocked_patterns/2,
     level_paths/2,
     level_timeout/2,
+    level_pty/2,
+    level_preserve_home/2,
 
     % App shell access extraction
     app_shell_access/2,
@@ -254,13 +279,17 @@ default_security_levels([
         sandbox(none),
         commands(all),
         paths(all),
-        timeout(none)
+        timeout(none),
+        pty(true),
+        preserve_home(false)  % Use sandbox HOME for isolated tool configs
     ]),
 
     level(trusted, [
         description('Trust user but block destructive operations'),
         sandbox(app_filter),
         commands(all),
+        pty(true),
+        preserve_home(false),  % Use sandbox HOME for isolated tool configs
         blocked_commands([
             sudo, su, doas,           % Privilege escalation
             rm, rmdir,                 % Deletion (use trash instead)
@@ -424,6 +453,18 @@ level_root_dir(LevelConfig, RootDir) :-
     ;   RootDir = '~/sandbox'
     ).
 
+level_pty(LevelConfig, Pty) :-
+    (   member(pty(Pty), LevelConfig)
+    ->  true
+    ;   Pty = false  % Default: no PTY
+    ).
+
+level_preserve_home(LevelConfig, PreserveHome) :-
+    (   member(preserve_home(PreserveHome), LevelConfig)
+    ->  true
+    ;   PreserveHome = false  % Default: use sandbox HOME for isolation
+    ).
+
 %% ============================================================================
 %% App Shell Access Extraction
 %% ============================================================================
@@ -513,14 +554,18 @@ format_level_entry(level(Name, Config), Entry) :-
     level_commands(Config, Commands),
     level_blocked_commands(Config, Blocked),
     level_timeout(Config, Timeout),
+    level_pty(Config, Pty),
+    level_preserve_home(Config, PreserveHome),
     format_commands_json(Commands, CommandsJSON),
     format_commands_json(Blocked, BlockedJSON),
     format(atom(Entry), '"~w": {
       "sandbox": "~w",
       "commands": ~w,
       "blockedCommands": ~w,
-      "timeout": ~w
-    }', [Name, Sandbox, CommandsJSON, BlockedJSON, Timeout]).
+      "timeout": ~w,
+      "pty": ~w,
+      "preserveHome": ~w
+    }', [Name, Sandbox, CommandsJSON, BlockedJSON, Timeout, Pty, PreserveHome]).
 
 format_commands_json(all, '"all"') :- !.
 format_commands_json([], '[]') :- !.
