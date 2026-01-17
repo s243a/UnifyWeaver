@@ -23,6 +23,7 @@
  *   - blocked_patterns(List): Regex patterns to block
  *   - pty(Bool)             : Enable PTY for interactive programs
  *   - preserve_home(Bool)   : Use real $HOME (true) or sandbox HOME (false)
+ *   - auto_shell(Bool)      : Auto-start PTY shell on connect (for superadmin)
  *   - timeout(Seconds)      : Command timeout
  *   - root_dir(Path)        : Root directory for proot isolation
  *
@@ -64,6 +65,7 @@
     level_timeout/2,
     level_pty/2,
     level_preserve_home/2,
+    level_auto_shell/2,
 
     % App shell access extraction
     app_shell_access/2,
@@ -274,6 +276,17 @@ backend_available(Backend) :-
  * Returns the default security level definitions.
  */
 default_security_levels([
+    level(superadmin, [
+        description('Full shell access with real HOME - direct PTY mode'),
+        sandbox(none),
+        commands(all),
+        paths(all),
+        timeout(none),
+        pty(true),
+        preserve_home(true),  % Use real HOME for full system access
+        auto_shell(true)      % Auto-start interactive shell on connect
+    ]),
+
     level(full, [
         description('No restrictions - full shell access'),
         sandbox(none),
@@ -465,6 +478,12 @@ level_preserve_home(LevelConfig, PreserveHome) :-
     ;   PreserveHome = false  % Default: use sandbox HOME for isolation
     ).
 
+level_auto_shell(LevelConfig, AutoShell) :-
+    (   member(auto_shell(AutoShell), LevelConfig)
+    ->  true
+    ;   AutoShell = false  % Default: don't auto-start shell
+    ).
+
 %% ============================================================================
 %% App Shell Access Extraction
 %% ============================================================================
@@ -556,6 +575,7 @@ format_level_entry(level(Name, Config), Entry) :-
     level_timeout(Config, Timeout),
     level_pty(Config, Pty),
     level_preserve_home(Config, PreserveHome),
+    level_auto_shell(Config, AutoShell),
     format_commands_json(Commands, CommandsJSON),
     format_commands_json(Blocked, BlockedJSON),
     format(atom(Entry), '"~w": {
@@ -564,8 +584,9 @@ format_level_entry(level(Name, Config), Entry) :-
       "blockedCommands": ~w,
       "timeout": ~w,
       "pty": ~w,
-      "preserveHome": ~w
-    }', [Name, Sandbox, CommandsJSON, BlockedJSON, Timeout, Pty, PreserveHome]).
+      "preserveHome": ~w,
+      "autoShell": ~w
+    }', [Name, Sandbox, CommandsJSON, BlockedJSON, Timeout, Pty, PreserveHome, AutoShell]).
 
 format_commands_json(all, '"all"') :- !.
 format_commands_json([], '[]') :- !.
