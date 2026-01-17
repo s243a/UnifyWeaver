@@ -768,9 +768,9 @@ def link_mindmap_nodes(
 
             if match:
                 # Determine label based on match type
-                # PT = exact title match to Pearltree
-                # PT? = semantic/fuzzy match
-                if match['match_type'] in ['exact_title', 'first_of_multiple']:
+                # PT = exact title match to Pearltree (including disambiguated)
+                # PT? = semantic/fuzzy match (no exact title match)
+                if match['match_type'] in ['exact_title', 'first_of_multiple', 'semantic_disambiguate']:
                     child_label = 'PT'
                     stats['title_matched'] += 1
                 else:
