@@ -14,6 +14,7 @@
 %   - Data Binding (state, stores, computed)
 %   - Accessibility (a11y attributes)
 %   - Data Integration (backend data sources)
+%   - Navigation Guards (auth, roles, permissions)
 %
 % Usage:
 %   ?- generate_complete_project(app(myapp, [...]), [frontend-react_native, backend-fastapi], '/output', Result).
@@ -54,6 +55,19 @@
     app_navigation/2,                   % +AppSpec, -Navigation
     app_screens/2,                      % +AppSpec, -Screens
     app_data/2,                         % +AppSpec, -Data
+    app_guards/2,                       % +AppSpec, -Guards
+    app_https/2,                        % +AppSpec, -HttpsConfig
+    app_auth/2,                         % +AppSpec, -AuthConfig
+    app_requires_https/1,               % +AppSpec
+    app_requires_secure_auth/1,         % +AppSpec
+
+    % Guard generation
+    generate_guard_files/3,             % +AppSpec, +Target, -Files
+    generate_auth_store/2,              % +Target, -Code
+    screen_has_guards/2,                % +Screen, -Guards
+
+    % Secure auth backend generation
+    generate_auth_backend/3,            % +AppSpec, +Target, -Files
 
     % Testing
     test_app_generator/0
@@ -73,6 +87,10 @@
 :- catch(use_module('../binding/data_binding'), _, true).
 :- catch(use_module('../a11y/accessibility'), _, true).
 :- catch(use_module('../patterns/ui_patterns'), _, true).
+
+% Discontiguous predicates (clauses spread across file for readability)
+:- discontiguous generate_nav_code/4.
+:- discontiguous generate_default_nav/2.
 
 % ============================================================================
 % APP SPEC ACCESSORS
@@ -99,6 +117,74 @@ app_data(app(_, Config), Data) :-
 
 app_translations(app(_, Config), Trans) :-
     (member(translations(Trans), Config) -> true ; Trans = []).
+
+app_guards(app(_, Config), Guards) :-
+    (member(guards(Guards), Config) -> true ; Guards = []).
+
+%! app_https(+AppSpec, -HttpsConfig)
+%
+%  Extract HTTPS configuration from app spec.
+%  Options: https(true) or https([port(Port), cert(CertPath), key(KeyPath)])
+%
+app_https(app(_, Config), HttpsConfig) :-
+    (   member(https(HttpsConfig), Config)
+    ->  true
+    ;   HttpsConfig = false
+    ).
+
+%! app_auth(+AppSpec, -AuthConfig)
+%
+%  Extract secure auth configuration from app spec.
+%  Options: auth(secure, [...]) for backend auth generation
+%
+app_auth(app(_, Config), AuthConfig) :-
+    (   member(auth(secure, AuthConfig), Config)
+    ->  true
+    ;   member(auth(secure), Config)
+    ->  AuthConfig = []  % secure with defaults
+    ;   AuthConfig = none
+    ).
+
+%! app_requires_https(+AppSpec)
+%  True if the app requires HTTPS.
+app_requires_https(AppSpec) :-
+    app_https(AppSpec, HttpsConfig),
+    HttpsConfig \= false.
+
+%! app_requires_secure_auth(+AppSpec)
+%  True if the app requires secure backend authentication.
+app_requires_secure_auth(AppSpec) :-
+    app_auth(AppSpec, AuthConfig),
+    AuthConfig \= none.
+
+%! screen_has_guards(+Screen, -Guards)
+%
+%  Extract guards from screen options.
+%  Supports both guards([...]) and protected(true) shorthand.
+%
+screen_has_guards(screen(_, _, Opts), Guards) :-
+    (   member(guards(Guards), Opts)
+    ->  true
+    ;   member(protected(true), Opts)
+    ->  Guards = [auth]
+    ;   Guards = []
+    ).
+
+%! get_guard_spec(+GuardName, +AppSpec, -GuardSpec)
+%
+%  Look up a guard definition from the app spec.
+%
+get_guard_spec(GuardName, AppSpec, GuardSpec) :-
+    app_guards(AppSpec, Guards),
+    member(guard(GuardName, GuardSpec), Guards).
+
+%! get_guard_spec(+GuardName, +AppSpec, -GuardSpec)
+%
+%  Default guard specs for common guards.
+%
+get_guard_spec(auth, _, [check(authenticated), redirect('/login')]) :- !.
+get_guard_spec(guest, _, [check(not_authenticated), redirect('/')]) :- !.
+get_guard_spec(admin, _, [check(role(admin)), redirect('/unauthorized')]) :- !.
 
 % ============================================================================
 % MAIN GENERATION ENTRY POINT
@@ -151,6 +237,7 @@ generate_frontend_project(AppSpec, Target, OutputDir, Files) :-
     generate_navigation_file(AppSpec, Target, NavCode),
     generate_screen_files(AppSpec, Target, ScreenFiles),
     generate_api_client(AppSpec, Target, ApiCode),
+    generate_guard_files(AppSpec, Target, GuardFiles),
 
     % Write entry point
     entry_point_path(Target, EntryPath),
@@ -176,6 +263,7 @@ generate_frontend_project(AppSpec, Target, OutputDir, Files) :-
         ThemeFiles,
         LocaleFiles,
         ScreenFiles,
+        GuardFiles,
         VueFiles
     ], AllFiles),
 
@@ -522,6 +610,14 @@ export const AppNavigator = () => (
 ", [ImportsStr, ScreensStr]).
 
 generate_nav_code(stack, Screens, react_native, Code) :-
+    (   some_screen_has_guards(Screens)
+    ->  generate_rn_stack_with_guards(Screens, Code)
+    ;   generate_rn_stack_simple(Screens, Code)
+    ).
+
+%! generate_rn_stack_simple(+Screens, -Code)
+%  Generate simple React Native stack navigator without guards.
+generate_rn_stack_simple(Screens, Code) :-
     findall(ScreenCode, (
         member(screen(Name, Component, _), Screens),
         format(atom(ScreenCode), "      <Stack.Screen name=\"~w\" component={~w} />", [Name, Component])
@@ -539,7 +635,85 @@ export const AppNavigator = () => (
 );
 ", [ScreensStr]).
 
+%! generate_rn_stack_with_guards(+Screens, -Code)
+%  Generate React Native stack navigator with authentication guards.
+generate_rn_stack_with_guards(Screens, Code) :-
+    findall(ScreenCode, (
+        member(Screen, Screens),
+        Screen = screen(Name, Component, _),
+        screen_has_guards(Screen, Guards),
+        generate_rn_screen_with_guards(Name, Component, Guards, ScreenCode)
+    ), ScreenCodes),
+    atomic_list_concat(ScreenCodes, '\n', ScreensStr),
+    format(atom(Code),
+"import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { useAuthStore } from '../stores/authStore';
+import { LoginScreen } from '../screens/LoginScreen';
+import { UnauthorizedScreen } from '../screens/UnauthorizedScreen';
+
+const Stack = createNativeStackNavigator();
+
+// Guard wrapper component for protected screens
+const withGuards = (Component: React.ComponentType<any>, guards: string[]) => {
+  return function GuardedScreen(props: any) {
+    const authStore = useAuthStore();
+
+    for (const guard of guards) {
+      switch (guard) {
+        case 'auth':
+          if (!authStore.isAuthenticated()) {
+            return <LoginScreen {...props} />;
+          }
+          break;
+        case 'guest':
+          if (authStore.isAuthenticated()) {
+            // Redirect to home - in practice, use navigation
+            return null;
+          }
+          break;
+        case 'admin':
+          if (!authStore.hasRole('admin')) {
+            return <UnauthorizedScreen {...props} />;
+          }
+          break;
+        default:
+          if (!authStore.hasPermission(guard)) {
+            return <UnauthorizedScreen {...props} />;
+          }
+      }
+    }
+    return <Component {...props} />;
+  };
+};
+
+export const AppNavigator = () => {
+  return (
+    <Stack.Navigator>
+      <Stack.Screen name=\"Login\" component={LoginScreen} options={{ headerShown: false }} />
+      <Stack.Screen name=\"Unauthorized\" component={UnauthorizedScreen} />
+~w
+    </Stack.Navigator>
+  );
+};
+", [ScreensStr]).
+
+%! generate_rn_screen_with_guards(+Name, +Component, +Guards, -ScreenCode)
+generate_rn_screen_with_guards(Name, Component, [], ScreenCode) :-
+    format(atom(ScreenCode), "      <Stack.Screen name=\"~w\" component={~w} />", [Name, Component]).
+generate_rn_screen_with_guards(Name, Component, Guards, ScreenCode) :-
+    Guards \= [],
+    format_guard_list(Guards, GuardsStr),
+    format(atom(ScreenCode), "      <Stack.Screen name=\"~w\" component={withGuards(~w, [~w])} />", [Name, Component, GuardsStr]).
+
 generate_nav_code(tab, Screens, swiftui, Code) :-
+    (   some_screen_has_guards(Screens)
+    ->  generate_swiftui_nav_with_guards(Screens, Code)
+    ;   generate_swiftui_nav_simple(Screens, Code)
+    ).
+
+%! generate_swiftui_nav_simple(+Screens, -Code)
+%  Generate simple SwiftUI TabView without guards.
+generate_swiftui_nav_simple(Screens, Code) :-
     findall(TabItem, (
         member(screen(Name, Component, _), Screens),
         capitalize_first(Name, CapName),
@@ -561,7 +735,104 @@ struct ContentView: View {
 }
 ", [TabsStr]).
 
+%! generate_swiftui_nav_with_guards(+Screens, -Code)
+%  Generate SwiftUI navigation with authentication guards.
+generate_swiftui_nav_with_guards(Screens, Code) :-
+    findall(TabItem, (
+        member(Screen, Screens),
+        Screen = screen(Name, Component, _),
+        capitalize_first(Name, CapName),
+        screen_has_guards(Screen, Guards),
+        generate_swiftui_tab_with_guards(Component, CapName, Guards, TabItem)
+    ), TabItems),
+    atomic_list_concat(TabItems, '\n', TabsStr),
+    format(atom(Code),
+"import SwiftUI
+
+struct ContentView: View {
+    @StateObject private var authStore = AuthStore()
+
+    var body: some View {
+        Group {
+            if authStore.isAuthenticated {
+                TabView {
+~w
+                }
+            } else {
+                LoginView()
+            }
+        }
+        .environmentObject(authStore)
+        .task {
+            await authStore.checkAuth()
+        }
+    }
+}
+
+// Guard wrapper view for protected content
+struct GuardedView<Content: View>: View {
+    @EnvironmentObject var authStore: AuthStore
+    let guards: [String]
+    let content: () -> Content
+
+    var body: some View {
+        Group {
+            if checkGuards() {
+                content()
+            } else {
+                UnauthorizedView()
+            }
+        }
+    }
+
+    private func checkGuards() -> Bool {
+        for guard in guards {
+            switch guard {
+            case \"auth\":
+                if !authStore.isAuthenticated { return false }
+            case \"guest\":
+                if authStore.isAuthenticated { return false }
+            case \"admin\":
+                if !authStore.hasRole(\"admin\") { return false }
+            default:
+                if !authStore.hasPermission(guard) { return false }
+            }
+        }
+        return true
+    }
+}
+", [TabsStr]).
+
+%! generate_swiftui_tab_with_guards(+Component, +CapName, +Guards, -TabItem)
+generate_swiftui_tab_with_guards(Component, CapName, [], TabItem) :-
+    format(atom(TabItem), "            ~w()
+                .tabItem {
+                    Label(\"~w\", systemImage: \"house\")
+                }", [Component, CapName]).
+generate_swiftui_tab_with_guards(Component, CapName, Guards, TabItem) :-
+    Guards \= [],
+    format_swiftui_guard_list(Guards, GuardsStr),
+    format(atom(TabItem), "            GuardedView(guards: [~w]) {
+                ~w()
+            }
+            .tabItem {
+                Label(\"~w\", systemImage: \"house\")
+            }", [GuardsStr, Component, CapName]).
+
+%! format_swiftui_guard_list(+Guards, -Str)
+format_swiftui_guard_list(Guards, Str) :-
+    findall(Quoted, (member(G, Guards), format(atom(Quoted), "\"~w\"", [G])), QuotedList),
+    atomic_list_concat(QuotedList, ', ', Str).
+
 generate_nav_code(tab, Screens, flutter, Code) :-
+    (   some_screen_has_guards(Screens)
+    ->  generate_flutter_router_with_guards(Screens, Code)
+    ;   generate_flutter_router_simple(Screens, Code)
+    ).
+
+%! generate_flutter_router_simple(+Screens, -Code)
+%  Generate simple Flutter GoRouter without guards.
+generate_flutter_router_simple(Screens, Code) :-
     findall(RouteCode, (
         member(screen(Name, _, _), Screens),
         atom_string(Name, NameStr),
@@ -581,12 +852,129 @@ final routerProvider = Provider<GoRouter>((ref) {
 });
 ", [RoutesStr]).
 
+%! generate_flutter_router_with_guards(+Screens, -Code)
+%  Generate Flutter GoRouter with navigation guards.
+generate_flutter_router_with_guards(Screens, Code) :-
+    findall(RouteCode, (
+        member(Screen, Screens),
+        Screen = screen(Name, _, _),
+        atom_string(Name, NameStr),
+        screen_has_guards(Screen, Guards),
+        generate_flutter_route_with_guards(NameStr, Name, Guards, RouteCode)
+    ), RouteCodes),
+    atomic_list_concat(RouteCodes, '\n', RoutesStr),
+    format(atom(Code),
+"import 'package:go_router/go_router.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/auth_provider.dart';
+import '../screens/login_screen.dart';
+import '../screens/unauthorized_screen.dart';
+
+final routerProvider = Provider<GoRouter>((ref) {
+  final authState = ref.watch(authProvider);
+
+  return GoRouter(
+    redirect: (context, state) {
+      final isAuthenticated = authState.isAuthenticated;
+      final isLoggingIn = state.matchedLocation == '/login';
+
+      // If not authenticated and not on login page, redirect to login
+      if (!isAuthenticated && !isLoggingIn) {
+        // Check if route requires auth
+        final requiresAuth = _routeRequiresAuth(state.matchedLocation);
+        if (requiresAuth) {
+          return '/login?redirect=\\${state.matchedLocation}';
+        }
+      }
+
+      // If authenticated and on login page, redirect away
+      if (isAuthenticated && isLoggingIn) {
+        return '/';
+      }
+
+      return null;
+    },
+    routes: [
+      GoRoute(
+        path: '/login',
+        builder: (_, __) => const LoginScreen(),
+      ),
+      GoRoute(
+        path: '/unauthorized',
+        builder: (_, __) => const UnauthorizedScreen(),
+      ),
+~w
+    ],
+  );
+});
+
+// Map of routes that require authentication
+bool _routeRequiresAuth(String path) {
+  const protectedRoutes = <String>[
+    // Add protected routes here
+  ];
+  return protectedRoutes.any((route) => path.startsWith(route));
+}
+", [RoutesStr]).
+
+%! generate_flutter_route_with_guards(+NameStr, +Name, +Guards, -RouteCode)
+generate_flutter_route_with_guards(NameStr, Name, [], RouteCode) :-
+    format(atom(RouteCode), "      GoRoute(path: '/~w', builder: (_, __) => const ~wScreen()),", [NameStr, Name]).
+generate_flutter_route_with_guards(NameStr, Name, Guards, RouteCode) :-
+    Guards \= [],
+    format_flutter_guard_redirect(Guards, GuardCode),
+    format(atom(RouteCode), "      GoRoute(
+        path: '/~w',
+        builder: (_, __) => const ~wScreen(),
+        redirect: (context, state) {
+          final authState = context.read(authProvider);
+~w
+          return null;
+        },
+      ),", [NameStr, Name, GuardCode]).
+
+%! format_flutter_guard_redirect(+Guards, -Code)
+format_flutter_guard_redirect(Guards, Code) :-
+    findall(GuardCheck, (
+        member(Guard, Guards),
+        format_single_flutter_guard(Guard, GuardCheck)
+    ), GuardChecks),
+    atomic_list_concat(GuardChecks, '\n', Code).
+
+format_single_flutter_guard(auth, Code) :-
+    Code = "          if (!authState.isAuthenticated) return '/login';".
+format_single_flutter_guard(guest, Code) :-
+    Code = "          if (authState.isAuthenticated) return '/';".
+format_single_flutter_guard(admin, Code) :-
+    Code = "          if (!authState.hasRole('admin')) return '/unauthorized';".
+format_single_flutter_guard(Guard, Code) :-
+    Guard \= auth, Guard \= guest, Guard \= admin,
+    format(atom(Code), "          if (!authState.hasPermission('~w')) return '/unauthorized';", [Guard]).
+
 generate_nav_code(router, Screens, vue, Code) :-
     % Get first screen for default redirect
     (Screens = [screen(FirstName, _, _)|_] -> true ; FirstName = home),
+    % Check if any screens have guards
+    (   some_screen_has_guards(Screens)
+    ->  generate_vue_router_with_guards(Screens, FirstName, Code)
+    ;   generate_vue_router_simple(Screens, FirstName, Code)
+    ).
+
+%! some_screen_has_guards(+Screens)
+%  True if any screen in the list has guards.
+some_screen_has_guards(Screens) :-
+    member(Screen, Screens),
+    screen_has_guards(Screen, Guards),
+    Guards \= [],
+    !.
+
+%! generate_vue_router_simple(+Screens, +FirstName, -Code)
+%  Generate simple Vue router without guards.
+generate_vue_router_simple(Screens, FirstName, Code) :-
     findall(RouteCode, (
-        member(screen(Name, Component, _), Screens),
-        format(atom(RouteCode), "  { path: '/~w', component: () => import('../views/~w.vue') },", [Name, Component])
+        member(screen(Name, _, _), Screens),
+        capitalize_first(Name, CapName),
+        format(atom(RouteCode), "  { path: '/~w', component: () => import('../views/~wView.vue') },", [Name, CapName])
     ), RouteCodes),
     atomic_list_concat(RouteCodes, '\n', RoutesStr),
     format(atom(Code),
@@ -602,6 +990,88 @@ export const router = createRouter({
   routes,
 });
 ", [FirstName, RoutesStr]).
+
+%! generate_vue_router_with_guards(+Screens, +FirstName, -Code)
+%  Generate Vue router with navigation guards.
+generate_vue_router_with_guards(Screens, FirstName, Code) :-
+    findall(RouteCode, (
+        member(Screen, Screens),
+        Screen = screen(Name, _, _),
+        capitalize_first(Name, CapName),
+        screen_has_guards(Screen, Guards),
+        generate_vue_route_with_meta(Name, CapName, Guards, RouteCode)
+    ), RouteCodes),
+    atomic_list_concat(RouteCodes, '\n', RoutesStr),
+    format(atom(Code),
+"import { createRouter, createWebHistory } from 'vue-router';
+import type { RouteLocationNormalized } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
+
+const routes = [
+  { path: '/', redirect: '/~w' },
+  { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
+  { path: '/unauthorized', name: 'unauthorized', component: () => import('../views/UnauthorizedView.vue') },
+~w
+];
+
+export const router = createRouter({
+  history: createWebHistory(),
+  routes,
+});
+
+// Navigation guards
+router.beforeEach((to: RouteLocationNormalized, _from: RouteLocationNormalized) => {
+  const authStore = useAuthStore();
+  const guards = to.meta.guards as string[] | undefined;
+
+  if (!guards || guards.length === 0) {
+    return true;
+  }
+
+  for (const guard of guards) {
+    switch (guard) {
+      case 'auth':
+        if (!authStore.isAuthenticated) {
+          return { name: 'login', query: { redirect: to.fullPath } };
+        }
+        break;
+      case 'guest':
+        if (authStore.isAuthenticated) {
+          return { path: '/' };
+        }
+        break;
+      case 'admin':
+        if (!authStore.hasRole('admin')) {
+          return { name: 'unauthorized' };
+        }
+        break;
+      default:
+        // Custom guard - check if user has the required role/permission
+        if (!authStore.hasPermission(guard)) {
+          return { name: 'unauthorized' };
+        }
+    }
+  }
+  return true;
+});
+
+export default router;
+", [FirstName, RoutesStr]).
+
+%! generate_vue_route_with_meta(+Name, +CapName, +Guards, -RouteCode)
+%  Generate a Vue route with meta.guards if guards are present.
+generate_vue_route_with_meta(Name, CapName, [], RouteCode) :-
+    format(atom(RouteCode), "  { path: '/~w', name: '~w', component: () => import('../views/~wView.vue') },", [Name, Name, CapName]).
+generate_vue_route_with_meta(Name, CapName, Guards, RouteCode) :-
+    Guards \= [],
+    format_guard_list(Guards, GuardsStr),
+    format(atom(RouteCode), "  { path: '/~w', name: '~w', component: () => import('../views/~wView.vue'), meta: { guards: [~w] } },", [Name, Name, CapName, GuardsStr]).
+
+%! format_guard_list(+Guards, -Str)
+%  Format a list of guard names as a JavaScript array literal.
+format_guard_list(Guards, Str) :-
+    findall(Quoted, (member(G, Guards), format(atom(Quoted), "'~w'", [G])), QuotedList),
+    atomic_list_concat(QuotedList, ', ', Str).
 
 generate_nav_code(_, _, Target, Code) :-
     generate_default_nav(Target, Code).
@@ -1069,11 +1539,18 @@ import { RouterView } from "vue-router";
 </style>
 '.
 
-%! generate_vue_vite_config(-Code)
+%! generate_vue_vite_config(+AppSpec, -Code)
 %
 %  Generate vite.config.ts for Vue project.
+%  Includes HTTPS configuration if https(true) is specified.
 %
-generate_vue_vite_config(Code) :-
+generate_vue_vite_config(AppSpec, Code) :-
+    (   app_requires_https(AppSpec)
+    ->  generate_vue_vite_config_https(Code)
+    ;   generate_vue_vite_config_http(Code)
+    ).
+
+generate_vue_vite_config_http(Code) :-
     Code = 'import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, URL } from "node:url";
@@ -1087,6 +1564,46 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+  },
+});
+'.
+
+generate_vue_vite_config_https(Code) :-
+    Code = 'import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
+import { fileURLToPath, URL } from "node:url";
+import fs from "node:fs";
+import path from "node:path";
+
+// Generate self-signed certificate for development
+// Run: npm run generate-cert (or use mkcert for trusted local certs)
+const httpsConfig = (() => {
+  const certPath = path.resolve(__dirname, "certs/localhost.pem");
+  const keyPath = path.resolve(__dirname, "certs/localhost-key.pem");
+
+  if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+    };
+  }
+
+  // Fallback: use Vite\'s built-in self-signed cert generation
+  console.warn("No certs found in ./certs/. Using Vite\'s auto-generated self-signed cert.");
+  console.warn("For trusted local HTTPS, run: npx mkcert localhost");
+  return true;
+})();
+
+export default defineConfig({
+  plugins: [vue()],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
+  server: {
+    port: 5173,
+    https: httpsConfig,
   },
 });
 '.
@@ -1146,7 +1663,7 @@ generate_vue_tsconfig_node(Code) :-
 generate_vue_specific_files(AppSpec, Files) :-
     generate_vue_index_html(AppSpec, IndexHtml),
     generate_vue_app_component(AppSpec, AppVue),
-    generate_vue_vite_config(ViteConfig),
+    generate_vue_vite_config(AppSpec, ViteConfig),
     generate_vue_tsconfig(TsConfig),
     generate_vue_tsconfig_node(TsConfigNode),
     Files = [
@@ -1156,6 +1673,1634 @@ generate_vue_specific_files(AppSpec, Files) :-
         file('/tsconfig.json', TsConfig),
         file('/tsconfig.node.json', TsConfigNode)
     ].
+
+% ============================================================================
+% GUARD FILES GENERATION
+% ============================================================================
+
+%! generate_guard_files(+AppSpec, +Target, -Files)
+%
+%  Generate authentication/authorization store files for navigation guards.
+%  Only generates files if the app uses guards.
+%  Generates: auth store, login screen, and unauthorized screen.
+%
+generate_guard_files(AppSpec, Target, Files) :-
+    app_screens(AppSpec, Screens),
+    app_navigation(AppSpec, Nav),
+    (Nav = navigation(_, NavScreens, _) -> AllScreens = NavScreens ; AllScreens = Screens),
+    (   some_screen_has_guards(AllScreens)
+    ->  generate_auth_store(Target, AuthStoreCode),
+        guard_store_path(Target, StorePath),
+        generate_login_screen(Target, LoginCode),
+        login_screen_path(Target, LoginPath),
+        generate_unauthorized_screen(Target, UnauthorizedCode),
+        unauthorized_screen_path(Target, UnauthorizedPath),
+        Files = [
+            file(StorePath, AuthStoreCode),
+            file(LoginPath, LoginCode),
+            file(UnauthorizedPath, UnauthorizedCode)
+        ]
+    ;   Files = []
+    ).
+
+%! login_screen_path(+Target, -Path)
+login_screen_path(vue, '/src/views/LoginView.vue').
+login_screen_path(react_native, '/src/screens/LoginScreen.tsx').
+login_screen_path(flutter, '/lib/screens/login_screen.dart').
+login_screen_path(swiftui, '/Sources/Views/LoginView.swift').
+
+%! unauthorized_screen_path(+Target, -Path)
+unauthorized_screen_path(vue, '/src/views/UnauthorizedView.vue').
+unauthorized_screen_path(react_native, '/src/screens/UnauthorizedScreen.tsx').
+unauthorized_screen_path(flutter, '/lib/screens/unauthorized_screen.dart').
+unauthorized_screen_path(swiftui, '/Sources/Views/UnauthorizedView.swift').
+
+%! generate_login_screen(+Target, -Code)
+generate_login_screen(vue, Code) :-
+    Code = "<script setup lang=\"ts\">
+import { ref } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
+
+const router = useRouter();
+const route = useRoute();
+const authStore = useAuthStore();
+
+const email = ref('');
+const password = ref('');
+const error = ref('');
+const loading = ref(false);
+
+const handleLogin = async () => {
+  error.value = '';
+  loading.value = true;
+  try {
+    await authStore.login(email.value, password.value);
+    const redirect = route.query.redirect as string || '/';
+    router.push(redirect);
+  } catch (e) {
+    error.value = 'Invalid email or password';
+  } finally {
+    loading.value = false;
+  }
+};
+</script>
+
+<template>
+  <div class=\"login-container\">
+    <div class=\"login-card\">
+      <h1>Login</h1>
+      <form @submit.prevent=\"handleLogin\">
+        <div class=\"form-group\">
+          <label for=\"email\">Email</label>
+          <input
+            id=\"email\"
+            v-model=\"email\"
+            type=\"email\"
+            placeholder=\"Enter your email\"
+            required
+          />
+        </div>
+        <div class=\"form-group\">
+          <label for=\"password\">Password</label>
+          <input
+            id=\"password\"
+            v-model=\"password\"
+            type=\"password\"
+            placeholder=\"Enter your password\"
+            required
+          />
+        </div>
+        <p v-if=\"error\" class=\"error\">{{ error }}</p>
+        <button type=\"submit\" :disabled=\"loading\">
+          {{ loading ? 'Logging in...' : 'Login' }}
+        </button>
+      </form>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.login-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background: var(--color-background);
+}
+
+.login-card {
+  background: var(--color-surface);
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 400px;
+}
+
+h1 {
+  text-align: center;
+  color: var(--color-text-primary);
+  margin-bottom: 1.5rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--color-text-secondary);
+}
+
+input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+button {
+  width: 100%;
+  padding: 0.75rem;
+  background: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  margin-top: 1rem;
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.error {
+  color: var(--color-error);
+  margin-top: 0.5rem;
+  text-align: center;
+}
+</style>
+".
+
+generate_login_screen(react_native, Code) :-
+    Code = "import React, { useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import { useAuthStore } from '../stores/authStore';
+import { useTheme } from '../theme';
+
+export const LoginScreen = () => {
+  const navigation = useNavigation();
+  const route = useRoute();
+  const authStore = useAuthStore();
+  const theme = useTheme();
+
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      await authStore.login(email, password);
+      const redirect = (route.params as any)?.redirect || 'Home';
+      navigation.navigate(redirect as never);
+    } catch (e) {
+      setError('Invalid email or password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+        <Text style={[styles.title, { color: theme.colors.text }]}>Login</Text>
+
+        <TextInput
+          style={[styles.input, { borderColor: theme.colors.border }]}
+          placeholder=\"Email\"
+          value={email}
+          onChangeText={setEmail}
+          keyboardType=\"email-address\"
+          autoCapitalize=\"none\"
+        />
+
+        <TextInput
+          style={[styles.input, { borderColor: theme.colors.border }]}
+          placeholder=\"Password\"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+        />
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+
+        <TouchableOpacity
+          style={[styles.button, { backgroundColor: theme.colors.primary }]}
+          onPress={handleLogin}
+          disabled={loading}
+        >
+          <Text style={styles.buttonText}>
+            {loading ? 'Logging in...' : 'Login'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  card: {
+    padding: 24,
+    borderRadius: 8,
+    width: '100%',
+    maxWidth: 400,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 4,
+    padding: 12,
+    marginBottom: 16,
+    fontSize: 16,
+  },
+  button: {
+    padding: 12,
+    borderRadius: 4,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  error: {
+    color: 'red',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+});
+".
+
+generate_login_screen(flutter, Code) :-
+    Code = "import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import '../providers/auth_provider.dart';
+
+class LoginScreen extends ConsumerStatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends ConsumerState<LoginScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleLogin() async {
+    setState(() => _error = null);
+    try {
+      await ref.read(authProvider.notifier).login(
+        _emailController.text,
+        _passwordController.text,
+      );
+      if (mounted) {
+        final redirect = GoRouterState.of(context).uri.queryParameters['redirect'] ?? '/';
+        context.go(redirect);
+      }
+    } catch (e) {
+      setState(() => _error = 'Invalid email or password');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final authState = ref.watch(authProvider);
+
+    return Scaffold(
+      body: Center(
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Login',
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+              const SizedBox(height: 24),
+              TextField(
+                controller: _emailController,
+                decoration: const InputDecoration(
+                  labelText: 'Email',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.emailAddress,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _passwordController,
+                decoration: const InputDecoration(
+                  labelText: 'Password',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(_error!, style: const TextStyle(color: Colors.red)),
+              ],
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: authState.loading ? null : _handleLogin,
+                  child: Text(authState.loading ? 'Logging in...' : 'Login'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+".
+
+generate_login_screen(swiftui, Code) :-
+    Code = "import SwiftUI
+
+struct LoginView: View {
+    @EnvironmentObject var authStore: AuthStore
+    @State private var email = \"\"
+    @State private var password = \"\"
+    @State private var error: String?
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Text(\"Login\")
+                .font(.largeTitle)
+                .fontWeight(.bold)
+
+            VStack(spacing: 16) {
+                TextField(\"Email\", text: $email)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .autocapitalization(.none)
+                    .keyboardType(.emailAddress)
+
+                SecureField(\"Password\", text: $password)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+            }
+            .padding(.horizontal)
+
+            if let error = error {
+                Text(error)
+                    .foregroundColor(.red)
+            }
+
+            Button(action: handleLogin) {
+                if authStore.loading {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                } else {
+                    Text(\"Login\")
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color.blue)
+            .foregroundColor(.white)
+            .cornerRadius(8)
+            .padding(.horizontal)
+            .disabled(authStore.loading)
+        }
+        .padding()
+    }
+
+    private func handleLogin() {
+        error = nil
+        Task {
+            do {
+                try await authStore.login(email: email, password: password)
+            } catch {
+                self.error = \"Invalid email or password\"
+            }
+        }
+    }
+}
+".
+
+%! generate_unauthorized_screen(+Target, -Code)
+generate_unauthorized_screen(vue, Code) :-
+    Code = "<script setup lang=\"ts\">
+import { useRouter } from 'vue-router';
+
+const router = useRouter();
+
+const goBack = () => {
+  router.back();
+};
+
+const goHome = () => {
+  router.push('/');
+};
+</script>
+
+<template>
+  <div class=\"unauthorized-container\">
+    <div class=\"unauthorized-card\">
+      <h1>Access Denied</h1>
+      <p>You don't have permission to access this page.</p>
+      <div class=\"actions\">
+        <button @click=\"goBack\">Go Back</button>
+        <button @click=\"goHome\" class=\"secondary\">Go Home</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.unauthorized-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background: var(--color-background);
+}
+
+.unauthorized-card {
+  background: var(--color-surface);
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  text-align: center;
+  max-width: 400px;
+}
+
+h1 {
+  color: var(--color-error);
+  margin-bottom: 1rem;
+}
+
+p {
+  color: var(--color-text-secondary);
+  margin-bottom: 1.5rem;
+}
+
+.actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+}
+
+button {
+  padding: 0.75rem 1.5rem;
+  background: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: var(--color-secondary);
+}
+</style>
+".
+
+generate_unauthorized_screen(react_native, Code) :-
+    Code = "import React from 'react';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { useTheme } from '../theme';
+
+export const UnauthorizedScreen = () => {
+  const navigation = useNavigation();
+  const theme = useTheme();
+
+  return (
+    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+        <Text style={[styles.title, { color: theme.colors.error }]}>Access Denied</Text>
+        <Text style={[styles.message, { color: theme.colors.textSecondary }]}>
+          You don't have permission to access this page.
+        </Text>
+        <View style={styles.actions}>
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: theme.colors.primary }]}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.buttonText}>Go Back</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: theme.colors.secondary }]}
+            onPress={() => navigation.navigate('Home' as never)}
+          >
+            <Text style={styles.buttonText}>Go Home</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  card: {
+    padding: 24,
+    borderRadius: 8,
+    alignItems: 'center',
+    maxWidth: 400,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 12,
+  },
+  message: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  button: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 4,
+  },
+  buttonText: {
+    color: 'white',
+    fontWeight: '600',
+  },
+});
+".
+
+generate_unauthorized_screen(flutter, Code) :-
+    Code = "import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+class UnauthorizedScreen extends StatelessWidget {
+  const UnauthorizedScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.lock, size: 64, color: Colors.red),
+              const SizedBox(height: 16),
+              Text(
+                'Access Denied',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  color: Colors.red,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'You don\\'t have permission to access this page.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ElevatedButton(
+                    onPressed: () => context.pop(),
+                    child: const Text('Go Back'),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: () => context.go('/'),
+                    child: const Text('Go Home'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+".
+
+generate_unauthorized_screen(swiftui, Code) :-
+    Code = "import SwiftUI
+
+struct UnauthorizedView: View {
+    @Environment(\\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: \"lock.fill\")
+                .font(.system(size: 64))
+                .foregroundColor(.red)
+
+            Text(\"Access Denied\")
+                .font(.title)
+                .fontWeight(.bold)
+                .foregroundColor(.red)
+
+            Text(\"You don't have permission to access this page.\")
+                .multilineTextAlignment(.center)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 12) {
+                Button(\"Go Back\") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+    }
+}
+".
+
+%! guard_store_path(+Target, -Path)
+%  Path for the auth store file.
+guard_store_path(vue, '/src/stores/auth.ts').
+guard_store_path(react_native, '/src/stores/authStore.ts').
+guard_store_path(flutter, '/lib/providers/auth_provider.dart').
+guard_store_path(swiftui, '/Sources/Stores/AuthStore.swift').
+
+%! generate_auth_store(+Target, -Code)
+%
+%  Generate the authentication store for each target.
+%
+generate_auth_store(vue, Code) :-
+    Code = "import { defineStore } from 'pinia';
+
+interface User {
+  id: string;
+  email: string;
+  roles: string[];
+  permissions: string[];
+}
+
+interface AuthState {
+  user: User | null;
+  token: string | null;
+  loading: boolean;
+}
+
+export const useAuthStore = defineStore('auth', {
+  state: (): AuthState => ({
+    user: null,
+    token: null,
+    loading: false,
+  }),
+
+  getters: {
+    isAuthenticated: (state) => !!state.token && !!state.user,
+
+    currentUser: (state) => state.user,
+
+    hasRole: (state) => (role: string) => {
+      return state.user?.roles.includes(role) ?? false;
+    },
+
+    hasPermission: (state) => (permission: string) => {
+      return state.user?.permissions.includes(permission) ?? false;
+    },
+  },
+
+  actions: {
+    async login(email: string, password: string) {
+      this.loading = true;
+      try {
+        // Replace with actual API call
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await response.json();
+        this.token = data.token;
+        this.user = data.user;
+        localStorage.setItem('auth_token', data.token);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    logout() {
+      this.token = null;
+      this.user = null;
+      localStorage.removeItem('auth_token');
+    },
+
+    async checkAuth() {
+      const token = localStorage.getItem('auth_token');
+      if (!token) return;
+
+      this.token = token;
+      try {
+        const response = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (response.ok) {
+          this.user = await response.json();
+        } else {
+          this.logout();
+        }
+      } catch {
+        this.logout();
+      }
+    },
+  },
+});
+".
+
+generate_auth_store(react_native, Code) :-
+    Code = "import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+interface User {
+  id: string;
+  email: string;
+  roles: string[];
+  permissions: string[];
+}
+
+interface AuthState {
+  user: User | null;
+  token: string | null;
+  loading: boolean;
+  isAuthenticated: () => boolean;
+  hasRole: (role: string) => boolean;
+  hasPermission: (permission: string) => boolean;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => void;
+  checkAuth: () => Promise<void>;
+}
+
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set, get) => ({
+      user: null,
+      token: null,
+      loading: false,
+
+      isAuthenticated: () => !!get().token && !!get().user,
+
+      hasRole: (role: string) => get().user?.roles.includes(role) ?? false,
+
+      hasPermission: (permission: string) =>
+        get().user?.permissions.includes(permission) ?? false,
+
+      login: async (email: string, password: string) => {
+        set({ loading: true });
+        try {
+          // Replace with actual API call
+          const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
+          const data = await response.json();
+          set({ token: data.token, user: data.user });
+        } finally {
+          set({ loading: false });
+        }
+      },
+
+      logout: () => {
+        set({ token: null, user: null });
+      },
+
+      checkAuth: async () => {
+        const { token } = get();
+        if (!token) return;
+
+        try {
+          const response = await fetch('/api/auth/me', {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (response.ok) {
+            const user = await response.json();
+            set({ user });
+          } else {
+            get().logout();
+          }
+        } catch {
+          get().logout();
+        }
+      },
+    }),
+    {
+      name: 'auth-storage',
+      storage: createJSONStorage(() => AsyncStorage),
+    }
+  )
+);
+".
+
+generate_auth_store(flutter, Code) :-
+    Code = "import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class User {
+  final String id;
+  final String email;
+  final List<String> roles;
+  final List<String> permissions;
+
+  User({
+    required this.id,
+    required this.email,
+    required this.roles,
+    required this.permissions,
+  });
+
+  factory User.fromJson(Map<String, dynamic> json) {
+    return User(
+      id: json['id'],
+      email: json['email'],
+      roles: List<String>.from(json['roles'] ?? []),
+      permissions: List<String>.from(json['permissions'] ?? []),
+    );
+  }
+}
+
+class AuthState {
+  final User? user;
+  final String? token;
+  final bool loading;
+
+  AuthState({this.user, this.token, this.loading = false});
+
+  bool get isAuthenticated => token != null && user != null;
+
+  bool hasRole(String role) => user?.roles.contains(role) ?? false;
+
+  bool hasPermission(String permission) =>
+      user?.permissions.contains(permission) ?? false;
+
+  AuthState copyWith({User? user, String? token, bool? loading}) {
+    return AuthState(
+      user: user ?? this.user,
+      token: token ?? this.token,
+      loading: loading ?? this.loading,
+    );
+  }
+}
+
+class AuthNotifier extends StateNotifier<AuthState> {
+  AuthNotifier() : super(AuthState());
+
+  Future<void> login(String email, String password) async {
+    state = state.copyWith(loading: true);
+    try {
+      // Replace with actual API call
+      final response = await http.post(
+        Uri.parse('/api/auth/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'password': password}),
+      );
+      final data = jsonDecode(response.body);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('auth_token', data['token']);
+      state = AuthState(
+        token: data['token'],
+        user: User.fromJson(data['user']),
+      );
+    } finally {
+      state = state.copyWith(loading: false);
+    }
+  }
+
+  Future<void> logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('auth_token');
+    state = AuthState();
+  }
+
+  Future<void> checkAuth() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('auth_token');
+    if (token == null) return;
+
+    try {
+      final response = await http.get(
+        Uri.parse('/api/auth/me'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (response.statusCode == 200) {
+        state = AuthState(
+          token: token,
+          user: User.fromJson(jsonDecode(response.body)),
+        );
+      } else {
+        await logout();
+      }
+    } catch (_) {
+      await logout();
+    }
+  }
+}
+
+final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
+  return AuthNotifier();
+});
+".
+
+generate_auth_store(swiftui, Code) :-
+    Code = "import Foundation
+import Combine
+
+struct User: Codable {
+    let id: String
+    let email: String
+    let roles: [String]
+    let permissions: [String]
+}
+
+@MainActor
+class AuthStore: ObservableObject {
+    @Published var user: User?
+    @Published var token: String?
+    @Published var loading = false
+
+    private let tokenKey = \"auth_token\"
+
+    var isAuthenticated: Bool {
+        token != nil && user != nil
+    }
+
+    func hasRole(_ role: String) -> Bool {
+        user?.roles.contains(role) ?? false
+    }
+
+    func hasPermission(_ permission: String) -> Bool {
+        user?.permissions.contains(permission) ?? false
+    }
+
+    func login(email: String, password: String) async throws {
+        loading = true
+        defer { loading = false }
+
+        // Replace with actual API call
+        guard let url = URL(string: \"/api/auth/login\") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = \"POST\"
+        request.setValue(\"application/json\", forHTTPHeaderField: \"Content-Type\")
+        request.httpBody = try JSONEncoder().encode([\"email\": email, \"password\": password])
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(LoginResponse.self, from: data)
+
+        token = response.token
+        user = response.user
+        UserDefaults.standard.set(response.token, forKey: tokenKey)
+    }
+
+    func logout() {
+        token = nil
+        user = nil
+        UserDefaults.standard.removeObject(forKey: tokenKey)
+    }
+
+    func checkAuth() async {
+        guard let storedToken = UserDefaults.standard.string(forKey: tokenKey) else { return }
+        token = storedToken
+
+        guard let url = URL(string: \"/api/auth/me\") else { return }
+        var request = URLRequest(url: url)
+        request.setValue(\"Bearer \\(storedToken)\", forHTTPHeaderField: \"Authorization\")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                user = try JSONDecoder().decode(User.self, from: data)
+            } else {
+                logout()
+            }
+        } catch {
+            logout()
+        }
+    }
+}
+
+struct LoginResponse: Codable {
+    let token: String
+    let user: User
+}
+".
+
+% ============================================================================
+% SECURE AUTH BACKEND GENERATION
+% ============================================================================
+
+%! generate_auth_backend(+AppSpec, +Target, -Files)
+%
+%  Generate secure authentication backend with:
+%  - Password hashing (bcrypt)
+%  - JWT token generation/verification
+%  - User model with roles/permissions
+%  - SQLAlchemy database integration
+%
+generate_auth_backend(AppSpec, fastapi, Files) :-
+    (   app_requires_secure_auth(AppSpec)
+    ->  generate_fastapi_auth_main(MainCode),
+        generate_fastapi_auth_models(ModelsCode),
+        generate_fastapi_auth_schemas(SchemasCode),
+        generate_fastapi_auth_utils(UtilsCode),
+        generate_fastapi_auth_routes(RoutesCode),
+        generate_fastapi_auth_deps(DepsCode),
+        generate_fastapi_requirements(ReqsCode),
+        Files = [
+            file('/main.py', MainCode),
+            file('/models.py', ModelsCode),
+            file('/schemas.py', SchemasCode),
+            file('/auth_utils.py', UtilsCode),
+            file('/routes/auth.py', RoutesCode),
+            file('/dependencies.py', DepsCode),
+            file('/requirements.txt', ReqsCode)
+        ]
+    ;   Files = []
+    ).
+
+generate_auth_backend(AppSpec, flask, Files) :-
+    (   app_requires_secure_auth(AppSpec)
+    ->  generate_flask_auth_app(AppCode),
+        generate_flask_auth_models(ModelsCode),
+        generate_flask_requirements(ReqsCode),
+        Files = [
+            file('/app.py', AppCode),
+            file('/models.py', ModelsCode),
+            file('/requirements.txt', ReqsCode)
+        ]
+    ;   Files = []
+    ).
+
+generate_auth_backend(_, _, []).
+
+%! generate_fastapi_auth_main(-Code)
+generate_fastapi_auth_main(Code) :-
+    Code = "\"\"\"
+FastAPI Application with Secure Authentication
+Generated by UnifyWeaver
+\"\"\"
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from routes.auth import router as auth_router
+import uvicorn
+
+app = FastAPI(
+    title=\"Secure API\",
+    description=\"API with JWT authentication\",
+    version=\"1.0.0\"
+)
+
+# CORS - configure for production
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[\"https://localhost:5173\", \"http://localhost:5173\"],
+    allow_credentials=True,
+    allow_methods=[\"*\"],
+    allow_headers=[\"*\"],
+)
+
+# Include auth routes
+app.include_router(auth_router, prefix=\"/api/auth\", tags=[\"Authentication\"])
+
+@app.get(\"/health\")
+async def health_check():
+    return {\"status\": \"healthy\"}
+
+if __name__ == \"__main__\":
+    uvicorn.run(
+        \"main:app\",
+        host=\"0.0.0.0\",
+        port=8000,
+        ssl_keyfile=\"certs/localhost-key.pem\",
+        ssl_certfile=\"certs/localhost.pem\",
+        reload=True
+    )
+".
+
+%! generate_fastapi_auth_models(-Code)
+generate_fastapi_auth_models(Code) :-
+    Code = "\"\"\"
+SQLAlchemy User Model
+\"\"\"
+from sqlalchemy import Column, String, Boolean, DateTime, JSON, create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+import uuid
+
+DATABASE_URL = \"sqlite:///./app.db\"  # Use PostgreSQL in production
+
+engine = create_engine(DATABASE_URL, connect_args={\"check_same_thread\": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+class User(Base):
+    __tablename__ = \"users\"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    roles = Column(JSON, default=[\"user\"])
+    permissions = Column(JSON, default=[])
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def has_role(self, role: str) -> bool:
+        return role in (self.roles or [])
+
+    def has_permission(self, permission: str) -> bool:
+        return permission in (self.permissions or [])
+
+
+# Create tables
+Base.metadata.create_all(bind=engine)
+".
+
+%! generate_fastapi_auth_schemas(-Code)
+generate_fastapi_auth_schemas(Code) :-
+    Code = "\"\"\"
+Pydantic Schemas for Authentication
+\"\"\"
+from pydantic import BaseModel, EmailStr, Field
+from typing import List, Optional
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    roles: List[str]
+    permissions: List[str]
+
+    class Config:
+        from_attributes = True
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = \"bearer\"
+    user: UserResponse
+
+
+class AuthResponse(BaseModel):
+    success: bool
+    token: Optional[str] = None
+    user: Optional[UserResponse] = None
+    message: Optional[str] = None
+".
+
+%! generate_fastapi_auth_utils(-Code)
+generate_fastapi_auth_utils(Code) :-
+    Code = "\"\"\"
+Authentication Utilities - Password Hashing & JWT
+\"\"\"
+from datetime import datetime, timedelta
+from typing import Optional
+import os
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+
+# Password hashing
+pwd_context = CryptContext(schemes=[\"bcrypt\"], deprecated=\"auto\")
+
+# JWT settings - USE ENVIRONMENT VARIABLES IN PRODUCTION
+SECRET_KEY = os.getenv(\"JWT_SECRET_KEY\", \"your-secret-key-change-in-production\")
+ALGORITHM = \"HS256\"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    \"\"\"Verify a password against its hash.\"\"\"
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    \"\"\"Hash a password using bcrypt.\"\"\"
+    return pwd_context.hash(password)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    \"\"\"Create a JWT access token.\"\"\"
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({\"exp\": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> Optional[dict]:
+    \"\"\"Decode and verify a JWT token.\"\"\"
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+".
+
+%! generate_fastapi_auth_routes(-Code)
+generate_fastapi_auth_routes(Code) :-
+    Code = "\"\"\"
+Authentication Routes
+\"\"\"
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from dependencies import get_db, get_current_user
+from models import User
+from schemas import UserCreate, UserLogin, TokenResponse, AuthResponse, UserResponse
+from auth_utils import verify_password, get_password_hash, create_access_token
+
+router = APIRouter()
+
+
+@router.post(\"/register\", response_model=AuthResponse)
+async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+    \"\"\"Register a new user.\"\"\"
+    # Check if user exists
+    existing = db.query(User).filter(User.email == user_data.email).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=\"Email already registered\"
+        )
+
+    # Create user with hashed password
+    user = User(
+        email=user_data.email,
+        hashed_password=get_password_hash(user_data.password),
+        roles=[\"user\"],
+        permissions=[\"read\"]
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    # Generate token
+    token = create_access_token({\"sub\": user.id, \"email\": user.email})
+
+    return AuthResponse(
+        success=True,
+        token=token,
+        user=UserResponse.model_validate(user),
+        message=\"Registration successful\"
+    )
+
+
+@router.post(\"/login\", response_model=AuthResponse)
+async def login(credentials: UserLogin, db: Session = Depends(get_db)):
+    \"\"\"Authenticate user and return JWT token.\"\"\"
+    user = db.query(User).filter(User.email == credentials.email).first()
+
+    if not user or not verify_password(credentials.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=\"Invalid email or password\",
+            headers={\"WWW-Authenticate\": \"Bearer\"}
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=\"Account is disabled\"
+        )
+
+    token = create_access_token({\"sub\": user.id, \"email\": user.email})
+
+    return AuthResponse(
+        success=True,
+        token=token,
+        user=UserResponse.model_validate(user)
+    )
+
+
+@router.get(\"/me\", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    \"\"\"Get current authenticated user info.\"\"\"
+    return UserResponse.model_validate(current_user)
+
+
+@router.post(\"/logout\")
+async def logout():
+    \"\"\"Logout - client should discard token.\"\"\"
+    return {\"success\": True, \"message\": \"Logged out successfully\"}
+".
+
+%! generate_fastapi_auth_deps(-Code)
+generate_fastapi_auth_deps(Code) :-
+    Code = "\"\"\"
+FastAPI Dependencies
+\"\"\"
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+from models import SessionLocal, User
+from auth_utils import decode_token
+
+security = HTTPBearer()
+
+
+def get_db():
+    \"\"\"Database session dependency.\"\"\"
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> User:
+    \"\"\"Get current authenticated user from JWT token.\"\"\"
+    token = credentials.credentials
+    payload = decode_token(token)
+
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=\"Invalid or expired token\",
+            headers={\"WWW-Authenticate\": \"Bearer\"}
+        )
+
+    user_id = payload.get(\"sub\")
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=\"User not found\"
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=\"Account is disabled\"
+        )
+
+    return user
+
+
+def require_role(role: str):
+    \"\"\"Dependency to require a specific role.\"\"\"
+    async def role_checker(current_user: User = Depends(get_current_user)):
+        if not current_user.has_role(role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f\"Role '{role}' required\"
+            )
+        return current_user
+    return role_checker
+
+
+def require_permission(permission: str):
+    \"\"\"Dependency to require a specific permission.\"\"\"
+    async def permission_checker(current_user: User = Depends(get_current_user)):
+        if not current_user.has_permission(permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f\"Permission '{permission}' required\"
+            )
+        return current_user
+    return permission_checker
+".
+
+%! generate_fastapi_requirements(-Code)
+generate_fastapi_requirements(Code) :-
+    Code = "fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+sqlalchemy>=2.0.0
+pydantic[email]>=2.0.0
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.6
+".
+
+%! generate_flask_auth_app(-Code)
+generate_flask_auth_app(Code) :-
+    Code = "\"\"\"
+Flask Application with Secure Authentication
+Generated by UnifyWeaver
+\"\"\"
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+from functools import wraps
+import jwt
+import os
+from datetime import datetime, timedelta
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+CORS(app, origins=['https://localhost:5173', 'http://localhost:5173'], supports_credentials=True)
+db = SQLAlchemy(app)
+bcrypt = Bcrypt(app)
+
+from models import User
+
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not token:
+            return jsonify({'success': False, 'message': 'Token required'}), 401
+        try:
+            payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            current_user = User.query.get(payload['sub'])
+            if not current_user or not current_user.is_active:
+                return jsonify({'success': False, 'message': 'Invalid user'}), 401
+        except jwt.ExpiredSignatureError:
+            return jsonify({'success': False, 'message': 'Token expired'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'success': False, 'message': 'Invalid token'}), 401
+        return f(current_user, *args, **kwargs)
+    return decorated
+
+
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({'success': False, 'message': 'Email already registered'}), 400
+
+    user = User(
+        email=data['email'],
+        password_hash=bcrypt.generate_password_hash(data['password']).decode('utf-8'),
+        roles=['user'],
+        permissions=['read']
+    )
+    db.session.add(user)
+    db.session.commit()
+
+    token = jwt.encode(
+        {'sub': user.id, 'email': user.email, 'exp': datetime.utcnow() + timedelta(days=1)},
+        app.config['SECRET_KEY'],
+        algorithm='HS256'
+    )
+
+    return jsonify({
+        'success': True,
+        'token': token,
+        'user': user.to_dict(),
+        'message': 'Registration successful'
+    })
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(email=data['email']).first()
+
+    if not user or not bcrypt.check_password_hash(user.password_hash, data['password']):
+        return jsonify({'success': False, 'message': 'Invalid email or password'}), 401
+
+    if not user.is_active:
+        return jsonify({'success': False, 'message': 'Account disabled'}), 403
+
+    token = jwt.encode(
+        {'sub': user.id, 'email': user.email, 'exp': datetime.utcnow() + timedelta(days=1)},
+        app.config['SECRET_KEY'],
+        algorithm='HS256'
+    )
+
+    return jsonify({
+        'success': True,
+        'token': token,
+        'user': user.to_dict()
+    })
+
+
+@app.route('/api/auth/me', methods=['GET'])
+@token_required
+def get_me(current_user):
+    return jsonify(current_user.to_dict())
+
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy'})
+
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    app.run(
+        host='0.0.0.0',
+        port=8000,
+        ssl_context=('certs/localhost.pem', 'certs/localhost-key.pem'),
+        debug=True
+    )
+".
+
+%! generate_flask_auth_models(-Code)
+generate_flask_auth_models(Code) :-
+    Code = "\"\"\"
+Flask-SQLAlchemy User Model
+\"\"\"
+from app import db
+from datetime import datetime
+import uuid
+
+
+class User(db.Model):
+    __tablename__ = 'users'
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    roles = db.Column(db.JSON, default=['user'])
+    permissions = db.Column(db.JSON, default=[])
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def has_role(self, role):
+        return role in (self.roles or [])
+
+    def has_permission(self, permission):
+        return permission in (self.permissions or [])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'email': self.email,
+            'roles': self.roles or [],
+            'permissions': self.permissions or []
+        }
+".
+
+%! generate_flask_requirements(-Code)
+generate_flask_requirements(Code) :-
+    Code = "flask>=2.3.0
+flask-cors>=4.0.0
+flask-sqlalchemy>=3.0.0
+flask-bcrypt>=1.0.1
+PyJWT>=2.8.0
+".
 
 % ============================================================================
 % UTILITY PREDICATES
