@@ -120,11 +120,22 @@ Both use the same projection model and hierarchical matching approach.
 
 **Skills:**
 - `skill_bookmark_filing.md` - Filing new bookmarks (same projection model)
+- `skill_train_model.md` - Train the projection model
+- `skill_semantic_inference.md` - General inference concepts
+- `skill_mst_folder_grouping.md` - Group folders with MST
 
 **Documentation:**
 - `docs/QUICKSTART_MINDMAP_LINKING.md` - Detailed guide with explanations
 - `docs/design/FEDERATED_MODEL_FORMAT.md` - Model format specification
 - `scripts/mindmap/README.md` - Full mindmap tools documentation
+
+**Education (in `education/` subfolder):**
+- `book-13-semantic-search/01_introduction.md` - Semantic search overview
+- `book-13-semantic-search/05_semantic_playbook.md` - Best practices
+- `book-13-semantic-search/07_density_scoring.md` - Scoring methods
+- `book-13-semantic-search/08_advanced_federation.md` - Federation architecture
+- `book-13-semantic-search/15_zero_shot_path_mapping.md` - Zero-shot inference
+- `book-14-ai-training/05_training_pipeline.md` - Model training
 
 **Code:**
 - `scripts/mindmap/link_pearltrees.py` - Main linking script
