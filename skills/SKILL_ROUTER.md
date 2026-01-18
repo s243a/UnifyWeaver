@@ -2,6 +2,24 @@
 
 Decision tree for loading skills. Follow from 1.0, branch based on conditions.
 
+## Preamble: Instructions
+
+**Notation:**
+- Numbers in brackets like [1] are footnotes. See **Notes** section at end of document.
+
+**LOAD** means:
+- If skill is NOT in context → Read the skill file into context
+- If skill IS in context → Proceed with skill instructions [1]
+
+**GOTO X.X** means:
+- Jump to that numbered section and continue evaluation
+
+**Evaluation order:**
+- Start at 1.0
+- Evaluate conditions top-to-bottom within each section
+- First matching condition wins
+- After LOAD, follow the skill's commands
+
 ## 1.0 Entry Point
 
 Parse user request and identify domain.
@@ -57,6 +75,10 @@ Parse user request and identify domain.
 - 6.3 Ask user to clarify intent
 
 ## Notes
+
+[1] If you forget the command, get an error, or feel uncertain → Re-read the skill to refresh, or applicable documentation or code, as part of the process to resolve the issue.
+
+## General Notes
 
 - Multiple conditions can match; load first matching skill
 - After loading skill, follow its commands
