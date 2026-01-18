@@ -49,3 +49,24 @@ swipl -g "use_module('src/unifyweaver/core/compiler_driver'), consult('temp_stra
 - **Arithmetic Predicates:** The current version of the `compiler_driver` has a known limitation and cannot transpile predicates that directly use arithmetic comparison operators (e.g., `>`, `<`, `=<`). This will cause the compilation to fail.
 - **Dependencies:** The compiler will automatically analyze and compile any user-defined predicates that your main predicate depends on.
 - **Output:** The result of a successful compilation is a new, executable `.sh` file in the specified output directory (e.g., `choose_strategy.sh`).
+
+## Related
+
+**Skills:**
+- `skill_unifyweaver_environment.md` - Environment setup
+- `skill_find_executable.md` - Finding executables
+
+**Documentation:**
+- `docs/EXTENDED_README.md` - Comprehensive usage guide
+- `docs/ADVANCED_RECURSION.md` - Recursion patterns
+
+**Education (in `education/` subfolder):**
+- `book-02-bash-target/01_introduction.md` - Bash target basics
+- `book-02-bash-target/02_simple_predicates.md` - Simple predicates
+- `book-02-bash-target/03_recursion_patterns.md` - Recursion compilation
+- `book-02-bash-target/04_data_structures.md` - Data structure handling
+- `book-11-prolog-target/01_introduction.md` - Prolog-to-Prolog compilation
+
+**Code:**
+- `src/unifyweaver/core/compiler_driver.pl` - Main compiler driver
+- `src/unifyweaver/targets/bash/` - Bash target implementation

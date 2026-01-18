@@ -78,9 +78,20 @@ Suggested folders:
 
 **Skills:**
 - `skill_mst_folder_grouping.md` - Generate folder structure
+- `skill_mindmap_linking.md` - Link mindmaps to Pearltrees
+- `skill_train_model.md` - Train projection models
+- `skill_semantic_inference.md` - General inference concepts
 
 **Documentation:**
 - `scripts/mindmap/README.md` - Full documentation (see "Folder Organization Tools" section)
+- `docs/design/FEDERATED_MODEL_FORMAT.md` - Model format specification
+
+**Education (in `education/` subfolder):**
+- `book-13-semantic-search/05_semantic_playbook.md` - Best practices
+- `book-13-semantic-search/07_density_scoring.md` - Scoring methods
+- `book-13-semantic-search/08_advanced_federation.md` - Federation architecture
+- `book-13-semantic-search/15_zero_shot_path_mapping.md` - Zero-shot inference
+- `book-14-ai-training/03_lda_projection.md` - Projection methods
 
 **Code:**
 - `scripts/mindmap/suggest_folder.py` - Main suggestion script
