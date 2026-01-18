@@ -18,7 +18,23 @@ jobs:
 
       - name: Install SWI-Prolog
         run: |
-          sudo apt-add-repository ppa:swi-prolog/stable -y
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends software-properties-common
+
+          added=0
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-add-repository ppa:swi-prolog/stable -y; then
+              added=1
+              break
+            fi
+            echo "WARN: Launchpad unavailable; retrying apt-add-repository ($attempt/5)..." >&2
+            sleep $((attempt * 15))
+          done
+          if [ "$added" -eq 0 ]; then
+            echo "WARN: Could not add PPA; installing SWI-Prolog from Ubuntu repo." >&2
+          fi
+
           sudo apt-get update -qq
           sudo apt-get install -y swi-prolog
 
@@ -106,7 +122,23 @@ jobs:
 
       - name: Install SWI-Prolog
         run: |
-          sudo apt-add-repository ppa:swi-prolog/stable -y
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends software-properties-common
+
+          added=0
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-add-repository ppa:swi-prolog/stable -y; then
+              added=1
+              break
+            fi
+            echo "WARN: Launchpad unavailable; retrying apt-add-repository ($attempt/5)..." >&2
+            sleep $((attempt * 15))
+          done
+          if [ "$added" -eq 0 ]; then
+            echo "WARN: Could not add PPA; installing SWI-Prolog from Ubuntu repo." >&2
+          fi
+
           sudo apt-get update -qq
           sudo apt-get install -y swi-prolog
 
