@@ -3221,12 +3221,12 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is not null && buildLeft && leftIsRecursive)
             {
-                trace?.RecordStrategy(join, "KeyJoinRecursiveIndexLeft");
-                var probe = Evaluate(join.Right, context);
                 if (joinKeyCount == 1)
                 {
+                    trace?.RecordStrategy(join, "KeyJoinRecursiveIndexLeft");
+                    var probeTuples = Evaluate(join.Right, context);
                     var index = GetRecursiveFactIndex(leftPredicate, leftKind, join.LeftKeys[0], leftRecursiveRows, context);
-                    foreach (var rightTuple in probe)
+                    foreach (var rightTuple in probeTuples)
                     {
                         if (rightTuple is null) continue;
 
@@ -3245,6 +3245,134 @@ namespace UnifyWeaver.QueryRuntime
                     yield break;
                 }
 
+                var signature = string.Join(",", join.LeftKeys);
+                var joinIndexCached =
+                    context.RecursiveJoinIndices.TryGetValue((leftPredicate, leftKind, signature), out var cachedJoinIndex) &&
+                    ReferenceEquals(cachedJoinIndex.Rows, leftRecursiveRows);
+
+                const int TinyProbeUpperBound = 64;
+                var probeIsTiny = TryEstimateRowUpperBound(join.Right, context, out var probeUpperBound) &&
+                                  probeUpperBound <= TinyProbeUpperBound;
+
+                if (probeIsTiny && !joinIndexCached)
+                {
+                    trace?.RecordStrategy(join, "KeyJoinRecursiveIndexPartial");
+                    var probeSource = Evaluate(join.Right, context);
+                    var probeRows = new List<(object[] Tuple, object[] Keys)>();
+                    var distinctKeys = new HashSet<object>[joinKeyCount];
+                    for (var i = 0; i < joinKeyCount; i++)
+                    {
+                        distinctKeys[i] = new HashSet<object>();
+                    }
+
+                    foreach (var rightTuple in probeSource)
+                    {
+                        if (rightTuple is null) continue;
+
+                        var keyValues = new object[joinKeyCount];
+                        for (var i = 0; i < joinKeyCount; i++)
+                        {
+                            var key = GetLookupKey(rightTuple, join.RightKeys[i], NullFactIndexKey);
+                            keyValues[i] = key;
+                            distinctKeys[i].Add(key);
+                        }
+
+                        probeRows.Add((rightTuple, keyValues));
+                    }
+
+                    if (probeRows.Count == 0)
+                    {
+                        yield break;
+                    }
+
+                    bool IsFactIndexCached(int columnIndex) =>
+                        context.RecursiveFactIndices.TryGetValue((leftPredicate, leftKind, columnIndex), out var cache) &&
+                        ReferenceEquals(cache.Rows, leftRecursiveRows);
+
+                    var pivotPos = 0;
+                    var bestDistinct = distinctKeys[0].Count;
+                    var bestCached = IsFactIndexCached(join.LeftKeys[0]);
+                    for (var i = 1; i < joinKeyCount; i++)
+                    {
+                        var candidateDistinct = distinctKeys[i].Count;
+                        var candidateCached = IsFactIndexCached(join.LeftKeys[i]);
+
+                        if (candidateCached && !bestCached)
+                        {
+                            pivotPos = i;
+                            bestDistinct = candidateDistinct;
+                            bestCached = true;
+                            continue;
+                        }
+
+                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                        {
+                            pivotPos = i;
+                            bestDistinct = candidateDistinct;
+                        }
+                    }
+
+                    var pivotLeftKey = join.LeftKeys[pivotPos];
+
+                    var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
+                    foreach (var probeRow in probeRows)
+                    {
+                        var pivotKey = probeRow.Keys[pivotPos];
+                        if (!probeIndex.TryGetValue(pivotKey, out var bucket))
+                        {
+                            bucket = new List<(object[] Tuple, object[] Keys)>();
+                            probeIndex[pivotKey] = bucket;
+                        }
+
+                        bucket.Add(probeRow);
+                    }
+
+                    if (probeIndex.Count == 0)
+                    {
+                        yield break;
+                    }
+
+                    var factIndex = GetRecursiveFactIndex(leftPredicate, leftKind, pivotLeftKey, leftRecursiveRows, context);
+                    foreach (var entry in probeIndex)
+                    {
+                        if (!factIndex.TryGetValue(entry.Key, out var leftBucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var leftTuple in leftBucket)
+                        {
+                            if (leftTuple is null) continue;
+
+                            foreach (var probeRow in entry.Value)
+                            {
+                                var match = true;
+                                for (var i = 0; i < joinKeyCount; i++)
+                                {
+                                    if (i == pivotPos) continue;
+                                    var leftValue = GetLookupKey(leftTuple, join.LeftKeys[i], NullFactIndexKey);
+                                    if (!Equals(leftValue, probeRow.Keys[i]))
+                                    {
+                                        match = false;
+                                        break;
+                                    }
+                                }
+
+                                if (!match)
+                                {
+                                    continue;
+                                }
+
+                                yield return BuildJoinOutput(leftTuple, probeRow.Tuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+
+                    yield break;
+                }
+
+                trace?.RecordStrategy(join, "KeyJoinRecursiveIndexLeft");
+                var probe = Evaluate(join.Right, context);
                 var joinIndex = GetRecursiveJoinIndex(leftPredicate, leftKind, join.LeftKeys, leftRecursiveRows, context);
                 foreach (var rightTuple in probe)
                 {
@@ -3269,12 +3397,12 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is not null && !buildLeft && rightIsRecursive)
             {
-                trace?.RecordStrategy(join, "KeyJoinRecursiveIndexRight");
-                var probe = Evaluate(join.Left, context);
                 if (joinKeyCount == 1)
                 {
+                    trace?.RecordStrategy(join, "KeyJoinRecursiveIndexRight");
+                    var probeTuples = Evaluate(join.Left, context);
                     var index = GetRecursiveFactIndex(rightPredicate, rightKind, join.RightKeys[0], rightRecursiveRows, context);
-                    foreach (var leftTuple in probe)
+                    foreach (var leftTuple in probeTuples)
                     {
                         if (leftTuple is null) continue;
 
@@ -3293,6 +3421,134 @@ namespace UnifyWeaver.QueryRuntime
                     yield break;
                 }
 
+                var signature = string.Join(",", join.RightKeys);
+                var joinIndexCached =
+                    context.RecursiveJoinIndices.TryGetValue((rightPredicate, rightKind, signature), out var cachedJoinIndex) &&
+                    ReferenceEquals(cachedJoinIndex.Rows, rightRecursiveRows);
+
+                const int TinyProbeUpperBound = 64;
+                var probeIsTiny = TryEstimateRowUpperBound(join.Left, context, out var probeUpperBound) &&
+                                  probeUpperBound <= TinyProbeUpperBound;
+
+                if (probeIsTiny && !joinIndexCached)
+                {
+                    trace?.RecordStrategy(join, "KeyJoinRecursiveIndexPartial");
+                    var probeSource = Evaluate(join.Left, context);
+                    var probeRows = new List<(object[] Tuple, object[] Keys)>();
+                    var distinctKeys = new HashSet<object>[joinKeyCount];
+                    for (var i = 0; i < joinKeyCount; i++)
+                    {
+                        distinctKeys[i] = new HashSet<object>();
+                    }
+
+                    foreach (var leftTuple in probeSource)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var keyValues = new object[joinKeyCount];
+                        for (var i = 0; i < joinKeyCount; i++)
+                        {
+                            var key = GetLookupKey(leftTuple, join.LeftKeys[i], NullFactIndexKey);
+                            keyValues[i] = key;
+                            distinctKeys[i].Add(key);
+                        }
+
+                        probeRows.Add((leftTuple, keyValues));
+                    }
+
+                    if (probeRows.Count == 0)
+                    {
+                        yield break;
+                    }
+
+                    bool IsFactIndexCached(int columnIndex) =>
+                        context.RecursiveFactIndices.TryGetValue((rightPredicate, rightKind, columnIndex), out var cache) &&
+                        ReferenceEquals(cache.Rows, rightRecursiveRows);
+
+                    var pivotPos = 0;
+                    var bestDistinct = distinctKeys[0].Count;
+                    var bestCached = IsFactIndexCached(join.RightKeys[0]);
+                    for (var i = 1; i < joinKeyCount; i++)
+                    {
+                        var candidateDistinct = distinctKeys[i].Count;
+                        var candidateCached = IsFactIndexCached(join.RightKeys[i]);
+
+                        if (candidateCached && !bestCached)
+                        {
+                            pivotPos = i;
+                            bestDistinct = candidateDistinct;
+                            bestCached = true;
+                            continue;
+                        }
+
+                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                        {
+                            pivotPos = i;
+                            bestDistinct = candidateDistinct;
+                        }
+                    }
+
+                    var pivotRightKey = join.RightKeys[pivotPos];
+
+                    var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
+                    foreach (var probeRow in probeRows)
+                    {
+                        var pivotKey = probeRow.Keys[pivotPos];
+                        if (!probeIndex.TryGetValue(pivotKey, out var bucket))
+                        {
+                            bucket = new List<(object[] Tuple, object[] Keys)>();
+                            probeIndex[pivotKey] = bucket;
+                        }
+
+                        bucket.Add(probeRow);
+                    }
+
+                    if (probeIndex.Count == 0)
+                    {
+                        yield break;
+                    }
+
+                    var factIndex = GetRecursiveFactIndex(rightPredicate, rightKind, pivotRightKey, rightRecursiveRows, context);
+                    foreach (var entry in probeIndex)
+                    {
+                        if (!factIndex.TryGetValue(entry.Key, out var rightBucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var rightTuple in rightBucket)
+                        {
+                            if (rightTuple is null) continue;
+
+                            foreach (var probeRow in entry.Value)
+                            {
+                                var match = true;
+                                for (var i = 0; i < joinKeyCount; i++)
+                                {
+                                    if (i == pivotPos) continue;
+                                    var rightValue = GetLookupKey(rightTuple, join.RightKeys[i], NullFactIndexKey);
+                                    if (!Equals(rightValue, probeRow.Keys[i]))
+                                    {
+                                        match = false;
+                                        break;
+                                    }
+                                }
+
+                                if (!match)
+                                {
+                                    continue;
+                                }
+
+                                yield return BuildJoinOutput(probeRow.Tuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+
+                    yield break;
+                }
+
+                trace?.RecordStrategy(join, "KeyJoinRecursiveIndexRight");
+                var probe = Evaluate(join.Left, context);
                 var joinIndex = GetRecursiveJoinIndex(rightPredicate, rightKind, join.RightKeys, rightRecursiveRows, context);
                 foreach (var leftTuple in probe)
                 {

@@ -22,6 +22,7 @@
 :- dynamic user:test_factorial/2.
 :- dynamic user:test_factorial_input/1.
 :- dynamic user:test_fib_param/2.
+:- dynamic user:test_recursive_label_path/3.
 :- dynamic user:test_post_agg_param/2.
 :- dynamic user:test_customer/1.
 :- dynamic user:test_customer_alice_or_bob/1.
@@ -182,6 +183,7 @@ test_csharp_query_target :-
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
         verify_recursive_selection_scan_uses_scan_index,
+        verify_recursive_multi_key_recursive_join_uses_partial_index,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
         verify_parameterized_fib_runtime,
@@ -453,6 +455,13 @@ setup_test_data :-
         test_fib_param(N2, F2),
         F is F1 + F2
     )),
+    assertz(user:mode(test_recursive_label_path(+, -, +))),
+    assertz(user:test_recursive_label_path(a, b, red)),
+    assertz(user:test_recursive_label_path(b, c, red)),
+    assertz(user:(test_recursive_label_path(X, Z, L) :-
+        test_recursive_label_path(X, Y, L),
+        test_recursive_label_path(Y, Z, L)
+    )),
     assertz(user:mode(test_post_agg_param(+, -))),
     assertz(user:test_post_agg_param(0, 0)),
     assertz(user:(test_post_agg_param(N, Sum) :-
@@ -616,6 +625,8 @@ cleanup_test_data :-
     retractall(user:test_scanindex_reach_filtered(_, _)),
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
+    retractall(user:test_recursive_label_path(_, _, _)),
+    retractall(user:mode(test_recursive_label_path(_, _, _))),
     retractall(user:test_post_agg_param(_, _)),
     retractall(user:mode(test_post_agg_param(_,_))),
     retractall(user:test_banned(_)),
@@ -1463,6 +1474,26 @@ verify_recursive_selection_scan_uses_scan_index :-
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,0', 'alice,2', 'alice,3', 'STRATEGY_USED:KeyJoinScanIndex=true'],
         [],
+        HarnessSource).
+
+verify_recursive_multi_key_recursive_join_uses_partial_index :-
+    csharp_query_target:build_query_plan(test_recursive_label_path/3, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path, arity:3}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path, arity:3}, role:_, width:_}, Left),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path, arity:3}, role:_, width:_}, Right),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [[a, red]], 'KeyJoinRecursiveIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red',
+         'a,c,red',
+         'STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
+        [[a, red]],
         HarnessSource).
 
 verify_parameterized_fib_plan :-
