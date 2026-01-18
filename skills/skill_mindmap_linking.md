@@ -118,7 +118,14 @@ Both use the same projection model and hierarchical matching approach.
 
 ## Related
 
+**Skills:**
 - `skill_bookmark_filing.md` - Filing new bookmarks (same projection model)
+
+**Documentation:**
 - `docs/QUICKSTART_MINDMAP_LINKING.md` - Detailed guide with explanations
 - `docs/design/FEDERATED_MODEL_FORMAT.md` - Model format specification
 - `scripts/mindmap/README.md` - Full mindmap tools documentation
+
+**Code:**
+- `scripts/mindmap/link_pearltrees.py` - Main linking script
+- `scripts/infer_pearltrees_federated.py` - Projection model inference (same approach)

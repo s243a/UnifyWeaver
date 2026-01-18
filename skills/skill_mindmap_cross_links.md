@@ -86,5 +86,15 @@ python3 scripts/mindmap/rename_mindmap.py --help
 
 ## Related
 
+**Skills:**
 - `skill_mindmap_linking.md` - Link to Pearltrees
+
+**Documentation:**
 - `scripts/mindmap/README.md` - Full documentation
+
+**Code:**
+- `scripts/mindmap/build_index.py` - Build tree_id → path index
+- `scripts/mindmap/add_relative_links.py` - Add cloudmapref attributes
+- `scripts/mindmap/rename_mindmap.py` - Rename with link updates
+- `scripts/mindmap/build_reverse_index.py` - Build backlinks index
+- `scripts/mindmap/index_store.py` - Index storage abstraction (JSON/TSV/SQLite)

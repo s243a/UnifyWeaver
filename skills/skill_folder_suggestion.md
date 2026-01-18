@@ -76,5 +76,12 @@ Suggested folders:
 
 ## Related
 
+**Skills:**
 - `skill_mst_folder_grouping.md` - Generate folder structure
-- `scripts/mindmap/README.md` - Full documentation
+
+**Documentation:**
+- `scripts/mindmap/README.md` - Full documentation (see "Folder Organization Tools" section)
+
+**Code:**
+- `scripts/mindmap/suggest_folder.py` - Main suggestion script
+- `scripts/mindmap/build_folder_projections.py` - Build W matrices per folder

@@ -80,5 +80,13 @@ python3 scripts/mindmap/generate_mst_mindmaps.py \
 
 ## Related
 
+**Skills:**
 - `skill_mindmap_cross_links.md` - Add cross-links between mindmaps
-- `scripts/mindmap/README.md` - Full documentation
+
+**Documentation:**
+- `scripts/mindmap/README.md` - Full documentation (see "MST Semantic Clustering" section)
+
+**Code:**
+- `scripts/mindmap/mst_folder_grouping.py` - Main MST partitioning script
+- `scripts/mindmap/generate_mst_mindmaps.py` - Generate mindmaps from MST structure
+- `scripts/mindmap/hierarchy_objective.py` - J = D/(1+H) objective function
