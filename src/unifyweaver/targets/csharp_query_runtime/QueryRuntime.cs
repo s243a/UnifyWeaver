@@ -5259,8 +5259,20 @@ namespace UnifyWeaver.QueryRuntime
                 return Enumerable.Empty<object[]>();
             }
 
+            static object[] BuildParameterKey(object[] tuple, IReadOnlyList<int> positions)
+            {
+                if (tuple.Length == positions.Count)
+                {
+                    var key = new object[positions.Count];
+                    Array.Copy(tuple, key, key.Length);
+                    return key;
+                }
+
+                return BuildKeyFromTuple(tuple, positions);
+            }
+
             var parameterSet = new HashSet<RowWrapper>(
-                parameters.Select(p => new RowWrapper(BuildKeyFromTuple(p, inputPositions))),
+                parameters.Where(p => p is not null).Select(p => new RowWrapper(BuildParameterKey(p, inputPositions))),
                 new RowWrapperComparer(StructuralArrayComparer.Instance));
 
             return source.Where(tuple =>
@@ -5324,7 +5336,9 @@ namespace UnifyWeaver.QueryRuntime
             foreach (var paramTuple in parameters)
             {
                 if (paramTuple is null) continue;
-                var key = BuildKeyFromTuple(paramTuple, inputPositions);
+                var key = paramTuple.Length == inputPositions.Count
+                    ? paramTuple.ToArray()
+                    : BuildKeyFromTuple(paramTuple, inputPositions);
                 keySet.Add(new RowWrapper(key));
             }
 
