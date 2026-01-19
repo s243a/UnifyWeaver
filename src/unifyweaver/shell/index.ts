@@ -157,3 +157,8 @@ export {
   // DSL builder
   EC
 } from './edit-review';
+
+// HTTP CLI Server
+// Run directly: ts-node http-server.ts [--port 3001]
+// Provides HTTP endpoints for grep, find, cat operations
+// See http-server.ts for standalone server

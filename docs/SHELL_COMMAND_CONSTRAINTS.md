@@ -326,6 +326,7 @@ src/unifyweaver/shell/
 ├── index.ts                    # Module exports
 ├── command-proxy.ts            # Original per-command validators
 ├── proxy-cli.ts                # CLI wrapper
+├── http-server.ts              # HTTP server for web/AI browser access
 ├── constraints.ts              # Constraint vocabulary & analyzer
 ├── constraint-loader.ts        # JSON loading
 ├── constraint-store.ts         # Storage abstraction layer
@@ -336,6 +337,61 @@ src/unifyweaver/shell/
 ├── store-and-edit-demo.ts      # Storage & edit demo
 └── llm-provider-demo.ts        # LLM provider demo
 ```
+
+## HTTP CLI Server
+
+The HTTP server exposes shell search commands via HTTP endpoints, enabling AI browsers (like Comet/Perplexity) to search your project.
+
+### Starting the Server
+
+```bash
+# Start on default port (3001)
+npx ts-node src/unifyweaver/shell/http-server.ts
+
+# Start on custom port
+npx ts-node src/unifyweaver/shell/http-server.ts --port 8080
+
+# With custom sandbox root
+SANDBOX_ROOT=/path/to/project npx ts-node src/unifyweaver/shell/http-server.ts
+```
+
+### Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | HTML/Vue interface |
+| `/health` | GET | Health check |
+| `/commands` | GET | List available commands |
+| `/grep` | POST | Search file contents |
+| `/find` | POST | Find files by pattern |
+| `/cat` | POST | Read file contents |
+| `/exec` | POST | Execute allowed command |
+
+### Example Usage
+
+```bash
+# Search for pattern
+curl -X POST http://localhost:3001/grep \
+  -H "Content-Type: application/json" \
+  -d '{"pattern": "export.*function", "path": "src/"}'
+
+# Find TypeScript files
+curl -X POST http://localhost:3001/find \
+  -H "Content-Type: application/json" \
+  -d '{"pattern": "*.ts", "path": "."}'
+
+# Read a file
+curl -X POST http://localhost:3001/cat \
+  -H "Content-Type: application/json" \
+  -d '{"path": "src/index.ts"}'
+```
+
+### Security
+
+- Only search commands allowed: `grep`, `find`, `cat`, `head`, `tail`, `ls`, `wc`
+- All operations restricted to sandbox directory
+- Uses `command-proxy.ts` validation for security checks
+- CORS enabled for browser access
 
 ## Running the Demos
 
@@ -351,6 +407,9 @@ npx ts-node src/unifyweaver/shell/llm-provider-demo.ts
 
 # LLM provider demo with live tests
 npx ts-node src/unifyweaver/shell/llm-provider-demo.ts --test
+
+# HTTP CLI server
+npx ts-node src/unifyweaver/shell/http-server.ts
 ```
 
 ## Integration with Command Proxy
