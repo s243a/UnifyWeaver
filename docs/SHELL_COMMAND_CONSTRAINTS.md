@@ -195,22 +195,110 @@ function evaluateConstraint(args: string[], constraint: ConstraintFunctor) {
 }
 ```
 
+## Storage Abstraction
+
+The constraint system uses a database-agnostic storage layer. Swap backends without code changes:
+
+```typescript
+import { initStore, SQLiteConstraintStore, FileConstraintStore } from './shell';
+
+// Use SQLite (persistent)
+await initStore({ type: 'sqlite', path: './constraints.db' });
+
+// Or use file-based JSON storage
+await initStore({ type: 'file', path: './constraints.json' });
+
+// Or use in-memory (default, for testing)
+await initStore({ type: 'memory' });
+```
+
+Available backends:
+- **MemoryConstraintStore** - Fast, non-persistent (testing/dev)
+- **SQLiteConstraintStore** - Persistent with indexing
+- **FileConstraintStore** - JSON file persistence
+
+## LLM Constraint Generation
+
+Automatically generate constraints for scripts using an LLM:
+
+```typescript
+import { generateConstraints, AnthropicProvider } from './shell';
+
+// Set API key via env: ANTHROPIC_API_KEY or OPENAI_API_KEY
+const result = await generateConstraints('./backup.sh', scriptContent);
+
+if (result.success) {
+  console.log(`Generated ${result.constraints.length} constraints`);
+}
+```
+
+The LLM analyzes the script and outputs declarative constraint facts - no code generation.
+
+## File Edit Review
+
+Validate file edits against declarative constraints:
+
+```typescript
+import { EC, registerEditConstraint, reviewFileEdit } from './shell';
+
+// Register edit constraints
+registerEditConstraint('**/*.ts', EC.noRemoveSecurityChecks());
+registerEditConstraint('**/*.ts', EC.maxLinesChanged(50));
+registerEditConstraint('**/config.ts', EC.noChangeExports());
+
+// Review a proposed edit
+const result = await reviewFileEdit(
+  'src/auth.ts',
+  originalContent,
+  proposedContent
+);
+
+if (!result.allowed) {
+  console.log(result.summary);
+  for (const r of result.constraintResults.filter(r => !r.satisfied)) {
+    console.log(`  Violation: ${r.message}`);
+  }
+}
+```
+
+### Edit Constraint Vocabulary
+
+| Functor | Description |
+|---------|-------------|
+| `no_delete_lines_containing([patterns])` | Block deletion of matching lines |
+| `no_modify_lines_containing([patterns])` | Block modification of matching lines |
+| `no_add_patterns([patterns])` | Block adding content matching patterns |
+| `max_lines_changed(n)` | Limit number of changed lines |
+| `no_change_imports` | Protect import statements |
+| `no_change_exports` | Protect export statements |
+| `no_remove_security_checks` | Block removal of validation code |
+| `preserve_function(name)` | Protect specific function |
+| `file_must_parse` | Require valid syntax after edit |
+
 ## Module Structure
 
 ```
 src/unifyweaver/shell/
-├── index.ts              # Module exports
-├── command-proxy.ts      # Original per-command validators
-├── proxy-cli.ts          # CLI wrapper
-├── constraints.ts        # Constraint vocabulary & analyzer
-├── constraint-loader.ts  # JSON/DB loading
-└── constraint-demo.ts    # Demo script
+├── index.ts                 # Module exports
+├── command-proxy.ts         # Original per-command validators
+├── proxy-cli.ts             # CLI wrapper
+├── constraints.ts           # Constraint vocabulary & analyzer
+├── constraint-loader.ts     # JSON loading
+├── constraint-store.ts      # Storage abstraction layer
+├── llm-constraint-generator.ts  # LLM integration
+├── edit-review.ts           # File edit validation
+├── constraint-demo.ts       # Command constraint demo
+└── store-and-edit-demo.ts   # Storage & edit demo
 ```
 
-## Running the Demo
+## Running the Demos
 
 ```bash
+# Command constraint demo
 npx ts-node src/unifyweaver/shell/constraint-demo.ts
+
+# Storage and edit review demo
+npx ts-node src/unifyweaver/shell/store-and-edit-demo.ts
 ```
 
 ## Integration with Command Proxy
