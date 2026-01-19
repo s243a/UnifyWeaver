@@ -162,6 +162,12 @@ This applies to:
   - Cross-compatible with Claude Code, Copilot, Cursor, and other AI tools
   - Testing patterns and project-specific workflows
 
+- **[../skills/](../skills/)** - Task-specific skill router for agents
+  - Decision tree with LOAD/GOTO navigation ([SKILL_ROUTER.md](../skills/SKILL_ROUTER.md))
+  - Mindmap tools: linking, MST grouping, cross-links, folder suggestion
+  - Bookmark filing and data processing skills
+  - See [AGENT_INSTRUCTIONS.md](../AGENT_INSTRUCTIONS.md) for startup instructions
+
 - **[development/STDIN_LOADING.md](development/STDIN_LOADING.md)** - Loading Prolog code from stdin
   - Using `consult(user)` for quick experiments
   - Testing without temporary files

@@ -6,6 +6,7 @@
     <title>Density Manifold Explorer</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="ml-backend.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -577,6 +578,50 @@
                     <div class="control-group" style="font-size: 0.8rem; color: #94a3b8;">
                         Tree algorithm used when recomputing with Pyodide
                     </div>
+
+                    <h2>ML Backend</h2>
+                    <div class="control-group">
+                        <label for="mlBackendSelect">Backend</label>
+                        <select id="mlBackendSelect">
+                            <option value="transformers.js">Transformers.js</option>
+                            <option value="tfjs">TensorFlow.js</option>
+                            <option value="onnx">ONNX Runtime</option>
+                            <option value="pyodide">Pyodide (NumPy)</option>
+                        </select>
+                    </div>
+                    <div class="control-group" style="font-size: 0.8rem; color: #94a3b8;">
+                        <span id="mlBackendStatus">Not loaded</span>
+                    </div>
+                    <button id="loadMLBackendBtn" class="secondary">Load ML Backend</button>
+                    <button id="testEmbedBtn" class="secondary" disabled style="margin-top: 5px;">Test Embedding</button>
+
+                    <h2>Projection Model</h2>
+                    <div class="control-group">
+                        <label for="projectionModelSource">Source</label>
+                        <select id="projectionModelSource">
+                            <option value="none">None</option>
+                            <option value="url">Load from URL</option>
+                            <option value="file">Load from file</option>
+                        </select>
+                    </div>
+                    <div id="projectionUrlGroup" class="control-group" style="display: none;">
+                        <input type="text" id="projectionModelUrl" placeholder="data/projection.onnx" style="width: 100%;">
+                        <button id="loadProjectionUrlBtn" class="secondary" style="margin-top: 5px;">Load</button>
+                    </div>
+                    <div id="projectionFileGroup" class="control-group" style="display: none;">
+                        <input type="file" id="projectionModelFile" accept=".onnx" style="font-size: 0.8rem;">
+                    </div>
+                    <div class="control-group" style="font-size: 0.8rem; color: #94a3b8;">
+                        <span id="projectionModelStatus">No model loaded</span>
+                    </div>
+                    <div class="control-group">
+                        <label for="embedBlend">Blend: <span class="value" id="embedBlendValue">0.70</span></label>
+                        <input type="range" id="embedBlend" min="0" max="1" value="0.7" step="0.05" disabled>
+                    </div>
+                    <div class="control-group" style="font-size: 0.75rem; color: #94a3b8;">
+                        <span id="embedBlendLabel">70% projected + 30% input</span>
+                    </div>
+                    <button id="testProjectionBtn" class="secondary" disabled>Test Projection</button>
                 </div>
             </div>
         </div>
@@ -665,6 +710,27 @@
         // Export elements
         const exportMindmapBtn = document.getElementById('exportMindmapBtn');
         const exportFormatSelect = document.getElementById('exportFormat');
+
+        // ML Backend elements
+        const mlBackendSelect = document.getElementById('mlBackendSelect');
+        const mlBackendStatus = document.getElementById('mlBackendStatus');
+        const loadMLBackendBtn = document.getElementById('loadMLBackendBtn');
+        const testEmbedBtn = document.getElementById('testEmbedBtn');
+        let mlBackend = null;  // Active ML backend instance
+
+        // Projection Model elements
+        const projectionModelSource = document.getElementById('projectionModelSource');
+        const projectionUrlGroup = document.getElementById('projectionUrlGroup');
+        const projectionFileGroup = document.getElementById('projectionFileGroup');
+        const projectionModelUrl = document.getElementById('projectionModelUrl');
+        const loadProjectionUrlBtn = document.getElementById('loadProjectionUrlBtn');
+        const projectionModelFile = document.getElementById('projectionModelFile');
+        const projectionModelStatus = document.getElementById('projectionModelStatus');
+        const embedBlendSlider = document.getElementById('embedBlend');
+        const embedBlendValue = document.getElementById('embedBlendValue');
+        const embedBlendLabel = document.getElementById('embedBlendLabel');
+        const testProjectionBtn = document.getElementById('testProjectionBtn');
+        let projectionSession = null;  // ONNX Runtime session for projection
 
         const controls = {
             nPoints: document.getElementById('nPoints'),
@@ -826,6 +892,49 @@ def compute_density_grid(points_2d, bandwidth=None, grid_size=100, padding=0.1):
     return {'x_min': float(x_min), 'x_max': float(x_max), 'y_min': float(y_min), 'y_max': float(y_max),
             'grid_size': grid_size, 'values': Z.tolist(), 'bandwidth': float(bandwidth)}
 
+def compute_fisher_entropy(embeddings, k=10):
+    """
+    Compute Fisher-based entropy for each node using local density.
+    Higher density = more general concept = lower entropy
+    Lower density = more specific concept = higher entropy
+    """
+    n = len(embeddings)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    emb_norm = embeddings / (norms + 1e-8)
+
+    # Compute pairwise distances
+    diff = emb_norm[:, np.newaxis, :] - emb_norm[np.newaxis, :, :]
+    dist_matrix = np.sqrt((diff ** 2).sum(axis=2))
+
+    # k-NN density: inverse of average distance to k nearest neighbors
+    k_actual = min(k, n - 1)
+    knn_dists = np.sort(dist_matrix, axis=1)[:, 1:k_actual+1]  # Exclude self
+    avg_knn_dist = knn_dists.mean(axis=1)
+    density = 1.0 / (avg_knn_dist + 1e-8)
+
+    # Fisher entropy: log(1/density) = -log(density)
+    # Normalize to 0-1 range for easier use
+    entropy = -np.log(density + 1e-8)
+    entropy = (entropy - entropy.min()) / (entropy.max() - entropy.min() + 1e-8)
+
+    return entropy
+
+# Storage for external entropy data (optional)
+_external_entropy = None
+
+def set_external_entropy(entropy_dict):
+    """Set externally computed entropy/probability data."""
+    global _external_entropy
+    _external_entropy = entropy_dict
+    print(f"Loaded external entropy for {len(entropy_dict)} nodes")
+
+def get_node_entropy(node_id, fisher_entropy):
+    """Get entropy for a node, preferring external data if available."""
+    global _external_entropy
+    if _external_entropy is not None and node_id in _external_entropy:
+        return float(_external_entropy[node_id])
+    return float(fisher_entropy[node_id])
+
 def build_mst_tree(embeddings, points_2d, titles=None):
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     emb_norm = embeddings / (norms + 1e-8)
@@ -849,12 +958,18 @@ def build_mst_tree(embeddings, points_2d, titles=None):
                 visited.add(neighbor)
                 parent[neighbor], depth[neighbor] = node, depth[node] + 1
                 queue.append(neighbor)
+
+    # Compute Fisher entropy for each node
+    fisher_entropy = compute_fisher_entropy(embeddings)
+
     nodes, edges = [], []
     for i in range(len(embeddings)):
         p_id = parent.get(i)
+        node_ent = get_node_entropy(i, fisher_entropy)
         nodes.append({'id': i, 'title': titles[i] if titles else f"Node {i}",
                       'parent_id': int(p_id) if p_id is not None else None,
-                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])})
+                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1]),
+                      'entropy': node_ent})
         if p_id is not None:
             edges.append({'source_id': int(p_id), 'target_id': i, 'weight': float(cos_dist[i, p_id])})
     return {'nodes': nodes, 'edges': edges, 'root_id': root, 'tree_type': 'mst'}
@@ -879,12 +994,21 @@ def build_j_guided_tree(embeddings, points_2d, titles=None, k_neighbors=10):
             if d < min_dist: min_dist, best_parent = d, placed_node
         parent[idx], depth[idx] = best_parent, depth[best_parent] + 1
         placed.add(idx)
+
+    # Compute Fisher entropy from density (already computed above)
+    # entropy = -log(density), normalized to 0-1
+    log_density = np.log(density + 1e-8)
+    fisher_entropy = -log_density
+    fisher_entropy = (fisher_entropy - fisher_entropy.min()) / (fisher_entropy.max() - fisher_entropy.min() + 1e-8)
+
     nodes, edges = [], []
     for i in range(n):
         p_id = parent.get(i)
+        node_ent = get_node_entropy(i, fisher_entropy)
         nodes.append({'id': i, 'title': titles[i] if titles else f"Node {i}",
                       'parent_id': int(p_id) if p_id is not None else None,
-                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])})
+                      'depth': int(depth.get(i, 0)), 'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1]),
+                      'entropy': node_ent})
         if p_id is not None:
             edges.append({'source_id': int(p_id), 'target_id': i, 'weight': float(dist_matrix[i, p_id])})
     return {'nodes': nodes, 'edges': edges, 'root_id': root, 'tree_type': 'j-guided'}
@@ -1111,6 +1235,282 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
 
             // Export
             exportMindmapBtn.addEventListener('click', exportMindmap);
+
+            // ML Backend
+            loadMLBackendBtn.addEventListener('click', loadMLBackend);
+            testEmbedBtn.addEventListener('click', testMLEmbedding);
+
+            // Projection Model
+            projectionModelSource.addEventListener('change', handleProjectionSourceChange);
+            loadProjectionUrlBtn.addEventListener('click', loadProjectionFromUrl);
+            projectionModelFile.addEventListener('change', loadProjectionFromFile);
+            embedBlendSlider.addEventListener('input', updateBlendLabel);
+            testProjectionBtn.addEventListener('click', testProjection);
+        }
+
+        // ============================================================
+        // ML Backend Functions
+        // ============================================================
+        async function loadMLBackend() {
+            const backendType = mlBackendSelect.value;
+            mlBackendStatus.textContent = 'Loading...';
+            mlBackendStatus.style.color = '#f39c12';
+            loadMLBackendBtn.disabled = true;
+
+            try {
+                // Dispose existing backend if any
+                if (mlBackend) {
+                    mlBackend.dispose();
+                    mlBackend = null;
+                }
+
+                // Special handling for Pyodide backend
+                if (backendType === 'pyodide') {
+                    if (!pyodideReady) {
+                        throw new Error('Pyodide not ready yet');
+                    }
+                    mlBackend = await MLBackend.create('pyodide', { pyodide });
+                } else {
+                    mlBackend = await MLBackend.create(backendType);
+                }
+
+                mlBackendStatus.textContent = `${mlBackend.name} ready (${mlBackend.model})`;
+                mlBackendStatus.style.color = '#27ae60';
+                testEmbedBtn.disabled = (backendType === 'pyodide'); // Pyodide can't embed
+                setStatus(`ML Backend loaded: ${mlBackend.name}`);
+
+            } catch (error) {
+                console.error('Failed to load ML backend:', error);
+                mlBackendStatus.textContent = `Error: ${error.message}`;
+                mlBackendStatus.style.color = '#e74c3c';
+                testEmbedBtn.disabled = true;
+            } finally {
+                loadMLBackendBtn.disabled = false;
+            }
+        }
+
+        async function testMLEmbedding() {
+            if (!mlBackend || !mlBackend.ready) {
+                setStatus('ML Backend not loaded', 'error');
+                return;
+            }
+
+            // Get some sample titles from current data
+            const sampleTexts = currentData?.points?.slice(0, 5).map(p => p.title) || [
+                'Physics', 'Quantum mechanics', 'Thermodynamics'
+            ];
+
+            setStatus('Computing embeddings...', 'loading');
+            testEmbedBtn.disabled = true;
+
+            try {
+                const startTime = performance.now();
+                const embeddings = await mlBackend.embed(sampleTexts);
+                const elapsed = (performance.now() - startTime).toFixed(0);
+
+                const dim = embeddings[0]?.length || 0;
+                setStatus(`Embedded ${sampleTexts.length} texts → ${dim}D in ${elapsed}ms`);
+
+                console.log('Sample embeddings:', embeddings);
+                console.log('Texts:', sampleTexts);
+
+            } catch (error) {
+                console.error('Embedding failed:', error);
+                setStatus(`Embedding failed: ${error.message}`, 'error');
+            } finally {
+                testEmbedBtn.disabled = false;
+            }
+        }
+
+        // ============================================================
+        // Projection Model Functions
+        // ============================================================
+        function handleProjectionSourceChange() {
+            const source = projectionModelSource.value;
+            projectionUrlGroup.style.display = source === 'url' ? 'block' : 'none';
+            projectionFileGroup.style.display = source === 'file' ? 'block' : 'none';
+
+            if (source === 'none') {
+                // Clear projection model
+                projectionSession = null;
+                projectionModelStatus.textContent = 'No model loaded';
+                projectionModelStatus.style.color = '#94a3b8';
+                embedBlendSlider.disabled = true;
+                testProjectionBtn.disabled = true;
+            }
+        }
+
+        async function loadProjectionFromUrl() {
+            const url = projectionModelUrl.value.trim();
+            if (!url) {
+                setStatus('Please enter a URL', 'error');
+                return;
+            }
+
+            await loadProjectionModel(url, url.split('/').pop());
+        }
+
+        async function loadProjectionFromFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const arrayBuffer = await file.arrayBuffer();
+            await loadProjectionModel(arrayBuffer, file.name);
+        }
+
+        async function loadProjectionModel(source, name) {
+            projectionModelStatus.textContent = 'Loading...';
+            projectionModelStatus.style.color = '#f39c12';
+
+            try {
+                // Load ONNX Runtime Web if not already loaded
+                if (typeof ort === 'undefined') {
+                    setStatus('Loading ONNX Runtime...', 'loading');
+                    await loadScript('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js');
+                }
+
+                // Load model from URL or ArrayBuffer
+                let modelData;
+                if (typeof source === 'string') {
+                    // It's a URL
+                    setStatus(`Fetching ${name}...`, 'loading');
+                    const response = await fetch(source);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    modelData = await response.arrayBuffer();
+                } else {
+                    // It's an ArrayBuffer
+                    modelData = source;
+                }
+
+                // Create ONNX session
+                projectionSession = await ort.InferenceSession.create(modelData, {
+                    executionProviders: ['wasm']  // Use WASM for broad compatibility
+                });
+
+                // Get model info
+                const inputNames = projectionSession.inputNames;
+                const outputNames = projectionSession.outputNames;
+
+                projectionModelStatus.textContent = `Loaded: ${name}`;
+                projectionModelStatus.style.color = '#27ae60';
+
+                // Enable controls
+                embedBlendSlider.disabled = false;
+                testProjectionBtn.disabled = false;
+
+                setStatus(`Projection model loaded (inputs: ${inputNames.join(', ')})`);
+                console.log('ONNX model loaded:', { inputNames, outputNames });
+
+            } catch (error) {
+                console.error('Failed to load projection model:', error);
+                projectionModelStatus.textContent = `Error: ${error.message}`;
+                projectionModelStatus.style.color = '#e74c3c';
+                projectionSession = null;
+                embedBlendSlider.disabled = true;
+                testProjectionBtn.disabled = true;
+            }
+        }
+
+        function updateBlendLabel() {
+            const blend = parseFloat(embedBlendSlider.value);
+            embedBlendValue.textContent = blend.toFixed(2);
+            const projected = Math.round(blend * 100);
+            const input = 100 - projected;
+            embedBlendLabel.textContent = `${projected}% projected + ${input}% input`;
+        }
+
+        async function testProjection() {
+            if (!projectionSession) {
+                setStatus('No projection model loaded', 'error');
+                return;
+            }
+
+            if (!currentData?.embeddings || currentData.embeddings.length === 0) {
+                setStatus('No embeddings available for projection', 'error');
+                return;
+            }
+
+            testProjectionBtn.disabled = true;
+            setStatus('Testing projection...', 'loading');
+
+            try {
+                // Get first 5 embeddings as test
+                const testEmbeddings = currentData.embeddings.slice(0, 5);
+                const blend = parseFloat(embedBlendSlider.value);
+
+                const startTime = performance.now();
+                const blendedResults = [];
+
+                for (const emb of testEmbeddings) {
+                    // Create input tensor
+                    const inputTensor = new ort.Tensor('float32', new Float32Array(emb), [1, emb.length]);
+
+                    // Run projection
+                    const results = await projectionSession.run({ 'query_embedding': inputTensor });
+                    const projected = Array.from(results['projected_embedding'].data);
+
+                    // Blend: blend * projected + (1 - blend) * input
+                    const blended = emb.map((v, i) => blend * projected[i] + (1 - blend) * v);
+                    blendedResults.push(blended);
+                }
+
+                const elapsed = (performance.now() - startTime).toFixed(0);
+                setStatus(`Projected ${testEmbeddings.length} embeddings in ${elapsed}ms (blend=${blend.toFixed(2)})`);
+
+                console.log('Projection test results:', {
+                    inputDim: testEmbeddings[0].length,
+                    outputDim: blendedResults[0].length,
+                    blend: blend,
+                    sample: blendedResults[0].slice(0, 5)
+                });
+
+            } catch (error) {
+                console.error('Projection failed:', error);
+                setStatus(`Projection failed: ${error.message}`, 'error');
+            } finally {
+                testProjectionBtn.disabled = false;
+            }
+        }
+
+        async function applyProjectionToEmbeddings(embeddings) {
+            /**
+             * Apply projection model to embeddings with blending.
+             * Returns blended embeddings: blend * projected + (1 - blend) * input
+             */
+            if (!projectionSession) {
+                return embeddings;  // No projection, return as-is
+            }
+
+            const blend = parseFloat(embedBlendSlider.value);
+            if (blend === 0) {
+                return embeddings;  // 100% input, no projection needed
+            }
+
+            const blendedEmbeddings = [];
+
+            for (const emb of embeddings) {
+                const inputTensor = new ort.Tensor('float32', new Float32Array(emb), [1, emb.length]);
+                const results = await projectionSession.run({ 'query_embedding': inputTensor });
+                const projected = Array.from(results['projected_embedding'].data);
+
+                // Blend
+                const blended = emb.map((v, i) => blend * projected[i] + (1 - blend) * v);
+                blendedEmbeddings.push(blended);
+            }
+
+            return blendedEmbeddings;
+        }
+
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
         }
 
         function updateEmbeddingsInfo() {
@@ -1832,6 +2232,23 @@ json.dumps(data)
                 xml += `x="${x}" y="${y}" palette="${palette}" colorinfo="${palette}" `;
                 xml += `text="${escapeXml(node.title)}">\n`;
 
+                // Add arrow based on entropy: flows from general (low entropy) to specific (high entropy)
+                if (!isRoot && parentId !== -1) {
+                    const parentNode = nodeMap[parentId];
+                    const childEntropy = node.entropy || 0;
+                    const parentEntropy = parentNode?.entropy || 0;
+
+                    xml += `        <parent-relation guid="${generateGuid()}">\n`;
+                    if (parentEntropy < childEntropy) {
+                        // Parent is more general → arrow points to child (target-arrow)
+                        xml += '          <style target-arrow="filledArrow"/>\n';
+                    } else {
+                        // Child is more general → arrow points to parent (source-arrow)
+                        xml += '          <style source-arrow="filledArrow"/>\n';
+                    }
+                    xml += '        </parent-relation>\n';
+                }
+
                 // Add Wikipedia link
                 xml += `        <link urllink="${escapeXml(wikiUrl)}"/>\n`;
 
@@ -2360,6 +2777,25 @@ json.dumps(data)
                 const rootTitle = selectedNode ? selectedNode.title : null;
                 const rootArg = rootTitle ? `"${rootTitle.replace(/"/g, '\\"')}"` : 'None';
 
+                // Check if we should apply projection blending
+                const blend = parseFloat(embedBlendSlider.value);
+                const useProjection = projectionSession && blend > 0 && currentData?.embeddings;
+
+                if (useProjection) {
+                    setStatus('Applying projection blend...', 'loading');
+                    const blendedEmbeddings = await applyProjectionToEmbeddings(currentData.embeddings);
+                    const titles = currentData.points.map(p => p.title);
+
+                    // Send blended embeddings to Pyodide
+                    pyodide.globals.set('_js_embeddings', blendedEmbeddings);
+                    pyodide.globals.set('_js_titles', titles);
+                    await pyodide.runPythonAsync(`
+set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
+                    `);
+                    console.log(`Loaded ${blendedEmbeddings.length} blended embeddings (blend=${blend})`);
+                    setStatus('Computing with blended embeddings...', 'loading');
+                }
+
                 const result = await pyodide.runPythonAsync(`
 import json
 embeddings, titles = get_embeddings(${nPoints}, root_title=${rootArg})
@@ -2401,7 +2837,8 @@ json.dumps({'data': data, 'used_real': _used_real})
                 updateTreeToggle();
                 updatePeaksList();
                 const rootMsg = selectedNode ? ` centered on "${selectedNode.title}"` : '';
-                setStatus(`Recomputed ${nPoints} points (${usedReal ? 'real' : 'demo'})${rootMsg}`);
+                const blendMsg = useProjection ? `, blend=${blend.toFixed(2)}` : '';
+                setStatus(`Recomputed ${nPoints} points (${usedReal ? 'real' : 'demo'}${blendMsg})${rootMsg}`);
 
             } catch (error) {
                 setStatus(`Error: ${error.message}`, 'error');

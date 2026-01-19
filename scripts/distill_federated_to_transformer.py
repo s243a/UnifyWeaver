@@ -33,9 +33,18 @@ import argparse
 import numpy as np
 from pathlib import Path
 from typing import Optional
+from types import ModuleType
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# NumPy 2.0 compatibility shim for pickle files saved with numpy._core
+if not hasattr(np, '_core'):
+    np_core = ModuleType('numpy._core')
+    np_core.multiarray = np.core.multiarray
+    np_core.umath = np.core.umath
+    sys.modules['numpy._core'] = np_core
+    sys.modules['numpy._core.multiarray'] = np.core.multiarray
 
 # Add project paths
 project_root = Path(__file__).parent.parent
@@ -76,6 +85,11 @@ class FederatedProjectionWrapper:
             self.cluster_dir = self.model_path.with_suffix('')
 
         logger.info(f"Model has {self.num_clusters} clusters")
+
+        # Load cluster centroids for routing
+        self.cluster_centroids = self.meta.get("cluster_centroids")
+        if self.cluster_centroids is not None:
+            logger.info(f"Loaded {len(self.cluster_centroids)} cluster centroids for routing")
 
         # Load routing data
         self._load_routing_data()
@@ -126,15 +140,16 @@ class FederatedProjectionWrapper:
 
         logger.info(f"Loaded {len(self.clusters)} cluster W matrices")
 
-    def project(self, q_emb: np.ndarray, top_k_routing: int = 10) -> np.ndarray:
+    def project(self, q_emb: np.ndarray, top_k_routing: int = 10, k_coverage: float = None) -> np.ndarray:
         """
-        Project query using federated routing.
+        Project query using federated softmax routing over cluster centroids.
 
-        This is what the transformer will learn to approximate.
+        Flow: query → sim(query, centroids) → softmax → Σ weight_i × (query @ W_i)
 
         Args:
             q_emb: Query embedding (embed_dim,)
-            top_k_routing: Number of training queries for soft routing
+            top_k_routing: Fixed number of top clusters (default: 10)
+            k_coverage: If set, override top_k with coverage-based k (e.g., 0.5 for 50%)
 
         Returns:
             Projected embedding (embed_dim,)
@@ -142,38 +157,92 @@ class FederatedProjectionWrapper:
         # Normalize query
         q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
 
-        # Compute similarities to all training queries
-        sims = q_norm @ self.query_embeddings.T
+        if self.cluster_centroids is not None:
+            # Query-based routing: compare query to cluster centroids
+            sims = q_norm @ self.cluster_centroids.T
 
-        # Softmax weights
-        sims_shifted = (sims - np.max(sims)) / self.temperature
-        weights = np.exp(sims_shifted)
-        weights /= weights.sum()
+            # Softmax weights over centroids (temperature-scaled)
+            sims_shifted = (sims - np.max(sims)) / self.temperature
+            weights = np.exp(sims_shifted)
+            weights /= weights.sum()
 
-        # Get top-k training queries
-        top_indices = np.argsort(weights)[-top_k_routing:]
+            # Determine k: coverage-based if specified, else fixed
+            if k_coverage is not None:
+                # Auto-k: find minimum k to capture k_coverage of weight
+                sorted_indices = np.argsort(weights)[::-1]
+                cumsum = 0.0
+                k = 1
+                for i, idx in enumerate(sorted_indices):
+                    cumsum += weights[idx]
+                    if cumsum >= k_coverage:
+                        k = i + 1
+                        break
+                k = max(1, min(k, len(weights)))
+            else:
+                k = top_k_routing
 
-        # Weighted projection using their clusters' W
-        proj = np.zeros_like(q_emb)
-        total_weight = 0.0
+            # Get top-k clusters by weight
+            top_indices = np.argsort(weights)[-k:]
 
-        for idx in top_indices:
-            cid = self.idx_to_cluster.get(int(idx))
-            if cid and cid in self.clusters:
-                W = self.clusters[cid]["W"]
-                w = weights[idx]
-                proj += w * (q_emb @ W)
-                total_weight += w
+            # Weighted projection: Σ weight_i × (query @ W_i)
+            proj = np.zeros_like(q_emb)
+            total_weight = 0.0
 
-        # Normalize by total weight used
-        if total_weight > 0:
-            proj /= total_weight
+            for idx in top_indices:
+                cid = self.cluster_ids[idx]
+                if cid in self.clusters:
+                    W = self.clusters[cid]["W"]
+                    w = weights[idx]
+                    proj += w * (q_emb @ W)
+                    total_weight += w
 
-        return proj
+            if total_weight > 0:
+                proj /= total_weight
 
-    def project_batch(self, q_embs: np.ndarray, top_k_routing: int = 10) -> np.ndarray:
+            return proj
+        else:
+            # Fallback if no centroids: use training query similarity
+            sims = q_norm @ self.query_embeddings.T
+
+            sims_shifted = (sims - np.max(sims)) / self.temperature
+            weights = np.exp(sims_shifted)
+            weights /= weights.sum()
+
+            # Determine k: coverage-based if specified, else fixed
+            if k_coverage is not None:
+                sorted_indices = np.argsort(weights)[::-1]
+                cumsum = 0.0
+                k = 1
+                for i, idx in enumerate(sorted_indices):
+                    cumsum += weights[idx]
+                    if cumsum >= k_coverage:
+                        k = i + 1
+                        break
+                k = max(1, min(k, len(weights)))
+            else:
+                k = top_k_routing
+
+            top_indices = np.argsort(weights)[-k:]
+
+            proj = np.zeros_like(q_emb)
+            total_weight = 0.0
+
+            for idx in top_indices:
+                cid = self.idx_to_cluster.get(int(idx))
+                if cid and cid in self.clusters:
+                    W = self.clusters[cid]["W"]
+                    w = weights[idx]
+                    proj += w * (q_emb @ W)
+                    total_weight += w
+
+            if total_weight > 0:
+                proj /= total_weight
+
+            return proj
+
+    def project_batch(self, q_embs: np.ndarray, top_k_routing: int = 10, k_coverage: float = None) -> np.ndarray:
         """Project a batch of query embeddings."""
-        return np.array([self.project(q, top_k_routing) for q in q_embs])
+        return np.array([self.project(q, top_k_routing, k_coverage) for q in q_embs])
 
 
 def main():
@@ -203,7 +272,15 @@ def main():
     parser.add_argument("--device", type=str, default="auto",
                        help="Device: auto, cuda, cpu (default: auto)")
     parser.add_argument("--top-k-routing", type=int, default=10,
-                       help="Top-k for federated routing (default: 10)")
+                       help="Top-k clusters for routing (default: 10)")
+    parser.add_argument("--k-coverage", type=float, default=None,
+                       help="Use coverage-based k instead of fixed (e.g., 0.5 for 50%%)")
+    parser.add_argument("--export-onnx", type=Path, default=None,
+                       help="Export trained model to ONNX format for browser deployment")
+    parser.add_argument("--onnx-opset", type=int, default=14,
+                       help="ONNX opset version (default: 14)")
+    parser.add_argument("--verify-onnx", action="store_true",
+                       help="Verify ONNX export matches PyTorch output")
 
     args = parser.parse_args()
 
@@ -329,6 +406,30 @@ def main():
 
     print(f"\nSaved transformer to {args.output_model}")
     print(f"Size: {args.output_model.stat().st_size / (1024*1024):.1f} MB")
+
+    # Export to ONNX if requested
+    if args.export_onnx:
+        print(f"\nExporting to ONNX...")
+        args.export_onnx.parent.mkdir(parents=True, exist_ok=True)
+        onnx_info = transformer.export_onnx(str(args.export_onnx), opset_version=args.onnx_opset)
+
+        print(f"  Output: {onnx_info['path']}")
+        print(f"  Size: {onnx_info['size_mb']:.2f} MB")
+        print(f"  Opset: {onnx_info['opset_version']}")
+        print(f"  Input: {onnx_info['input_shape']}")
+        print(f"  Output: {onnx_info['output_shape']}")
+
+        # Verify if requested
+        if args.verify_onnx:
+            print("\nVerifying ONNX export...")
+            verify_result = transformer.verify_onnx(str(args.export_onnx))
+            if verify_result.get('verified'):
+                print(f"  ✓ Verified (max_diff={verify_result['max_diff']:.6f})")
+            elif 'error' in verify_result:
+                print(f"  ⚠ Skipped: {verify_result['error']}")
+            else:
+                print(f"  ✗ Mismatch (max_diff={verify_result['max_diff']:.6f})")
+
     print("\nDone!")
 
     return 0

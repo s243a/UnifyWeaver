@@ -101,8 +101,26 @@ An MCP server is available at `scripts/mcp_bookmark_filing_server.py` exposing:
 - `get_filing_candidates` - Get semantic search candidates
 - `file_bookmark` - Get LLM recommendation for filing
 
-## Related Scripts
+## Related
 
+**Skills:**
+- `skill_train_model.md` - Train the federated projection model
+- `skill_semantic_inference.md` - General inference concepts
+- `skill_mindmap_linking.md` - Link mindmaps to Pearltrees (same projection model)
+
+**Documentation:**
+- `docs/design/FEDERATED_MODEL_FORMAT.md` - Model format specification
+- `docs/QUICKSTART_MINDMAP_LINKING.md` - End-to-end workflow
+
+**Education (in `education/` subfolder):**
+- `book-13-semantic-search/16_bookmark_filing.md` - Bookmark filing workflow
+- `book-13-semantic-search/01_introduction.md` - Semantic search overview
+- `book-13-semantic-search/05_semantic_playbook.md` - Best practices
+- `book-13-semantic-search/07_density_scoring.md` - Scoring methods
+- `book-13-semantic-search/08_advanced_federation.md` - Federation architecture
+- `book-14-ai-training/05_training_pipeline.md` - Model training
+
+**Code:**
 - `scripts/infer_pearltrees_federated.py` - Semantic search inference
 - `scripts/bookmark_filing_assistant.py` - Full filing assistant with LLM
 - `scripts/generate_account_training_data.py` - Filter JSONL by account
