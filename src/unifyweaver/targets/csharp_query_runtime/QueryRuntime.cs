@@ -2144,13 +2144,32 @@ namespace UnifyWeaver.QueryRuntime
                         var leftSignature = leftIndexKeys.Count == 1 ? string.Empty : string.Join(",", leftIndexKeys);
                         var rightSignature = rightIndexKeys.Count == 1 ? string.Empty : string.Join(",", rightIndexKeys);
 
+                        static int CountMatchingPattern(IReadOnlyList<object[]> candidates, object[] pattern)
+                        {
+                            var count = 0;
+                            foreach (var tuple in candidates)
+                            {
+                                if (tuple is null) continue;
+                                if (TupleMatchesPattern(tuple, pattern))
+                                {
+                                    count++;
+                                }
+                            }
+
+                            return count;
+                        }
+
                         var estimatedLeftProbe = leftScanPattern is null
                             ? leftFacts.Count
-                            : SelectFactsForPattern(leftScanPredicate, leftFacts, leftScanPattern, context).Count;
+                            : CountMatchingPattern(
+                                SelectFactsForPattern(leftScanPredicate, leftFacts, leftScanPattern, context),
+                                leftScanPattern);
 
                         var estimatedRightProbe = rightScanPattern is null
                             ? rightFacts.Count
-                            : SelectFactsForPattern(rightScanPredicate, rightFacts, rightScanPattern, context).Count;
+                            : CountMatchingPattern(
+                                SelectFactsForPattern(rightScanPredicate, rightFacts, rightScanPattern, context),
+                                rightScanPattern);
 
                         var buildScanOnLeft = (long)leftFacts.Count + estimatedRightProbe <= (long)rightFacts.Count + estimatedLeftProbe;
 
@@ -4321,9 +4340,9 @@ namespace UnifyWeaver.QueryRuntime
                         continue;
                     }
 
-                    var index = GetFactIndex(predicate, i, facts, context);
+                    var singleFactIndex = GetFactIndex(predicate, i, facts, context);
                     var key = value ?? NullFactIndexKey;
-                    return index.TryGetValue(key, out var bucket) ? bucket : Array.Empty<object[]>();
+                    return singleFactIndex.TryGetValue(key, out var bucket) ? bucket : Array.Empty<object[]>();
                 }
             }
 
@@ -4336,15 +4355,41 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
-            var joinIndex = GetJoinIndex(predicate, keyIndices, facts, context);
-            var joinKey = new object[keyIndices.Count];
-            for (var i = 0; i < keyIndices.Count; i++)
+            var signature = string.Join(",", keyIndices);
+            if (context.JoinIndices.TryGetValue((predicate, signature), out var cachedJoinIndex))
             {
-                joinKey[i] = pattern[keyIndices[i]];
+                var joinKey = new object[keyIndices.Count];
+                for (var i = 0; i < keyIndices.Count; i++)
+                {
+                    joinKey[i] = pattern[keyIndices[i]];
+                }
+
+                var wrapper = new RowWrapper(joinKey);
+                return cachedJoinIndex.TryGetValue(wrapper, out var joinBucket) ? joinBucket : Array.Empty<object[]>();
             }
 
-            var wrapper = new RowWrapper(joinKey);
-            return joinIndex.TryGetValue(wrapper, out var joinBucket) ? joinBucket : Array.Empty<object[]>();
+            var pivotIndex = keyIndices[0];
+            var pivotKey = pattern[pivotIndex] ?? NullFactIndexKey;
+            var bestBucketCount = int.MaxValue;
+            foreach (var boundIndex in keyIndices)
+            {
+                if (!context.FactIndices.TryGetValue((predicate, boundIndex), out var cachedFactIndex))
+                {
+                    continue;
+                }
+
+                var key = pattern[boundIndex] ?? NullFactIndexKey;
+                var candidate = cachedFactIndex.TryGetValue(key, out var bucket) ? bucket.Count : 0;
+                if (candidate < bestBucketCount)
+                {
+                    bestBucketCount = candidate;
+                    pivotIndex = boundIndex;
+                    pivotKey = key;
+                }
+            }
+
+            var factIndex = GetFactIndex(predicate, pivotIndex, facts, context);
+            return factIndex.TryGetValue(pivotKey, out var pivotBucket) ? pivotBucket : Array.Empty<object[]>();
         }
 
         private IEnumerable<object[]> ExecuteNegation(NegationNode negation, EvaluationContext? context)
