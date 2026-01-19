@@ -222,10 +222,15 @@ Available backends:
 Automatically generate constraints for scripts using an LLM:
 
 ```typescript
-import { generateConstraints, AnthropicProvider } from './shell';
+import { generateConstraints, ClaudeCLIProvider, getBestProvider } from './shell';
 
-// Set API key via env: ANTHROPIC_API_KEY or OPENAI_API_KEY
-const result = await generateConstraints('./backup.sh', scriptContent);
+// Auto-detect best available provider
+const provider = await getBestProvider();
+
+// Or use a specific provider
+const result = await generateConstraints('./backup.sh', scriptContent, {
+  provider: new ClaudeCLIProvider({ model: 'sonnet' })
+});
 
 if (result.success) {
   console.log(`Generated ${result.constraints.length} constraints`);
@@ -233,6 +238,45 @@ if (result.success) {
 ```
 
 The LLM analyzes the script and outputs declarative constraint facts - no code generation.
+
+### Available LLM Providers
+
+**CLI-based (no API keys needed):**
+```typescript
+import { ClaudeCLIProvider, GeminiCLIProvider, OllamaCLIProvider } from './shell';
+
+// Claude Code CLI
+const claude = new ClaudeCLIProvider({ model: 'sonnet' });  // or opus, haiku
+
+// Gemini CLI
+const gemini = new GeminiCLIProvider({ model: 'gemini-2.0-flash' });
+
+// Ollama (local models)
+const ollama = new OllamaCLIProvider({ model: 'llama3' });
+```
+
+**API-based:**
+```typescript
+import { AnthropicProvider, OpenAIProvider } from './shell';
+
+// Requires ANTHROPIC_API_KEY env var
+const anthropic = new AnthropicProvider();
+
+// Requires OPENAI_API_KEY env var (also works with local servers)
+const openai = new OpenAIProvider({ baseUrl: 'http://localhost:1234/v1' });
+```
+
+**Auto-detection:**
+```typescript
+import { getBestProvider, getAvailableCLIProviders } from './shell';
+
+// Returns best available provider (prefers CLI)
+const provider = await getBestProvider();
+
+// List installed CLI tools
+const available = await getAvailableCLIProviders();
+// Returns: ['claude-cli', 'gemini-cli', 'ollama']
+```
 
 ## File Edit Review
 
@@ -279,16 +323,18 @@ if (!result.allowed) {
 
 ```
 src/unifyweaver/shell/
-├── index.ts                 # Module exports
-├── command-proxy.ts         # Original per-command validators
-├── proxy-cli.ts             # CLI wrapper
-├── constraints.ts           # Constraint vocabulary & analyzer
-├── constraint-loader.ts     # JSON loading
-├── constraint-store.ts      # Storage abstraction layer
-├── llm-constraint-generator.ts  # LLM integration
-├── edit-review.ts           # File edit validation
-├── constraint-demo.ts       # Command constraint demo
-└── store-and-edit-demo.ts   # Storage & edit demo
+├── index.ts                    # Module exports
+├── command-proxy.ts            # Original per-command validators
+├── proxy-cli.ts                # CLI wrapper
+├── constraints.ts              # Constraint vocabulary & analyzer
+├── constraint-loader.ts        # JSON loading
+├── constraint-store.ts         # Storage abstraction layer
+├── llm-constraint-generator.ts # LLM API providers
+├── llm-cli-providers.ts        # LLM CLI providers (claude, gemini, ollama)
+├── edit-review.ts              # File edit validation
+├── constraint-demo.ts          # Command constraint demo
+├── store-and-edit-demo.ts      # Storage & edit demo
+└── llm-provider-demo.ts        # LLM provider demo
 ```
 
 ## Running the Demos
@@ -299,6 +345,12 @@ npx ts-node src/unifyweaver/shell/constraint-demo.ts
 
 # Storage and edit review demo
 npx ts-node src/unifyweaver/shell/store-and-edit-demo.ts
+
+# LLM provider demo (check available providers)
+npx ts-node src/unifyweaver/shell/llm-provider-demo.ts
+
+# LLM provider demo with live tests
+npx ts-node src/unifyweaver/shell/llm-provider-demo.ts --test
 ```
 
 ## Integration with Command Proxy

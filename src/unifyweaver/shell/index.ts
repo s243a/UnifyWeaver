@@ -94,7 +94,7 @@ export {
   toStoredConstraint
 } from './constraint-store';
 
-// LLM constraint generator
+// LLM constraint generator (API-based)
 export {
   // Types
   LLMProvider,
@@ -105,7 +105,7 @@ export {
   EditConstraintFunctor,
   EditConstraint,
 
-  // Providers
+  // API Providers
   AnthropicProvider,
   OpenAIProvider,
 
@@ -117,6 +117,25 @@ export {
   getDefaultProvider,
   setDefaultProvider
 } from './llm-constraint-generator';
+
+// LLM CLI providers
+export {
+  // Types
+  CLIProviderType,
+  CLIProviderOptions,
+
+  // CLI Providers
+  ClaudeCLIProvider,
+  GeminiCLIProvider,
+  OllamaCLIProvider,
+  GenericCLIProvider,
+
+  // Functions
+  createCLIProvider,
+  isCLIAvailable,
+  getAvailableCLIProviders,
+  getBestProvider
+} from './llm-cli-providers';
 
 // Edit review (constraint-based file validation)
 export {
