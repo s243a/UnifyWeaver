@@ -12,8 +12,9 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "downlevelIteration": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/unifyweaver/shell/**/*"],
   "exclude": ["node_modules", "dist"]
 }

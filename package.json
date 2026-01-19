@@ -1,8 +1,11 @@
 {
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "minimatch": "^10.1.1",
     "puppeteer-core": "^24.35.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.0.9",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"

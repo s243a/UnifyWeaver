@@ -72,3 +72,69 @@ export {
   EXAMPLE_CONSTRAINT_FILE,
   CONSTRAINT_GENERATION_PROMPT
 } from './constraint-loader';
+
+// Constraint store (storage abstraction)
+export {
+  // Types
+  ConstraintStore,
+  StoredConstraint,
+  StoreType,
+  StoreOptions,
+
+  // Implementations
+  MemoryConstraintStore,
+  SQLiteConstraintStore,
+  FileConstraintStore,
+
+  // Functions
+  createConstraintStore,
+  getStore,
+  setStore,
+  initStore,
+  toStoredConstraint
+} from './constraint-store';
+
+// LLM constraint generator
+export {
+  // Types
+  LLMProvider,
+  LLMOptions,
+  GeneratorOptions,
+  GenerationResult,
+  EditReviewResult as LLMEditReviewResult,
+  EditConstraintFunctor,
+  EditConstraint,
+
+  // Providers
+  AnthropicProvider,
+  OpenAIProvider,
+
+  // Functions
+  generateConstraints,
+  generateConstraintsBatch,
+  reviewEdit as llmReviewEdit,
+  generateEditConstraints,
+  getDefaultProvider,
+  setDefaultProvider
+} from './llm-constraint-generator';
+
+// Edit review (constraint-based file validation)
+export {
+  // Types
+  LineDiff,
+  EditConstraintResult,
+  EditReviewOptions,
+  EditReviewResult,
+
+  // Functions
+  registerEditConstraint,
+  getEditConstraints,
+  clearEditConstraints,
+  computeDiff,
+  evaluateEditConstraint,
+  reviewFileEdit,
+  registerDefaultEditConstraints,
+
+  // DSL builder
+  EC
+} from './edit-review';
