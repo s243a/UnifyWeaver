@@ -8,9 +8,9 @@ This document provides a complete overview of all UnifyWeaver skills organized i
 |--------------|-------------|-------------|
 | `skill_server_tools.md` | Backend services, APIs, IPC | 12 |
 | `skill_gui_tools.md` | Frontend/GUI generation | 13 |
-| `skill_data_tools.md` | Data processing, ML, queries | 14 |
-| `skill_mindmap_tools.md` | Mindmap organization | 6 |
-| Standalone | Various specialized skills | ~10 |
+| `skill_data_tools.md` | Data processing, ML, queries | 13 |
+| `skill_mindmap_bookmark_tools.md` | Mindmaps, bookmarks, Pearltrees | 14 |
+| Standalone | Core & compiler skills | 6 |
 
 ---
 
@@ -88,29 +88,44 @@ skill_gui_tools.md (MASTER)
 
 ---
 
-## Mindmap Tools
+## Mindmap & Bookmark Tools
 
 ```
-skill_mindmap_tools.md (MASTER)
-├── skill_mindmap_organization.md (sub-master)
+skill_mindmap_bookmark_tools.md (MASTER)
+│
+├── skill_mindmap_tools.md (sub-master)
+│   ├── skill_mindmap_organization.md
 │   ├── skill_mindmap_indexing.md
-│   ├── skill_mindmap_linking.md
-│   └── skill_mindmap_rename.md
-├── skill_mindmap_index.md
-├── skill_mindmap_references.md
-└── skill_mindmap_cross_links.md
+│   │   ├── skill_mindmap_index.md
+│   │   └── skill_mindmap_rename.md
+│   └── skill_mindmap_references.md
+│       ├── skill_mindmap_linking.md
+│       └── skill_mindmap_cross_links.md
+│
+├── skill_bookmark_tools.md (sub-master)
+│   ├── skill_bookmark_filing.md
+│   ├── skill_folder_suggestion.md
+│   └── skill_mst_folder_grouping.md
+│
+└── skill_density_explorer.md
 ```
 
 | Skill | Purpose |
 |-------|---------|
-| `skill_mindmap_tools.md` | Master for mindmap management |
+| `skill_mindmap_bookmark_tools.md` | Master for mindmaps and bookmarks |
+| `skill_mindmap_tools.md` | SimpleMind file management |
 | `skill_mindmap_organization.md` | Mindmap structure patterns |
 | `skill_mindmap_indexing.md` | Index building and querying |
-| `skill_mindmap_linking.md` | Cross-mindmap linking |
-| `skill_mindmap_rename.md` | Rename with reference updates |
 | `skill_mindmap_index.md` | Index store operations |
+| `skill_mindmap_rename.md` | Rename with reference updates |
 | `skill_mindmap_references.md` | Reference management |
-| `skill_mindmap_cross_links.md` | Cross-link operations |
+| `skill_mindmap_linking.md` | Enrich mindmaps with Pearltrees links |
+| `skill_mindmap_cross_links.md` | Local cloudmapref navigation |
+| `skill_bookmark_tools.md` | Bookmark filing and organization |
+| `skill_bookmark_filing.md` | File bookmarks into Pearltrees |
+| `skill_folder_suggestion.md` | Suggest folders for items |
+| `skill_mst_folder_grouping.md` | Build folder hierarchies via MST |
+| `skill_density_explorer.md` | Embedding space visualization |
 
 ---
 
@@ -125,7 +140,6 @@ skill_data_tools.md (MASTER)
 │   └── skill_fuzzy_search.md
 ├── skill_ml_tools.md (sub-master)
 │   ├── skill_embedding_models.md
-│   ├── skill_density_explorer.md
 │   ├── skill_train_model.md
 │   ├── skill_semantic_inference.md
 │   └── skill_hierarchy_objective.md
@@ -144,23 +158,12 @@ skill_data_tools.md (MASTER)
 | `skill_fuzzy_search.md` | Fuzzy logic, RRF, score blending |
 | `skill_ml_tools.md` | Machine learning tools |
 | `skill_embedding_models.md` | Model selection (nomic, MiniLM, BERT) |
-| `skill_density_explorer.md` | Interactive embedding visualization |
 | `skill_train_model.md` | Federated model training |
 | `skill_semantic_inference.md` | Running inference |
 | `skill_hierarchy_objective.md` | J = D/(1+H) optimization |
 | `skill_data_sources.md` | Data source handling |
 | `skill_json_sources.md` | JSON/JSONL data sources |
 | `skill_extract_records.md` | Markdown record extraction |
-
----
-
-## Bookmark & Filing Skills (Standalone)
-
-| Skill | Purpose |
-|-------|---------|
-| `skill_bookmark_filing.md` | Bookmark organization |
-| `skill_folder_suggestion.md` | Folder recommendations |
-| `skill_mst_folder_grouping.md` | MST-based grouping |
 
 ---
 
@@ -185,6 +188,7 @@ skill_aggregation_patterns.md
 skill_app_generation.md
 skill_authentication.md
 skill_bookmark_filing.md
+skill_bookmark_tools.md
 skill_browser_python.md
 skill_component_library.md
 skill_data_binding.md
@@ -210,6 +214,7 @@ skill_infrastructure.md
 skill_ipc.md
 skill_json_sources.md
 skill_layout_system.md
+skill_mindmap_bookmark_tools.md
 skill_mindmap_cross_links.md
 skill_mindmap_index.md
 skill_mindmap_indexing.md

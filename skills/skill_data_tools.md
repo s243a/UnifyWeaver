@@ -21,7 +21,6 @@ skill_data_tools.md (this file - MASTER)
 │   └── skill_fuzzy_search.md - Fuzzy logic, RRF, score blending
 ├── skill_ml_tools.md (sub-master)
 │   ├── skill_embedding_models.md - Model selection (nomic, MiniLM, BERT)
-│   ├── skill_density_explorer.md - Embedding visualization
 │   ├── skill_train_model.md - Federated model training
 │   ├── skill_semantic_inference.md - Running inference
 │   └── skill_hierarchy_objective.md - J = D/(1+H) optimization
@@ -29,6 +28,8 @@ skill_data_tools.md (this file - MASTER)
     ├── skill_json_sources.md - JSON/JSONL data sources
     └── skill_extract_records.md - Markdown record extraction
 ```
+
+Note: `skill_density_explorer.md` moved to `skill_mindmap_bookmark_tools.md` as it serves both mindmap and bookmark visualization.
 
 ## Quick Reference
 

@@ -17,11 +17,12 @@ Machine learning tools for embeddings, semantic search, model training, inferenc
 skill_data_tools.md (parent)
 └── skill_ml_tools.md (this file)
     ├── skill_embedding_models.md - Model selection (nomic, MiniLM, BERT, ModernBERT)
-    ├── skill_density_explorer.md - Interactive embedding visualization
     ├── skill_train_model.md - Federated model training with Procrustes
     ├── skill_semantic_inference.md - Running inference for folder suggestion
     └── skill_hierarchy_objective.md - J = D/(1+H) optimization
 ```
+
+Note: `skill_density_explorer.md` is under `skill_mindmap_bookmark_tools.md` as it serves visualization for both domains.
 
 ## Quick Start
 
@@ -267,10 +268,11 @@ python3 scripts/bookmark_filing_assistant.py \
 ## Child Skills
 
 - `skill_embedding_models.md` - Model selection and configuration
-- `skill_density_explorer.md` - Interactive visualization
 - `skill_train_model.md` - Training workflows
 - `skill_semantic_inference.md` - Running inference
 - `skill_hierarchy_objective.md` - J = D/(1+H) theory and implementation
+
+Note: `skill_density_explorer.md` is under `skill_mindmap_bookmark_tools.md`.
 
 ## Related
 

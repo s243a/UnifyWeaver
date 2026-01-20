@@ -1,6 +1,6 @@
-# Skill: Mindmap Tools
+# Skill: Mindmap Tools (Sub-Master)
 
-Master skill for managing SimpleMind mindmap files (.smmx) - organization, indexing, linking, and visualization.
+Managing SimpleMind mindmap files (.smmx) - organization, indexing, linking, and cross-references.
 
 ## When to Use
 
@@ -12,35 +12,30 @@ Master skill for managing SimpleMind mindmap files (.smmx) - organization, index
 ## Skill Hierarchy
 
 ```
-skill_mindmap_tools.md (this file)
-│
-├── Organization & Structure
-│   └── skill_mindmap_organization.md (sub-master)
-│       ├── skill_mst_folder_grouping.md - MST-based folder organization
-│       ├── skill_folder_suggestion.md - Suggest folders for items
-│       └── skill_hierarchy_objective.md - Evaluate hierarchy (J = D/(1+H))
-│
-├── Indexing & Lookup
-│   └── skill_mindmap_indexing.md (sub-master)
-│       ├── skill_mindmap_index.md - Forward/reverse indexes, storage backends
-│       └── skill_mindmap_rename.md - Rename files, update all references
-│
-├── Linking & References
-│   └── skill_mindmap_references.md (sub-master)
-│       ├── skill_mindmap_linking.md - Link to Pearltrees URLs
-│       └── skill_mindmap_cross_links.md - Add cloudmapref for local navigation
-│
-└── Visualization
-    └── skill_density_explorer.md - Explore embeddings, trees, density
+skill_mindmap_bookmark_tools.md (parent)
+└── skill_mindmap_tools.md (this file)
+    │
+    ├── skill_mindmap_organization.md (sub-master)
+    │   └── (uses hierarchy_objective from skill_ml_tools.md)
+    │
+    ├── skill_mindmap_indexing.md (sub-master)
+    │   ├── skill_mindmap_index.md - Forward/reverse indexes
+    │   └── skill_mindmap_rename.md - Rename with reference updates
+    │
+    └── skill_mindmap_references.md (sub-master)
+        ├── skill_mindmap_linking.md - Enrich with Pearltrees links
+        └── skill_mindmap_cross_links.md - Local cloudmapref navigation
 ```
 
 ## Sub-Skills Overview
 
 ### Organization & Structure
 
-Semantically organize mindmaps into folder hierarchies using embeddings and clustering.
+Semantically organize mindmaps using embeddings and clustering.
 
 **Sub-master:** `skill_mindmap_organization.md`
+
+Note: MST folder grouping and folder suggestion are now under `skill_bookmark_tools.md` since they apply to both mindmaps and bookmarks.
 
 ### Indexing & Lookup
 
@@ -50,15 +45,9 @@ Track mindmap locations and maintain consistency when files move or are renamed.
 
 ### Linking & References
 
-Create navigable connections between mindmaps and external URLs.
+Create navigable connections between mindmaps and external URLs (Pearltrees).
 
 **Sub-master:** `skill_mindmap_references.md`
-
-### Visualization
-
-Explore embedding spaces and tree structures visually.
-
-**Skill:** `skill_density_explorer.md`
 
 ## SimpleMind File Format
 
@@ -99,13 +88,17 @@ python tools/density_explorer/flask_api.py
 
 ## Related
 
-**Sub-Master Skills:**
+**Parent Skill:**
+- `skill_mindmap_bookmark_tools.md` - Master for mindmaps and bookmarks
+
+**Child Skills:**
 - `skill_mindmap_organization.md` - Organization & structure
 - `skill_mindmap_indexing.md` - Indexing & lookup
 - `skill_mindmap_references.md` - Linking & references
 
-**Individual Skills:**
-- `skill_density_explorer.md` - Visualization
+**Sibling Skills:**
+- `skill_bookmark_tools.md` - Bookmark filing and folder organization
+- `skill_density_explorer.md` - Visualization (shared)
 
 **Documentation:**
 - `scripts/mindmap/README.md` - Tool documentation

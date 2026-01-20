@@ -349,13 +349,16 @@ lsof -i :5000
 ## Related
 
 **Parent Skill:**
-- `skill_ml_tools.md` - ML tools sub-master
+- `skill_mindmap_bookmark_tools.md` - Master for mindmaps and bookmarks
 
 **Sibling Skills:**
+- `skill_mindmap_tools.md` - SimpleMind file management
+- `skill_bookmark_tools.md` - Bookmark filing and organization
+
+**ML Foundation:**
+- `skill_ml_tools.md` - ML tools (embeddings, training, inference)
 - `skill_embedding_models.md` - Choosing embedding models
 - `skill_hierarchy_objective.md` - J = D/(1+H) theory
-- `skill_train_model.md` - Model training
-- `skill_semantic_inference.md` - Running inference
 
 **Other Skills:**
 - `skill_mst_folder_grouping.md` - MST for folder organization

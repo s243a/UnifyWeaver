@@ -170,15 +170,17 @@ python3 scripts/mindmap/apply_folder_structure.py \
 ## Related
 
 **Parent Skill:**
-- `skill_mindmap_tools.md` - Master mindmap skill
+- `skill_mindmap_tools.md` - Mindmap tools sub-master
 
-**Individual Skills:**
+**Related Skills (under skill_bookmark_tools.md):**
 - `skill_mst_folder_grouping.md` - MST-based folder organization
 - `skill_folder_suggestion.md` - Suggest folders for items
-- `skill_hierarchy_objective.md` - Evaluate hierarchy quality (J = D/(1+H))
 
-**Related Skills:**
+**ML Foundation (under skill_ml_tools.md):**
+- `skill_hierarchy_objective.md` - Evaluate hierarchy quality (J = D/(1+H))
 - `skill_embedding_models.md` - Choosing embedding models
+
+**Visualization:**
 - `skill_density_explorer.md` - Visualize clustering
 
 **Code:**

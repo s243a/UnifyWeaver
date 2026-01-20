@@ -103,7 +103,14 @@ An MCP server is available at `scripts/mcp_bookmark_filing_server.py` exposing:
 
 ## Related
 
-**Skills:**
+**Parent Skill:**
+- `skill_bookmark_tools.md` - Bookmark tools sub-master
+
+**Sibling Skills:**
+- `skill_folder_suggestion.md` - Suggest folders for items
+- `skill_mst_folder_grouping.md` - Build folder hierarchies
+
+**Other Skills:**
 - `skill_train_model.md` - Train the federated projection model
 - `skill_semantic_inference.md` - General inference concepts
 - `skill_mindmap_linking.md` - Link mindmaps to Pearltrees (same projection model)

@@ -80,9 +80,15 @@ python3 scripts/mindmap/generate_mst_mindmaps.py \
 
 ## Related
 
-**Skills:**
+**Parent Skill:**
+- `skill_bookmark_tools.md` - Bookmark tools sub-master
+
+**Sibling Skills:**
+- `skill_bookmark_filing.md` - File bookmarks to Pearltrees
+- `skill_folder_suggestion.md` - Suggest folders for individual items
+
+**Other Skills:**
 - `skill_mindmap_cross_links.md` - Add cross-links between mindmaps
-- `skill_folder_suggestion.md` - Suggest folders for individual mindmaps
 - `skill_train_model.md` - Train models for semantic grouping
 
 **Documentation:**

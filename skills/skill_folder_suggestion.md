@@ -76,8 +76,14 @@ Suggested folders:
 
 ## Related
 
-**Skills:**
+**Parent Skill:**
+- `skill_bookmark_tools.md` - Bookmark tools sub-master
+
+**Sibling Skills:**
+- `skill_bookmark_filing.md` - File bookmarks to Pearltrees
 - `skill_mst_folder_grouping.md` - Generate folder structure
+
+**Other Skills:**
 - `skill_mindmap_linking.md` - Link mindmaps to Pearltrees
 - `skill_train_model.md` - Train projection models
 - `skill_semantic_inference.md` - General inference concepts
