@@ -200,6 +200,7 @@ test_csharp_query_target :-
         verify_parameterized_need_allows_post_agg,
         verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
+        verify_parameterized_reachability_plan,
         verify_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_inferred_plan,
@@ -565,6 +566,9 @@ setup_test_data :-
         N1 is N - 1,
         test_even(N1)
     )),
+    assertz(user:mode(test_reachable_param(+, -))),
+    assertz(user:(test_reachable_param(X, Y) :- test_fact(X, Y))),
+    assertz(user:(test_reachable_param(X, Z) :- test_fact(X, Y), test_reachable_param(Y, Z))),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -672,6 +676,8 @@ cleanup_test_data :-
     retractall(user:test_even_param_unbound(_)),
     retractall(user:test_odd_param_unbound(_)),
     retractall(user:mode(test_even_param_unbound(_))),
+    retractall(user:test_reachable_param(_, _)),
+    retractall(user:mode(test_reachable_param(_, _))),
     retractall(user:test_reachable(_, _)),
     cleanup_csv_dynamic_source.
 
@@ -1871,6 +1877,24 @@ verify_recursive_plan :-
         width:2
     }),
     maybe_run_query_runtime(Plan, ['alice,bob', 'bob,charlie', 'alice,charlie']).
+
+verify_parameterized_reachability_plan :-
+    csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, output],
+    get_dict(root, Plan, transitive_closure{type:transitive_closure,
+        head:predicate{name:test_reachable_param, arity:2},
+        edge:predicate{name:test_fact, arity:2},
+        width:2
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    sub_string(Source, _, _, _, 'TransitiveClosureNode'),
+    \+ sub_string(Source, _, _, _, '$need'),
+    \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
+    maybe_run_query_runtime(Plan, ['alice,bob', 'alice,charlie'], [[alice]]).
 
 verify_mutual_recursion_plan :-
     csharp_query_target:build_query_plan(test_even/1, [target(csharp_query)], Plan),

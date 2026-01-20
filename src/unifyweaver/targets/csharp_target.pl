@@ -956,35 +956,44 @@ parse_query_order_key(DefaultDir, Width, Item, Key) :-
 
 build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Modes, Plan) :-
     get_dict(arity, HeadSpec, Arity),
-    (   eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes),
-        with_suppressed_user_error(build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions))
-    ->  true,
-        SeedOverride = seed(NeedMat, InputPositions)
-    ;   NeedRelations = [],
-        SeedOverride = none
-    ),
-    build_base_root(HeadSpec, BaseClauses, Options, Modes, SeedOverride, BaseRoot, BaseRelations),
-    build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, Modes, SeedOverride, RecursiveNodes, RecursiveRelations),
-    append(BaseRelations, RecursiveRelations, MainRelations0),
-    append(NeedRelations, MainRelations0, CombinedRelations0),
-    dedup_relations(CombinedRelations0, CombinedRelations),
-    (   maybe_transitive_closure_root(HeadSpec, Modes, BaseRoot, RecursiveNodes, Root)
-    ->  true
-    ;   Root = fixpoint{
-            type:fixpoint,
+    (   maybe_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations)
+    ->  Plan = plan{
             head:HeadSpec,
-            base:BaseRoot,
-            recursive:RecursiveNodes,
-            width:Arity
+            root:Root,
+            relations:Relations,
+            metadata:_{classification:recursive, options:Options, modes:Modes},
+            is_recursive:true
         }
-    ),
-    Plan = plan{
-        head:HeadSpec,
-        root:Root,
-        relations:CombinedRelations,
-        metadata:_{classification:recursive, options:Options, modes:Modes},
-        is_recursive:true
-    }.
+    ;   (   eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes),
+            with_suppressed_user_error(build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions))
+        ->  true,
+            SeedOverride = seed(NeedMat, InputPositions)
+        ;   NeedRelations = [],
+            SeedOverride = none
+        ),
+        build_base_root(HeadSpec, BaseClauses, Options, Modes, SeedOverride, BaseRoot, BaseRelations),
+        build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, Modes, SeedOverride, RecursiveNodes, RecursiveRelations),
+        append(BaseRelations, RecursiveRelations, MainRelations0),
+        append(NeedRelations, MainRelations0, CombinedRelations0),
+        dedup_relations(CombinedRelations0, Relations),
+        (   maybe_transitive_closure_root(HeadSpec, Modes, BaseRoot, RecursiveNodes, Root)
+        ->  true
+        ;   Root = fixpoint{
+                type:fixpoint,
+                head:HeadSpec,
+                base:BaseRoot,
+                recursive:RecursiveNodes,
+                width:Arity
+            }
+        ),
+        Plan = plan{
+            head:HeadSpec,
+            root:Root,
+            relations:Relations,
+            metadata:_{classification:recursive, options:Options, modes:Modes},
+            is_recursive:true
+        }
+    ).
 
 %% Transitive closure optimisation ------------------------------------------
 %
@@ -994,9 +1003,66 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
 % or its forward-join equivalent:
 %   reachable(X,Z) :- reachable(X,Y), edge(Y,Z).
 %
-% When found (and the plan is not parameterised), emit a dedicated
-% transitive_closure node so the runtime can execute it without allocating
-% join rows each iteration.
+% When found, emit a dedicated transitive_closure node so the runtime can
+% execute it without allocating join rows each iteration. Parameterised
+% variants are supported when the first argument is the only input.
+
+maybe_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations) :-
+    GroupSpecs = [HeadSpec],
+    get_dict(arity, HeadSpec, 2),
+    transitive_closure_supported_modes(Modes),
+    BaseClauses = [BaseClause],
+    RecClauses = [RecClause],
+    transitive_closure_base_clause(HeadSpec, BaseClause, EdgeSpec),
+    transitive_closure_recursive_rule_clause(HeadSpec, EdgeSpec, RecClause),
+    get_dict(name, EdgeSpec, EdgePred),
+    get_dict(arity, EdgeSpec, EdgeArity),
+    ensure_relation(EdgePred, EdgeArity, [], Relations0),
+    dedup_relations(Relations0, Relations),
+    Root = transitive_closure{
+        type:transitive_closure,
+        head:HeadSpec,
+        edge:EdgeSpec,
+        width:2
+    }.
+
+transitive_closure_supported_modes(Modes) :-
+    input_positions(Modes, Positions),
+    (   Positions == []
+    ;   Positions == [0]
+    ).
+
+transitive_closure_base_clause(HeadSpec, Head-Body, EdgeSpec) :-
+    get_dict(name, HeadSpec, Pred),
+    Head =.. [Pred, From, To],
+    var(From),
+    var(To),
+    body_to_list(Body, [EdgeTerm0]),
+    strip_module(EdgeTerm0, _, EdgeTerm),
+    EdgeTerm =.. [EdgePred, From, To|Extra],
+    forall(member(Arg, Extra), var(Arg)),
+    length([From, To|Extra], EdgeArity),
+    EdgeSpec = predicate{name:EdgePred, arity:EdgeArity}.
+
+transitive_closure_recursive_rule_clause(HeadSpec, EdgeSpec, Head-Body) :-
+    get_dict(name, HeadSpec, Pred),
+    Head =.. [Pred, From, To],
+    var(From),
+    var(To),
+    body_to_list(Body, [TermA0, TermB0]),
+    (   transitive_closure_edge_term(EdgeSpec, From, Mid, TermA0),
+        strip_module(TermB0, _, RecTerm),
+        RecTerm =.. [Pred, Mid, To]
+    ;   strip_module(TermA0, _, RecTerm),
+        RecTerm =.. [Pred, From, Mid],
+        transitive_closure_edge_term(EdgeSpec, Mid, To, TermB0)
+    ).
+
+transitive_closure_edge_term(predicate{name:EdgePred, arity:EdgeArity}, From, To, Term0) :-
+    strip_module(Term0, _, Term),
+    Term =.. [EdgePred, From, To|Extra],
+    length([From, To|Extra], EdgeArity),
+    forall(member(Arg, Extra), var(Arg)).
 
 maybe_transitive_closure_root(HeadSpec, Modes, BaseRoot, RecursiveNodes, Root) :-
     \+ memberchk(input, Modes),
