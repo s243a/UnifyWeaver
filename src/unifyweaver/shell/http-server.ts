@@ -46,6 +46,9 @@ const ALLOWED_ORIGINS = ['*']; // Configure for production
 // Commands specifically allowed for search operations
 const SEARCH_COMMANDS = ['grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc'];
 
+// Feedback log file
+const FEEDBACK_FILE = process.env.FEEDBACK_FILE || path.join(SANDBOX_ROOT, 'comet-feedback.log');
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -56,6 +59,12 @@ interface SearchRequest {
   options?: string[];
   command?: string;
   args?: string[];
+}
+
+interface FeedbackRequest {
+  message: string;
+  type?: 'info' | 'success' | 'warning' | 'error' | 'suggestion';
+  context?: string;
 }
 
 interface APIResponse {
@@ -287,6 +296,77 @@ async function handleCat(req: http.IncomingMessage, res: http.ServerResponse): P
   }
 }
 
+async function handleFeedback(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const body = await parseBody(req);
+    const { message, type = 'info', context } = JSON.parse(body) as FeedbackRequest;
+
+    if (!message) {
+      return sendError(res, 'Missing message');
+    }
+
+    // Create timestamped record
+    const timestamp = new Date().toISOString();
+    const record = {
+      timestamp,
+      type,
+      message,
+      context: context || null
+    };
+
+    const logLine = JSON.stringify(record) + '\n';
+
+    // Append to feedback file
+    fs.appendFileSync(FEEDBACK_FILE, logLine, 'utf-8');
+
+    sendJSON(res, {
+      success: true,
+      data: {
+        recorded: true,
+        timestamp,
+        file: FEEDBACK_FILE
+      }
+    });
+  } catch (err) {
+    sendError(res, (err as Error).message, 500);
+  }
+}
+
+async function handleGetFeedback(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    if (!fs.existsSync(FEEDBACK_FILE)) {
+      return sendJSON(res, {
+        success: true,
+        data: {
+          entries: [],
+          count: 0
+        }
+      });
+    }
+
+    const content = fs.readFileSync(FEEDBACK_FILE, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    const entries = lines.map(line => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { raw: line };
+      }
+    });
+
+    sendJSON(res, {
+      success: true,
+      data: {
+        entries,
+        count: entries.length,
+        file: FEEDBACK_FILE
+      }
+    });
+  } catch (err) {
+    sendError(res, (err as Error).message, 500);
+  }
+}
+
 // ============================================================================
 // HTML Interface
 // ============================================================================
@@ -397,6 +477,7 @@ function getHTMLInterface(): string {
       <button class="tab" :class="{ active: tab === 'find' }" @click="tab = 'find'">Find</button>
       <button class="tab" :class="{ active: tab === 'cat' }" @click="tab = 'cat'">Cat</button>
       <button class="tab" :class="{ active: tab === 'exec' }" @click="tab = 'exec'">Custom</button>
+      <button class="tab" :class="{ active: tab === 'feedback' }" @click="tab = 'feedback'">Feedback</button>
     </div>
 
     <!-- Grep Panel -->
@@ -456,6 +537,45 @@ function getHTMLInterface(): string {
       <p class="count" style="margin-top: 10px;">Allowed: grep, find, cat, head, tail, ls, wc</p>
     </div>
 
+    <!-- Feedback Panel -->
+    <div class="panel" v-if="tab === 'feedback'">
+      <div class="form-group">
+        <label>Feedback Type</label>
+        <select v-model="feedback.type" style="width: 100%; padding: 10px; background: #0f3460; border: 1px solid #1a1a2e; color: #eee; border-radius: 5px;">
+          <option value="info">Info</option>
+          <option value="success">Success</option>
+          <option value="suggestion">Suggestion</option>
+          <option value="warning">Warning</option>
+          <option value="error">Error</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Message</label>
+        <textarea v-model="feedback.message" rows="4" placeholder="Enter your feedback, notes, or observations..." @keyup.ctrl.enter="doFeedback"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Context (optional)</label>
+        <input v-model="feedback.context" placeholder="e.g., search query, file path, or related info">
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <button @click="doFeedback" :disabled="loading || !feedback.message">{{ loading ? 'Submitting...' : 'Submit Feedback' }}</button>
+        <button @click="loadFeedback" :disabled="loading" style="background: #0f3460;">{{ loading ? 'Loading...' : 'View History' }}</button>
+      </div>
+      <div v-if="feedbackHistory.length > 0" style="margin-top: 15px;">
+        <p class="count">{{ feedbackHistory.length }} feedback entries</p>
+        <div style="max-height: 300px; overflow-y: auto;">
+          <div v-for="(entry, i) in feedbackHistory" :key="i" style="background: #0f3460; padding: 10px; margin: 5px 0; border-radius: 5px; border-left: 3px solid;" :style="{ borderColor: typeColor(entry.type) }">
+            <div style="display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8;">
+              <span>{{ entry.type?.toUpperCase() || 'INFO' }}</span>
+              <span>{{ formatTime(entry.timestamp) }}</span>
+            </div>
+            <div style="margin-top: 5px;">{{ entry.message }}</div>
+            <div v-if="entry.context" style="font-size: 12px; color: #94a3b8; margin-top: 5px;">Context: {{ entry.context }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Results -->
     <div class="results" v-if="result">
       <p v-if="result.warning" class="warning">⚠️ {{ result.warning }}</p>
@@ -490,6 +610,8 @@ function getHTMLInterface(): string {
         const find = reactive({ pattern: '', path: '.', options: '' });
         const cat = reactive({ path: '' });
         const exec = reactive({ command: '', args: '[]' });
+        const feedback = reactive({ message: '', type: 'info', context: '' });
+        const feedbackHistory = ref([]);
 
         async function doGrep() {
           loading.value = true;
@@ -566,7 +688,63 @@ function getHTMLInterface(): string {
           loading.value = false;
         }
 
-        return { tab, loading, result, grep, find, cat, exec, doGrep, doFind, doCat, doExec };
+        async function doFeedback() {
+          if (!feedback.message) return;
+          loading.value = true;
+          try {
+            const res = await fetch('/feedback', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                message: feedback.message,
+                type: feedback.type,
+                context: feedback.context || undefined
+              })
+            });
+            const data = await res.json();
+            if (data.success) {
+              feedback.message = '';
+              feedback.context = '';
+              await loadFeedback();
+            }
+          } catch (err) {
+            console.error('Feedback error:', err);
+          }
+          loading.value = false;
+        }
+
+        async function loadFeedback() {
+          loading.value = true;
+          try {
+            const res = await fetch('/feedback');
+            const data = await res.json();
+            if (data.success) {
+              feedbackHistory.value = (data.data.entries || []).reverse();
+            }
+          } catch (err) {
+            console.error('Load feedback error:', err);
+          }
+          loading.value = false;
+        }
+
+        function typeColor(type) {
+          const colors = {
+            info: '#3b82f6',
+            success: '#4ade80',
+            suggestion: '#a855f7',
+            warning: '#fbbf24',
+            error: '#ff6b6b'
+          };
+          return colors[type] || colors.info;
+        }
+
+        function formatTime(timestamp) {
+          if (!timestamp) return '';
+          const d = new Date(timestamp);
+          return d.toLocaleString();
+        }
+
+        return { tab, loading, result, grep, find, cat, exec, feedback, feedbackHistory, doGrep, doFind, doCat, doExec, doFeedback, loadFeedback, typeColor, formatTime };
       }
     }).mount('#app');
   </script>
@@ -613,6 +791,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       await handleFind(req, res);
     } else if (pathname === '/cat' && method === 'POST') {
       await handleCat(req, res);
+    } else if (pathname === '/feedback' && method === 'POST') {
+      await handleFeedback(req, res);
+    } else if (pathname === '/feedback' && method === 'GET') {
+      await handleGetFeedback(req, res);
     } else {
       sendError(res, 'Not found', 404);
     }
@@ -645,6 +827,8 @@ function startServer(port: number): void {
 ║    POST /find       - Find files                           ║
 ║    POST /cat        - Read file                            ║
 ║    POST /exec       - Execute command                      ║
+║    POST /feedback   - Submit feedback                      ║
+║    GET  /feedback   - Read feedback log                    ║
 ╚════════════════════════════════════════════════════════════╝
 `);
   });
