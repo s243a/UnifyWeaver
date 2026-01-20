@@ -265,11 +265,15 @@ swipl -g "use_module('src/unifyweaver/targets/sql_target'), \
 ## Related
 
 **Parent Skill:**
-- `skill_aggregation_patterns.md` - Overview of aggregation approaches
+- `skill_query_patterns.md` - Query patterns sub-master
+
+**Sibling Skills:**
+- `skill_stream_aggregation.md` - Runtime aggregation in Go/Python
+- `skill_aggregation_patterns.md` - Aggregation overview
+- `skill_fuzzy_search.md` - Fuzzy score blending
 
 **Other Skills:**
 - `skill_unifyweaver_compile.md` - Basic compilation
-- `skill_stream_aggregation.md` - Runtime aggregation in Go/Python
 
 **Documentation:**
 - `education/book-10-sql-target/` - SQL target tutorial

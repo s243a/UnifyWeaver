@@ -114,3 +114,17 @@ swipl -f init.pl -g "consult('tmp/code.pl'), ..."
 ## 5. Examples
 
 For concrete usage patterns, see the playbook example library and parser README.
+
+## Related
+
+**Parent Skill:**
+- `skill_data_sources.md` - Data sources sub-master
+
+**Sibling Skills:**
+- `skill_json_sources.md` - JSON/JSONL data sources
+
+**Documentation:**
+- `docs/playbooks/parsing/README.md` - Parser tooling overview
+
+**Code:**
+- `scripts/utils/extract_records.pl` - Perl record extractor

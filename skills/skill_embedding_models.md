@@ -289,10 +289,14 @@ Processing long documents (>512 tokens)?
 
 ## Related
 
-**Skills:**
+**Parent Skill:**
+- `skill_ml_tools.md` - ML tools sub-master
+
+**Sibling Skills:**
 - `skill_train_model.md` - Training with embeddings
 - `skill_hierarchy_objective.md` - Entropy computation
 - `skill_semantic_inference.md` - Running inference
+- `skill_density_explorer.md` - Visualization
 
 **Documentation:**
 - `docs/proposals/MINIMAL_TRANSFORMATION_PROJECTION.md` - Procrustes theory

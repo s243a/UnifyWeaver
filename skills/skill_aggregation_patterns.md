@@ -123,7 +123,10 @@ f_or([S1, S2, S3], Max).
 
 ## Related
 
-**Sub-Skills:**
+**Parent Skill:**
+- `skill_query_patterns.md` - Query patterns sub-master
+
+**Sibling Skills:**
 - `skill_sql_target.md` - SQL generation and database dialects
 - `skill_stream_aggregation.md` - Runtime aggregation operators
 - `skill_fuzzy_search.md` - Fuzzy logic and score fusion

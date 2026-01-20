@@ -241,9 +241,17 @@ print(f"Slope: {slope:.3f}")       # Higher = better depth-probability alignment
 
 ## Related
 
-**Skills:**
-- `skill_mst_folder_grouping.md` - MST-based hierarchy construction
+**Parent Skill:**
+- `skill_ml_tools.md` - ML tools sub-master
+
+**Sibling Skills:**
 - `skill_train_model.md` - Training models with hierarchy-aware clustering
+- `skill_embedding_models.md` - Model selection
+- `skill_semantic_inference.md` - Running inference
+- `skill_density_explorer.md` - Visualization
+
+**Other Skills:**
+- `skill_mst_folder_grouping.md` - MST-based hierarchy construction
 - `skill_folder_suggestion.md` - Using hierarchies for folder suggestion
 
 **Documentation:**

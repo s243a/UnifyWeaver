@@ -84,8 +84,16 @@ Creates a `.pkl` file containing:
 
 ## Related
 
-**Skills:**
+**Parent Skill:**
+- `skill_ml_tools.md` - ML tools sub-master
+
+**Sibling Skills:**
 - `skill_semantic_inference.md` - Run inference with trained model
+- `skill_embedding_models.md` - Model selection
+- `skill_hierarchy_objective.md` - Hierarchy optimization
+- `skill_density_explorer.md` - Visualization
+
+**Other Skills:**
 - `skill_folder_suggestion.md` - Suggest folders for mindmaps
 - `skill_bookmark_filing.md` - File bookmarks automatically
 

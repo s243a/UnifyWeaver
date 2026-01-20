@@ -103,3 +103,14 @@ Use this skill whenever a playbook instructs you to read JSON data via `source/3
 - Column count must equal predicate arity.
 - Empty column names or malformed selectors raise `domain_error(json_column_entry, _)`.
 - `return_object(true)` without a `type_hint/1` or with arity ≠ 1 raises an error.
+
+## Related
+
+**Parent Skill:**
+- `skill_data_sources.md` - Data sources sub-master
+
+**Sibling Skills:**
+- `skill_extract_records.md` - Markdown record extraction
+
+**Code:**
+- `src/unifyweaver/sources/json_source.pl` - JSON source implementation

@@ -8,8 +8,9 @@ This document provides a complete overview of all UnifyWeaver skills organized i
 |--------------|-------------|-------------|
 | `skill_server_tools.md` | Backend services, APIs, IPC | 12 |
 | `skill_gui_tools.md` | Frontend/GUI generation | 13 |
+| `skill_data_tools.md` | Data processing, ML, queries | 14 |
 | `skill_mindmap_tools.md` | Mindmap organization | 6 |
-| Standalone | Various specialized skills | ~15 |
+| Standalone | Various specialized skills | ~10 |
 
 ---
 
@@ -113,28 +114,43 @@ skill_mindmap_tools.md (MASTER)
 
 ---
 
-## Data & Query Skills (Standalone)
+## Data Tools (Data Processing & ML)
+
+```
+skill_data_tools.md (MASTER)
+├── skill_query_patterns.md (sub-master)
+│   ├── skill_sql_target.md
+│   ├── skill_stream_aggregation.md
+│   ├── skill_aggregation_patterns.md
+│   └── skill_fuzzy_search.md
+├── skill_ml_tools.md (sub-master)
+│   ├── skill_embedding_models.md
+│   ├── skill_density_explorer.md
+│   ├── skill_train_model.md
+│   ├── skill_semantic_inference.md
+│   └── skill_hierarchy_objective.md
+└── skill_data_sources.md (sub-master)
+    ├── skill_json_sources.md
+    └── skill_extract_records.md
+```
 
 | Skill | Purpose |
 |-------|---------|
-| `skill_sql_target.md` | SQL query generation |
-| `skill_stream_aggregation.md` | Streaming aggregation patterns |
-| `skill_aggregation_patterns.md` | GROUP BY, window functions |
-| `skill_fuzzy_search.md` | Fuzzy text matching |
-| `skill_json_sources.md` | JSON data source handling |
-| `skill_extract_records.md` | Record extraction patterns |
-
----
-
-## ML & Embeddings Skills (Standalone)
-
-| Skill | Purpose |
-|-------|---------|
-| `skill_embedding_models.md` | Embedding model configuration |
-| `skill_density_explorer.md` | Density-based exploration |
-| `skill_train_model.md` | Model training workflows |
-| `skill_semantic_inference.md` | Semantic reasoning |
-| `skill_hierarchy_objective.md` | Hierarchical optimization |
+| `skill_data_tools.md` | Master for data processing and ML |
+| `skill_query_patterns.md` | Query and aggregation patterns |
+| `skill_sql_target.md` | SQL generation (SQLite, PostgreSQL, MySQL) |
+| `skill_stream_aggregation.md` | Runtime aggregation (Go, C#, Perl, Ruby) |
+| `skill_aggregation_patterns.md` | GROUP BY, window functions, paradigm overview |
+| `skill_fuzzy_search.md` | Fuzzy logic, RRF, score blending |
+| `skill_ml_tools.md` | Machine learning tools |
+| `skill_embedding_models.md` | Model selection (nomic, MiniLM, BERT) |
+| `skill_density_explorer.md` | Interactive embedding visualization |
+| `skill_train_model.md` | Federated model training |
+| `skill_semantic_inference.md` | Running inference |
+| `skill_hierarchy_objective.md` | J = D/(1+H) optimization |
+| `skill_data_sources.md` | Data source handling |
+| `skill_json_sources.md` | JSON/JSONL data sources |
+| `skill_extract_records.md` | Markdown record extraction |
 
 ---
 
@@ -172,6 +188,8 @@ skill_bookmark_filing.md
 skill_browser_python.md
 skill_component_library.md
 skill_data_binding.md
+skill_data_sources.md
+skill_data_tools.md
 skill_density_explorer.md
 skill_deployment.md
 skill_embedding_models.md
@@ -200,10 +218,12 @@ skill_mindmap_organization.md
 skill_mindmap_references.md
 skill_mindmap_rename.md
 skill_mindmap_tools.md
+skill_ml_tools.md
 skill_mst_folder_grouping.md
 skill_networking.md
 skill_pipe_communication.md
 skill_python_bridges.md
+skill_query_patterns.md
 skill_responsive_design.md
 skill_rpyc.md
 skill_semantic_inference.md

@@ -249,10 +249,14 @@ rrf_combined = rrf_blend_scores([bge_scores, minilm_scores, nomic_scores])
 ## Related
 
 **Parent Skill:**
-- `skill_aggregation_patterns.md` - Overview of aggregation approaches
+- `skill_query_patterns.md` - Query patterns sub-master
+
+**Sibling Skills:**
+- `skill_sql_target.md` - SQL generation
+- `skill_stream_aggregation.md` - Runtime aggregation
+- `skill_aggregation_patterns.md` - Aggregation overview
 
 **Other Skills:**
-- `skill_semantic_search.md` - Semantic search basics
 - `skill_train_model.md` - Training embedding models
 - `skill_embedding_models.md` - Model selection
 

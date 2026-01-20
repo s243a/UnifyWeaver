@@ -348,9 +348,16 @@ lsof -i :5000
 
 ## Related
 
-**Skills:**
+**Parent Skill:**
+- `skill_ml_tools.md` - ML tools sub-master
+
+**Sibling Skills:**
 - `skill_embedding_models.md` - Choosing embedding models
 - `skill_hierarchy_objective.md` - J = D/(1+H) theory
+- `skill_train_model.md` - Model training
+- `skill_semantic_inference.md` - Running inference
+
+**Other Skills:**
 - `skill_mst_folder_grouping.md` - MST for folder organization
 
 **Documentation:**

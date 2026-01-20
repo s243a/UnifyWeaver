@@ -240,10 +240,11 @@ popular_items(Item, Sales) :-
 ## Related
 
 **Parent Skill:**
-- `skill_aggregation_patterns.md` - Overview of aggregation approaches
+- `skill_query_patterns.md` - Query patterns sub-master
 
-**Other Skills:**
+**Sibling Skills:**
 - `skill_sql_target.md` - Declarative SQL aggregation
+- `skill_aggregation_patterns.md` - Aggregation overview
 - `skill_fuzzy_search.md` - Score-based aggregation
 
 **Documentation:**

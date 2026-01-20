@@ -100,8 +100,16 @@ python3 scripts/infer_pearltrees_federated.py --help
 
 ## Related
 
-**Skills:**
+**Parent Skill:**
+- `skill_ml_tools.md` - ML tools sub-master
+
+**Sibling Skills:**
 - `skill_train_model.md` - Train the model first
+- `skill_embedding_models.md` - Model selection
+- `skill_hierarchy_objective.md` - Hierarchy optimization
+- `skill_density_explorer.md` - Visualization
+
+**Other Skills:**
 - `skill_bookmark_filing.md` - Specialized bookmark filing
 - `skill_folder_suggestion.md` - Suggest folders for mindmaps
 
