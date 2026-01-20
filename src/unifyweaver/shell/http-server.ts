@@ -27,6 +27,7 @@ import * as http from 'http';
 import * as url from 'url';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import {
   execute,
   validateCommand,
@@ -44,7 +45,7 @@ const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 const ALLOWED_ORIGINS = ['*']; // Configure for production
 
 // Commands specifically allowed for search operations
-const SEARCH_COMMANDS = ['grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc'];
+const SEARCH_COMMANDS = ['grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc', 'pwd'];
 
 // Feedback log file
 const FEEDBACK_FILE = process.env.FEEDBACK_FILE || path.join(SANDBOX_ROOT, 'comet-feedback.log');
@@ -59,12 +60,24 @@ interface SearchRequest {
   options?: string[];
   command?: string;
   args?: string[];
+  cwd?: string;  // Working directory relative to sandbox root
 }
 
 interface FeedbackRequest {
   message: string;
   type?: 'info' | 'success' | 'warning' | 'error' | 'suggestion';
   context?: string;
+}
+
+interface BrowseRequest {
+  path?: string;
+}
+
+interface FileEntry {
+  name: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modified?: string;
 }
 
 interface APIResponse {
@@ -120,6 +133,60 @@ function sendError(res: http.ServerResponse, message: string, status = 400): voi
   sendJSON(res, { success: false, error: message }, status);
 }
 
+/**
+ * Resolve a working directory path safely within the sandbox.
+ * Returns the absolute path or SANDBOX_ROOT if invalid.
+ */
+function resolveWorkingDir(cwd?: string): string {
+  if (!cwd || cwd === '.') {
+    return SANDBOX_ROOT;
+  }
+  const resolved = path.resolve(SANDBOX_ROOT, cwd);
+  // Ensure it's within sandbox and exists
+  if (!resolved.startsWith(SANDBOX_ROOT)) {
+    return SANDBOX_ROOT;
+  }
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    return SANDBOX_ROOT;
+  }
+  return resolved;
+}
+
+/**
+ * Expand glob patterns in arguments using the shell.
+ * Only expands patterns containing * or ?, and only within sandbox.
+ */
+function expandGlobs(args: string[], cwd: string): string[] {
+  const expanded: string[] = [];
+  for (const arg of args) {
+    // Only expand if it looks like a glob pattern
+    if (arg.includes('*') || arg.includes('?')) {
+      try {
+        // Use shell to expand the glob, constrained to cwd
+        const result = execSync(`printf '%s\\n' ${arg}`, {
+          cwd,
+          encoding: 'utf-8',
+          timeout: 5000,
+          shell: '/bin/sh'
+        }).trim();
+
+        // If expansion found matches, add them; otherwise keep original
+        if (result && result !== arg) {
+          expanded.push(...result.split('\n').filter(Boolean));
+        } else {
+          expanded.push(arg);
+        }
+      } catch {
+        // If expansion fails, keep the original argument
+        expanded.push(arg);
+      }
+    } else {
+      expanded.push(arg);
+    }
+  }
+  return expanded;
+}
+
 // ============================================================================
 // Route Handlers
 // ============================================================================
@@ -153,7 +220,7 @@ async function handleCommands(req: http.IncomingMessage, res: http.ServerRespons
 async function handleExec(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await parseBody(req);
-    const { command, args = [] } = JSON.parse(body) as SearchRequest;
+    const { command, args = [], cwd } = JSON.parse(body) as SearchRequest;
 
     if (!command) {
       return sendError(res, 'Missing command');
@@ -164,15 +231,21 @@ async function handleExec(req: http.IncomingMessage, res: http.ServerResponse): 
       return sendError(res, `Command not allowed. Allowed: ${SEARCH_COMMANDS.join(', ')}`, 403);
     }
 
+    // Resolve working directory
+    const workingDir = resolveWorkingDir(cwd);
+
+    // Expand glob patterns in arguments
+    const expandedArgs = expandGlobs(args, workingDir);
+
     // Validate first
-    const validation = validateCommand(command, args, { role: 'user' });
+    const validation = validateCommand(command, expandedArgs, { role: 'user' });
     if (!validation.ok) {
       return sendError(res, validation.reason || 'Validation failed', 403);
     }
 
     // Execute
-    const cmdString = [command, ...args].join(' ');
-    const result = await execute(cmdString, { role: 'user', cwd: SANDBOX_ROOT });
+    const cmdString = [command, ...expandedArgs].join(' ');
+    const result = await execute(cmdString, { role: 'user', cwd: workingDir });
 
     if (!result.success) {
       return sendJSON(res, {
@@ -199,11 +272,14 @@ async function handleExec(req: http.IncomingMessage, res: http.ServerResponse): 
 async function handleGrep(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await parseBody(req);
-    const { pattern, path: searchPath = '.', options = [] } = JSON.parse(body) as SearchRequest;
+    const { pattern, path: searchPath = '.', options = [], cwd } = JSON.parse(body) as SearchRequest;
 
     if (!pattern) {
       return sendError(res, 'Missing pattern');
     }
+
+    // Resolve working directory
+    const workingDir = resolveWorkingDir(cwd);
 
     // Build grep command
     const args = [
@@ -216,7 +292,7 @@ async function handleGrep(req: http.IncomingMessage, res: http.ServerResponse): 
     ];
 
     const cmdString = ['grep', ...args].join(' ');
-    const result = await execute(cmdString, { role: 'user', cwd: SANDBOX_ROOT });
+    const result = await execute(cmdString, { role: 'user', cwd: workingDir });
 
     sendJSON(res, {
       success: true,
@@ -235,7 +311,10 @@ async function handleGrep(req: http.IncomingMessage, res: http.ServerResponse): 
 async function handleFind(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await parseBody(req);
-    const { pattern, path: searchPath = '.', options = [] } = JSON.parse(body) as SearchRequest;
+    const { pattern, path: searchPath = '.', options = [], cwd } = JSON.parse(body) as SearchRequest;
+
+    // Resolve working directory
+    const workingDir = resolveWorkingDir(cwd);
 
     // Build find command
     const args = [searchPath];
@@ -247,7 +326,7 @@ async function handleFind(req: http.IncomingMessage, res: http.ServerResponse): 
     args.push(...options);
 
     const cmdString = ['find', ...args].join(' ');
-    const result = await execute(cmdString, { role: 'user', cwd: SANDBOX_ROOT });
+    const result = await execute(cmdString, { role: 'user', cwd: workingDir });
 
     sendJSON(res, {
       success: true,
@@ -266,15 +345,18 @@ async function handleFind(req: http.IncomingMessage, res: http.ServerResponse): 
 async function handleCat(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await parseBody(req);
-    const { path: filePath, options = [] } = JSON.parse(body) as SearchRequest;
+    const { path: filePath, options = [], cwd } = JSON.parse(body) as SearchRequest;
 
     if (!filePath) {
       return sendError(res, 'Missing path');
     }
 
+    // Resolve working directory
+    const workingDir = resolveWorkingDir(cwd);
+
     const args = [...options, filePath];
     const cmdString = ['cat', ...args].join(' ');
-    const result = await execute(cmdString, { role: 'user', cwd: SANDBOX_ROOT });
+    const result = await execute(cmdString, { role: 'user', cwd: workingDir });
 
     if (!result.success) {
       return sendJSON(res, {
@@ -367,6 +449,75 @@ async function handleGetFeedback(req: http.IncomingMessage, res: http.ServerResp
   }
 }
 
+async function handleBrowse(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const body = await parseBody(req);
+    const { path: browsePath = '.' } = JSON.parse(body || '{}') as BrowseRequest;
+
+    // Resolve and validate path is within sandbox
+    const targetPath = path.resolve(SANDBOX_ROOT, browsePath);
+    if (!targetPath.startsWith(SANDBOX_ROOT)) {
+      return sendError(res, 'Path outside sandbox', 403);
+    }
+
+    if (!fs.existsSync(targetPath)) {
+      return sendError(res, 'Path not found', 404);
+    }
+
+    const stats = fs.statSync(targetPath);
+    if (!stats.isDirectory()) {
+      return sendError(res, 'Not a directory', 400);
+    }
+
+    // Read directory contents
+    const items = fs.readdirSync(targetPath);
+    const entries: FileEntry[] = [];
+
+    for (const name of items) {
+      // Skip hidden files starting with . unless explicitly in root
+      if (name.startsWith('.') && browsePath !== '.') continue;
+
+      try {
+        const itemPath = path.join(targetPath, name);
+        const itemStats = fs.statSync(itemPath);
+        entries.push({
+          name,
+          type: itemStats.isDirectory() ? 'directory' : 'file',
+          size: itemStats.isFile() ? itemStats.size : undefined,
+          modified: itemStats.mtime.toISOString()
+        });
+      } catch {
+        // Skip items we can't stat (permission errors, etc.)
+        continue;
+      }
+    }
+
+    // Sort: directories first, then alphabetically
+    entries.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'directory' ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    // Calculate relative path from sandbox root
+    const relativePath = path.relative(SANDBOX_ROOT, targetPath) || '.';
+
+    sendJSON(res, {
+      success: true,
+      data: {
+        path: relativePath,
+        absolutePath: targetPath,
+        parent: relativePath !== '.' ? path.dirname(relativePath) || '.' : null,
+        entries,
+        count: entries.length
+      }
+    });
+  } catch (err) {
+    sendError(res, (err as Error).message, 500);
+  }
+}
+
 // ============================================================================
 // HTML Interface
 // ============================================================================
@@ -392,6 +543,7 @@ function getHTMLInterface(): string {
     h1 { color: #e94560; margin-bottom: 20px; }
     .tabs {
       display: flex;
+      flex-wrap: wrap;
       gap: 5px;
       margin-bottom: 20px;
     }
@@ -472,12 +624,54 @@ function getHTMLInterface(): string {
   <div id="app" class="container">
     <h1>🔍 UnifyWeaver CLI Search</h1>
 
+    <div style="background: #0f3460; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+      <span style="color: #94a3b8;">Working directory:</span>
+      <code style="background: #1a1a2e; padding: 4px 8px; border-radius: 3px; font-family: monospace;">{{ workingDir }}</code>
+      <button v-if="workingDir !== '.'" @click="workingDir = '.'" style="background: #16213e; padding: 5px 10px; font-size: 12px;">Reset to root</button>
+    </div>
+
     <div class="tabs">
+      <button class="tab" :class="{ active: tab === 'browse' }" @click="tab = 'browse'; loadBrowse()">Browse</button>
       <button class="tab" :class="{ active: tab === 'grep' }" @click="tab = 'grep'">Grep</button>
       <button class="tab" :class="{ active: tab === 'find' }" @click="tab = 'find'">Find</button>
       <button class="tab" :class="{ active: tab === 'cat' }" @click="tab = 'cat'">Cat</button>
       <button class="tab" :class="{ active: tab === 'exec' }" @click="tab = 'exec'">Custom</button>
       <button class="tab" :class="{ active: tab === 'feedback' }" @click="tab = 'feedback'">Feedback</button>
+    </div>
+
+    <!-- Browse Panel -->
+    <div class="panel" v-if="tab === 'browse'">
+      <div style="margin-bottom: 15px;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+          <button v-if="browse.parent !== null" @click="navigateTo(browse.parent)" style="background: #0f3460; padding: 8px 12px;">⬆️ Up</button>
+          <span style="color: #94a3b8; font-family: monospace;">📁 {{ browse.path || '.' }}</span>
+          <button @click="workingDir = browse.path" :disabled="workingDir === browse.path" style="background: #4ade80; color: #000; padding: 6px 12px; font-size: 12px;">📌 Set as Working Dir</button>
+        </div>
+        <p class="count" v-if="browse.entries.length">{{ browse.entries.length }} items</p>
+      </div>
+      <div style="max-height: 400px; overflow-y: auto;">
+        <div v-for="entry in browse.entries" :key="entry.name"
+             @click="entry.type === 'directory' ? navigateTo(browse.path === '.' ? entry.name : browse.path + '/' + entry.name) : selectFile(browse.path === '.' ? entry.name : browse.path + '/' + entry.name)"
+             style="padding: 10px; background: #0f3460; margin: 3px 0; border-radius: 5px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;"
+             :style="{ borderLeft: entry.type === 'directory' ? '3px solid #e94560' : '3px solid #3b82f6' }">
+          <span>
+            <span style="margin-right: 8px;">{{ entry.type === 'directory' ? '📁' : '📄' }}</span>
+            {{ entry.name }}
+          </span>
+          <span style="color: #94a3b8; font-size: 12px;">{{ entry.size ? formatSize(entry.size) : '' }}</span>
+        </div>
+        <div v-if="browse.entries.length === 0 && !loading" style="color: #94a3b8; text-align: center; padding: 20px;">
+          Empty directory
+        </div>
+      </div>
+      <div style="margin-top: 15px; padding: 10px; background: #0f3460; border-radius: 5px;" v-if="browse.selected">
+        <p style="color: #94a3b8; font-size: 12px; margin-bottom: 5px;">Selected file:</p>
+        <p style="font-family: monospace;">{{ browse.selected }}</p>
+        <div style="margin-top: 10px; display: flex; gap: 10px;">
+          <button @click="cat.path = browse.selected; tab = 'cat'; doCat()">View Contents</button>
+          <button @click="grep.path = browse.path; tab = 'grep'" style="background: #0f3460;">Search Here</button>
+        </div>
+      </div>
     </div>
 
     <!-- Grep Panel -->
@@ -526,15 +720,11 @@ function getHTMLInterface(): string {
     <!-- Custom Exec Panel -->
     <div class="panel" v-if="tab === 'exec'">
       <div class="form-group">
-        <label>Command</label>
-        <input v-model="exec.command" placeholder="e.g., ls, grep, find, cat, head, tail, wc" @keyup.enter="doExec">
-      </div>
-      <div class="form-group">
-        <label>Arguments (JSON array)</label>
-        <input v-model="exec.args" placeholder='e.g., ["-la", "src/"]'>
+        <label>Command (as you'd type in shell)</label>
+        <input v-model="exec.commandLine" placeholder="e.g., ls -la src/ or wc -l *.ts" @keyup.enter="doExec">
       </div>
       <button @click="doExec" :disabled="loading">{{ loading ? 'Running...' : 'Execute' }}</button>
-      <p class="count" style="margin-top: 10px;">Allowed: grep, find, cat, head, tail, ls, wc</p>
+      <p class="count" style="margin-top: 10px;">Allowed: cd, pwd, grep, find, cat, head, tail, ls, wc</p>
     </div>
 
     <!-- Feedback Panel -->
@@ -590,10 +780,11 @@ function getHTMLInterface(): string {
     <!-- Help -->
     <div class="help">
       <h3>Quick Help</h3>
+      <p><strong>Working Dir:</strong> All commands run relative to the working directory. Use Browse to navigate and "Set as Working Dir", or use <code>cd</code> in Custom.</p>
+      <p><strong>Browse:</strong> Navigate the file tree. Click folders to enter, files to select.</p>
       <p><strong>Grep:</strong> Search file contents with regex. Use <code>-i</code> for case-insensitive, <code>--include=*.ts</code> for file filters.</p>
       <p><strong>Find:</strong> Find files by name pattern. Use <code>-type f</code> for files only, <code>-maxdepth N</code> to limit depth.</p>
-      <p><strong>Cat:</strong> Read entire file contents.</p>
-      <p><strong>Sandbox:</strong> All operations are restricted to the sandbox directory.</p>
+      <p><strong>Custom:</strong> Supports globs (<code>*.ts</code>, <code>*/</code>) and <code>cd</code> to change working directory.</p>
     </div>
   </div>
 
@@ -605,13 +796,50 @@ function getHTMLInterface(): string {
         const tab = ref('grep');
         const loading = ref(false);
         const result = ref(null);
+        const workingDir = ref('.');
 
         const grep = reactive({ pattern: '', path: '.', options: '' });
         const find = reactive({ pattern: '', path: '.', options: '' });
         const cat = reactive({ path: '' });
-        const exec = reactive({ command: '', args: '[]' });
+        const exec = reactive({ commandLine: '' });
         const feedback = reactive({ message: '', type: 'info', context: '' });
         const feedbackHistory = ref([]);
+        const browse = reactive({ path: '.', entries: [], parent: null, selected: null });
+
+        async function loadBrowse(path = '.') {
+          loading.value = true;
+          try {
+            const res = await fetch('/browse', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path })
+            });
+            const data = await res.json();
+            if (data.success) {
+              browse.path = data.data.path;
+              browse.entries = data.data.entries;
+              browse.parent = data.data.parent;
+              browse.selected = null;
+            }
+          } catch (err) {
+            console.error('Browse error:', err);
+          }
+          loading.value = false;
+        }
+
+        function navigateTo(path) {
+          loadBrowse(path);
+        }
+
+        function selectFile(filePath) {
+          browse.selected = filePath;
+        }
+
+        function formatSize(bytes) {
+          if (bytes < 1024) return bytes + ' B';
+          if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+          return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
 
         async function doGrep() {
           loading.value = true;
@@ -623,7 +851,8 @@ function getHTMLInterface(): string {
               body: JSON.stringify({
                 pattern: grep.pattern,
                 path: grep.path,
-                options: grep.options.split(/\\s+/).filter(Boolean)
+                options: grep.options.split(/\\s+/).filter(Boolean),
+                cwd: workingDir.value
               })
             });
             result.value = await res.json();
@@ -643,7 +872,8 @@ function getHTMLInterface(): string {
               body: JSON.stringify({
                 pattern: find.pattern,
                 path: find.path,
-                options: find.options.split(/\\s+/).filter(Boolean)
+                options: find.options.split(/\\s+/).filter(Boolean),
+                cwd: workingDir.value
               })
             });
             result.value = await res.json();
@@ -660,7 +890,7 @@ function getHTMLInterface(): string {
             const res = await fetch('/cat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: cat.path })
+              body: JSON.stringify({ path: cat.path, cwd: workingDir.value })
             });
             result.value = await res.json();
           } catch (err) {
@@ -673,13 +903,35 @@ function getHTMLInterface(): string {
           loading.value = true;
           result.value = null;
           try {
+            // Parse command line: split on whitespace, first part is command, rest are args
+            const parts = exec.commandLine.trim().split(/\\s+/);
+            const command = parts[0] || '';
+            const args = parts.slice(1);
+
+            // Handle cd command client-side
+            if (command === 'cd') {
+              const targetDir = args[0] || '.';
+              // Validate via browse endpoint
+              const browseRes = await fetch('/browse', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: workingDir.value === '.' ? targetDir : workingDir.value + '/' + targetDir })
+              });
+              const browseData = await browseRes.json();
+              if (browseData.success) {
+                workingDir.value = browseData.data.path;
+                result.value = { success: true, data: { stdout: 'Changed to: ' + browseData.data.path } };
+              } else {
+                result.value = { success: false, error: browseData.error || 'Directory not found' };
+              }
+              loading.value = false;
+              return;
+            }
+
             const res = await fetch('/exec', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                command: exec.command,
-                args: JSON.parse(exec.args || '[]')
-              })
+              body: JSON.stringify({ command, args, cwd: workingDir.value })
             });
             result.value = await res.json();
           } catch (err) {
@@ -744,7 +996,7 @@ function getHTMLInterface(): string {
           return d.toLocaleString();
         }
 
-        return { tab, loading, result, grep, find, cat, exec, feedback, feedbackHistory, doGrep, doFind, doCat, doExec, doFeedback, loadFeedback, typeColor, formatTime };
+        return { tab, loading, result, workingDir, grep, find, cat, exec, feedback, feedbackHistory, browse, doGrep, doFind, doCat, doExec, doFeedback, loadFeedback, loadBrowse, navigateTo, selectFile, formatSize, typeColor, formatTime };
       }
     }).mount('#app');
   </script>
@@ -795,6 +1047,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       await handleFeedback(req, res);
     } else if (pathname === '/feedback' && method === 'GET') {
       await handleGetFeedback(req, res);
+    } else if (pathname === '/browse' && method === 'POST') {
+      await handleBrowse(req, res);
     } else {
       sendError(res, 'Not found', 404);
     }
@@ -823,6 +1077,7 @@ function startServer(port: number): void {
 ║    GET  /           - HTML interface                       ║
 ║    GET  /health     - Health check                         ║
 ║    GET  /commands   - List commands                        ║
+║    POST /browse     - Browse directories                   ║
 ║    POST /grep       - Search contents                      ║
 ║    POST /find       - Find files                           ║
 ║    POST /cat        - Read file                            ║

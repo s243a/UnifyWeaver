@@ -4,7 +4,9 @@ A sandboxed HTTP interface for shell search commands, designed for AI browser ag
 
 ## Overview
 
-The HTTP CLI Server exposes `grep`, `find`, `cat`, and other read-only commands via HTTP endpoints, with a Vue-based web interface. It includes a feedback channel for agent-to-agent communication.
+The HTTP CLI Server exposes `grep`, `find`, `cat`, and other read-only commands via HTTP endpoints, with a Vue-based web interface. It includes a file browser, working directory support, glob expansion, and a feedback channel for agent-to-agent communication.
+
+**Status:** Prototype - functional but needs security hardening before production use.
 
 ```bash
 # Start server
@@ -44,9 +46,8 @@ SANDBOX_ROOT=/path/to/project npx ts-node src/unifyweaver/shell/http-server.ts
 
 **Weaknesses:**
 - Must know CLI flags (no GUI affordances)
-- "Custom" tab's JSON array for arguments is unintuitive
 - No tab completion or command history
-- Limited command set (grep/find/cat/ls/head/tail/wc only)
+- Limited command set (cd/pwd/grep/find/cat/ls/head/tail/wc)
 
 **Best for:** Quick searches when you don't want to context-switch to terminal.
 
@@ -71,12 +72,21 @@ SANDBOX_ROOT=/path/to/project npx ts-node src/unifyweaver/shell/http-server.ts
 | `/` | GET | HTML/Vue interface |
 | `/health` | GET | Server status and config |
 | `/commands` | GET | List allowed commands |
+| `/browse` | POST | Browse directory contents |
 | `/grep` | POST | Search file contents |
 | `/find` | POST | Find files by pattern |
 | `/cat` | POST | Read file contents |
 | `/exec` | POST | Execute allowed command |
 | `/feedback` | POST | Submit feedback (for agents) |
 | `/feedback` | GET | Read feedback history |
+
+### Example: Browse
+
+```bash
+curl -X POST http://localhost:3001/browse \
+  -H "Content-Type: application/json" \
+  -d '{"path": "src/"}'
+```
 
 ### Example: Grep
 
@@ -135,15 +145,36 @@ AI agents performing research need a way to record observations. The `/feedback`
 4. **No write operations** - By design, but limits utility for some workflows
 5. **GUI not beginner-friendly** - Requires CLI knowledge
 
+## Security Considerations
+
+**Current state:** This is a prototype for local development use only.
+
+**Not production-ready due to:**
+- No authentication - anyone with network access can use the server
+- HTTP only - no TLS/HTTPS encryption
+- CORS allows all origins (`*`)
+- No rate limiting
+- No audit logging beyond basic request logs
+
+**Before exposing to networks:**
+1. Add authentication (API keys, OAuth, or basic auth)
+2. Enable HTTPS with valid certificates
+3. Restrict CORS to specific origins
+4. Add rate limiting to prevent abuse
+5. Implement proper audit logging
+6. Consider IP allowlisting
+
+**Safe for:** Local development on trusted networks, behind VPN, or with proper reverse proxy (nginx/caddy with auth).
+
 ## Future Directions
 
 Potential improvements based on user feedback:
 
+- **Authentication** - API keys or OAuth for secure access
+- **HTTPS support** - TLS encryption for network use
 - **Explicit controls** - Checkboxes for common options (case-insensitive, file types)
-- **List mode** - Dedicated `ls` operation with directories-only toggle
 - **UnifyWeaver commands** - Expose compile/test as first-class operations
 - **Command presets** - "Search TypeScript", "Find test files", etc.
-- **Better Custom tab** - Simple text input instead of JSON array
 
 ## Files
 
