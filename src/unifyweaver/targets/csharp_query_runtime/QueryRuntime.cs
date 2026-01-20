@@ -214,6 +214,14 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Computes the transitive closure of a binary edge relation.
+    /// </summary>
+    public sealed record TransitiveClosureNode(
+        PredicateId EdgeRelation,
+        PredicateId Predicate
+    ) : PlanNode;
+
+    /// <summary>
     /// Indicates which relation a recursive reference should read from.
     /// </summary>
     public enum RecursiveRefKind
@@ -720,6 +728,7 @@ namespace UnifyWeaver.QueryRuntime
                     case CrossRefNode:
                     case EmptyNode:
                     case UnitNode:
+                    case TransitiveClosureNode:
                         return;
 
                     case ProgramNode program:
@@ -853,6 +862,7 @@ namespace UnifyWeaver.QueryRuntime
                 OrderByNode orderBy => $"OrderBy keys=[{string.Join(",", orderBy.Keys.Select(k => $"{k.Index}:{k.Direction}"))}]",
                 LimitNode limit => $"Limit count={limit.Count}",
                 OffsetNode offset => $"Offset count={offset.Count}",
+                TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -1099,6 +1109,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 case OffsetNode offset:
                     result = ExecuteOffset(offset, context);
+                    break;
+
+                case TransitiveClosureNode closure:
+                    result = ExecuteTransitiveClosure(closure, context);
                     break;
 
                 case FixpointNode fixpoint:
@@ -1518,6 +1532,10 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         CollectReferencedPredicates(recursivePlan, predicates);
                     }
+                    return;
+
+                case TransitiveClosureNode closure:
+                    predicates.Add(closure.EdgeRelation);
                     return;
 
                 case MutualFixpointNode mutual:
@@ -5462,6 +5480,87 @@ namespace UnifyWeaver.QueryRuntime
             return key;
         }
 
+        private IEnumerable<object[]> ExecuteTransitiveClosure(TransitiveClosureNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "TransitiveClosure");
+
+                var predicate = closure.Predicate;
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+
+                var visited = new HashSet<PairKey>();
+                var totalRows = new List<object[]>();
+                var delta = new List<PairKey>();
+
+                foreach (var edge in edges)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var from = edge[0];
+                    var to = edge[1];
+                    var key = new PairKey(from, to);
+                    if (visited.Add(key))
+                    {
+                        totalRows.Add(new object[] { from, to });
+                        delta.Add(key);
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<PairKey>();
+
+                    foreach (var pair in delta)
+                    {
+                        var lookupKey = pair.To ?? NullFactIndexKey;
+                        if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var next = edge[1];
+                            var nextKey = new PairKey(pair.From, next);
+                            if (visited.Add(nextKey))
+                            {
+                                totalRows.Add(new object[] { pair.From, next });
+                                nextDelta.Add(nextKey);
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
         private IEnumerable<object[]> ExecuteFixpoint(FixpointNode fixpoint, EvaluationContext? parentContext)
         {
             if (fixpoint is null) throw new ArgumentNullException(nameof(fixpoint));
@@ -5873,6 +5972,8 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
         }
+
+        private readonly record struct PairKey(object? From, object? To);
 
         private readonly struct RowWrapper
         {
