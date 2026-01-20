@@ -1865,29 +1865,11 @@ verify_recursive_arithmetic_plan :-
 verify_recursive_plan :-
     csharp_query_target:build_query_plan(test_reachable/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
-    get_dict(root, Plan, fixpoint{type:fixpoint, head:_, base:Base, recursive:[RecursiveClause], width:2}),
-    Base = projection{
-        type:projection,
-        input:relation_scan{predicate:predicate{name:test_fact, arity:2}, type:relation_scan, width:_},
-        columns:[0, 1],
+    get_dict(root, Plan, transitive_closure{type:transitive_closure,
+        head:predicate{name:test_reachable, arity:2},
+        edge:predicate{name:test_fact, arity:2},
         width:2
-    },
-    RecursiveClause = projection{
-        type:projection,
-        input:JoinNode,
-        columns:[0, 3],
-        width:2
-    },
-    JoinNode = join{
-        type:join,
-        left:relation_scan{predicate:predicate{name:test_fact, arity:2}, type:relation_scan, width:_},
-        right:recursive_ref{predicate:predicate{name:test_reachable, arity:2}, role:delta, type:recursive_ref, width:_},
-        left_keys:[1],
-        right_keys:[0],
-        left_width:_,
-        right_width:_,
-        width:_
-    },
+    }),
     maybe_run_query_runtime(Plan, ['alice,bob', 'bob,charlie', 'alice,charlie']).
 
 verify_mutual_recursion_plan :-

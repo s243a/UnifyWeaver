@@ -968,13 +968,16 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
     append(BaseRelations, RecursiveRelations, MainRelations0),
     append(NeedRelations, MainRelations0, CombinedRelations0),
     dedup_relations(CombinedRelations0, CombinedRelations),
-    Root = fixpoint{
-        type:fixpoint,
-        head:HeadSpec,
-        base:BaseRoot,
-        recursive:RecursiveNodes,
-        width:Arity
-    },
+    (   maybe_transitive_closure_root(HeadSpec, Modes, BaseRoot, RecursiveNodes, Root)
+    ->  true
+    ;   Root = fixpoint{
+            type:fixpoint,
+            head:HeadSpec,
+            base:BaseRoot,
+            recursive:RecursiveNodes,
+            width:Arity
+        }
+    ),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -982,6 +985,49 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
         metadata:_{classification:recursive, options:Options, modes:Modes},
         is_recursive:true
     }.
+
+%% Transitive closure optimisation ------------------------------------------
+%
+% Detect the canonical transitive-closure pattern:
+%   reachable(X,Y) :- edge(X,Y).
+%   reachable(X,Z) :- edge(X,Y), reachable(Y,Z).
+% or its forward-join equivalent:
+%   reachable(X,Z) :- reachable(X,Y), edge(Y,Z).
+%
+% When found (and the plan is not parameterised), emit a dedicated
+% transitive_closure node so the runtime can execute it without allocating
+% join rows each iteration.
+
+maybe_transitive_closure_root(HeadSpec, Modes, BaseRoot, RecursiveNodes, Root) :-
+    \+ memberchk(input, Modes),
+    get_dict(arity, HeadSpec, 2),
+    RecursiveNodes = [RecursiveNode],
+    transitive_closure_edge_spec(BaseRoot, EdgeSpec),
+    transitive_closure_recursive_clause(HeadSpec, EdgeSpec, RecursiveNode),
+    Root = transitive_closure{
+        type:transitive_closure,
+        head:HeadSpec,
+        edge:EdgeSpec,
+        width:2
+    }.
+
+transitive_closure_edge_spec(relation_scan{type:relation_scan, predicate:EdgeSpec, width:2}, EdgeSpec) :- !.
+transitive_closure_edge_spec(projection{type:projection, input:relation_scan{type:relation_scan, predicate:EdgeSpec, width:_}, columns:[0,1], width:2}, EdgeSpec) :-
+    !.
+
+transitive_closure_recursive_clause(HeadSpec, EdgeSpec, projection{type:projection, input:Join, columns:[0,3], width:2}) :-
+    is_dict(Join, join),
+    get_dict(left, Join, Left),
+    get_dict(right, Join, Right),
+    get_dict(left_keys, Join, [LeftKey]),
+    get_dict(right_keys, Join, [RightKey]),
+    LeftKey == 1,
+    RightKey == 0,
+    (   Left = relation_scan{type:relation_scan, predicate:EdgeSpec, width:_},
+        Right = recursive_ref{type:recursive_ref, predicate:HeadSpec, role:delta, width:_}
+    ;   Left = recursive_ref{type:recursive_ref, predicate:HeadSpec, role:delta, width:_},
+        Right = relation_scan{type:relation_scan, predicate:EdgeSpec, width:_}
+    ).
 
 build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
     (   eligible_for_mutual_need_closure(HeadSpec, GroupSpecs, Modes, NeedMat, NeedRelations, SeedOverrides)
@@ -3245,6 +3291,14 @@ emit_plan_expression(Node, Expr) :-
     maplist(emit_plan_expression, Sources, SourceExprs),
     atomic_list_concat(SourceExprs, ', ', SourceList),
     format(atom(Expr), 'new UnionNode(new PlanNode[]{ ~w })', [SourceList]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, transitive_closure), !,
+    get_dict(edge, Node, predicate{name:EdgeName, arity:EdgeArity}),
+    get_dict(head, Node, predicate{name:Name, arity:Arity}),
+    atom_string(EdgeName, EdgeNameStr),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new TransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w))',
+        [EdgeNameStr, EdgeArity, NameStr, Arity]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, fixpoint), !,
     get_dict(base, Node, BaseNode),

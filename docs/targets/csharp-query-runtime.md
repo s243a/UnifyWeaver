@@ -7,7 +7,7 @@ Roadmap: `docs/targets/csharp-query-runtime-roadmap.md`
 ## Status (v0.1)
 - **Non-recursive clauses** – fact scans, joins, selections, projections, and unions translate to query nodes executed via LINQ.
 - **Arithmetic & comparisons** – `is/2`, inequality operators, and `dif/2` become arithmetic or selection nodes with runtime evaluation.
-- **Recursive predicates** – semi-naive fixpoint driver supports single-predicate recursion (e.g., reachability, factorial).
+- **Recursive predicates** – semi-naive fixpoint driver supports single-predicate recursion; canonical reachability patterns compile to `TransitiveClosureNode` for faster closure evaluation.
 - **Mutual recursion** – strongly connected predicate groups emit `mutual_fixpoint` plans composed of `cross_ref` nodes, enabling even/odd style dependencies.
 - **Negation (safe/stratified)** – `\+/1` compiles to `NegationNode` and supports stratified negation over derived predicates via program definition materialisation.
 - **Deduplication** – per-predicate `HashSet<object[]>` mirrors Bash distinct semantics.
