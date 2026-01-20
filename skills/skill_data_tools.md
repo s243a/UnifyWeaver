@@ -9,6 +9,7 @@ Master skill for data processing, querying, machine learning, and data source ma
 - User wants to train or run ML models
 - User needs to read JSON/JSONL data sources
 - User asks about embeddings, semantic search, or hierarchy optimization
+- User wants to generate synthetic training data
 
 ## Skill Hierarchy
 
@@ -24,9 +25,13 @@ skill_data_tools.md (this file - MASTER)
 │   ├── skill_train_model.md - Federated model training
 │   ├── skill_semantic_inference.md - Running inference
 │   └── skill_hierarchy_objective.md - J = D/(1+H) optimization
-└── skill_data_sources.md (sub-master)
-    ├── skill_json_sources.md - JSON/JSONL data sources
-    └── skill_extract_records.md - Markdown record extraction
+├── skill_data_sources.md (sub-master)
+│   ├── skill_json_sources.md - JSON/JSONL data sources
+│   └── skill_extract_records.md - Markdown record extraction
+└── skill_synthetic_data.md (sub-master)
+    ├── skill_qa_generation.md - Q&A from skills/docs
+    ├── skill_answer_tailoring.md - Reword answers with LLM
+    └── skill_pearl_dataset.md - Pearltrees training data from RDF
 ```
 
 Note: `skill_density_explorer.md` moved to `skill_mindmap_bookmark_tools.md` as it serves both mindmap and bookmark visualization.
@@ -94,6 +99,23 @@ perl scripts/utils/extract_records.pl \
   path/to/file.md
 ```
 
+### Synthetic Data
+
+```bash
+# Generate Q&A from skills
+python training-data/scripts/generate_qa_from_skills.py \
+  --all --model haiku
+
+# Tailor/reword answers
+python scripts/generate_tailored_answers.py \
+  --input training-data/expanded
+
+# Generate Pearltrees dataset
+python scripts/generate_pearl_dataset.py \
+  --rdf data/export.rdf \
+  --output reports/targets.jsonl
+```
+
 ## Capabilities Overview
 
 ### Query & Aggregation
@@ -124,6 +146,15 @@ perl scripts/utils/extract_records.pl \
 | JSONL Streams | Line-by-line, null policies | Implemented |
 | Markdown Records | Extract structured data from docs | Implemented |
 
+### Synthetic Data
+
+| Capability | Description | Tool |
+|------------|-------------|------|
+| Q&A Generation | Generate Q&A from skills/docs | generate_qa_from_skills.py |
+| Answer Tailoring | Reword answers with LLM | generate_tailored_answers.py |
+| Pearl Dataset | Training data from Pearltrees RDF | generate_pearl_dataset.py |
+| Cluster Expansion | Expand Q&A clusters to pairs | expand_clusters_to_pairs.py |
+
 ## Common Workflows
 
 ### Semantic Search Pipeline
@@ -148,18 +179,27 @@ perl scripts/utils/extract_records.pl \
 3. **Visualize structure** - Density explorer (`skill_density_explorer.md`)
 4. **Iterate** - Adjust parameters, re-root, add intermediate nodes
 
+### Synthetic Data Pipeline
+
+1. **Generate Q&A** - From skills or docs (`skill_qa_generation.md`)
+2. **Expand clusters** - To individual pairs (`skill_synthetic_data.md`)
+3. **Tailor answers** - Reword with LLM (`skill_answer_tailoring.md`)
+4. **Generate embeddings** - For training (`skill_embedding_models.md`)
+5. **Train model** - On generated data (`skill_train_model.md`)
+
 ## Child Skills
 
 - `skill_query_patterns.md` - SQL, streaming aggregation, fuzzy search
 - `skill_ml_tools.md` - Embeddings, training, inference, visualization
 - `skill_data_sources.md` - JSON sources, record extraction
+- `skill_synthetic_data.md` - Q&A generation, answer tailoring, pearl datasets
 
 ## Related
 
 **Sibling Masters:**
 - `skill_server_tools.md` - Backend services, APIs, IPC
 - `skill_gui_tools.md` - Frontend/GUI generation
-- `skill_mindmap_tools.md` - Mindmap organization
+- `skill_mindmap_bookmark_tools.md` - Mindmaps and bookmarks
 
 **Documentation:**
 - `docs/BINDING_MATRIX.md` - Target feature matrix
@@ -171,3 +211,6 @@ perl scripts/utils/extract_records.pl \
 - `src/unifyweaver/fuzzy/` - Fuzzy logic DSL
 - `scripts/train_pearltrees_federated.py` - Model training
 - `tools/density_explorer/` - Visualization tool
+- `scripts/generate_tailored_answers.py` - Answer tailoring
+- `training-data/scripts/generate_qa_from_skills.py` - Q&A generation
+- `scripts/generate_pearl_dataset.py` - Pearltrees dataset

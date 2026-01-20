@@ -8,7 +8,7 @@ This document provides a complete overview of all UnifyWeaver skills organized i
 |--------------|-------------|-------------|
 | `skill_server_tools.md` | Backend services, APIs, IPC | 12 |
 | `skill_gui_tools.md` | Frontend/GUI generation | 13 |
-| `skill_data_tools.md` | Data processing, ML, queries | 13 |
+| `skill_data_tools.md` | Data processing, ML, queries, synthetic data | 17 |
 | `skill_mindmap_bookmark_tools.md` | Mindmaps, bookmarks, Pearltrees | 14 |
 | Standalone | Core & compiler skills | 6 |
 
@@ -143,9 +143,13 @@ skill_data_tools.md (MASTER)
 │   ├── skill_train_model.md
 │   ├── skill_semantic_inference.md
 │   └── skill_hierarchy_objective.md
-└── skill_data_sources.md (sub-master)
-    ├── skill_json_sources.md
-    └── skill_extract_records.md
+├── skill_data_sources.md (sub-master)
+│   ├── skill_json_sources.md
+│   └── skill_extract_records.md
+└── skill_synthetic_data.md (sub-master)
+    ├── skill_qa_generation.md
+    ├── skill_answer_tailoring.md
+    └── skill_pearl_dataset.md
 ```
 
 | Skill | Purpose |
@@ -164,6 +168,10 @@ skill_data_tools.md (MASTER)
 | `skill_data_sources.md` | Data source handling |
 | `skill_json_sources.md` | JSON/JSONL data sources |
 | `skill_extract_records.md` | Markdown record extraction |
+| `skill_synthetic_data.md` | Synthetic training data generation |
+| `skill_qa_generation.md` | Generate Q&A from skills/docs |
+| `skill_answer_tailoring.md` | Reword answers with LLM |
+| `skill_pearl_dataset.md` | Pearltrees training data from RDF |
 
 ---
 
@@ -185,6 +193,7 @@ skill_data_tools.md (MASTER)
 ```
 skill_accessibility.md
 skill_aggregation_patterns.md
+skill_answer_tailoring.md
 skill_app_generation.md
 skill_authentication.md
 skill_bookmark_filing.md
@@ -226,8 +235,10 @@ skill_mindmap_tools.md
 skill_ml_tools.md
 skill_mst_folder_grouping.md
 skill_networking.md
+skill_pearl_dataset.md
 skill_pipe_communication.md
 skill_python_bridges.md
+skill_qa_generation.md
 skill_query_patterns.md
 skill_responsive_design.md
 skill_rpyc.md
@@ -235,6 +246,7 @@ skill_semantic_inference.md
 skill_server_tools.md
 skill_sql_target.md
 skill_stream_aggregation.md
+skill_synthetic_data.md
 skill_theming.md
 skill_train_model.md
 skill_transpiler_extension.md
