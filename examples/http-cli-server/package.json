@@ -1,0 +1,16 @@
+{
+  "name": "http-cli-server-example",
+  "version": "1.0.0",
+  "description": "HTTP CLI Server with JWT auth, RBAC, and WebSocket shell",
+  "scripts": {
+    "start": "npx ts-node http-server.ts",
+    "start:auth": "AUTH_REQUIRED=true npx ts-node http-server.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "ws": "^8.19.0"
+  }
+}
