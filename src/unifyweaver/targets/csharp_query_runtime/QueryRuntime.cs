@@ -1002,6 +1002,22 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(closure, rows);
                 }
 
+                if (plan.Root is TransitiveClosureNode closureByTarget &&
+                    inputPositions.Count == 1 &&
+                    inputPositions[0] == 1)
+                {
+                    var rows = ExecuteSeededTransitiveClosureByTarget(closureByTarget, parameters: paramList, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(closureByTarget);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(closureByTarget, rows);
+                }
+
                 if (plan.Root is RelationScanNode scan)
                 {
                     var rows = ExecuteBoundFactScan(scan, inputPositions, paramList, context);
@@ -5670,6 +5686,125 @@ namespace UnifyWeaver.QueryRuntime
                             if (visited.Add(nextKey))
                             {
                                 totalRows.Add(new object[] { pair.From!, next });
+                                nextDelta.Add(nextKey);
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosureByTarget(
+            TransitiveClosureNode closure,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "TransitiveClosureSeededByTarget");
+
+                var predicate = closure.Predicate;
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
+
+                var visited = new HashSet<PairKey>();
+                var totalRows = new List<object[]>();
+                var delta = new List<PairKey>();
+
+                var seeds = new List<object?>();
+                var seenSeeds = new HashSet<object?>();
+
+                foreach (var paramTuple in parameters)
+                {
+                    if (paramTuple is null || paramTuple.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    object? seed = null;
+                    if (paramTuple.Length == 1)
+                    {
+                        seed = paramTuple[0];
+                    }
+                    else if (paramTuple.Length > 1)
+                    {
+                        seed = paramTuple[1];
+                    }
+
+                    if (seenSeeds.Add(seed))
+                    {
+                        seeds.Add(seed);
+                    }
+                }
+
+                foreach (var seed in seeds)
+                {
+                    var lookupKey = seed ?? NullFactIndexKey;
+                    if (!predIndex.TryGetValue(lookupKey, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var edge in bucket)
+                    {
+                        if (edge is null || edge.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var from = edge[0];
+                        var key = new PairKey(from, seed);
+                        if (visited.Add(key))
+                        {
+                            totalRows.Add(new object[] { from, seed! });
+                            delta.Add(key);
+                        }
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<PairKey>();
+
+                    foreach (var pair in delta)
+                    {
+                        var lookupKey = pair.From ?? NullFactIndexKey;
+                        if (!predIndex.TryGetValue(lookupKey, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var prev = edge[0];
+                            var nextKey = new PairKey(prev, pair.To);
+                            if (visited.Add(nextKey))
+                            {
+                                totalRows.Add(new object[] { prev, pair.To! });
                                 nextDelta.Add(nextKey);
                             }
                         }

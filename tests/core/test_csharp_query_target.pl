@@ -201,6 +201,7 @@ test_csharp_query_target :-
         verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
         verify_parameterized_reachability_plan,
+        verify_parameterized_reachability_by_target_plan,
         verify_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_inferred_plan,
@@ -569,6 +570,9 @@ setup_test_data :-
     assertz(user:mode(test_reachable_param(+, -))),
     assertz(user:(test_reachable_param(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable_param(X, Z) :- test_fact(X, Y), test_reachable_param(Y, Z))),
+    assertz(user:mode(test_reachable_param_end(-, +))),
+    assertz(user:(test_reachable_param_end(X, Y) :- test_fact(X, Y))),
+    assertz(user:(test_reachable_param_end(X, Z) :- test_fact(X, Y), test_reachable_param_end(Y, Z))),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -678,6 +682,8 @@ cleanup_test_data :-
     retractall(user:mode(test_even_param_unbound(_))),
     retractall(user:test_reachable_param(_, _)),
     retractall(user:mode(test_reachable_param(_, _))),
+    retractall(user:test_reachable_param_end(_, _)),
+    retractall(user:mode(test_reachable_param_end(_, _))),
     retractall(user:test_reachable(_, _)),
     cleanup_csv_dynamic_source.
 
@@ -1895,6 +1901,24 @@ verify_parameterized_reachability_plan :-
     \+ sub_string(Source, _, _, _, '$need'),
     \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
     maybe_run_query_runtime(Plan, ['alice,bob', 'alice,charlie'], [[alice]]).
+
+verify_parameterized_reachability_by_target_plan :-
+    csharp_query_target:build_query_plan(test_reachable_param_end/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [output, input],
+    get_dict(root, Plan, transitive_closure{type:transitive_closure,
+        head:predicate{name:test_reachable_param_end, arity:2},
+        edge:predicate{name:test_fact, arity:2},
+        width:2
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 1 }'),
+    sub_string(Source, _, _, _, 'TransitiveClosureNode'),
+    \+ sub_string(Source, _, _, _, '$need'),
+    \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
+    maybe_run_query_runtime(Plan, ['alice,charlie', 'bob,charlie'], [[charlie]]).
 
 verify_mutual_recursion_plan :-
     csharp_query_target:build_query_plan(test_even/1, [target(csharp_query)], Plan),
