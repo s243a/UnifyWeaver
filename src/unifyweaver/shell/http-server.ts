@@ -1,8 +1,8 @@
 #!/usr/bin/env ts-node
 /**
- * HTTP CLI Server
+ * HTTP/HTTPS CLI Server
  *
- * Exposes shell search commands (grep, find, cat, rg) via HTTP endpoints
+ * Exposes shell search commands (grep, find, cat, rg) via HTTP/HTTPS endpoints
  * for use with AI browsers like Comet (Perplexity).
  *
  * Uses command-proxy.ts for validation and execution.
@@ -10,6 +10,7 @@
  * Usage:
  *   ts-node http-server.ts
  *   ts-node http-server.ts --port 3001
+ *   ts-node http-server.ts --cert cert.pem --key key.pem  # HTTPS mode
  *
  * Endpoints:
  *   GET  /health              - Health check
@@ -19,11 +20,13 @@
  *   POST /find                - Find files by pattern
  *   POST /cat                 - Read file contents
  *   GET  /                    - Serve HTML interface
+ *   WS   /shell               - WebSocket shell (requires shell role)
  *
  * @module unifyweaver/shell/http-server
  */
 
 import * as http from 'http';
+import * as https from 'https';
 import * as url from 'url';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -1761,8 +1764,35 @@ function executeShellCommand(session: ShellSession, command: string): void {
   });
 }
 
-function startServer(port: number): void {
-  const server = http.createServer(handleRequest);
+interface SSLOptions {
+  cert?: string;
+  key?: string;
+}
+
+function startServer(port: number, ssl?: SSLOptions): void {
+  let server: http.Server | https.Server;
+  let protocol: string;
+
+  if (ssl?.cert && ssl?.key) {
+    // HTTPS mode
+    try {
+      const sslOptions = {
+        cert: fs.readFileSync(ssl.cert),
+        key: fs.readFileSync(ssl.key)
+      };
+      server = https.createServer(sslOptions, handleRequest);
+      protocol = 'https';
+    } catch (err) {
+      console.error(`Failed to load SSL certificates: ${err}`);
+      console.error(`  cert: ${ssl.cert}`);
+      console.error(`  key: ${ssl.key}`);
+      process.exit(1);
+    }
+  } else {
+    // HTTP mode
+    server = http.createServer(handleRequest);
+    protocol = 'http';
+  }
 
   // Create WebSocket server
   const wss = new WebSocketServer({ server });
@@ -1798,13 +1828,16 @@ function startServer(port: number): void {
 
   server.listen(port, () => {
     const authStatus = AUTH_REQUIRED ? 'ENABLED' : 'disabled';
+    const wsProtocol = protocol === 'https' ? 'wss' : 'ws';
+    const serverUrl = `${protocol}://localhost:${port}`;
     console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║           UnifyWeaver HTTP CLI Server                      ║
 ╠════════════════════════════════════════════════════════════╣
-║  Server running at: http://localhost:${port.toString().padEnd(24)}║
+║  Server running at: ${serverUrl.padEnd(37)}║
 ║  Sandbox root:      ${SANDBOX_ROOT.slice(0, 35).padEnd(36)}║
 ║  Authentication:    ${authStatus.padEnd(36)}║
+║  SSL/TLS:           ${(protocol === 'https' ? 'ENABLED' : 'disabled').padEnd(36)}║
 ║                                                            ║
 ║  Auth Endpoints:                                           ║
 ║    GET  /auth/status - Auth status                         ║
@@ -1821,12 +1854,15 @@ function startServer(port: number): void {
 ║    POST /feedback   - Submit feedback                      ║
 ║                                                            ║
 ║  WebSocket Shell:                                          ║
-║    ws://localhost:${port}/shell?token=JWT (shell role)        ║
+║    ${wsProtocol}://localhost:${port}/shell?token=JWT (shell role)       ║
 ╚════════════════════════════════════════════════════════════╝
 `);
     if (!AUTH_REQUIRED) {
       console.log('Auth disabled. Set AUTH_REQUIRED=true to enable.');
       console.log('Default users: shell@local/shell, admin@local/admin, user@local/user\n');
+    }
+    if (protocol === 'https') {
+      console.log(`SSL certificates loaded from --cert and --key options.\n`);
     }
   });
 
@@ -1847,6 +1883,8 @@ function startServer(port: number): void {
 function main(): void {
   const args = process.argv.slice(2);
   let port = DEFAULT_PORT;
+  let certPath: string | undefined;
+  let keyPath: string | undefined;
 
   // Parse --port argument
   const portIdx = args.indexOf('--port');
@@ -1856,6 +1894,24 @@ function main(): void {
       console.error('Invalid port number');
       process.exit(1);
     }
+  }
+
+  // Parse --cert argument
+  const certIdx = args.indexOf('--cert');
+  if (certIdx !== -1 && args[certIdx + 1]) {
+    certPath = args[certIdx + 1];
+  }
+
+  // Parse --key argument
+  const keyIdx = args.indexOf('--key');
+  if (keyIdx !== -1 && args[keyIdx + 1]) {
+    keyPath = args[keyIdx + 1];
+  }
+
+  // Validate SSL options - both or neither required
+  if ((certPath && !keyPath) || (!certPath && keyPath)) {
+    console.error('Both --cert and --key are required for HTTPS');
+    process.exit(1);
   }
 
   // Help
@@ -1868,20 +1924,31 @@ Usage:
 
 Options:
   --port <number>   Port to listen on (default: ${DEFAULT_PORT})
+  --cert <path>     Path to SSL certificate file (enables HTTPS)
+  --key <path>      Path to SSL private key file (enables HTTPS)
   --help, -h        Show this help
 
 Environment:
   SANDBOX_ROOT      Root directory for sandbox operations
+  AUTH_REQUIRED     Set to 'true' to require authentication
 
 Examples:
+  # HTTP mode (development)
   ts-node http-server.ts
   ts-node http-server.ts --port 8080
-  SANDBOX_ROOT=/tmp/sandbox ts-node http-server.ts
+
+  # HTTPS mode (production)
+  ts-node http-server.ts --cert server.crt --key server.key
+  ts-node http-server.ts --port 443 --cert /etc/ssl/cert.pem --key /etc/ssl/key.pem
+
+  # Generate self-signed certs for development:
+  openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
 `);
     process.exit(0);
   }
 
-  startServer(port);
+  const ssl = certPath && keyPath ? { cert: certPath, key: keyPath } : undefined;
+  startServer(port, ssl);
 }
 
 main();
