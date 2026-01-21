@@ -1018,6 +1018,23 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(closureByTarget, rows);
                 }
 
+                if (plan.Root is TransitiveClosureNode closurePairs &&
+                    inputPositions.Count == 2 &&
+                    inputPositions[0] == 0 &&
+                    inputPositions[1] == 1)
+                {
+                    var rows = ExecuteSeededTransitiveClosurePairs(closurePairs, parameters: paramList, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(closurePairs);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(closurePairs, rows);
+                }
+
                 if (plan.Root is RelationScanNode scan)
                 {
                     var rows = ExecuteBoundFactScan(scan, inputPositions, paramList, context);
@@ -5819,6 +5836,336 @@ namespace UnifyWeaver.QueryRuntime
             finally
             {
                 context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairs(
+            TransitiveClosureNode closure,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+
+                var bySource = new Dictionary<object?, HashSet<object?>>();
+                var byTarget = new Dictionary<object?, HashSet<object?>>();
+
+                foreach (var paramTuple in parameters)
+                {
+                    if (paramTuple is null || paramTuple.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    object? source = null;
+                    object? target = null;
+
+                    if (paramTuple.Length >= 2)
+                    {
+                        source = paramTuple[0];
+                        target = paramTuple[1];
+                    }
+                    else if (paramTuple.Length == 1)
+                    {
+                        source = paramTuple[0];
+                        target = null;
+                    }
+
+                    if (!bySource.TryGetValue(source, out var targets))
+                    {
+                        targets = new HashSet<object?>();
+                        bySource.Add(source, targets);
+                    }
+                    targets.Add(target);
+
+                    if (!byTarget.TryGetValue(target, out var sources))
+                    {
+                        sources = new HashSet<object?>();
+                        byTarget.Add(target, sources);
+                    }
+                    sources.Add(source);
+                }
+
+                trace?.RecordStrategy(closure, "TransitiveClosurePairs");
+
+                if (bySource.Count <= byTarget.Count)
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsForward");
+                    return ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context);
+                }
+
+                trace?.RecordStrategy(closure, "TransitiveClosurePairsBackward");
+                return ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context);
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsForward(
+            TransitiveClosureNode closure,
+            IReadOnlyDictionary<object?, HashSet<object?>> targetsBySource,
+            EvaluationContext context)
+        {
+            var trace = context.Trace;
+            var predicate = closure.Predicate;
+            var edges = GetFactsList(closure.EdgeRelation, context);
+            var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+
+            var totalRows = new List<object[]>();
+
+            foreach (var entry in targetsBySource)
+            {
+                var source = entry.Key;
+                if (entry.Value.Count == 0)
+                {
+                    continue;
+                }
+
+                var remainingTargets = new HashSet<object?>(entry.Value);
+                var visitedNodes = new HashSet<object?>();
+                var queue = new Queue<object?>();
+
+                SeedForwardSearch(source, remainingTargets, succIndex, visitedNodes, queue, totalRows);
+
+                var iteration = 0;
+                var deltaCount = queue.Count;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, deltaCount, visitedNodes.Count);
+
+                while (queue.Count > 0 && remainingTargets.Count > 0)
+                {
+                    iteration++;
+                    var breadth = queue.Count;
+                    for (var i = 0; i < breadth; i++)
+                    {
+                        var node = queue.Dequeue();
+                        ExpandForwardSearch(source, node, remainingTargets, succIndex, visitedNodes, queue, totalRows);
+                        if (remainingTargets.Count == 0)
+                        {
+                            break;
+                        }
+                    }
+
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, queue.Count, visitedNodes.Count);
+                }
+            }
+
+            return totalRows;
+
+            void SeedForwardSearch(
+                object? seed,
+                HashSet<object?> remaining,
+                Dictionary<object, List<object[]>> index,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output)
+            {
+                var lookupKey = seed ?? NullFactIndexKey;
+                if (!index.TryGetValue(lookupKey, out var bucket))
+                {
+                    return;
+                }
+
+                foreach (var edge in bucket)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var next = edge[1];
+                    if (!visited.Add(next))
+                    {
+                        continue;
+                    }
+
+                    frontier.Enqueue(next);
+                    if (remaining.Remove(next))
+                    {
+                        output.Add(new object[] { seed!, next });
+                        if (remaining.Count == 0)
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            void ExpandForwardSearch(
+                object? seed,
+                object? current,
+                HashSet<object?> remaining,
+                Dictionary<object, List<object[]>> index,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output)
+            {
+                var lookupKey = current ?? NullFactIndexKey;
+                if (!index.TryGetValue(lookupKey, out var bucket))
+                {
+                    return;
+                }
+
+                foreach (var edge in bucket)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var next = edge[1];
+                    if (!visited.Add(next))
+                    {
+                        continue;
+                    }
+
+                    frontier.Enqueue(next);
+                    if (remaining.Remove(next))
+                    {
+                        output.Add(new object[] { seed!, next });
+                        if (remaining.Count == 0)
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsBackward(
+            TransitiveClosureNode closure,
+            IReadOnlyDictionary<object?, HashSet<object?>> sourcesByTarget,
+            EvaluationContext context)
+        {
+            var trace = context.Trace;
+            var predicate = closure.Predicate;
+            var edges = GetFactsList(closure.EdgeRelation, context);
+            var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
+
+            var totalRows = new List<object[]>();
+
+            foreach (var entry in sourcesByTarget)
+            {
+                var target = entry.Key;
+                if (entry.Value.Count == 0)
+                {
+                    continue;
+                }
+
+                var remainingSources = new HashSet<object?>(entry.Value);
+                var visitedNodes = new HashSet<object?>();
+                var queue = new Queue<object?>();
+
+                SeedBackwardSearch(target, remainingSources, predIndex, visitedNodes, queue, totalRows);
+
+                var iteration = 0;
+                var deltaCount = queue.Count;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, deltaCount, visitedNodes.Count);
+
+                while (queue.Count > 0 && remainingSources.Count > 0)
+                {
+                    iteration++;
+                    var breadth = queue.Count;
+                    for (var i = 0; i < breadth; i++)
+                    {
+                        var node = queue.Dequeue();
+                        ExpandBackwardSearch(target, node, remainingSources, predIndex, visitedNodes, queue, totalRows);
+                        if (remainingSources.Count == 0)
+                        {
+                            break;
+                        }
+                    }
+
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, queue.Count, visitedNodes.Count);
+                }
+            }
+
+            return totalRows;
+
+            void SeedBackwardSearch(
+                object? seed,
+                HashSet<object?> remaining,
+                Dictionary<object, List<object[]>> index,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output)
+            {
+                var lookupKey = seed ?? NullFactIndexKey;
+                if (!index.TryGetValue(lookupKey, out var bucket))
+                {
+                    return;
+                }
+
+                foreach (var edge in bucket)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var prev = edge[0];
+                    if (!visited.Add(prev))
+                    {
+                        continue;
+                    }
+
+                    frontier.Enqueue(prev);
+                    if (remaining.Remove(prev))
+                    {
+                        output.Add(new object[] { prev!, seed });
+                        if (remaining.Count == 0)
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            void ExpandBackwardSearch(
+                object? seed,
+                object? current,
+                HashSet<object?> remaining,
+                Dictionary<object, List<object[]>> index,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output)
+            {
+                var lookupKey = current ?? NullFactIndexKey;
+                if (!index.TryGetValue(lookupKey, out var bucket))
+                {
+                    return;
+                }
+
+                foreach (var edge in bucket)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var prev = edge[0];
+                    if (!visited.Add(prev))
+                    {
+                        continue;
+                    }
+
+                    frontier.Enqueue(prev);
+                    if (remaining.Remove(prev))
+                    {
+                        output.Add(new object[] { prev!, seed });
+                        if (remaining.Count == 0)
+                        {
+                            return;
+                        }
+                    }
+                }
             }
         }
 
