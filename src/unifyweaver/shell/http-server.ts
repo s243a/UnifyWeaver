@@ -27,7 +27,8 @@ import * as http from 'http';
 import * as url from 'url';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import WebSocket, { WebSocketServer } from 'ws';
 import {
   execute,
   validateCommand,
@@ -35,6 +36,16 @@ import {
   Risk,
   SANDBOX_ROOT
 } from './command-proxy';
+import {
+  login,
+  getUserFromToken,
+  verifyToken,
+  hasRole,
+  canAccessShell,
+  canExecuteCommands,
+  canBrowse,
+  TokenPayload
+} from './auth';
 
 // ============================================================================
 // Configuration
@@ -43,6 +54,9 @@ import {
 const DEFAULT_PORT = 3001;
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 const ALLOWED_ORIGINS = ['*']; // Configure for production
+
+// Authentication: set AUTH_REQUIRED=true to require login
+const AUTH_REQUIRED = process.env.AUTH_REQUIRED === 'true';
 
 // Commands specifically allowed for search operations
 const SEARCH_COMMANDS = ['grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc', 'pwd'];
@@ -116,7 +130,7 @@ function sendJSON(res: http.ServerResponse, data: APIResponse, status = 200): vo
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': ALLOWED_ORIGINS[0],
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
   });
   res.end(JSON.stringify(data, null, 2));
 }
@@ -131,6 +145,56 @@ function sendHTML(res: http.ServerResponse, html: string): void {
 
 function sendError(res: http.ServerResponse, message: string, status = 400): void {
   sendJSON(res, { success: false, error: message }, status);
+}
+
+/**
+ * Extract user from Authorization header.
+ * Returns null if no valid token, or the token payload if valid.
+ */
+function getAuthUser(req: http.IncomingMessage): TokenPayload | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  const token = authHeader.substring(7);
+  return verifyToken(token);
+}
+
+/**
+ * Check if request is authenticated (when AUTH_REQUIRED is true).
+ * Returns the user if authenticated, or sends 401 and returns null.
+ */
+function requireAuth(req: http.IncomingMessage, res: http.ServerResponse): TokenPayload | null {
+  if (!AUTH_REQUIRED) {
+    // Return a default user when auth is not required
+    return {
+      sub: 'anonymous',
+      email: 'anonymous@local',
+      roles: ['shell', 'admin', 'user'],  // Full access when auth disabled
+      permissions: ['read', 'write', 'delete', 'shell'],
+      iat: 0,
+      exp: 0
+    };
+  }
+
+  const user = getAuthUser(req);
+  if (!user) {
+    sendError(res, 'Authentication required', 401);
+    return null;
+  }
+  return user;
+}
+
+/**
+ * Check if user has the required role.
+ * Returns true if access granted, false if denied (and sends 403).
+ */
+function requireRole(user: TokenPayload, res: http.ServerResponse, ...requiredRoles: string[]): boolean {
+  if (requiredRoles.some(role => user.roles.includes(role))) {
+    return true;
+  }
+  sendError(res, `Forbidden: requires one of roles: ${requiredRoles.join(', ')}`, 403);
+  return false;
 }
 
 /**
@@ -519,6 +583,72 @@ async function handleBrowse(req: http.IncomingMessage, res: http.ServerResponse)
 }
 
 // ============================================================================
+// Auth Handlers
+// ============================================================================
+
+async function handleLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const body = await parseBody(req);
+    const { email, password } = JSON.parse(body);
+
+    if (!email || !password) {
+      return sendError(res, 'Email and password required', 400);
+    }
+
+    const result = login(email, password);
+
+    if (!result.success) {
+      return sendError(res, result.error || 'Login failed', 401);
+    }
+
+    sendJSON(res, {
+      success: true,
+      data: {
+        token: result.token,
+        user: result.user
+      }
+    });
+  } catch (err) {
+    sendError(res, (err as Error).message, 500);
+  }
+}
+
+async function handleMe(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const user = getAuthUser(req);
+
+  if (!user) {
+    return sendError(res, 'Not authenticated', 401);
+  }
+
+  sendJSON(res, {
+    success: true,
+    data: {
+      id: user.sub,
+      email: user.email,
+      roles: user.roles,
+      permissions: user.permissions
+    }
+  });
+}
+
+async function handleAuthStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const user = getAuthUser(req);
+
+  sendJSON(res, {
+    success: true,
+    data: {
+      authRequired: AUTH_REQUIRED,
+      authenticated: user !== null,
+      user: user ? {
+        id: user.sub,
+        email: user.email,
+        roles: user.roles
+      } : null
+    }
+  });
+}
+
+// ============================================================================
 // HTML Interface
 // ============================================================================
 
@@ -618,25 +748,100 @@ function getHTMLInterface(): string {
       padding: 2px 6px;
       border-radius: 3px;
     }
+    .login-container {
+      max-width: 400px;
+      margin: 50px auto;
+      padding: 30px;
+      background: #16213e;
+      border-radius: 10px;
+    }
+    .login-container h2 {
+      color: #e94560;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .user-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0f3460;
+      padding: 10px 15px;
+      border-radius: 5px;
+      margin-bottom: 15px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .user-email { color: #4ade80; font-weight: bold; }
+    .user-roles {
+      display: flex;
+      gap: 5px;
+    }
+    .role-badge {
+      padding: 2px 8px;
+      background: #1a1a2e;
+      border-radius: 3px;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .role-badge.shell { background: #e94560; color: #fff; }
+    .role-badge.admin { background: #3b82f6; color: #fff; }
   </style>
 </head>
 <body>
   <div id="app" class="container">
     <h1>🔍 UnifyWeaver CLI Search</h1>
 
-    <div style="background: #0f3460; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
-      <span style="color: #94a3b8;">Working directory:</span>
-      <code style="background: #1a1a2e; padding: 4px 8px; border-radius: 3px; font-family: monospace;">{{ workingDir }}</code>
-      <button v-if="workingDir !== '.'" @click="workingDir = '.'" style="background: #16213e; padding: 5px 10px; font-size: 12px;">Reset to root</button>
+    <!-- Login Form (shown when auth required and not logged in) -->
+    <div v-if="authRequired && !user" class="login-container">
+      <h2>Login Required</h2>
+      <div class="form-group">
+        <label>Email</label>
+        <input v-model="loginEmail" type="email" placeholder="e.g., shell@local" @keyup.enter="doLogin">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input v-model="loginPassword" type="password" placeholder="Password" @keyup.enter="doLogin">
+      </div>
+      <button @click="doLogin" :disabled="loading" style="width: 100%;">{{ loading ? 'Logging in...' : 'Login' }}</button>
+      <p v-if="loginError" class="error" style="margin-top: 10px; text-align: center;">{{ loginError }}</p>
+      <p style="margin-top: 15px; color: #94a3b8; font-size: 12px; text-align: center;">
+        Default users: shell@local/shell, admin@local/admin, user@local/user
+      </p>
     </div>
 
-    <div class="tabs">
+    <!-- Main App (shown when auth not required OR logged in) -->
+    <template v-if="!authRequired || user">
+      <!-- User Header -->
+      <div v-if="user" class="user-header">
+        <div class="user-info">
+          <span class="user-email">{{ user.email }}</span>
+          <div class="user-roles">
+            <span v-for="role in user.roles" :key="role" class="role-badge" :class="role">{{ role }}</span>
+          </div>
+        </div>
+        <button @click="doLogout" style="background: #16213e; padding: 5px 15px;">Logout</button>
+      </div>
+
+      <!-- Working Directory Bar -->
+      <div style="background: #0f3460; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <span style="color: #94a3b8;">Working directory:</span>
+        <code style="background: #1a1a2e; padding: 4px 8px; border-radius: 3px; font-family: monospace;">{{ workingDir }}</code>
+        <button v-if="workingDir !== '.'" @click="workingDir = '.'" style="background: #16213e; padding: 5px 10px; font-size: 12px;">Reset to root</button>
+      </div>
+
+      <div class="tabs">
       <button class="tab" :class="{ active: tab === 'browse' }" @click="tab = 'browse'; loadBrowse()">Browse</button>
       <button class="tab" :class="{ active: tab === 'grep' }" @click="tab = 'grep'">Grep</button>
       <button class="tab" :class="{ active: tab === 'find' }" @click="tab = 'find'">Find</button>
       <button class="tab" :class="{ active: tab === 'cat' }" @click="tab = 'cat'">Cat</button>
       <button class="tab" :class="{ active: tab === 'exec' }" @click="tab = 'exec'">Custom</button>
       <button class="tab" :class="{ active: tab === 'feedback' }" @click="tab = 'feedback'">Feedback</button>
+      <button v-if="user && user.roles && user.roles.includes('shell')" class="tab" :class="{ active: tab === 'shell' }" @click="tab = 'shell'; focusShellInput()" style="background: #a855f7;">🔐 Shell</button>
     </div>
 
     <!-- Browse Panel -->
@@ -766,6 +971,62 @@ function getHTMLInterface(): string {
       </div>
     </div>
 
+    <!-- Shell Panel (superadmin only) -->
+    <div class="panel" v-if="tab === 'shell'" style="padding: 0;">
+      <div style="background: #0a0a0a; border-radius: 5px; overflow: hidden;">
+        <div style="background: #16213e; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <span style="color: #a855f7; font-weight: bold;">🔐 Shell</span>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <span v-if="shellConnected" style="color: #4ade80; font-size: 12px;">● Connected</span>
+            <span v-else style="color: #ff6b6b; font-size: 12px;">● Disconnected</span>
+            <button @click="shellTextMode = !shellTextMode" :style="{ background: shellTextMode ? '#a855f7' : '#0f3460' }" style="padding: 4px 10px; font-size: 12px;">
+              {{ shellTextMode ? 'Capture' : 'Text Mode' }}
+            </button>
+            <button @click="clearShellOutput" style="padding: 4px 10px; font-size: 12px; background: #0f3460;">Clear</button>
+            <button @click="connectShell" :disabled="shellConnected" style="padding: 4px 10px; font-size: 12px;">Connect</button>
+            <button @click="disconnectShell" :disabled="!shellConnected" style="padding: 4px 10px; font-size: 12px;">Disconnect</button>
+          </div>
+        </div>
+        <div style="position: relative;">
+          <div id="shell-output" @click="focusCaptureInput" style="background: #0a0a0a; padding: 10px; height: 350px; overflow-y: auto; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; user-select: text; -webkit-user-select: text;">
+            <span style="color: #94a3b8;">Click "Connect" to start a shell session.<br>Only users with the "shell" role can access this feature.</span>
+          </div>
+          <!-- Hidden input for capture mode (triggers mobile keyboard) -->
+          <input
+            v-if="!shellTextMode"
+            id="shell-capture-input"
+            @input="handleCaptureInput"
+            @keydown="handleCaptureKeydown"
+            type="text"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            style="position: absolute; bottom: 10px; left: 10px; right: 10px; opacity: 0.01; height: 40px; font-size: 16px; background: transparent; border: none; color: transparent; caret-color: #4ade80;"
+          />
+        </div>
+        <!-- Text Mode Input -->
+        <div v-if="shellTextMode" style="display: flex; align-items: center; padding: 8px 12px; background: #16213e; border-top: 1px solid #0f3460; gap: 8px;">
+          <span style="color: #4ade80; font-family: monospace; font-size: 13px;">$</span>
+          <input
+            id="shell-input"
+            v-model="shellInput"
+            @keydown.enter="sendShellCommand"
+            type="text"
+            placeholder="Type command and press Enter..."
+            style="flex: 1; background: #0a0a0a; border: 1px solid #0f3460; border-radius: 4px; padding: 8px 12px; color: #eee; font-family: monospace; font-size: 16px;"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+          <button @click="sendShellCommand" style="padding: 8px 16px; font-size: 13px;">Send</button>
+        </div>
+        <div v-else style="padding: 8px 12px; background: #16213e; border-top: 1px solid #0f3460; font-size: 12px; color: #94a3b8;">
+          Capture mode: Tap the terminal area to open keyboard. Characters sent immediately.
+        </div>
+      </div>
+    </div>
+
     <!-- Results -->
     <div class="results" v-if="result">
       <p v-if="result.warning" class="warning">⚠️ {{ result.warning }}</p>
@@ -786,6 +1047,7 @@ function getHTMLInterface(): string {
       <p><strong>Find:</strong> Find files by name pattern. Use <code>-type f</code> for files only, <code>-maxdepth N</code> to limit depth.</p>
       <p><strong>Custom:</strong> Supports globs (<code>*.ts</code>, <code>*/</code>) and <code>cd</code> to change working directory.</p>
     </div>
+    </template>
   </div>
 
   <script>
@@ -798,6 +1060,14 @@ function getHTMLInterface(): string {
         const result = ref(null);
         const workingDir = ref('.');
 
+        // Auth state
+        const authRequired = ref(false);
+        const user = ref(null);
+        const token = ref(localStorage.getItem('token') || '');
+        const loginEmail = ref('');
+        const loginPassword = ref('');
+        const loginError = ref('');
+
         const grep = reactive({ pattern: '', path: '.', options: '' });
         const find = reactive({ pattern: '', path: '.', options: '' });
         const cat = reactive({ path: '' });
@@ -806,12 +1076,243 @@ function getHTMLInterface(): string {
         const feedbackHistory = ref([]);
         const browse = reactive({ path: '.', entries: [], parent: null, selected: null });
 
+        // Shell state
+        const shellConnected = ref(false);
+        const shellOutput = ref(null);
+        const shellTextMode = ref(true);  // Default to text mode for mobile
+        const shellInput = ref('');
+        let shellWs = null;
+
+        // Shell functions
+        function connectShell() {
+          if (shellWs) return;
+          if (!token.value) {
+            appendShellOutput('\\x1b[31mError: Not authenticated\\x1b[0m\\r\\n');
+            return;
+          }
+
+          const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const wsUrl = wsProtocol + '//' + window.location.host + '/?token=' + encodeURIComponent(token.value);
+
+          try {
+            shellWs = new WebSocket(wsUrl);
+
+            shellWs.onopen = () => {
+              shellConnected.value = true;
+              clearShellOutput();
+              // Auto-focus input for mobile keyboard
+              setTimeout(() => {
+                const input = document.getElementById('shell-input');
+                if (input) input.focus();
+              }, 100);
+            };
+
+            shellWs.onmessage = (event) => {
+              try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'output') {
+                  appendShellOutput(msg.data);
+                } else if (msg.type === 'prompt') {
+                  const cwd = msg.cwd || '~';
+                  const shortCwd = cwd.length > 30 ? '...' + cwd.slice(-27) : cwd;
+                  appendShellOutput('\\x1b[32m' + shortCwd + '\\x1b[0m $ ');
+                } else if (msg.type === 'error') {
+                  appendShellOutput('\\x1b[31mError: ' + msg.data + '\\x1b[0m\\r\\n');
+                }
+              } catch (e) {
+                console.error('Shell message parse error:', e);
+              }
+            };
+
+            shellWs.onclose = () => {
+              shellConnected.value = false;
+              shellWs = null;
+              appendShellOutput('\\r\\n\\x1b[33m[Connection closed]\\x1b[0m\\r\\n');
+            };
+
+            shellWs.onerror = (err) => {
+              console.error('Shell WebSocket error:', err);
+              appendShellOutput('\\x1b[31mWebSocket error\\x1b[0m\\r\\n');
+            };
+
+            // Handle keyboard input
+            document.addEventListener('keydown', handleShellKeyDown);
+          } catch (err) {
+            appendShellOutput('\\x1b[31mFailed to connect: ' + err.message + '\\x1b[0m\\r\\n');
+          }
+        }
+
+        function disconnectShell() {
+          if (shellWs) {
+            shellWs.close();
+            shellWs = null;
+          }
+          shellConnected.value = false;
+          document.removeEventListener('keydown', handleShellKeyDown);
+        }
+
+        function handleShellKeyDown(e) {
+          if (tab.value !== 'shell' || !shellConnected.value || !shellWs) return;
+
+          // Ignore if typing in input field
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+          e.preventDefault();
+
+          let char = '';
+          if (e.key === 'Enter') char = '\\r';
+          else if (e.key === 'Backspace') char = '\\x7f';
+          else if (e.key === 'c' && e.ctrlKey) char = '\\x03';
+          else if (e.key.length === 1) char = e.key;
+          else return;
+
+          shellWs.send(JSON.stringify({ type: 'input', data: char }));
+        }
+
+        function appendShellOutput(text) {
+          const el = document.getElementById('shell-output');
+          if (!el) return;
+          // Simple ANSI to HTML conversion
+          const html = text
+            .replace(/\\x1b\\[31m/g, '<span style="color: #ff6b6b;">')
+            .replace(/\\x1b\\[32m/g, '<span style="color: #4ade80;">')
+            .replace(/\\x1b\\[33m/g, '<span style="color: #fbbf24;">')
+            .replace(/\\x1b\\[0m/g, '</span>')
+            .replace(/\\r\\n/g, '<br>')
+            .replace(/\\r/g, '')
+            .replace(/\\n/g, '<br>');
+          el.innerHTML += html;
+          el.scrollTop = el.scrollHeight;
+        }
+
+        function clearShellOutput() {
+          const el = document.getElementById('shell-output');
+          if (el) el.innerHTML = '';
+        }
+
+        function sendShellCommand() {
+          const cmd = shellInput.value.trim();
+          if (!cmd || !shellWs || !shellConnected.value) return;
+
+          // Send command character by character then enter
+          for (const char of cmd) {
+            shellWs.send(JSON.stringify({ type: 'input', data: char }));
+          }
+          shellWs.send(JSON.stringify({ type: 'input', data: '\\r' }));
+          shellInput.value = '';
+        }
+
+        function focusShellInput() {
+          setTimeout(() => {
+            const input = document.getElementById('shell-input');
+            if (input) input.focus();
+          }, 100);
+        }
+
+        function focusCaptureInput() {
+          if (shellTextMode.value) return;
+          const input = document.getElementById('shell-capture-input');
+          if (input) input.focus();
+        }
+
+        function handleCaptureInput(e) {
+          if (!shellWs || !shellConnected.value) return;
+          const value = e.target.value;
+          if (value) {
+            // Send each character
+            for (const char of value) {
+              shellWs.send(JSON.stringify({ type: 'input', data: char }));
+            }
+            e.target.value = '';
+          }
+        }
+
+        function handleCaptureKeydown(e) {
+          if (!shellWs || !shellConnected.value) return;
+
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            shellWs.send(JSON.stringify({ type: 'input', data: '\\r' }));
+          } else if (e.key === 'Backspace') {
+            e.preventDefault();
+            shellWs.send(JSON.stringify({ type: 'input', data: '\\x7f' }));
+          }
+        }
+
+        // Auth helper
+        function getAuthHeaders() {
+          const headers = { 'Content-Type': 'application/json' };
+          if (token.value) {
+            headers['Authorization'] = 'Bearer ' + token.value;
+          }
+          return headers;
+        }
+
+        // Check auth status on mount
+        async function checkAuthStatus() {
+          try {
+            const res = await fetch('/auth/status');
+            const data = await res.json();
+            authRequired.value = data.data?.authRequired || false;
+
+            // If we have a token, verify it
+            if (token.value) {
+              const meRes = await fetch('/auth/me', { headers: getAuthHeaders() });
+              const meData = await meRes.json();
+              if (meData.success && meData.user) {
+                user.value = meData.user;
+              } else {
+                // Token invalid, clear it
+                token.value = '';
+                localStorage.removeItem('token');
+              }
+            }
+          } catch (err) {
+            console.error('Auth check error:', err);
+          }
+        }
+
+        async function doLogin() {
+          if (!loginEmail.value || !loginPassword.value) return;
+          loading.value = true;
+          loginError.value = '';
+          try {
+            const res = await fetch('/auth/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email: loginEmail.value, password: loginPassword.value })
+            });
+            const data = await res.json();
+            if (data.success && data.data?.token) {
+              token.value = data.data.token;
+              localStorage.setItem('token', data.data.token);
+              user.value = data.data.user;
+              loginEmail.value = '';
+              loginPassword.value = '';
+            } else {
+              loginError.value = data.error || 'Login failed';
+            }
+          } catch (err) {
+            loginError.value = err.message;
+          }
+          loading.value = false;
+        }
+
+        function doLogout() {
+          token.value = '';
+          user.value = null;
+          localStorage.removeItem('token');
+        }
+
+        // Check auth on mount
+        checkAuthStatus();
+
         async function loadBrowse(path = '.') {
           loading.value = true;
           try {
             const res = await fetch('/browse', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
               body: JSON.stringify({ path })
             });
             const data = await res.json();
@@ -847,7 +1348,7 @@ function getHTMLInterface(): string {
           try {
             const res = await fetch('/grep', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
               body: JSON.stringify({
                 pattern: grep.pattern,
                 path: grep.path,
@@ -868,7 +1369,7 @@ function getHTMLInterface(): string {
           try {
             const res = await fetch('/find', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
               body: JSON.stringify({
                 pattern: find.pattern,
                 path: find.path,
@@ -889,7 +1390,7 @@ function getHTMLInterface(): string {
           try {
             const res = await fetch('/cat', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
               body: JSON.stringify({ path: cat.path, cwd: workingDir.value })
             });
             result.value = await res.json();
@@ -914,7 +1415,7 @@ function getHTMLInterface(): string {
               // Validate via browse endpoint
               const browseRes = await fetch('/browse', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({ path: workingDir.value === '.' ? targetDir : workingDir.value + '/' + targetDir })
               });
               const browseData = await browseRes.json();
@@ -930,7 +1431,7 @@ function getHTMLInterface(): string {
 
             const res = await fetch('/exec', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
               body: JSON.stringify({ command, args, cwd: workingDir.value })
             });
             result.value = await res.json();
@@ -946,7 +1447,7 @@ function getHTMLInterface(): string {
           try {
             const res = await fetch('/feedback', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
               body: JSON.stringify({
                 message: feedback.message,
                 type: feedback.type,
@@ -968,7 +1469,7 @@ function getHTMLInterface(): string {
         async function loadFeedback() {
           loading.value = true;
           try {
-            const res = await fetch('/feedback');
+            const res = await fetch('/feedback', { headers: getAuthHeaders() });
             const data = await res.json();
             if (data.success) {
               feedbackHistory.value = (data.data.entries || []).reverse();
@@ -996,7 +1497,7 @@ function getHTMLInterface(): string {
           return d.toLocaleString();
         }
 
-        return { tab, loading, result, workingDir, grep, find, cat, exec, feedback, feedbackHistory, browse, doGrep, doFind, doCat, doExec, doFeedback, loadFeedback, loadBrowse, navigateTo, selectFile, formatSize, typeColor, formatTime };
+        return { tab, loading, result, workingDir, authRequired, user, loginEmail, loginPassword, loginError, doLogin, doLogout, shellConnected, shellOutput, shellTextMode, shellInput, connectShell, disconnectShell, sendShellCommand, clearShellOutput, focusShellInput, focusCaptureInput, handleCaptureInput, handleCaptureKeydown, grep, find, cat, exec, feedback, feedbackHistory, browse, doGrep, doFind, doCat, doExec, doFeedback, loadFeedback, loadBrowse, navigateTo, selectFile, formatSize, typeColor, formatTime };
       }
     }).mount('#app');
   </script>
@@ -1018,7 +1519,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     res.writeHead(204, {
       'Access-Control-Allow-Origin': ALLOWED_ORIGINS[0],
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type'
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
     });
     res.end();
     return;
@@ -1029,25 +1530,46 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   try {
     // Route requests
+
+    // Public routes (no auth required)
     if (pathname === '/' && method === 'GET') {
       sendHTML(res, getHTMLInterface());
     } else if (pathname === '/health' && method === 'GET') {
       await handleHealth(req, res);
+    } else if (pathname === '/auth/status' && method === 'GET') {
+      await handleAuthStatus(req, res);
+    } else if (pathname === '/auth/login' && method === 'POST') {
+      await handleLogin(req, res);
+    } else if (pathname === '/auth/me' && method === 'GET') {
+      await handleMe(req, res);
+
+    // Protected routes (auth required when AUTH_REQUIRED=true)
     } else if (pathname === '/commands' && method === 'GET') {
+      if (!requireAuth(req, res)) return;
       await handleCommands(req, res);
     } else if (pathname === '/exec' && method === 'POST') {
+      const user = requireAuth(req, res);
+      if (!user) return;
+      // /exec requires admin or shell role
+      if (!requireRole(user, res, 'admin', 'shell')) return;
       await handleExec(req, res);
     } else if (pathname === '/grep' && method === 'POST') {
+      if (!requireAuth(req, res)) return;
       await handleGrep(req, res);
     } else if (pathname === '/find' && method === 'POST') {
+      if (!requireAuth(req, res)) return;
       await handleFind(req, res);
     } else if (pathname === '/cat' && method === 'POST') {
+      if (!requireAuth(req, res)) return;
       await handleCat(req, res);
     } else if (pathname === '/feedback' && method === 'POST') {
+      if (!requireAuth(req, res)) return;
       await handleFeedback(req, res);
     } else if (pathname === '/feedback' && method === 'GET') {
+      if (!requireAuth(req, res)) return;
       await handleGetFeedback(req, res);
     } else if (pathname === '/browse' && method === 'POST') {
+      if (!requireAuth(req, res)) return;
       await handleBrowse(req, res);
     } else {
       sendError(res, 'Not found', 404);
@@ -1062,30 +1584,250 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 // Server
 // ============================================================================
 
+// ============================================================================
+// WebSocket Shell Session
+// ============================================================================
+
+interface ShellSession {
+  ws: WebSocket;
+  user: TokenPayload;
+  process: ChildProcessWithoutNullStreams | null;
+  currentDir: string;
+  inputBuffer: string;
+}
+
+function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
+  const session: ShellSession = {
+    ws,
+    user,
+    process: null,
+    currentDir: SANDBOX_ROOT,
+    inputBuffer: ''
+  };
+
+  // Send welcome message
+  const welcome = `\r\nConnected to UnifyWeaver Shell\r\n` +
+    `User: ${user.email} [${user.roles.join(', ')}]\r\n` +
+    `Working directory: ${SANDBOX_ROOT}\r\n` +
+    `Type "help" for commands, "exit" to disconnect\r\n\r\n`;
+  ws.send(JSON.stringify({ type: 'output', data: welcome }));
+  ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+
+  ws.on('message', (data: Buffer | string) => {
+    try {
+      const msg = JSON.parse(data.toString());
+
+      if (msg.type === 'input') {
+        const char = msg.data;
+
+        // Handle Enter key
+        if (char === '\r' || char === '\n') {
+          ws.send(JSON.stringify({ type: 'output', data: '\r\n' }));
+          const command = session.inputBuffer.trim();
+          session.inputBuffer = '';
+
+          if (command) {
+            executeShellCommand(session, command);
+          } else {
+            ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+          }
+        }
+        // Handle Backspace
+        else if (char === '\x7f' || char === '\b') {
+          if (session.inputBuffer.length > 0) {
+            session.inputBuffer = session.inputBuffer.slice(0, -1);
+            ws.send(JSON.stringify({ type: 'output', data: '\b \b' }));
+          }
+        }
+        // Handle Ctrl+C
+        else if (char === '\x03') {
+          if (session.process) {
+            session.process.kill('SIGINT');
+            session.process = null;
+          }
+          ws.send(JSON.stringify({ type: 'output', data: '^C\r\n' }));
+          session.inputBuffer = '';
+          ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+        }
+        // Handle printable characters
+        else if (char >= ' ' && char <= '~') {
+          session.inputBuffer += char;
+          ws.send(JSON.stringify({ type: 'output', data: char }));
+        }
+      }
+    } catch (err) {
+      console.error('Shell message error:', err);
+    }
+  });
+
+  ws.on('close', () => {
+    if (session.process) {
+      session.process.kill();
+      session.process = null;
+    }
+    console.log(`Shell session closed for ${user.email}`);
+  });
+}
+
+function executeShellCommand(session: ShellSession, command: string): void {
+  const { ws } = session;
+
+  // Built-in: help
+  if (command === 'help') {
+    const helpText = `\r\nUnifyWeaver Shell - Built-in Commands:\r\n` +
+      `  help    - Show this help\r\n` +
+      `  cd DIR  - Change directory\r\n` +
+      `  pwd     - Print working directory\r\n` +
+      `  exit    - Disconnect\r\n` +
+      `\r\nYou can run any shell command. Output is streamed in real-time.\r\n\r\n`;
+    ws.send(JSON.stringify({ type: 'output', data: helpText }));
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+    return;
+  }
+
+  // Built-in: exit
+  if (command === 'exit' || command === 'quit') {
+    ws.send(JSON.stringify({ type: 'output', data: 'Goodbye!\r\n' }));
+    ws.close();
+    return;
+  }
+
+  // Built-in: cd
+  if (command.startsWith('cd ') || command === 'cd') {
+    const targetDir = command.slice(3).trim() || SANDBOX_ROOT;
+    let newDir: string;
+
+    if (path.isAbsolute(targetDir)) {
+      newDir = targetDir;
+    } else if (targetDir === '~') {
+      newDir = SANDBOX_ROOT;
+    } else if (targetDir.startsWith('~/')) {
+      newDir = path.join(SANDBOX_ROOT, targetDir.slice(2));
+    } else {
+      newDir = path.resolve(session.currentDir, targetDir);
+    }
+
+    // Security: Ensure within sandbox
+    if (!newDir.startsWith(SANDBOX_ROOT)) {
+      ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mcd: Access denied - outside sandbox\x1b[0m\r\n` }));
+      ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+      return;
+    }
+
+    if (fs.existsSync(newDir) && fs.statSync(newDir).isDirectory()) {
+      session.currentDir = newDir;
+    } else {
+      ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mcd: ${targetDir}: No such directory\x1b[0m\r\n` }));
+    }
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+    return;
+  }
+
+  // Built-in: pwd
+  if (command === 'pwd') {
+    ws.send(JSON.stringify({ type: 'output', data: session.currentDir + '\r\n' }));
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+    return;
+  }
+
+  // Execute shell command
+  const proc = spawn('sh', ['-c', command], {
+    cwd: session.currentDir,
+    env: { ...process.env, HOME: SANDBOX_ROOT, TERM: 'xterm-256color' }
+  });
+
+  session.process = proc;
+
+  proc.stdout.on('data', (data: Buffer) => {
+    ws.send(JSON.stringify({ type: 'output', data: data.toString().replace(/\n/g, '\r\n') }));
+  });
+
+  proc.stderr.on('data', (data: Buffer) => {
+    ws.send(JSON.stringify({ type: 'output', data: `\x1b[31m${data.toString().replace(/\n/g, '\r\n')}\x1b[0m` }));
+  });
+
+  proc.on('close', (code: number) => {
+    session.process = null;
+    if (code !== 0) {
+      ws.send(JSON.stringify({ type: 'output', data: `\x1b[33m[exit code: ${code}]\x1b[0m\r\n` }));
+    }
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+  });
+
+  proc.on('error', (err: Error) => {
+    session.process = null;
+    ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mError: ${err.message}\x1b[0m\r\n` }));
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+  });
+}
+
 function startServer(port: number): void {
   const server = http.createServer(handleRequest);
 
+  // Create WebSocket server
+  const wss = new WebSocketServer({ server });
+
+  wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+    // Extract token from URL query string
+    const urlParsed = url.parse(req.url || '', true);
+    const token = urlParsed.query.token as string;
+
+    if (!token) {
+      ws.send(JSON.stringify({ type: 'error', data: 'Authentication required' }));
+      ws.close(1008, 'Authentication required');
+      return;
+    }
+
+    const payload = verifyToken(token);
+    if (!payload) {
+      ws.send(JSON.stringify({ type: 'error', data: 'Invalid token' }));
+      ws.close(1008, 'Invalid token');
+      return;
+    }
+
+    // Check for shell role
+    if (!payload.roles.includes('shell')) {
+      ws.send(JSON.stringify({ type: 'error', data: 'Shell access requires "shell" role' }));
+      ws.close(1008, 'Access denied');
+      return;
+    }
+
+    console.log(`Shell session started for ${payload.email}`);
+    handleShellConnection(ws, payload);
+  });
+
   server.listen(port, () => {
+    const authStatus = AUTH_REQUIRED ? 'ENABLED' : 'disabled';
     console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║           UnifyWeaver HTTP CLI Server                      ║
 ╠════════════════════════════════════════════════════════════╣
 ║  Server running at: http://localhost:${port.toString().padEnd(24)}║
 ║  Sandbox root:      ${SANDBOX_ROOT.slice(0, 35).padEnd(36)}║
+║  Authentication:    ${authStatus.padEnd(36)}║
 ║                                                            ║
-║  Endpoints:                                                ║
+║  Auth Endpoints:                                           ║
+║    GET  /auth/status - Auth status                         ║
+║    POST /auth/login  - Login (email, password)             ║
+║    GET  /auth/me     - Current user info                   ║
+║                                                            ║
+║  Protected Endpoints:                                      ║
 ║    GET  /           - HTML interface                       ║
-║    GET  /health     - Health check                         ║
-║    GET  /commands   - List commands                        ║
 ║    POST /browse     - Browse directories                   ║
 ║    POST /grep       - Search contents                      ║
 ║    POST /find       - Find files                           ║
 ║    POST /cat        - Read file                            ║
 ║    POST /exec       - Execute command                      ║
 ║    POST /feedback   - Submit feedback                      ║
-║    GET  /feedback   - Read feedback log                    ║
+║                                                            ║
+║  WebSocket Shell:                                          ║
+║    ws://localhost:${port}/shell?token=JWT (shell role)        ║
 ╚════════════════════════════════════════════════════════════╝
 `);
+    if (!AUTH_REQUIRED) {
+      console.log('Auth disabled. Set AUTH_REQUIRED=true to enable.');
+      console.log('Default users: shell@local/shell, admin@local/admin, user@local/user\n');
+    }
   });
 
   server.on('error', (err: NodeJS.ErrnoException) => {

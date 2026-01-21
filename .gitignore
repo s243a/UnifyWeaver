@@ -151,3 +151,4 @@ CLAUDE.md
 
 # Local tools and subprojects (optional, not in repo)
 .local/
+users.json
