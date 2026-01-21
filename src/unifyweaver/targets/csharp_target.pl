@@ -1030,6 +1030,7 @@ transitive_closure_supported_modes(Modes) :-
     input_positions(Modes, Positions),
     (   Positions == []
     ;   Positions == [0]
+    ;   Positions == [1]
     ).
 
 transitive_closure_base_clause(HeadSpec, Head-Body, EdgeSpec) :-
