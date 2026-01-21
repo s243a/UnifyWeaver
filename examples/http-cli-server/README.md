@@ -1,94 +1,103 @@
 # HTTP CLI Server Example
 
-A web-based CLI interface for AI browser agents with JWT authentication, role-based access control, and WebSocket shell for superadmin users.
+This example demonstrates generating an HTTP CLI server with authentication,
+WebSocket shell, and HTTPS support using UnifyWeaver's declarative specification.
 
-## Features
+## Overview
 
-- **File Browser** - Navigate directories within sandbox
-- **Search Commands** - grep, find, cat with glob expansion
-- **Custom Commands** - Execute allowed shell commands
-- **JWT Authentication** - Secure token-based auth
-- **Role-Based Access Control** - user, admin, shell roles
-- **WebSocket Shell** - Full interactive shell for superadmin
-- **Mobile Support** - Text Mode and Capture Mode for touch devices
-
-## Quick Start
-
-```bash
-# Install dependencies
-npm install
-
-# Start without auth (development)
-npm start
-
-# Start with auth enabled
-npm run start:auth
-```
-
-Open http://localhost:3001 in your browser.
-
-## Default Users
-
-Created automatically on first login when auth is enabled:
-
-| Email | Password | Roles | Access |
-|-------|----------|-------|--------|
-| shell@local | shell | shell, admin, user | Full access + WebSocket Shell |
-| admin@local | admin | admin, user | All endpoints, no shell |
-| user@local | user | user | Browse/search only |
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AUTH_REQUIRED` | `false` | Enable JWT authentication |
-| `PORT` | `3001` | Server port |
-| `SANDBOX_ROOT` | `~/sandbox` | Root directory for file operations |
-| `JWT_SECRET` | (dev secret) | JWT signing secret (change in production!) |
-| `USERS_FILE` | `./users.json` | Path to users database |
-
-## Endpoints
-
-### Public (no auth required)
-- `GET /auth/status` - Auth configuration
-- `POST /auth/login` - Get JWT token
-- `GET /auth/me` - Current user info
-
-### Protected (all authenticated users)
-- `GET /` - Web UI
-- `POST /browse` - Browse directories
-- `POST /grep` - Search file contents
-- `POST /find` - Find files by pattern
-- `POST /cat` - Read file contents
-- `POST /feedback` - Submit/get feedback
-
-### Admin Only (admin, shell roles)
-- `POST /exec` - Execute custom commands
-
-### WebSocket Shell (shell role only)
-- `ws://localhost:3001/?token=JWT` - Interactive shell
-
-## Shell Modes
-
-The web UI provides two input modes for the shell:
-
-- **Text Mode** (default) - Input field with Send button, works on mobile
-- **Capture Mode** - Tap terminal to open keyboard, characters sent immediately
-
-## Security Notes
-
-- All file operations are sandboxed to `SANDBOX_ROOT`
-- JWT tokens expire after 24 hours
-- Passwords are hashed with SHA256 + salt
-- WebSocket shell requires explicit "shell" role
-- Change `JWT_SECRET` in production!
+Instead of manually writing server code, you define the server declaratively in
+Prolog (`spec.pl`) and generate TypeScript code using UnifyWeaver's generators.
 
 ## Files
 
-- `http-server.ts` - Main HTTP/WebSocket server
-- `auth.ts` - JWT authentication module
-- `command-proxy.ts` - Command validation and execution
+| File | Description |
+|------|-------------|
+| `spec.pl` | Declarative server and auth specification |
+| `generate.sh` | Script to run the generators |
+| `generated/` | Output folder for generated TypeScript |
 
-## Future: UnifyWeaver Generation
+## Usage
 
-This example is currently manually written. A future goal is to generate this server using UnifyWeaver's Prolog-based code generation system, similar to how Vue apps are generated from app specifications.
+### Generate the server
+
+```bash
+./generate.sh
+```
+
+Or from the project root:
+
+```bash
+./examples/http-cli-server/generate.sh
+```
+
+### Run the generated server
+
+```bash
+cd generated
+npm install
+npx ts-node server.ts
+```
+
+With HTTPS:
+
+```bash
+SSL_CERT=/path/to/cert.pem SSL_KEY=/path/to/key.pem npx ts-node server.ts
+```
+
+## Specification
+
+The `spec.pl` file defines:
+
+### Service Specification
+
+- **Port**: 3001
+- **HTTPS**: Certificate and key from environment variables
+- **Endpoints**:
+  - `GET /health` - Health check (public)
+  - `GET /auth/status` - Auth status (public)
+  - `POST /auth/login` - Login (public)
+  - `GET /auth/me` - Current user info (authenticated)
+  - `GET /commands` - List available commands
+  - `POST /browse` - Directory listing
+  - `POST /grep` - Search file contents
+  - `POST /find` - Find files by pattern
+  - `POST /cat` - Read file contents
+  - `POST /exec` - Execute commands (admin/shell only)
+  - `POST /feedback` - Submit feedback
+
+### Authentication Specification
+
+- **Backend**: Text file (`users.txt`)
+- **Password Hash**: bcrypt
+- **Token Type**: JWT (24-hour expiry)
+- **Roles**:
+  - `shell` - Full access including WebSocket PTY
+  - `admin` - Admin access with command execution
+  - `user` - Basic browse and search only
+
+### Default Users
+
+| Email | Password | Roles |
+|-------|----------|-------|
+| shell@local | shell | shell, admin, user |
+| admin@local | admin | admin, user |
+| user@local | user | user |
+
+## Comparison with Manual Implementation
+
+The manual TypeScript implementation is preserved in `../prototypes/http-cli-server/`
+for reference. The generated code should be functionally equivalent but is produced
+from the declarative specification.
+
+Benefits of the declarative approach:
+- Single source of truth for configuration
+- Easier to modify (change spec, regenerate)
+- Can target multiple languages (TypeScript, Python, Go)
+- Validates specification before generation
+
+## Related
+
+- `../../src/unifyweaver/sources/service_source.pl` - Service source type
+- `../../src/unifyweaver/glue/http_server_generator.pl` - Server generator
+- `../../src/unifyweaver/glue/auth_generator.pl` - Auth generator
+- `../../docs/PROPOSAL_HTTP_CLI_GENERATION.md` - Design proposal

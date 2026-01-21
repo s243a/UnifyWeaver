@@ -1,0 +1,8 @@
+{
+  "backend": "text_file",
+  "passwordHash": "bcrypt",
+  "tokenType": "jwt",
+  "usersFile": "users.txt",
+  "sessionDuration": 86400,
+  "jwtSecret": "change-this-in-production-use-env-var"
+}
