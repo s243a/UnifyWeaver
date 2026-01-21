@@ -252,6 +252,58 @@ async function handle_{{name}}(req, res) {
 5. **Testable** - Validate specs before generation
 6. **Composable** - Mix and match auth, shell, endpoints
 
+## Directory Structure
+
+Organize code by distinguishing between generally useful components (reusable) and implementation-specific customizations:
+
+```
+src/unifyweaver/
+├── glue/
+│   ├── http_server_generator.pl    # Generates server code
+│   ├── auth_generator.pl           # Generates auth code
+│   └── shell_generator.pl          # Generates shell code
+├── components/
+│   ├── auth/                       # General auth components
+│   │   ├── jwt_auth.pl             # JWT auth (reusable)
+│   │   └── oauth_auth.pl           # OAuth (reusable)
+│   ├── shell/                      # General shell components
+│   │   ├── websocket_shell.pl      # WebSocket PTY (reusable)
+│   │   └── sandbox.pl              # Sandboxing (reusable)
+│   └── ui/                         # General UI components
+│       ├── login_form.pl           # Login UI (reusable)
+│       └── terminal.pl             # Terminal UI (reusable)
+├── bindings/
+│   └── auth_service_binding.pl     # Connect auth→service (reusable)
+├── sources/
+│   └── service_source.pl           # Service source type
+
+examples/
+├── http-cli-server/                # Specific implementation
+│   ├── spec.pl                     # App spec (uses general components)
+│   ├── generated/                  # Generated output
+│   └── customizations/             # Menu bar style, theme, etc.
+
+prototypes/
+├── http-server-manual.ts           # Original manual implementation
+└── vue-guard-test/                 # Original vue app (reference)
+```
+
+### Code Organization Principles
+
+| Location | Contains | Example |
+|----------|----------|---------|
+| `src/unifyweaver/components/` | Reusable building blocks | JWT auth, WebSocket shell |
+| `src/unifyweaver/bindings/` | Reusable connection patterns | Auth→Service binding |
+| `src/unifyweaver/sources/` | Source type definitions | Service source type |
+| `examples/` | Specific app specs + customizations | Menu bar style, specific theme |
+| `prototypes/` | Original manual code (reference) | Current http-server.ts |
+
+This separation ensures:
+- General code is DRY in `src/`
+- Implementation choices (menu style) are explicit in `examples/`
+- Manual prototypes preserved for comparison/debugging
+- Clear separation of "what's reusable" vs "what's this specific app"
+
 ## Files to Create/Modify
 
 | File | Action | Purpose |
