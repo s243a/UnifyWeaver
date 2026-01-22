@@ -347,15 +347,20 @@ def enrich_mindmap(
             if verbose:
                 print(f"  Added to index: {target_id} -> {filename}")
 
-        # Add cloudmapref if not already set
+        # Set cloudmapref (RefPearls should only have cloudmapref, not urllink)
+        # The URL is preserved in the topic's <note> metadata
         current_cloudmapref = link.get('cloudmapref', '')
-        if not current_cloudmapref:
-            rel_path = f"./{filename}"
+        rel_path = f"./{filename}"
+
+        if current_cloudmapref != rel_path:
             link.set('cloudmapref', rel_path)
+            # Remove urllink if present - RefPearls use cloudmapref only
+            if 'urllink' in link.attrib:
+                del link.attrib['urllink']
             cloudmapref_added += 1
             modified = True
             if verbose:
-                print(f"  Added cloudmapref for '{title}': {rel_path}")
+                print(f"  Set cloudmapref for '{title}': {rel_path}")
 
     # Save if modified
     if modified and not dry_run:
