@@ -23,6 +23,8 @@
 :- dynamic user:test_factorial_input/1.
 :- dynamic user:test_fib_param/2.
 :- dynamic user:test_recursive_label_path/3.
+:- dynamic user:test_cat/1.
+:- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_sparse_input_fact/3.
 :- dynamic user:test_sparse_input_filtered/3.
 :- dynamic user:test_post_agg_param/2.
@@ -189,6 +191,7 @@ test_csharp_query_target :-
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
         verify_recursive_selection_scan_uses_scan_index,
         verify_recursive_multi_key_recursive_join_uses_partial_index,
+        verify_recursive_multi_key_recursive_selection_join_uses_partial_index,
         verify_parameterized_sparse_input_positions_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
@@ -478,6 +481,14 @@ setup_test_data :-
         test_recursive_label_path(X, Y, L),
         test_recursive_label_path(Y, Z, L)
     )),
+    assertz(user:test_cat(cat1)),
+    assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
+    assertz(user:test_recursive_label_path_cat_filtered(b, c, red, cat1)),
+    assertz(user:(test_recursive_label_path_cat_filtered(X, Z, L, Cat) :-
+        test_cat(Cat),
+        test_recursive_label_path_cat_filtered(X, Y, L, cat1),
+        test_recursive_label_path_cat_filtered(Y, Z, L, cat1)
+    )),
     assertz(user:mode(test_sparse_input_filtered(+, -, +))),
     assertz(user:test_sparse_input_fact(a, 1, red)),
     assertz(user:test_sparse_input_fact(a, 2, red)),
@@ -691,6 +702,8 @@ cleanup_test_data :-
     retractall(user:test_reachable_param_both(_, _)),
     retractall(user:mode(test_reachable_param_both(_, _))),
     retractall(user:test_reachable(_, _)),
+    retractall(user:test_cat(_)),
+    retractall(user:test_recursive_label_path_cat_filtered(_, _, _, _)),
     cleanup_csv_dynamic_source.
 
 verify_fact_plan :-
@@ -1547,6 +1560,30 @@ verify_recursive_multi_key_recursive_join_uses_partial_index :-
         ['a,b,red',
          'b,c,red',
          'a,c,red',
+         'STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
+        [],
+        HarnessSource).
+
+verify_recursive_multi_key_recursive_selection_join_uses_partial_index :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_filtered/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_filtered, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    (   Left = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_filtered, arity:4}, role:_, width:_}, predicate:_, width:_},
+        Right = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_filtered, arity:4}, role:_, width:_}, predicate:_, width:_}
+    ;   Right = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_filtered, arity:4}, role:_, width:_}, predicate:_, width:_},
+        Left = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_filtered, arity:4}, role:_, width:_}, predicate:_, width:_}
+    ),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinRecursiveIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'b,c,red,cat1',
+         'a,c,red,cat1',
          'STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
         [],
         HarnessSource).
@@ -2548,9 +2585,13 @@ capture_user_error(Goal, Output) :-
         )
     ).
 
-dotnet_cli(path(dotnet)) :-
+dotnet_cli(Dotnet) :-
+    (   current_prolog_flag(windows, true)
+    ->  Dotnet = path('dotnet.exe')
+    ;   Dotnet = path(dotnet)
+    ),
     catch(
-        (   process_create(path(dotnet), ['--version'],
+        (   process_create(Dotnet, ['--version'],
                            [ stdout(null),
                              stderr(null),
                              process(PID)
@@ -2566,7 +2607,14 @@ prepare_temp_dir(Plan, Dir) :-
     get_dict(head, Plan, predicate{name:PredName, arity:_}),
     !,
     uuid(UUID),
-    atomic_list_concat(['csharp_query_', PredName, '_', UUID], Sub),
+    (   current_prolog_flag(windows, true)
+    ->  atom_length(PredName, PredLen),
+        PrefixLen is min(12, PredLen),
+        sub_atom(PredName, 0, PrefixLen, _, PredPrefix),
+        sub_atom(UUID, 0, 8, _, ShortUUID),
+        atomic_list_concat(['cq_', PredPrefix, '_', ShortUUID], Sub)
+    ;   atomic_list_concat(['csharp_query_', PredName, '_', UUID], Sub)
+    ),
     cqt_option(output_dir, Base),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
@@ -2575,7 +2623,11 @@ prepare_temp_dir(Plan, Dir) :-
 % Fallback for backwards compatibility
 prepare_temp_dir(Dir) :-
     uuid(UUID),
-    atomic_list_concat(['csharp_query_', UUID], Sub),
+    (   current_prolog_flag(windows, true)
+    ->  sub_atom(UUID, 0, 8, _, ShortUUID),
+        atomic_list_concat(['cq_', ShortUUID], Sub)
+    ;   atomic_list_concat(['csharp_query_', UUID], Sub)
+    ),
     cqt_option(output_dir, Base),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
@@ -2877,24 +2929,32 @@ find_compiled_executable(Dir, ExePath) :-
 % Execute compiled binary (native or DLL)
 execute_compiled_binary(ExePath, Dir, Status, Output) :-
     dotnet_env(Dir, Env),
+    absolute_file_name(Dir, AbsDir, []),
+    absolute_file_name(ExePath, AbsExePath, []),
+    (   current_prolog_flag(windows, true)
+    ->  prolog_to_os_filename(AbsDir, CwdDir),
+        prolog_to_os_filename(AbsExePath, RunPath)
+    ;   CwdDir = AbsDir,
+        RunPath = AbsExePath
+    ),
     (   atom_concat(_, '.dll', ExePath)
     ->  % Execute DLL with dotnet
         dotnet_cli(Dotnet),
-        process_create(Dotnet, [ExePath],
-                       [ cwd(Dir),
-                         env(Env),
-                         stdout(pipe(Out)),
-                         stderr(pipe(Err)),
-                         process(PID)
-                       ])
+        process_create(Dotnet, [RunPath],
+                       [ cwd(CwdDir),
+                          env(Env),
+                          stdout(pipe(Out)),
+                          stderr(pipe(Err)),
+                          process(PID)
+                        ])
     ;   % Execute native binary directly
-        process_create(ExePath, [],
-                       [ cwd(Dir),
-                         env(Env),
-                         stdout(pipe(Out)),
-                         stderr(pipe(Err)),
-                         process(PID)
-                       ])
+        process_create(RunPath, [],
+                       [ cwd(CwdDir),
+                          env(Env),
+                          stdout(pipe(Out)),
+                          stderr(pipe(Err)),
+                          process(PID)
+                        ])
     ),
     read_string(Out, _, Stdout),
     read_string(Err, _, Stderr),
@@ -3167,8 +3227,13 @@ write_string(Path, String) :-
 
 dotnet_command(Dotnet, Args, Dir, Status, Output) :-
     dotnet_env(Dir, Env),
+    absolute_file_name(Dir, AbsDir, []),
+    (   current_prolog_flag(windows, true)
+    ->  prolog_to_os_filename(AbsDir, CwdDir)
+    ;   CwdDir = AbsDir
+    ),
     process_create(Dotnet, Args,
-                   [ cwd(Dir),
+                   [ cwd(CwdDir),
                      env(Env),
                      stdout(pipe(Out)),
                      stderr(pipe(Err)),
@@ -3188,6 +3253,32 @@ dotnet_env(Dir, Env) :-
            'DOTNET_CLI_TELEMETRY_OPTOUT'='1',
            'DOTNET_NOLOGO'='1'
            | BaseEnv].
+
+:- if(\+ current_predicate(environ/1)).
+% SWI-Prolog for Windows does not provide environ/1. Provide a lightweight
+% fallback so our dotnet harness can preserve the full process environment while
+% overriding dotnet-specific vars.
+environ(Env) :-
+    process_create(path('cmd.exe'), ['/c', set], [stdout(pipe(Out)), process(PID)]),
+    read_string(Out, _, Output),
+    close(Out),
+    process_wait(PID, exit(_)),
+    split_string(Output, "\n", "\r", Lines0),
+    include(non_empty_line, Lines0, Lines),
+    findall(Name=Value,
+        (   member(Line, Lines),
+            parse_cmd_env_line(Line, Name, Value)
+        ),
+        Env).
+
+parse_cmd_env_line(Line, Name, Value) :-
+    sub_string(Line, SepPos, 1, After, "="),
+    sub_string(Line, 0, SepPos, _, NameStr),
+    ValueStart is SepPos + 1,
+    sub_string(Line, ValueStart, After, 0, ValueStr),
+    atom_string(Name, NameStr),
+    Value = ValueStr.
+:- endif.
 
 is_dotnet_env('DOTNET_CLI_HOME'=_).
 is_dotnet_env('DOTNET_CLI_TELEMETRY_OPTOUT'=_).
