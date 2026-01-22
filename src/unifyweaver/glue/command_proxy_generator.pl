@@ -115,7 +115,7 @@ generate_ts_command_proxy(SandboxRoot, Commands, Timeout, Code) :-
         '  requiresConfirmation: boolean;\n',
         '}\n\n'
     ], Header),
-    format(atom(Config), '// Configuration\nexport const SANDBOX_ROOT = process.env.SANDBOX_ROOT || ''~w'';\n\n', [SandboxRoot]),
+    format(atom(Config), '// Configuration\nconst HOME = process.env.HOME || ''/home/user'';\nexport const SANDBOX_ROOT = process.env.SANDBOX_ROOT || `${HOME}/sandbox`;\n\n', []),
     atomic_list_concat([
         '// Helpers\n',
         'const isSensitivePath = (p: string): boolean => {\n',
@@ -150,7 +150,8 @@ export function executeCommand(cmd: string, args: string[], options: ExecutionCo
     const execArgs = transformedArgs.slice(1);
     const proc = spawn(executable, execArgs, {
       cwd: options.cwd || SANDBOX_ROOT,
-      timeout: options.timeout || ~w
+      timeout: options.timeout || ~w,
+      shell: true
     } as SpawnOptions);
     let stdout = '''';
     let stderr = '''';

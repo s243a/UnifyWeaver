@@ -1,0 +1,11 @@
+# SSL certificates (generated locally)
+*.pem
+
+# User database (contains password hashes)
+users.txt
+
+# Node modules
+node_modules/
+
+# Feedback logs
+*.log

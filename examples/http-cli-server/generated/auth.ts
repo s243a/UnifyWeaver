@@ -187,7 +187,26 @@ function loadUsers(): Map<string, User> {
     if (line.startsWith('#') || !line.trim()) continue;
     const parts = line.split(':');
     if (parts.length >= 2) {
-      const [email, passwordHash, rolesStr = '', permsStr = ''] = parts;
+      // Handle sha256:salt:hash format (3 colons in password hash)
+      // Format: email:sha256:salt:hash:roles:permissions
+      // Or: email:bcrypthash:roles:permissions (bcrypt starts with $2)
+      const email = parts[0];
+      let passwordHash: string;
+      let rolesStr: string;
+      let permsStr: string;
+
+      if (parts[1] === 'sha256' && parts.length >= 6) {
+        // sha256:salt:hash format
+        passwordHash = `${parts[1]}:${parts[2]}:${parts[3]}`;
+        rolesStr = parts[4] || '';
+        permsStr = parts[5] || '';
+      } else {
+        // bcrypt or plain format
+        passwordHash = parts[1];
+        rolesStr = parts[2] || '';
+        permsStr = parts[3] || '';
+      }
+
       users.set(email.toLowerCase(), {
         email,
         passwordHash,

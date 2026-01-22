@@ -35,14 +35,33 @@ Or from the project root:
 ```bash
 cd generated
 npm install
-npx ts-node server.ts
+npx ts-node server.ts --port 8080
 ```
 
-With HTTPS:
+With HTTPS (generate self-signed cert first):
 
 ```bash
-SSL_CERT=/path/to/cert.pem SSL_KEY=/path/to/key.pem npx ts-node server.ts
+# Generate self-signed certificate
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
+
+# Run with HTTPS
+npx ts-node server.ts --port 8080 --cert cert.pem --key key.pem
 ```
+
+With authentication enabled:
+
+```bash
+AUTH_REQUIRED=true npx ts-node server.ts --port 8080 --cert cert.pem --key key.pem
+```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AUTH_REQUIRED` | Require login (`true`/`false`) | `false` |
+| `SANDBOX_ROOT` | Root directory for file operations | `$HOME/sandbox` |
+| `JWT_SECRET` | Secret for JWT signing | `change-this-in-production` |
+| `USERS_FILE` | Path to users database file | `users.txt` |
 
 ## Specification
 

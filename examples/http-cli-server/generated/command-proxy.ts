@@ -56,7 +56,8 @@ export interface CommandInfo {
 }
 
 // Configuration
-export const SANDBOX_ROOT = process.env.SANDBOX_ROOT || '$HOME/sandbox';
+const HOME = process.env.HOME || '/home/user';
+export const SANDBOX_ROOT = process.env.SANDBOX_ROOT || `${HOME}/sandbox`;
 
 // Helpers
 const isSensitivePath = (p: string): boolean => {
@@ -335,7 +336,8 @@ export function executeCommand(cmd: string, args: string[], options: ExecutionCo
     const execArgs = transformedArgs.slice(1);
     const proc = spawn(executable, execArgs, {
       cwd: options.cwd || SANDBOX_ROOT,
-      timeout: options.timeout || 30000
+      timeout: options.timeout || 30000,
+      shell: true
     } as SpawnOptions);
     let stdout = '';
     let stderr = '';
