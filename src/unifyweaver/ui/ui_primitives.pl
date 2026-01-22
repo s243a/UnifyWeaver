@@ -53,6 +53,9 @@
 
 :- use_module(library(lists)).
 
+% Load target generators (optional - may be loaded separately)
+:- catch(use_module('vue_generator'), _, true).
+
 % ============================================================================
 % LAYOUT PRIMITIVES
 % ============================================================================
@@ -495,8 +498,13 @@ generate_ui_for_target(flutter, UISpec, Code) :-
 generate_ui_for_target(swiftui, UISpec, Code) :-
     generate_swiftui_ui(UISpec, Code).
 
-% Placeholder generators - to be implemented in separate modules
-generate_vue_ui(_UISpec, 'TODO: Vue generation').
+% Generator implementations - call out to target-specific modules
+generate_vue_ui(UISpec, Code) :-
+    (   current_predicate(vue_generator:generate_vue_template/2)
+    ->  vue_generator:generate_vue_template(UISpec, Code)
+    ;   Code = 'ERROR: vue_generator module not loaded'
+    ).
+
 generate_react_ui(_UISpec, 'TODO: React generation').
 generate_html_ui(_UISpec, 'TODO: HTML generation').
 generate_flutter_ui(_UISpec, 'TODO: Flutter generation').

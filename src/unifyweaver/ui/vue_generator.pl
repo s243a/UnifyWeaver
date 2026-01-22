@@ -28,10 +28,6 @@
     % Style generation
     generate_vue_styles/3,        % generate_vue_styles(+UISpec, +Options, -Styles)
 
-    % Component helpers
-    vue_component_tag/2,          % vue_component_tag(+ComponentType, -Tag)
-    vue_directive/3,              % vue_directive(+Type, +Value, -Directive)
-
     % Testing
     test_vue_generator/0
 ]).
@@ -631,8 +627,12 @@ generate_component(avatar, Options, Indent, _GenOpts, Code) :-
     get_option(size, Options, Size, 40),
 
     indent_string(Indent, IndentStr),
-    format(atom(Code), '~w<div style="width: ~wpx; height: ~wpx; border-radius: 50%; background: #3498db; display: flex; justify-content: center; align-items: center; color: #fff; font-weight: bold; overflow: hidden;">~w</div>~n',
-           [IndentStr, Size, Size, Name]).
+    (   Src \= ''
+    ->  format(atom(Code), '~w<img src="~w" alt="~w" style="width: ~wpx; height: ~wpx; border-radius: 50%; object-fit: cover;">~n',
+               [IndentStr, Src, Name, Size, Size])
+    ;   format(atom(Code), '~w<div style="width: ~wpx; height: ~wpx; border-radius: 50%; background: #3498db; display: flex; justify-content: center; align-items: center; color: #fff; font-weight: bold; overflow: hidden;">~w</div>~n',
+               [IndentStr, Size, Size, Name])
+    ).
 
 % Icon component
 generate_component(icon, Options, Indent, _GenOpts, Code) :-
