@@ -48,22 +48,65 @@ def extract_tree_id(filename: str) -> Optional[str]:
     return None
 
 
-def load_mindmap_index(index_path: Path) -> Dict[str, str]:
+def load_mindmap_index(index_path: Path) -> Tuple[Dict[str, str], Optional[str]]:
     """Load mindmap index from JSON file.
 
     The index maps tree_id -> filename (e.g., "12345" -> "Title_id12345.smmx").
     This allows linking to mindmaps that don't exist yet.
+
+    Returns:
+        Tuple of (index dict, base_dir or None)
     """
     if not index_path.exists():
-        return {}
+        return {}, None
 
     with open(index_path, 'r') as f:
         data = json.load(f)
 
+    base_dir = data.get('base_dir')
+
     # Handle both formats: direct dict or {"index": {...}}
     if 'index' in data:
-        return data['index']
-    return data
+        return data['index'], base_dir
+    return data, base_dir
+
+
+def save_mindmap_index(index_path: Path, index: Dict[str, str], base_dir: Optional[str] = None):
+    """Save mindmap index to JSON file."""
+    data = {
+        'base_dir': base_dir or str(index_path.parent),
+        'count': len(index),
+        'index': index
+    }
+    with open(index_path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+def sanitize_filename(title: str, max_length: int = 50) -> str:
+    """Sanitize a title for use as a filename."""
+    if not title:
+        return ""
+    # Replace problematic characters with underscores
+    sanitized = re.sub(r'[/\\:*?"<>|\s]+', '_', title)
+    # Remove leading/trailing underscores and dots
+    sanitized = sanitized.strip('_.')
+    # Collapse multiple underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+    # Truncate
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length].rstrip('_')
+    return sanitized
+
+
+def generate_filename(title: str, tree_id: str) -> str:
+    """Generate mindmap filename from title and tree ID.
+
+    Returns filename like 'Title_id12345.smmx' or 'id12345.smmx' if no title.
+    """
+    sanitized = sanitize_filename(title)
+    if sanitized:
+        return f"{sanitized}_id{tree_id}.smmx"
+    return f"id{tree_id}.smmx"
 
 
 def build_mindmap_index(mindmap_dir: Path) -> Dict[str, Path]:
@@ -212,17 +255,19 @@ def enrich_mindmap(
     filename_index: Dict[str, str],
     dry_run: bool = False,
     verbose: bool = False
-) -> Tuple[int, int]:
+) -> Tuple[int, int, int]:
     """
     Enrich a mindmap with Pearltrees links.
 
+    Also adds missing RefPearl targets to the filename_index (in-place).
+
     Returns:
-        Tuple of (root_link_added, cloudmapref_links_added)
+        Tuple of (root_link_added, cloudmapref_links_added, index_entries_added)
     """
     tree_id = extract_tree_id(smmx_path.name)
     if not tree_id:
         print(f"Could not extract tree ID from {smmx_path.name}")
-        return (0, 0)
+        return (0, 0, 0)
 
     # Load mindmap XML
     try:
@@ -230,13 +275,13 @@ def enrich_mindmap(
             xml_content = zf.read('document/mindmap.xml').decode('utf-8')
     except (zipfile.BadZipFile, KeyError) as e:
         print(f"Error reading {smmx_path}: {e}")
-        return (0, 0)
+        return (0, 0, 0)
 
     try:
         root = ET.fromstring(xml_content)
     except ET.ParseError as e:
         print(f"Error parsing XML in {smmx_path}: {e}")
-        return (0, 0)
+        return (0, 0, 0)
 
     modified = False
     root_link_added = 0
@@ -273,6 +318,7 @@ def enrich_mindmap(
 
     # 2. Add cloudmapref links for RefPearl/AliasPearl children
     refpearls = get_refpearl_children(db_path, tree_id)
+    index_entries_added = 0
 
     for ref in refpearls:
         target_id = ref['target_tree_id']
@@ -290,19 +336,21 @@ def enrich_mindmap(
         if link is None:
             link = ET.SubElement(topic, 'link')
 
+        # Look up or generate filename, add to index if missing
+        if target_id in filename_index:
+            filename = filename_index[target_id]
+        else:
+            # Generate filename and add to index
+            filename = generate_filename(title, target_id)
+            filename_index[target_id] = filename
+            index_entries_added += 1
+            if verbose:
+                print(f"  Added to index: {target_id} -> {filename}")
+
         # Add cloudmapref if not already set
         current_cloudmapref = link.get('cloudmapref', '')
         if not current_cloudmapref:
-            # Look up expected filename from index
-            if target_id in filename_index:
-                filename = filename_index[target_id]
-                rel_path = f"./{filename}"
-            else:
-                # Fallback: generate expected filename
-                rel_path = f"./id{target_id}.smmx"
-                if verbose:
-                    print(f"  '{title}' (id{target_id}) not in index - using fallback")
-
+            rel_path = f"./{filename}"
             link.set('cloudmapref', rel_path)
             cloudmapref_added += 1
             modified = True
@@ -317,7 +365,7 @@ def enrich_mindmap(
         with zipfile.ZipFile(smmx_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('document/mindmap.xml', xml_output.encode('utf-8'))
 
-    return (root_link_added, cloudmapref_added)
+    return (root_link_added, cloudmapref_added, index_entries_added)
 
 
 def main():
@@ -349,9 +397,11 @@ def main():
         return 1
 
     # Load mindmap filename index
-    if args.index:
-        print(f"Loading index from {args.index}...")
-        filename_index = load_mindmap_index(args.index)
+    index_path = args.index
+    base_dir = None
+    if index_path:
+        print(f"Loading index from {index_path}...")
+        filename_index, base_dir = load_mindmap_index(index_path)
         print(f"  {len(filename_index)} entries")
     else:
         # Fallback: scan directory and extract filenames
@@ -363,7 +413,7 @@ def main():
 
     # Enrich mindmap
     print(f"\nEnriching {args.mindmap.name}...")
-    root_added, cloudmaprefs_added = enrich_mindmap(
+    root_added, cloudmaprefs_added, index_added = enrich_mindmap(
         args.mindmap,
         args.children_db,
         filename_index,
@@ -371,10 +421,16 @@ def main():
         verbose=args.verbose
     )
 
+    # Save updated index if entries were added
+    if index_added > 0 and index_path and not args.dry_run:
+        print(f"\nSaving updated index ({index_added} new entries)...")
+        save_mindmap_index(index_path, filename_index, base_dir)
+
     action = "Would add" if args.dry_run else "Added"
     print(f"\n{action}:")
     print(f"  Root Pearltrees link: {root_added}")
     print(f"  RefPearl cloudmapref links: {cloudmaprefs_added}")
+    print(f"  Index entries: {index_added}")
 
     return 0
 
