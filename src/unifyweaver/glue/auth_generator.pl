@@ -297,7 +297,7 @@ generate_ts_default_users(Users, Code) :-
 // Default Users
 // ============================================================================
 
-const DEFAULT_USERS = ~w;
+const DEFAULT_USERS: { email: string; password: string; roles: Role[] }[] = ~w;
 
 function ensureDefaultUsers(): void {
   for (const user of DEFAULT_USERS) {
@@ -506,7 +506,7 @@ function getUserFromToken(token: string): Omit<User, \'passwordHash\'> | null {
 %  Generate role checking functions.
 %
 generate_role_functions(Roles, typescript, Code) :-
-    (   member(shell, Roles) -> ShellCheck = 'roles.includes(\'shell\')' ; ShellCheck = 'false' ),
+    (   member(shell, Roles) -> ShellCheck = 'payload.roles.includes(\'shell\')' ; ShellCheck = 'false' ),
     (   member(admin, Roles) -> AdminCheck = 'roles.includes(\'admin\')' ; AdminCheck = 'false' ),
     format(atom(Code), '// ============================================================================
 // Role Checking Functions

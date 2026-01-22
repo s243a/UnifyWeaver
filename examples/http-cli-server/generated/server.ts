@@ -9,6 +9,7 @@ import * as http from 'http';
 import * as url from 'url';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync, spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import * as https from 'https';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
@@ -16,8 +17,16 @@ import {
   verifyToken,
   getUserFromToken,
   hasRole,
-  TokenPayload
+  TokenPayload,
+  Role
 } from './auth';
+import {
+  execute,
+  validateCommand,
+  listCommands,
+  Risk,
+  SANDBOX_ROOT
+} from './command-proxy';
 
 // ============================================================================
 // Configuration
@@ -30,6 +39,12 @@ const ALLOWED_ORIGINS = ['*'];
 // Authentication: set AUTH_REQUIRED=true to require login
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED === 'true';
 
+// Commands allowed for search operations
+const SEARCH_COMMANDS = ['grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc', 'pwd'];
+
+// Feedback log file
+const FEEDBACK_FILE = process.env.FEEDBACK_FILE || path.join(SANDBOX_ROOT, 'comet-feedback.log');
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -38,10 +53,56 @@ interface APIResponse {
   success: boolean;
   data?: unknown;
   error?: string;
+  warning?: string;
 }
 
 interface RequestBody {
   [key: string]: unknown;
+}
+
+interface FileEntry {
+  name: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modified?: string;
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+function resolveWorkingDir(cwd?: string): string {
+  if (!cwd || cwd === '.') return SANDBOX_ROOT;
+  const resolved = path.resolve(SANDBOX_ROOT, cwd);
+  if (!resolved.startsWith(SANDBOX_ROOT)) return SANDBOX_ROOT;
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return SANDBOX_ROOT;
+  return resolved;
+}
+
+function expandGlobs(args: string[], cwd: string): string[] {
+  const expanded: string[] = [];
+  for (const arg of args) {
+    if (arg.includes('*') || arg.includes('?')) {
+      try {
+        const result = execSync(`printf '%s\\n' ${arg}`, {
+          cwd,
+          encoding: 'utf-8',
+          timeout: 5000,
+          shell: '/bin/sh'
+        }).trim();
+        if (result && result !== arg) {
+          expanded.push(...result.split('\n').filter(Boolean));
+        } else {
+          expanded.push(arg);
+        }
+      } catch {
+        expanded.push(arg);
+      }
+    } else {
+      expanded.push(arg);
+    }
+  }
+  return expanded;
 }
 
 /**
@@ -55,8 +116,14 @@ async function handle_health(
 ): Promise<void> {
   // Public endpoint - no auth required
 
-  // TODO: Implement health logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'health' } });
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      status: 'ok',
+      sandboxRoot: SANDBOX_ROOT,
+      timestamp: new Date().toISOString()
+    }
+  });
 }
 
 /**
@@ -70,8 +137,14 @@ async function handle_auth_status(
 ): Promise<void> {
   // Public endpoint - no auth required
 
-  // TODO: Implement auth_status logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'auth_status' } });
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      authRequired: AUTH_REQUIRED,
+      authenticated: user !== null,
+      user: user ? { id: user.sub, email: user.email, roles: user.roles } : null
+    }
+  });
 }
 
 /**
@@ -85,8 +158,22 @@ async function handle_auth_login(
 ): Promise<void> {
   // Public endpoint - no auth required
 
-  // TODO: Implement auth_login logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'auth_login' } });
+  const { email, password } = body as any;
+
+  if (!email || !password) {
+    return sendJSON(res, 400, { success: false, error: 'Email and password required' });
+  }
+
+  const result = login(email, password);
+
+  if (!result.success) {
+    return sendJSON(res, 401, { success: false, error: result.error || 'Login failed' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: { token: result.token, user: result.user }
+  });
 }
 
 /**
@@ -101,12 +188,23 @@ async function handle_auth_me(
   // Requires roles: [user,admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement auth_me logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'auth_me' } });
+  if (!user) {
+    return sendJSON(res, 401, { success: false, error: 'Not authenticated' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      id: user.sub,
+      email: user.email,
+      roles: user.roles,
+      permissions: user.permissions
+    }
+  });
 }
 
 /**
@@ -121,12 +219,15 @@ async function handle_commands(
   // Requires roles: [user,admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement commands logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'commands' } });
+  const commands = listCommands().filter(c => SEARCH_COMMANDS.includes(c.name) || c.risk === Risk.SAFE);
+  sendJSON(res, 200, {
+    success: true,
+    data: { commands, searchCommands: SEARCH_COMMANDS }
+  });
 }
 
 /**
@@ -141,12 +242,60 @@ async function handle_browse(
   // Requires roles: [user,admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement browse logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'browse' } });
+  const { path: browsePath = '.' } = body as any;
+
+  const targetPath = path.resolve(SANDBOX_ROOT, browsePath);
+  if (!targetPath.startsWith(SANDBOX_ROOT)) {
+    return sendJSON(res, 403, { success: false, error: 'Path outside sandbox' });
+  }
+
+  if (!fs.existsSync(targetPath)) {
+    return sendJSON(res, 404, { success: false, error: 'Path not found' });
+  }
+
+  const stats = fs.statSync(targetPath);
+  if (!stats.isDirectory()) {
+    return sendJSON(res, 400, { success: false, error: 'Not a directory' });
+  }
+
+  const items = fs.readdirSync(targetPath);
+  const entries: FileEntry[] = [];
+
+  for (const name of items) {
+    if (name.startsWith('.') && browsePath !== '.') continue;
+    try {
+      const itemPath = path.join(targetPath, name);
+      const itemStats = fs.statSync(itemPath);
+      entries.push({
+        name,
+        type: itemStats.isDirectory() ? 'directory' : 'file',
+        size: itemStats.isFile() ? itemStats.size : undefined,
+        modified: itemStats.mtime.toISOString()
+      });
+    } catch { continue; }
+  }
+
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const relativePath = path.relative(SANDBOX_ROOT, targetPath) || '.';
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      path: relativePath,
+      absolutePath: targetPath,
+      parent: relativePath !== '.' ? path.dirname(relativePath) || '.' : null,
+      entries,
+      count: entries.length
+    }
+  });
 }
 
 /**
@@ -161,12 +310,30 @@ async function handle_grep(
   // Requires roles: [user,admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement grep logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'grep' } });
+  const { pattern, path: searchPath = '.', options = [], cwd } = body as any;
+
+  if (!pattern) {
+    return sendJSON(res, 400, { success: false, error: 'Missing pattern' });
+  }
+
+  const workingDir = resolveWorkingDir(cwd);
+  const args = ['-r', '-n', '--color=never', ...options, pattern, searchPath];
+  const cmdString = ['grep', ...args].join(' ');
+  const result = await execute(cmdString, { role: 'user', cwd: workingDir });
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      matches: result.stdout?.split('\n').filter(Boolean) || [],
+      count: result.stdout?.split('\n').filter(Boolean).length || 0,
+      stderr: result.stderr
+    },
+    warning: result.warning
+  });
 }
 
 /**
@@ -181,12 +348,28 @@ async function handle_find(
   // Requires roles: [user,admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement find logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'find' } });
+  const { pattern, path: searchPath = '.', options = [], cwd } = body as any;
+
+  const workingDir = resolveWorkingDir(cwd);
+  const args = [searchPath];
+  if (pattern) args.push('-name', pattern);
+  args.push(...options);
+
+  const cmdString = ['find', ...args].join(' ');
+  const result = await execute(cmdString, { role: 'user', cwd: workingDir });
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      files: result.stdout?.split('\n').filter(Boolean) || [],
+      count: result.stdout?.split('\n').filter(Boolean).length || 0
+    },
+    warning: result.warning
+  });
 }
 
 /**
@@ -201,12 +384,31 @@ async function handle_cat(
   // Requires roles: [user,admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement cat logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'cat' } });
+  const { path: filePath, options = [], cwd } = body as any;
+
+  if (!filePath) {
+    return sendJSON(res, 400, { success: false, error: 'Missing path' });
+  }
+
+  const workingDir = resolveWorkingDir(cwd);
+  const cmdString = ['cat', ...options, filePath].join(' ');
+  const result = await execute(cmdString, { role: 'user', cwd: workingDir });
+
+  if (!result.success) {
+    return sendJSON(res, 400, { success: false, error: result.error });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      content: result.stdout,
+      lines: result.stdout?.split('\n').length || 0
+    }
+  });
 }
 
 /**
@@ -221,12 +423,40 @@ async function handle_exec(
   // Requires roles: [admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement exec logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'exec' } });
+  const { command, args = [], cwd } = body as any;
+
+  if (!command) {
+    return sendJSON(res, 400, { success: false, error: 'Missing command' });
+  }
+
+  if (!SEARCH_COMMANDS.includes(command)) {
+    return sendJSON(res, 403, { success: false, error: `Command not allowed. Allowed: ${SEARCH_COMMANDS.join(', ')}` });
+  }
+
+  const workingDir = resolveWorkingDir(cwd);
+  const expandedArgs = expandGlobs(args, workingDir);
+  const validation = validateCommand(command, expandedArgs, { role: 'user' });
+
+  if (!validation.ok) {
+    return sendJSON(res, 403, { success: false, error: validation.reason || 'Validation failed' });
+  }
+
+  const cmdString = [command, ...expandedArgs].join(' ');
+  const result = await execute(cmdString, { role: 'user', cwd: workingDir });
+
+  if (!result.success) {
+    return sendJSON(res, 400, { success: false, error: result.error, warning: result.warning });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: { stdout: result.stdout, stderr: result.stderr, code: result.code },
+    warning: result.warning
+  });
 }
 
 /**
@@ -241,12 +471,36 @@ async function handle_feedback(
   // Requires roles: [user,admin,shell]
   if (AUTH_REQUIRED) {
     if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
-    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r));
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  // TODO: Implement feedback logic
-  sendJSON(res, 200, { success: true, data: { endpoint: 'feedback' } });
+  // Handle GET for reading feedback
+  if (req.method === 'GET') {
+    if (!fs.existsSync(FEEDBACK_FILE)) {
+      return sendJSON(res, 200, { success: true, data: { entries: [], count: 0 } });
+    }
+    const content = fs.readFileSync(FEEDBACK_FILE, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    const entries = lines.map(line => { try { return JSON.parse(line); } catch { return { raw: line }; } });
+    return sendJSON(res, 200, { success: true, data: { entries, count: entries.length } });
+  }
+
+  // POST for submitting feedback
+  const { message, type = 'info', context } = body as any;
+
+  if (!message) {
+    return sendJSON(res, 400, { success: false, error: 'Missing message' });
+  }
+
+  const timestamp = new Date().toISOString();
+  const record = { timestamp, type, message, context: context || null };
+  fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(record) + '\n', 'utf-8');
+
+  sendJSON(res, 200, {
+    success: true,
+    data: { recorded: true, timestamp, file: FEEDBACK_FILE }
+  });
 }
 
 // ============================================================================
@@ -361,8 +615,16 @@ async function handleRequest(
 }
 
 // ============================================================================
-// WebSocket Handler
+// WebSocket Shell Session
 // ============================================================================
+
+interface ShellSession {
+  ws: WebSocket;
+  user: TokenPayload;
+  process: ChildProcessWithoutNullStreams | null;
+  currentDir: string;
+  inputBuffer: string;
+}
 
 function setupWebSocket(server: http.Server | https.Server): void {
   const wss = new WebSocketServer({ server });
@@ -386,33 +648,174 @@ function setupWebSocket(server: http.Server | https.Server): void {
 
     // Check for required roles
     const requiredRoles = ['shell'];
-    const hasRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r));
-    if (!hasRole) {
-      ws.send(JSON.stringify({ type: 'error', data: 'Insufficient permissions' }));
+    const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
+    if (!hasRequiredRole) {
+      ws.send(JSON.stringify({ type: 'error', data: 'Shell access requires role: ' + requiredRoles.join(', ') }));
       ws.close(1008, 'Access denied');
       return;
     }
 
-    console.log(`WebSocket connection from ${payload.email}`);
-    handleWebSocketConnection(ws, payload);
+    console.log(`Shell session started for ${payload.email}`);
+    handleShellConnection(ws, payload);
   });
 }
 
-function handleWebSocketConnection(ws: WebSocket, user: TokenPayload): void {
-  ws.send(JSON.stringify({ type: 'connected', user: user.email }));
+function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
+  const session: ShellSession = {
+    ws,
+    user,
+    process: null,
+    currentDir: SANDBOX_ROOT,
+    inputBuffer: ''
+  };
 
-  ws.on('message', (data: Buffer) => {
+  // Send welcome message
+  const welcome = `\r\nConnected to UnifyWeaver Shell\r\nUser: ${user.email} [${user.roles.join(', ')}]\r\nWorking directory: ${SANDBOX_ROOT}\r\nType "help" for commands, "exit" to disconnect\r\n\r\n`;
+  ws.send(JSON.stringify({ type: 'output', data: welcome }));
+  ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+
+  ws.on('message', (data: Buffer | string) => {
     try {
       const msg = JSON.parse(data.toString());
-      // Handle WebSocket messages
-      ws.send(JSON.stringify({ type: 'echo', data: msg }));
+      if (msg.type === 'input') {
+        handleShellInput(session, msg.data);
+      }
     } catch (err) {
-      ws.send(JSON.stringify({ type: 'error', data: 'Invalid message format' }));
+      console.error('Shell message error:', err);
     }
   });
 
   ws.on('close', () => {
-    console.log(`WebSocket disconnected: ${user.email}`);
+    if (session.process) {
+      session.process.kill();
+      session.process = null;
+    }
+    console.log(`Shell session closed for ${user.email}`);
+  });
+}
+
+function handleShellInput(session: ShellSession, char: string): void {
+  const { ws } = session;
+
+  // Enter key
+  if (char === '\r' || char === '\n') {
+    ws.send(JSON.stringify({ type: 'output', data: '\r\n' }));
+    const command = session.inputBuffer.trim();
+    session.inputBuffer = '';
+    if (command) {
+      executeShellCommand(session, command);
+    } else {
+      ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+    }
+  }
+  // Backspace
+  else if (char === '\x7f' || char === '\b') {
+    if (session.inputBuffer.length > 0) {
+      session.inputBuffer = session.inputBuffer.slice(0, -1);
+      ws.send(JSON.stringify({ type: 'output', data: '\b \b' }));
+    }
+  }
+  // Ctrl+C
+  else if (char === '\x03') {
+    if (session.process) {
+      session.process.kill('SIGINT');
+      session.process = null;
+    }
+    ws.send(JSON.stringify({ type: 'output', data: '^C\r\n' }));
+    session.inputBuffer = '';
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+  }
+  // Printable characters
+  else if (char >= ' ' && char <= '~') {
+    session.inputBuffer += char;
+    ws.send(JSON.stringify({ type: 'output', data: char }));
+  }
+}
+
+function executeShellCommand(session: ShellSession, command: string): void {
+  const { ws } = session;
+
+  // Built-in: help
+  if (command === 'help') {
+    const helpText = `\r\nUnifyWeaver Shell - Built-in Commands:\r\n  help    - Show this help\r\n  cd DIR  - Change directory\r\n  pwd     - Print working directory\r\n  exit    - Disconnect\r\n\r\nYou can run any shell command. Output is streamed in real-time.\r\n\r\n`;
+    ws.send(JSON.stringify({ type: 'output', data: helpText }));
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+    return;
+  }
+
+  // Built-in: exit
+  if (command === 'exit' || command === 'quit') {
+    ws.send(JSON.stringify({ type: 'output', data: 'Goodbye!\r\n' }));
+    ws.close();
+    return;
+  }
+
+  // Built-in: cd
+  if (command.startsWith('cd ') || command === 'cd') {
+    const targetDir = command.slice(3).trim() || SANDBOX_ROOT;
+    let newDir: string;
+
+    if (path.isAbsolute(targetDir)) {
+      newDir = targetDir;
+    } else if (targetDir === '~') {
+      newDir = SANDBOX_ROOT;
+    } else if (targetDir.startsWith('~/')) {
+      newDir = path.join(SANDBOX_ROOT, targetDir.slice(2));
+    } else {
+      newDir = path.resolve(session.currentDir, targetDir);
+    }
+
+    // Security: ensure within sandbox
+    if (!newDir.startsWith(SANDBOX_ROOT)) {
+      ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mcd: Access denied - outside sandbox\x1b[0m\r\n` }));
+      ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+      return;
+    }
+
+    if (fs.existsSync(newDir) && fs.statSync(newDir).isDirectory()) {
+      session.currentDir = newDir;
+    } else {
+      ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mcd: ${targetDir}: No such directory\x1b[0m\r\n` }));
+    }
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+    return;
+  }
+
+  // Built-in: pwd
+  if (command === 'pwd') {
+    ws.send(JSON.stringify({ type: 'output', data: session.currentDir + '\r\n' }));
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+    return;
+  }
+
+  // Execute shell command
+  const proc = spawn('sh', ['-c', command], {
+    cwd: session.currentDir,
+    env: { ...process.env, HOME: SANDBOX_ROOT, TERM: 'xterm-256color' }
+  });
+
+  session.process = proc;
+
+  proc.stdout.on('data', (data: Buffer) => {
+    ws.send(JSON.stringify({ type: 'output', data: data.toString().replace(/\n/g, '\r\n') }));
+  });
+
+  proc.stderr.on('data', (data: Buffer) => {
+    ws.send(JSON.stringify({ type: 'output', data: `\x1b[31m${data.toString().replace(/\n/g, '\r\n')}\x1b[0m` }));
+  });
+
+  proc.on('close', (code: number) => {
+    session.process = null;
+    if (code !== 0) {
+      ws.send(JSON.stringify({ type: 'output', data: `\x1b[33m[exit code: ${code}]\x1b[0m\r\n` }));
+    }
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+  });
+
+  proc.on('error', (err: Error) => {
+    session.process = null;
+    ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mError: ${err.message}\x1b[0m\r\n` }));
+    ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
   });
 }
 

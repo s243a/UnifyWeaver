@@ -252,13 +252,13 @@ function hasRole(payload: TokenPayload | null, role: Role): boolean {
 
 function canAccessShell(payload: TokenPayload | null): boolean {
   if (!payload) return false;
-  return roles.includes('shell');
+  return payload.roles.includes('shell');
 }
 
 function canExecuteCommands(payload: TokenPayload | null): boolean {
   if (!payload) return false;
   const roles = payload.roles;
-  return roles.includes('shell') || roles.includes('admin');
+  return payload.roles.includes('shell') || roles.includes('admin');
 }
 
 function canBrowse(payload: TokenPayload | null): boolean {
@@ -270,7 +270,7 @@ function canBrowse(payload: TokenPayload | null): boolean {
 // Default Users
 // ============================================================================
 
-const DEFAULT_USERS = [
+const DEFAULT_USERS: { email: string; password: string; roles: Role[] }[] = [
   { email: 'shell@local', password: 'shell', roles: ['shell', 'admin', 'user'] },
   { email: 'admin@local', password: 'admin', roles: ['admin', 'user'] },
   { email: 'user@local', password: 'user', roles: ['user'] }

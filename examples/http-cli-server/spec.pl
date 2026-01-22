@@ -15,6 +15,7 @@
 :- use_module('../../src/unifyweaver/sources/service_source').
 :- use_module('../../src/unifyweaver/glue/http_server_generator').
 :- use_module('../../src/unifyweaver/glue/auth_generator').
+:- use_module('../../src/unifyweaver/glue/command_proxy_generator').
 
 %% ============================================================================
 %% SERVICE SPECIFICATION
@@ -127,15 +128,20 @@ generate_all :-
     % Generate auth config JSON
     generate_auth_config(AuthSpec, AuthConfigJSON),
 
+    % Generate command proxy
+    generate_command_proxy([sandbox_root('$HOME/sandbox')], typescript, CmdProxyCode),
+
     % Write files
     write_file('generated/server.ts', ServerCode),
     write_file('generated/auth.ts', AuthCode),
     write_file('generated/auth-config.json', AuthConfigJSON),
+    write_file('generated/command-proxy.ts', CmdProxyCode),
 
     format('Generated files:~n'),
     format('  - generated/server.ts~n'),
     format('  - generated/auth.ts~n'),
-    format('  - generated/auth-config.json~n').
+    format('  - generated/auth-config.json~n'),
+    format('  - generated/command-proxy.ts~n').
 
 %! write_file(+Path, +Content) is det
 %

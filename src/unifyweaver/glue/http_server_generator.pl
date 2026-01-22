@@ -38,6 +38,8 @@
 
 :- use_module(library(lists)).
 :- use_module('../sources/service_source').
+% Note: server_components.pl provides reusable component generators
+% but endpoint logic is implemented directly here for simplicity.
 
 %% ============================================================================
 %% MAIN GENERATION ENTRY POINTS
@@ -112,7 +114,7 @@ generate_server_imports(ServiceSpec, typescript, Code) :-
     service_websocket(ServiceSpec, WSConfig),
 
     % Base imports
-    BaseImports = 'import * as http from \'http\';\nimport * as url from \'url\';\nimport * as path from \'path\';\nimport * as fs from \'fs\';',
+    BaseImports = 'import * as http from \'http\';\nimport * as url from \'url\';\nimport * as path from \'path\';\nimport * as fs from \'fs\';\nimport { execSync, spawn, ChildProcessWithoutNullStreams } from \'child_process\';',
 
     % HTTPS import if needed
     (   https_enabled(HTTPSConfig)
@@ -127,9 +129,12 @@ generate_server_imports(ServiceSpec, typescript, Code) :-
     ),
 
     % Auth import
-    AuthImport = 'import {\n  login,\n  verifyToken,\n  getUserFromToken,\n  hasRole,\n  TokenPayload\n} from \'./auth\';',
+    AuthImport = 'import {\n  login,\n  verifyToken,\n  getUserFromToken,\n  hasRole,\n  TokenPayload,\n  Role\n} from \'./auth\';',
 
-    atomic_list_concat([BaseImports, HTTPSImport, WSImport, AuthImport], '\n', Code).
+    % Command proxy import
+    CmdProxyImport = 'import {\n  execute,\n  validateCommand,\n  listCommands,\n  Risk,\n  SANDBOX_ROOT\n} from \'./command-proxy\';',
+
+    atomic_list_concat([BaseImports, HTTPSImport, WSImport, AuthImport, CmdProxyImport], '\n', Code).
 
 %% ============================================================================
 %% CONFIG GENERATION
@@ -155,7 +160,13 @@ const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 const ALLOWED_ORIGINS = ~w;
 
 // Authentication: set AUTH_REQUIRED=true to require login
-const AUTH_REQUIRED = process.env.AUTH_REQUIRED === \'true\';', [Port, OriginsArray]).
+const AUTH_REQUIRED = process.env.AUTH_REQUIRED === \'true\';
+
+// Commands allowed for search operations
+const SEARCH_COMMANDS = [\'grep\', \'find\', \'cat\', \'head\', \'tail\', \'ls\', \'wc\', \'pwd\'];
+
+// Feedback log file
+const FEEDBACK_FILE = process.env.FEEDBACK_FILE || path.join(SANDBOX_ROOT, \'comet-feedback.log\');', [Port, OriginsArray]).
 
 origins_to_ts_array(Origins, Array) :-
     maplist(origin_to_string, Origins, Strings),
@@ -163,7 +174,7 @@ origins_to_ts_array(Origins, Array) :-
     format(atom(Array), '[~w]', [StringsJoined]).
 
 origin_to_string(Origin, String) :-
-    format(atom(String), '\'~w\'', [Origin]).
+    format(atom(String), '''~w''', [Origin]).
 
 %% ============================================================================
 %% TYPES GENERATION
@@ -178,10 +189,56 @@ interface APIResponse {
   success: boolean;
   data?: unknown;
   error?: string;
+  warning?: string;
 }
 
 interface RequestBody {
   [key: string]: unknown;
+}
+
+interface FileEntry {
+  name: string;
+  type: \'file\' | \'directory\';
+  size?: number;
+  modified?: string;
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+function resolveWorkingDir(cwd?: string): string {
+  if (!cwd || cwd === \'.\') return SANDBOX_ROOT;
+  const resolved = path.resolve(SANDBOX_ROOT, cwd);
+  if (!resolved.startsWith(SANDBOX_ROOT)) return SANDBOX_ROOT;
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return SANDBOX_ROOT;
+  return resolved;
+}
+
+function expandGlobs(args: string[], cwd: string): string[] {
+  const expanded: string[] = [];
+  for (const arg of args) {
+    if (arg.includes(\'*\') || arg.includes(\'?\')) {
+      try {
+        const result = execSync(`printf \'%s\\\\n\' ${arg}`, {
+          cwd,
+          encoding: \'utf-8\',
+          timeout: 5000,
+          shell: \'/bin/sh\'
+        }).trim();
+        if (result && result !== arg) {
+          expanded.push(...result.split(\'\\n\').filter(Boolean));
+        } else {
+          expanded.push(arg);
+        }
+      } catch {
+        expanded.push(arg);
+      }
+    } else {
+      expanded.push(arg);
+    }
+  }
+  return expanded;
 }'.
 
 %% ============================================================================
@@ -200,6 +257,7 @@ generate_ts_endpoint_handler(Endpoint, Code) :-
     endpoint_path(Endpoint, Path),
     endpoint_roles(Endpoint, Roles),
     endpoint_public(Endpoint, IsPublic),
+    endpoint_handler_type(Endpoint, HandlerType),
 
     % Generate role check if not public
     (   IsPublic == true
@@ -207,8 +265,11 @@ generate_ts_endpoint_handler(Endpoint, Code) :-
     ;   Roles == []
     ->  RoleCheck = '  // Requires authentication\n  if (AUTH_REQUIRED && !user) {\n    return sendJSON(res, 401, { success: false, error: \'Authentication required\' });\n  }'
     ;   roles_to_ts_array_simple(Roles, RolesArray),
-        format(atom(RoleCheck), '  // Requires roles: ~w\n  if (AUTH_REQUIRED) {\n    if (!user) return sendJSON(res, 401, { success: false, error: \'Authentication required\' });\n    const hasRequiredRole = ~w.some(r => user.roles.includes(r));\n    if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: \'Insufficient permissions\' });\n  }', [Roles, RolesArray])
+        format(atom(RoleCheck), '  // Requires roles: ~w\n  if (AUTH_REQUIRED) {\n    if (!user) return sendJSON(res, 401, { success: false, error: \'Authentication required\' });\n    const hasRequiredRole = ~w.some(r => user.roles.includes(r as Role));\n    if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: \'Insufficient permissions\' });\n  }', [Roles, RolesArray])
     ),
+
+    % Generate handler body based on type
+    generate_handler_body(HandlerType, Name, HandlerBody),
 
     upcase_atom(Method, MethodUpper),
     format(atom(Code), '/**
@@ -222,9 +283,271 @@ async function handle_~w(
 ): Promise<void> {
 ~w
 
-  // TODO: Implement ~w logic
-  sendJSON(res, 200, { success: true, data: { endpoint: \'~w\' } });
-}', [MethodUpper, Path, Name, Name, RoleCheck, Name, Name]).
+~w
+}', [MethodUpper, Path, Name, Name, RoleCheck, HandlerBody]).
+
+%! endpoint_handler_type(+Endpoint, -Type) is det
+%  Determine the handler type from endpoint name/path
+endpoint_handler_type(Endpoint, Type) :-
+    endpoint_name(Endpoint, Name),
+    handler_type_from_name(Name, Type), !.
+endpoint_handler_type(_, custom).
+
+handler_type_from_name(health, health) :- !.
+handler_type_from_name(auth_status, auth_status) :- !.
+handler_type_from_name(auth_login, login) :- !.
+handler_type_from_name(auth_me, auth_me) :- !.
+handler_type_from_name(commands, commands) :- !.
+handler_type_from_name(browse, browse) :- !.
+handler_type_from_name(grep, grep) :- !.
+handler_type_from_name(find, find) :- !.
+handler_type_from_name(cat, cat) :- !.
+handler_type_from_name(exec, exec) :- !.
+handler_type_from_name(feedback, feedback) :- !.
+handler_type_from_name(_, custom).
+
+%! generate_handler_body(+Type, +Name, -Body) is det
+%  Generate the handler implementation body
+generate_handler_body(health, _, Body) :-
+    Body = '  sendJSON(res, 200, {
+    success: true,
+    data: {
+      status: \'ok\',
+      sandboxRoot: SANDBOX_ROOT,
+      timestamp: new Date().toISOString()
+    }
+  });'.
+
+generate_handler_body(auth_status, _, Body) :-
+    Body = '  sendJSON(res, 200, {
+    success: true,
+    data: {
+      authRequired: AUTH_REQUIRED,
+      authenticated: user !== null,
+      user: user ? { id: user.sub, email: user.email, roles: user.roles } : null
+    }
+  });'.
+
+generate_handler_body(login, _, Body) :-
+    Body = '  const { email, password } = body as any;
+
+  if (!email || !password) {
+    return sendJSON(res, 400, { success: false, error: \'Email and password required\' });
+  }
+
+  const result = login(email, password);
+
+  if (!result.success) {
+    return sendJSON(res, 401, { success: false, error: result.error || \'Login failed\' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: { token: result.token, user: result.user }
+  });'.
+
+generate_handler_body(auth_me, _, Body) :-
+    Body = '  if (!user) {
+    return sendJSON(res, 401, { success: false, error: \'Not authenticated\' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      id: user.sub,
+      email: user.email,
+      roles: user.roles,
+      permissions: user.permissions
+    }
+  });'.
+
+generate_handler_body(commands, _, Body) :-
+    Body = '  const commands = listCommands().filter(c => SEARCH_COMMANDS.includes(c.name) || c.risk === Risk.SAFE);
+  sendJSON(res, 200, {
+    success: true,
+    data: { commands, searchCommands: SEARCH_COMMANDS }
+  });'.
+
+generate_handler_body(browse, _, Body) :-
+    Body = '  const { path: browsePath = \'.\' } = body as any;
+
+  const targetPath = path.resolve(SANDBOX_ROOT, browsePath);
+  if (!targetPath.startsWith(SANDBOX_ROOT)) {
+    return sendJSON(res, 403, { success: false, error: \'Path outside sandbox\' });
+  }
+
+  if (!fs.existsSync(targetPath)) {
+    return sendJSON(res, 404, { success: false, error: \'Path not found\' });
+  }
+
+  const stats = fs.statSync(targetPath);
+  if (!stats.isDirectory()) {
+    return sendJSON(res, 400, { success: false, error: \'Not a directory\' });
+  }
+
+  const items = fs.readdirSync(targetPath);
+  const entries: FileEntry[] = [];
+
+  for (const name of items) {
+    if (name.startsWith(\'.\') && browsePath !== \'.\') continue;
+    try {
+      const itemPath = path.join(targetPath, name);
+      const itemStats = fs.statSync(itemPath);
+      entries.push({
+        name,
+        type: itemStats.isDirectory() ? \'directory\' : \'file\',
+        size: itemStats.isFile() ? itemStats.size : undefined,
+        modified: itemStats.mtime.toISOString()
+      });
+    } catch { continue; }
+  }
+
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return a.type === \'directory\' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const relativePath = path.relative(SANDBOX_ROOT, targetPath) || \'.\';
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      path: relativePath,
+      absolutePath: targetPath,
+      parent: relativePath !== \'.\' ? path.dirname(relativePath) || \'.\' : null,
+      entries,
+      count: entries.length
+    }
+  });'.
+
+generate_handler_body(grep, _, Body) :-
+    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd } = body as any;
+
+  if (!pattern) {
+    return sendJSON(res, 400, { success: false, error: \'Missing pattern\' });
+  }
+
+  const workingDir = resolveWorkingDir(cwd);
+  const args = [\'-r\', \'-n\', \'--color=never\', ...options, pattern, searchPath];
+  const cmdString = [\'grep\', ...args].join(\' \');
+  const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      matches: result.stdout?.split(\'\\n\').filter(Boolean) || [],
+      count: result.stdout?.split(\'\\n\').filter(Boolean).length || 0,
+      stderr: result.stderr
+    },
+    warning: result.warning
+  });'.
+
+generate_handler_body(find, _, Body) :-
+    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd } = body as any;
+
+  const workingDir = resolveWorkingDir(cwd);
+  const args = [searchPath];
+  if (pattern) args.push(\'-name\', pattern);
+  args.push(...options);
+
+  const cmdString = [\'find\', ...args].join(\' \');
+  const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      files: result.stdout?.split(\'\\n\').filter(Boolean) || [],
+      count: result.stdout?.split(\'\\n\').filter(Boolean).length || 0
+    },
+    warning: result.warning
+  });'.
+
+generate_handler_body(cat, _, Body) :-
+    Body = '  const { path: filePath, options = [], cwd } = body as any;
+
+  if (!filePath) {
+    return sendJSON(res, 400, { success: false, error: \'Missing path\' });
+  }
+
+  const workingDir = resolveWorkingDir(cwd);
+  const cmdString = [\'cat\', ...options, filePath].join(\' \');
+  const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
+
+  if (!result.success) {
+    return sendJSON(res, 400, { success: false, error: result.error });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      content: result.stdout,
+      lines: result.stdout?.split(\'\\n\').length || 0
+    }
+  });'.
+
+generate_handler_body(exec, _, Body) :-
+    Body = '  const { command, args = [], cwd } = body as any;
+
+  if (!command) {
+    return sendJSON(res, 400, { success: false, error: \'Missing command\' });
+  }
+
+  if (!SEARCH_COMMANDS.includes(command)) {
+    return sendJSON(res, 403, { success: false, error: `Command not allowed. Allowed: ${SEARCH_COMMANDS.join(\', \')}` });
+  }
+
+  const workingDir = resolveWorkingDir(cwd);
+  const expandedArgs = expandGlobs(args, workingDir);
+  const validation = validateCommand(command, expandedArgs, { role: \'user\' });
+
+  if (!validation.ok) {
+    return sendJSON(res, 403, { success: false, error: validation.reason || \'Validation failed\' });
+  }
+
+  const cmdString = [command, ...expandedArgs].join(\' \');
+  const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
+
+  if (!result.success) {
+    return sendJSON(res, 400, { success: false, error: result.error, warning: result.warning });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: { stdout: result.stdout, stderr: result.stderr, code: result.code },
+    warning: result.warning
+  });'.
+
+generate_handler_body(feedback, _, Body) :-
+    Body = '  // Handle GET for reading feedback
+  if (req.method === \'GET\') {
+    if (!fs.existsSync(FEEDBACK_FILE)) {
+      return sendJSON(res, 200, { success: true, data: { entries: [], count: 0 } });
+    }
+    const content = fs.readFileSync(FEEDBACK_FILE, \'utf-8\');
+    const lines = content.trim().split(\'\\n\').filter(Boolean);
+    const entries = lines.map(line => { try { return JSON.parse(line); } catch { return { raw: line }; } });
+    return sendJSON(res, 200, { success: true, data: { entries, count: entries.length } });
+  }
+
+  // POST for submitting feedback
+  const { message, type = \'info\', context } = body as any;
+
+  if (!message) {
+    return sendJSON(res, 400, { success: false, error: \'Missing message\' });
+  }
+
+  const timestamp = new Date().toISOString();
+  const record = { timestamp, type, message, context: context || null };
+  fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(record) + \'\\n\', \'utf-8\');
+
+  sendJSON(res, 200, {
+    success: true,
+    data: { recorded: true, timestamp, file: FEEDBACK_FILE }
+  });'.
+
+generate_handler_body(custom, Name, Body) :-
+    format(atom(Body), '  // TODO: Implement ~w logic
+  sendJSON(res, 200, { success: true, data: { endpoint: \'~w\' } });', [Name, Name]).
 
 roles_to_ts_array_simple(Roles, Array) :-
     maplist(role_to_string, Roles, Strings),
@@ -232,7 +555,7 @@ roles_to_ts_array_simple(Roles, Array) :-
     format(atom(Array), '[~w]', [StringsJoined]).
 
 role_to_string(Role, String) :-
-    format(atom(String), '\'~w\'', [Role]).
+    format(atom(String), '''~w''', [Role]).
 
 %% ============================================================================
 %% REQUEST ROUTER GENERATION
@@ -342,12 +665,19 @@ generate_websocket_handler(ServiceSpec, typescript, Code) :-
     service_websocket(ServiceSpec, WSConfig),
     (   WSConfig == none
     ->  Code = '// No WebSocket configured'
-    ;   websocket_path(WSConfig, WSPath),
-        websocket_roles(WSConfig, WSRoles),
+    ;   websocket_roles(WSConfig, WSRoles),
         roles_to_ts_array_simple(WSRoles, RolesArray),
         format(atom(Code), '// ============================================================================
-// WebSocket Handler
+// WebSocket Shell Session
 // ============================================================================
+
+interface ShellSession {
+  ws: WebSocket;
+  user: TokenPayload;
+  process: ChildProcessWithoutNullStreams | null;
+  currentDir: string;
+  inputBuffer: string;
+}
 
 function setupWebSocket(server: http.Server | https.Server): void {
   const wss = new WebSocketServer({ server });
@@ -371,33 +701,174 @@ function setupWebSocket(server: http.Server | https.Server): void {
 
     // Check for required roles
     const requiredRoles = ~w;
-    const hasRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r));
-    if (!hasRole) {
-      ws.send(JSON.stringify({ type: \'error\', data: \'Insufficient permissions\' }));
+    const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
+    if (!hasRequiredRole) {
+      ws.send(JSON.stringify({ type: \'error\', data: \'Shell access requires role: \' + requiredRoles.join(\', \') }));
       ws.close(1008, \'Access denied\');
       return;
     }
 
-    console.log(`WebSocket connection from ${payload.email}`);
-    handleWebSocketConnection(ws, payload);
+    console.log(`Shell session started for ${payload.email}`);
+    handleShellConnection(ws, payload);
   });
 }
 
-function handleWebSocketConnection(ws: WebSocket, user: TokenPayload): void {
-  ws.send(JSON.stringify({ type: \'connected\', user: user.email }));
+function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
+  const session: ShellSession = {
+    ws,
+    user,
+    process: null,
+    currentDir: SANDBOX_ROOT,
+    inputBuffer: \'\'
+  };
 
-  ws.on(\'message\', (data: Buffer) => {
+  // Send welcome message
+  const welcome = `\\r\\nConnected to UnifyWeaver Shell\\r\\nUser: ${user.email} [${user.roles.join(\', \')}]\\r\\nWorking directory: ${SANDBOX_ROOT}\\r\\nType \"help\" for commands, \"exit\" to disconnect\\r\\n\\r\\n`;
+  ws.send(JSON.stringify({ type: \'output\', data: welcome }));
+  ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+
+  ws.on(\'message\', (data: Buffer | string) => {
     try {
       const msg = JSON.parse(data.toString());
-      // Handle WebSocket messages
-      ws.send(JSON.stringify({ type: \'echo\', data: msg }));
+      if (msg.type === \'input\') {
+        handleShellInput(session, msg.data);
+      }
     } catch (err) {
-      ws.send(JSON.stringify({ type: \'error\', data: \'Invalid message format\' }));
+      console.error(\'Shell message error:\', err);
     }
   });
 
   ws.on(\'close\', () => {
-    console.log(`WebSocket disconnected: ${user.email}`);
+    if (session.process) {
+      session.process.kill();
+      session.process = null;
+    }
+    console.log(`Shell session closed for ${user.email}`);
+  });
+}
+
+function handleShellInput(session: ShellSession, char: string): void {
+  const { ws } = session;
+
+  // Enter key
+  if (char === \'\\r\' || char === \'\\n\') {
+    ws.send(JSON.stringify({ type: \'output\', data: \'\\r\\n\' }));
+    const command = session.inputBuffer.trim();
+    session.inputBuffer = \'\';
+    if (command) {
+      executeShellCommand(session, command);
+    } else {
+      ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+    }
+  }
+  // Backspace
+  else if (char === \'\\x7f\' || char === \'\\b\') {
+    if (session.inputBuffer.length > 0) {
+      session.inputBuffer = session.inputBuffer.slice(0, -1);
+      ws.send(JSON.stringify({ type: \'output\', data: \'\\b \\b\' }));
+    }
+  }
+  // Ctrl+C
+  else if (char === \'\\x03\') {
+    if (session.process) {
+      session.process.kill(\'SIGINT\');
+      session.process = null;
+    }
+    ws.send(JSON.stringify({ type: \'output\', data: \'^C\\r\\n\' }));
+    session.inputBuffer = \'\';
+    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+  }
+  // Printable characters
+  else if (char >= \' \' && char <= \'~~\') {
+    session.inputBuffer += char;
+    ws.send(JSON.stringify({ type: \'output\', data: char }));
+  }
+}
+
+function executeShellCommand(session: ShellSession, command: string): void {
+  const { ws } = session;
+
+  // Built-in: help
+  if (command === \'help\') {
+    const helpText = `\\r\\nUnifyWeaver Shell - Built-in Commands:\\r\\n  help    - Show this help\\r\\n  cd DIR  - Change directory\\r\\n  pwd     - Print working directory\\r\\n  exit    - Disconnect\\r\\n\\r\\nYou can run any shell command. Output is streamed in real-time.\\r\\n\\r\\n`;
+    ws.send(JSON.stringify({ type: \'output\', data: helpText }));
+    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+    return;
+  }
+
+  // Built-in: exit
+  if (command === \'exit\' || command === \'quit\') {
+    ws.send(JSON.stringify({ type: \'output\', data: \'Goodbye!\\r\\n\' }));
+    ws.close();
+    return;
+  }
+
+  // Built-in: cd
+  if (command.startsWith(\'cd \') || command === \'cd\') {
+    const targetDir = command.slice(3).trim() || SANDBOX_ROOT;
+    let newDir: string;
+
+    if (path.isAbsolute(targetDir)) {
+      newDir = targetDir;
+    } else if (targetDir === \'~~\') {
+      newDir = SANDBOX_ROOT;
+    } else if (targetDir.startsWith(\'~~/\')) {
+      newDir = path.join(SANDBOX_ROOT, targetDir.slice(2));
+    } else {
+      newDir = path.resolve(session.currentDir, targetDir);
+    }
+
+    // Security: ensure within sandbox
+    if (!newDir.startsWith(SANDBOX_ROOT)) {
+      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: Access denied - outside sandbox\\x1b[0m\\r\\n` }));
+      ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+      return;
+    }
+
+    if (fs.existsSync(newDir) && fs.statSync(newDir).isDirectory()) {
+      session.currentDir = newDir;
+    } else {
+      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: ${targetDir}: No such directory\\x1b[0m\\r\\n` }));
+    }
+    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+    return;
+  }
+
+  // Built-in: pwd
+  if (command === \'pwd\') {
+    ws.send(JSON.stringify({ type: \'output\', data: session.currentDir + \'\\r\\n\' }));
+    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+    return;
+  }
+
+  // Execute shell command
+  const proc = spawn(\'sh\', [\'-c\', command], {
+    cwd: session.currentDir,
+    env: { ...process.env, HOME: SANDBOX_ROOT, TERM: \'xterm-256color\' }
+  });
+
+  session.process = proc;
+
+  proc.stdout.on(\'data\', (data: Buffer) => {
+    ws.send(JSON.stringify({ type: \'output\', data: data.toString().replace(/\\n/g, \'\\r\\n\') }));
+  });
+
+  proc.stderr.on(\'data\', (data: Buffer) => {
+    ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31m${data.toString().replace(/\\n/g, \'\\r\\n\')}\\x1b[0m` }));
+  });
+
+  proc.on(\'close\', (code: number) => {
+    session.process = null;
+    if (code !== 0) {
+      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[33m[exit code: ${code}]\\x1b[0m\\r\\n` }));
+    }
+    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+  });
+
+  proc.on(\'error\', (err: Error) => {
+    session.process = null;
+    ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mError: ${err.message}\\x1b[0m\\r\\n` }));
+    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
   });
 }', [RolesArray])
     ).
