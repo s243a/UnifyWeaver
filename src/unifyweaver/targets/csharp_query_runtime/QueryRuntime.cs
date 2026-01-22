@@ -222,6 +222,16 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Computes the transitive closure of an edge relation while preserving invariant group columns
+    /// (e.g. label/category keyed reachability).
+    /// </summary>
+    public sealed record GroupedTransitiveClosureNode(
+        PredicateId EdgeRelation,
+        PredicateId Predicate,
+        IReadOnlyList<int> GroupIndices
+    ) : PlanNode;
+
+    /// <summary>
     /// Indicates which relation a recursive reference should read from.
     /// </summary>
     public enum RecursiveRefKind
@@ -729,6 +739,7 @@ namespace UnifyWeaver.QueryRuntime
                     case EmptyNode:
                     case UnitNode:
                     case TransitiveClosureNode:
+                    case GroupedTransitiveClosureNode:
                         return;
 
                     case ProgramNode program:
@@ -863,6 +874,7 @@ namespace UnifyWeaver.QueryRuntime
                 LimitNode limit => $"Limit count={limit.Count}",
                 OffsetNode offset => $"Offset count={offset.Count}",
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
+                GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -1162,6 +1174,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 case TransitiveClosureNode closure:
                     result = ExecuteTransitiveClosure(closure, context);
+                    break;
+
+                case GroupedTransitiveClosureNode closure:
+                    result = ExecuteGroupedTransitiveClosure(closure, context);
                     break;
 
                 case FixpointNode fixpoint:
@@ -5642,6 +5658,170 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteGroupedTransitiveClosure(GroupedTransitiveClosureNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (closure.GroupIndices is null) throw new ArgumentNullException(nameof(closure.GroupIndices));
+
+            var width = closure.Predicate.Arity;
+            if (width < 2)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var groupCount = closure.GroupIndices.Count;
+            if (groupCount == 0)
+            {
+                return ExecuteTransitiveClosure(new TransitiveClosureNode(closure.EdgeRelation, closure.Predicate), parentContext);
+            }
+
+            var maxRequiredIndex = 1;
+            var seen = new HashSet<int>();
+            for (var i = 0; i < groupCount; i++)
+            {
+                var index = closure.GroupIndices[i];
+                if (index < 0 || index >= width)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(closure.GroupIndices), $"Group index {index} is outside predicate width {width}.");
+                }
+
+                if (index == 0 || index == 1)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(closure.GroupIndices), $"Group index {index} overlaps closure endpoints.");
+                }
+
+                if (!seen.Add(index))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(closure.GroupIndices), $"Duplicate group index {index}.");
+                }
+
+                if (index > maxRequiredIndex)
+                {
+                    maxRequiredIndex = index;
+                }
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosure");
+
+                var predicate = closure.Predicate;
+                var edges = GetFactsList(closure.EdgeRelation, context);
+
+                var edgeKeyIndices = new int[groupCount + 1];
+                for (var i = 0; i < groupCount; i++)
+                {
+                    edgeKeyIndices[i] = closure.GroupIndices[i];
+                }
+                edgeKeyIndices[groupCount] = 0;
+
+                var succIndex = GetJoinIndex(closure.EdgeRelation, edgeKeyIndices, edges, context);
+                var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+
+                var visited = new HashSet<RowWrapper>(wrapperComparer);
+                var totalRows = new List<object[]>();
+                var delta = new List<object[]>();
+
+                foreach (var edge in edges)
+                {
+                    if (edge is null || edge.Length <= maxRequiredIndex)
+                    {
+                        continue;
+                    }
+
+                    var from = edge[0];
+                    var to = edge[1];
+
+                    var key = new object[groupCount + 2];
+                    for (var i = 0; i < groupCount; i++)
+                    {
+                        key[i] = edge[closure.GroupIndices[i]];
+                    }
+                    key[groupCount] = from;
+                    key[groupCount + 1] = to;
+
+                    if (visited.Add(new RowWrapper(key)))
+                    {
+                        totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, key));
+                        delta.Add(key);
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<object[]>();
+
+                    foreach (var pair in delta)
+                    {
+                        var lookup = new object[groupCount + 1];
+                        Array.Copy(pair, lookup, groupCount);
+                        lookup[groupCount] = pair[groupCount + 1];
+
+                        if (!succIndex.TryGetValue(new RowWrapper(lookup), out var bucket))
+                        {
+                            continue;
+                        }
+
+                        var from = pair[groupCount];
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length <= maxRequiredIndex)
+                            {
+                                continue;
+                            }
+
+                            var next = edge[1];
+
+                            var nextKey = new object[groupCount + 2];
+                            Array.Copy(pair, nextKey, groupCount);
+                            nextKey[groupCount] = from;
+                            nextKey[groupCount + 1] = next;
+
+                            if (visited.Add(new RowWrapper(nextKey)))
+                            {
+                                totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, nextKey));
+                                nextDelta.Add(nextKey);
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static object[] BuildGroupedClosureRow(
+            int width,
+            int groupCount,
+            IReadOnlyList<int> groupIndices,
+            object[] key)
+        {
+            var row = new object[width];
+            row[0] = key[groupCount];
+            row[1] = key[groupCount + 1];
+
+            for (var i = 0; i < groupCount; i++)
+            {
+                row[groupIndices[i]] = key[i];
+            }
+
+            return row;
         }
 
         private IEnumerable<object[]> ExecuteSeededTransitiveClosure(

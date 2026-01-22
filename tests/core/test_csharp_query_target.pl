@@ -23,6 +23,8 @@
 :- dynamic user:test_factorial_input/1.
 :- dynamic user:test_fib_param/2.
 :- dynamic user:test_recursive_label_path/3.
+:- dynamic user:test_label_cat_edge/4.
+:- dynamic user:test_label_cat_reach/4.
 :- dynamic user:test_cat/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_sparse_input_fact/3.
@@ -203,6 +205,7 @@ test_csharp_query_target :-
         verify_parameterized_need_allows_post_agg,
         verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
+        verify_grouped_transitive_closure_plan,
         verify_parameterized_reachability_plan,
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
@@ -481,6 +484,18 @@ setup_test_data :-
         test_recursive_label_path(X, Y, L),
         test_recursive_label_path(Y, Z, L)
     )),
+    assertz(user:test_label_cat_edge(a, b, red, cat1)),
+    assertz(user:test_label_cat_edge(b, c, red, cat1)),
+    assertz(user:test_label_cat_edge(a, b, red, cat2)),
+    assertz(user:test_label_cat_edge(a, d, blue, cat1)),
+    assertz(user:test_label_cat_edge(d, e, blue, cat1)),
+    assertz(user:(test_label_cat_reach(X, Y, L, Cat) :-
+        test_label_cat_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_label_cat_reach(X, Z, L, Cat) :-
+        test_label_cat_edge(X, Y, L, Cat),
+        test_label_cat_reach(Y, Z, L, Cat)
+    )),
     assertz(user:test_cat(cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(b, c, red, cat1)),
@@ -672,6 +687,8 @@ cleanup_test_data :-
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_recursive_label_path(_, _, _)),
+    retractall(user:test_label_cat_edge(_, _, _, _)),
+    retractall(user:test_label_cat_reach(_, _, _, _)),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
     retractall(user:mode(test_sparse_input_filtered(_, _, _))),
@@ -1926,6 +1943,28 @@ verify_recursive_plan :-
         width:2
     }),
     maybe_run_query_runtime(Plan, ['alice,bob', 'bob,charlie', 'alice,charlie']).
+
+verify_grouped_transitive_closure_plan :-
+    csharp_query_target:build_query_plan(test_label_cat_reach/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, transitive_closure_grouped{type:transitive_closure_grouped,
+        head:predicate{name:test_label_cat_reach, arity:4},
+        edge:predicate{name:test_label_cat_edge, arity:4},
+        group_indices:[2,3],
+        width:4
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'GroupedTransitiveClosureNode'),
+    sub_string(Source, _, _, _, 'new int[]{ 2, 3 }'),
+    maybe_run_query_runtime(Plan, [
+        'a,b,red,cat1',
+        'b,c,red,cat1',
+        'a,c,red,cat1',
+        'a,b,red,cat2',
+        'a,d,blue,cat1',
+        'd,e,blue,cat1',
+        'a,e,blue,cat1'
+    ]).
 
 verify_parameterized_reachability_plan :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
