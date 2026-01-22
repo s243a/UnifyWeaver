@@ -3235,32 +3235,56 @@ namespace UnifyWeaver.QueryRuntime
                 EvaluationContext context,
                 out PredicateId predicate,
                 out RecursiveRefKind kind,
-                out IReadOnlyList<object[]> rows)
+                out IReadOnlyList<object[]> rows,
+                out Func<object[], bool>? filter)
             {
                 predicate = default;
                 kind = default;
                 rows = Array.Empty<object[]>();
+                filter = null;
 
-                switch (node)
+                while (true)
                 {
-                    case RecursiveRefNode recursive:
-                        if (!recursive.Predicate.Equals(context.Current))
+                    switch (node)
+                    {
+                        case SelectionNode selection:
                         {
-                            throw new NotSupportedException(
-                                $"Cross-predicate recursion is not supported (referenced {recursive.Predicate} while evaluating {context.Current}).");
+                            var selectionPredicate = selection.Predicate;
+                            if (filter is null)
+                            {
+                                filter = selectionPredicate;
+                            }
+                            else
+                            {
+                                var outer = filter;
+                                filter = tuple => outer(tuple) && selectionPredicate(tuple);
+                            }
+
+                            node = selection.Input;
+                            continue;
                         }
 
-                        predicate = recursive.Predicate;
-                        kind = recursive.Kind;
-                        break;
+                        case RecursiveRefNode recursive:
+                            if (!recursive.Predicate.Equals(context.Current))
+                            {
+                                throw new NotSupportedException(
+                                    $"Cross-predicate recursion is not supported (referenced {recursive.Predicate} while evaluating {context.Current}).");
+                            }
 
-                    case CrossRefNode cross:
-                        predicate = cross.Predicate;
-                        kind = cross.Kind;
-                        break;
+                            predicate = recursive.Predicate;
+                            kind = recursive.Kind;
+                            break;
 
-                    default:
-                        return false;
+                        case CrossRefNode cross:
+                            predicate = cross.Predicate;
+                            kind = cross.Kind;
+                            break;
+
+                        default:
+                            return false;
+                    }
+
+                    break;
                 }
 
                 var map = kind == RecursiveRefKind.Total ? context.Totals : context.Deltas;
@@ -3271,12 +3295,16 @@ namespace UnifyWeaver.QueryRuntime
             PredicateId leftPredicate = default;
             RecursiveRefKind leftKind = default;
             IReadOnlyList<object[]> leftRecursiveRows = Array.Empty<object[]>();
-            var leftIsRecursive = context is not null && TryGetRecursiveRows(join.Left, context, out leftPredicate, out leftKind, out leftRecursiveRows);
+            Func<object[], bool>? leftRecursiveFilter = null;
+            var leftIsRecursive = context is not null &&
+                                  TryGetRecursiveRows(join.Left, context, out leftPredicate, out leftKind, out leftRecursiveRows, out leftRecursiveFilter);
 
             PredicateId rightPredicate = default;
             RecursiveRefKind rightKind = default;
             IReadOnlyList<object[]> rightRecursiveRows = Array.Empty<object[]>();
-            var rightIsRecursive = context is not null && TryGetRecursiveRows(join.Right, context, out rightPredicate, out rightKind, out rightRecursiveRows);
+            Func<object[], bool>? rightRecursiveFilter = null;
+            var rightIsRecursive = context is not null &&
+                                   TryGetRecursiveRows(join.Right, context, out rightPredicate, out rightKind, out rightRecursiveRows, out rightRecursiveFilter);
 
             if (context is not null && (leftIsRecursive || rightIsRecursive))
             {
@@ -3324,6 +3352,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         foreach (var leftTuple in bucket)
                         {
+                            if (leftRecursiveFilter is not null && !leftRecursiveFilter(leftTuple)) continue;
                             yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                         }
                     }
@@ -3426,13 +3455,14 @@ namespace UnifyWeaver.QueryRuntime
                             continue;
                         }
 
-                        foreach (var leftTuple in leftBucket)
-                        {
-                            if (leftTuple is null) continue;
+                                        foreach (var leftTuple in leftBucket)
+                                        {
+                                            if (leftTuple is null) continue;
+                                            if (leftRecursiveFilter is not null && !leftRecursiveFilter(leftTuple)) continue;
 
-                            foreach (var probeRow in entry.Value)
-                            {
-                                var match = true;
+                                            foreach (var probeRow in entry.Value)
+                                            {
+                                                var match = true;
                                 for (var i = 0; i < joinKeyCount; i++)
                                 {
                                     if (i == pivotPos) continue;
@@ -3474,6 +3504,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     foreach (var leftTuple in bucket)
                     {
+                        if (leftRecursiveFilter is not null && !leftRecursiveFilter(leftTuple)) continue;
                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                     }
                 }
@@ -3500,6 +3531,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         foreach (var rightTuple in bucket)
                         {
+                            if (rightRecursiveFilter is not null && !rightRecursiveFilter(rightTuple)) continue;
                             yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                         }
                     }
@@ -3602,13 +3634,14 @@ namespace UnifyWeaver.QueryRuntime
                             continue;
                         }
 
-                        foreach (var rightTuple in rightBucket)
-                        {
-                            if (rightTuple is null) continue;
+                                        foreach (var rightTuple in rightBucket)
+                                        {
+                                            if (rightTuple is null) continue;
+                                            if (rightRecursiveFilter is not null && !rightRecursiveFilter(rightTuple)) continue;
 
-                            foreach (var probeRow in entry.Value)
-                            {
-                                var match = true;
+                                            foreach (var probeRow in entry.Value)
+                                            {
+                                                var match = true;
                                 for (var i = 0; i < joinKeyCount; i++)
                                 {
                                     if (i == pivotPos) continue;
@@ -3650,6 +3683,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     foreach (var rightTuple in bucket)
                     {
+                        if (rightRecursiveFilter is not null && !rightRecursiveFilter(rightTuple)) continue;
                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                     }
                 }
