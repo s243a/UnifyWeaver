@@ -964,6 +964,14 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
             metadata:_{classification:recursive, options:Options, modes:Modes},
             is_recursive:true
         }
+    ;   maybe_grouped_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations)
+    ->  Plan = plan{
+            head:HeadSpec,
+            root:Root,
+            relations:Relations,
+            metadata:_{classification:recursive, options:Options, modes:Modes},
+            is_recursive:true
+        }
     ;   (   eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes),
             with_suppressed_user_error(build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions))
         ->  true,
@@ -1025,6 +1033,81 @@ maybe_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Mod
         edge:EdgeSpec,
         width:2
     }.
+
+%% Grouped transitive closure optimisation ----------------------------------
+%
+% Detect a reachability pattern that carries invariant group columns:
+%   reach(X,Y,G...) :- edge(X,Y,G...).
+%   reach(X,Z,G...) :- edge(X,Y,G...), reach(Y,Z,G...).
+% or its forward-join equivalent.
+%
+% When found, emit a dedicated node so the runtime can compute closure keyed
+% by the invariant group columns without allocating join rows each iteration.
+
+maybe_grouped_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations) :-
+    GroupSpecs = [HeadSpec],
+    get_dict(arity, HeadSpec, Arity),
+    Arity > 2,
+    grouped_transitive_closure_supported_modes(Modes),
+    BaseClauses = [BaseClause],
+    RecClauses = [RecClause],
+    grouped_transitive_closure_base_clause(HeadSpec, BaseClause, EdgeSpec, GroupIndices),
+    grouped_transitive_closure_recursive_rule_clause(HeadSpec, EdgeSpec, RecClause),
+    get_dict(name, EdgeSpec, EdgePred),
+    get_dict(arity, EdgeSpec, EdgeArity),
+    ensure_relation(EdgePred, EdgeArity, [], Relations0),
+    dedup_relations(Relations0, Relations),
+    Root = transitive_closure_grouped{
+        type:transitive_closure_grouped,
+        head:HeadSpec,
+        edge:EdgeSpec,
+        group_indices:GroupIndices,
+        width:Arity
+    }.
+
+grouped_transitive_closure_supported_modes(Modes) :-
+    input_positions(Modes, Positions),
+    Positions == [].
+
+grouped_transitive_closure_base_clause(HeadSpec, Head-Body, EdgeSpec, GroupIndices) :-
+    get_dict(name, HeadSpec, Pred),
+    get_dict(arity, HeadSpec, Arity),
+    Head =.. [Pred, From, To|Groups],
+    var(From),
+    var(To),
+    forall(member(Arg, Groups), var(Arg)),
+    length([From, To|Groups], Arity),
+    body_to_list(Body, [EdgeTerm0]),
+    strip_module(EdgeTerm0, _, EdgeTerm),
+    EdgeTerm =.. [EdgePred, From, To|Groups],
+    length([From, To|Groups], EdgeArity),
+    EdgeArity == Arity,
+    EdgeSpec = predicate{name:EdgePred, arity:EdgeArity},
+    ArityMinus1 is Arity - 1,
+    numlist(2, ArityMinus1, GroupIndices).
+
+grouped_transitive_closure_recursive_rule_clause(HeadSpec, EdgeSpec, Head-Body) :-
+    get_dict(name, HeadSpec, Pred),
+    Head =.. [Pred, From, To|Groups],
+    var(From),
+    var(To),
+    forall(member(Arg, Groups), var(Arg)),
+    body_to_list(Body, [TermA0, TermB0]),
+    (   grouped_transitive_closure_edge_term(EdgeSpec, From, Mid, Groups, TermA0),
+        var(Mid),
+        strip_module(TermB0, _, RecTerm),
+        RecTerm =.. [Pred, Mid, To|Groups]
+    ;   strip_module(TermA0, _, RecTerm),
+        RecTerm =.. [Pred, From, Mid|Groups],
+        var(Mid),
+        grouped_transitive_closure_edge_term(EdgeSpec, Mid, To, Groups, TermB0)
+    ).
+
+grouped_transitive_closure_edge_term(predicate{name:EdgePred, arity:EdgeArity}, From, To, Groups, Term0) :-
+    strip_module(Term0, _, Term),
+    Term =.. [EdgePred, From, To|Groups],
+    length([From, To|Groups], EdgeArity),
+    forall(member(Arg, Groups), var(Arg)).
 
 transitive_closure_supported_modes(Modes) :-
     input_positions(Modes, Positions),
@@ -3367,6 +3450,16 @@ emit_plan_expression(Node, Expr) :-
     atom_string(Name, NameStr),
     format(atom(Expr), 'new TransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w))',
         [EdgeNameStr, EdgeArity, NameStr, Arity]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, transitive_closure_grouped), !,
+    get_dict(edge, Node, predicate{name:EdgeName, arity:EdgeArity}),
+    get_dict(head, Node, predicate{name:Name, arity:Arity}),
+    get_dict(group_indices, Node, GroupIndices),
+    int_array_literal(GroupIndices, GroupIndicesLiteral),
+    atom_string(EdgeName, EdgeNameStr),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new GroupedTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w)',
+        [EdgeNameStr, EdgeArity, NameStr, Arity, GroupIndicesLiteral]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, fixpoint), !,
     get_dict(base, Node, BaseNode),
