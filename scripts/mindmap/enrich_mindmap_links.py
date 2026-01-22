@@ -4,24 +4,30 @@ Enrich mindmap with Pearltrees links and RefPearl cross-references.
 
 This script adds:
 1. Pearltrees URL to the root node (if missing)
-2. cloudmapref links for RefPearl/AliasPearl children that point to other mindmaps
+2. cloudmapref links for RefPearl/AliasPearl children pointing to other mindmaps
+
+RefPearl/AliasPearl Link Resolution:
+- Uses the mindmap index (index.json) to get expected filenames
+- Links are relative cloudmapref paths (e.g., ./Title_id12345.smmx)
+- Links work even if target mindmap doesn't exist yet (progress tracking)
 
 Usage:
-    # Enrich a single mindmap
+    # Enrich using index for path resolution
     python3 scripts/mindmap/enrich_mindmap_links.py \
         --mindmap output/mindmaps_curated/Science_id10388356.smmx \
         --children-db output/children_index.db \
-        --mindmap-dir output/mindmaps_curated/
+        --index output/mindmaps_curated/index.json
 
     # Dry run
     python3 scripts/mindmap/enrich_mindmap_links.py \
         --mindmap output/mindmaps_curated/Science_id10388356.smmx \
         --children-db output/children_index.db \
-        --mindmap-dir output/mindmaps_curated/ \
+        --index output/mindmaps_curated/index.json \
         --dry-run
 """
 
 import argparse
+import json
 import os
 import re
 import sqlite3
@@ -42,8 +48,26 @@ def extract_tree_id(filename: str) -> Optional[str]:
     return None
 
 
+def load_mindmap_index(index_path: Path) -> Dict[str, str]:
+    """Load mindmap index from JSON file.
+
+    The index maps tree_id -> filename (e.g., "12345" -> "Title_id12345.smmx").
+    This allows linking to mindmaps that don't exist yet.
+    """
+    if not index_path.exists():
+        return {}
+
+    with open(index_path, 'r') as f:
+        data = json.load(f)
+
+    # Handle both formats: direct dict or {"index": {...}}
+    if 'index' in data:
+        return data['index']
+    return data
+
+
 def build_mindmap_index(mindmap_dir: Path) -> Dict[str, Path]:
-    """Build index of tree_id -> mindmap path."""
+    """Build index of tree_id -> mindmap path by scanning directory."""
     index = {}
     for smmx in mindmap_dir.rglob('*.smmx'):
         tree_id = extract_tree_id(smmx.name)
@@ -185,7 +209,7 @@ def find_topic_by_title(root: ET.Element, title: str) -> Optional[ET.Element]:
 def enrich_mindmap(
     smmx_path: Path,
     db_path: Path,
-    mindmap_index: Dict[str, Path],
+    filename_index: Dict[str, str],
     dry_run: bool = False,
     verbose: bool = False
 ) -> Tuple[int, int]:
@@ -247,14 +271,12 @@ def enrich_mindmap(
                 if verbose:
                     print(f"  Created root link: {tree_info['pearltrees_url']}")
 
-    # 2. Add links for RefPearl/AliasPearl children
+    # 2. Add cloudmapref links for RefPearl/AliasPearl children
     refpearls = get_refpearl_children(db_path, tree_id)
-    refpearl_urls_added = 0
 
     for ref in refpearls:
         target_id = ref['target_tree_id']
         title = ref['title']
-        target_uri = ref['target_uri']  # Pearltrees URL
 
         # Find topic matching this RefPearl title
         topic = find_topic_by_title(root, title)
@@ -268,28 +290,24 @@ def enrich_mindmap(
         if link is None:
             link = ET.SubElement(topic, 'link')
 
-        # Check if we have a mindmap for this target
-        has_mindmap = target_id in mindmap_index
-
-        if has_mindmap:
-            target_path = mindmap_index[target_id]
-            current_cloudmapref = link.get('cloudmapref', '')
-            if not current_cloudmapref:
-                rel_path = compute_relative_path(smmx_path, target_path)
-                link.set('cloudmapref', rel_path)
-                cloudmapref_added += 1
-                modified = True
+        # Add cloudmapref if not already set
+        current_cloudmapref = link.get('cloudmapref', '')
+        if not current_cloudmapref:
+            # Look up expected filename from index
+            if target_id in filename_index:
+                filename = filename_index[target_id]
+                rel_path = f"./{filename}"
+            else:
+                # Fallback: generate expected filename
+                rel_path = f"./id{target_id}.smmx"
                 if verbose:
-                    print(f"  Added cloudmapref for '{title}': {rel_path}")
+                    print(f"  '{title}' (id{target_id}) not in index - using fallback")
 
-        # Always add Pearltrees URL if missing
-        current_url = link.get('urllink', '')
-        if not current_url and target_uri:
-            link.set('urllink', target_uri)
-            refpearl_urls_added += 1
+            link.set('cloudmapref', rel_path)
+            cloudmapref_added += 1
             modified = True
             if verbose:
-                print(f"  Added URL for '{title}': {target_uri}")
+                print(f"  Added cloudmapref for '{title}': {rel_path}")
 
     # Save if modified
     if modified and not dry_run:
@@ -299,7 +317,7 @@ def enrich_mindmap(
         with zipfile.ZipFile(smmx_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('document/mindmap.xml', xml_output.encode('utf-8'))
 
-    return (root_link_added, cloudmapref_added, refpearl_urls_added)
+    return (root_link_added, cloudmapref_added)
 
 
 def main():
@@ -313,8 +331,8 @@ def main():
                         help='Mindmap file to enrich')
     parser.add_argument('--children-db', '-c', type=Path, required=True,
                         help='Path to children_index.db')
-    parser.add_argument('--mindmap-dir', '-d', type=Path,
-                        help='Directory containing mindmaps for cloudmapref resolution')
+    parser.add_argument('--index', '-i', type=Path,
+                        help='Mindmap index file (JSON) for path resolution')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be done without making changes')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -330,18 +348,25 @@ def main():
         print(f"Error: Children database not found: {args.children_db}")
         return 1
 
-    # Build mindmap index
-    mindmap_dir = args.mindmap_dir or args.mindmap.parent
-    print(f"Building mindmap index from {mindmap_dir}...")
-    mindmap_index = build_mindmap_index(mindmap_dir)
-    print(f"  {len(mindmap_index)} mindmaps indexed")
+    # Load mindmap filename index
+    if args.index:
+        print(f"Loading index from {args.index}...")
+        filename_index = load_mindmap_index(args.index)
+        print(f"  {len(filename_index)} entries")
+    else:
+        # Fallback: scan directory and extract filenames
+        mindmap_dir = args.mindmap.parent
+        print(f"No index provided, scanning {mindmap_dir}...")
+        path_index = build_mindmap_index(mindmap_dir)
+        filename_index = {k: v.name for k, v in path_index.items()}
+        print(f"  {len(filename_index)} mindmaps found")
 
     # Enrich mindmap
     print(f"\nEnriching {args.mindmap.name}...")
-    root_added, cloudmaprefs_added, urls_added = enrich_mindmap(
+    root_added, cloudmaprefs_added = enrich_mindmap(
         args.mindmap,
         args.children_db,
-        mindmap_index,
+        filename_index,
         dry_run=args.dry_run,
         verbose=args.verbose
     )
@@ -350,7 +375,6 @@ def main():
     print(f"\n{action}:")
     print(f"  Root Pearltrees link: {root_added}")
     print(f"  RefPearl cloudmapref links: {cloudmaprefs_added}")
-    print(f"  RefPearl URL links: {urls_added}")
 
     return 0
 
