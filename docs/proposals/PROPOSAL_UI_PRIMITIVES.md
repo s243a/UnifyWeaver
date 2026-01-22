@@ -463,9 +463,26 @@ http_cli_interface(ui_spec([
 - `src/unifyweaver/glue/http_server_generator.pl` - integration
 - `examples/http-cli-server/generated/server.ts` - regenerated server
 
-### 🔲 Phase 4: Multi-Target (Future)
+### ✅ Phase 4: Multi-Target - React (Completed)
 
-- React generator
+**Branch**: `feat/ui-multi-target`
+
+- Created `react_generator.pl` module (986 lines)
+- Full JSX template generation from UI specs
+- React-specific syntax:
+  - JSX conditionals: `{condition && (...)}`
+  - Array mapping: `items.map((item, index) => ...)`
+  - State setters: `setEmail`, `setPassword`
+  - Style objects: `style={{ key: value }}`
+  - Event handlers: `onClick`, `onChange`
+- All 8 tests passing
+- Successfully generates all HTTP CLI panels
+
+**Files created**:
+- `src/unifyweaver/ui/react_generator.pl`
+
+### 🔲 Phase 4: Multi-Target - Remaining (Future)
+
 - Flutter generator
 - CLI/TUI generator
 
