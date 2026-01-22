@@ -35,6 +35,9 @@
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 
+% Load pattern system (optional - patterns expanded on-the-fly if available)
+:- catch(use_module('ui_patterns'), _, true).
+
 % ============================================================================
 % TEMPLATE GENERATION
 % ============================================================================
@@ -71,6 +74,15 @@ generate_node(container(Type, ContainerOpts, Content), Indent, Options, Code) :-
 % Component nodes
 generate_node(component(Type, CompOpts), Indent, Options, Code) :-
     generate_component(Type, CompOpts, Indent, Options, Code), !.
+
+% Pattern nodes - expand and generate
+generate_node(use_pattern(Name, Args), Indent, Options, Code) :-
+    (   current_predicate(ui_patterns:expand_pattern/3)
+    ->  ui_patterns:expand_pattern(Name, Args, Expanded),
+        generate_node(Expanded, Indent, Options, Code)
+    ;   indent_string(Indent, IndentStr),
+        format(atom(Code), '~w<!-- Pattern ~w not expanded: ui_patterns module not loaded -->~n', [IndentStr, Name])
+    ), !.
 
 % Conditional: when
 generate_node(when(Condition, Content), Indent, Options, Code) :-
