@@ -150,13 +150,33 @@ def compute_relative_path(from_path: Path, to_path: Path) -> str:
         return str(to_path)
 
 
+def normalize_title(text: str) -> str:
+    """Normalize title for matching.
+
+    Handles:
+    - \\N sequences (SimpleMind newlines)
+    - &amp; entities
+    - Multiple spaces
+    - Case insensitivity
+    """
+    if not text:
+        return ""
+    # Replace \N (literal backslash-N) with space
+    text = text.replace('\\N', ' ').replace('\n', ' ')
+    # Replace XML entities
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+    # Collapse multiple spaces and strip
+    text = ' '.join(text.split())
+    return text.lower()
+
+
 def find_topic_by_title(root: ET.Element, title: str) -> Optional[ET.Element]:
     """Find a topic element by its text attribute."""
-    title_lower = title.lower().strip()
+    title_normalized = normalize_title(title)
 
     for topic in root.iter('topic'):
-        topic_text = (topic.get('text') or '').lower().strip()
-        if topic_text == title_lower:
+        topic_text = normalize_title(topic.get('text') or '')
+        if topic_text == title_normalized:
             return topic
 
     return None
@@ -227,20 +247,14 @@ def enrich_mindmap(
                 if verbose:
                     print(f"  Created root link: {tree_info['pearltrees_url']}")
 
-    # 2. Add cloudmapref for RefPearl/AliasPearl children
+    # 2. Add links for RefPearl/AliasPearl children
     refpearls = get_refpearl_children(db_path, tree_id)
+    refpearl_urls_added = 0
 
     for ref in refpearls:
         target_id = ref['target_tree_id']
         title = ref['title']
-
-        # Check if we have a mindmap for this target
-        if target_id not in mindmap_index:
-            if verbose:
-                print(f"  No mindmap for {title} (id{target_id})")
-            continue
-
-        target_path = mindmap_index[target_id]
+        target_uri = ref['target_uri']  # Pearltrees URL
 
         # Find topic matching this RefPearl title
         topic = find_topic_by_title(root, title)
@@ -249,31 +263,33 @@ def enrich_mindmap(
                 print(f"  No topic found for '{title}'")
             continue
 
-        # Check if topic already has cloudmapref
+        # Get or create link element
         link = topic.find('link')
-        if link is not None:
-            current_cloudmapref = link.get('cloudmapref', '')
-            if current_cloudmapref:
-                if verbose:
-                    print(f"  '{title}' already has cloudmapref")
-                continue
-
-            # Add cloudmapref to existing link
-            rel_path = compute_relative_path(smmx_path, target_path)
-            link.set('cloudmapref', rel_path)
-            cloudmapref_added += 1
-            modified = True
-            if verbose:
-                print(f"  Added cloudmapref for '{title}': {rel_path}")
-        else:
-            # Create link with cloudmapref
+        if link is None:
             link = ET.SubElement(topic, 'link')
-            rel_path = compute_relative_path(smmx_path, target_path)
-            link.set('cloudmapref', rel_path)
-            cloudmapref_added += 1
+
+        # Check if we have a mindmap for this target
+        has_mindmap = target_id in mindmap_index
+
+        if has_mindmap:
+            target_path = mindmap_index[target_id]
+            current_cloudmapref = link.get('cloudmapref', '')
+            if not current_cloudmapref:
+                rel_path = compute_relative_path(smmx_path, target_path)
+                link.set('cloudmapref', rel_path)
+                cloudmapref_added += 1
+                modified = True
+                if verbose:
+                    print(f"  Added cloudmapref for '{title}': {rel_path}")
+
+        # Always add Pearltrees URL if missing
+        current_url = link.get('urllink', '')
+        if not current_url and target_uri:
+            link.set('urllink', target_uri)
+            refpearl_urls_added += 1
             modified = True
             if verbose:
-                print(f"  Created cloudmapref for '{title}': {rel_path}")
+                print(f"  Added URL for '{title}': {target_uri}")
 
     # Save if modified
     if modified and not dry_run:
@@ -283,7 +299,7 @@ def enrich_mindmap(
         with zipfile.ZipFile(smmx_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('document/mindmap.xml', xml_output.encode('utf-8'))
 
-    return (root_link_added, cloudmapref_added)
+    return (root_link_added, cloudmapref_added, refpearl_urls_added)
 
 
 def main():
@@ -322,7 +338,7 @@ def main():
 
     # Enrich mindmap
     print(f"\nEnriching {args.mindmap.name}...")
-    root_added, refs_added = enrich_mindmap(
+    root_added, cloudmaprefs_added, urls_added = enrich_mindmap(
         args.mindmap,
         args.children_db,
         mindmap_index,
@@ -333,7 +349,8 @@ def main():
     action = "Would add" if args.dry_run else "Added"
     print(f"\n{action}:")
     print(f"  Root Pearltrees link: {root_added}")
-    print(f"  RefPearl cloudmapref links: {refs_added}")
+    print(f"  RefPearl cloudmapref links: {cloudmaprefs_added}")
+    print(f"  RefPearl URL links: {urls_added}")
 
     return 0
 
