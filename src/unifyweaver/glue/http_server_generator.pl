@@ -33,13 +33,18 @@
     generate_request_router/3,          % +ServiceSpec, +Target, -Code
     generate_websocket_handler/3,       % +ServiceSpec, +Target, -Code
     generate_server_setup/3,            % +ServiceSpec, +Target, -Code
-    generate_cli_parser/3               % +ServiceSpec, +Target, -Code
+    generate_cli_parser/3,              % +ServiceSpec, +Target, -Code
+    generate_html_interface_function/3  % +ServiceSpec, +Target, -Code
 ]).
 
 :- use_module(library(lists)).
 :- use_module('../sources/service_source').
 % Note: server_components.pl provides reusable component generators
 % but endpoint logic is implemented directly here for simplicity.
+
+% Load UI generators (optional - for HTML interface generation)
+:- catch(use_module('../ui/html_interface_generator'), _, true).
+:- catch(use_module('../ui/http_cli_ui'), _, true).
 
 %% ============================================================================
 %% MAIN GENERATION ENTRY POINTS
@@ -62,6 +67,12 @@ generate_http_server(ServiceSpec, typescript, Code) :-
     generate_server_setup(ServiceSpec, typescript, SetupCode),
     generate_cli_parser(ServiceSpec, typescript, CLICode),
 
+    % Generate HTML interface if serve_html(true) is set
+    (   service_serve_html(ServiceSpec, true)
+    ->  generate_html_interface_function(ServiceSpec, typescript, HTMLCode)
+    ;   HTMLCode = ''
+    ),
+
     service_name(ServiceSpec, Name),
 
     % Combine all sections
@@ -76,6 +87,7 @@ generate_http_server(ServiceSpec, typescript, Code) :-
         ConfigCode, '\n\n',
         TypesCode, '\n\n',
         HandlersCode, '\n\n',
+        HTMLCode, '\n\n',
         RouterCode, '\n\n',
         WSCode, '\n\n',
         SetupCode, '\n\n',
@@ -1005,6 +1017,57 @@ Environment:
   const ssl = certPath && keyPath ? { cert: certPath, key: keyPath } : undefined;
   startServer(port, ssl);
 }', [DefaultPort, Name, DefaultPort]).
+
+%% ============================================================================
+%% HTML INTERFACE GENERATION
+%% ============================================================================
+
+%! generate_html_interface_function(+ServiceSpec, +Target, -Code) is det
+%
+%  Generate the getHTMLInterface() function using UI primitives.
+%
+generate_html_interface_function(_ServiceSpec, typescript, Code) :-
+    % Try to use the declarative UI generator
+    (   current_predicate(http_cli_ui:http_cli_interface/1),
+        current_predicate(http_cli_ui:http_cli_theme/1),
+        current_predicate(html_interface_generator:generate_html_interface/3)
+    ->  http_cli_ui:http_cli_interface(UISpec),
+        http_cli_ui:http_cli_theme(Theme),
+        html_interface_generator:generate_html_interface(UISpec, Theme, HTMLContent),
+        % Escape backticks and dollar signs for JavaScript template literal
+        escape_for_js_template(HTMLContent, EscapedHTML),
+        format(atom(Code), 'function getHTMLInterface(): string {
+  return `~w`;
+}', [EscapedHTML])
+    ;   % Fallback: minimal HTML
+        Code = 'function getHTMLInterface(): string {
+  return `<!DOCTYPE html>
+<html><head><title>UnifyWeaver CLI</title></head>
+<body><h1>UnifyWeaver CLI Server</h1><p>HTML interface not available.</p></body>
+</html>`;
+}'
+    ).
+
+%! escape_for_js_template(+Input, -Output) is det
+%  Escape content for JavaScript template literal (backticks).
+escape_for_js_template(Input, Output) :-
+    atom_string(Input, Str),
+    % Escape backticks and ${
+    string_replace(Str, "`", "\\`", Str1),
+    string_replace(Str1, "${", "\\${", Str2),
+    atom_string(Output, Str2).
+
+%! string_replace(+Input, +From, +To, -Output) is det
+%  Simple string replacement.
+string_replace(Input, From, To, Output) :-
+    (   sub_string(Input, Before, _, After, From)
+    ->  sub_string(Input, 0, Before, _, Prefix),
+        sub_string(Input, _, After, 0, Suffix),
+        string_replace(Suffix, From, To, ReplacedSuffix),
+        string_concat(Prefix, To, Temp),
+        string_concat(Temp, ReplacedSuffix, Output)
+    ;   Output = Input
+    ).
 
 %% ============================================================================
 %% HELPER PREDICATES
