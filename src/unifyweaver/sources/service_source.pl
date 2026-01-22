@@ -46,7 +46,10 @@
     % WebSocket accessors
     websocket_path/2,
     websocket_roles/2,
-    websocket_handler/2
+    websocket_handler/2,
+
+    % Templates
+    service_template/2
 ]).
 
 :- use_module(library(lists)).
