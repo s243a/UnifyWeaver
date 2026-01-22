@@ -150,13 +150,20 @@ def resolve_broken_ref(
 
 
 def compute_relative_path(from_path: Path, to_path: Path) -> str:
-    """Compute relative path from one mindmap to another."""
+    """Compute relative path from one mindmap to another.
+
+    SimpleMind expects same-directory references to start with './'
+    """
     # Both paths should be resolved
     from_dir = from_path.parent.resolve()
     to_path = to_path.resolve()
 
     try:
-        return os.path.relpath(to_path, from_dir)
+        rel = os.path.relpath(to_path, from_dir)
+        # SimpleMind expects './' prefix for same-directory files
+        if not rel.startswith('.') and not rel.startswith('/'):
+            rel = './' + rel
+        return rel
     except ValueError:
         # On Windows, can't compute relative path across drives
         return str(to_path)
