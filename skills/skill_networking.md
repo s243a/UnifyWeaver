@@ -312,8 +312,51 @@ Generates endpoints for federated queries:
 
 ### Cross-Model Endpoints
 
+Generate endpoints for cross-model communication in distributed systems.
+
 ```prolog
 generate_cross_model_endpoint(Target, Options, Code).
+```
+
+**Options:**
+- `models([Model1, Model2, ...])` - List of model names to federate
+- `aggregation(Strategy)` - `vote`, `blend`, `cascade`
+- `timeout(Seconds)` - Per-model timeout
+
+**Example:**
+```prolog
+generate_cross_model_endpoint(python, [
+    models([semantic_search, keyword_search, graph_search]),
+    aggregation(blend),
+    timeout(30)
+], Code).
+```
+
+**Generated Endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/cross/query` | POST | Query across all models, aggregate results |
+| `/cross/models` | GET | List available models |
+| `/cross/health` | GET | Health check for all models |
+
+**Example Usage:**
+```python
+# POST /cross/query
+{
+    "query": "quantum computing basics",
+    "models": ["semantic_search", "keyword_search"],
+    "top_k": 10
+}
+
+# Response
+{
+    "results": [
+        {"source": "semantic_search", "score": 0.89, "path": "Science/Physics"},
+        {"source": "keyword_search", "score": 0.75, "path": "Computing/Quantum"}
+    ],
+    "aggregated_score": 0.82
+}
 ```
 
 ## Related

@@ -1,10 +1,28 @@
 # Skill: Find Executable
 
-## Audience
-This skill is for coding agents that need to locate executables that may not be in the system's PATH.
+Locate executables that may not be in the system's PATH by searching common installation directories.
 
-## Workflow Overview
-This skill attempts to find a specified executable by searching a list of common installation directories for different operating systems. It returns the full path to the executable if found.
+## When to Use
+
+- Command fails with "command not found" but you know it's installed
+- Need to find language runtimes (perl, python, swipl) on different OSes
+- Setting up cross-platform scripts that need absolute paths
+
+## Quick Start
+
+```bash
+# The skill searches OS-specific directories automatically
+# Example: Find SWI-Prolog on the system
+
+# On Linux, check these locations:
+ls /usr/bin/swipl /usr/local/bin/swipl /snap/bin/swipl 2>/dev/null | head -1
+
+# On macOS, also check:
+ls /opt/homebrew/bin/swipl /Applications/SWI-Prolog.app/Contents/MacOS/swipl 2>/dev/null | head -1
+
+# On Windows (PowerShell):
+@("C:\Program Files\swipl\bin\swipl.exe", "C:\Program Files (x86)\swipl\bin\swipl.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+```
 
 ## Agent Inputs
 - **Executable Name**: The name of the executable to find (e.g., `perl`, `swipl`).

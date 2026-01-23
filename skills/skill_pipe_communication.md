@@ -187,7 +187,7 @@ generate_pipeline_script(Steps, Options, Script).
 - `step(Name, local, Script)` - Local processing
 - `step(Name, remote, URL)` - Remote HTTP call
 
-**Example:**
+**Basic Example:**
 ```prolog
 generate_pipeline_script([
     step(extract, local, 'cat data.tsv'),
@@ -198,6 +198,73 @@ generate_pipeline_script([
 
 **Options:**
 - `language(Lang)` - Output language (python, bash, go)
+- `error_handling(Mode)` - `fail_fast` (default), `continue`, `retry(N)`
+- `timeout(Seconds)` - Per-step timeout
+
+### Step Execution Order
+
+Steps execute sequentially. Output from each step pipes to the next:
+
+```
+step1 → stdout | stdin → step2 → stdout | stdin → step3
+```
+
+### Error Handling
+
+```prolog
+generate_pipeline_script([
+    step(fetch, remote, 'http://api.example.com/data'),
+    step(process, local, 'python process.py'),
+    step(store, local, 'python store.py')
+], [language(bash), error_handling(fail_fast)], Script).
+```
+
+| Mode | Behavior |
+|------|----------|
+| `fail_fast` | Stop pipeline on first error (default) |
+| `continue` | Log error, continue with next step |
+| `retry(N)` | Retry failed step N times before failing |
+
+### Conditional Steps
+
+Use `when/2` to make steps conditional:
+
+```prolog
+generate_pipeline_script([
+    step(fetch, local, 'curl -s $URL'),
+    step(validate, local, 'python validate.py'),
+    step(transform, local, 'python transform.py', when(validation_passed)),
+    step(fallback, local, 'python fallback.py', when(validation_failed))
+], [language(bash)], Script).
+```
+
+### Complete Pipeline Example
+
+```prolog
+generate_pipeline_script([
+    step(extract, local, 'python extract.py --input data.csv'),
+    step(clean, local, 'python clean.py --remove-nulls'),
+    step(enrich, remote, 'http://api.example.com/enrich'),
+    step(transform, local, 'python transform.py --format json'),
+    step(load, local, 'python load.py --db postgres')
+], [
+    language(bash),
+    error_handling(retry(3)),
+    timeout(300)
+], Script).
+```
+
+**Generated Bash:**
+```bash
+#!/bin/bash
+set -euo pipefail
+
+python extract.py --input data.csv \
+  | python clean.py --remove-nulls \
+  | curl -s -X POST -d @- http://api.example.com/enrich \
+  | python transform.py --format json \
+  | python load.py --db postgres
+```
 
 ## Format Options
 

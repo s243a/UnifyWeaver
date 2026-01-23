@@ -117,7 +117,9 @@ swipl -q -g "
 
 ### 4.4. Test Environment
 
-For isolated testing, use the test environment initialization:
+For isolated testing, use the test environment initialization script.
+
+#### Basic Usage
 
 ```bash
 cd /path/to/UnifyWeaver
@@ -127,6 +129,39 @@ cd scripts/testing/test_env
 ```
 
 This creates a self-contained environment with all modules copied.
+
+#### Test Environment Options
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `-d, --dir <dir>` | Parent directory for test_env | `--dir /tmp` creates `/tmp/test_env` |
+| `-p, --path <path>` | Full custom path | `--path /tmp/my_test` |
+| `--force-windows` | Force Windows SWI-Prolog (for testing wrappers) | |
+| `--help` | Show all options | |
+
+#### Examples
+
+```bash
+# Create test environment in default location (scripts/testing/test_env)
+bash scripts/testing/init_testing.sh
+
+# Create test environment in /tmp
+bash scripts/testing/init_testing.sh -d /tmp
+
+# Create with custom name
+bash scripts/testing/init_testing.sh -p /tmp/my_unifyweaver_test
+
+# Test Windows wrapper logic on Linux/WSL
+bash scripts/testing/init_testing.sh --force-windows
+```
+
+#### What It Does
+
+1. Backs up existing configuration files
+2. Detects and configures SWI-Prolog installation
+3. Sets up file search paths
+4. Creates isolated test_env directory with copied modules
+5. Generates `unifyweaver.sh` wrapper script
 
 ## 5. Common Errors and Solutions
 

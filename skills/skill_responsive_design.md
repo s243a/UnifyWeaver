@@ -318,22 +318,74 @@ declare_responsive_layout(my_layout, [
 
 ## Visibility Utilities
 
-Generate show/hide classes per breakpoint:
+Generate show/hide classes per breakpoint for controlling element visibility on different devices.
+
+### Generate All Visibility Classes
 
 ```prolog
 generate_visibility_utilities(CSS).
 ```
 
-**Generated:**
+This generates classes for all standard breakpoints (mobile, tablet, desktop, etc.).
+
+### Generated Classes
+
+| Class | Effect |
+|-------|--------|
+| `.hidden-mobile` | Hidden on mobile, visible elsewhere |
+| `.visible-mobile` | Visible only on mobile |
+| `.hidden-tablet` | Hidden on tablet, visible elsewhere |
+| `.visible-tablet` | Visible only on tablet |
+| `.hidden-desktop` | Hidden on desktop, visible elsewhere |
+| `.visible-desktop` | Visible only on desktop |
+
+### Example Output
+
 ```css
+/* Desktop-first: elements visible by default */
 .hidden-mobile { display: block; }
 .visible-mobile { display: none; }
+.hidden-tablet { display: block; }
+.visible-tablet { display: none; }
+.hidden-desktop { display: none; }
+.visible-desktop { display: block; }
 
 @media (max-width: 767px) {
   .hidden-mobile { display: none; }
   .visible-mobile { display: block; }
 }
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .hidden-tablet { display: none; }
+  .visible-tablet { display: block; }
+}
+
+@media (min-width: 1024px) {
+  .hidden-desktop { display: none; }
+  .visible-desktop { display: block; }
+}
 ```
+
+### Usage in HTML
+
+```html
+<!-- Show navigation only on desktop -->
+<nav class="visible-desktop">Full navigation</nav>
+
+<!-- Show hamburger menu only on mobile -->
+<button class="visible-mobile">☰</button>
+
+<!-- Hide sidebar on mobile -->
+<aside class="hidden-mobile">Sidebar content</aside>
+```
+
+### Custom Visibility for Specific Breakpoints
+
+```prolog
+generate_visibility_for_breakpoint(tablet, CSS).
+```
+
+Generates only tablet-specific visibility classes.
 
 ## Common Patterns
 

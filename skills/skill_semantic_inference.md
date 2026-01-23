@@ -86,6 +86,57 @@ python3 scripts/infer_pearltrees_federated.py --help
 | `interactive` | REPL for testing |
 | `server` | HTTP API endpoint |
 
+### Interactive Mode
+
+Enter a REPL for testing queries interactively:
+
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated.pkl \
+  --interactive
+```
+
+**REPL Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `<query text>` | Search for matching folders |
+| `:top N` | Set number of results (default: 10) |
+| `:cluster NAME` | Restrict to specific cluster |
+| `:cluster all` | Search all clusters |
+| `:json` | Toggle JSON output format |
+| `:tree` | Toggle tree output format |
+| `:help` | Show available commands |
+| `:quit` or `Ctrl+D` | Exit the REPL |
+
+**Example Session:**
+
+```
+$ python3 scripts/infer_pearltrees_federated.py --model model.pkl --interactive
+Loaded model with 275 clusters
+> quantum computing
+
+Results:
+  [0.89] Science/Physics/Quantum Mechanics
+  [0.82] Technology/Computing/Quantum
+  [0.75] Science/Physics/Theory
+
+> :top 3
+Set top_k to 3
+
+> :cluster science
+Filtering to cluster: science
+
+> machine learning
+Results:
+  [0.91] Science/AI/Machine Learning
+  [0.84] Science/AI/Deep Learning
+  [0.78] Science/Statistics
+
+> :quit
+Goodbye!
+```
+
 ## Parameters
 
 | Parameter | Description | Default |
