@@ -1047,6 +1047,20 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(closurePairs, rows);
                 }
 
+                if (plan.Root is GroupedTransitiveClosureNode groupedClosure)
+                {
+                    var rows = ExecuteSeededGroupedTransitiveClosure(groupedClosure, inputPositions, parameters: paramList, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(groupedClosure);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(groupedClosure, rows);
+                }
+
                 if (plan.Root is RelationScanNode scan)
                 {
                     var rows = ExecuteBoundFactScan(scan, inputPositions, paramList, context);
@@ -5677,31 +5691,7 @@ namespace UnifyWeaver.QueryRuntime
                 return ExecuteTransitiveClosure(new TransitiveClosureNode(closure.EdgeRelation, closure.Predicate), parentContext);
             }
 
-            var maxRequiredIndex = 1;
-            var seen = new HashSet<int>();
-            for (var i = 0; i < groupCount; i++)
-            {
-                var index = closure.GroupIndices[i];
-                if (index < 0 || index >= width)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(closure.GroupIndices), $"Group index {index} is outside predicate width {width}.");
-                }
-
-                if (index == 0 || index == 1)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(closure.GroupIndices), $"Group index {index} overlaps closure endpoints.");
-                }
-
-                if (!seen.Add(index))
-                {
-                    throw new ArgumentOutOfRangeException(nameof(closure.GroupIndices), $"Duplicate group index {index}.");
-                }
-
-                if (index > maxRequiredIndex)
-                {
-                    maxRequiredIndex = index;
-                }
-            }
+            var maxRequiredIndex = ValidateGroupedClosureIndices(closure.GroupIndices, width);
 
             var context = parentContext ?? new EvaluationContext();
             context.FixpointDepth++;
@@ -5822,6 +5812,562 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return row;
+        }
+
+        private static int ValidateGroupedClosureIndices(IReadOnlyList<int> groupIndices, int width)
+        {
+            var maxRequiredIndex = 1;
+            var seen = new HashSet<int>();
+
+            for (var i = 0; i < groupIndices.Count; i++)
+            {
+                var index = groupIndices[i];
+                if (index < 0 || index >= width)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(groupIndices), $"Group index {index} is outside predicate width {width}.");
+                }
+
+                if (index == 0 || index == 1)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(groupIndices), $"Group index {index} overlaps closure endpoints.");
+                }
+
+                if (!seen.Add(index))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(groupIndices), $"Duplicate group index {index}.");
+                }
+
+                if (index > maxRequiredIndex)
+                {
+                    maxRequiredIndex = index;
+                }
+            }
+
+            return maxRequiredIndex;
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosure(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            if (parameters.Count == 0)
+            {
+                return Enumerable.Empty<object[]>();
+            }
+
+            var hasSource = inputPositions.Contains(0);
+            var hasTarget = inputPositions.Contains(1);
+
+            if (hasSource && !hasTarget)
+            {
+                return ExecuteSeededGroupedTransitiveClosureBySource(closure, inputPositions, parameters, parentContext);
+            }
+
+            if (hasTarget && !hasSource)
+            {
+                return ExecuteSeededGroupedTransitiveClosureByTarget(closure, inputPositions, parameters, parentContext);
+            }
+
+            if (hasSource && hasTarget)
+            {
+                var rows = ExecuteSeededGroupedTransitiveClosureBySource(closure, inputPositions, parameters, parentContext);
+                return FilterByParameters(rows, inputPositions, parameters);
+            }
+
+            return FilterByParameters(ExecuteGroupedTransitiveClosure(closure, parentContext), inputPositions, parameters);
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosureBySource(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            var width = closure.Predicate.Arity;
+            if (width < 2)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var groupCount = closure.GroupIndices.Count;
+            if (groupCount == 0)
+            {
+                return ExecuteSeededTransitiveClosure(new TransitiveClosureNode(closure.EdgeRelation, closure.Predicate), parameters, parentContext);
+            }
+
+            var maxRequiredIndex = ValidateGroupedClosureIndices(closure.GroupIndices, width);
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeeded");
+
+                var predicate = closure.Predicate;
+                var edges = GetFactsList(closure.EdgeRelation, context);
+
+                var edgeKeyIndices = new int[groupCount + 1];
+                for (var i = 0; i < groupCount; i++)
+                {
+                    edgeKeyIndices[i] = closure.GroupIndices[i];
+                }
+                edgeKeyIndices[groupCount] = 0;
+
+                var succIndex = GetJoinIndex(closure.EdgeRelation, edgeKeyIndices, edges, context);
+                var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+
+                var visited = new HashSet<RowWrapper>(wrapperComparer);
+                var seedKeys = new HashSet<RowWrapper>(wrapperComparer);
+                var totalRows = new List<object[]>();
+                var delta = new List<object[]>();
+
+                Dictionary<object, List<object[]>>? fromIndex = null;
+
+                foreach (var paramTuple in parameters)
+                {
+                    if (paramTuple is null || paramTuple.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetParameterValue(paramTuple, inputPositions, 0, out var seed))
+                    {
+                        continue;
+                    }
+
+                    var filters = new object?[groupCount];
+                    var allBound = true;
+                    for (var i = 0; i < groupCount; i++)
+                    {
+                        var groupIndex = closure.GroupIndices[i];
+                        if (inputPositions.Contains(groupIndex))
+                        {
+                            if (!TryGetParameterValue(paramTuple, inputPositions, groupIndex, out var filter))
+                            {
+                                throw new InvalidOperationException($"Missing parameter value for group index {groupIndex}.");
+                            }
+
+                            filters[i] = filter;
+                        }
+                        else
+                        {
+                            filters[i] = Wildcard.Value;
+                            allBound = false;
+                        }
+                    }
+
+                    var seedKey = new object[groupCount + 1];
+                    for (var i = 0; i < groupCount; i++)
+                    {
+                        seedKey[i] = filters[i]!;
+                    }
+                    seedKey[groupCount] = seed!;
+
+                    if (!seedKeys.Add(new RowWrapper(seedKey)))
+                    {
+                        continue;
+                    }
+
+                    if (allBound)
+                    {
+                        var lookup = new object[groupCount + 1];
+                        Array.Copy(seedKey, lookup, lookup.Length);
+
+                        if (!succIndex.TryGetValue(new RowWrapper(lookup), out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length <= maxRequiredIndex)
+                            {
+                                continue;
+                            }
+
+                            var to = edge[1];
+                            var key = new object[groupCount + 2];
+                            Array.Copy(seedKey, key, seedKey.Length);
+                            key[groupCount + 1] = to;
+
+                            if (visited.Add(new RowWrapper(key)))
+                            {
+                                totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, key));
+                                delta.Add(key);
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    fromIndex ??= GetFactIndex(closure.EdgeRelation, 0, edges, context);
+
+                    var lookupKey = seed ?? NullFactIndexKey;
+                    if (!fromIndex.TryGetValue(lookupKey, out var fromBucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var edge in fromBucket)
+                    {
+                        if (edge is null || edge.Length <= maxRequiredIndex)
+                        {
+                            continue;
+                        }
+
+                        if (!EdgeMatchesFilters(edge, closure.GroupIndices, filters))
+                        {
+                            continue;
+                        }
+
+                        var key = new object[groupCount + 2];
+                        for (var i = 0; i < groupCount; i++)
+                        {
+                            key[i] = edge[closure.GroupIndices[i]];
+                        }
+                        key[groupCount] = seed!;
+                        key[groupCount + 1] = edge[1];
+
+                        if (visited.Add(new RowWrapper(key)))
+                        {
+                            totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, key));
+                            delta.Add(key);
+                        }
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<object[]>();
+
+                    foreach (var pair in delta)
+                    {
+                        var lookup = new object[groupCount + 1];
+                        Array.Copy(pair, lookup, groupCount);
+                        lookup[groupCount] = pair[groupCount + 1];
+
+                        if (!succIndex.TryGetValue(new RowWrapper(lookup), out var bucket))
+                        {
+                            continue;
+                        }
+
+                        var from = pair[groupCount];
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length <= maxRequiredIndex)
+                            {
+                                continue;
+                            }
+
+                            var next = edge[1];
+
+                            var nextKey = new object[groupCount + 2];
+                            Array.Copy(pair, nextKey, groupCount);
+                            nextKey[groupCount] = from;
+                            nextKey[groupCount + 1] = next;
+
+                            if (visited.Add(new RowWrapper(nextKey)))
+                            {
+                                totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, nextKey));
+                                nextDelta.Add(nextKey);
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosureByTarget(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            var width = closure.Predicate.Arity;
+            if (width < 2)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var groupCount = closure.GroupIndices.Count;
+            if (groupCount == 0)
+            {
+                return ExecuteSeededTransitiveClosureByTarget(new TransitiveClosureNode(closure.EdgeRelation, closure.Predicate), parameters, parentContext);
+            }
+
+            var maxRequiredIndex = ValidateGroupedClosureIndices(closure.GroupIndices, width);
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededByTarget");
+
+                var predicate = closure.Predicate;
+                var edges = GetFactsList(closure.EdgeRelation, context);
+
+                var edgeKeyIndices = new int[groupCount + 1];
+                for (var i = 0; i < groupCount; i++)
+                {
+                    edgeKeyIndices[i] = closure.GroupIndices[i];
+                }
+                edgeKeyIndices[groupCount] = 1;
+
+                var predIndex = GetJoinIndex(closure.EdgeRelation, edgeKeyIndices, edges, context);
+                var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+
+                var visited = new HashSet<RowWrapper>(wrapperComparer);
+                var seedKeys = new HashSet<RowWrapper>(wrapperComparer);
+                var totalRows = new List<object[]>();
+                var delta = new List<object[]>();
+
+                Dictionary<object, List<object[]>>? toIndex = null;
+
+                foreach (var paramTuple in parameters)
+                {
+                    if (paramTuple is null || paramTuple.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetParameterValue(paramTuple, inputPositions, 1, out var seed))
+                    {
+                        continue;
+                    }
+
+                    var filters = new object?[groupCount];
+                    var allBound = true;
+                    for (var i = 0; i < groupCount; i++)
+                    {
+                        var groupIndex = closure.GroupIndices[i];
+                        if (inputPositions.Contains(groupIndex))
+                        {
+                            if (!TryGetParameterValue(paramTuple, inputPositions, groupIndex, out var filter))
+                            {
+                                throw new InvalidOperationException($"Missing parameter value for group index {groupIndex}.");
+                            }
+
+                            filters[i] = filter;
+                        }
+                        else
+                        {
+                            filters[i] = Wildcard.Value;
+                            allBound = false;
+                        }
+                    }
+
+                    var seedKey = new object[groupCount + 1];
+                    for (var i = 0; i < groupCount; i++)
+                    {
+                        seedKey[i] = filters[i]!;
+                    }
+                    seedKey[groupCount] = seed!;
+
+                    if (!seedKeys.Add(new RowWrapper(seedKey)))
+                    {
+                        continue;
+                    }
+
+                    if (allBound)
+                    {
+                        var lookup = new object[groupCount + 1];
+                        Array.Copy(seedKey, lookup, lookup.Length);
+
+                        if (!predIndex.TryGetValue(new RowWrapper(lookup), out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length <= maxRequiredIndex)
+                            {
+                                continue;
+                            }
+
+                            var from = edge[0];
+                            var key = new object[groupCount + 2];
+                            Array.Copy(seedKey, key, groupCount);
+                            key[groupCount] = from;
+                            key[groupCount + 1] = seed!;
+
+                            if (visited.Add(new RowWrapper(key)))
+                            {
+                                totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, key));
+                                delta.Add(key);
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    toIndex ??= GetFactIndex(closure.EdgeRelation, 1, edges, context);
+
+                    var lookupKey = seed ?? NullFactIndexKey;
+                    if (!toIndex.TryGetValue(lookupKey, out var toBucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var edge in toBucket)
+                    {
+                        if (edge is null || edge.Length <= maxRequiredIndex)
+                        {
+                            continue;
+                        }
+
+                        if (!EdgeMatchesFilters(edge, closure.GroupIndices, filters))
+                        {
+                            continue;
+                        }
+
+                        var key = new object[groupCount + 2];
+                        for (var i = 0; i < groupCount; i++)
+                        {
+                            key[i] = edge[closure.GroupIndices[i]];
+                        }
+                        key[groupCount] = edge[0];
+                        key[groupCount + 1] = seed!;
+
+                        if (visited.Add(new RowWrapper(key)))
+                        {
+                            totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, key));
+                            delta.Add(key);
+                        }
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<object[]>();
+
+                    foreach (var pair in delta)
+                    {
+                        var lookup = new object[groupCount + 1];
+                        Array.Copy(pair, lookup, groupCount);
+                        lookup[groupCount] = pair[groupCount];
+
+                        if (!predIndex.TryGetValue(new RowWrapper(lookup), out var bucket))
+                        {
+                            continue;
+                        }
+
+                        var target = pair[groupCount + 1];
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length <= maxRequiredIndex)
+                            {
+                                continue;
+                            }
+
+                            var prev = edge[0];
+
+                            var nextKey = new object[groupCount + 2];
+                            Array.Copy(pair, nextKey, groupCount);
+                            nextKey[groupCount] = prev;
+                            nextKey[groupCount + 1] = target;
+
+                            if (visited.Add(new RowWrapper(nextKey)))
+                            {
+                                totalRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, nextKey));
+                                nextDelta.Add(nextKey);
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static bool EdgeMatchesFilters(object[] edge, IReadOnlyList<int> groupIndices, object?[] filters)
+        {
+            for (var i = 0; i < groupIndices.Count; i++)
+            {
+                var filter = filters[i];
+                if (ReferenceEquals(filter, Wildcard.Value))
+                {
+                    continue;
+                }
+
+                if (!Equals(edge[groupIndices[i]], filter))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool TryGetParameterValue(
+            object[] tuple,
+            IReadOnlyList<int> inputPositions,
+            int position,
+            out object? value)
+        {
+            if (tuple.Length == inputPositions.Count)
+            {
+                for (var i = 0; i < inputPositions.Count; i++)
+                {
+                    if (inputPositions[i] == position)
+                    {
+                        value = tuple[i];
+                        return true;
+                    }
+                }
+
+                value = null;
+                return false;
+            }
+
+            if (position >= 0 && position < tuple.Length)
+            {
+                value = tuple[position];
+                return true;
+            }
+
+            value = null;
+            return false;
         }
 
         private IEnumerable<object[]> ExecuteSeededTransitiveClosure(

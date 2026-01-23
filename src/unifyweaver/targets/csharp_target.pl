@@ -1048,7 +1048,7 @@ maybe_grouped_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClau
     GroupSpecs = [HeadSpec],
     get_dict(arity, HeadSpec, Arity),
     Arity > 2,
-    grouped_transitive_closure_supported_modes(Modes),
+    grouped_transitive_closure_supported_modes(Modes, Arity),
     BaseClauses = [BaseClause],
     RecClauses = [RecClause],
     grouped_transitive_closure_base_clause(HeadSpec, BaseClause, EdgeSpec, GroupIndices),
@@ -1065,9 +1065,25 @@ maybe_grouped_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClau
         width:Arity
     }.
 
-grouped_transitive_closure_supported_modes(Modes) :-
-    input_positions(Modes, Positions),
-    Positions == [].
+grouped_transitive_closure_supported_modes(Modes, Arity) :-
+    input_positions(Modes, Positions0),
+    sort(Positions0, Positions),
+    ArityMinus1 is Arity - 1,
+    numlist(2, ArityMinus1, GroupIndices),
+    (   Positions == []
+    ;   memberchk(0, Positions),
+        \+ memberchk(1, Positions),
+        forall((member(Pos, Positions), Pos \= 0),
+               memberchk(Pos, GroupIndices))
+    ;   memberchk(1, Positions),
+        \+ memberchk(0, Positions),
+        forall((member(Pos, Positions), Pos \= 1),
+               memberchk(Pos, GroupIndices))
+    ;   memberchk(0, Positions),
+        memberchk(1, Positions),
+        subtract(Positions, [0, 1], Rest),
+        Rest == GroupIndices
+    ).
 
 grouped_transitive_closure_base_clause(HeadSpec, Head-Body, EdgeSpec, GroupIndices) :-
     get_dict(name, HeadSpec, Pred),
