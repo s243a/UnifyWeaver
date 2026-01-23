@@ -211,6 +211,9 @@ test_csharp_query_target :-
         verify_parameterized_reachability_plan,
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
+        verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
+        verify_parameterized_reachability_cache_reuse_runtime,
+        verify_parameterized_reachability_by_target_cache_reuse_runtime,
         verify_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_inferred_plan,
@@ -2053,6 +2056,39 @@ verify_parameterized_reachability_both_inputs_plan :-
     \+ sub_string(Source, _, _, _, '$need'),
     \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
     maybe_run_query_runtime(Plan, ['alice,bob', 'alice,charlie'], [[alice, bob], [alice, charlie], [bob, alice]]).
+
+verify_parameterized_grouped_transitive_closure_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_flag(ModuleClass, [[a, red, cat1]], 'GroupedTransitiveClosureSeeded', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeeded=true'],
+        [[a, red, cat1]],
+        HarnessSource).
+
+verify_parameterized_reachability_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_flag(ModuleClass, [[alice]], 'TransitiveClosureSeeded', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,bob',
+         'alice,charlie',
+         'CACHE_HIT:TransitiveClosureSeeded=true'],
+        [[alice]],
+        HarnessSource).
+
+verify_parameterized_reachability_by_target_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_end/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_flag(ModuleClass, [[charlie]], 'TransitiveClosureSeededByTarget', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,charlie',
+         'bob,charlie',
+         'CACHE_HIT:TransitiveClosureSeededByTarget=true'],
+        [[charlie]],
+        HarnessSource).
 
 verify_mutual_recursion_plan :-
     csharp_query_target:build_query_plan(test_even/1, [target(csharp_query)], Plan),

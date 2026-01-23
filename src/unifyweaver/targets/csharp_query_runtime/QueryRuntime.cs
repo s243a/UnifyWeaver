@@ -970,6 +970,7 @@ namespace UnifyWeaver.QueryRuntime
     {
         private readonly IRelationProvider _provider;
         private static readonly object NullFactIndexKey = new();
+        private static readonly RowWrapperComparer StructuralRowWrapperComparer = new(StructuralArrayComparer.Instance);
         private readonly EvaluationContext? _cacheContext;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
@@ -1098,6 +1099,10 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.FactSets.Clear();
             _cacheContext.FactIndices.Clear();
             _cacheContext.JoinIndices.Clear();
+            _cacheContext.TransitiveClosureSeededResults.Clear();
+            _cacheContext.TransitiveClosureSeededByTargetResults.Clear();
+            _cacheContext.GroupedTransitiveClosureSeededResults.Clear();
+            _cacheContext.GroupedTransitiveClosureSeededByTargetResults.Clear();
         }
 
         private IEnumerable<object[]> Evaluate(PlanNode node, EvaluationContext? context = null)
@@ -5929,6 +5934,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 var visited = new HashSet<RowWrapper>(wrapperComparer);
                 var seedKeys = new HashSet<RowWrapper>(wrapperComparer);
+                var orderedSeeds = new List<object[]>();
                 var totalRows = new List<object[]>();
                 var delta = new List<object[]>();
 
@@ -5978,6 +5984,8 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         continue;
                     }
+
+                    orderedSeeds.Add(seedKey);
 
                     if (allBound)
                     {
@@ -6047,6 +6055,21 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
 
+                var flatSeedKey = BuildFlatSeedCacheKey(orderedSeeds, groupCount + 1);
+                var groupedKey = string.Join(",", closure.GroupIndices);
+                var cacheKey = (closure.EdgeRelation, closure.Predicate, groupedKey);
+                var traceKey =
+                    $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups=[{groupedKey}]:seeds={orderedSeeds.Count}";
+
+                if (context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var cachedBySeed) &&
+                    cachedBySeed.TryGetValue(new RowWrapper(flatSeedKey), out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: false, built: true);
+
                 var iteration = 0;
                 trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
 
@@ -6093,6 +6116,13 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
+                if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var storeBySeed))
+                {
+                    storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                    context.GroupedTransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
+                }
+
+                storeBySeed[new RowWrapper(flatSeedKey)] = totalRows;
                 return totalRows;
             }
             finally
@@ -6147,6 +6177,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 var visited = new HashSet<RowWrapper>(wrapperComparer);
                 var seedKeys = new HashSet<RowWrapper>(wrapperComparer);
+                var orderedSeeds = new List<object[]>();
                 var totalRows = new List<object[]>();
                 var delta = new List<object[]>();
 
@@ -6196,6 +6227,8 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         continue;
                     }
+
+                    orderedSeeds.Add(seedKey);
 
                     if (allBound)
                     {
@@ -6266,6 +6299,21 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
 
+                var flatSeedKey = BuildFlatSeedCacheKey(orderedSeeds, groupCount + 1);
+                var groupedKey = string.Join(",", closure.GroupIndices);
+                var cacheKey = (closure.EdgeRelation, closure.Predicate, groupedKey);
+                var traceKey =
+                    $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups=[{groupedKey}]:seeds={orderedSeeds.Count}";
+
+                if (context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var cachedBySeed) &&
+                    cachedBySeed.TryGetValue(new RowWrapper(flatSeedKey), out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
+
                 var iteration = 0;
                 trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
 
@@ -6312,12 +6360,35 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
+                if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var storeBySeed))
+                {
+                    storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                    context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
+                }
+
+                storeBySeed[new RowWrapper(flatSeedKey)] = totalRows;
                 return totalRows;
             }
             finally
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private static object[] BuildFlatSeedCacheKey(IReadOnlyList<object[]> seedKeys, int keyWidth)
+        {
+            if (seedKeys is null) throw new ArgumentNullException(nameof(seedKeys));
+            if (keyWidth < 0) throw new ArgumentOutOfRangeException(nameof(keyWidth));
+
+            var key = new object[seedKeys.Count * keyWidth];
+            var offset = 0;
+            for (var i = 0; i < seedKeys.Count; i++)
+            {
+                Array.Copy(seedKeys[i], 0, key, offset, keyWidth);
+                offset += keyWidth;
+            }
+
+            return key;
         }
 
         private static bool EdgeMatchesFilters(object[] edge, IReadOnlyList<int> groupIndices, object?[] filters)
@@ -6410,6 +6481,19 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
 
+                var seedsKey = seeds.ToArray();
+                var cacheKey = (closure.EdgeRelation, closure.Predicate);
+                var traceKey = $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={seedsKey.Length}";
+
+                if (context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var cachedBySeed) &&
+                    cachedBySeed.TryGetValue(new RowWrapper(seedsKey), out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
+
                 foreach (var seed in seeds)
                 {
                     var lookupKey = seed ?? NullFactIndexKey;
@@ -6472,6 +6556,13 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
+                if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var storeBySeed))
+                {
+                    storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                    context.TransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
+                }
+
+                storeBySeed[new RowWrapper(seedsKey)] = totalRows;
                 return totalRows;
             }
             finally
@@ -6528,6 +6619,19 @@ namespace UnifyWeaver.QueryRuntime
                         seeds.Add(seed);
                     }
                 }
+
+                var seedsKey = seeds.ToArray();
+                var cacheKey = (closure.EdgeRelation, closure.Predicate);
+                var traceKey = $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:targets={seedsKey.Length}";
+
+                if (context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var cachedBySeed) &&
+                    cachedBySeed.TryGetValue(new RowWrapper(seedsKey), out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
 
                 foreach (var seed in seeds)
                 {
@@ -6591,6 +6695,13 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
+                if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var storeBySeed))
+                {
+                    storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                    context.TransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
+                }
+
+                storeBySeed[new RowWrapper(seedsKey)] = totalRows;
                 return totalRows;
             }
             finally
@@ -7301,6 +7412,14 @@ namespace UnifyWeaver.QueryRuntime
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
+                TransitiveClosureSeededResults = parent?.TransitiveClosureSeededResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                TransitiveClosureSeededByTargetResults = parent?.TransitiveClosureSeededByTargetResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
             }
 
             public PredicateId Current { get; set; }
@@ -7339,6 +7458,14 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>> FactIndices { get; }
 
             public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededByTargetResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededByTargetResults { get; }
         }
 
         private readonly record struct PairKey(object? From, object? To);
