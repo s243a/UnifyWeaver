@@ -28,6 +28,7 @@
     exec_panel_spec/1,
     feedback_panel_spec/1,
     shell_panel_spec/1,
+    results_panel_spec/1,
 
     % Testing
     test_http_cli_ui/0
@@ -131,7 +132,10 @@ http_cli_interface(
                         case(feedback, [use_spec(feedback_panel_spec)]),
                         case(shell, [use_spec(shell_panel_spec)])
                     ])
-                ])
+                ]),
+
+                % Results panel (visible for grep, find, cat, exec)
+                use_spec(results_panel_spec)
             ])
         ])
     ])
@@ -564,6 +568,19 @@ shell_panel_spec(
                 ])
             ])
         ])
+    ])
+).
+
+%! results_panel_spec(-Spec) is det
+%  Results panel with syntax highlighting for code viewing.
+%  Shows results for grep, find, cat, and exec tabs.
+%  NOTE: This spec generates a custom results panel with highlight.js integration.
+%  The generator handles this specially via generate_results_panel/1.
+results_panel_spec(
+    custom_results_panel([
+        show_when([grep, find, cat, exec]),
+        syntax_highlight(true),
+        actions([download, copy, clear])
     ])
 ).
 
