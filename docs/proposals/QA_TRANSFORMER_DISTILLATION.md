@@ -482,18 +482,28 @@ while fitting means/variances is filling in details.
 
 **Errors and Model Expressiveness**
 
-When a model makes errors, we can ask: *could* the model express the truth?
+When a model makes errors, we can ask: what fraction of the truth aligns
+with the model's manifold?
 
-- If yes: errors are noise/variance (on the model's manifold)
-- If no: errors include model misspecification (off the manifold)
+- High alignment: most error is noise/variance (on-manifold)
+- Low alignment: error includes model misspecification (off-manifold)
+
+This isn't binary. The truth might partially align with a model's manifold,
+with some dimensions captured and others missed.
 
 For our architectures:
-- 12² may be unable to express the true routing function (off-manifold bias)
-- 6³ can express it, errors are optimization noise (on-manifold variance)
-- 4⁴ can express it and more, risking fitting noise (overfitting)
+- 12² captures some dimensions of truth, misses others (partial alignment)
+- 6³ captures most dimensions, errors are mostly optimization noise
+- 4⁴ captures truth plus extra dimensions that fit noise (overfitting)
 
-This suggests a criterion should measure not just fit, but *whether the
-model class contains the truth*. AIC doesn't distinguish these error types.
+**Overfitting as low-information dimensions**: When a model has excess
+capacity, it can fit dimensions that are noise rather than signal. These
+extra dimensions add complexity without adding predictive value. The model
+isn't "wrong" on its manifold—it's just modeling the wrong thing.
+
+This suggests a criterion should measure not just fit, but *what fraction
+of the model's capacity captures signal vs noise*. AIC penalizes total
+capacity but doesn't distinguish informative from uninformative dimensions.
 
 **Training Dynamics as Information**
 
@@ -517,9 +527,15 @@ manifolds of expressible functions:
 Functions expressible by 12² ⊂ Functions expressible by 6³ ⊂ Functions expressible by 4⁴
 ```
 
-The optimal architecture is the smallest one whose manifold contains the
-true function. Too small → bias (truth is off-manifold). Too large →
-variance (many points on manifold fit the data, hard to find the right one).
+But it's not about whether the manifold "contains" the truth. It's about
+what fraction of the truth's dimensions align with the manifold:
+
+- 12² manifold: aligns with some dimensions of truth
+- 6³ manifold: aligns with most dimensions of truth
+- 4⁴ manifold: aligns with truth + extra noise dimensions
+
+The optimal architecture maximizes alignment with truth while minimizing
+extra dimensions that would capture noise.
 
 **Why This Matters**
 
@@ -527,12 +543,13 @@ Standard model selection (AIC/BIC) asks: "how many parameters?"
 We propose asking: "how many structural choices?" (capacity)
 
 But even this may not be enough. The deeper question is:
-"Does this architecture's manifold contain the truth, and can we find it?"
+"What fraction of this architecture's capacity captures signal vs noise?"
 
 This question involves:
-- Expressiveness (is truth on the manifold?)
-- Optimization (can we reach it?)
-- Generalization (will we generalize once there?)
+- Expressiveness (how much of the truth can we capture?)
+- Efficiency (how much capacity is wasted on noise?)
+- Optimization (can we find the signal dimensions?)
+- Generalization (do the signal dimensions transfer to new data?)
 
 These are distinct concerns that a single criterion struggles to capture.
 
