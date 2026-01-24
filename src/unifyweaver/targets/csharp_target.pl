@@ -1953,11 +1953,11 @@ candidate_key(cand(Index, Term, Role, Vars, Arity), VarCounts, BoundVars, Key) :
     candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, Key).
 
 % Prefer candidates that share already-bound variables. Next, keep the join graph
-% connected when possible. When tied, prefer literals with more constant
-% arguments (PatternScan-selective). When facts are available at compile time,
-% prefer more selective patterns (fewer matching fact rows). Finally, prefer
-% smaller arity, then original order.
-candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, ConstArgs, NegEstimate, NegArity, NegIndex]) :-
+% connected when possible. Then prefer more selective candidates based on the
+% estimated row count (exact when facts are available at compile time, heuristic
+% otherwise). When tied, prefer literals with more constant arguments
+% (PatternScan-selective). Finally, prefer smaller arity, then original order.
+candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, NegEstimate, ConstArgs, NegArity, NegIndex]) :-
     shared_bound_count(Vars, BoundVars, Shared),
     connectivity_score(Vars, VarCounts, Connected),
     constant_arg_count_in_term(Term, ConstArgs),
