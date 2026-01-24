@@ -465,6 +465,79 @@ because:
 
 ---
 
+### Connecting Philosophy
+
+**The Discrete-Continuous Duality**
+
+Our transformer distillation problem has a dual nature:
+
+1. **Discrete structure**: Which of H^L routing patterns to activate
+2. **Continuous implementation**: What weights realize those patterns
+
+Traditional AIC treats all parameters equally, but this misses the hierarchy.
+The discrete choices (routing) are the "real" decisions; the continuous
+weights are consequences that follow from those choices. This is analogous
+to how in a mixture model, choosing K components is the structural decision,
+while fitting means/variances is filling in details.
+
+**Errors and Model Expressiveness**
+
+When a model makes errors, we can ask: *could* the model express the truth?
+
+- If yes: errors are noise/variance (on the model's manifold)
+- If no: errors include model misspecification (off the manifold)
+
+For our architectures:
+- 12² may be unable to express the true routing function (off-manifold bias)
+- 6³ can express it, errors are optimization noise (on-manifold variance)
+- 4⁴ can express it and more, risking fitting noise (overfitting)
+
+This suggests a criterion should measure not just fit, but *whether the
+model class contains the truth*. AIC doesn't distinguish these error types.
+
+**Training Dynamics as Information**
+
+An underappreciated signal: how quickly does the model learn?
+
+If 6³ learns faster than 12², this might indicate:
+- The architecture is *aligned* with the problem structure
+- The optimization landscape is smoother
+- Fewer bits needed to describe the solution in this architecture
+
+This connects to MDL: the best model minimizes description length. If 6³
+needs fewer gradient updates, perhaps its "description" of the solution
+is shorter, even though it has more capacity.
+
+**The Manifold Perspective**
+
+Real solutions live on manifolds. Different architectures define different
+manifolds of expressible functions:
+
+```
+Functions expressible by 12² ⊂ Functions expressible by 6³ ⊂ Functions expressible by 4⁴
+```
+
+The optimal architecture is the smallest one whose manifold contains the
+true function. Too small → bias (truth is off-manifold). Too large →
+variance (many points on manifold fit the data, hard to find the right one).
+
+**Why This Matters**
+
+Standard model selection (AIC/BIC) asks: "how many parameters?"
+We propose asking: "how many structural choices?" (capacity)
+
+But even this may not be enough. The deeper question is:
+"Does this architecture's manifold contain the truth, and can we find it?"
+
+This question involves:
+- Expressiveness (is truth on the manifold?)
+- Optimization (can we reach it?)
+- Generalization (will we generalize once there?)
+
+These are distinct concerns that a single criterion struggles to capture.
+
+---
+
 ### Theoretical Concepts to Explore
 
 The following theoretical frameworks may be relevant to understanding
