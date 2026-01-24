@@ -264,6 +264,9 @@ def main():
     parser.add_argument("--selection-criterion", type=str, default="aic_t",
                        choices=["best_cosine", "aic_t", "aic_gaussian", "bic_t"],
                        help="Selection criterion for compare mode (default: aic_t)")
+    parser.add_argument("--effective-df", type=str, default="params",
+                       choices=["params", "capacity", "log_capacity"],
+                       help="Effective degrees of freedom for AIC: params (raw count), capacity (H^L), log_capacity (log2(H^L))")
     parser.add_argument("--compare-epochs", type=int, default=50,
                        help="Training epochs for compare mode (default: 50)")
     parser.add_argument("--num-heads", type=int, default=None,
@@ -407,24 +410,40 @@ def main():
                 cosine_sims_per_sample.append(cos)
             cosine_sims_per_sample = np.array(cosine_sims_per_sample)
 
-            aic_result = compute_aic_cosine(cosine_sims_per_sample, n_params)
+            # Determine effective degrees of freedom
+            capacity = c['capacity']
+            if args.effective_df == "capacity":
+                effective_k = capacity
+            elif args.effective_df == "log_capacity":
+                effective_k = np.log2(capacity)
+            else:  # params
+                effective_k = n_params
+
+            aic_result = compute_aic_cosine(cosine_sims_per_sample, effective_k)
+
+            # Also compute with raw params for display
+            aic_result_params = compute_aic_cosine(cosine_sims_per_sample, n_params)
 
             comparison_results.append({
                 'candidate': c,
                 'transformer': transformer,
                 'n_params': n_params,
+                'effective_k': effective_k,
+                'capacity': capacity,
                 'mean_cosine_sim': results['mean_cosine_sim'],
                 'std_cosine_sim': results['std_cosine_sim'],
                 'final_loss': losses[-1],
                 'aic_t': aic_result['aic_t'],
                 'aic_gaussian': aic_result['aic_gaussian'],
                 'bic_t': aic_result['bic_t'],
+                'aic_t_params': aic_result_params['aic_t'],
                 'df_estimated': aic_result['df_estimated'],
+                'log_likelihood': aic_result['log_likelihood_t'],
             })
 
             print(f"  Cosine: {results['mean_cosine_sim']:.4f} ± {results['std_cosine_sim']:.4f}")
-            print(f"  AIC(t): {aic_result['aic_t']:.2f}, AIC(gauss): {aic_result['aic_gaussian']:.2f}")
-            print(f"  Estimated df: {aic_result['df_estimated']:.1f}")
+            print(f"  Effective k ({args.effective_df}): {effective_k:.1f}")
+            print(f"  AIC(t): {aic_result['aic_t']:.2f}, -2ln(L): {-2*aic_result['log_likelihood_t']:.2f}")
 
         # Select winner
         print(f"\n{'=' * 60}")
@@ -444,15 +463,15 @@ def main():
             comparison_results.sort(key=lambda r: r['bic_t'])
             criterion_name = "BIC (Student's t)"
 
-        print(f"\nRanked by {criterion_name}:")
-        print(f"\n{'Rank':>4} {'H':>4} {'L':>4} {'Params':>12} {'Cosine':>10} {'AIC(t)':>12} {'AIC(g)':>12}")
-        print(f"{'-'*4} {'-'*4} {'-'*4} {'-'*12} {'-'*10} {'-'*12} {'-'*12}")
+        print(f"\nRanked by {criterion_name} (effective df = {args.effective_df}):")
+        print(f"\n{'Rank':>4} {'H':>4} {'L':>4} {'H^L':>6} {'Eff.k':>10} {'Cosine':>8} {'-2ln(L)':>10} {'AIC(t)':>12}")
+        print(f"{'-'*4} {'-'*4} {'-'*4} {'-'*6} {'-'*10} {'-'*8} {'-'*10} {'-'*12}")
 
         for rank, r in enumerate(comparison_results):
             c = r['candidate']
-            marker = "***" if rank == 0 else ""
-            print(f"{rank+1:>4} {c['num_heads']:>4} {c['num_layers']:>4} {r['n_params']:>12,} "
-                  f"{r['mean_cosine_sim']:>10.4f} {r['aic_t']:>12.2f} {r['aic_gaussian']:>12.2f} {marker}")
+            marker = " ***" if rank == 0 else ""
+            print(f"{rank+1:>4} {c['num_heads']:>4} {c['num_layers']:>4} {r['capacity']:>6} {r['effective_k']:>10.1f} "
+                  f"{r['mean_cosine_sim']:>8.4f} {-2*r['log_likelihood']:>10.2f} {r['aic_t']:>12.2f}{marker}")
 
         # Winner
         winner = comparison_results[0]

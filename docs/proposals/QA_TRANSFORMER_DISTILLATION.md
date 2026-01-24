@@ -377,6 +377,177 @@ Selection criteria:
 - `aic_gaussian`: AIC with Gaussian assumption
 - `bic_t`: BIC with Student's t (stronger complexity penalty)
 
+### Effective Degrees of Freedom
+
+Standard AIC uses raw parameter count (k = millions), which dominates the
+criterion for neural networks. We offer alternative "effective parameter count"
+options via `--effective-df`:
+
+| Option | k = | Rationale |
+|--------|-----|-----------|
+| `params` | 10.6M, 15.4M, 20.1M | Raw weights (default, but problematic) |
+| `capacity` | H^L = 144, 216, 256 | Discrete routing patterns |
+| `log_capacity` | log₂(H^L) ≈ 7-8 | Bits to encode routing |
+
+---
+
+### What We Know (Empirical Facts)
+
+1. **Raw parameter count dominates AIC**: With k in millions, the 2k penalty
+   overwhelms the likelihood term, making AIC essentially "smallest model wins"
+
+2. **Capacity-based AIC is numerically balanced**: When k = H^L (144-256),
+   the penalty term 2k ≈ 300-500 is comparable to -2ln(L) ≈ 535, producing
+   meaningful trade-offs
+
+3. **Experimental results**:
+   - 12² (144 capacity): 0.673 cosine similarity
+   - 6³ (216 capacity): 0.705 cosine similarity (best generalization)
+   - 4⁴ (256 capacity): 0.693 cosine similarity
+
+4. **Training dynamics**: Deeper networks (6³, 4⁴) reach higher cosine
+   similarity faster, but 12² can catch up with more epochs
+
+---
+
+### Philosophical Position (Proposed Interpretation)
+
+We propose that **capacity (H^L) represents the effective parameter count**
+because:
+
+1. **Discrete routing structure**: The transformer implements H^L distinct
+   attention routing patterns. The millions of linear weights are secondary
+   parameters that realize these discrete patterns.
+
+2. **Analogy to established models**:
+   - Mixture of K Gaussians: complexity is O(K), not O(K×d²)
+   - Decision trees: complexity is number of leaves, not threshold values
+   - Our transformer: complexity is routing patterns, not weight values
+
+3. **Logical vs implementation complexity**: The model operates at a logical
+   level (which attention heads to select), while linear mappings are the
+   continuous implementation of those discrete choices.
+
+4. **Problem characterization**: We believe transformer distillation is more
+   like a discrete routing problem than a continuous optimization problem.
+
+---
+
+### Open Questions (Needs Research)
+
+1. **Theoretical justification**: We lack formal proof that H^L is the correct
+   effective parameter count. Possible approaches:
+   - Vapnik-Chervonenkis dimension analysis
+   - PAC-Bayes generalization bounds
+   - Minimum Description Length formulation
+
+2. **Bias-variance in architecture selection**: Our experiments suggest:
+   - 12²: higher bias (underfitting)
+   - 6³: balanced
+   - 4⁴: higher variance (slight overfitting)
+
+   A principled criterion should capture this, but AIC doesn't directly
+   measure bias-variance trade-off.
+
+3. **Errors within vs exterior to model**: Are 12² errors due to model
+   misspecification (can't express the true function) while 6³ errors are
+   noise around the expressible truth? This relates to whether the true
+   solution lies on the model's manifold.
+
+4. **Training efficiency as model fit**: 6³ learns faster than 12². Could
+   training efficiency (epochs to convergence, learning curve area) serve
+   as a model selection criterion? This might indicate architecture-problem
+   alignment.
+
+5. **Cross-validation vs information criteria**: Our manual comparison
+   (effectively cross-validation) selected 6³, while AIC selected 12².
+   Which is more appropriate for neural architecture selection?
+
+---
+
+### Theoretical Concepts to Explore
+
+The following theoretical frameworks may be relevant to understanding
+effective degrees of freedom and model selection in this context:
+
+**Statistical Learning Theory:**
+
+- **Vapnik-Chervonenkis (VC) Dimension**: Measures the capacity of a model
+  class by the largest set it can shatter (classify arbitrarily). For our
+  transformers, the VC dimension might be related to H^L routing patterns
+  rather than raw parameter count.
+
+- **Rademacher Complexity**: Another capacity measure based on how well the
+  model can fit random labels. Related to generalization bounds.
+
+- **PAC (Probably Approximately Correct) Learning**: Framework for bounding
+  generalization error. PAC-Bayes bounds incorporate prior beliefs about
+  model complexity.
+
+**Information-Theoretic Model Selection:**
+
+- **Akaike Information Criterion (AIC)**: 2k - 2ln(L). Asymptotically optimal
+  for prediction. Tends to select larger models.
+
+- **Bayesian Information Criterion (BIC)**: k·ln(n) - 2ln(L). Consistent
+  (selects true model as n→∞). Stronger complexity penalty.
+
+- **Minimum Description Length (MDL)**: Model selection as data compression.
+  Best model minimizes: length(model) + length(data|model). May naturally
+  capture the discrete/continuous distinction.
+
+- **Fisher Information**: Measures information an observation provides about
+  parameters. Related to model curvature and effective degrees of freedom.
+
+**Bias-Variance Decomposition:**
+
+- **Bias**: Error from model limitations (can't express true function)
+- **Variance**: Error from sensitivity to training data
+- **Bias-Variance Tradeoff**: Simple models → high bias, low variance.
+  Complex models → low bias, high variance. Optimal is balanced.
+
+- **James-Stein Estimation**: Sometimes biased estimators have lower total
+  error than unbiased ones. Relates to why 6³ might beat 4⁴.
+
+**Effective Degrees of Freedom:**
+
+- **Ridge Regression**: Effective df = trace(H) where H is hat matrix.
+  Can be much less than parameter count p.
+
+- **Smoothing Splines**: Effective df controlled by smoothing parameter.
+  Bridges between interpolation and underfitting.
+
+- **Neural Network Compression**: Pruned networks show that effective
+  complexity << parameter count. Many weights are redundant.
+
+**Geometry of Learning:**
+
+- **Loss Landscape Geometry**: Smoother landscapes → easier optimization.
+  Architecture affects landscape structure.
+
+- **Implicit Regularization**: SGD dynamics implicitly prefer simpler
+  solutions. Different architectures have different implicit biases.
+
+- **Neural Tangent Kernel (NTK)**: In infinite-width limit, neural nets
+  behave as kernel methods. The kernel depends on architecture.
+
+- **Manifold Hypothesis**: Real data lies on low-dimensional manifolds.
+  Model errors can be decomposed into on-manifold (expressible) and
+  off-manifold (model limitation) components.
+
+**Relevant Literature:**
+
+- Akaike, H. (1974). "A new look at the statistical model identification"
+- Schwarz, G. (1978). "Estimating the dimension of a model" (BIC)
+- Rissanen, J. (1978). "Modeling by shortest data description" (MDL)
+- Vapnik, V. (1995). "The Nature of Statistical Learning Theory"
+- Gal & Ghahramani (2016). "Dropout as a Bayesian Approximation"
+- Jacot et al. (2018). "Neural Tangent Kernel"
+- Belkin et al. (2019). "Reconciling modern machine learning with the
+  bias-variance trade-off" (double descent)
+
+---
+
 ## Related Work
 
 - **Knowledge Distillation**: Hinton et al. (2015) - temperature-scaled softmax
