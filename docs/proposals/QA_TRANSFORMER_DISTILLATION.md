@@ -534,7 +534,11 @@ K(x, x') = ∇_θ f(x;θ)ᵀ ∇_θ f(x';θ)
 ```
 
 This is the inner product of the Jacobians—the "feature map" φ(x) = ∇_θ f(x;θ).
-The eigendecomposition of this kernel defines learnable directions:
+
+**Working in the NTK eigenbasis**: The key insight is to decompose the target
+(or residuals) into the eigenbasis of K on the training data. Each eigenmode
+corresponds to a learnable direction in function space, with its eigenvalue
+controlling how quickly that mode is learned:
 
 - **High eigenvalue modes**: Learned quickly (many parameters contribute)
 - **Low eigenvalue modes**: Learned slowly
@@ -562,14 +566,37 @@ The relevant likelihood measures are those components of error that lie in
 the **span of the NTK eigenfunctions**, because those are the only components
 the model can realistically change via training.
 
-In the NTK-as-GP view, the marginal likelihood decomposes along eigenmodes:
-- **Posterior mean** along each mode: how much of that mode you fit
-- **Posterior variance**: uncertainty in that mode
+**NTK-eigenbasis view of likelihood**: Under the NTK-as-GP approximation, the
+model's behavior is fully described in the eigenbasis of the NTK on the
+training data. The log marginal likelihood decomposes into contributions from
+these modes: for each mode, the posterior mean and variance of the target's
+projection determine its impact on log marginal likelihood.
 
-A good criterion should weight errors in high-eigenvalue NTK directions more
-heavily, because these reflect meaningful misfit the model could address.
-Errors in near-null directions look more like model misspecification than
-bad optimization.
+- **Posterior mean** along each mode: how much of that mode is fit
+- **Posterior variance**: uncertainty in that mode (how well-constrained)
+
+Modes in the NTK span with large eigenvalues are the ones whose residuals
+matter most; directions in the NTK null space do not change with training
+and behave as structural mismatch rather than improvable fit.
+
+**Comparing architectures**: Two architectures with similar raw log-likelihood
+may differ in *how that likelihood is distributed across NTK modes*:
+
+- A "good" architecture concentrates improvement in a small number of
+  high-signal modes (high posterior mean, well-controlled variance)
+- A "bad" architecture uses extra modes to fit noise or leaves important
+  modes underfit
+
+**Function-space decomposition of fit**: In the NTK limit, our networks
+correspond to Gaussian processes with kernel K_NTK. The log marginal likelihood
+decomposes along the NTK eigenfunctions: for each eigenmode, the posterior mean
+and variance of the data's projection onto that mode determine its contribution
+to the likelihood. Practically, this means that "relevant" likelihood is
+concentrated in the span of NTK modes with non-negligible eigenvalues: these
+are the directions the architecture can learn and refine. Residual error in
+the NTK null space is structurally unlearnable and should be treated as model
+misspecification rather than as evidence of overfitting or underfitting within
+the model class.
 
 **Why This Matters**
 
