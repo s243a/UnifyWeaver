@@ -69,8 +69,9 @@ class FederatedProjectionWrapper:
     Used as the teacher model for transformer distillation.
     """
 
-    def __init__(self, model_path: Path):
+    def __init__(self, model_path: Path, routing_mode: str = "centroid"):
         self.model_path = Path(model_path)
+        self.routing_mode = routing_mode
 
         # Load model metadata
         logger.info(f"Loading federated model from {model_path}...")
@@ -108,6 +109,7 @@ class FederatedProjectionWrapper:
             self.embed_dim = 384  # Default
 
         logger.info(f"Embedding dimension: {self.embed_dim}")
+        logger.info(f"Routing mode: {self.routing_mode}")
 
     def _load_routing_data(self):
         """Load query embeddings and index-to-cluster mapping for routing."""
@@ -145,9 +147,11 @@ class FederatedProjectionWrapper:
 
     def project(self, q_emb: np.ndarray, top_k_routing: int = 10, k_coverage: float = None) -> np.ndarray:
         """
-        Project query using federated softmax routing over cluster centroids.
+        Project query using federated softmax routing.
 
-        Flow: query → sim(query, centroids) → softmax → Σ weight_i × (query @ W_i)
+        Routing mode:
+        - "centroid": sim(query, centroids) → softmax → weighted projection
+        - "question": sim(query, all questions) → aggregate to clusters → weighted projection
 
         Args:
             q_emb: Query embedding (embed_dim,)
@@ -157,6 +161,11 @@ class FederatedProjectionWrapper:
         Returns:
             Projected embedding (embed_dim,)
         """
+        # Dispatch based on routing mode
+        if self.routing_mode == "question":
+            return self._project_question_routing(q_emb, top_k_routing)
+
+        # Centroid-based routing (default)
         # Normalize query
         q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
 
@@ -243,6 +252,82 @@ class FederatedProjectionWrapper:
 
             return proj
 
+    def compute_routing_entropy(self, q_emb: np.ndarray) -> float:
+        """
+        Compute entropy of routing weights (higher = more uncertain).
+
+        Useful diagnostic: high entropy samples are near decision boundaries.
+        """
+        q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
+
+        if self.routing_mode == "question":
+            # Question-based routing entropy
+            sims = q_norm @ self.query_embeddings.T
+            sims_shifted = (sims - np.max(sims)) / self.temperature
+            weights = np.exp(sims_shifted)
+            weights /= weights.sum()
+        else:
+            # Centroid-based routing entropy
+            if self.cluster_centroids is not None:
+                sims = q_norm @ self.cluster_centroids.T
+            else:
+                sims = q_norm @ self.query_embeddings.T
+            sims_shifted = (sims - np.max(sims)) / self.temperature
+            weights = np.exp(sims_shifted)
+            weights /= weights.sum()
+
+        # Compute entropy: -Σ w_i log(w_i)
+        weights = weights[weights > 1e-10]  # Avoid log(0)
+        entropy = -np.sum(weights * np.log(weights))
+
+        # Normalize by max entropy (log(n))
+        max_entropy = np.log(len(weights))
+        return entropy / max_entropy if max_entropy > 0 else 0.0
+
+    def _project_question_routing(self, q_emb: np.ndarray, top_k_clusters: int = 10) -> np.ndarray:
+        """
+        Project using per-question routing with cluster aggregation.
+
+        Flow: query → sim(query, all questions) → softmax → aggregate to cluster weights → Σ weight_k × (query @ W_k)
+
+        This provides richer routing signal than centroid-only routing.
+        """
+        q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
+
+        # Compute similarity to all training questions
+        sims = q_norm @ self.query_embeddings.T
+
+        # Softmax over questions
+        sims_shifted = (sims - np.max(sims)) / self.temperature
+        question_weights = np.exp(sims_shifted)
+        question_weights /= question_weights.sum()
+
+        # Aggregate to cluster weights (sum of question weights per cluster)
+        cluster_weights = {}
+        for idx, w in enumerate(question_weights):
+            cid = self.idx_to_cluster.get(int(idx))
+            if cid:
+                cluster_weights[cid] = cluster_weights.get(cid, 0.0) + w
+
+        # Get top-k clusters by aggregated weight
+        sorted_clusters = sorted(cluster_weights.items(), key=lambda x: x[1], reverse=True)
+        top_clusters = sorted_clusters[:top_k_clusters]
+
+        # Weighted projection
+        proj = np.zeros_like(q_emb)
+        total_weight = 0.0
+
+        for cid, w in top_clusters:
+            if cid in self.clusters:
+                W = self.clusters[cid]["W"]
+                proj += w * (q_emb @ W)
+                total_weight += w
+
+        if total_weight > 0:
+            proj /= total_weight
+
+        return proj
+
     def project_batch(self, q_embs: np.ndarray, top_k_routing: int = 10, k_coverage: float = None) -> np.ndarray:
         """Project a batch of query embeddings."""
         return np.array([self.project(q, top_k_routing, k_coverage) for q in q_embs])
@@ -291,6 +376,9 @@ def main():
                        help="Top-k clusters for routing (default: 10)")
     parser.add_argument("--k-coverage", type=float, default=None,
                        help="Use coverage-based k instead of fixed (e.g., 0.5 for 50%%)")
+    parser.add_argument("--routing-mode", type=str, default="centroid",
+                       choices=["centroid", "question"],
+                       help="Routing mode: centroid (sim to centroids) or question (sim to all questions, aggregated)")
     parser.add_argument("--export-onnx", type=Path, default=None,
                        help="Export trained model to ONNX format for browser deployment")
     parser.add_argument("--onnx-opset", type=int, default=14,
@@ -309,7 +397,7 @@ def main():
     print("=" * 60)
 
     # Load federated model (teacher)
-    federated = FederatedProjectionWrapper(args.input_model)
+    federated = FederatedProjectionWrapper(args.input_model, routing_mode=args.routing_mode)
 
     n_clusters = federated.num_clusters
     embed_dim = federated.embed_dim
@@ -318,6 +406,7 @@ def main():
     print(f"  Clusters (N): {n_clusters}")
     print(f"  Embedding dim: {embed_dim}")
     print(f"  Temperature: {federated.temperature}")
+    print(f"  Routing mode: {federated.routing_mode}")
 
     # Handle architecture modes
     if args.architecture == "suggest":
