@@ -116,6 +116,9 @@
 :- dynamic user:test_link_to_charlie/1.
 :- dynamic user:test_select_fact/2.
 :- dynamic user:test_selective_common_amount/1.
+:- dynamic user:test_rowcount_big/2.
+:- dynamic user:test_rowcount_small/1.
+:- dynamic user:test_join_order_rowcount_prefers_small/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -132,6 +135,7 @@ test_csharp_query_target :-
         verify_join_plan,
         verify_join_ordering_constant_arg_plan,
         verify_join_ordering_selectivity_plan,
+        verify_join_ordering_rowcount_over_constargs_plan,
         verify_selection_plan,
         verify_ground_relation_arg_plan,
         verify_multi_constant_pattern_scan_plan,
@@ -251,6 +255,15 @@ setup_test_data :-
     assertz(user:(test_selective_common_amount(Amount) :-
         test_select_fact(alice, Amount),
         test_select_fact(bob, Amount)
+    )),
+    assertz(user:test_rowcount_big(a, foo)),
+    assertz(user:test_rowcount_big(b, foo)),
+    assertz(user:test_rowcount_big(c, foo)),
+    assertz(user:test_rowcount_small(a)),
+    assertz(user:test_rowcount_small(b)),
+    assertz(user:(test_join_order_rowcount_prefers_small(X) :-
+        test_rowcount_big(X, foo),
+        test_rowcount_small(X)
     )),
     assertz(user:(test_filtered(X) :- test_fact(X, _), X = alice)),
     assertz(user:test_val(item1, 5)),
@@ -626,6 +639,9 @@ cleanup_test_data :-
     retractall(user:test_link_to_charlie(_)),
     retractall(user:test_select_fact(_, _)),
     retractall(user:test_selective_common_amount(_)),
+    retractall(user:test_rowcount_big(_, _)),
+    retractall(user:test_rowcount_small(_)),
+    retractall(user:test_join_order_rowcount_prefers_small(_)),
     retractall(user:test_filtered(_)),
     retractall(user:test_val(_, _)),
     retractall(user:test_increment(_, _)),
@@ -799,6 +815,22 @@ verify_join_ordering_selectivity_plan :-
     LeftPattern = [operand{kind:value, value:bob}, operand{kind:wildcard}],
     RightPattern = [operand{kind:value, value:alice}, operand{kind:wildcard}],
     maybe_run_query_runtime(Plan, ['1']).
+
+verify_join_ordering_rowcount_over_constargs_plan :-
+    csharp_query_target:build_query_plan(test_join_order_rowcount_prefers_small/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:JoinNode, columns:_, width:1}),
+    JoinNode = join{
+        type:join,
+        left:relation_scan{predicate:predicate{name:test_rowcount_small, arity:1}, type:relation_scan, width:_},
+        right:pattern_scan{predicate:predicate{name:test_rowcount_big, arity:2}, type:pattern_scan, pattern:RightPattern, width:_},
+        left_keys:[0],
+        right_keys:[0],
+        left_width:_,
+        right_width:_,
+        width:_
+    },
+    RightPattern = [operand{kind:wildcard}, operand{kind:value, value:foo}],
+    maybe_run_query_runtime(Plan, ['a', 'b']).
 
 verify_selection_plan :-
     csharp_query_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
