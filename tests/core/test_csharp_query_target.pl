@@ -42,6 +42,9 @@
 :- dynamic user:test_bothscan_left/3.
 :- dynamic user:test_bothscan_right/3.
 :- dynamic user:test_bothscan_join/4.
+:- dynamic user:test_bothscan_probe_left/3.
+:- dynamic user:test_bothscan_probe_right/5.
+:- dynamic user:test_bothscan_probe_join/1.
 :- dynamic user:test_cache_join_left/2.
 :- dynamic user:test_cache_join_right/2.
 :- dynamic user:test_cache_join_root/1.
@@ -191,6 +194,7 @@ test_csharp_query_target :-
         verify_parameterized_multi_key_join_runtime,
         verify_parameterized_multi_key_join_strategy_partial_index,
         verify_multi_key_both_scan_join_strategy_partial_index,
+        verify_both_scan_join_selective_probe_uses_partial_index,
         verify_both_scan_join_prefers_cached_fact_index,
         verify_multi_constant_pattern_scan_prefers_fact_index,
         verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
@@ -315,6 +319,18 @@ setup_test_data :-
     assertz(user:(test_bothscan_join(Customer, Product, LeftValue, RightValue) :-
         test_bothscan_left(Customer, Product, LeftValue),
         test_bothscan_right(Customer, Product, RightValue)
+    )),
+    forall(between(1, 100, I),
+        (   format(atom(Customer), 'c~w', [I]),
+            format(atom(Product), 'p~w', [I]),
+            format(atom(Value), 'v~w', [I]),
+            assertz(user:test_bothscan_probe_left(Customer, Product, Value)),
+            (   I =< 2 -> Tag2 = bar ; Tag2 = baz),
+            assertz(user:test_bothscan_probe_right(Customer, Product, I, foo, Tag2))
+        )),
+    assertz(user:(test_bothscan_probe_join(Value) :-
+        test_bothscan_probe_left(Customer, Product, Value),
+        test_bothscan_probe_right(Customer, Product, _, foo, bar)
     )),
     assertz(user:test_cache_join_left(k1, a1)),
     assertz(user:test_cache_join_left(k2, a2)),
@@ -664,6 +680,9 @@ cleanup_test_data :-
     retractall(user:test_bothscan_left(_, _, _)),
     retractall(user:test_bothscan_right(_, _, _)),
     retractall(user:test_bothscan_join(_, _, _, _)),
+    retractall(user:test_bothscan_probe_left(_, _, _)),
+    retractall(user:test_bothscan_probe_right(_, _, _, _, _)),
+    retractall(user:test_bothscan_probe_join(_)),
     retractall(user:test_cache_join_left(_, _)),
     retractall(user:test_cache_join_right(_, _)),
     retractall(user:test_cache_join_root(_)),
@@ -1485,6 +1504,19 @@ verify_multi_key_both_scan_join_strategy_partial_index :-
          'alice,laptop,1,20',
          'alice,laptop,2,10',
          'alice,laptop,2,20',
+        'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [],
+        HarnessSource).
+
+verify_both_scan_join_selective_probe_uses_partial_index :-
+    csharp_query_target:build_query_plan(test_bothscan_probe_join/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(join{type:join, left:_, right:_, left_keys:[0, 1], right_keys:[0, 1], left_width:_, right_width:_, width:_}, Root),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinScanIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['v1',
+         'v2',
          'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
         [],
         HarnessSource).

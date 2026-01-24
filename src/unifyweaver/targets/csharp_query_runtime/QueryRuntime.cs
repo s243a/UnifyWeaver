@@ -2319,9 +2319,7 @@ namespace UnifyWeaver.QueryRuntime
                                 var joinIndexCached = context.JoinIndices.ContainsKey((leftScanPredicate, leftSignature));
 
                                 const int TinyProbeUpperBound = 64;
-                                var probeIsTiny = keyCount > 1 &&
-                                                  TryEstimateRowUpperBound(join.Right, context, out var probeUpperBound) &&
-                                                  probeUpperBound <= TinyProbeUpperBound;
+                                var probeIsTiny = keyCount > 1 && estimatedRightProbe <= TinyProbeUpperBound;
 
                                 if (probeIsTiny &&
                                     !joinIndexCached &&
@@ -2499,9 +2497,7 @@ namespace UnifyWeaver.QueryRuntime
                                 var joinIndexCached = context.JoinIndices.ContainsKey((rightScanPredicate, rightSignature));
 
                                 const int TinyProbeUpperBound = 64;
-                                var probeIsTiny = keyCount > 1 &&
-                                                  TryEstimateRowUpperBound(join.Left, context, out var probeUpperBound) &&
-                                                  probeUpperBound <= TinyProbeUpperBound;
+                                var probeIsTiny = keyCount > 1 && estimatedLeftProbe <= TinyProbeUpperBound;
 
                                 if (probeIsTiny &&
                                     !joinIndexCached &&
