@@ -284,6 +284,26 @@ class FederatedProjectionWrapper:
         max_entropy = np.log(len(weights))
         return entropy / max_entropy if max_entropy > 0 else 0.0
 
+    def compute_entropy_weights(self, query_embeddings: np.ndarray) -> np.ndarray:
+        """
+        Compute entropy-based importance weights for a batch of queries.
+
+        Higher entropy = more uncertain routing = more informative sample.
+
+        Returns:
+            Array of weights, normalized so mean = 1.0
+        """
+        entropies = np.array([
+            self.compute_routing_entropy(q) for q in query_embeddings
+        ])
+
+        # Convert entropy to importance weights
+        # Higher entropy = higher weight (more informative)
+        # Normalize so mean = 1.0 (preserves expected loss scale)
+        weights = entropies / entropies.mean() if entropies.mean() > 0 else np.ones_like(entropies)
+
+        return weights
+
     def _project_question_routing(self, q_emb: np.ndarray, top_k_clusters: int = 10) -> np.ndarray:
         """
         Project using per-question routing with cluster aggregation.
@@ -379,6 +399,8 @@ def main():
     parser.add_argument("--routing-mode", type=str, default="centroid",
                        choices=["centroid", "question"],
                        help="Routing mode: centroid (sim to centroids) or question (sim to all questions, aggregated)")
+    parser.add_argument("--entropy-weighting", action="store_true",
+                       help="Weight training samples by routing entropy (upweight uncertain samples)")
     parser.add_argument("--export-onnx", type=Path, default=None,
                        help="Export trained model to ONNX format for browser deployment")
     parser.add_argument("--onnx-opset", type=int, default=14,
@@ -459,6 +481,12 @@ def main():
 
         ff_dim = args.ff_dim or embed_dim * 2
 
+        # Compute entropy weights for compare mode if enabled
+        compare_sample_weights = None
+        if args.entropy_weighting:
+            print("Computing routing entropy weights for comparison...")
+            compare_sample_weights = federated.compute_entropy_weights(train_queries)
+
         comparison_results = []
 
         for i, c in enumerate(candidates):
@@ -482,7 +510,8 @@ def main():
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 log_interval=args.compare_epochs,  # Only log at end
-                cosine_weight=args.cosine_weight
+                cosine_weight=args.cosine_weight,
+                sample_weights=compare_sample_weights
             )
 
             # Evaluate
@@ -586,7 +615,8 @@ def main():
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 log_interval=20,
-                cosine_weight=args.cosine_weight
+                cosine_weight=args.cosine_weight,
+                sample_weights=compare_sample_weights
             )
             results = evaluate_equivalence(transformer, federated, test_queries)
             print(f"Final cosine: {results['mean_cosine_sim']:.4f}")
@@ -674,6 +704,14 @@ def main():
     print(f"  Transformer params: {transformer_params:,}")
     print(f"  Ratio: {compression:.1f}x smaller")
 
+    # Compute entropy weights if enabled
+    sample_weights = None
+    if args.entropy_weighting:
+        print("\nComputing routing entropy weights...")
+        sample_weights = federated.compute_entropy_weights(train_queries)
+        print(f"  Entropy weights: min={sample_weights.min():.3f}, max={sample_weights.max():.3f}, "
+              f"std={sample_weights.std():.3f}")
+
     # Train via distillation
     print(f"\nTraining for {args.epochs} epochs (cosine_weight={args.cosine_weight})...")
     losses = train_distillation(
@@ -684,7 +722,8 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.lr,
         log_interval=20,
-        cosine_weight=args.cosine_weight
+        cosine_weight=args.cosine_weight,
+        sample_weights=sample_weights
     )
 
     # Evaluate on test set
