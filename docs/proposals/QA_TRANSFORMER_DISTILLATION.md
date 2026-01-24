@@ -518,7 +518,7 @@ This connects to MDL: the best model minimizes description length. If 6³
 needs fewer gradient updates, perhaps its "description" of the solution
 is shorter, even though it has more capacity.
 
-**The Manifold Perspective**
+**The Neural Tangent Kernel (NTK) Perspective**
 
 Real solutions live on manifolds. Different architectures define different
 manifolds of expressible functions:
@@ -527,23 +527,49 @@ manifolds of expressible functions:
 Functions expressible by 12² ⊂ Functions expressible by 6³ ⊂ Functions expressible by 4⁴
 ```
 
-The manifold should be statistically tangent to the error distribution.
-Errors can be decomposed geometrically:
+The NTK formalism makes this precise. The Neural Tangent Kernel is:
 
-- **Errors within the manifold** (tangent): The model could express this
-  but didn't quite reach it. These are consequential for evaluating fit—
-  they represent optimization quality and are what the model can improve.
+```
+K(x, x') = ∇_θ f(x;θ)ᵀ ∇_θ f(x';θ)
+```
 
-- **Errors orthogonal to the manifold**: The model cannot express this
-  direction. These represent structural limitations, not fit quality.
+This is the inner product of the Jacobians—the "feature map" φ(x) = ∇_θ f(x;θ).
+The eigendecomposition of this kernel defines learnable directions:
 
-For model selection, errors within the manifold matter more. A model with
-small tangent errors has good fit; large orthogonal errors indicate the
-architecture is misaligned with the problem.
+- **High eigenvalue modes**: Learned quickly (many parameters contribute)
+- **Low eigenvalue modes**: Learned slowly
+- **Null space (zero eigenvalues)**: Cannot be learned at all
 
-- 12² manifold: may have large orthogonal errors (can't express some directions)
-- 6³ manifold: mostly tangent errors (can express truth, small fit errors)
-- 4⁴ manifold: tangent errors include noise fitting (extra dimensions)
+**Terminology note**: In linear algebra, "kernel" = "null space". In ML/NTK,
+"kernel" refers to the kernel function K(x,x'), and we distinguish:
+
+- **Span of NTK features** (image of NTK operator): Directions the model
+  CAN express via gradient updates. Errors here are reducible.
+- **Null space of NTK operator**: Directions the model CANNOT express.
+  Errors here are structural limitations, not fit quality.
+
+For model selection, errors in the NTK span matter more—these are what the
+model can realistically address. Errors in the null space reflect
+architectural mismatch rather than improvable fit.
+
+- 12² NTK span: smaller, more directions in null space (structural bias)
+- 6³ NTK span: covers most of the truth's variance
+- 4⁴ NTK span: larger than needed, extra dimensions fit noise
+
+**Implications for Information Criteria**
+
+The relevant likelihood measures are those components of error that lie in
+the **span of the NTK eigenfunctions**, because those are the only components
+the model can realistically change via training.
+
+In the NTK-as-GP view, the marginal likelihood decomposes along eigenmodes:
+- **Posterior mean** along each mode: how much of that mode you fit
+- **Posterior variance**: uncertainty in that mode
+
+A good criterion should weight errors in high-eigenvalue NTK directions more
+heavily, because these reflect meaningful misfit the model could address.
+Errors in near-null directions look more like model misspecification than
+bad optimization.
 
 **Why This Matters**
 
