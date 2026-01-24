@@ -177,6 +177,10 @@ const AUTH_REQUIRED = process.env.AUTH_REQUIRED === \'true\';
 // Commands allowed for search operations
 const SEARCH_COMMANDS = [\'grep\', \'find\', \'cat\', \'head\', \'tail\', \'ls\', \'wc\', \'pwd\'];
 
+// Browse roots - support sandbox, project, and home directories
+const PROJECT_ROOT = process.env.PROJECT_ROOT || path.resolve(__dirname, \'../../..\');
+const HOME_ROOT = process.env.HOME || \'/data/data/com.termux/files/home\';
+
 // Feedback log file
 const FEEDBACK_FILE = process.env.FEEDBACK_FILE || path.join(SANDBOX_ROOT, \'comet-feedback.log\');', [Port, OriginsArray]).
 
@@ -219,11 +223,30 @@ interface FileEntry {
 // Helper Functions
 // ============================================================================
 
-function resolveWorkingDir(cwd?: string): string {
-  if (!cwd || cwd === \'.\') return SANDBOX_ROOT;
-  const resolved = path.resolve(SANDBOX_ROOT, cwd);
-  if (!resolved.startsWith(SANDBOX_ROOT)) return SANDBOX_ROOT;
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return SANDBOX_ROOT;
+/**
+ * Get the base directory for a given root type
+ */
+function getRootDir(root?: string): string {
+  switch (root) {
+    case \'project\':
+      return PROJECT_ROOT;
+    case \'home\':
+      return HOME_ROOT;
+    case \'sandbox\':
+    default:
+      return SANDBOX_ROOT;
+  }
+}
+
+/**
+ * Resolve a working directory relative to the specified root
+ */
+function resolveWorkingDir(cwd?: string, root?: string): string {
+  const rootDir = getRootDir(root);
+  if (!cwd || cwd === \'.\') return rootDir;
+  const resolved = path.resolve(rootDir, cwd);
+  if (!resolved.startsWith(rootDir)) return rootDir;
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return rootDir;
   return resolved;
 }
 
@@ -381,11 +404,14 @@ generate_handler_body(commands, _, Body) :-
   });'.
 
 generate_handler_body(browse, _, Body) :-
-    Body = '  const { path: browsePath = \'.\' } = body as any;
+    Body = '  const { path: browsePath = \'.\', root = \'sandbox\' } = body as any;
 
-  const targetPath = path.resolve(SANDBOX_ROOT, browsePath);
-  if (!targetPath.startsWith(SANDBOX_ROOT)) {
-    return sendJSON(res, 403, { success: false, error: \'Path outside sandbox\' });
+  // Determine root directory based on selection
+  const rootDir = getRootDir(root);
+
+  const targetPath = path.resolve(rootDir, browsePath);
+  if (!targetPath.startsWith(rootDir)) {
+    return sendJSON(res, 403, { success: false, error: \'Path outside root\' });
   }
 
   if (!fs.existsSync(targetPath)) {
@@ -419,13 +445,15 @@ generate_handler_body(browse, _, Body) :-
     return a.name.localeCompare(b.name);
   });
 
-  const relativePath = path.relative(SANDBOX_ROOT, targetPath) || \'.\';
+  const relativePath = path.relative(rootDir, targetPath) || \'.\';
 
   sendJSON(res, 200, {
     success: true,
     data: {
       path: relativePath,
       absolutePath: targetPath,
+      root,
+      rootDir,
       parent: relativePath !== \'.\' ? path.dirname(relativePath) || \'.\' : null,
       entries,
       count: entries.length
@@ -433,13 +461,13 @@ generate_handler_body(browse, _, Body) :-
   });'.
 
 generate_handler_body(grep, _, Body) :-
-    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd } = body as any;
+    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd, root } = body as any;
 
   if (!pattern) {
     return sendJSON(res, 400, { success: false, error: \'Missing pattern\' });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const args = [\'-r\', \'-n\', \'--color=never\', ...options, pattern, searchPath];
   const cmdString = [\'grep\', ...args].join(\' \');
   const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
@@ -455,9 +483,9 @@ generate_handler_body(grep, _, Body) :-
   });'.
 
 generate_handler_body(find, _, Body) :-
-    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd } = body as any;
+    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd, root } = body as any;
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const args = [searchPath];
   if (pattern) args.push(\'-name\', pattern);
   args.push(...options);
@@ -475,13 +503,13 @@ generate_handler_body(find, _, Body) :-
   });'.
 
 generate_handler_body(cat, _, Body) :-
-    Body = '  const { path: filePath, options = [], cwd } = body as any;
+    Body = '  const { path: filePath, options = [], cwd, root } = body as any;
 
   if (!filePath) {
     return sendJSON(res, 400, { success: false, error: \'Missing path\' });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const cmdString = [\'cat\', ...options, filePath].join(\' \');
   const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
 
@@ -498,7 +526,7 @@ generate_handler_body(cat, _, Body) :-
   });'.
 
 generate_handler_body(exec, _, Body) :-
-    Body = '  const { command, args = [], cwd } = body as any;
+    Body = '  const { command, args = [], cwd, root } = body as any;
 
   if (!command) {
     return sendJSON(res, 400, { success: false, error: \'Missing command\' });
@@ -508,7 +536,7 @@ generate_handler_body(exec, _, Body) :-
     return sendJSON(res, 403, { success: false, error: `Command not allowed. Allowed: ${SEARCH_COMMANDS.join(\', \')}` });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const expandedArgs = expandGlobs(args, workingDir);
   const validation = validateCommand(command, expandedArgs, { role: \'user\' });
 
@@ -695,7 +723,14 @@ interface ShellSession {
   user: TokenPayload;
   process: ChildProcessWithoutNullStreams | null;
   currentDir: string;
+  rootType: string;  // \'sandbox\' | \'project\' | \'home\'
+  rootDir: string;   // Actual root directory path
   inputBuffer: string;
+  // Command history support
+  history: string[];
+  historyIndex: number;
+  // Escape sequence buffer for arrow keys
+  escapeBuffer: string;
 }
 
 function setupWebSocket(server: http.Server | https.Server): void {
@@ -704,6 +739,7 @@ function setupWebSocket(server: http.Server | https.Server): void {
   wss.on(\'connection\', (ws: WebSocket, req: http.IncomingMessage) => {
     const parsedUrl = url.parse(req.url || \'\', true);
     const token = parsedUrl.query.token as string;
+    const rootType = (parsedUrl.query.root as string) || \'sandbox\';
 
     let payload: TokenPayload;
 
@@ -743,22 +779,28 @@ function setupWebSocket(server: http.Server | https.Server): void {
       };
     }
 
-    console.log(`Shell session started for ${payload.email}`);
-    handleShellConnection(ws, payload);
+    console.log(`Shell session started for ${payload.email} (root: ${rootType})`);
+    handleShellConnection(ws, payload, rootType);
   });
 }
 
-function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
+function handleShellConnection(ws: WebSocket, user: TokenPayload, rootType: string = \'sandbox\'): void {
+  const rootDir = getRootDir(rootType);
   const session: ShellSession = {
     ws,
     user,
     process: null,
-    currentDir: SANDBOX_ROOT,
-    inputBuffer: \'\'
+    currentDir: rootDir,
+    rootType,
+    rootDir,
+    inputBuffer: \'\',
+    history: [],
+    historyIndex: -1,
+    escapeBuffer: \'\'
   };
 
   // Send welcome message
-  const welcome = `\\r\\nConnected to UnifyWeaver Shell\\r\\nUser: ${user.email} [${user.roles.join(\', \')}]\\r\\nWorking directory: ${SANDBOX_ROOT}\\r\\nType \"help\" for commands, \"exit\" to disconnect\\r\\n\\r\\n`;
+  const welcome = `\\r\\nConnected to UnifyWeaver Shell\\r\\nUser: ${user.email} [${user.roles.join(\', \')}]\\r\\nRoot: ${rootType} (${rootDir})\\r\\nType \"help\" for commands, \"exit\" to disconnect\\r\\n\\r\\n`;
   ws.send(JSON.stringify({ type: \'output\', data: welcome }));
   ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
 
@@ -769,7 +811,9 @@ function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
         handleShellInput(session, msg.data);
       }
     } catch (err) {
-      console.error(\'Shell message error:\', err);
+      // Try handling as raw text (for compatibility)
+      const rawData = data.toString();
+      handleShellInput(session, rawData);
     }
   });
 
@@ -783,22 +827,78 @@ function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
 }
 
 function handleShellInput(session: ShellSession, input: string): void {
-  const { ws } = session;
-
   // Process each character in the input
   for (const char of input) {
     processShellChar(session, char);
   }
 }
 
+function clearInputLine(session: ShellSession): void {
+  const { ws, inputBuffer } = session;
+  if (inputBuffer.length > 0) {
+    // Move cursor back, overwrite with spaces, move back again
+    const backspaces = \'\\b\'.repeat(inputBuffer.length);
+    const spaces = \' \'.repeat(inputBuffer.length);
+    ws.send(JSON.stringify({ type: \'output\', data: backspaces + spaces + backspaces }));
+  }
+}
+
 function processShellChar(session: ShellSession, char: string): void {
   const { ws } = session;
+
+  // If we are in the middle of an escape sequence
+  if (session.escapeBuffer) {
+    session.escapeBuffer += char;
+
+    // Check for complete escape sequences
+    if (session.escapeBuffer === \'\\x1b[A\') {
+      // Up arrow - previous command in history
+      session.escapeBuffer = \'\';
+      if (session.history.length > 0 && session.historyIndex < session.history.length - 1) {
+        clearInputLine(session);
+        session.historyIndex++;
+        session.inputBuffer = session.history[session.history.length - 1 - session.historyIndex] || \'\';
+        ws.send(JSON.stringify({ type: \'output\', data: session.inputBuffer }));
+      }
+    } else if (session.escapeBuffer === \'\\x1b[B\') {
+      // Down arrow - next command in history
+      session.escapeBuffer = \'\';
+      if (session.historyIndex > 0) {
+        clearInputLine(session);
+        session.historyIndex--;
+        session.inputBuffer = session.history[session.history.length - 1 - session.historyIndex] || \'\';
+        ws.send(JSON.stringify({ type: \'output\', data: session.inputBuffer }));
+      } else if (session.historyIndex === 0) {
+        clearInputLine(session);
+        session.historyIndex = -1;
+        session.inputBuffer = \'\';
+      }
+    } else if (session.escapeBuffer === \'\\x1b[C\') {
+      // Right arrow - currently not supporting cursor movement within line
+      session.escapeBuffer = \'\';
+    } else if (session.escapeBuffer === \'\\x1b[D\') {
+      // Left arrow - currently not supporting cursor movement within line
+      session.escapeBuffer = \'\';
+    } else if (session.escapeBuffer.length > 4) {
+      // Unknown/too long escape sequence, discard
+      session.escapeBuffer = \'\';
+    }
+    // Otherwise keep collecting escape sequence characters
+    return;
+  }
+
+  // Escape character - start of escape sequence
+  if (char === \'\\x1b\') {
+    session.escapeBuffer = char;
+    return;
+  }
 
   // Enter key
   if (char === \'\\r\' || char === \'\\n\') {
     ws.send(JSON.stringify({ type: \'output\', data: \'\\r\\n\' }));
     const command = session.inputBuffer.trim();
     session.inputBuffer = \'\';
+    session.historyIndex = -1;  // Reset history navigation
     if (command) {
       executeShellCommand(session, command);
     } else {
@@ -820,7 +920,21 @@ function processShellChar(session: ShellSession, char: string): void {
     }
     ws.send(JSON.stringify({ type: \'output\', data: \'^C\\r\\n\' }));
     session.inputBuffer = \'\';
+    session.historyIndex = -1;
     ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+  }
+  // Ctrl+D (EOF)
+  else if (char === \'\\x04\') {
+    if (session.inputBuffer.length === 0) {
+      ws.send(JSON.stringify({ type: \'output\', data: \'exit\\r\\n\' }));
+      ws.close();
+    }
+  }
+  // Tab (for future tab completion)
+  else if (char === \'\\t\') {
+    // Currently just insert spaces, could add tab completion later
+    session.inputBuffer += \'    \';
+    ws.send(JSON.stringify({ type: \'output\', data: \'    \' }));
   }
   // Printable characters
   else if (char >= \' \' && char <= \'~~\') {
@@ -831,6 +945,16 @@ function processShellChar(session: ShellSession, char: string): void {
 
 function executeShellCommand(session: ShellSession, command: string): void {
   const { ws } = session;
+
+  // Save to command history (avoid consecutive duplicates)
+  if (command && session.history[session.history.length - 1] !== command) {
+    session.history.push(command);
+    // Keep history to reasonable size
+    if (session.history.length > 100) {
+      session.history.shift();
+    }
+  }
+  session.historyIndex = -1;
 
   // Built-in: help
   if (command === \'help\') {
@@ -849,22 +973,22 @@ function executeShellCommand(session: ShellSession, command: string): void {
 
   // Built-in: cd
   if (command.startsWith(\'cd \') || command === \'cd\') {
-    const targetDir = command.slice(3).trim() || SANDBOX_ROOT;
+    const targetDir = command.slice(3).trim() || session.rootDir;
     let newDir: string;
 
     if (path.isAbsolute(targetDir)) {
       newDir = targetDir;
     } else if (targetDir === \'~~\') {
-      newDir = SANDBOX_ROOT;
+      newDir = session.rootDir;
     } else if (targetDir.startsWith(\'~~/\')) {
-      newDir = path.join(SANDBOX_ROOT, targetDir.slice(2));
+      newDir = path.join(session.rootDir, targetDir.slice(2));
     } else {
       newDir = path.resolve(session.currentDir, targetDir);
     }
 
-    // Security: ensure within sandbox
-    if (!newDir.startsWith(SANDBOX_ROOT)) {
-      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: Access denied - outside sandbox\\x1b[0m\\r\\n` }));
+    // Security: ensure within selected root
+    if (!newDir.startsWith(session.rootDir)) {
+      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: Access denied - outside ${session.rootType} root\\x1b[0m\\r\\n` }));
       ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
       return;
     }
@@ -888,7 +1012,7 @@ function executeShellCommand(session: ShellSession, command: string): void {
   // Execute shell command
   const proc = spawn(\'sh\', [\'-c\', command], {
     cwd: session.currentDir,
-    env: { ...process.env, HOME: SANDBOX_ROOT, TERM: \'xterm-256color\' }
+    env: { ...process.env, HOME: session.rootDir, TERM: \'xterm-256color\' }
   });
 
   session.process = proc;

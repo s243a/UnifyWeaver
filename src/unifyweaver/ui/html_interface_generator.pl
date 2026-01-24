@@ -505,6 +505,7 @@ const app = createApp({
     // UI state
     const tab = ref("browse");
     const workingDir = ref(".");
+    const browseRoot = ref("sandbox");  // sandbox | project | home
     const results = ref("");
     const resultCount = ref(0);
 
@@ -576,10 +577,20 @@ const app = createApp({
       localStorage.removeItem("token");
     };
 
+    // Root selector
+    const onRootChange = () => {
+      workingDir.value = ".";
+      loadBrowse(".");
+    };
+    const resetWorkingDir = () => {
+      workingDir.value = ".";
+      loadBrowse(".");
+    };
+
     // Browse methods
     const loadBrowse = async (path = browse.path) => {
       loading.value = true;
-      const res = await apiCall("/browse", "POST", { path, workingDir: workingDir.value });
+      const res = await apiCall("/browse", "POST", { path, root: browseRoot.value });
       if (res.success) {
         browse.path = res.data.path;
         browse.entries = res.data.entries || [];
@@ -592,7 +603,28 @@ const app = createApp({
     };
 
     const navigateTo = (path) => loadBrowse(path);
+    const navigateUp = () => { if (browse.parent) loadBrowse(browse.parent); };
+    const handleEntryClick = (entry) => {
+      if (entry.type === "directory") {
+        const newPath = browse.path === "." ? entry.name : `${browse.path}/${entry.name}`;
+        loadBrowse(newPath);
+      } else {
+        const filePath = browse.path === "." ? entry.name : `${browse.path}/${entry.name}`;
+        browse.selected = filePath;
+      }
+    };
     const selectFile = (path) => { browse.selected = path; };
+    const viewFile = () => {
+      if (browse.selected) {
+        cat.path = browse.selected;
+        tab.value = "cat";
+        doCat();
+      }
+    };
+    const searchHere = () => {
+      grep.path = browse.path;
+      tab.value = "grep";
+    };
 
     // Search methods
     const doGrep = async () => {
@@ -600,9 +632,10 @@ const app = createApp({
       const res = await apiCall("/grep", "POST", {
         pattern: grep.pattern,
         path: grep.path || workingDir.value,
-        options: grep.options
+        options: grep.options,
+        root: browseRoot.value
       });
-      results.value = res.success ? res.data.output : res.error;
+      results.value = res.success ? (res.data.matches || []).join("\\n") : res.error;
       resultCount.value = res.data?.count || 0;
       loading.value = false;
     };
@@ -612,9 +645,10 @@ const app = createApp({
       const res = await apiCall("/find", "POST", {
         pattern: find.pattern,
         path: find.path || workingDir.value,
-        options: find.options
+        options: find.options,
+        root: browseRoot.value
       });
-      results.value = res.success ? res.data.output : res.error;
+      results.value = res.success ? (res.data.files || []).join("\\n") : res.error;
       resultCount.value = res.data?.count || 0;
       loading.value = false;
     };
@@ -623,7 +657,8 @@ const app = createApp({
       loading.value = true;
       const res = await apiCall("/cat", "POST", {
         path: cat.path,
-        workingDir: workingDir.value
+        cwd: workingDir.value,
+        root: browseRoot.value
       });
       results.value = res.success ? res.data.content : res.error;
       loading.value = false;
@@ -631,9 +666,15 @@ const app = createApp({
 
     const doExec = async () => {
       loading.value = true;
+      // Parse command line into command and args
+      const parts = exec.commandLine.trim().split(/\\s+/);
+      const command = parts[0] || "";
+      const args = parts.slice(1);
       const res = await apiCall("/exec", "POST", {
-        command: exec.commandLine,
-        workingDir: workingDir.value
+        command,
+        args,
+        cwd: workingDir.value,
+        root: browseRoot.value
       });
       results.value = res.success ? res.data.stdout : res.error;
       loading.value = false;
@@ -657,16 +698,16 @@ const app = createApp({
     // Shell methods
     const connectShell = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}`;
+      const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}&root=${browseRoot.value}`;
       shell.ws = new WebSocket(wsUrl);
-      shell.ws.onopen = () => { shell.connected = true; shell.output = "Connected to shell.\\\\n"; };
+      shell.ws.onopen = () => { shell.connected = true; shell.output = `Connected to shell (${browseRoot.value} root).\\\\n`; };
       shell.ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "output" || msg.type === "error") {
             shell.output += msg.data;
           } else if (msg.type === "prompt") {
-            shell.output += "$ ";
+            shell.output += `${browseRoot.value}:~$ `;
           }
         } catch {
           shell.output += e.data;
@@ -772,9 +813,10 @@ const app = createApp({
 
     return {
       authRequired, user, loginEmail, loginPassword, loginError, loading, token,
-      tab, workingDir, results, resultCount,
+      tab, workingDir, browseRoot, results, resultCount,
       browse, grep, find, cat, exec, feedback, shell, shellTextMode,
-      doLogin, doLogout, loadBrowse, navigateTo, selectFile,
+      doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile,
+      handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
       doGrep, doFind, doCat, doExec, doFeedback,
       connectShell, disconnectShell, sendShellCommand, clearShell,
       toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
