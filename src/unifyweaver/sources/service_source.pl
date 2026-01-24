@@ -371,6 +371,9 @@ service_template(http_cli, service(http_cli, [
     https([cert_env('SSL_CERT'), key_env('SSL_KEY')]),
     endpoints([
         endpoint(health, get, '/health', [public(true)]),
+        endpoint(auth_status, get, '/auth/status', [public(true)]),
+        endpoint(auth_login, post, '/auth/login', [public(true)]),
+        endpoint(auth_me, get, '/auth/me', [roles([user, admin, shell])]),
         endpoint(commands, get, '/commands', [roles([user, admin, shell])]),
         endpoint(exec, post, '/exec', [roles([admin, shell])]),
         endpoint(grep, post, '/grep', [roles([user, admin, shell])]),

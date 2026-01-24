@@ -649,6 +649,13 @@ async function handleRequest(
     // Route to handlers
 ~w
 
+    // Serve HTML interface at root
+    if (method === \'GET\' && pathname === \'/\') {
+      res.writeHead(200, { \'Content-Type\': \'text/html\', \'Access-Control-Allow-Origin\': \'*\' });
+      res.end(getHTMLInterface());
+      return;
+    }
+
     // Not found
     sendJSON(res, 404, { success: false, error: \'Not found\' });
   } catch (err) {
@@ -698,26 +705,42 @@ function setupWebSocket(server: http.Server | https.Server): void {
     const parsedUrl = url.parse(req.url || \'\', true);
     const token = parsedUrl.query.token as string;
 
-    if (!token) {
-      ws.send(JSON.stringify({ type: \'error\', data: \'Authentication required\' }));
-      ws.close(1008, \'Authentication required\');
-      return;
-    }
+    let payload: TokenPayload;
 
-    const payload = verifyToken(token);
-    if (!payload) {
-      ws.send(JSON.stringify({ type: \'error\', data: \'Invalid token\' }));
-      ws.close(1008, \'Invalid token\');
-      return;
-    }
+    if (AUTH_REQUIRED) {
+      // Auth required - must have valid token
+      if (!token) {
+        ws.send(JSON.stringify({ type: \'error\', data: \'Authentication required\' }));
+        ws.close(1008, \'Authentication required\');
+        return;
+      }
 
-    // Check for required roles
-    const requiredRoles = ~w;
-    const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
-    if (!hasRequiredRole) {
-      ws.send(JSON.stringify({ type: \'error\', data: \'Shell access requires role: \' + requiredRoles.join(\', \') }));
-      ws.close(1008, \'Access denied\');
-      return;
+      const verified = verifyToken(token);
+      if (!verified) {
+        ws.send(JSON.stringify({ type: \'error\', data: \'Invalid token\' }));
+        ws.close(1008, \'Invalid token\');
+        return;
+      }
+      payload = verified;
+
+      // Check for required roles
+      const requiredRoles = ~w;
+      const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
+      if (!hasRequiredRole) {
+        ws.send(JSON.stringify({ type: \'error\', data: \'Shell access requires role: \' + requiredRoles.join(\', \') }));
+        ws.close(1008, \'Access denied\');
+        return;
+      }
+    } else {
+      // Auth not required - use guest payload with full access
+      payload = {
+        sub: \'guest\',
+        email: \'guest@local\',
+        roles: [\'user\', \'admin\', \'shell\'] as Role[],
+        permissions: [\'*\'],
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 86400
+      };
     }
 
     console.log(`Shell session started for ${payload.email}`);
@@ -759,7 +782,16 @@ function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
   });
 }
 
-function handleShellInput(session: ShellSession, char: string): void {
+function handleShellInput(session: ShellSession, input: string): void {
+  const { ws } = session;
+
+  // Process each character in the input
+  for (const char of input) {
+    processShellChar(session, char);
+  }
+}
+
+function processShellChar(session: ShellSession, char: string): void {
   const { ws } = session;
 
   // Enter key

@@ -106,6 +106,43 @@ generate_node(foreach(Items, Var, Template), Indent, Options, Code) :-
     format(atom(Code), '~w<div v-for="~w in ~w" :key="~w">~n~w~w</div>~n',
            [IndentStr, Var, VueItems, Var, TemplateCode, IndentStr]), !.
 
+% Panel switch - generates v-if/v-else-if chain for tab panels
+generate_node(panel_switch(Variable, Cases), Indent, Options, Code) :-
+    generate_panel_switch(Variable, Cases, Indent, Options, 0, CaseCodes),
+    atomic_list_concat(CaseCodes, '\n', Code), !.
+
+% Use spec - expand a spec predicate and generate its content
+generate_node(use_spec(SpecPred), Indent, Options, Code) :-
+    % Try to call the spec predicate from http_cli_ui module
+    QualifiedCall =.. [SpecPred, Spec],
+    (   catch(http_cli_ui:QualifiedCall, _, fail)
+    ->  generate_node(Spec, Indent, Options, Code)
+    ;   catch(call(SpecPred, Spec), _, fail)
+    ->  generate_node(Spec, Indent, Options, Code)
+    ;   indent_string(Indent, IndentStr),
+        format(atom(Code), '~w<!-- Spec not found: ~w -->~n', [IndentStr, SpecPred])
+    ), !.
+
+%! generate_panel_switch(+Variable, +Cases, +Indent, +Options, +Index, -Codes) is det
+generate_panel_switch(_, [], _, _, _, []).
+generate_panel_switch(Variable, [case(Value, Content)|Rest], Indent, Options, Index, [Code|RestCodes]) :-
+    % v-if for first case, v-else-if for rest
+    (Index =:= 0 -> Directive = 'v-if' ; Directive = 'v-else-if'),
+    indent_string(Indent, IndentStr),
+    NextIndent is Indent + 1,
+    % Convert variable name (active_tab -> tab for Vue compatibility)
+    (Variable = active_tab -> VueVar = tab ; VueVar = Variable),
+    % Generate content (which may be a list)
+    (is_list(Content) ->
+        generate_node(Content, NextIndent, Options, InnerCode)
+    ;
+        generate_node(Content, NextIndent, Options, InnerCode)
+    ),
+    format(atom(Code), '~w<div ~w="~w === \'~w\'" class="panel">~n~w~w</div>',
+           [IndentStr, Directive, VueVar, Value, InnerCode, IndentStr]),
+    NextIndex is Index + 1,
+    generate_panel_switch(Variable, Rest, Indent, Options, NextIndex, RestCodes).
+
 % Pattern usage (placeholder - patterns should be expanded before generation)
 generate_node(use_pattern(Name, Args), Indent, _Options, Code) :-
     indent_string(Indent, IndentStr),
@@ -253,14 +290,43 @@ generate_container(panel, Options, Content, Indent, GenOpts, Code) :-
     get_option(background, Options, Bg, '#16213e'),
     get_option(padding, Options, Padding, 20),
     get_option(rounded, Options, Rounded, 5),
+    get_option(class, Options, Class, ''),
+    get_option(style, Options, ExtraStyle, ''),
+    get_option(id, Options, Id, ''),
+    get_option(on_click, Options, OnClick, ''),
 
-    format(atom(StyleStr), 'background: ~w; padding: ~wpx; border-radius: ~wpx', [Bg, Padding, Rounded]),
+    % Build base style unless class is provided (class styling takes precedence)
+    (Class \= '' ->
+        % When class is provided, only use extra inline styles
+        (ExtraStyle \= '' -> StyleStr = ExtraStyle ; StyleStr = '')
+    ;
+        % No class - use default inline styling
+        format(atom(BaseStyle), 'background: ~w; padding: ~wpx; border-radius: ~wpx', [Bg, Padding, Rounded]),
+        (ExtraStyle \= '' ->
+            format(atom(StyleStr), '~w; ~w', [BaseStyle, ExtraStyle])
+        ;
+            StyleStr = BaseStyle
+        )
+    ),
 
     NextIndent is Indent + 1,
     generate_node(Content, NextIndent, GenOpts, ContentCode),
     indent_string(Indent, IndentStr),
-    format(atom(Code), '~w<div style="~w">~n~w~w</div>~n',
-           [IndentStr, StyleStr, ContentCode, IndentStr]).
+
+    % Build id attribute
+    (Id \= '' -> format(atom(IdAttr), ' id="~w"', [Id]) ; IdAttr = ''),
+    % Build class attribute
+    (Class \= '' -> format(atom(ClassAttr), ' class="~w"', [Class]) ; ClassAttr = ''),
+    % Build style attribute
+    (StyleStr \= '' -> format(atom(StyleAttr), ' style="~w"', [StyleStr]) ; StyleAttr = ''),
+    % Build click handler
+    (OnClick \= '' ->
+        snake_to_camel(OnClick, CamelClick),
+        format(atom(ClickAttr), ' @click="~w"', [CamelClick])
+    ; ClickAttr = ''),
+
+    format(atom(Code), '~w<div~w~w~w~w>~n~w~w</div>~n',
+           [IndentStr, IdAttr, ClassAttr, StyleAttr, ClickAttr, ContentCode, IndentStr]).
 
 % Card container
 generate_container(card, Options, Content, Indent, GenOpts, Code) :-
@@ -408,7 +474,6 @@ generate_component(link, Options, Indent, _GenOpts, Code) :-
 
 % Button component
 generate_component(button, Options, Indent, _GenOpts, Code) :-
-    get_option(label, Options, Label, 'Button'),
     get_option(on_click, Options, OnClick, ''),
     get_option(variant, Options, Variant, primary),
     get_option(disabled, Options, Disabled, false),
@@ -417,16 +482,46 @@ generate_component(button, Options, Indent, _GenOpts, Code) :-
     variant_button_style(Variant, VariantStyle),
     indent_string(Indent, IndentStr),
 
-    (OnClick \= '' -> format(atom(ClickAttr), ' @click="~w"', [OnClick]) ; ClickAttr = ''),
-    (Disabled \= false -> format(atom(DisabledAttr), ' :disabled="~w"', [Disabled]) ; DisabledAttr = ''),
+    (OnClick \= '' ->
+        onclick_to_vue(OnClick, CamelClick),
+        format(atom(ClickAttr), ' @click="~w"', [CamelClick])
+    ; ClickAttr = ''),
 
-    (Loading \= false ->
-        format(atom(Code), '~w<button~w~w style="~w">{{ ~w ? \'Loading...\' : \'~w\' }}</button>~n',
-               [IndentStr, ClickAttr, DisabledAttr, VariantStyle, Loading, Label])
-    ;
+    % Convert disabled expression to Vue format
+    disabled_to_vue(Disabled, VueDisabled),
+    (VueDisabled \= 'false' -> format(atom(DisabledAttr), ' :disabled="~w"', [VueDisabled]) ; DisabledAttr = ''),
+
+    % Check for conditional label: label(Cond, TrueLabel, FalseLabel) - 3-arg version
+    (member(label(Cond, TrueLabel, FalseLabel), Options) ->
+        binding_to_vue(Cond, VueCond),
+        format(atom(LabelCode), '{{ ~w ? \'~w\' : \'~w\' }}', [VueCond, TrueLabel, FalseLabel]),
         format(atom(Code), '~w<button~w~w style="~w">~w</button>~n',
-               [IndentStr, ClickAttr, DisabledAttr, VariantStyle, Label])
+               [IndentStr, ClickAttr, DisabledAttr, VariantStyle, LabelCode])
+    % Check for simple label: label(Text) - 1-arg version
+    ; member(label(SimpleLabel), Options) ->
+        format(atom(Code), '~w<button~w~w style="~w">~w</button>~n',
+               [IndentStr, ClickAttr, DisabledAttr, VariantStyle, SimpleLabel])
+    % Fallback to loading state or default
+    ; Loading \= false ->
+        binding_to_vue(Loading, VueLoading),
+        format(atom(Code), '~w<button~w~w style="~w">{{ ~w ? \'Loading...\' : \'Button\' }}</button>~n',
+               [IndentStr, ClickAttr, DisabledAttr, VariantStyle, VueLoading])
+    ;
+        format(atom(Code), '~w<button~w~w style="~w">Button</button>~n',
+               [IndentStr, ClickAttr, DisabledAttr, VariantStyle])
     ).
+
+% Convert disabled expressions to Vue format
+disabled_to_vue(false, 'false') :- !.
+disabled_to_vue(true, 'true') :- !.
+disabled_to_vue(var(X), VueX) :- !, binding_to_vue(var(X), VueX).
+disabled_to_vue(not(X), VueCond) :- !,
+    disabled_to_vue(X, VueX),
+    format(atom(VueCond), '!~w', [VueX]).
+disabled_to_vue(eq(A, B), VueCond) :- !, condition_to_vue(eq(A, B), VueCond).
+disabled_to_vue(not_eq(A, B), VueCond) :- !, condition_to_vue(not_eq(A, B), VueCond).
+disabled_to_vue(X, X) :- atom(X), !.
+disabled_to_vue(X, Result) :- term_to_atom(X, Result).
 
 % Icon button component
 generate_component(icon_button, Options, Indent, _GenOpts, Code) :-
@@ -446,20 +541,42 @@ generate_component(text_input, Options, Indent, _GenOpts, Code) :-
     get_option(placeholder, Options, Placeholder, ''),
     get_option(label, Options, Label, ''),
     get_option(disabled, Options, Disabled, false),
+    get_option(id, Options, Id, ''),
+    get_option(on_input, Options, OnInput, ''),
+    get_option(on_keydown, Options, OnKeydown, ''),
+    get_option(style, Options, Style, ''),
 
     indent_string(Indent, IndentStr),
+
+    % Build v-model attribute (skip if no bind)
+    (Bind \= '' ->
+        snake_to_camel(Bind, CamelBind),
+        format(atom(VModelAttr), ' v-model="~w"', [CamelBind])
+    ; VModelAttr = ''),
+
+    % Build other attributes
     (Disabled \= false -> format(atom(DisabledAttr), ' :disabled="~w"', [Disabled]) ; DisabledAttr = ''),
+    (Id \= '' -> format(atom(IdAttr), ' id="~w"', [Id]) ; IdAttr = ''),
+    (OnInput \= '' ->
+        onclick_to_vue(OnInput, VueInput),
+        format(atom(InputAttr), ' @input="~w"', [VueInput])
+    ; InputAttr = ''),
+    (OnKeydown \= '' ->
+        onclick_to_vue(OnKeydown, VueKeydown),
+        format(atom(KeydownAttr), ' @keydown="~w"', [VueKeydown])
+    ; KeydownAttr = ''),
+    (Style \= '' -> format(atom(StyleAttr), ' style="~w"', [Style]) ; StyleAttr = ' style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;"'),
 
     (Label \= '' ->
         format(atom(Code),
 '~w<div class="form-group">
 ~w  <label>~w</label>
-~w  <input type="~w" v-model="~w" placeholder="~w"~w style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+~w  <input type="~w"~w~w placeholder="~w"~w~w~w~w>
 ~w</div>~n',
-               [IndentStr, IndentStr, Label, IndentStr, Type, Bind, Placeholder, DisabledAttr, IndentStr])
+               [IndentStr, IndentStr, Label, IndentStr, Type, VModelAttr, IdAttr, Placeholder, DisabledAttr, InputAttr, KeydownAttr, StyleAttr, IndentStr])
     ;
-        format(atom(Code), '~w<input type="~w" v-model="~w" placeholder="~w"~w style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">~n',
-               [IndentStr, Type, Bind, Placeholder, DisabledAttr])
+        format(atom(Code), '~w<input type="~w"~w~w placeholder="~w"~w~w~w~w>~n',
+               [IndentStr, Type, VModelAttr, IdAttr, Placeholder, DisabledAttr, InputAttr, KeydownAttr, StyleAttr])
     ).
 
 % Textarea component
@@ -470,6 +587,7 @@ generate_component(textarea, Options, Indent, _GenOpts, Code) :-
     get_option(label, Options, Label, ''),
 
     indent_string(Indent, IndentStr),
+    snake_to_camel(Bind, CamelBind),
 
     (Label \= '' ->
         format(atom(Code),
@@ -477,10 +595,10 @@ generate_component(textarea, Options, Indent, _GenOpts, Code) :-
 ~w  <label>~w</label>
 ~w  <textarea v-model="~w" placeholder="~w" rows="~w" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;"></textarea>
 ~w</div>~n',
-               [IndentStr, IndentStr, Label, IndentStr, Bind, Placeholder, Rows, IndentStr])
+               [IndentStr, IndentStr, Label, IndentStr, CamelBind, Placeholder, Rows, IndentStr])
     ;
         format(atom(Code), '~w<textarea v-model="~w" placeholder="~w" rows="~w" style="width: 100%; padding: 10px;"></textarea>~n',
-               [IndentStr, Bind, Placeholder, Rows])
+               [IndentStr, CamelBind, Placeholder, Rows])
     ).
 
 % Checkbox component
@@ -663,6 +781,73 @@ generate_component(alert, Options, Indent, _GenOpts, Code) :-
     indent_string(Indent, IndentStr),
     format(atom(Code), '~w<div style="~w">~w</div>~n', [IndentStr, AlertStyle, Message]).
 
+% Tab button component
+generate_component(tab_button, Options, Indent, _GenOpts, Code) :-
+    get_option(id, Options, Id, ''),
+    get_option(label, Options, Label, ''),
+    get_option(icon, Options, Icon, ''),
+    get_option(active, Options, Active, false),
+    get_option(on_click, Options, OnClick, ''),
+    get_option(highlight, Options, Highlight, false),
+    get_option(visible, Options, Visible, true),
+
+    indent_string(Indent, IndentStr),
+
+    % Build the click handler
+    (OnClick \= '' ->
+        onclick_to_vue(OnClick, VueClick),
+        format(atom(ClickAttr), ' @click="~w"', [VueClick])
+    ; ClickAttr = ''),
+
+    % Build active class binding
+    (Active \= false ->
+        active_to_vue(Active, VueActive),
+        format(atom(ClassAttr), ' :class="{ active: ~w }"', [VueActive])
+    ; ClassAttr = ''),
+
+    % Build visibility condition
+    (Visible \= true ->
+        visible_to_vue(Visible, VueVisible),
+        format(atom(VisibleAttr), ' v-if="~w"', [VueVisible])
+    ; VisibleAttr = ''),
+
+    % Build highlight style
+    (Highlight == true ->
+        HighlightStyle = ' style="background: #a855f7;"'
+    ; HighlightStyle = ''),
+
+    % Build label with optional icon
+    (Icon \= '' ->
+        format(atom(LabelText), '~w ~w', [Icon, Label])
+    ; LabelText = Label),
+
+    format(atom(Code), '~w<button class="tab"~w~w~w~w>~w</button>~n',
+           [IndentStr, ClassAttr, ClickAttr, VisibleAttr, HighlightStyle, LabelText]).
+
+% Code component (inline code)
+generate_component(code, Options, Indent, _GenOpts, Code) :-
+    get_option(content, Options, Content, ''),
+    indent_string(Indent, IndentStr),
+    (is_binding(Content) ->
+        binding_to_vue(Content, VueBinding),
+        format(atom(Code), '~w<code>{{ ~w }}</code>~n', [IndentStr, VueBinding])
+    ;
+        format(atom(Code), '~w<code>~w</code>~n', [IndentStr, Content])
+    ).
+
+% Pre component (preformatted text)
+generate_component(pre, Options, Indent, _GenOpts, Code) :-
+    get_option(content, Options, Content, ''),
+    get_option(class, Options, Class, ''),
+    indent_string(Indent, IndentStr),
+    (Class \= '' -> format(atom(ClassAttr), ' class="~w"', [Class]) ; ClassAttr = ''),
+    (is_binding(Content) ->
+        binding_to_vue(Content, VueBinding),
+        format(atom(Code), '~w<pre~w>{{ ~w }}</pre>~n', [IndentStr, ClassAttr, VueBinding])
+    ;
+        format(atom(Code), '~w<pre~w>~w</pre>~n', [IndentStr, ClassAttr, Content])
+    ).
+
 % Default component fallback
 generate_component(Type, Options, Indent, _GenOpts, Code) :-
     indent_string(Indent, IndentStr),
@@ -771,33 +956,191 @@ variant_alert_style(error, 'padding: 12px 16px; background: #f8d7da; color: #721
 variant_alert_style(_, 'padding: 12px 16px; background: #eee; border-radius: 5px').
 
 % Binding detection
-is_binding(Term) :- atom(Term), atom_codes(Term, [C|_]), C \= 34, C \= 39.  % Not starting with quote
-is_binding(bind(X)) :- atom(X).
+is_binding(var(_)) :- !.
+is_binding(bind(_)) :- !.
+% Function calls that wrap bindings (e.g., format_size(var(x)))
+is_binding(Term) :-
+    compound(Term),
+    Term =.. [Func|Args],
+    Args \= [],
+    % Exclude option/opt terms which are data, not bindings
+    Func \= option,
+    Func \= opt,
+    % Check if any argument is a var() or bind() (not just any binding)
+    member(Arg, Args),
+    (Arg = var(_) ; Arg = bind(_)), !.
+% Plain atoms that look like variable names (snake_case identifiers) are bindings
+% Exclude: static text (starts with uppercase, contains spaces, or is very short)
+is_binding(Term) :-
+    atom(Term),
+    atom_codes(Term, [C|Rest]),
+    C >= 0'a, C =< 0'z,  % Starts with lowercase
+    Rest \= [],           % More than 1 char
+    \+ member(0' , Rest), % No spaces (not plain text)
+    % Contains underscore or is a known variable pattern
+    (member(0'_, Rest) ; atom_length(Term, Len), Len > 4), !.
 
-binding_to_vue(bind(X), X) :- !.
-binding_to_vue(X, X) :- atom(X).
+binding_to_vue(var(X), CamelX) :- !,
+    snake_to_camel(X, CamelX).
+binding_to_vue(bind(X), CamelX) :- !,
+    snake_to_camel(X, CamelX).
+% Handle function calls like format_size(var(entry.size))
+binding_to_vue(Term, VueCode) :-
+    compound(Term),
+    Term =.. [Func|Args],
+    Args \= [], !,
+    snake_to_camel(Func, CamelFunc),
+    maplist(arg_to_vue, Args, VueArgs),
+    atomic_list_concat(VueArgs, ', ', ArgsStr),
+    format(atom(VueCode), '~w(~w)', [CamelFunc, ArgsStr]).
+binding_to_vue(X, CamelX) :- atom(X), !,
+    snake_to_camel(X, CamelX).
+
+% Snake_case to camelCase conversion
+% Handle compound terms like func(arg1, arg2)
+snake_to_camel(Compound, Camel) :-
+    compound(Compound), !,
+    Compound =.. [Func|Args],
+    snake_to_camel(Func, CamelFunc),
+    maplist(arg_to_vue, Args, VueArgs),
+    atomic_list_concat(VueArgs, ', ', ArgsStr),
+    format(atom(Camel), '~w(~w)', [CamelFunc, ArgsStr]).
+
+snake_to_camel(Snake, Camel) :-
+    atom(Snake),
+    atom_codes(Snake, Codes),
+    snake_to_camel_codes(Codes, CamelCodes),
+    atom_codes(Camel, CamelCodes).
+
+% Convert argument to Vue expression
+arg_to_vue(var(Name), VueName) :- !, snake_to_camel(Name, VueName).
+arg_to_vue(Atom, Atom) :- atom(Atom), !.
+arg_to_vue(Num, Num) :- number(Num), !.
+arg_to_vue(Compound, Vue) :- compound(Compound), !, snake_to_camel(Compound, Vue).
+
+snake_to_camel_codes([], []).
+snake_to_camel_codes([0'_,C|Rest], [Upper|CamelRest]) :- !,
+    (C >= 0'a, C =< 0'z -> Upper is C - 32 ; Upper = C),
+    snake_to_camel_codes(Rest, CamelRest).
+snake_to_camel_codes([C|Rest], [C|CamelRest]) :-
+    snake_to_camel_codes(Rest, CamelRest).
 
 % Condition conversion
-condition_to_vue(Cond, Cond) :- atom(Cond), !.
-condition_to_vue(not(C), VueCond) :-
+condition_to_vue(Cond, CamelCond) :- atom(Cond), !,
+    snake_to_camel(Cond, CamelCond).
+condition_to_vue(var(Name), CamelName) :- !,
+    snake_to_camel(Name, CamelName).
+condition_to_vue(not(C), VueCond) :- !,
     condition_to_vue(C, VC),
     format(atom(VueCond), '!~w', [VC]).
-condition_to_vue(and(A, B), VueCond) :-
+condition_to_vue(and(A, B), VueCond) :- !,
     condition_to_vue(A, VA),
     condition_to_vue(B, VB),
     format(atom(VueCond), '(~w && ~w)', [VA, VB]).
-condition_to_vue(or(A, B), VueCond) :-
+condition_to_vue(or(A, B), VueCond) :- !,
     condition_to_vue(A, VA),
     condition_to_vue(B, VB),
     format(atom(VueCond), '(~w || ~w)', [VA, VB]).
-condition_to_vue([H|T], VueCond) :-
+condition_to_vue(not_eq(A, B), VueCond) :- !,
+    condition_to_vue(A, VA),
+    value_to_vue_string(B, VB),
+    format(atom(VueCond), '~w !== ~w', [VA, VB]).
+condition_to_vue(eq(A, B), VueCond) :- !,
+    condition_to_vue(A, VA),
+    value_to_vue_string(B, VB),
+    format(atom(VueCond), '~w === ~w', [VA, VB]).
+
+% Convert a value to Vue string (with single quotes for atoms)
+value_to_vue_string(var(X), X) :- !.
+value_to_vue_string(X, Result) :- atom(X), !,
+    format(atom(Result), '\'~w\'', [X]).
+value_to_vue_string(X, X) :- number(X), !.
+value_to_vue_string(X, Result) :-
+    format(atom(Result), '\'~w\'', [X]).
+condition_to_vue(empty(Var), VueCond) :- !,
+    condition_to_vue(Var, VV),
+    format(atom(VueCond), '~w.length === 0', [VV]).
+condition_to_vue(has_role(Roles), VueCond) :- !,
+    visible_to_vue(has_role(Roles), VueCond).
+condition_to_vue([H|T], VueCond) :- !,
     condition_to_vue(H, VH),
     condition_to_vue(T, VT),
     format(atom(VueCond), '(~w && ~w)', [VH, VT]).
-condition_to_vue([], 'true').
+condition_to_vue([], 'true') :- !.
+% Fallback - convert term to string
+condition_to_vue(Term, VueCond) :-
+    term_to_atom(Term, VueCond).
 
+items_to_vue(var(Name), Name) :- !.
 items_to_vue(Items, Items) :- atom(Items), !.
 items_to_vue(Items, VueItems) :- is_list(Items), term_to_atom(Items, VueItems).
+
+% Convert onclick expressions to Vue
+onclick_to_vue(set_tab(TabId), VueCode) :- !,
+    format(atom(VueCode), 'tab = \'~w\'', [TabId]).
+onclick_to_vue(set_working_dir(var(Path)), VueCode) :- !,
+    snake_to_camel(Path, CamelPath),
+    format(atom(VueCode), 'workingDir = ~w', [CamelPath]).
+onclick_to_vue(handle_entry_click(var(Entry)), VueCode) :- !,
+    snake_to_camel(Entry, CamelEntry),
+    format(atom(VueCode), 'handleEntryClick(~w)', [CamelEntry]).
+onclick_to_vue(Atom, CamelAtom) :- atom(Atom), !,
+    snake_to_camel(Atom, CamelAtom).
+onclick_to_vue(Term, VueCode) :-
+    % For other compound terms, convert function name to camelCase
+    Term =.. [Func|Args],
+    snake_to_camel(Func, CamelFunc),
+    (Args = [] ->
+        VueCode = CamelFunc
+    ;
+        maplist(arg_to_vue, Args, VueArgs),
+        atomic_list_concat(VueArgs, ', ', ArgsStr),
+        format(atom(VueCode), '~w(~w)', [CamelFunc, ArgsStr])
+    ).
+
+arg_to_vue(var(X), Result) :- !,
+    snake_to_camel(X, Result).
+arg_to_vue(X, X) :- atom(X), !.
+arg_to_vue(X, Result) :-
+    term_to_atom(X, Result).
+
+% Convert active expressions to Vue
+active_to_vue(eq(Var, Value), VueCode) :- !,
+    format(atom(VueCode), '~w === \'~w\'', [Var, Value]).
+active_to_vue(Atom, Atom) :- atom(Atom), !.
+active_to_vue(Term, VueCode) :-
+    term_to_atom(Term, VueCode).
+
+% Convert visibility expressions to Vue
+visible_to_vue(has_role(Roles), VueCode) :- !,
+    (is_list(Roles) ->
+        roles_to_condition(Roles, VueCode)
+    ;
+        format(atom(VueCode), 'user?.roles?.includes(\'~w\')', [Roles])
+    ).
+visible_to_vue(true, 'true') :- !.
+visible_to_vue(false, 'false') :- !.
+visible_to_vue(Atom, Atom) :- atom(Atom), !.
+visible_to_vue(Term, VueCode) :-
+    term_to_atom(Term, VueCode).
+
+% Empty roles list means always visible
+roles_to_condition([], 'true') :- !.
+% Single role - include !authRequired fallback for when auth is disabled
+roles_to_condition([Role], Code) :- !,
+    format(atom(Code), '!authRequired || user?.roles?.includes(\'~w\')', [Role]).
+% Multiple roles - check any role matches, with !authRequired fallback
+roles_to_condition([Role|Rest], Code) :-
+    roles_to_condition_inner(Rest, RestCode),
+    format(atom(Code), '!authRequired || user?.roles?.includes(\'~w\') || ~w', [Role, RestCode]).
+
+% Inner helper without the authRequired prefix (to avoid duplication)
+roles_to_condition_inner([], 'false') :- !.
+roles_to_condition_inner([Role], Code) :- !,
+    format(atom(Code), 'user?.roles?.includes(\'~w\')', [Role]).
+roles_to_condition_inner([Role|Rest], Code) :-
+    roles_to_condition_inner(Rest, RestCode),
+    format(atom(Code), 'user?.roles?.includes(\'~w\') || ~w', [Role, RestCode]).
 
 % Build style attribute
 build_style_attr([], '', '') :- !.
@@ -818,7 +1161,10 @@ build_dimension_style(W, H, Style) :- W \= '', H \= '', format(atom(Style), ' st
 
 generate_static_options([], '').
 generate_static_options([Opt|Rest], Code) :-
+    % Handle both opt(Value, Label) and option(Value, Label) formats
     (Opt = opt(Value, Label) ->
+        format(atom(OptCode), '<option value="~w">~w</option>', [Value, Label])
+    ; Opt = option(Value, Label) ->
         format(atom(OptCode), '<option value="~w">~w</option>', [Value, Label])
     ;
         format(atom(OptCode), '<option value="~w">~w</option>', [Opt, Opt])

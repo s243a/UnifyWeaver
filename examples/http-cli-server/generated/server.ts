@@ -42,6 +42,10 @@ const AUTH_REQUIRED = process.env.AUTH_REQUIRED === 'true';
 // Commands allowed for search operations
 const SEARCH_COMMANDS = ['grep', 'find', 'cat', 'head', 'tail', 'ls', 'wc', 'pwd'];
 
+// Browse roots
+const PROJECT_ROOT = process.env.PROJECT_ROOT || path.resolve(__dirname, '../../..');
+const HOME_ROOT = process.env.HOME || '/data/data/com.termux/files/home';
+
 // Feedback log file
 const FEEDBACK_FILE = process.env.FEEDBACK_FILE || path.join(SANDBOX_ROOT, 'comet-feedback.log');
 
@@ -71,11 +75,30 @@ interface FileEntry {
 // Helper Functions
 // ============================================================================
 
-function resolveWorkingDir(cwd?: string): string {
-  if (!cwd || cwd === '.') return SANDBOX_ROOT;
-  const resolved = path.resolve(SANDBOX_ROOT, cwd);
-  if (!resolved.startsWith(SANDBOX_ROOT)) return SANDBOX_ROOT;
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return SANDBOX_ROOT;
+/**
+ * Get the base directory for a given root type
+ */
+function getRootDir(root?: string): string {
+  switch (root) {
+    case 'project':
+      return PROJECT_ROOT;
+    case 'home':
+      return HOME_ROOT;
+    case 'sandbox':
+    default:
+      return SANDBOX_ROOT;
+  }
+}
+
+/**
+ * Resolve a working directory relative to the specified root
+ */
+function resolveWorkingDir(cwd?: string, root?: string): string {
+  const rootDir = getRootDir(root);
+  if (!cwd || cwd === '.') return rootDir;
+  const resolved = path.resolve(rootDir, cwd);
+  if (!resolved.startsWith(rootDir)) return rootDir;
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return rootDir;
   return resolved;
 }
 
@@ -127,6 +150,87 @@ async function handle_health(
 }
 
 /**
+ * GET /auth/status - auth_status endpoint
+ */
+async function handle_auth_status(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  body: RequestBody,
+  user: TokenPayload | null
+): Promise<void> {
+  // Public endpoint - no auth required
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      authRequired: AUTH_REQUIRED,
+      authenticated: user !== null,
+      user: user ? { id: user.sub, email: user.email, roles: user.roles } : null
+    }
+  });
+}
+
+/**
+ * POST /auth/login - auth_login endpoint
+ */
+async function handle_auth_login(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  body: RequestBody,
+  user: TokenPayload | null
+): Promise<void> {
+  // Public endpoint - no auth required
+
+  const { email, password } = body as any;
+
+  if (!email || !password) {
+    return sendJSON(res, 400, { success: false, error: 'Email and password required' });
+  }
+
+  const result = login(email, password);
+
+  if (!result.success) {
+    return sendJSON(res, 401, { success: false, error: result.error || 'Login failed' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: { token: result.token, user: result.user }
+  });
+}
+
+/**
+ * GET /auth/me - auth_me endpoint
+ */
+async function handle_auth_me(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  body: RequestBody,
+  user: TokenPayload | null
+): Promise<void> {
+  // Requires roles: [user,admin,shell]
+  if (AUTH_REQUIRED) {
+    if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
+    if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
+  }
+
+  if (!user) {
+    return sendJSON(res, 401, { success: false, error: 'Not authenticated' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      id: user.sub,
+      email: user.email,
+      roles: user.roles,
+      permissions: user.permissions
+    }
+  });
+}
+
+/**
  * GET /commands - commands endpoint
  */
 async function handle_commands(
@@ -165,7 +269,7 @@ async function handle_exec(
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  const { command, args = [], cwd } = body as any;
+  const { command, args = [], cwd, root } = body as any;
 
   if (!command) {
     return sendJSON(res, 400, { success: false, error: 'Missing command' });
@@ -175,7 +279,7 @@ async function handle_exec(
     return sendJSON(res, 403, { success: false, error: `Command not allowed. Allowed: ${SEARCH_COMMANDS.join(', ')}` });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const expandedArgs = expandGlobs(args, workingDir);
   const validation = validateCommand(command, expandedArgs, { role: 'user' });
 
@@ -213,13 +317,13 @@ async function handle_grep(
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  const { pattern, path: searchPath = '.', options = [], cwd } = body as any;
+  const { pattern, path: searchPath = '.', options = [], cwd, root } = body as any;
 
   if (!pattern) {
     return sendJSON(res, 400, { success: false, error: 'Missing pattern' });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const args = ['-r', '-n', '--color=never', ...options, pattern, searchPath];
   const cmdString = ['grep', ...args].join(' ');
   const result = await execute(cmdString, { role: 'user', cwd: workingDir });
@@ -251,9 +355,9 @@ async function handle_find(
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  const { pattern, path: searchPath = '.', options = [], cwd } = body as any;
+  const { pattern, path: searchPath = '.', options = [], cwd, root } = body as any;
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const args = [searchPath];
   if (pattern) args.push('-name', pattern);
   args.push(...options);
@@ -287,13 +391,13 @@ async function handle_cat(
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  const { path: filePath, options = [], cwd } = body as any;
+  const { path: filePath, options = [], cwd, root } = body as any;
 
   if (!filePath) {
     return sendJSON(res, 400, { success: false, error: 'Missing path' });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const cmdString = ['cat', ...options, filePath].join(' ');
   const result = await execute(cmdString, { role: 'user', cwd: workingDir });
 
@@ -326,11 +430,26 @@ async function handle_browse(
     if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
   }
 
-  const { path: browsePath = '.' } = body as any;
+  const { path: browsePath = '.', root = 'sandbox' } = body as any;
 
-  const targetPath = path.resolve(SANDBOX_ROOT, browsePath);
-  if (!targetPath.startsWith(SANDBOX_ROOT)) {
-    return sendJSON(res, 403, { success: false, error: 'Path outside sandbox' });
+  // Determine root directory based on selection
+  let rootDir: string;
+  switch (root) {
+    case 'project':
+      rootDir = PROJECT_ROOT;
+      break;
+    case 'home':
+      rootDir = HOME_ROOT;
+      break;
+    case 'sandbox':
+    default:
+      rootDir = SANDBOX_ROOT;
+      break;
+  }
+
+  const targetPath = path.resolve(rootDir, browsePath);
+  if (!targetPath.startsWith(rootDir)) {
+    return sendJSON(res, 403, { success: false, error: 'Path outside root' });
   }
 
   if (!fs.existsSync(targetPath)) {
@@ -364,13 +483,15 @@ async function handle_browse(
     return a.name.localeCompare(b.name);
   });
 
-  const relativePath = path.relative(SANDBOX_ROOT, targetPath) || '.';
+  const relativePath = path.relative(rootDir, targetPath) || '.';
 
   sendJSON(res, 200, {
     success: true,
     data: {
       path: relativePath,
       absolutePath: targetPath,
+      root,
+      rootDir,
       parent: relativePath !== '.' ? path.dirname(relativePath) || '.' : null,
       entries,
       count: entries.length
@@ -386,6 +507,9 @@ function getHTMLInterface(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>UnifyWeaver CLI Search</title>
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -559,72 +683,282 @@ function getHTMLInterface(): string {
     .shell-input:focus { outline: none; }
     .prompt { color: #4ade80; font-family: monospace; }
 
+    /* Navbar styles */
+    .navbar {
+      display: flex;
+      gap: 8px;
+      padding: 6px 12px;
+      background: #0f3460;
+      align-items: center;
+      margin-bottom: 10px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .navbar .spacer { flex: 1; }
+    .navbar .user-email { color: #4ade80; }
+    .navbar .role-badge {
+      padding: 1px 6px;
+      background: #1a1a2e;
+      border-radius: 3px;
+      font-size: 10px;
+      color: #94a3b8;
+    }
+    .navbar .role-badge.shell { background: #a855f7; color: #fff; }
+    .navbar .role-badge.admin { background: #3b82f6; color: #fff; }
+    .navbar button {
+      padding: 4px 10px;
+      background: #e94560;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .navbar button:hover { background: #ff6b6b; }
+
   </style>
 </head>
 <body>
   <div id="app" class="container">
-<h1>🔍 UnifyWeaver CLI Search</h1>
 
-    <template v-if="(auth_required) && (!user)">
+    <template v-if="(authRequired) && (!user)">
 <div style="background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 3px 6px rgba(0,0,0,0.15)">
   <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
     <h2>Login Required</h2>
     <div class="form-group">
       <label>Email</label>
-      <input type="email" v-model="login_email" placeholder="e.g., shell@local" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+      <input type="email" v-model="loginEmail" placeholder="e.g., shell@local" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
     </div>
     <div class="form-group">
       <label>Password</label>
-      <input type="password" v-model="login_password" placeholder="Password" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+      <input type="password" v-model="loginPassword" placeholder="Password" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
     </div>
-    <button @click="do_login" :disabled="loading" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">Button</button>
-    <template v-if="login_error">
-      <span style="error">{{ login_error }}</span>
+    <button @click="doLogin" :disabled="loading" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">{{ loading ? 'Logging in...' : 'Login' }}</button>
+    <template v-if="loginError">
+      <span style="error">{{ loginError }}</span>
     </template>
     <span style="muted">Default users: shell@local/shell, admin@local/admin, user@local/user</span>
   </div>
 </div>
 
     </template>
-    <template v-if="(!auth_required) || (user)">
-    <template v-if="user">
-<div style="background: #16213e; padding: 20px; border-radius: 5px">
-  <div style="display: flex; flex-direction: row; gap: 10px; justify-content: space-between; align-items: center; flex-wrap: wrap; ">
-    <div style="display: flex; flex-direction: row; gap: 10px; justify-content: flex-start; align-items: center; ; ">
-      <span>var(user.email)</span>
-      <div style="display: flex; flex-direction: row; gap: 5px; justify-content: flex-start; align-items: stretch; ; ">
-        <!-- Unknown node: foreach(var(user.roles),role,[component(badge,[content(var(role)),class([role_badge,var(role)])])]) -->
-      </div>
-    </div>
-    <button @click="do_logout" style="padding: 10px 20px; background: #16213e; border: none; color: #fff; cursor: pointer; border-radius: 5px">Logout</button>
-  </div>
+    <template v-if="(!authRequired) || (user)">
+<!-- Navbar -->
+<nav class="navbar">
+  <template v-if="user">
+    <span class="user-email">{{ user.email }}</span>
+    <span v-for="role in user.roles" :key="role" class="role-badge" :class="role">{{ role }}</span>
+    <span class="spacer"></span>
+    <button @click="doLogout">Logout</button>
+  </template>
+  <template v-else-if="authRequired">
+    <span style="color: #f38ba8;">Login required</span>
+    <span class="spacer"></span>
+  </template>
+  <template v-else>
+    <span style="color: #94a3b8; font-size: 12px;">Guest mode</span>
+    <span class="spacer"></span>
+  </template>
+</nav>
+
+<div class="working_dir_bar" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 12px; background: #0f3460; border-radius: 4px; margin-bottom: 10px; font-size: 12px;">
+  <span style="color: #94a3b8;">Root:</span>
+  <select v-model="browseRoot" @change="onRootChange" style="padding: 4px 8px; background: #1a1a2e; border: 1px solid #16213e; color: #cdd6f4; border-radius: 3px; font-size: 12px;">
+    <option value="sandbox">Sandbox</option>
+    <option value="project">Project</option>
+    <option value="home">Home</option>
+  </select>
+  <span style="color: #94a3b8;">Path:</span>
+  <code style="color: #4ade80;">{{ workingDir }}</code>
+  <template v-if="workingDir !== '.'">
+    <button @click="resetWorkingDir" style="padding: 4px 10px; background: #16213e; border: none; color: #fff; cursor: pointer; border-radius: 3px; font-size: 11px;">Reset</button>
+  </template>
 </div>
 
-    </template>
-<div style="background: #16213e; padding: 20px; border-radius: 5px">
-  <div style="display: flex; flex-direction: row; gap: 10px; justify-content: flex-start; align-items: center; flex-wrap: wrap; ">
-    <span style="muted">Working directory:</span>
-    <!-- Component: code [content(working_dir)] -->
-    <!-- Unknown node: when(not_eq(working_dir,.),[component(button,[label(Reset to root),on_click(reset_working_dir),variant(ghost),size(small)])]) -->
-  </div>
-</div>
-
-<div style="background: #16213e; padding: 20px; border-radius: 5px">
+<div class="tabs">
   <div style="display: flex; flex-direction: row; gap: 5px; justify-content: flex-start; align-items: stretch; flex-wrap: wrap; ">
-    <!-- Component: tab_button [id(browse),label(Browse),active(eq(tab,browse)),on_click(set_tab(browse)),icon(📁),visible(has_role([user,admin,shell])),highlight(false)] -->
-    <!-- Component: tab_button [id(grep),label(Grep),active(eq(tab,grep)),on_click(set_tab(grep)),icon(🔍),visible(has_role([user,admin,shell])),highlight(false)] -->
-    <!-- Component: tab_button [id(find),label(Find),active(eq(tab,find)),on_click(set_tab(find)),icon(📂),visible(has_role([user,admin,shell])),highlight(false)] -->
-    <!-- Component: tab_button [id(cat),label(Cat),active(eq(tab,cat)),on_click(set_tab(cat)),icon(📄),visible(has_role([user,admin,shell])),highlight(false)] -->
-    <!-- Component: tab_button [id(exec),label(Custom),active(eq(tab,exec)),on_click(set_tab(exec)),icon(⚡),visible(has_role([admin,shell])),highlight(false)] -->
-    <!-- Component: tab_button [id(feedback),label(Feedback),active(eq(tab,feedback)),on_click(set_tab(feedback)),icon(💬),visible(has_role([user,admin,shell])),highlight(false)] -->
-    <!-- Component: tab_button [id(shell),label(Shell),active(eq(tab,shell)),on_click(set_tab(shell)),icon(🔐),visible(has_role([shell])),highlight(true)] -->
+    <button class="tab" :class="{ active: tab === 'browse' }" @click="tab = 'browse'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">📁 Browse</button>
+    <button class="tab" :class="{ active: tab === 'grep' }" @click="tab = 'grep'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">🔍 Grep</button>
+    <button class="tab" :class="{ active: tab === 'find' }" @click="tab = 'find'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">📂 Find</button>
+    <button class="tab" :class="{ active: tab === 'cat' }" @click="tab = 'cat'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">📄 Cat</button>
+    <button class="tab" :class="{ active: tab === 'exec' }" @click="tab = 'exec'" v-if="!authRequired || user?.roles?.includes('admin') || user?.roles?.includes('shell')">⚡ Custom</button>
+    <button class="tab" :class="{ active: tab === 'feedback' }" @click="tab = 'feedback'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">💬 Feedback</button>
+    <button class="tab" :class="{ active: tab === 'shell' }" @click="tab = 'shell'" v-if="!authRequired || user?.roles?.includes('shell')" style="background: #a855f7;">🔐 Shell</button>
   </div>
 </div>
 
 <!-- Container: outlet -->
 <div>
-  <!-- Unknown node: panel_switch(active_tab,[case(browse,[use_spec(browse_panel_spec)]),case(grep,[use_spec(grep_panel_spec)]),case(find,[use_spec(find_panel_spec)]),case(cat,[use_spec(cat_panel_spec)]),case(exec,[use_spec(exec_panel_spec)]),case(feedback,[use_spec(feedback_panel_spec)]),case(shell,[use_spec(shell_panel_spec)])]) -->
-</div>
+  <div v-if="tab === 'browse'" class="panel">
+    <div class="panel">
+      <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
+        <div style="display: flex; flex-direction: row; gap: 10px; justify-content: flex-start; align-items: center; flex-wrap: wrap; ">
+          <template v-if="browse.parent">
+            <button @click="navigateUp" style="padding: 10px 20px; background: #16213e; border: none; color: #fff; cursor: pointer; border-radius: 5px">⬆️ Up</button>
+          </template>
+          <span style="icon">📁 </span>
+          <code>{{ browse.path }}</code>
+          <button @click="workingDir = browse.path" :disabled="workingDir === browse.path" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px">📌 Set as Working Dir</button>
+        </div>
+        <template v-if="browse.entries">
+          <span></span>
+        </template>
+        <!-- Container: scroll -->
+        <div>
+          <div v-for="entry in browse.entries" :key="entry">
+          <div class="file_entry" @click="handleEntryClick(entry)">
+            <div style="display: flex; flex-direction: row; ; justify-content: space-between; align-items: center; ; ">
+              <div style="display: flex; flex-direction: row; gap: 8px; justify-content: flex-start; align-items: stretch; ; ">
+                <span style="font-size: 24px;"></span>
+                <span>{{ entry.name }}</span>
+              </div>
+              <span style="muted">{{ formatSize(entry.size) }}</span>
+            </div>
+          </div>
+          </div>
+        </div>
+        <template v-if="(browse.entries.length === 0 && !loading)">
+          <span style="muted">Empty directory</span>
+        </template>
+        <template v-if="browse.selected">
+          <div class="selected_file">
+            <div style="display: flex; flex-direction: column; gap: 10px; align-items: stretch; ">
+              <span style="muted">Selected file:</span>
+              <code>{{ browse.selected }}</code>
+              <div style="display: flex; flex-direction: row; gap: 10px; justify-content: flex-start; align-items: stretch; ; ">
+                <button @click="viewFile" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">View Contents</button>
+                <button @click="searchHere" style="padding: 10px 20px; background: #16213e; border: none; color: #fff; cursor: pointer; border-radius: 5px">Search Here</button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="tab === 'grep'" class="panel">
+    <div class="panel">
+      <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
+        <div class="form-group">
+          <label>Search Pattern (regex)</label>
+          <input type="text" v-model="grep.pattern" placeholder="e.g., function.*export" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <div class="form-group">
+          <label>Path (relative to sandbox)</label>
+          <input type="text" v-model="grep.path" placeholder="e.g., src/ or ." style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <div class="form-group">
+          <label>Options (space-separated)</label>
+          <input type="text" v-model="grep.options" placeholder="e.g., -i --include=*.ts" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <button @click="doGrep" :disabled="loading" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">{{ loading ? 'Searching...' : 'Search' }}</button>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="tab === 'find'" class="panel">
+    <div class="panel">
+      <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
+        <div class="form-group">
+          <label>File Pattern</label>
+          <input type="text" v-model="find.pattern" placeholder="e.g., *.ts or index.*" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <div class="form-group">
+          <label>Search Path</label>
+          <input type="text" v-model="find.path" placeholder="e.g., src/ or ." style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <div class="form-group">
+          <label>Options (space-separated)</label>
+          <input type="text" v-model="find.options" placeholder="e.g., -type f -maxdepth 3" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <button @click="doFind" :disabled="loading" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">{{ loading ? 'Finding...' : 'Find Files' }}</button>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="tab === 'cat'" class="panel">
+    <div class="panel">
+      <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
+        <div class="form-group">
+          <label>File Path</label>
+          <input type="text" v-model="cat.path" placeholder="e.g., src/index.ts" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <button @click="doCat" :disabled="loading" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">{{ loading ? 'Reading...' : 'Read File' }}</button>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="tab === 'exec'" class="panel">
+    <div class="panel">
+      <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
+        <div class="form-group">
+          <label>Command (as you'd type in shell)</label>
+          <input type="text" v-model="exec.commandLine" @keydown.enter="doExec" placeholder="e.g., ls -la src/ or wc -l *.ts" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <button @click="doExec" :disabled="loading" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">{{ loading ? 'Running...' : 'Execute' }}</button>
+        <span style="color: #94a3b8; font-size: 12px;">Allowed: grep, find, cat, head, tail, ls, wc, pwd</span>
+        <template v-if="exec.result">
+          <div class="results">
+            <pre style="white-space: pre-wrap; word-wrap: break-word; font-size: 13px; line-height: 1.5; color: #cdd6f4;">{{ exec.result }}</pre>
+          </div>
+        </template>
+        <template v-if="exec.error">
+          <div class="results" style="border-left: 3px solid #f38ba8;">
+            <pre style="white-space: pre-wrap; word-wrap: break-word; font-size: 13px; color: #f38ba8;">{{ exec.error }}</pre>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="tab === 'feedback'" class="panel">
+    <div class="panel">
+      <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
+        <div class="form-group">
+          <label>Feedback Type</label>
+          <select v-model="feedback.type" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+            <option value="" disabled>Select...</option>
+            <option value="info">Info</option><option value="success">Success</option><option value="suggestion">Suggestion</option><option value="warning">Warning</option><option value="error">Error</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Message</label>
+          <textarea v-model="feedback.message" placeholder="Enter your feedback, notes, or observations..." rows="4" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;"></textarea>
+        </div>
+        <button @click="doFeedback" :disabled="loading" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">{{ loading ? 'Submitting...' : 'Submit Feedback' }}</button>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="tab === 'shell'" class="panel">
+    <div class="panel" style="padding: 0;">
+      <div style="display: flex; flex-direction: column; align-items: stretch;">
+        <div style="display: flex; flex-direction: row; gap: 8px; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 10px; background: #0f3460;">
+          <span style="color: #a855f7; font-weight: bold;">🔐 Shell</span>
+          <div style="display: flex; flex-direction: row; gap: 8px; justify-content: flex-start; align-items: center; flex-wrap: wrap;">
+            <template v-if="shell.connected">
+              <span style="color: #4ade80; font-size: 12px;">● Connected</span>
+            </template>
+            <template v-if="!shell.connected">
+              <span style="color: #ff6b6b; font-size: 12px;">● Disconnected</span>
+            </template>
+            <button @click="toggleTextMode" :style="{ padding: '5px 10px', background: shellTextMode ? '#89b4fa' : '#16213e', border: 'none', color: shellTextMode ? '#1a1a2e' : '#fff', cursor: 'pointer', borderRadius: '5px', fontSize: '12px' }">{{ shellTextMode ? 'Terminal' : 'Text Mode' }}</button>
+            <button @click="clearShell" style="padding: 5px 10px; background: #16213e; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-size: 12px;">Clear</button>
+            <button @click="connectShell" :disabled="shell.connected" style="padding: 5px 10px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-size: 12px;">Connect</button>
+            <button @click="disconnectShell" :disabled="!shell.connected" style="padding: 5px 10px; background: #16213e; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-size: 12px;">Disconnect</button>
+          </div>
+        </div>
+        <!-- Terminal mode (xterm.js) -->
+        <div v-show="!shellTextMode" id="xterm_container" style="height: 400px; background: #1a1a2e;"></div>
+        <!-- Text mode (native selection for copying) -->
+        <div v-show="shellTextMode" style="display: flex; flex-direction: column; height: 400px; background: #1a1a2e;">
+          <pre style="flex: 1; margin: 0; padding: 15px; color: #cdd6f4; font-family: monospace; font-size: 14px; line-height: 1.5; overflow-y: auto; white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text;">{{ shell.textOutput }}</pre>
+          <div style="display: flex; align-items: center; padding: 8px 15px; background: #0f3460; border-top: 1px solid #1a1a2e; gap: 8px;">
+            <span style="color: #4ade80; font-family: monospace;">$</span>
+            <input type="text" v-model="shell.textInput" @keydown.enter="sendTextCommand" placeholder="Type command..." style="flex: 1; background: #1a1a2e; border: 1px solid #0f3460; border-radius: 4px; padding: 8px; color: #cdd6f4; font-family: monospace; font-size: 14px;">
+            <button @click="sendTextCommand" style="padding: 8px 15px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-size: 12px;">Send</button>
+          </div>
+        </div>
+        <div style="padding: 5px 10px; background: #0f3460; font-size: 11px; color: #94a3b8;">
+          {{ shellTextMode ? 'Text mode: Select and copy text freely' : 'Terminal mode: Full interactive shell' }}
+        </div>
+      </div>
+    </div>
+  </div></div>
 
     </template>
   </div>
@@ -645,6 +979,7 @@ const app = createApp({
     // UI state
     const tab = ref("browse");
     const workingDir = ref(".");
+    const browseRoot = ref("sandbox");
     const results = ref("");
     const resultCount = ref(0);
 
@@ -659,14 +994,15 @@ const app = createApp({
     const grep = reactive({ pattern: "", path: ".", options: ""});
     const find = reactive({ pattern: "", path: ".", options: ""});
     const cat = reactive({ path: ""});
-    const exec = reactive({ commandLine: ""});
+    const exec = reactive({ commandLine: "", result: "", error: "" });
     const feedback = reactive({ type: "info", message: ""});
     const shell = reactive({
       connected: false,
-      output: "",
-      input: "",
-      ws: null
+      ws: null,
+      textOutput: "UnifyWeaver Shell\\nClick 'Connect' to start a session\\n\\n",
+      textInput: ""
     });
+    const shellTextMode = ref(false);  // false = terminal mode, true = text mode
 
     // API helpers
     const apiCall = async (endpoint, method = "GET", body = null) => {
@@ -715,10 +1051,20 @@ const app = createApp({
       localStorage.removeItem("token");
     };
 
+    // Root/directory methods
+    const onRootChange = () => {
+      workingDir.value = ".";
+      loadBrowse(".");
+    };
+
+    const resetWorkingDir = () => {
+      workingDir.value = ".";
+    };
+
     // Browse methods
     const loadBrowse = async (path = browse.path) => {
       loading.value = true;
-      const res = await apiCall("/browse", "POST", { path, workingDir: workingDir.value });
+      const res = await apiCall("/browse", "POST", { path, root: browseRoot.value });
       if (res.success) {
         browse.path = res.data.path;
         browse.entries = res.data.entries || [];
@@ -731,7 +1077,29 @@ const app = createApp({
     };
 
     const navigateTo = (path) => loadBrowse(path);
+    const navigateUp = () => {
+      if (browse.parent) loadBrowse(browse.parent);
+    };
     const selectFile = (path) => { browse.selected = path; };
+    const handleEntryClick = (entry) => {
+      if (entry.type === 'directory') {
+        const newPath = browse.path === '.' ? entry.name : \`\${browse.path}/\${entry.name}\`;
+        loadBrowse(newPath);
+      } else {
+        const filePath = browse.path === '.' ? entry.name : \`\${browse.path}/\${entry.name}\`;
+        browse.selected = filePath;
+      }
+    };
+    const viewFile = async () => {
+      if (!browse.selected) return;
+      cat.path = browse.selected;
+      tab.value = 'cat';
+      await doCat();
+    };
+    const searchHere = () => {
+      grep.path = browse.path;
+      tab.value = 'grep';
+    };
 
     // Search methods
     const doGrep = async () => {
@@ -739,7 +1107,8 @@ const app = createApp({
       const res = await apiCall("/grep", "POST", {
         pattern: grep.pattern,
         path: grep.path || workingDir.value,
-        options: grep.options
+        options: grep.options,
+        root: browseRoot.value
       });
       results.value = res.success ? res.data.output : res.error;
       resultCount.value = res.data?.count || 0;
@@ -751,7 +1120,8 @@ const app = createApp({
       const res = await apiCall("/find", "POST", {
         pattern: find.pattern,
         path: find.path || workingDir.value,
-        options: find.options
+        options: find.options,
+        root: browseRoot.value
       });
       results.value = res.success ? res.data.output : res.error;
       resultCount.value = res.data?.count || 0;
@@ -762,7 +1132,8 @@ const app = createApp({
       loading.value = true;
       const res = await apiCall("/cat", "POST", {
         path: cat.path,
-        workingDir: workingDir.value
+        cwd: workingDir.value,
+        root: browseRoot.value
       });
       results.value = res.success ? res.data.content : res.error;
       loading.value = false;
@@ -770,11 +1141,27 @@ const app = createApp({
 
     const doExec = async () => {
       loading.value = true;
+      exec.result = "";
+      exec.error = "";
+
+      // Parse command line into command and args
+      const parts = exec.commandLine.trim().split(/\\s+/);
+      const command = parts[0];
+      const args = parts.slice(1);
+
       const res = await apiCall("/exec", "POST", {
-        command: exec.commandLine,
-        workingDir: workingDir.value
+        command,
+        args,
+        cwd: workingDir.value,
+        root: browseRoot.value
       });
-      results.value = res.success ? res.data.stdout : res.error;
+
+      if (res.success) {
+        exec.result = res.data.stdout || "(no output)";
+        if (res.data.stderr) exec.error = res.data.stderr;
+      } else {
+        exec.error = res.error || "Command failed";
+      }
       loading.value = false;
     };
 
@@ -793,29 +1180,124 @@ const app = createApp({
       loading.value = false;
     };
 
-    // Shell methods
-    const connectShell = () => {
-      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = \`\${protocol}//\${location.host}/shell?token=\${token.value}\`;
-      shell.ws = new WebSocket(wsUrl);
-      shell.ws.onopen = () => { shell.connected = true; shell.output = "Connected to shell.\n"; };
-      shell.ws.onmessage = (e) => { shell.output += e.data; scrollShell(); };
-      shell.ws.onclose = () => { shell.connected = false; shell.output += "\nDisconnected.\n"; };
-      shell.ws.onerror = () => { shell.connected = false; };
+    // Shell methods using xterm.js
+    let terminal = null;
+    let fitAddon = null;
+
+    const initTerminal = () => {
+      const container = document.getElementById("xterm_container");
+      if (!container || terminal) return;
+
+      terminal = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        theme: {
+          background: '#1a1a2e',
+          foreground: '#cdd6f4',
+          cursor: '#e94560',
+          cursorAccent: '#1a1a2e',
+          selectionBackground: '#585b70',
+        }
+      });
+
+      fitAddon = new FitAddon.FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(container);
+      fitAddon.fit();
+
+      terminal.writeln('\\x1b[1;35m╔══════════════════════════════════════╗');
+      terminal.writeln('║     UnifyWeaver Shell                ║');
+      terminal.writeln('║  Click "Connect" to start session    ║');
+      terminal.writeln('╚══════════════════════════════════════╝\\x1b[0m');
+      terminal.writeln('');
+
+      // Send input to WebSocket
+      terminal.onData((data) => {
+        if (shell.ws && shell.ws.readyState === WebSocket.OPEN) {
+          shell.ws.send(JSON.stringify({ type: "input", data }));
+        }
+      });
+
+      window.addEventListener("resize", () => fitAddon?.fit());
     };
 
-    const sendShellCommand = () => {
-      if (shell.ws && shell.connected && shell.input) {
-        shell.ws.send(shell.input + "\n");
-        shell.input = "";
+    const connectShell = () => {
+      if (!terminal) initTerminal();
+
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = \`\${protocol}//\${location.host}/shell?token=\${token.value}&root=\${browseRoot.value}\`;
+
+      terminal.writeln(\`\\x1b[33mConnecting (root: \${browseRoot.value})...\\x1b[0m\`);
+      shell.ws = new WebSocket(wsUrl);
+
+      shell.ws.onopen = () => {
+        shell.connected = true;
+        terminal.writeln('\\x1b[32mConnected!\\x1b[0m');
+      };
+
+      shell.ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "output" || msg.type === "error") {
+            terminal.write(msg.data);
+            // Strip ANSI codes for text mode and normalize line endings
+            const plainText = msg.data
+              .replace(/\\x1b\\[[0-9;]*m/g, '')
+              .replace(/\\r\\n/g, '\\n')
+              .replace(/\\r/g, '');
+            if (plainText) shell.textOutput += plainText;
+          } else if (msg.type === "prompt") {
+            terminal.write(\`\\x1b[32m\${browseRoot.value}\\x1b[0m:\\x1b[34m~\\x1b[0m$ \`);
+            shell.textOutput += \`\${browseRoot.value}:~$ \`;
+          }
+        } catch {
+          terminal.write(e.data);
+          shell.textOutput += e.data;
+        }
+      };
+
+      shell.ws.onclose = () => {
+        shell.connected = false;
+        terminal.writeln('\\r\\n\\x1b[31mDisconnected\\x1b[0m');
+        shell.textOutput += '\\nDisconnected\\n';
+      };
+
+      shell.ws.onerror = () => {
+        shell.connected = false;
+        terminal.writeln('\\x1b[31mConnection error\\x1b[0m');
+        shell.textOutput += 'Connection error\\n';
+      };
+    };
+
+    const clearShell = () => {
+      if (terminal) terminal.clear();
+      shell.textOutput = '';
+    };
+
+    const disconnectShell = () => {
+      if (shell.ws) {
+        shell.ws.close();
+        shell.ws = null;
       }
     };
 
-    const clearShell = () => { shell.output = ""; };
+    const toggleTextMode = () => {
+      shellTextMode.value = !shellTextMode.value;
+    };
 
-    const scrollShell = () => {
-      const el = document.getElementById("shell-output");
-      if (el) el.scrollTop = el.scrollHeight;
+    const sendTextCommand = () => {
+      const cmd = shell.textInput.trim();
+      if (!cmd || !shell.ws || shell.ws.readyState !== WebSocket.OPEN) return;
+
+      shell.textOutput += browseRoot.value + ':~$ ' + cmd + '\\n';
+      shell.textInput = '';
+
+      // Send each character then enter
+      for (const char of cmd) {
+        shell.ws.send(JSON.stringify({ type: "input", data: char }));
+      }
+      shell.ws.send(JSON.stringify({ type: "input", data: "\\r" }));
     };
 
     // Utilities
@@ -833,18 +1315,19 @@ const app = createApp({
     });
 
     watch(tab, (newTab) => {
-      if (newTab === "shell" && !shell.connected && user.value?.roles?.includes("shell")) {
-        connectShell();
+      if (newTab === "shell") {
+        // Initialize terminal when shell tab is first opened
+        setTimeout(() => initTerminal(), 100);
       }
     });
 
     return {
       authRequired, user, loginEmail, loginPassword, loginError, loading, token,
-      tab, workingDir, results, resultCount,
-      browse, grep, find, cat, exec, feedback, shell,
-      doLogin, doLogout, loadBrowse, navigateTo, selectFile,
+      tab, workingDir, browseRoot, results, resultCount,
+      browse, grep, find, cat, exec, feedback, shell, shellTextMode,
+      doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile, handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
       doGrep, doFind, doCat, doExec, doFeedback,
-      connectShell, sendShellCommand, clearShell,
+      connectShell, disconnectShell, clearShell, toggleTextMode, sendTextCommand,
       formatSize
     };
   }
@@ -928,6 +1411,15 @@ async function handleRequest(
     if (method === 'GET' && pathname === '/health') {
       return handle_health(req, res, body, user);
     }
+    if (method === 'GET' && pathname === '/auth/status') {
+      return handle_auth_status(req, res, body, user);
+    }
+    if (method === 'POST' && pathname === '/auth/login') {
+      return handle_auth_login(req, res, body, user);
+    }
+    if (method === 'GET' && pathname === '/auth/me') {
+      return handle_auth_me(req, res, body, user);
+    }
     if (method === 'GET' && pathname === '/commands') {
       return handle_commands(req, res, body, user);
     }
@@ -947,6 +1439,13 @@ async function handleRequest(
       return handle_browse(req, res, body, user);
     }
 
+    // Serve HTML interface at root
+    if (method === 'GET' && pathname === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': '*' });
+      res.end(getHTMLInterface());
+      return;
+    }
+
     // Not found
     sendJSON(res, 404, { success: false, error: 'Not found' });
   } catch (err) {
@@ -964,7 +1463,14 @@ interface ShellSession {
   user: TokenPayload;
   process: ChildProcessWithoutNullStreams | null;
   currentDir: string;
+  rootType: string;  // 'sandbox' | 'project' | 'home'
+  rootDir: string;   // Actual root directory path
   inputBuffer: string;
+  // Command history support
+  history: string[];
+  historyIndex: number;
+  // Escape sequence buffer for arrow keys
+  escapeBuffer: string;
 }
 
 function setupWebSocket(server: http.Server | https.Server): void {
@@ -973,45 +1479,68 @@ function setupWebSocket(server: http.Server | https.Server): void {
   wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
     const parsedUrl = url.parse(req.url || '', true);
     const token = parsedUrl.query.token as string;
+    const rootType = (parsedUrl.query.root as string) || 'sandbox';
 
-    if (!token) {
-      ws.send(JSON.stringify({ type: 'error', data: 'Authentication required' }));
-      ws.close(1008, 'Authentication required');
-      return;
+    let payload: TokenPayload;
+
+    if (AUTH_REQUIRED) {
+      // Auth required - must have valid token
+      if (!token) {
+        ws.send(JSON.stringify({ type: 'error', data: 'Authentication required' }));
+        ws.close(1008, 'Authentication required');
+        return;
+      }
+
+      const verified = verifyToken(token);
+      if (!verified) {
+        ws.send(JSON.stringify({ type: 'error', data: 'Invalid token' }));
+        ws.close(1008, 'Invalid token');
+        return;
+      }
+      payload = verified;
+
+      // Check for required roles
+      const requiredRoles = ['shell'];
+      const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
+      if (!hasRequiredRole) {
+        ws.send(JSON.stringify({ type: 'error', data: 'Shell access requires role: ' + requiredRoles.join(', ') }));
+        ws.close(1008, 'Access denied');
+        return;
+      }
+    } else {
+      // Auth not required - use guest payload with full access
+      payload = {
+        sub: 'guest',
+        email: 'guest@local',
+        roles: ['user', 'admin', 'shell'] as Role[],
+        permissions: ['*'],
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 86400
+      };
     }
 
-    const payload = verifyToken(token);
-    if (!payload) {
-      ws.send(JSON.stringify({ type: 'error', data: 'Invalid token' }));
-      ws.close(1008, 'Invalid token');
-      return;
-    }
-
-    // Check for required roles
-    const requiredRoles = ['shell'];
-    const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
-    if (!hasRequiredRole) {
-      ws.send(JSON.stringify({ type: 'error', data: 'Shell access requires role: ' + requiredRoles.join(', ') }));
-      ws.close(1008, 'Access denied');
-      return;
-    }
-
-    console.log(`Shell session started for ${payload.email}`);
-    handleShellConnection(ws, payload);
+    console.log(`Shell session started for ${payload.email} (root: ${rootType})`);
+    handleShellConnection(ws, payload, rootType);
   });
 }
 
-function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
+function handleShellConnection(ws: WebSocket, user: TokenPayload, rootType: string = 'sandbox'): void {
+  const rootDir = getRootDir(rootType);
   const session: ShellSession = {
     ws,
     user,
     process: null,
-    currentDir: SANDBOX_ROOT,
-    inputBuffer: ''
+    currentDir: rootDir,
+    rootType,
+    rootDir,
+    inputBuffer: '',
+    history: [],
+    historyIndex: -1,
+    escapeBuffer: ''
   };
 
   // Send welcome message
-  const welcome = `\r\nConnected to UnifyWeaver Shell\r\nUser: ${user.email} [${user.roles.join(', ')}]\r\nWorking directory: ${SANDBOX_ROOT}\r\nType "help" for commands, "exit" to disconnect\r\n\r\n`;
+  const welcome = `\r\nConnected to UnifyWeaver Shell\r\nUser: ${user.email} [${user.roles.join(', ')}]\r\nRoot: ${rootType} (${rootDir})\r\nType "help" for commands, "exit" to disconnect\r\n\r\n`;
   ws.send(JSON.stringify({ type: 'output', data: welcome }));
   ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
 
@@ -1019,10 +1548,16 @@ function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
     try {
       const msg = JSON.parse(data.toString());
       if (msg.type === 'input') {
+        // Debug: log received input
+        const chars = [...msg.data].map(c => c.charCodeAt(0));
+        console.log(`Shell input: "${msg.data}" chars: [${chars.join(', ')}]`);
         handleShellInput(session, msg.data);
       }
     } catch (err) {
-      console.error('Shell message error:', err);
+      // Try handling as raw text (for compatibility)
+      const rawData = data.toString();
+      console.log(`Shell raw input: "${rawData}" (JSON parse failed)`);
+      handleShellInput(session, rawData);
     }
   });
 
@@ -1035,14 +1570,81 @@ function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
   });
 }
 
-function handleShellInput(session: ShellSession, char: string): void {
+function handleShellInput(session: ShellSession, input: string): void {
   const { ws } = session;
+
+  // Process each character in the input
+  for (const char of input) {
+    processShellChar(session, char);
+  }
+}
+
+function clearInputLine(session: ShellSession): void {
+  const { ws, inputBuffer } = session;
+  if (inputBuffer.length > 0) {
+    // Move cursor back, overwrite with spaces, move back again
+    const backspaces = '\b'.repeat(inputBuffer.length);
+    const spaces = ' '.repeat(inputBuffer.length);
+    ws.send(JSON.stringify({ type: 'output', data: backspaces + spaces + backspaces }));
+  }
+}
+
+function processShellChar(session: ShellSession, char: string): void {
+  const { ws } = session;
+
+  // If we're in the middle of an escape sequence
+  if (session.escapeBuffer) {
+    session.escapeBuffer += char;
+
+    // Check for complete escape sequences
+    if (session.escapeBuffer === '\x1b[A') {
+      // Up arrow - previous command in history
+      session.escapeBuffer = '';
+      if (session.history.length > 0 && session.historyIndex < session.history.length - 1) {
+        clearInputLine(session);
+        session.historyIndex++;
+        session.inputBuffer = session.history[session.history.length - 1 - session.historyIndex] || '';
+        ws.send(JSON.stringify({ type: 'output', data: session.inputBuffer }));
+      }
+    } else if (session.escapeBuffer === '\x1b[B') {
+      // Down arrow - next command in history
+      session.escapeBuffer = '';
+      if (session.historyIndex > 0) {
+        clearInputLine(session);
+        session.historyIndex--;
+        session.inputBuffer = session.history[session.history.length - 1 - session.historyIndex] || '';
+        ws.send(JSON.stringify({ type: 'output', data: session.inputBuffer }));
+      } else if (session.historyIndex === 0) {
+        clearInputLine(session);
+        session.historyIndex = -1;
+        session.inputBuffer = '';
+      }
+    } else if (session.escapeBuffer === '\x1b[C') {
+      // Right arrow - currently not supporting cursor movement within line
+      session.escapeBuffer = '';
+    } else if (session.escapeBuffer === '\x1b[D') {
+      // Left arrow - currently not supporting cursor movement within line
+      session.escapeBuffer = '';
+    } else if (session.escapeBuffer.length > 4) {
+      // Unknown/too long escape sequence, discard
+      session.escapeBuffer = '';
+    }
+    // Otherwise keep collecting escape sequence characters
+    return;
+  }
+
+  // Escape character - start of escape sequence
+  if (char === '\x1b') {
+    session.escapeBuffer = char;
+    return;
+  }
 
   // Enter key
   if (char === '\r' || char === '\n') {
     ws.send(JSON.stringify({ type: 'output', data: '\r\n' }));
     const command = session.inputBuffer.trim();
     session.inputBuffer = '';
+    session.historyIndex = -1;  // Reset history navigation
     if (command) {
       executeShellCommand(session, command);
     } else {
@@ -1064,7 +1666,21 @@ function handleShellInput(session: ShellSession, char: string): void {
     }
     ws.send(JSON.stringify({ type: 'output', data: '^C\r\n' }));
     session.inputBuffer = '';
+    session.historyIndex = -1;
     ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
+  }
+  // Ctrl+D (EOF)
+  else if (char === '\x04') {
+    if (session.inputBuffer.length === 0) {
+      ws.send(JSON.stringify({ type: 'output', data: 'exit\r\n' }));
+      ws.close();
+    }
+  }
+  // Tab (for future tab completion)
+  else if (char === '\t') {
+    // Currently just insert spaces, could add tab completion later
+    session.inputBuffer += '    ';
+    ws.send(JSON.stringify({ type: 'output', data: '    ' }));
   }
   // Printable characters
   else if (char >= ' ' && char <= '~') {
@@ -1075,6 +1691,16 @@ function handleShellInput(session: ShellSession, char: string): void {
 
 function executeShellCommand(session: ShellSession, command: string): void {
   const { ws } = session;
+
+  // Save to command history (avoid consecutive duplicates)
+  if (command && session.history[session.history.length - 1] !== command) {
+    session.history.push(command);
+    // Keep history to reasonable size
+    if (session.history.length > 100) {
+      session.history.shift();
+    }
+  }
+  session.historyIndex = -1;
 
   // Built-in: help
   if (command === 'help') {
@@ -1093,22 +1719,22 @@ function executeShellCommand(session: ShellSession, command: string): void {
 
   // Built-in: cd
   if (command.startsWith('cd ') || command === 'cd') {
-    const targetDir = command.slice(3).trim() || SANDBOX_ROOT;
+    const targetDir = command.slice(3).trim() || session.rootDir;
     let newDir: string;
 
     if (path.isAbsolute(targetDir)) {
       newDir = targetDir;
     } else if (targetDir === '~') {
-      newDir = SANDBOX_ROOT;
+      newDir = session.rootDir;
     } else if (targetDir.startsWith('~/')) {
-      newDir = path.join(SANDBOX_ROOT, targetDir.slice(2));
+      newDir = path.join(session.rootDir, targetDir.slice(2));
     } else {
       newDir = path.resolve(session.currentDir, targetDir);
     }
 
-    // Security: ensure within sandbox
-    if (!newDir.startsWith(SANDBOX_ROOT)) {
-      ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mcd: Access denied - outside sandbox\x1b[0m\r\n` }));
+    // Security: ensure within selected root
+    if (!newDir.startsWith(session.rootDir)) {
+      ws.send(JSON.stringify({ type: 'output', data: `\x1b[31mcd: Access denied - outside ${session.rootType} root\x1b[0m\r\n` }));
       ws.send(JSON.stringify({ type: 'prompt', cwd: session.currentDir }));
       return;
     }
@@ -1132,7 +1758,7 @@ function executeShellCommand(session: ShellSession, command: string): void {
   // Execute shell command
   const proc = spawn('sh', ['-c', command], {
     cwd: session.currentDir,
-    env: { ...process.env, HOME: SANDBOX_ROOT, TERM: 'xterm-256color' }
+    env: { ...process.env, HOME: session.rootDir, TERM: 'xterm-256color' }
   });
 
   session.process = proc;
