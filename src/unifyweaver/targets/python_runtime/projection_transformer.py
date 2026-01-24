@@ -532,37 +532,53 @@ def evaluate_equivalence(
     }
 
 
-def optimal_architecture(n_flat_heads: int, prefer_h: int = 4) -> Tuple[int, int]:
+def optimal_architecture(n_flat_heads: int, prefer_h: int = 4, embed_dim: int = 768) -> Tuple[int, int]:
     """
     Calculate optimal H (heads) and L (layers) for target flat head count.
 
-    Uses H^L = N constraint, minimizing total heads H × L.
-    Theoretically optimal H ≈ e ≈ 2.718, but we prefer powers of 2.
+    Uses H^L >= N constraint (must have sufficient capacity), minimizing
+    total parameters while ensuring the architecture can represent N clusters.
+
+    Considers H values that divide embed_dim (PyTorch requirement).
+    E.g., for N=124 with embed_dim=768: 6^3=216 or 4^4=256.
 
     Args:
         n_flat_heads: Target equivalent flat LDA heads
-        prefer_h: Preferred heads per layer (default 4)
+        prefer_h: Preferred heads per layer (default 4, used as tiebreaker)
+        embed_dim: Embedding dimension (H must divide this)
 
     Returns:
         (num_heads, num_layers) tuple
     """
-    # Calculate layers needed for preferred H
     if n_flat_heads <= 1:
         return (1, 1)
 
-    # Calculate exact L, then pick floor or ceil based on which is closer to N
-    l_exact = math.log(n_flat_heads) / math.log(prefer_h)
-    l_floor = max(1, int(l_exact))
-    l_ceil = l_floor + 1
+    # Only consider H values that divide embed_dim (PyTorch MultiheadAttention requirement)
+    valid_h = [h for h in [2, 3, 4, 6, 8, 12, 16] if embed_dim % h == 0]
 
-    # Pick the one that gives equivalent heads closer to N
-    equiv_floor = prefer_h ** l_floor
-    equiv_ceil = prefer_h ** l_ceil
+    # Consider multiple H values to find optimal H^L >= N
+    candidates = []
+    for h in valid_h:
+        # Find minimum L such that h^L >= N
+        l = max(1, math.ceil(math.log(n_flat_heads) / math.log(h)))
+        equiv = h ** l
+        # Must have equiv >= N
+        if equiv >= n_flat_heads:
+            overhead = equiv - n_flat_heads  # How much over N
+            # Prefer h == prefer_h as tiebreaker
+            tiebreaker = 0 if h == prefer_h else 1
+            candidates.append((l, overhead, tiebreaker, h, l))
 
-    if abs(equiv_floor - n_flat_heads) <= abs(equiv_ceil - n_flat_heads):
-        return (prefer_h, l_floor)
-    else:
-        return (prefer_h, l_ceil)
+    if not candidates:
+        # Fallback: use prefer_h with ceil
+        l = max(1, math.ceil(math.log(n_flat_heads) / math.log(prefer_h)))
+        return (prefer_h, l)
+
+    # Sort by: layers (fewer better), overhead (smaller better), tiebreaker
+    candidates.sort()
+    _, _, _, best_h, best_l = candidates[0]
+
+    return (best_h, best_l)
 
 
 # Quick test

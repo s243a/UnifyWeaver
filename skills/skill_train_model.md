@@ -15,7 +15,8 @@ Train semantic search models using Procrustes projection for folder suggestion a
 python3 scripts/train_pearltrees_federated.py \
   reports/pearltrees_targets.jsonl \
   models/pearltrees_federated.pkl \
-  --cluster-method mst \
+  --cluster-method embedding \
+  --cluster-criterion effective_rank \
   --model nomic-ai/nomic-embed-text-v1.5
 ```
 
@@ -28,13 +29,13 @@ python3 scripts/train_pearltrees_federated.py \
   "OUTPUT_MODEL.pkl"
 ```
 
-### Train with MST Clustering
+### Train with Optimal Cluster Count (Recommended)
 ```bash
 python3 scripts/train_pearltrees_federated.py \
   "INPUT_JSONL" \
   "OUTPUT_MODEL.pkl" \
-  --cluster-method mst \
-  --max-clusters 50
+  --cluster-method embedding \
+  --cluster-criterion effective_rank
 ```
 
 ### Train with Specific Embedding Model
@@ -71,9 +72,48 @@ JSONL with `target_text` field (materialized paths work best):
 
 | Method | Use Case |
 |--------|----------|
-| `mst` | Recommended - preserves hierarchy |
-| `kmeans` | Faster for large datasets |
-| `none` | Single global projection |
+| `embedding` | K-means on answer embeddings - uniform cluster sizes, good for RAG |
+| `mst` | MST edge-cutting - preserves local topology, for hierarchical data |
+| `per-tree` | One cluster per source tree/folder |
+| `path_depth` | Cluster by materialized path depth |
+
+**When to use which:**
+- **`embedding` (K-means)**: Recommended for RAG and semantic search. Produces more uniform cluster sizes, faster training.
+- **`mst`**: Better for hierarchical applications where preserving parent-child relationships matters. However, the J-guided hierarchy objective (`skill_hierarchy_objective.md`) is even better for hierarchical optimization.
+
+## Cluster Count Optimization
+
+Use `--cluster-criterion` to auto-select optimal cluster count:
+
+| Criterion | Description |
+|-----------|-------------|
+| `effective_rank` | Recommended - spectral participation ratio of answer embeddings |
+| `covering` | 2^r where r dimensions capture target variance (default 80%) |
+| `sqrt_n` | √N heuristic (common K-means rule of thumb) |
+| `auto` | Same as effective_rank |
+
+**Example with auto cluster count:**
+```bash
+python3 scripts/train_pearltrees_federated.py \
+  input.jsonl output.pkl \
+  --cluster-method embedding \
+  --cluster-criterion effective_rank
+```
+
+**Override with fixed cluster count:**
+```bash
+python3 scripts/train_pearltrees_federated.py \
+  input.jsonl output.pkl \
+  --max-clusters 50
+```
+
+For covering method, adjust target variance:
+```bash
+python3 scripts/train_pearltrees_federated.py \
+  input.jsonl output.pkl \
+  --cluster-criterion covering \
+  --target-variance 0.90
+```
 
 ## Output
 
