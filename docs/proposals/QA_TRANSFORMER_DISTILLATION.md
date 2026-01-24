@@ -527,15 +527,23 @@ manifolds of expressible functions:
 Functions expressible by 12² ⊂ Functions expressible by 6³ ⊂ Functions expressible by 4⁴
 ```
 
-But it's not about whether the manifold "contains" the truth. It's about
-what fraction of the truth's dimensions align with the manifold:
+The manifold should be statistically tangent to the error distribution.
+Errors can be decomposed geometrically:
 
-- 12² manifold: aligns with some dimensions of truth
-- 6³ manifold: aligns with most dimensions of truth
-- 4⁴ manifold: aligns with truth + extra noise dimensions
+- **Errors within the manifold** (tangent): The model could express this
+  but didn't quite reach it. These are consequential for evaluating fit—
+  they represent optimization quality and are what the model can improve.
 
-The optimal architecture maximizes alignment with truth while minimizing
-extra dimensions that would capture noise.
+- **Errors orthogonal to the manifold**: The model cannot express this
+  direction. These represent structural limitations, not fit quality.
+
+For model selection, errors within the manifold matter more. A model with
+small tangent errors has good fit; large orthogonal errors indicate the
+architecture is misaligned with the problem.
+
+- 12² manifold: may have large orthogonal errors (can't express some directions)
+- 6³ manifold: mostly tangent errors (can express truth, small fit errors)
+- 4⁴ manifold: tangent errors include noise fitting (extra dimensions)
 
 **Why This Matters**
 
