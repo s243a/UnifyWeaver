@@ -443,8 +443,23 @@ generate_panel_switch_cases(Variable, [case(Value, Content)|Rest], Index, [Code|
     NextIndex is Index + 1,
     generate_panel_switch_cases(Variable, Rest, NextIndex, RestCodes).
 
-collection_to_vue(var(Name), Name) :- !.
-collection_to_vue(Name, Name).
+collection_to_vue(var(Name), CamelName) :- !,
+    snake_to_camel(Name, CamelName).
+collection_to_vue(Name, CamelName) :-
+    snake_to_camel(Name, CamelName).
+
+% Snake_case to camelCase conversion
+snake_to_camel(Snake, Camel) :-
+    atom_codes(Snake, Codes),
+    snake_to_camel_codes(Codes, CamelCodes),
+    atom_codes(Camel, CamelCodes).
+
+snake_to_camel_codes([], []).
+snake_to_camel_codes([0'_,C|Rest], [Upper|CamelRest]) :- !,
+    (C >= 0'a, C =< 0'z -> Upper is C - 32 ; Upper = C),
+    snake_to_camel_codes(Rest, CamelRest).
+snake_to_camel_codes([C|Rest], [C|CamelRest]) :-
+    snake_to_camel_codes(Rest, CamelRest).
 
 condition_to_vue(and(A, B), VueCondition) :- !,
     condition_to_vue(A, VA),
@@ -457,8 +472,10 @@ condition_to_vue(or(A, B), VueCondition) :- !,
 condition_to_vue(not(A), VueCondition) :- !,
     condition_to_vue(A, VA),
     format(atom(VueCondition), '!~w', [VA]).
-condition_to_vue(var(Name), Name) :- !.
-condition_to_vue(Atom, Atom) :- atom(Atom), !.
+condition_to_vue(var(Name), CamelName) :- !,
+    snake_to_camel(Name, CamelName).
+condition_to_vue(Atom, CamelAtom) :- atom(Atom), !,
+    snake_to_camel(Atom, CamelAtom).
 
 % ============================================================================
 % VUE APP GENERATION
@@ -510,6 +527,7 @@ const app = createApp({
       input: "",
       ws: null
     });
+    const shellTextMode = ref(true);  // true = text mode, false = capture mode
 
     // API helpers
     const apiCall = async (endpoint, method = "GET", body = null) => {
@@ -641,23 +659,94 @@ const app = createApp({
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}`;
       shell.ws = new WebSocket(wsUrl);
-      shell.ws.onopen = () => { shell.connected = true; shell.output = "Connected to shell.\\n"; };
-      shell.ws.onmessage = (e) => { shell.output += e.data; scrollShell(); };
-      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\nDisconnected.\\n"; };
+      shell.ws.onopen = () => { shell.connected = true; shell.output = "Connected to shell.\\\\n"; };
+      shell.ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "output" || msg.type === "error") {
+            shell.output += msg.data;
+          } else if (msg.type === "prompt") {
+            shell.output += "$ ";
+          }
+        } catch {
+          shell.output += e.data;
+        }
+        scrollShell();
+      };
+      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\\\nDisconnected.\\\\n"; };
       shell.ws.onerror = () => { shell.connected = false; };
     };
 
     const sendShellCommand = () => {
       if (shell.ws && shell.connected && shell.input) {
-        shell.ws.send(shell.input + "\\n");
+        shell.ws.send(JSON.stringify({ type: "input", data: shell.input + "\\\\n" }));
         shell.input = "";
       }
     };
 
     const clearShell = () => { shell.output = ""; };
 
+    const disconnectShell = () => {
+      if (shell.ws) {
+        shell.ws.close();
+        shell.ws = null;
+      }
+    };
+
+    const toggleShellMode = () => {
+      shellTextMode.value = !shellTextMode.value;
+      if (!shellTextMode.value) {
+        // Switching to capture mode - focus the hidden input
+        setTimeout(() => focusCaptureInput(), 100);
+      }
+    };
+
+    const focusCaptureInput = () => {
+      const input = document.getElementById("shell_capture_input");
+      if (input) input.focus();
+    };
+
+    const handleCaptureInput = (e) => {
+      if (!shell.ws || !shell.connected) return;
+      // Handle backspace on mobile (inputType is deleteContentBackward)
+      if (e.inputType === "deleteContentBackward") {
+        shell.ws.send(JSON.stringify({ type: "input", data: String.fromCharCode(127) }));
+        return;
+      }
+      const value = e.target.value;
+      if (value) {
+        // Send each character individually
+        for (const char of value) {
+          shell.ws.send(JSON.stringify({ type: "input", data: char }));
+        }
+        e.target.value = "";
+      }
+    };
+
+    const handleCaptureKeydown = (e) => {
+      if (!shell.ws || !shell.connected) return;
+      const sendInput = (data) => shell.ws.send(JSON.stringify({ type: "input", data }));
+      // Handle special keys
+      if (e.key === "Enter") {
+        e.preventDefault();
+        sendInput(String.fromCharCode(13));
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        sendInput(String.fromCharCode(127));
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        sendInput(String.fromCharCode(9));
+      } else if (e.ctrlKey && e.key === "c") {
+        e.preventDefault();
+        sendInput(String.fromCharCode(3));
+      } else if (e.ctrlKey && e.key === "d") {
+        e.preventDefault();
+        sendInput(String.fromCharCode(4));
+      }
+    };
+
     const scrollShell = () => {
-      const el = document.getElementById("shell-output");
+      const el = document.getElementById("shell_output");
       if (el) el.scrollTop = el.scrollHeight;
     };
 
@@ -684,10 +773,11 @@ const app = createApp({
     return {
       authRequired, user, loginEmail, loginPassword, loginError, loading, token,
       tab, workingDir, results, resultCount,
-      browse, grep, find, cat, exec, feedback, shell,
+      browse, grep, find, cat, exec, feedback, shell, shellTextMode,
       doLogin, doLogout, loadBrowse, navigateTo, selectFile,
       doGrep, doFind, doCat, doExec, doFeedback,
-      connectShell, sendShellCommand, clearShell,
+      connectShell, disconnectShell, sendShellCommand, clearShell,
+      toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
       formatSize
     };
   }

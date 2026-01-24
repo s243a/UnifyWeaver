@@ -445,39 +445,107 @@ feedback_panel_spec(
 
 %! shell_panel_spec(-Spec) is det
 shell_panel_spec(
-    container(panel, [class(panel)], [
-        layout(stack, [spacing(15)], [
-            % Shell status
-            layout(flex, [justify(between), align(center)], [
-                component(text, [content("PTY Shell"), class(shell_title)]),
-                layout(flex, [gap(10)], [
-                    component(badge, [
-                        content(var('shell.connected'), "Connected", "Disconnected"),
-                        variant(var('shell.connected'), success, error)
+    container(panel, [class(panel), style("padding: 0;")], [
+        layout(stack, [spacing(0)], [
+            % Shell header bar
+            layout(flex, [justify(between), align(center), wrap(true), gap(8),
+                          style("background: #16213e; padding: 8px 12px;")], [
+                component(text, [content("🔐 Shell"), style("color: #a855f7; font-weight: bold;")]),
+                layout(flex, [gap(8), align(center), wrap(true)], [
+                    % Connection status
+                    when(var('shell.connected'), [
+                        component(text, [content("● Connected"), style("color: #4ade80; font-size: 12px;")])
                     ]),
+                    unless(var('shell.connected'), [
+                        component(text, [content("● Disconnected"), style("color: #ff6b6b; font-size: 12px;")])
+                    ]),
+                    % Text Mode / Capture Mode toggle
+                    component(button, [
+                        label(var(shell_text_mode), "Capture", "Text Mode"),
+                        on_click(toggle_shell_mode),
+                        variant(ghost),
+                        size(small),
+                        style_binding(var(shell_text_mode), "background: #a855f7;", "background: #0f3460;")
+                    ]),
+                    % Clear button
                     component(button, [
                         label("Clear"),
                         on_click(clear_shell),
+                        variant(ghost),
+                        size(small)
+                    ]),
+                    % Connect button
+                    component(button, [
+                        label("Connect"),
+                        on_click(connect_shell),
+                        disabled(var('shell.connected')),
+                        variant(ghost),
+                        size(small)
+                    ]),
+                    % Disconnect button
+                    component(button, [
+                        label("Disconnect"),
+                        on_click(disconnect_shell),
+                        disabled(not(var('shell.connected'))),
                         variant(ghost),
                         size(small)
                     ])
                 ])
             ]),
 
-            % Terminal output
-            container(panel, [class(terminal), id(shell_output)], [
-                component(pre, [content(var('shell.output')), class(terminal_text)])
+            % Terminal wrapper with relative positioning (matches prototype structure)
+            container(panel, [class(terminal_wrapper), style("position: relative;")], [
+                % Terminal output area
+                container(panel, [id(shell_output),
+                                  on_click(focus_capture_input),
+                                  style("background: #0a0a0a; padding: 10px; height: 350px; overflow-y: auto; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; user-select: text;")], [
+                    when(empty(var('shell.output')), [
+                        component(text, [
+                            content("Click \"Connect\" to start a shell session."),
+                            style("color: #94a3b8;")
+                        ])
+                    ]),
+                    unless(empty(var('shell.output')), [
+                        component(pre, [content(var('shell.output')), class(terminal_text)])
+                    ])
+                ]),
+                % Hidden capture input (sibling of terminal, inside relative wrapper)
+                unless(var(shell_text_mode), [
+                    component(text_input, [
+                        id(shell_capture_input),
+                        on_input(handle_capture_input),
+                        on_keydown(handle_capture_keydown),
+                        type(text),
+                        autocomplete(off),
+                        style("position: absolute; bottom: 10px; left: 10px; right: 10px; opacity: 0.01; height: 40px; font-size: 16px; background: transparent; border: none; color: transparent; caret-color: #4ade80;")
+                    ])
+                ])
             ]),
 
-            % Input line
-            layout(flex, [gap(10)], [
-                component(text, [content("$"), class(prompt)]),
-                component(text_input, [
-                    bind('shell.input'),
-                    placeholder("Enter command..."),
-                    on_keyup_enter(send_shell_command),
-                    id(shell_input),
-                    class(shell_input)
+            % Capture mode instructions
+            unless(var(shell_text_mode), [
+                component(text, [
+                    content("Capture mode: Tap the terminal area to open keyboard. Characters sent immediately."),
+                    style("padding: 8px 12px; background: #16213e; border-top: 1px solid #0f3460; font-size: 12px; color: #94a3b8;")
+                ])
+            ]),
+
+            % Text mode input line
+            when(var(shell_text_mode), [
+                layout(flex, [gap(10), style("background: #16213e; padding: 8px 12px;")], [
+                    component(text, [content("$"), style("color: #4ade80; font-family: monospace;")]),
+                    component(text_input, [
+                        bind('shell.input'),
+                        placeholder("Enter command..."),
+                        on_keyup_enter(send_shell_command),
+                        id(shell_input),
+                        style("flex: 1; background: #0a0a0a; border: none; color: #eee; font-family: monospace;")
+                    ]),
+                    component(button, [
+                        label("Send"),
+                        on_click(send_shell_command),
+                        size(small)
+                    ])
                 ])
             ])
         ])
