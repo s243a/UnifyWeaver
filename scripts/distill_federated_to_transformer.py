@@ -284,14 +284,18 @@ class FederatedProjectionWrapper:
         max_entropy = np.log(len(weights))
         return entropy / max_entropy if max_entropy > 0 else 0.0
 
-    def compute_entropy_weights(self, query_embeddings: np.ndarray) -> np.ndarray:
+    def compute_entropy_weights(self, query_embeddings: np.ndarray, clip_range: tuple = (0.5, 2.0)) -> np.ndarray:
         """
         Compute entropy-based importance weights for a batch of queries.
 
         Higher entropy = more uncertain routing = more informative sample.
 
+        Args:
+            query_embeddings: Array of query embeddings
+            clip_range: (min_weight, max_weight) to prevent extreme values
+
         Returns:
-            Array of weights, normalized so mean = 1.0
+            Array of weights, normalized so mean ≈ 1.0, clipped to range
         """
         entropies = np.array([
             self.compute_routing_entropy(q) for q in query_embeddings
@@ -300,7 +304,16 @@ class FederatedProjectionWrapper:
         # Convert entropy to importance weights
         # Higher entropy = higher weight (more informative)
         # Normalize so mean = 1.0 (preserves expected loss scale)
-        weights = entropies / entropies.mean() if entropies.mean() > 0 else np.ones_like(entropies)
+        if entropies.mean() > 0:
+            weights = entropies / entropies.mean()
+        else:
+            weights = np.ones_like(entropies)
+
+        # Clip to prevent extreme weights that destabilize training
+        weights = np.clip(weights, clip_range[0], clip_range[1])
+
+        # Re-normalize after clipping
+        weights = weights / weights.mean()
 
         return weights
 
