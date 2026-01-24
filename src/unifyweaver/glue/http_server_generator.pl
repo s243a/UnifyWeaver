@@ -136,7 +136,7 @@ generate_server_imports(ServiceSpec, typescript, Code) :-
 
     % WebSocket import if needed
     (   WSConfig \= none
-    ->  WSImport = 'import WebSocket, { WebSocketServer } from \'ws\';'
+    ->  WSImport = 'import WebSocket, { WebSocketServer } from \'ws\';\nimport * as pty from \'node-pty\';'
     ;   WSImport = ''
     ),
 
@@ -715,22 +715,15 @@ generate_websocket_handler(ServiceSpec, typescript, Code) :-
     ;   websocket_roles(WSConfig, WSRoles),
         roles_to_ts_array_simple(WSRoles, RolesArray),
         format(atom(Code), '// ============================================================================
-// WebSocket Shell Session
+// WebSocket Shell Session (using node-pty for proper PTY support)
 // ============================================================================
 
-interface ShellSession {
+interface PTYSession {
   ws: WebSocket;
   user: TokenPayload;
-  process: ChildProcessWithoutNullStreams | null;
-  currentDir: string;
-  rootType: string;  // \'sandbox\' | \'project\' | \'home\'
-  rootDir: string;   // Actual root directory path
-  inputBuffer: string;
-  // Command history support
-  history: string[];
-  historyIndex: number;
-  // Escape sequence buffer for arrow keys
-  escapeBuffer: string;
+  pty: pty.IPty | null;
+  rootType: string;
+  rootDir: string;
 }
 
 function setupWebSocket(server: http.Server | https.Server): void {
@@ -740,11 +733,12 @@ function setupWebSocket(server: http.Server | https.Server): void {
     const parsedUrl = url.parse(req.url || \'\', true);
     const token = parsedUrl.query.token as string;
     const rootType = (parsedUrl.query.root as string) || \'sandbox\';
+    const cols = parseInt(parsedUrl.query.cols as string) || 80;
+    const rows = parseInt(parsedUrl.query.rows as string) || 24;
 
     let payload: TokenPayload;
 
     if (AUTH_REQUIRED) {
-      // Auth required - must have valid token
       if (!token) {
         ws.send(JSON.stringify({ type: \'error\', data: \'Authentication required\' }));
         ws.close(1008, \'Authentication required\');
@@ -759,7 +753,6 @@ function setupWebSocket(server: http.Server | https.Server): void {
       }
       payload = verified;
 
-      // Check for required roles
       const requiredRoles = ~w;
       const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
       if (!hasRequiredRole) {
@@ -768,7 +761,6 @@ function setupWebSocket(server: http.Server | https.Server): void {
         return;
       }
     } else {
-      // Auth not required - use guest payload with full access
       payload = {
         sub: \'guest\',
         email: \'guest@local\',
@@ -779,264 +771,94 @@ function setupWebSocket(server: http.Server | https.Server): void {
       };
     }
 
-    console.log(`Shell session started for ${payload.email} (root: ${rootType})`);
-    handleShellConnection(ws, payload, rootType);
+    console.log(`Shell session started for ${payload.email} (root: ${rootType}, ${cols}x${rows})`);
+    handlePTYConnection(ws, payload, rootType, cols, rows);
   });
 }
 
-function handleShellConnection(ws: WebSocket, user: TokenPayload, rootType: string = \'sandbox\'): void {
+function handlePTYConnection(ws: WebSocket, user: TokenPayload, rootType: string, cols: number, rows: number): void {
   const rootDir = getRootDir(rootType);
-  const session: ShellSession = {
+
+  // Spawn a real PTY shell
+  const shell = process.env.SHELL || \'/bin/bash\';
+  const ptyProcess = pty.spawn(shell, [], {
+    name: \'xterm-256color\',
+    cols,
+    rows,
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      HOME: rootDir,
+      TERM: \'xterm-256color\',
+      COLORTERM: \'truecolor\',
+      PS1: `\\\\[\\\\033[32m\\\\]${rootType}\\\\[\\\\033[0m\\\\]:\\\\[\\\\033[34m\\\\]\\\\w\\\\[\\\\033[0m\\\\]\\\\$ `
+    }
+  });
+
+  const session: PTYSession = {
     ws,
     user,
-    process: null,
-    currentDir: rootDir,
+    pty: ptyProcess,
     rootType,
-    rootDir,
-    inputBuffer: \'\',
-    history: [],
-    historyIndex: -1,
-    escapeBuffer: \'\'
+    rootDir
   };
 
-  // Send welcome message
-  const welcome = `\\r\\nConnected to UnifyWeaver Shell\\r\\nUser: ${user.email} [${user.roles.join(\', \')}]\\r\\nRoot: ${rootType} (${rootDir})\\r\\nType \"help\" for commands, \"exit\" to disconnect\\r\\n\\r\\n`;
-  ws.send(JSON.stringify({ type: \'output\', data: welcome }));
-  ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+  // Send PTY output to WebSocket
+  ptyProcess.onData((data: string) => {
+    try {
+      ws.send(JSON.stringify({ type: \'output\', data }));
+    } catch (err) {
+      // WebSocket might be closed
+    }
+  });
 
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    console.log(`PTY exited for ${user.email} (code: ${exitCode}, signal: ${signal})`);
+    try {
+      ws.send(JSON.stringify({ type: \'exit\', code: exitCode, signal }));
+      ws.close();
+    } catch (err) {
+      // WebSocket might already be closed
+    }
+  });
+
+  // Handle WebSocket messages
   ws.on(\'message\', (data: Buffer | string) => {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.type === \'input\') {
-        handleShellInput(session, msg.data);
+
+      if (msg.type === \'input\' && session.pty) {
+        // Send input directly to PTY
+        session.pty.write(msg.data);
+      } else if (msg.type === \'resize\' && session.pty) {
+        // Handle terminal resize
+        const newCols = msg.cols || 80;
+        const newRows = msg.rows || 24;
+        session.pty.resize(newCols, newRows);
+        console.log(`Resized terminal for ${user.email} to ${newCols}x${newRows}`);
       }
     } catch (err) {
-      // Try handling as raw text (for compatibility)
-      const rawData = data.toString();
-      handleShellInput(session, rawData);
+      // Try handling as raw input
+      if (session.pty) {
+        session.pty.write(data.toString());
+      }
     }
   });
 
   ws.on(\'close\', () => {
-    if (session.process) {
-      session.process.kill();
-      session.process = null;
+    if (session.pty) {
+      session.pty.kill();
+      session.pty = null;
     }
     console.log(`Shell session closed for ${user.email}`);
   });
-}
 
-function handleShellInput(session: ShellSession, input: string): void {
-  // Process each character in the input
-  for (const char of input) {
-    processShellChar(session, char);
-  }
-}
-
-function clearInputLine(session: ShellSession): void {
-  const { ws, inputBuffer } = session;
-  if (inputBuffer.length > 0) {
-    // Move cursor back, overwrite with spaces, move back again
-    const backspaces = \'\\b\'.repeat(inputBuffer.length);
-    const spaces = \' \'.repeat(inputBuffer.length);
-    ws.send(JSON.stringify({ type: \'output\', data: backspaces + spaces + backspaces }));
-  }
-}
-
-function processShellChar(session: ShellSession, char: string): void {
-  const { ws } = session;
-
-  // If we are in the middle of an escape sequence
-  if (session.escapeBuffer) {
-    session.escapeBuffer += char;
-
-    // Check for complete escape sequences
-    if (session.escapeBuffer === \'\\x1b[A\') {
-      // Up arrow - previous command in history
-      session.escapeBuffer = \'\';
-      if (session.history.length > 0 && session.historyIndex < session.history.length - 1) {
-        clearInputLine(session);
-        session.historyIndex++;
-        session.inputBuffer = session.history[session.history.length - 1 - session.historyIndex] || \'\';
-        ws.send(JSON.stringify({ type: \'output\', data: session.inputBuffer }));
-      }
-    } else if (session.escapeBuffer === \'\\x1b[B\') {
-      // Down arrow - next command in history
-      session.escapeBuffer = \'\';
-      if (session.historyIndex > 0) {
-        clearInputLine(session);
-        session.historyIndex--;
-        session.inputBuffer = session.history[session.history.length - 1 - session.historyIndex] || \'\';
-        ws.send(JSON.stringify({ type: \'output\', data: session.inputBuffer }));
-      } else if (session.historyIndex === 0) {
-        clearInputLine(session);
-        session.historyIndex = -1;
-        session.inputBuffer = \'\';
-      }
-    } else if (session.escapeBuffer === \'\\x1b[C\') {
-      // Right arrow - currently not supporting cursor movement within line
-      session.escapeBuffer = \'\';
-    } else if (session.escapeBuffer === \'\\x1b[D\') {
-      // Left arrow - currently not supporting cursor movement within line
-      session.escapeBuffer = \'\';
-    } else if (session.escapeBuffer.length > 4) {
-      // Unknown/too long escape sequence, discard
-      session.escapeBuffer = \'\';
+  ws.on(\'error\', (err) => {
+    console.error(`WebSocket error for ${user.email}:`, err.message);
+    if (session.pty) {
+      session.pty.kill();
+      session.pty = null;
     }
-    // Otherwise keep collecting escape sequence characters
-    return;
-  }
-
-  // Escape character - start of escape sequence
-  if (char === \'\\x1b\') {
-    session.escapeBuffer = char;
-    return;
-  }
-
-  // Enter key
-  if (char === \'\\r\' || char === \'\\n\') {
-    ws.send(JSON.stringify({ type: \'output\', data: \'\\r\\n\' }));
-    const command = session.inputBuffer.trim();
-    session.inputBuffer = \'\';
-    session.historyIndex = -1;  // Reset history navigation
-    if (command) {
-      executeShellCommand(session, command);
-    } else {
-      ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-    }
-  }
-  // Backspace
-  else if (char === \'\\x7f\' || char === \'\\b\') {
-    if (session.inputBuffer.length > 0) {
-      session.inputBuffer = session.inputBuffer.slice(0, -1);
-      ws.send(JSON.stringify({ type: \'output\', data: \'\\b \\b\' }));
-    }
-  }
-  // Ctrl+C
-  else if (char === \'\\x03\') {
-    if (session.process) {
-      session.process.kill(\'SIGINT\');
-      session.process = null;
-    }
-    ws.send(JSON.stringify({ type: \'output\', data: \'^C\\r\\n\' }));
-    session.inputBuffer = \'\';
-    session.historyIndex = -1;
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-  }
-  // Ctrl+D (EOF)
-  else if (char === \'\\x04\') {
-    if (session.inputBuffer.length === 0) {
-      ws.send(JSON.stringify({ type: \'output\', data: \'exit\\r\\n\' }));
-      ws.close();
-    }
-  }
-  // Tab (for future tab completion)
-  else if (char === \'\\t\') {
-    // Currently just insert spaces, could add tab completion later
-    session.inputBuffer += \'    \';
-    ws.send(JSON.stringify({ type: \'output\', data: \'    \' }));
-  }
-  // Printable characters
-  else if (char >= \' \' && char <= \'~~\') {
-    session.inputBuffer += char;
-    ws.send(JSON.stringify({ type: \'output\', data: char }));
-  }
-}
-
-function executeShellCommand(session: ShellSession, command: string): void {
-  const { ws } = session;
-
-  // Save to command history (avoid consecutive duplicates)
-  if (command && session.history[session.history.length - 1] !== command) {
-    session.history.push(command);
-    // Keep history to reasonable size
-    if (session.history.length > 100) {
-      session.history.shift();
-    }
-  }
-  session.historyIndex = -1;
-
-  // Built-in: help
-  if (command === \'help\') {
-    const helpText = `\\r\\nUnifyWeaver Shell - Built-in Commands:\\r\\n  help    - Show this help\\r\\n  cd DIR  - Change directory\\r\\n  pwd     - Print working directory\\r\\n  exit    - Disconnect\\r\\n\\r\\nYou can run any shell command. Output is streamed in real-time.\\r\\n\\r\\n`;
-    ws.send(JSON.stringify({ type: \'output\', data: helpText }));
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-    return;
-  }
-
-  // Built-in: exit
-  if (command === \'exit\' || command === \'quit\') {
-    ws.send(JSON.stringify({ type: \'output\', data: \'Goodbye!\\r\\n\' }));
-    ws.close();
-    return;
-  }
-
-  // Built-in: cd
-  if (command.startsWith(\'cd \') || command === \'cd\') {
-    const targetDir = command.slice(3).trim() || session.rootDir;
-    let newDir: string;
-
-    if (path.isAbsolute(targetDir)) {
-      newDir = targetDir;
-    } else if (targetDir === \'~~\') {
-      newDir = session.rootDir;
-    } else if (targetDir.startsWith(\'~~/\')) {
-      newDir = path.join(session.rootDir, targetDir.slice(2));
-    } else {
-      newDir = path.resolve(session.currentDir, targetDir);
-    }
-
-    // Security: ensure within selected root
-    if (!newDir.startsWith(session.rootDir)) {
-      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: Access denied - outside ${session.rootType} root\\x1b[0m\\r\\n` }));
-      ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-      return;
-    }
-
-    if (fs.existsSync(newDir) && fs.statSync(newDir).isDirectory()) {
-      session.currentDir = newDir;
-    } else {
-      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: ${targetDir}: No such directory\\x1b[0m\\r\\n` }));
-    }
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-    return;
-  }
-
-  // Built-in: pwd
-  if (command === \'pwd\') {
-    ws.send(JSON.stringify({ type: \'output\', data: session.currentDir + \'\\r\\n\' }));
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-    return;
-  }
-
-  // Execute shell command
-  const proc = spawn(\'sh\', [\'-c\', command], {
-    cwd: session.currentDir,
-    env: { ...process.env, HOME: session.rootDir, TERM: \'xterm-256color\' }
-  });
-
-  session.process = proc;
-
-  proc.stdout.on(\'data\', (data: Buffer) => {
-    ws.send(JSON.stringify({ type: \'output\', data: data.toString().replace(/\\n/g, \'\\r\\n\') }));
-  });
-
-  proc.stderr.on(\'data\', (data: Buffer) => {
-    ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31m${data.toString().replace(/\\n/g, \'\\r\\n\')}\\x1b[0m` }));
-  });
-
-  proc.on(\'close\', (code: number) => {
-    session.process = null;
-    if (code !== 0) {
-      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[33m[exit code: ${code}]\\x1b[0m\\r\\n` }));
-    }
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-  });
-
-  proc.on(\'error\', (err: Error) => {
-    session.process = null;
-    ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mError: ${err.message}\\x1b[0m\\r\\n` }));
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
   });
 }', [RolesArray])
     ).
