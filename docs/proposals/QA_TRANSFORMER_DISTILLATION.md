@@ -598,6 +598,17 @@ the NTK null space is structurally unlearnable and should be treated as model
 misspecification rather than as evidence of overfitting or underfitting within
 the model class.
 
+**Practical note on GP machinery**: The above is not just intuition—it's
+computable. Treating K_NTK as a GP kernel gives access to standard GP formulas:
+
+- **Posterior mean** m*(x): best prediction at x
+- **Posterior variance** σ²*(x): uncertainty at x
+- **Log marginal likelihood**: -½ yᵀK⁻¹y - ½ log|K| - (n/2)log(2π)
+
+Hyperparameters (including architecture choices) can be selected by maximizing
+this marginal likelihood. We don't need to implement full GP inference to use
+the conceptual framework, but it's available if needed.
+
 **Why This Matters**
 
 Standard model selection (AIC/BIC) asks: "how many parameters?"
