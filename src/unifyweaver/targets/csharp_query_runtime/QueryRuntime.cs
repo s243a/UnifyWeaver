@@ -2223,7 +2223,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         var otherNode = leftIsScan ? join.Right : join.Left;
 
-                        if (!scanIndexCached && _cacheContext is null && !IsRecursiveProbe(otherNode))
+                        if (context.FixpointDepth == 0 && !scanIndexCached && _cacheContext is null && !IsRecursiveProbe(otherNode))
                         {
                             const int TinyProbeUpperBound = 64;
                             if (joinKeyCount == 1 &&

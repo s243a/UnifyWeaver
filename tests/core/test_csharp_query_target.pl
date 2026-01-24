@@ -190,6 +190,7 @@ test_csharp_query_target :-
         verify_both_scan_join_prefers_cached_fact_index,
         verify_multi_constant_pattern_scan_prefers_fact_index,
         verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
+        verify_fixpoint_tiny_probe_scan_uses_scan_index_without_cache_reuse,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
         verify_recursive_selection_scan_uses_scan_index,
@@ -1503,6 +1504,56 @@ verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse :-
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,1', 'STRATEGY_USED:KeyJoinScanIndex=true'],
         [[alice]],
+        HarnessSource).
+
+verify_fixpoint_tiny_probe_scan_uses_scan_index_without_cache_reuse :-
+    Plan = plan{
+        head:predicate{name:test_fixpoint_tiny_probe_scan, arity:2},
+        root:fixpoint{
+            type:fixpoint,
+            head:predicate{name:test_fixpoint_tiny_probe_scan, arity:2},
+            base:relation_scan{type:relation_scan, predicate:predicate{name:test_fp_seed, arity:2}, width:2},
+            recursive:[
+                projection{
+                    type:projection,
+                    input:join{
+                        type:join,
+                        left:relation_scan{type:relation_scan, predicate:predicate{name:test_fp_edge, arity:2}, width:2},
+                        right:projection{
+                            type:projection,
+                            input:relation_scan{type:relation_scan, predicate:predicate{name:test_fp_allowed_src, arity:2}, width:2},
+                            columns:[0],
+                            width:1
+                        },
+                        left_keys:[0],
+                        right_keys:[0],
+                        left_width:2,
+                        right_width:1,
+                        width:3
+                    },
+                    columns:[0,1],
+                    width:2
+                }
+            ],
+            width:2
+        },
+        is_recursive:true,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_fp_seed, arity:2}, facts:[[seed, seed]]},
+            relation{predicate:predicate{name:test_fp_edge, arity:2}, facts:[[a, b], [a, c], [d, e], [x, y]]},
+            relation{predicate:predicate{name:test_fp_allowed_src, arity:2}, facts:[[a, 1], [d, 2]]}
+        ]
+    },
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, [], 'KeyJoinScanIndex', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['seed,seed',
+         'a,b',
+         'a,c',
+         'd,e',
+         'STRATEGY_USED:KeyJoinScanIndex=true'],
+        [],
         HarnessSource).
 
 verify_parameterized_recursive_multi_key_join_strategy_partial_index :-
@@ -3136,6 +3187,52 @@ harness_source_with_strategy_flag(ModuleClass, Params, Strategy, Source) :-
 
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+ 
+   var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+   Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+   ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, Strategy, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\nvar trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: false));
 ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
  string FormatValue(object? value) => value switch
