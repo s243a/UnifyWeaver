@@ -581,6 +581,221 @@ def optimal_architecture(n_flat_heads: int, prefer_h: int = 4, embed_dim: int = 
     return (best_h, best_l)
 
 
+def generate_candidate_architectures(
+    n_clusters: int,
+    embed_dim: int = 768,
+    num_suggestions: int = 3
+) -> List[dict]:
+    """
+    Generate candidate transformer architectures for distillation.
+
+    Produces diverse architectures with different depth/width trade-offs.
+
+    Args:
+        n_clusters: Number of clusters in federated model (minimum capacity)
+        embed_dim: Embedding dimension (H must divide this)
+        num_suggestions: Number of candidates to return
+
+    Returns:
+        List of dicts with 'num_heads', 'num_layers', 'capacity', 'params_estimate'
+    """
+    # Valid H values that divide embed_dim
+    valid_h = [h for h in [2, 3, 4, 6, 8, 12, 16] if embed_dim % h == 0]
+
+    # Generate all valid (H, L) pairs with H^L >= n_clusters
+    candidates = []
+    for h in valid_h:
+        # Find minimum L
+        min_l = max(1, math.ceil(math.log(n_clusters) / math.log(h)))
+        # Consider min_l through min_l + 2 for more diversity
+        for l in range(min_l, min(min_l + 3, 9)):
+            capacity = h ** l
+            if capacity >= n_clusters:
+                # Estimate parameters (rough approximation)
+                # TransformerEncoderLayer: ~4 * d^2 per layer (attention + FFN)
+                params = l * 4 * embed_dim * embed_dim + 2 * embed_dim * embed_dim
+                overhead = capacity - n_clusters
+                candidates.append({
+                    'num_heads': h,
+                    'num_layers': l,
+                    'capacity': capacity,
+                    'overhead': overhead,
+                    'overhead_pct': 100.0 * overhead / n_clusters,
+                    'params_estimate': params,
+                })
+
+    # Remove duplicates
+    seen = set()
+    unique = []
+    for c in candidates:
+        key = (c['num_heads'], c['num_layers'])
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+    candidates = unique
+
+    # Sort by layers (prefer fewer), then by overhead
+    candidates.sort(key=lambda c: (c['num_layers'], c['overhead']))
+
+    # Select diverse candidates across different layer counts
+    # Strategy: prioritize one candidate per layer count, then fill remaining
+    selected = []
+    by_layers = {}
+    for c in candidates:
+        l = c['num_layers']
+        if l not in by_layers:
+            by_layers[l] = []
+        by_layers[l].append(c)
+
+    # Pick best (lowest overhead) from each layer count
+    for l in sorted(by_layers.keys()):
+        if len(selected) >= num_suggestions:
+            break
+        selected.append(by_layers[l][0])
+
+    # If we need more, add second-best from each layer count
+    if len(selected) < num_suggestions:
+        for l in sorted(by_layers.keys()):
+            if len(selected) >= num_suggestions:
+                break
+            if len(by_layers[l]) > 1:
+                selected.append(by_layers[l][1])
+
+    return selected[:num_suggestions]
+
+
+def compute_aic_student_t(
+    residuals: np.ndarray,
+    n_params: int,
+    df: float = None
+) -> dict:
+    """
+    Compute AIC using Student's t-distribution for residuals.
+
+    Theory:
+    -------
+    Standard AIC assumes Gaussian errors: AIC = 2k - 2ln(L)
+
+    For Gaussian with MLE variance σ² = MSE:
+        -2ln(L) = n·ln(2πσ²) + n = n·ln(MSE) + const
+        AIC_gaussian = n·ln(MSE) + 2k
+
+    Student's t is more robust to outliers. The log-likelihood for
+    standardized residuals z_i = (r_i - μ)/σ under t(ν) is:
+
+        ln L = Σ ln(t_pdf(z_i; ν))
+
+    where t_pdf includes the gamma function terms. The key insight
+    is that the RELEVANCE of each error depends on σ:
+    - Same absolute error is less significant if σ is large
+    - Student's t has heavier tails, so outliers penalize less than Gaussian
+
+    We estimate degrees of freedom ν from the data using the method of moments:
+        ν̂ = 2σ⁴ / (σ⁴ - σ²) for excess kurtosis
+
+    Args:
+        residuals: Model residuals (predicted - actual), shape (n,) or (n, d)
+        n_params: Number of model parameters (k)
+        df: Degrees of freedom for t-distribution. If None, estimated from data.
+
+    Returns:
+        Dict with AIC scores and diagnostic info
+    """
+    from scipy import stats
+
+    # Flatten if multi-dimensional
+    if residuals.ndim > 1:
+        residuals = residuals.flatten()
+
+    n = len(residuals)
+    mu = np.mean(residuals)
+    sigma = np.std(residuals)
+
+    # Standardize residuals
+    z = (residuals - mu) / (sigma + 1e-10)
+
+    # Estimate degrees of freedom if not provided
+    if df is None:
+        # Method of moments using kurtosis
+        # For t(ν): kurtosis = 6/(ν-4) for ν > 4
+        # So ν = 4 + 6/kurtosis
+        kurtosis = stats.kurtosis(z)  # Excess kurtosis
+        if kurtosis > 0.1:
+            df = max(3, 4 + 6 / kurtosis)
+        else:
+            df = 30  # Effectively Gaussian for low kurtosis
+        df = min(df, 100)  # Cap at 100
+
+    # Compute log-likelihood under Student's t
+    log_likelihood = np.sum(stats.t.logpdf(z, df=df))
+
+    # Also compute Gaussian log-likelihood for comparison
+    log_likelihood_gaussian = np.sum(stats.norm.logpdf(z))
+
+    # AIC: 2k - 2ln(L)
+    aic_t = 2 * n_params - 2 * log_likelihood
+    aic_gaussian = 2 * n_params - 2 * log_likelihood_gaussian
+
+    # BIC: k·ln(n) - 2ln(L)
+    bic_t = n_params * np.log(n) - 2 * log_likelihood
+    bic_gaussian = n_params * np.log(n) - 2 * log_likelihood_gaussian
+
+    # Normalized versions (per-sample) for easier comparison
+    aic_t_per_sample = aic_t / n
+    aic_gaussian_per_sample = aic_gaussian / n
+
+    return {
+        'aic_t': aic_t,
+        'aic_gaussian': aic_gaussian,
+        'bic_t': bic_t,
+        'bic_gaussian': bic_gaussian,
+        'aic_t_per_sample': aic_t_per_sample,
+        'aic_gaussian_per_sample': aic_gaussian_per_sample,
+        'log_likelihood_t': log_likelihood,
+        'log_likelihood_gaussian': log_likelihood_gaussian,
+        'df_estimated': df,
+        'residual_mean': mu,
+        'residual_std': sigma,
+        'n_samples': n,
+        'n_params': n_params,
+    }
+
+
+def compute_aic_cosine(
+    cosine_sims: np.ndarray,
+    n_params: int,
+    df: float = None
+) -> dict:
+    """
+    Compute AIC using cosine similarity transformed to residuals.
+
+    Transforms cosine similarity to a loss-like quantity for AIC:
+        cosine_loss = 1 - cosine_sim  (range [0, 2])
+
+    Then applies Student's t AIC to this loss.
+
+    Args:
+        cosine_sims: Cosine similarities between predicted and target, shape (n,)
+        n_params: Number of model parameters
+        df: Degrees of freedom (None = estimate from data)
+
+    Returns:
+        Dict with AIC scores and diagnostics
+    """
+    # Transform to loss (lower is better)
+    cosine_loss = 1 - cosine_sims
+
+    # Use as "residuals" for AIC computation
+    result = compute_aic_student_t(cosine_loss, n_params, df=df)
+
+    # Add cosine-specific stats
+    result['mean_cosine_sim'] = float(np.mean(cosine_sims))
+    result['std_cosine_sim'] = float(np.std(cosine_sims))
+    result['mean_cosine_loss'] = float(np.mean(cosine_loss))
+
+    return result
+
+
 # Quick test
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

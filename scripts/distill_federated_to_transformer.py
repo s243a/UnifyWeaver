@@ -55,7 +55,10 @@ from projection_transformer import (
     ProjectionTransformer,
     train_distillation,
     evaluate_equivalence,
-    optimal_architecture
+    optimal_architecture,
+    generate_candidate_architectures,
+    compute_aic_student_t,
+    compute_aic_cosine
 )
 
 
@@ -253,6 +256,16 @@ def main():
                        help="Input federated model (.pkl)")
     parser.add_argument("output_model", type=Path,
                        help="Output transformer model (.pt)")
+    parser.add_argument("--architecture", type=str, default="auto",
+                       choices=["auto", "suggest", "compare"],
+                       help="Architecture selection mode: auto (pick one), suggest (show options), compare (train and select)")
+    parser.add_argument("--num-suggestions", type=int, default=3,
+                       help="Number of architecture suggestions for suggest/compare mode (default: 3)")
+    parser.add_argument("--selection-criterion", type=str, default="aic_t",
+                       choices=["best_cosine", "aic_t", "aic_gaussian", "bic_t"],
+                       help="Selection criterion for compare mode (default: aic_t)")
+    parser.add_argument("--compare-epochs", type=int, default=50,
+                       help="Training epochs for compare mode (default: 50)")
     parser.add_argument("--num-heads", type=int, default=None,
                        help="Attention heads per layer (default: auto from H^L=N)")
     parser.add_argument("--num-layers", type=int, default=None,
@@ -303,9 +316,198 @@ def main():
     print(f"  Embedding dim: {embed_dim}")
     print(f"  Temperature: {federated.temperature}")
 
-    # Calculate optimal architecture if not specified
+    # Handle architecture modes
+    if args.architecture == "suggest":
+        # Just show suggestions and exit
+        candidates = generate_candidate_architectures(n_clusters, embed_dim, args.num_suggestions)
+        print(f"\n{'=' * 60}")
+        print(f"Architecture Suggestions for {n_clusters} clusters")
+        print(f"{'=' * 60}")
+        print(f"\n{'H':>4} {'L':>4} {'H^L':>6} {'Overhead':>10} {'~Params':>12} {'Notes'}")
+        print(f"{'-'*4} {'-'*4} {'-'*6} {'-'*10} {'-'*12} {'-'*20}")
+        for i, c in enumerate(candidates):
+            notes = []
+            if c['num_layers'] == 2:
+                notes.append("shallow, fast")
+            elif c['num_layers'] == 3:
+                notes.append("balanced")
+            elif c['num_layers'] >= 4:
+                notes.append("deep, expressive")
+            if c['overhead_pct'] < 20:
+                notes.append("low overhead")
+            notes_str = ", ".join(notes) if notes else ""
+            print(f"{c['num_heads']:>4} {c['num_layers']:>4} {c['capacity']:>6} "
+                  f"{c['overhead_pct']:>9.1f}% {c['params_estimate']:>11,} {notes_str}")
+        print(f"\nTo train a specific architecture:")
+        print(f"  --num-heads H --num-layers L")
+        print(f"\nTo compare and auto-select:")
+        print(f"  --architecture compare --selection-criterion aic_t")
+        return 0
+
+    if args.architecture == "compare":
+        # Compare mode: train multiple, select by criterion
+        candidates = generate_candidate_architectures(n_clusters, embed_dim, args.num_suggestions)
+        print(f"\n{'=' * 60}")
+        print(f"Comparing {len(candidates)} architectures ({args.compare_epochs} epochs each)")
+        print(f"Selection criterion: {args.selection_criterion}")
+        print(f"{'=' * 60}")
+
+        # Get training data early for comparison
+        query_embeddings = federated.query_embeddings.astype(np.float32)
+        n_samples = len(query_embeddings)
+        n_test = int(n_samples * args.test_split)
+        n_train = n_samples - n_test
+
+        indices = np.random.permutation(n_samples)
+        train_idx = indices[:n_train]
+        test_idx = indices[n_train:]
+
+        train_queries = query_embeddings[train_idx]
+        test_queries = query_embeddings[test_idx]
+
+        ff_dim = args.ff_dim or embed_dim * 2
+
+        comparison_results = []
+
+        for i, c in enumerate(candidates):
+            print(f"\n--- Candidate {i+1}/{len(candidates)}: H={c['num_heads']}, L={c['num_layers']} (capacity={c['capacity']}) ---")
+
+            # Create and train
+            transformer = ProjectionTransformer(
+                embed_dim=embed_dim,
+                num_heads=c['num_heads'],
+                num_layers=c['num_layers'],
+                ff_dim=ff_dim,
+                device=args.device
+            )
+            n_params = transformer.get_info()['total_parameters']
+
+            losses = train_distillation(
+                transformer=transformer,
+                lda_projection=federated,
+                query_embeddings=train_queries,
+                num_epochs=args.compare_epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.lr,
+                log_interval=args.compare_epochs,  # Only log at end
+                cosine_weight=args.cosine_weight
+            )
+
+            # Evaluate
+            results = evaluate_equivalence(transformer, federated, test_queries)
+
+            # Compute AIC
+            cosine_sims = np.array([results['mean_cosine_sim']] * len(test_queries))
+            # Recompute per-sample cosine sims for proper AIC
+            cosine_sims_per_sample = []
+            for q in test_queries:
+                lda_out = federated.project(q)
+                trans_out = transformer.project(q)
+                cos = np.dot(lda_out, trans_out) / (np.linalg.norm(lda_out) * np.linalg.norm(trans_out) + 1e-8)
+                cosine_sims_per_sample.append(cos)
+            cosine_sims_per_sample = np.array(cosine_sims_per_sample)
+
+            aic_result = compute_aic_cosine(cosine_sims_per_sample, n_params)
+
+            comparison_results.append({
+                'candidate': c,
+                'transformer': transformer,
+                'n_params': n_params,
+                'mean_cosine_sim': results['mean_cosine_sim'],
+                'std_cosine_sim': results['std_cosine_sim'],
+                'final_loss': losses[-1],
+                'aic_t': aic_result['aic_t'],
+                'aic_gaussian': aic_result['aic_gaussian'],
+                'bic_t': aic_result['bic_t'],
+                'df_estimated': aic_result['df_estimated'],
+            })
+
+            print(f"  Cosine: {results['mean_cosine_sim']:.4f} ± {results['std_cosine_sim']:.4f}")
+            print(f"  AIC(t): {aic_result['aic_t']:.2f}, AIC(gauss): {aic_result['aic_gaussian']:.2f}")
+            print(f"  Estimated df: {aic_result['df_estimated']:.1f}")
+
+        # Select winner
+        print(f"\n{'=' * 60}")
+        print("Comparison Results")
+        print(f"{'=' * 60}")
+
+        if args.selection_criterion == "best_cosine":
+            comparison_results.sort(key=lambda r: -r['mean_cosine_sim'])
+            criterion_name = "Cosine Similarity"
+        elif args.selection_criterion == "aic_t":
+            comparison_results.sort(key=lambda r: r['aic_t'])
+            criterion_name = "AIC (Student's t)"
+        elif args.selection_criterion == "aic_gaussian":
+            comparison_results.sort(key=lambda r: r['aic_gaussian'])
+            criterion_name = "AIC (Gaussian)"
+        elif args.selection_criterion == "bic_t":
+            comparison_results.sort(key=lambda r: r['bic_t'])
+            criterion_name = "BIC (Student's t)"
+
+        print(f"\nRanked by {criterion_name}:")
+        print(f"\n{'Rank':>4} {'H':>4} {'L':>4} {'Params':>12} {'Cosine':>10} {'AIC(t)':>12} {'AIC(g)':>12}")
+        print(f"{'-'*4} {'-'*4} {'-'*4} {'-'*12} {'-'*10} {'-'*12} {'-'*12}")
+
+        for rank, r in enumerate(comparison_results):
+            c = r['candidate']
+            marker = "***" if rank == 0 else ""
+            print(f"{rank+1:>4} {c['num_heads']:>4} {c['num_layers']:>4} {r['n_params']:>12,} "
+                  f"{r['mean_cosine_sim']:>10.4f} {r['aic_t']:>12.2f} {r['aic_gaussian']:>12.2f} {marker}")
+
+        # Winner
+        winner = comparison_results[0]
+        winner_c = winner['candidate']
+        print(f"\n*** Selected: H={winner_c['num_heads']}, L={winner_c['num_layers']} ***")
+        print(f"    Cosine: {winner['mean_cosine_sim']:.4f}, AIC(t): {winner['aic_t']:.2f}")
+
+        # Retrain winner with full epochs if compare_epochs < epochs
+        if args.compare_epochs < args.epochs:
+            print(f"\nRetraining winner with full {args.epochs} epochs...")
+            transformer = ProjectionTransformer(
+                embed_dim=embed_dim,
+                num_heads=winner_c['num_heads'],
+                num_layers=winner_c['num_layers'],
+                ff_dim=ff_dim,
+                device=args.device
+            )
+            losses = train_distillation(
+                transformer=transformer,
+                lda_projection=federated,
+                query_embeddings=train_queries,
+                num_epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.lr,
+                log_interval=20,
+                cosine_weight=args.cosine_weight
+            )
+            results = evaluate_equivalence(transformer, federated, test_queries)
+            print(f"Final cosine: {results['mean_cosine_sim']:.4f}")
+        else:
+            transformer = winner['transformer']
+
+        # Save and continue to export logic
+        args.num_heads = winner_c['num_heads']
+        args.num_layers = winner_c['num_layers']
+
+        # Save winner
+        args.output_model.parent.mkdir(parents=True, exist_ok=True)
+        transformer.save(str(args.output_model))
+        print(f"\nSaved transformer to {args.output_model}")
+
+        # Export ONNX if requested (same as normal flow)
+        if args.export_onnx:
+            print(f"\nExporting to ONNX...")
+            args.export_onnx.parent.mkdir(parents=True, exist_ok=True)
+            onnx_info = transformer.export_onnx(str(args.export_onnx), opset_version=args.onnx_opset)
+            print(f"  Output: {onnx_info['path']}")
+            print(f"  Size: {onnx_info['size_mb']:.2f} MB")
+
+        print("\nDone!")
+        return 0
+
+    # Calculate optimal architecture if not specified (auto mode)
     if args.num_heads is None or args.num_layers is None:
-        h, l = optimal_architecture(n_clusters, prefer_h=4)
+        h, l = optimal_architecture(n_clusters, prefer_h=4, embed_dim=embed_dim)
         if args.num_heads is None:
             args.num_heads = h
         if args.num_layers is None:

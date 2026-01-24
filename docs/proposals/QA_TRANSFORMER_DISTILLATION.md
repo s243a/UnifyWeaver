@@ -283,12 +283,108 @@ def compute_importance_weight(query_emb, cluster_weights, bert_logits=None):
 | Entropy weighting | Better generalization on boundary cases |
 | BERT uncertainty | More principled importance weights |
 
+## Architecture Selection via AIC
+
+### The Problem
+
+Given K clusters and N questions, how do we choose the transformer architecture (H heads, L layers)?
+
+- Constraint: H^L ≥ K (sufficient capacity)
+- Trade-off: More parameters → better fit but potential overfitting
+- Our experiment: 12², 6³, 4⁴ all valid, but 6³ generalized best
+
+### Akaike Information Criterion (AIC)
+
+Standard AIC balances fit vs complexity:
+```
+AIC = 2k - 2ln(L)
+```
+Where k = parameters, L = likelihood.
+
+For regression with Gaussian errors (variance σ²):
+```
+AIC_gaussian = n·ln(MSE) + 2k
+```
+
+### Student's t Distribution
+
+The Gaussian assumption treats all errors equally. But:
+- An error of 0.1 when σ=0.01 is significant
+- An error of 0.1 when σ=0.5 is noise
+
+Student's t-distribution addresses this by:
+1. Standardizing residuals: z_i = (r_i - μ) / σ
+2. Using heavier tails (more robust to outliers)
+3. The relevance of each error depends on σ
+
+Log-likelihood under t(ν):
+```
+ln L = Σ ln(t_pdf(z_i; ν))
+```
+
+Where t_pdf involves gamma functions and the degrees of freedom ν.
+
+### Estimating Degrees of Freedom
+
+We estimate ν from the data using kurtosis:
+```
+For t(ν): excess_kurtosis = 6/(ν-4)  for ν > 4
+Therefore: ν ≈ 4 + 6/kurtosis
+```
+
+High kurtosis (heavy tails) → low ν → t-distribution
+Low kurtosis (near Gaussian) → high ν → approaches normal
+
+### Implementation
+
+```python
+from scipy import stats
+
+def compute_aic_student_t(residuals, n_params):
+    # Standardize
+    z = (residuals - residuals.mean()) / residuals.std()
+
+    # Estimate df from kurtosis
+    kurtosis = stats.kurtosis(z)
+    df = max(3, 4 + 6/kurtosis) if kurtosis > 0.1 else 30
+
+    # Log-likelihood under t(df)
+    log_L = np.sum(stats.t.logpdf(z, df=df))
+
+    # AIC
+    return 2 * n_params - 2 * log_L
+```
+
+### Usage
+
+```bash
+# Suggest architectures
+python3 scripts/distill_federated_to_transformer.py \
+  models/federated.pkl models/out.pt \
+  --architecture suggest --num-suggestions 4
+
+# Compare with AIC selection
+python3 scripts/distill_federated_to_transformer.py \
+  models/federated.pkl models/out.pt \
+  --architecture compare \
+  --selection-criterion aic_t \
+  --compare-epochs 50
+```
+
+Selection criteria:
+- `best_cosine`: Highest mean cosine similarity
+- `aic_t`: AIC with Student's t (default, balances fit + complexity)
+- `aic_gaussian`: AIC with Gaussian assumption
+- `bic_t`: BIC with Student's t (stronger complexity penalty)
+
 ## Related Work
 
 - **Knowledge Distillation**: Hinton et al. (2015) - temperature-scaled softmax
 - **Importance Sampling**: Prioritizing informative training examples
 - **Uncertainty Quantification**: Gal & Ghahramani (2016) - dropout-based uncertainty
 - **Fisher Information in Deep Learning**: Martens (2014) - natural gradient methods
+- **Model Selection**: Akaike (1974) - AIC; Schwarz (1978) - BIC
+- **Robust Regression**: Lange et al. (1989) - t-distribution for outlier-robust estimation
 
 ## Files
 
