@@ -72,6 +72,17 @@ interface FileEntry {
   modified?: string;
 }
 
+// Upload/Download configuration
+const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100MB
+
+interface MultipartPart {
+  name: string;
+  filename?: string;
+  contentType?: string;
+  data: Buffer;
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -127,6 +138,106 @@ function expandGlobs(args: string[], cwd: string): string[] {
     }
   }
   return expanded;
+}
+
+/**
+ * Simple multipart/form-data parser (no external dependencies)
+ */
+function parseMultipart(body: Buffer, boundary: string): MultipartPart[] {
+  const parts: MultipartPart[] = [];
+  const boundaryBuffer = Buffer.from(`--${boundary}`);
+
+  let start = body.indexOf(boundaryBuffer);
+  if (start === -1) return parts;
+  start += boundaryBuffer.length + 2; // Skip boundary and CRLF
+
+  while (start < body.length) {
+    // Find next boundary
+    let end = body.indexOf(boundaryBuffer, start);
+    if (end === -1) break;
+
+    // Extract part data (minus trailing CRLF before boundary)
+    const partData = body.slice(start, end - 2);
+
+    // Find header/body separator (CRLFCRLF)
+    const headerEnd = partData.indexOf(Buffer.from('\r\n\r\n'));
+    if (headerEnd === -1) {
+      start = end + boundaryBuffer.length + 2;
+      continue;
+    }
+
+    const headers = partData.slice(0, headerEnd).toString();
+    const content = partData.slice(headerEnd + 4);
+
+    // Parse Content-Disposition header
+    const nameMatch = headers.match(/name="([^"]+)"/);
+    const filenameMatch = headers.match(/filename="([^"]+)"/);
+    const contentTypeMatch = headers.match(/Content-Type:\s*([^\r\n]+)/i);
+
+    if (nameMatch) {
+      parts.push({
+        name: nameMatch[1],
+        filename: filenameMatch?.[1],
+        contentType: contentTypeMatch?.[1],
+        data: content
+      });
+    }
+
+    // Move to next part
+    start = end + boundaryBuffer.length;
+    // Check for end boundary (--)
+    if (body.slice(start, start + 2).toString() === '--') break;
+    start += 2; // Skip CRLF after boundary
+  }
+
+  return parts;
+}
+
+/**
+ * Get MIME type from filename extension
+ */
+function getMimeType(filename: string): string {
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.txt': 'text/plain',
+    '.html': 'text/html',
+    '.htm': 'text/html',
+    '.css': 'text/css',
+    '.js': 'application/javascript',
+    '.mjs': 'application/javascript',
+    '.json': 'application/json',
+    '.xml': 'application/xml',
+    '.pdf': 'application/pdf',
+    '.zip': 'application/zip',
+    '.tar': 'application/x-tar',
+    '.gz': 'application/gzip',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.ts': 'text/plain',
+    '.tsx': 'text/plain',
+    '.pl': 'text/plain',
+    '.py': 'text/plain',
+    '.rb': 'text/plain',
+    '.rs': 'text/plain',
+    '.go': 'text/plain',
+    '.java': 'text/plain',
+    '.c': 'text/plain',
+    '.cpp': 'text/plain',
+    '.h': 'text/plain',
+    '.md': 'text/markdown',
+    '.yaml': 'text/yaml',
+    '.yml': 'text/yaml'
+  };
+  return mimeTypes[ext] || 'application/octet-stream';
 }
 
 /**
@@ -532,6 +643,162 @@ async function handle_feedback(
   });
 }
 
+/**
+ * POST /upload - upload endpoint
+ */
+async function handle_upload(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  body: RequestBody,
+  user: TokenPayload | null
+): Promise<void> {
+  // Requires roles: [admin,shell]
+  if (AUTH_REQUIRED) {
+    if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
+    const hasRequiredRole = ['admin', 'shell'].some(r => user.roles.includes(r as Role));
+    if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
+  }
+
+  // File upload handler - expects multipart/form-data
+  const contentType = req.headers['content-type'] || '';
+
+  if (!contentType.includes('multipart/form-data')) {
+    return sendJSON(res, 400, { success: false, error: 'Content-Type must be multipart/form-data' });
+  }
+
+  const boundary = contentType.split('boundary=')[1];
+  if (!boundary) {
+    return sendJSON(res, 400, { success: false, error: 'Missing boundary in Content-Type' });
+  }
+
+  // Read raw body for multipart parsing
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+    if (Buffer.concat(chunks).length > MAX_UPLOAD_SIZE) {
+      return sendJSON(res, 413, { success: false, error: 'File too large (max 50MB)' });
+    }
+  }
+  const rawBody = Buffer.concat(chunks);
+
+  // Parse destination from form fields
+  const parts = parseMultipart(rawBody, boundary);
+  let destination = '.';
+  let root = 'sandbox';
+  const uploaded: Array<{ name: string; size: number }> = [];
+
+  // First pass: get form fields
+  for (const part of parts) {
+    if (!part.filename && part.name === 'destination') {
+      destination = part.data.toString().trim() || '.';
+    }
+    if (!part.filename && part.name === 'root') {
+      root = part.data.toString().trim() || 'sandbox';
+    }
+  }
+
+  // Resolve destination directory
+  const destDir = resolveWorkingDir(destination, root);
+  const rootDir = getRootDir(root);
+
+  // Second pass: save files
+  for (const part of parts) {
+    if (part.filename) {
+      // Sanitize filename
+      const safeName = path.basename(part.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const filePath = path.join(destDir, safeName);
+
+      // Security: ensure path stays within root
+      if (!filePath.startsWith(rootDir)) {
+        return sendJSON(res, 403, { success: false, error: 'Destination path outside allowed root' });
+      }
+
+      // Ensure destination directory exists
+      if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+      }
+
+      fs.writeFileSync(filePath, part.data);
+      uploaded.push({ name: safeName, size: part.data.length });
+    }
+  }
+
+  if (uploaded.length === 0) {
+    return sendJSON(res, 400, { success: false, error: 'No files uploaded' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      uploaded,
+      count: uploaded.length,
+      destination: path.relative(rootDir, destDir) || '.',
+      root
+    }
+  });
+}
+
+/**
+ * GET /download - download endpoint
+ */
+async function handle_download(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  body: RequestBody,
+  user: TokenPayload | null
+): Promise<void> {
+  // Requires roles: [user,admin,shell]
+  if (AUTH_REQUIRED) {
+    if (!user) return sendJSON(res, 401, { success: false, error: 'Authentication required' });
+    const hasRequiredRole = ['user', 'admin', 'shell'].some(r => user.roles.includes(r as Role));
+    if (!hasRequiredRole) return sendJSON(res, 403, { success: false, error: 'Insufficient permissions' });
+  }
+
+  // File download handler
+  // Support both query params (GET) and body params
+  const filePath = (body.path as string) || (url.parse(req.url || '', true).query.path as string);
+  const root = (body.root as string) || (url.parse(req.url || '', true).query.root as string) || 'sandbox';
+
+  if (!filePath) {
+    return sendJSON(res, 400, { success: false, error: 'Missing path parameter' });
+  }
+
+  const rootDir = getRootDir(root);
+  const fullPath = path.resolve(rootDir, filePath);
+
+  // Security: ensure path stays within root
+  if (!fullPath.startsWith(rootDir)) {
+    return sendJSON(res, 403, { success: false, error: 'Path outside allowed root' });
+  }
+
+  if (!fs.existsSync(fullPath)) {
+    return sendJSON(res, 404, { success: false, error: 'File not found' });
+  }
+
+  const stats = fs.statSync(fullPath);
+  if (stats.isDirectory()) {
+    return sendJSON(res, 400, { success: false, error: 'Cannot download directory' });
+  }
+
+  // Check file size limit
+  if (stats.size > MAX_DOWNLOAD_SIZE) {
+    return sendJSON(res, 413, { success: false, error: 'File too large for download (max 100MB)' });
+  }
+
+  const filename = path.basename(fullPath);
+  const mimeType = getMimeType(filename);
+
+  res.writeHead(200, {
+    'Content-Type': mimeType,
+    'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+    'Content-Length': stats.size,
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  const stream = fs.createReadStream(fullPath);
+  stream.pipe(res);
+}
+
 function getHTMLInterface(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -837,6 +1104,7 @@ function getHTMLInterface(): string {
 <div class="tabs">
   <div style="display: flex; flex-direction: row; gap: 5px; justify-content: flex-start; align-items: stretch; flex-wrap: wrap; ">
     <button class="tab" :class="{ active: tab === 'browse' }" @click="tab = 'browse'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">📁 Browse</button>
+    <button class="tab" :class="{ active: tab === 'upload' }" @click="tab = 'upload'" v-if="!authRequired || user?.roles?.includes('admin') || user?.roles?.includes('shell')">📤 Upload</button>
     <button class="tab" :class="{ active: tab === 'grep' }" @click="tab = 'grep'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">🔍 Grep</button>
     <button class="tab" :class="{ active: tab === 'find' }" @click="tab = 'find'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">📂 Find</button>
     <button class="tab" :class="{ active: tab === 'cat' }" @click="tab = 'cat'" v-if="!authRequired || user?.roles?.includes('user') || user?.roles?.includes('admin') || user?.roles?.includes('shell')">📄 Cat</button>
@@ -884,11 +1152,52 @@ function getHTMLInterface(): string {
             <div style="display: flex; flex-direction: column; gap: 10px; align-items: stretch; ">
               <span style="muted">Selected file:</span>
               <code>{{ browse.selected }}</code>
-              <div style="display: flex; flex-direction: row; gap: 10px; justify-content: flex-start; align-items: stretch; ; ">
+              <div style="display: flex; flex-direction: row; gap: 10px; justify-content: flex-start; align-items: stretch; flex-wrap: wrap; ">
                 <button @click="viewFile" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">View Contents</button>
+                <button @click="downloadFile" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">📥 Download</button>
                 <button @click="searchHere" style="padding: 10px 20px; background: #16213e; border: none; color: #fff; cursor: pointer; border-radius: 5px">Search Here</button>
               </div>
             </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+  <div v-else-if="tab === 'upload'" class="panel">
+    <div class="panel">
+      <div style="display: flex; flex-direction: column; gap: 15px; align-items: stretch; ">
+        <div class="form-group">
+          <label>Destination Path (relative to root, empty = working dir)</label>
+          <input type="text" v-model="upload.destination" placeholder="e.g., uploads/ or leave empty" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+        </div>
+        <div id="upload_dropzone" class="upload_dropzone" style="border: 2px dashed #0f3460; padding: 40px; text-align: center; cursor: pointer; border-radius: 8px; transition: border-color 0.2s;" @click="triggerFileInput">
+          <div style="display: flex; flex-direction: column; gap: 10px; align-items: center; ">
+            <span style="font-size: 18px;">📁 Click to select files</span>
+            <span style="muted">or drag and drop</span>
+            <span style="muted">Max 50MB per file</span>
+          </div>
+        </div>
+        <!-- Component: file_input [id(upload_file_input),multiple(true),on_change(handle_file_select),style(display: none;)] -->
+        <template v-if="upload.selectedFiles.length">
+          <div class="selected_files" style="background: #16213e; padding: 15px; border-radius: 5px;">
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: stretch; ">
+              <span style="muted">Selected files:</span>
+              <div v-for="file in upload.selectedFiles" :key="file">
+              <div style="display: flex; flex-direction: row; ; justify-content: space-between; align-items: center; ; ">
+                <span>{{ file.name }}</span>
+                <div style="display: flex; flex-direction: row; gap: 10px; justify-content: flex-start; align-items: center; ; ">
+                  <span style="muted">{{ formatSize(file.size) }}</span>
+                  <button @click="removeUploadFile(file.name)" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px">✕</button>
+                </div>
+              </div>
+              </div>
+            </div>
+          </div>
+        </template>
+        <button @click="doUpload" :disabled="upload.uploading || !upload.selectedFiles.length" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">{{ upload.uploading ? 'Uploading...' : '📤 Upload Files' }}</button>
+        <template v-if="upload.result">
+          <div class="upload_result">
+            <span>{{ upload.result }}</span>
           </div>
         </template>
       </div>
@@ -1097,6 +1406,15 @@ const app = createApp({
     });
     const shellTextMode = ref(true);  // true = text mode, false = capture mode
 
+    // Upload state
+    const upload = reactive({
+      destination: "",
+      selectedFiles: [],
+      uploading: false,
+      result: "",
+      resultType: "info"
+    });
+
     // API helpers
     const apiCall = async (endpoint, method = "GET", body = null) => {
       const headers = { "Content-Type": "application/json" };
@@ -1191,6 +1509,100 @@ const app = createApp({
     const searchHere = () => {
       grep.path = browse.path;
       tab.value = "grep";
+    };
+
+    // Download file from browse panel
+    const downloadFile = async () => {
+      if (!browse.selected) return;
+
+      const downloadUrl = \`/download?path=\${encodeURIComponent(browse.selected)}&root=\${browseRoot.value}\`;
+
+      try {
+        const response = await fetch(downloadUrl, {
+          headers: token.value ? { "Authorization": \`Bearer \${token.value}\` } : {}
+        });
+
+        if (!response.ok) {
+          const err = await response.json();
+          results.value = "Download failed: " + (err.error || response.statusText);
+          return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = browse.selected.split("/").pop() || "download";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        results.value = "Download failed: " + err.message;
+      }
+    };
+
+    // Upload methods
+    const triggerFileInput = () => {
+      document.getElementById("upload_file_input")?.click();
+    };
+
+    const handleFileSelect = (e) => {
+      const files = e.target.files;
+      upload.selectedFiles = Array.from(files).map(f => ({
+        name: f.name,
+        size: f.size,
+        file: f
+      }));
+      upload.result = "";
+    };
+
+    const removeUploadFile = (filename) => {
+      upload.selectedFiles = upload.selectedFiles.filter(f => f.name !== filename);
+    };
+
+    const doUpload = async () => {
+      if (!upload.selectedFiles.length) return;
+
+      upload.uploading = true;
+      upload.result = "";
+
+      const formData = new FormData();
+      formData.append("destination", upload.destination || workingDir.value);
+      formData.append("root", browseRoot.value);
+
+      for (const item of upload.selectedFiles) {
+        formData.append("files", item.file);
+      }
+
+      try {
+        const response = await fetch("/upload", {
+          method: "POST",
+          headers: token.value ? { "Authorization": \`Bearer \${token.value}\` } : {},
+          body: formData
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          upload.result = \`Uploaded \${result.data.count} file(s) to \${result.data.destination}\`;
+          upload.resultType = "success";
+          upload.selectedFiles = [];
+          // Clear file input
+          const fileInput = document.getElementById("upload_file_input");
+          if (fileInput) fileInput.value = "";
+          // Refresh browse if in browse tab
+          if (tab.value === "browse") loadBrowse();
+        } else {
+          upload.result = result.error || "Upload failed";
+          upload.resultType = "error";
+        }
+      } catch (err) {
+        upload.result = err.message;
+        upload.resultType = "error";
+      }
+
+      upload.uploading = false;
     };
 
     // Search methods
@@ -1538,7 +1950,7 @@ const app = createApp({
       }
     };
 
-    const downloadFile = () => {
+    const downloadResults = () => {
       if (!results.value) return;
       const filename = cat.path.split("/").pop() || "file.txt";
       const blob = new Blob([results.value], { type: "text/plain" });
@@ -1586,13 +1998,14 @@ const app = createApp({
     return {
       authRequired, user, loginEmail, loginPassword, loginError, loading, token,
       tab, workingDir, browseRoot, results, resultCount, detectedLanguage, resultHeader,
-      browse, grep, find, cat, exec, feedback, shell, shellTextMode, xtermAvailable,
+      browse, grep, find, cat, exec, feedback, shell, shellTextMode, xtermAvailable, upload,
       doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile,
       handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
-      doGrep, doFind, doCat, doExec, doFeedback,
+      doGrep, doFind, doCat, doExec, doFeedback, doUpload,
       connectShell, disconnectShell, sendShellCommand, clearShell,
       toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
-      initXterm, formatSize, clearResults, copyResults, downloadFile
+      initXterm, formatSize, clearResults, copyResults, downloadResults,
+      downloadFile, triggerFileInput, handleFileSelect, removeUploadFile
     };
   }
 });
@@ -1704,6 +2117,12 @@ async function handleRequest(
     }
     if (method === 'POST' && pathname === '/feedback') {
       return handle_feedback(req, res, body, user);
+    }
+    if (method === 'POST' && pathname === '/upload') {
+      return handle_upload(req, res, body, user);
+    }
+    if (method === 'GET' && pathname === '/download') {
+      return handle_download(req, res, body, user);
     }
 
     // Serve HTML interface at root

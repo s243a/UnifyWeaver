@@ -520,6 +520,14 @@ disabled_to_vue(not(X), VueCond) :- !,
     format(atom(VueCond), '!~w', [VueX]).
 disabled_to_vue(eq(A, B), VueCond) :- !, condition_to_vue(eq(A, B), VueCond).
 disabled_to_vue(not_eq(A, B), VueCond) :- !, condition_to_vue(not_eq(A, B), VueCond).
+disabled_to_vue(or(A, B), VueCond) :- !,
+    disabled_to_vue(A, VA),
+    disabled_to_vue(B, VB),
+    format(atom(VueCond), '~w || ~w', [VA, VB]).
+disabled_to_vue(and(A, B), VueCond) :- !,
+    disabled_to_vue(A, VA),
+    disabled_to_vue(B, VB),
+    format(atom(VueCond), '~w && ~w', [VA, VB]).
 disabled_to_vue(X, X) :- atom(X), !.
 disabled_to_vue(X, Result) :- term_to_atom(X, Result).
 

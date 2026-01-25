@@ -626,6 +626,15 @@ const app = createApp({
     });
     const shellTextMode = ref(true);  // true = text mode, false = capture mode
 
+    // Upload state
+    const upload = reactive({
+      destination: "",
+      selectedFiles: [],
+      uploading: false,
+      result: "",
+      resultType: "info"
+    });
+
     // API helpers
     const apiCall = async (endpoint, method = "GET", body = null) => {
       const headers = { "Content-Type": "application/json" };
@@ -720,6 +729,100 @@ const app = createApp({
     const searchHere = () => {
       grep.path = browse.path;
       tab.value = "grep";
+    };
+
+    // Download file from browse panel
+    const downloadFile = async () => {
+      if (!browse.selected) return;
+
+      const downloadUrl = `/download?path=${encodeURIComponent(browse.selected)}&root=${browseRoot.value}`;
+
+      try {
+        const response = await fetch(downloadUrl, {
+          headers: token.value ? { "Authorization": `Bearer ${token.value}` } : {}
+        });
+
+        if (!response.ok) {
+          const err = await response.json();
+          results.value = "Download failed: " + (err.error || response.statusText);
+          return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = browse.selected.split("/").pop() || "download";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        results.value = "Download failed: " + err.message;
+      }
+    };
+
+    // Upload methods
+    const triggerFileInput = () => {
+      document.getElementById("upload_file_input")?.click();
+    };
+
+    const handleFileSelect = (e) => {
+      const files = e.target.files;
+      upload.selectedFiles = Array.from(files).map(f => ({
+        name: f.name,
+        size: f.size,
+        file: f
+      }));
+      upload.result = "";
+    };
+
+    const removeUploadFile = (filename) => {
+      upload.selectedFiles = upload.selectedFiles.filter(f => f.name !== filename);
+    };
+
+    const doUpload = async () => {
+      if (!upload.selectedFiles.length) return;
+
+      upload.uploading = true;
+      upload.result = "";
+
+      const formData = new FormData();
+      formData.append("destination", upload.destination || workingDir.value);
+      formData.append("root", browseRoot.value);
+
+      for (const item of upload.selectedFiles) {
+        formData.append("files", item.file);
+      }
+
+      try {
+        const response = await fetch("/upload", {
+          method: "POST",
+          headers: token.value ? { "Authorization": `Bearer ${token.value}` } : {},
+          body: formData
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          upload.result = `Uploaded ${result.data.count} file(s) to ${result.data.destination}`;
+          upload.resultType = "success";
+          upload.selectedFiles = [];
+          // Clear file input
+          const fileInput = document.getElementById("upload_file_input");
+          if (fileInput) fileInput.value = "";
+          // Refresh browse if in browse tab
+          if (tab.value === "browse") loadBrowse();
+        } else {
+          upload.result = result.error || "Upload failed";
+          upload.resultType = "error";
+        }
+      } catch (err) {
+        upload.result = err.message;
+        upload.resultType = "error";
+      }
+
+      upload.uploading = false;
     };
 
     // Search methods
@@ -1067,7 +1170,7 @@ const app = createApp({
       }
     };
 
-    const downloadFile = () => {
+    const downloadResults = () => {
       if (!results.value) return;
       const filename = cat.path.split("/").pop() || "file.txt";
       const blob = new Blob([results.value], { type: "text/plain" });
@@ -1115,13 +1218,14 @@ const app = createApp({
     return {
       authRequired, user, loginEmail, loginPassword, loginError, loading, token,
       tab, workingDir, browseRoot, results, resultCount, detectedLanguage, resultHeader,
-      browse, grep, find, cat, exec, feedback, shell, shellTextMode, xtermAvailable,
+      browse, grep, find, cat, exec, feedback, shell, shellTextMode, xtermAvailable, upload,
       doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile,
       handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
-      doGrep, doFind, doCat, doExec, doFeedback,
+      doGrep, doFind, doCat, doExec, doFeedback, doUpload,
       connectShell, disconnectShell, sendShellCommand, clearShell,
       toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
-      initXterm, formatSize, clearResults, copyResults, downloadFile
+      initXterm, formatSize, clearResults, copyResults, downloadResults,
+      downloadFile, triggerFileInput, handleFileSelect, removeUploadFile
     };
   }
 });

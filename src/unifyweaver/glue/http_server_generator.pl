@@ -219,6 +219,17 @@ interface FileEntry {
   modified?: string;
 }
 
+// Upload/Download configuration
+const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100MB
+
+interface MultipartPart {
+  name: string;
+  filename?: string;
+  contentType?: string;
+  data: Buffer;
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -274,6 +285,106 @@ function expandGlobs(args: string[], cwd: string): string[] {
     }
   }
   return expanded;
+}
+
+/**
+ * Simple multipart/form-data parser (no external dependencies)
+ */
+function parseMultipart(body: Buffer, boundary: string): MultipartPart[] {
+  const parts: MultipartPart[] = [];
+  const boundaryBuffer = Buffer.from(`--${boundary}`);
+
+  let start = body.indexOf(boundaryBuffer);
+  if (start === -1) return parts;
+  start += boundaryBuffer.length + 2; // Skip boundary and CRLF
+
+  while (start < body.length) {
+    // Find next boundary
+    let end = body.indexOf(boundaryBuffer, start);
+    if (end === -1) break;
+
+    // Extract part data (minus trailing CRLF before boundary)
+    const partData = body.slice(start, end - 2);
+
+    // Find header/body separator (CRLFCRLF)
+    const headerEnd = partData.indexOf(Buffer.from(\'\\r\\n\\r\\n\'));
+    if (headerEnd === -1) {
+      start = end + boundaryBuffer.length + 2;
+      continue;
+    }
+
+    const headers = partData.slice(0, headerEnd).toString();
+    const content = partData.slice(headerEnd + 4);
+
+    // Parse Content-Disposition header
+    const nameMatch = headers.match(/name="([^"]+)"/);
+    const filenameMatch = headers.match(/filename="([^"]+)"/);
+    const contentTypeMatch = headers.match(/Content-Type:\\s*([^\\r\\n]+)/i);
+
+    if (nameMatch) {
+      parts.push({
+        name: nameMatch[1],
+        filename: filenameMatch?.[1],
+        contentType: contentTypeMatch?.[1],
+        data: content
+      });
+    }
+
+    // Move to next part
+    start = end + boundaryBuffer.length;
+    // Check for end boundary (--)
+    if (body.slice(start, start + 2).toString() === \'--\') break;
+    start += 2; // Skip CRLF after boundary
+  }
+
+  return parts;
+}
+
+/**
+ * Get MIME type from filename extension
+ */
+function getMimeType(filename: string): string {
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    \'.txt\': \'text/plain\',
+    \'.html\': \'text/html\',
+    \'.htm\': \'text/html\',
+    \'.css\': \'text/css\',
+    \'.js\': \'application/javascript\',
+    \'.mjs\': \'application/javascript\',
+    \'.json\': \'application/json\',
+    \'.xml\': \'application/xml\',
+    \'.pdf\': \'application/pdf\',
+    \'.zip\': \'application/zip\',
+    \'.tar\': \'application/x-tar\',
+    \'.gz\': \'application/gzip\',
+    \'.png\': \'image/png\',
+    \'.jpg\': \'image/jpeg\',
+    \'.jpeg\': \'image/jpeg\',
+    \'.gif\': \'image/gif\',
+    \'.svg\': \'image/svg+xml\',
+    \'.webp\': \'image/webp\',
+    \'.ico\': \'image/x-icon\',
+    \'.mp3\': \'audio/mpeg\',
+    \'.wav\': \'audio/wav\',
+    \'.mp4\': \'video/mp4\',
+    \'.webm\': \'video/webm\',
+    \'.ts\': \'text/plain\',
+    \'.tsx\': \'text/plain\',
+    \'.pl\': \'text/plain\',
+    \'.py\': \'text/plain\',
+    \'.rb\': \'text/plain\',
+    \'.rs\': \'text/plain\',
+    \'.go\': \'text/plain\',
+    \'.java\': \'text/plain\',
+    \'.c\': \'text/plain\',
+    \'.cpp\': \'text/plain\',
+    \'.h\': \'text/plain\',
+    \'.md\': \'text/markdown\',
+    \'.yaml\': \'text/yaml\',
+    \'.yml\': \'text/yaml\'
+  };
+  return mimeTypes[ext] || \'application/octet-stream\';
 }'.
 
 %% ============================================================================
@@ -339,6 +450,8 @@ handler_type_from_name(find, find) :- !.
 handler_type_from_name(cat, cat) :- !.
 handler_type_from_name(exec, exec) :- !.
 handler_type_from_name(feedback, feedback) :- !.
+handler_type_from_name(upload, upload) :- !.
+handler_type_from_name(download, download) :- !.
 handler_type_from_name(_, custom).
 
 %! generate_handler_body(+Type, +Name, -Body) is det
@@ -584,6 +697,130 @@ generate_handler_body(feedback, _, Body) :-
     success: true,
     data: { recorded: true, timestamp, file: FEEDBACK_FILE }
   });'.
+
+generate_handler_body(upload, _, Body) :-
+    Body = '  // File upload handler - expects multipart/form-data
+  const contentType = req.headers[\'content-type\'] || \'\';
+
+  if (!contentType.includes(\'multipart/form-data\')) {
+    return sendJSON(res, 400, { success: false, error: \'Content-Type must be multipart/form-data\' });
+  }
+
+  const boundary = contentType.split(\'boundary=\')[1];
+  if (!boundary) {
+    return sendJSON(res, 400, { success: false, error: \'Missing boundary in Content-Type\' });
+  }
+
+  // Read raw body for multipart parsing
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+    if (Buffer.concat(chunks).length > MAX_UPLOAD_SIZE) {
+      return sendJSON(res, 413, { success: false, error: \'File too large (max 50MB)\' });
+    }
+  }
+  const rawBody = Buffer.concat(chunks);
+
+  // Parse destination from form fields
+  const parts = parseMultipart(rawBody, boundary);
+  let destination = \'.\';
+  let root = \'sandbox\';
+  const uploaded: Array<{ name: string; size: number }> = [];
+
+  // First pass: get form fields
+  for (const part of parts) {
+    if (!part.filename && part.name === \'destination\') {
+      destination = part.data.toString().trim() || \'.\';
+    }
+    if (!part.filename && part.name === \'root\') {
+      root = part.data.toString().trim() || \'sandbox\';
+    }
+  }
+
+  // Resolve destination directory
+  const destDir = resolveWorkingDir(destination, root);
+  const rootDir = getRootDir(root);
+
+  // Second pass: save files
+  for (const part of parts) {
+    if (part.filename) {
+      // Sanitize filename
+      const safeName = path.basename(part.filename).replace(/[^a-zA-Z0-9._-]/g, \'_\');
+      const filePath = path.join(destDir, safeName);
+
+      // Security: ensure path stays within root
+      if (!filePath.startsWith(rootDir)) {
+        return sendJSON(res, 403, { success: false, error: \'Destination path outside allowed root\' });
+      }
+
+      // Ensure destination directory exists
+      if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+      }
+
+      fs.writeFileSync(filePath, part.data);
+      uploaded.push({ name: safeName, size: part.data.length });
+    }
+  }
+
+  if (uploaded.length === 0) {
+    return sendJSON(res, 400, { success: false, error: \'No files uploaded\' });
+  }
+
+  sendJSON(res, 200, {
+    success: true,
+    data: {
+      uploaded,
+      count: uploaded.length,
+      destination: path.relative(rootDir, destDir) || \'.\',
+      root
+    }
+  });'.
+
+generate_handler_body(download, _, Body) :-
+    Body = '  // File download handler
+  // Support both query params (GET) and body params
+  const filePath = (body.path as string) || (url.parse(req.url || \'\', true).query.path as string);
+  const root = (body.root as string) || (url.parse(req.url || \'\', true).query.root as string) || \'sandbox\';
+
+  if (!filePath) {
+    return sendJSON(res, 400, { success: false, error: \'Missing path parameter\' });
+  }
+
+  const rootDir = getRootDir(root);
+  const fullPath = path.resolve(rootDir, filePath);
+
+  // Security: ensure path stays within root
+  if (!fullPath.startsWith(rootDir)) {
+    return sendJSON(res, 403, { success: false, error: \'Path outside allowed root\' });
+  }
+
+  if (!fs.existsSync(fullPath)) {
+    return sendJSON(res, 404, { success: false, error: \'File not found\' });
+  }
+
+  const stats = fs.statSync(fullPath);
+  if (stats.isDirectory()) {
+    return sendJSON(res, 400, { success: false, error: \'Cannot download directory\' });
+  }
+
+  // Check file size limit
+  if (stats.size > MAX_DOWNLOAD_SIZE) {
+    return sendJSON(res, 413, { success: false, error: \'File too large for download (max 100MB)\' });
+  }
+
+  const filename = path.basename(fullPath);
+  const mimeType = getMimeType(filename);
+
+  res.writeHead(200, {
+    \'Content-Type\': mimeType,
+    \'Content-Disposition\': `attachment; filename="${encodeURIComponent(filename)}"`,
+    \'Content-Length\': stats.size,
+    \'Access-Control-Allow-Origin\': \'*\'
+  });
+
+  const stream = fs.createReadStream(fullPath);
+  stream.pipe(res);'.
 
 generate_handler_body(custom, Name, Body) :-
     format(atom(Body), '  // TODO: Implement ~w logic

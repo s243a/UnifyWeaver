@@ -22,6 +22,7 @@
     user_header_spec/1,
     working_dir_bar_spec/1,
     browse_panel_spec/1,
+    upload_panel_spec/1,
     grep_panel_spec/1,
     find_panel_spec/1,
     cat_panel_spec/1,
@@ -82,6 +83,7 @@ http_cli_theme(theme(http_cli, [
 %  Define the available tabs in the interface.
 http_cli_tabs([
     tab(browse, "Browse", [icon('📁'), roles([user, admin, shell])]),
+    tab(upload, "Upload", [icon('📤'), roles([admin, shell])]),
     tab(grep, "Grep", [icon('🔍'), roles([user, admin, shell])]),
     tab(find, "Find", [icon('📂'), roles([user, admin, shell])]),
     tab(cat, "Cat", [icon('📄'), roles([user, admin, shell])]),
@@ -125,6 +127,7 @@ http_cli_interface(
                 container(outlet, [id(tab_content)], [
                     panel_switch(active_tab, [
                         case(browse, [use_spec(browse_panel_spec)]),
+                        case(upload, [use_spec(upload_panel_spec)]),
                         case(grep, [use_spec(grep_panel_spec)]),
                         case(find, [use_spec(find_panel_spec)]),
                         case(cat, [use_spec(cat_panel_spec)]),
@@ -320,11 +323,94 @@ browse_panel_spec(
                     layout(stack, [spacing(10)], [
                         component(text, [content("Selected file:"), style(muted), size(12)]),
                         component(code, [content(var('browse.selected'))]),
-                        layout(flex, [gap(10)], [
+                        layout(flex, [gap(10), wrap(true)], [
                             component(button, [label("View Contents"), on_click(view_file)]),
+                            component(button, [label("📥 Download"), on_click(download_file), variant(primary)]),
                             component(button, [label("Search Here"), on_click(search_here), variant(secondary)])
                         ])
                     ])
+                ])
+            ])
+        ])
+    ])
+).
+
+%! upload_panel_spec(-Spec) is det
+%  Upload panel for uploading files to the server.
+%  Destination defaults to current working directory.
+upload_panel_spec(
+    container(panel, [class(panel)], [
+        layout(stack, [spacing(15)], [
+            % Destination path input
+            component(text_input, [
+                label("Destination Path (relative to root, empty = working dir)"),
+                bind('upload.destination'),
+                placeholder("e.g., uploads/ or leave empty")
+            ]),
+
+            % File drop zone / selector
+            container(panel, [
+                id(upload_dropzone),
+                class(upload_dropzone),
+                on_click(trigger_file_input),
+                style("border: 2px dashed #0f3460; padding: 40px; text-align: center; cursor: pointer; border-radius: 8px; transition: border-color 0.2s;")
+            ], [
+                layout(stack, [spacing(10), align(center)], [
+                    component(text, [content("📁 Click to select files"), style("font-size: 18px;")]),
+                    component(text, [content("or drag and drop"), style(muted)]),
+                    component(text, [content("Max 50MB per file"), style(muted), size(12)])
+                ])
+            ]),
+
+            % Hidden file input
+            component(file_input, [
+                id(upload_file_input),
+                multiple(true),
+                on_change(handle_file_select),
+                style("display: none;")
+            ]),
+
+            % Selected files list
+            when(var('upload.selectedFiles.length'), [
+                container(panel, [class(selected_files), style("background: #16213e; padding: 15px; border-radius: 5px;")], [
+                    layout(stack, [spacing(8)], [
+                        component(text, [content("Selected files:"), style(muted), size(12)]),
+                        foreach(var('upload.selectedFiles'), file, [
+                            layout(flex, [justify(between), align(center), style("padding: 5px 0; border-bottom: 1px solid #0f3460;")], [
+                                component(text, [content(var('file.name'))]),
+                                layout(flex, [gap(10), align(center)], [
+                                    component(text, [content(format_size(var('file.size'))), style(muted), size(12)]),
+                                    component(button, [
+                                        label("✕"),
+                                        on_click(remove_upload_file(var('file.name'))),
+                                        variant(ghost),
+                                        size(small),
+                                        style("padding: 2px 8px; min-width: auto;")
+                                    ])
+                                ])
+                            ])
+                        ])
+                    ])
+                ])
+            ]),
+
+            % Upload button
+            component(button, [
+                label(var('upload.uploading'), "Uploading...", "📤 Upload Files"),
+                on_click(do_upload),
+                disabled(or(var('upload.uploading'), not(var('upload.selectedFiles.length')))),
+                full_width(true)
+            ]),
+
+            % Upload result message
+            when(var('upload.result'), [
+                container(panel, [
+                    class(upload_result),
+                    style_binding(eq(var('upload.resultType'), success),
+                                  "background: #065f46; padding: 10px; border-radius: 5px;",
+                                  "background: #7f1d1d; padding: 10px; border-radius: 5px;")
+                ], [
+                    component(text, [content(var('upload.result'))])
                 ])
             ])
         ])
