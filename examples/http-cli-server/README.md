@@ -1,12 +1,22 @@
 # HTTP CLI Server Example
 
 This example demonstrates generating an HTTP CLI server with authentication,
-WebSocket shell, and HTTPS support using UnifyWeaver's declarative specification.
+WebSocket shell, HTTPS support, and syntax-highlighted file viewing using
+UnifyWeaver's declarative specification.
 
 ## Overview
 
 Instead of manually writing server code, you define the server declaratively in
 Prolog (`spec.pl`) and generate TypeScript code using UnifyWeaver's generators.
+
+## Features
+
+- **PTY Shell**: Real pseudo-terminal via node-pty with full terminal emulation
+- **Syntax Highlighting**: Code viewing with highlight.js (20+ languages)
+- **Root Selector**: Switch between sandbox, project, and home directories
+- **Results Panel**: Download/copy buttons for grep, find, cat, exec output
+- **HTTPS Support**: Self-signed or custom certificates
+- **Role-based Auth**: JWT tokens with shell/admin/user roles
 
 ## Files
 
@@ -15,6 +25,15 @@ Prolog (`spec.pl`) and generate TypeScript code using UnifyWeaver's generators.
 | `spec.pl` | Declarative server and auth specification |
 | `generate.sh` | Script to run the generators |
 | `generated/` | Output folder for generated TypeScript |
+
+### Generators (in `src/unifyweaver/`)
+
+| File | Description |
+|------|-------------|
+| `glue/http_server_generator.pl` | Server, routes, handlers, WebSocket PTY |
+| `ui/html_interface_generator.pl` | HTML/CSS/Vue template generation |
+| `ui/http_cli_ui.pl` | Declarative UI component specification |
+| `ui/vue_generator.pl` | Vue.js component generation |
 
 ## Usage
 
@@ -59,9 +78,47 @@ AUTH_REQUIRED=true npx ts-node server.ts --port 8080 --cert cert.pem --key key.p
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AUTH_REQUIRED` | Require login (`true`/`false`) | `false` |
-| `SANDBOX_ROOT` | Root directory for file operations | `$HOME/sandbox` |
+| `SANDBOX_ROOT` | Root directory for sandbox mode | `$HOME/sandbox` |
+| `PROJECT_ROOT` | Root directory for project mode | `../../..` (project root) |
+| `HOME_ROOT` | Root directory for home mode | `$HOME` |
 | `JWT_SECRET` | Secret for JWT signing | `change-this-in-production` |
 | `USERS_FILE` | Path to users database file | `users.txt` |
+
+## Web Interface
+
+The generated server includes a complete Vue.js single-page application:
+
+### Tabs
+
+| Tab | Description | Required Role |
+|-----|-------------|---------------|
+| Browse | File browser with navigation | user |
+| Grep | Regex search in files | user |
+| Find | Find files by pattern | user |
+| Cat | View file with syntax highlighting | user |
+| Custom | Execute allowed commands | admin |
+| Feedback | Submit feedback/notes | user |
+| Shell | Interactive PTY terminal | shell |
+
+### Root Selector
+
+Switch between three directory roots:
+- **Sandbox**: Isolated working directory (`$HOME/sandbox`)
+- **Project**: UnifyWeaver project root
+- **Home**: User's home directory
+
+### Shell Features
+
+- Real PTY via node-pty (not character emulation)
+- ANSI escape code stripping for text display
+- Terminal resize support
+- Capture mode (mobile keyboard) and text mode
+
+### Syntax Highlighting
+
+File viewing uses highlight.js with support for:
+JavaScript, TypeScript, Python, Ruby, Rust, Go, Java, C/C++,
+HTML, CSS, JSON, YAML, Markdown, SQL, Prolog, and more.
 
 ## Specification
 
