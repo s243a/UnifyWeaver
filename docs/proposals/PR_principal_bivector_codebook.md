@@ -316,6 +316,8 @@ This allows principled comparison: a 3-layer model (capacity 216) is justified o
 
 ## Preliminary Results
 
+### Previous Approach: Rotation Distillation (PR #637)
+
 Training run with rotation-based federated teacher (3-layer, 4-head, 384 rotation planes):
 
 | Epoch | Loss | Train Cosine |
@@ -328,6 +330,33 @@ Training run with rotation-based federated teacher (3-layer, 4-head, 384 rotatio
 | 100 | 0.160 | 0.908 |
 
 **Test evaluation**: 0.635 cosine similarity (±0.31)
+
+### Bivector Codebook Approach
+
+Initial training with bivector codebook (64 components, 52.34% variance explained):
+
+| Epoch | Loss | Cosine |
+|-------|------|--------|
+| 1 | 0.270 | **0.506** |
+
+**Note**: Training started at 0.506 cosine (vs 0.095 for previous approach) - suggesting the codebook architecture provides better initialization. However, subsequent epochs were extremely slow due to matrix exponential computation, and the test was terminated after ~3 hours with no progress beyond epoch 1.
+
+**Status**: Inconclusive due to resource constraints. The matrix exponential bottleneck (O(d³) per forward pass) made training impractical. The first epoch showed promising results but runtime issues prevented full evaluation. Further testing needed with:
+1. Orthogonal codebook approach (see Appendix B) - avoids matrix exponential entirely
+2. Lower resource usage periods
+3. Reduced epoch count (may converge faster given better initialization)
+
+### Orthogonal Codebook Speedup
+
+Empirical comparison on 768-dimensional embeddings:
+
+| Method | Time (100 samples) | Per-sample |
+|--------|-------------------|------------|
+| Matrix exponential | 10,730ms | 107.3ms |
+| Rodrigues formula | 9.05ms | 0.09ms |
+| **Speedup** | | **1,186×** |
+
+The orthogonal approach (Appendix B) achieves over 1000× speedup by using closed-form Rodrigues formula instead of matrix exponential. This makes the architecture practical for training.
 
 ### Note on Evaluation
 
