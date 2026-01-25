@@ -221,16 +221,83 @@ For D=64, d=768: Current is O(768 × 384) ≈ 295K ops per sample. Proposed is d
 3. PCA to get D principal bivectors
 4. Save codebook
 
-### Phase 2: Train Transformer
-1. For each (query, target) pair:
-   - Compute optimal bivector B* from federated teacher
-   - Project onto codebook: coefficients = B* · basis
-   - Train transformer to predict coefficients
-2. Loss: MSE on coefficients + output reconstruction
+### Phase 2: Project Teacher to Subspace
 
-### Phase 3: Optional Fine-tuning
+**Key insight**: Both teacher and student should operate in the same D-dimensional subspace.
+
+```python
+def project_teacher_to_subspace(teacher_bivector, basis):
+    """
+    Project teacher's full bivector onto the D-dimensional principal subspace.
+
+    Args:
+        teacher_bivector: (d, d) antisymmetric matrix from federated model
+        basis: (D, d, d) principal bivector basis
+
+    Returns:
+        coefficients: (D,) projection onto each basis vector
+    """
+    # Flatten for dot product
+    teacher_flat = teacher_bivector.flatten()
+    basis_flat = basis.reshape(len(basis), -1)  # (D, d²)
+
+    # Project: coefficients_i = <teacher, basis_i>
+    coefficients = basis_flat @ teacher_flat
+
+    return coefficients
+```
+
+This ensures:
+1. **Errors are meaningful** - measured only in the D directions that matter
+2. **Information criteria apply** - can use AIC/BIC to compare model sizes
+3. **Same manifold** - teacher and student both constrained to learned subspace
+4. **Justifies larger models** - if more capacity reduces error in the subspace, it's real improvement
+
+### Phase 3: Train Transformer
+1. For each (query, target) pair:
+   - Compute teacher's bivector from federated model
+   - **Project onto D-dimensional subspace** (not full space)
+   - Train transformer to predict the D coefficients
+2. Loss: MSE on coefficients (in subspace) + output reconstruction
+
+### Phase 4: Optional Fine-tuning
 - Allow gradients to flow through codebook
 - Joint optimization of routing and codebook
+
+### Information-Theoretic Model Selection
+
+With teacher and student in the same subspace, we can properly apply information criteria.
+
+**Note**: As introduced in [QA_TRANSFORMER_DISTILLATION.md](QA_TRANSFORMER_DISTILLATION.md), we use **model capacity (H^L)** as a proxy for effective parameter count rather than raw parameter count. Raw parameter count (millions) would dominate the AIC/BIC penalty term, making it useless for model comparison. Capacity represents the number of discrete routing patterns the model can express.
+
+```python
+def compute_model_criteria(model, val_loss, n_samples, capacity):
+    """
+    Compare models using information criteria.
+
+    Args:
+        model: The trained model
+        val_loss: Validation loss (in the D-dimensional subspace)
+        n_samples: Number of validation samples
+        capacity: Model capacity H^L (e.g., 6³=216 for 3-layer, 6-head)
+                  Used as proxy for effective parameter count
+
+    See: QA_TRANSFORMER_DISTILLATION.md for capacity-based AIC rationale
+    """
+    # Log-likelihood proxy (assuming Gaussian errors in subspace)
+    log_likelihood = -n_samples * val_loss
+
+    # AIC: penalize capacity lightly
+    # Using capacity (not raw params) keeps penalty balanced with likelihood
+    aic = 2 * capacity - 2 * log_likelihood
+
+    # BIC: penalize capacity more heavily
+    bic = capacity * np.log(n_samples) - 2 * log_likelihood
+
+    return {'aic': aic, 'bic': bic, 'val_loss': val_loss, 'capacity': capacity}
+```
+
+This allows principled comparison: a 3-layer model (capacity 216) is justified over a 2-layer model (capacity 36) if it reduces subspace error enough to overcome the capacity penalty.
 
 ## Expected Benefits
 
