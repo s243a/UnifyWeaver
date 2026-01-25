@@ -139,6 +139,12 @@ sys.path.insert(0, str(project_root / "src" / "unifyweaver" / "targets" / "pytho
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+
+def log_info(msg: str):
+    """Log info message and flush stdout to prevent buffer stalls."""
+    logger.info(msg)
+    sys.stdout.flush()
+
 # Lazy imports for PyTorch
 torch = None
 nn = None
@@ -821,7 +827,7 @@ class BivectorTeacher:
         all_outputs = np.zeros((n_samples, self.d), dtype=np.float32)
 
         # Process in batches for coefficient computation (CPU-bound routing)
-        logger.info(f"  Computing coefficients for {n_samples} samples...")
+        log_info(f"  Computing coefficients for {n_samples} samples...")
         coeff_start = time.time()
 
         for i in range(n_samples):
@@ -832,13 +838,13 @@ class BivectorTeacher:
                 elapsed = time.time() - coeff_start
                 rate = (i + 1) / elapsed
                 remaining = (n_samples - i - 1) / rate
-                logger.info(f"    Coefficients: {i+1}/{n_samples} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
+                log_info(f"    Coefficients: {i+1}/{n_samples} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
 
         coeff_elapsed = time.time() - coeff_start
-        logger.info(f"  Coefficients done: {coeff_elapsed:.2f}s ({n_samples/coeff_elapsed:.1f}/s)")
+        log_info(f"  Coefficients done: {coeff_elapsed:.2f}s ({n_samples/coeff_elapsed:.1f}/s)")
 
         # Now compute outputs with batched matrix exponential (GPU-accelerated)
-        logger.info(f"  Computing rotations with batch_size={batch_size} on {device}...")
+        log_info(f"  Computing rotations with batch_size={batch_size} on {device}...")
         rotation_start = time.time()
 
         coeffs_tensor = torch.from_numpy(all_coefficients).float().to(device)
@@ -866,10 +872,10 @@ class BivectorTeacher:
                 elapsed = time.time() - rotation_start
                 rate = batch_end / elapsed
                 remaining = (n_samples - batch_end) / rate if batch_end < n_samples else 0
-                logger.info(f"    Rotations: {batch_end}/{n_samples} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
+                log_info(f"    Rotations: {batch_end}/{n_samples} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
 
         rotation_elapsed = time.time() - rotation_start
-        logger.info(f"  Rotations done: {rotation_elapsed:.2f}s ({n_samples/rotation_elapsed:.1f}/s)")
+        log_info(f"  Rotations done: {rotation_elapsed:.2f}s ({n_samples/rotation_elapsed:.1f}/s)")
 
         return all_coefficients, all_outputs
 
@@ -1003,7 +1009,7 @@ def train_bivector_codebook_transformer(
         remaining = avg_epoch_time * (num_epochs - epoch - 1)
 
         if (epoch + 1) % log_interval == 0 or epoch == 0:
-            logger.info(
+            log_info(
                 f"Epoch {epoch+1}/{num_epochs} ({epoch_elapsed:.1f}s), Loss: {avg_loss:.6f}, "
                 f"Coeff: {epoch_coeff_loss/n_batches:.6f}, "
                 f"Output: {epoch_output_loss/n_batches:.6f}, "
@@ -1013,7 +1019,7 @@ def train_bivector_codebook_transformer(
 
     total_training_time = time.time() - training_start
     transformer.eval_mode()
-    logger.info(f"Training complete in {Timer.format_duration(total_training_time)}. Final loss: {losses[-1]:.6f}")
+    log_info(f"Training complete in {Timer.format_duration(total_training_time)}. Final loss: {losses[-1]:.6f}")
 
     return losses
 
@@ -1032,7 +1038,7 @@ def evaluate_transformer(
     n_samples = len(test_queries)
 
     # Compute teacher outputs using batched method
-    logger.info(f"Computing teacher outputs for {n_samples} test samples...")
+    log_info(f"Computing teacher outputs for {n_samples} test samples...")
     _, teacher_outputs = teacher.compute_targets_batched(
         test_queries,
         top_k=10,
@@ -1041,7 +1047,7 @@ def evaluate_transformer(
     )
 
     # Compute transformer outputs in batches
-    logger.info("Computing transformer outputs...")
+    log_info("Computing transformer outputs...")
     trans_outputs = []
 
     queries_tensor = torch.from_numpy(test_queries).float().to(transformer.device)
@@ -1067,7 +1073,7 @@ def evaluate_transformer(
     cosine_sims = np.sum(teacher_normed * trans_normed, axis=1)
 
     eval_elapsed = time.time() - eval_start
-    logger.info(f"Evaluation complete: {eval_elapsed:.2f}s ({n_samples/eval_elapsed:.1f} samples/s)")
+    log_info(f"Evaluation complete: {eval_elapsed:.2f}s ({n_samples/eval_elapsed:.1f} samples/s)")
 
     return {
         'mean_mse': np.mean(mse_values),
