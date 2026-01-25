@@ -483,3 +483,342 @@ A = (A - A.T) / 2  # Ensure antisymmetric (numerical stability)
 - **Rotation Interpolation**: Shoemake, K. (1985). "Animating Rotation with Quaternion Curves". *SIGGRAPH*. While focused on quaternions, establishes why interpolation must happen in the tangent space.
 
 - **SO(n) Geometry**: Absil, P.-A., Mahony, R., & Sepulchre, R. (2008). *Optimization Algorithms on Matrix Manifolds*. Princeton. Chapter 3 covers SO(n) as a Riemannian manifold.
+
+## Appendix B: Commutative Rotations via Orthogonal Planes
+
+### The Non-Commutativity Problem
+
+In general, rotations do not commute:
+```
+R₁ × R₂ ≠ R₂ × R₁
+```
+
+This means the order of applying rotations matters. When we blend bivectors and compute `exp(Σ wᵢBᵢ)`, we get a valid rotation, but this is computationally expensive (matrix exponential requires ~15 matrix multiplies via Padé approximation).
+
+**The question**: Can we instead pre-compute rotations `Rᵢ = exp(Bᵢ)` and compose them directly?
+
+### When Rotations Commute
+
+Two rotations commute if and only if they act on **orthogonal planes** (non-overlapping 2D subspaces).
+
+**Mathematical statement**: For bivectors B₁ and B₂ represented as antisymmetric matrices:
+```
+[B₁, B₂] = B₁B₂ - B₂B₁ = 0  ⟺  B₁ and B₂ rotate in orthogonal planes
+```
+
+When bivectors commute, the exponential map respects addition:
+```
+exp(B₁ + B₂) = exp(B₁) × exp(B₂) = exp(B₂) × exp(B₁)
+```
+
+**Example**: In 768 dimensions:
+- B₁ rotates in the (e₁, e₂) plane
+- B₂ rotates in the (e₃, e₄) plane
+- These affect completely independent coordinates, so they commute
+
+### Schur Decomposition of Antisymmetric Matrices
+
+Any antisymmetric (skew-symmetric) matrix can be decomposed into its "rotation planes" via the **real Schur decomposition**:
+
+```
+B = Q Σ Qᵀ
+```
+
+where:
+- Q is orthogonal (Q⁻¹ = Qᵀ)
+- Σ is block diagonal with 2×2 blocks of the form:
+  ```
+  [  0   -θₖ ]
+  [ θₖ    0  ]
+  ```
+- Each block represents rotation by angle θₖ in a 2D plane defined by columns of Q
+
+**Interpretation**: An antisymmetric matrix B can be written as a sum of simple bivectors:
+```
+B = Σₖ θₖ (uₖvₖᵀ - vₖuₖᵀ)
+```
+where (uₖ, vₖ) are orthonormal pairs defining each rotation plane, and θₖ is the rotation angle in that plane.
+
+### Extracting the "Normal" of a Bivector
+
+In 3D, a bivector has a Hodge dual that gives a normal vector (the rotation axis). In higher dimensions, we can extract the **dominant rotation plane** as an analog:
+
+```python
+from scipy.linalg import schur
+import numpy as np
+
+def extract_rotation_planes(B, tol=1e-10):
+    """
+    Extract rotation planes and angles from a bivector (antisymmetric matrix).
+
+    Args:
+        B: (d, d) antisymmetric matrix
+        tol: tolerance for zero angles
+
+    Returns:
+        planes: List of (u, v, theta) tuples defining each rotation plane
+                u, v are orthonormal vectors spanning the plane
+                theta is the rotation angle
+    """
+    d = B.shape[0]
+
+    # Real Schur decomposition: B = Q @ T @ Q.T
+    # For antisymmetric B, T is block diagonal with 2x2 antisymmetric blocks
+    T, Q = schur(B, output='real')
+
+    planes = []
+    i = 0
+    while i < d:
+        if i + 1 < d and abs(T[i, i+1]) > tol:
+            # 2x2 block found: rotation plane
+            theta = T[i+1, i]  # Rotation angle (T[i,i+1] = -theta, T[i+1,i] = theta)
+            u = Q[:, i]       # First basis vector of plane
+            v = Q[:, i+1]     # Second basis vector of plane
+            planes.append((u, v, theta))
+            i += 2
+        else:
+            # Zero block (no rotation in this direction)
+            i += 1
+
+    return planes
+
+def get_dominant_plane(B):
+    """Get the dominant (largest angle) rotation plane of a bivector."""
+    planes = extract_rotation_planes(B)
+    if not planes:
+        return None
+    # Sort by absolute angle, return largest
+    planes.sort(key=lambda p: abs(p[2]), reverse=True)
+    return planes[0]
+```
+
+### Orthogonalizing a Codebook
+
+Given a codebook of bivectors from PCA, we can orthogonalize them to ensure all rotations commute:
+
+```python
+def orthogonalize_codebook(codebook_bivectors):
+    """
+    Orthogonalize codebook bivectors so their rotations commute.
+
+    Strategy: Extract dominant plane from each bivector,
+    orthogonalize the planes using Gram-Schmidt on 2D subspaces.
+
+    Args:
+        codebook_bivectors: (n_components, d, d) array of antisymmetric matrices
+
+    Returns:
+        orthogonal_bivectors: (n_components, d, d) with orthogonal rotation planes
+        plane_bases: List of (u, v) orthonormal pairs for each plane
+    """
+    n_components, d, _ = codebook_bivectors.shape
+
+    # Extract dominant plane from each bivector
+    dominant_planes = []
+    for B in codebook_bivectors:
+        plane = get_dominant_plane(B)
+        if plane:
+            u, v, theta = plane
+            dominant_planes.append((u, v, theta))
+
+    # Orthogonalize planes using modified Gram-Schmidt on 2D subspaces
+    orthogonal_planes = []
+    used_dims = set()
+
+    for u, v, theta in dominant_planes:
+        # Project out components in already-used dimensions
+        u_orth = u.copy()
+        v_orth = v.copy()
+
+        for dim in used_dims:
+            u_orth[dim] = 0
+            v_orth[dim] = 0
+
+        # Re-orthonormalize u and v
+        u_orth = u_orth / (np.linalg.norm(u_orth) + 1e-10)
+        v_orth = v_orth - np.dot(v_orth, u_orth) * u_orth
+        v_orth = v_orth / (np.linalg.norm(v_orth) + 1e-10)
+
+        # Find which dimensions this plane uses most
+        top_u = np.argsort(np.abs(u_orth))[-2:]
+        top_v = np.argsort(np.abs(v_orth))[-2:]
+        used_dims.update(top_u)
+        used_dims.update(top_v)
+
+        orthogonal_planes.append((u_orth, v_orth, theta))
+
+    # Reconstruct orthogonal bivectors
+    orthogonal_bivectors = np.zeros_like(codebook_bivectors)
+    for i, (u, v, theta) in enumerate(orthogonal_planes):
+        # B = theta * (u @ v.T - v @ u.T)
+        orthogonal_bivectors[i] = theta * (np.outer(u, v) - np.outer(v, u))
+
+    return orthogonal_bivectors, orthogonal_planes
+```
+
+### Alternative: Construct Orthogonal Codebook from Scratch
+
+Rather than orthogonalizing PCA components, we can construct an orthogonal codebook directly:
+
+```python
+def build_orthogonal_codebook(d, n_components):
+    """
+    Build a codebook of n_components orthogonal rotation planes.
+
+    In d dimensions, we can have at most d/2 orthogonal rotation planes.
+
+    Args:
+        d: Embedding dimension (e.g., 768)
+        n_components: Number of codebook entries (must be <= d/2)
+
+    Returns:
+        codebook: (n_components, d, d) orthogonal bivectors
+    """
+    assert n_components <= d // 2, f"Can have at most {d//2} orthogonal planes in {d}D"
+
+    codebook = np.zeros((n_components, d, d))
+
+    for i in range(n_components):
+        # Use dimensions (2i, 2i+1) for the i-th rotation plane
+        # This guarantees orthogonality
+        j, k = 2 * i, 2 * i + 1
+        codebook[i, j, k] = -1.0  # Antisymmetric: B[j,k] = -B[k,j]
+        codebook[i, k, j] = 1.0
+
+    return codebook
+```
+
+### Computational Speedup: Pre-computed Rotation Composition
+
+With orthogonal planes, rotations commute and we can pre-compute:
+
+```python
+class FastOrthogonalCodebook:
+    """
+    Codebook with orthogonal rotation planes for fast composition.
+
+    Since all bivectors rotate in orthogonal planes, their rotations commute:
+        exp(Σ wᵢBᵢ) = Π exp(wᵢBᵢ) = Π Rᵢ^wᵢ
+
+    We pre-compute Rᵢ = exp(Bᵢ) and use Rodrigues formula for weighted application.
+    """
+
+    def __init__(self, codebook_bivectors):
+        """
+        Args:
+            codebook_bivectors: (n_components, d, d) orthogonal bivectors
+        """
+        self.bivectors = codebook_bivectors
+        self.n_components, self.d, _ = codebook_bivectors.shape
+
+        # Extract plane info for each bivector
+        self.planes = []  # List of (u, v, theta) tuples
+        for B in codebook_bivectors:
+            plane = get_dominant_plane(B)
+            self.planes.append(plane)
+
+        # Pre-compute rotation matrices (for reference, but we'll use Rodrigues)
+        self.rotations = np.array([
+            scipy.linalg.expm(B) for B in codebook_bivectors
+        ])
+
+    def apply_weighted_rotation(self, x, weights):
+        """
+        Apply weighted rotation composition efficiently.
+
+        For orthogonal planes, we can apply each rotation independently:
+            y = Rₙ^wₙ @ ... @ R₂^w₂ @ R₁^w₁ @ x
+
+        Using Rodrigues formula for each weighted rotation:
+            R^w = exp(w * B) = I + sin(wθ) * B_unit + (1 - cos(wθ)) * B_unit²
+
+        Args:
+            x: (batch, d) input vectors
+            weights: (batch, n_components) blending weights
+
+        Returns:
+            y: (batch, d) rotated vectors
+        """
+        batch_size = x.shape[0]
+        y = x.copy()
+
+        for i, (u, v, theta) in enumerate(self.planes):
+            if theta is None or abs(theta) < 1e-10:
+                continue
+
+            w = weights[:, i]  # (batch,)
+
+            # Weighted angle
+            w_theta = w * theta  # (batch,)
+
+            # Rodrigues formula components
+            # For a simple bivector B = u⊗v - v⊗u with ||B|| = 1:
+            # exp(θB) = I + sin(θ)B + (1-cos(θ))B²
+            # where B² = -(u⊗u + v⊗v) for orthonormal u,v
+
+            sin_wt = np.sin(w_theta)[:, None]  # (batch, 1)
+            cos_wt = np.cos(w_theta)[:, None]  # (batch, 1)
+
+            # Project x onto the rotation plane
+            x_u = np.dot(y, u)[:, None]  # (batch, 1)
+            x_v = np.dot(y, v)[:, None]  # (batch, 1)
+
+            # Rotation within the plane
+            # x_u' = cos(wθ) * x_u - sin(wθ) * x_v
+            # x_v' = sin(wθ) * x_u + cos(wθ) * x_v
+            new_x_u = cos_wt * x_u - sin_wt * x_v
+            new_x_v = sin_wt * x_u + cos_wt * x_v
+
+            # Update y: remove old components, add new
+            y = y - x_u * u - x_v * v + new_x_u * u + new_x_v * v
+
+        return y
+```
+
+### Performance Comparison
+
+| Method | Computation | Notes |
+|--------|-------------|-------|
+| `exp(Σ wᵢBᵢ)` | O(d³) per sample | Full matrix exponential via Padé (~15 matmuls) |
+| K matrix multiplies | O(K × d³) | Sequential Rᵢ application |
+| Rodrigues per plane | O(K × d) | Only affects 2D subspace per plane |
+
+**With orthogonal planes and Rodrigues formula**: O(K × d) vs O(d³)
+
+For d=768, K=64: Rodrigues is ~768²/64 ≈ **9000× faster** than matrix exponential!
+
+### Trade-offs
+
+| Aspect | General Bivectors | Orthogonal Bivectors |
+|--------|-------------------|----------------------|
+| Expressiveness | Full rotation manifold | Constrained to orthogonal planes |
+| Computation | Expensive (matrix exp) | Very fast (Rodrigues) |
+| Accuracy | Exact teacher reproduction | Approximation |
+| Codebook | From PCA (data-driven) | Structured (may miss patterns) |
+
+### Hybrid Approach
+
+A practical middle ground:
+1. **Use PCA** to find important rotation directions
+2. **Orthogonalize** to nearest orthogonal planes
+3. **Fine-tune** the transformer to compensate for approximation error
+
+The transformer can learn to adjust routing weights to account for the orthogonalization, giving us the speed benefit while maintaining quality.
+
+### Implementation Status
+
+This orthogonal decomposition approach is proposed as an **extension** to the main bivector codebook architecture:
+
+- [ ] Implement `extract_rotation_planes()` using Schur decomposition
+- [ ] Implement `orthogonalize_codebook()` for existing PCA codebooks
+- [ ] Implement `FastOrthogonalCodebook` with Rodrigues formula
+- [ ] Benchmark speed vs accuracy trade-off
+- [ ] Compare training convergence with orthogonal vs general codebooks
+
+### Citations
+
+- **Schur Decomposition**: Golub, G.H. & Van Loan, C.F. (2013). *Matrix Computations*, 4th ed. Johns Hopkins. Section 7.4 covers the real Schur form.
+
+- **Rodrigues' Formula**: Rodrigues, O. (1840). "Des lois géométriques qui régissent les déplacements d'un système solide". *Journal de Mathématiques Pures et Appliquées*. The rotation formula for 3D; generalizes to simple bivectors in higher dimensions.
+
+- **Commutativity of Rotations**: Stillwell, J. (2008). *Naive Lie Theory*. Springer. Chapter 2 discusses when rotations commute.
