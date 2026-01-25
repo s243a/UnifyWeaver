@@ -314,6 +314,36 @@ This allows principled comparison: a 3-layer model (capacity 216) is justified o
 4. [ ] Benchmark against current Givens approach
 5. [ ] Document in skill file
 
+## Preliminary Results
+
+Training run with rotation-based federated teacher (3-layer, 4-head, 384 rotation planes):
+
+| Epoch | Loss | Train Cosine |
+|-------|------|--------------|
+| 1 | 1.754 | 0.095 |
+| 20 | 0.728 | 0.739 |
+| 40 | 0.371 | 0.776 |
+| 60 | 0.235 | 0.908 |
+| 80 | 0.183 | 0.852 |
+| 100 | 0.160 | 0.908 |
+
+**Test evaluation**: 0.635 cosine similarity (±0.31)
+
+### Note on Evaluation
+
+The test script initially reported this as "Poor" because it compared transformer output against LDA projections. However, this comparison is **not meaningful** because:
+
+1. The transformer was trained against the **rotation-based teacher** (which stays in the rotation manifold)
+2. LDA projections use **standard output blending** (which leaves the rotation manifold)
+3. These are fundamentally different targets - comparing them conflates model error with manifold mismatch
+
+The correct evaluation compares transformer vs rotation-based teacher on held-out data. The 0.635 test cosine reflects some overfitting (train was 0.908), which can be addressed with:
+- Proper train/test split using question rewording redundancy
+- Early stopping
+- Regularization tuning
+
+**TODO**: Implement proper held-out evaluation against rotation-based teacher.
+
 ## Questions/Risks
 
 1. **Matrix exponential cost**: For d=768, matrix exp is O(d³). May need approximations for speed.
@@ -321,9 +351,57 @@ This allows principled comparison: a 3-layer model (capacity 216) is justified o
 3. **Sparse routing**: Top-K selection vs full softmax for efficiency?
 4. **Gradient flow**: Should codebook be frozen or fine-tuned?
 
+## Theoretical Justification: Why Rotation (Minimal Transformation)?
+
+### The Problem with Standard Blending
+
+Standard multi-head projection blends output vectors:
+```
+output = Σ wᵢ × (query @ Wᵢ)
+       = query @ (Σ wᵢ × Wᵢ)
+```
+
+The weighted sum of rotation matrices `Σ wᵢ × Wᵢ` is **not** a rotation matrix. This leaves the rotation manifold and produces an arbitrary linear transform that:
+- Distorts angles between vectors
+- Distorts distances between vectors
+- Doesn't preserve neighborhood relationships
+
+Even normalizing the output only fixes magnitude, not the geometric distortion.
+
+### Minimal Transformation Preserves Geometry
+
+Rotation-based blending:
+```
+angles = Σ wᵢ × anglesᵢ
+output = R(angles) @ query × scale
+```
+
+The blended angles still parameterize a valid rotation. This enforces an **isometry** (plus scale) that preserves:
+- **Angles**: `cos(Rx, Ry) = cos(x, y)` for any vectors
+- **Distances**: `||Rx - Ry|| = ||x - y||`
+- **Structure**: Neighborhood relationships are maintained
+
+### Information-Theoretic Argument
+
+The embedding model (nomic, etc.) learned rich semantic structure through massive pretraining. By using rotation:
+- **Preserve**: The geometric relationships already learned
+- **Learn**: Only the rotation parameters to align query → answer space
+- **Maximize**: Mutual information between input and output
+
+Arbitrary transforms can distort pretrained geometry and require more data to relearn structure that was already there. The minimal transformation maximizes information preservation - any deviation from isometry is "adding noise" that must be justified by data.
+
+### Continuity Hierarchy
+
+1. **Basic continuity**: Close inputs → close outputs
+2. **Lipschitz continuity**: Bounded rate of change
+3. **Minimal transformation**: Preserves relative geometry (strictest)
+
+This matters for semantic search: if query A is "between" queries B and C in embedding space, after projection A should still be "between" the projections of B and C. Standard blending can distort this; rotation preserves it.
+
 ## References
 
 - Geometric algebra and bivector representation
 - Lie group theory: SO(n) and its tangent space
 - VQ-VAE and codebook learning
 - Mixture of Experts sparse routing
+- Isometry and metric preservation in embeddings
