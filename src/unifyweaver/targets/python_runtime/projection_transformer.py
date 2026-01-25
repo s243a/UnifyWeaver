@@ -391,7 +391,8 @@ def train_distillation(
     batch_size: int = 32,
     learning_rate: float = 1e-4,
     log_interval: int = 10,
-    cosine_weight: float = 0.5
+    cosine_weight: float = 0.5,
+    sample_weights: Optional[np.ndarray] = None
 ) -> List[float]:
     """
     Train transformer via knowledge distillation from LDA projection.
@@ -405,6 +406,8 @@ def train_distillation(
         learning_rate: Learning rate
         log_interval: Log every N epochs
         cosine_weight: Weight for cosine similarity loss (0=MSE only, 1=cosine only)
+        sample_weights: Optional per-sample importance weights (N,). Higher = more important.
+                       Useful for entropy-based weighting (upweight uncertain samples).
 
     Returns:
         List of loss values per epoch
@@ -424,6 +427,15 @@ def train_distillation(
     # Convert to tensors
     queries_tensor = torch.from_numpy(query_embeddings).float().to(transformer.device)
     targets_tensor = torch.from_numpy(lda_outputs).float().to(transformer.device)
+
+    # Convert sample weights to tensor if provided
+    weights_tensor = None
+    if sample_weights is not None:
+        # Normalize weights to sum to n_samples (so mean is preserved)
+        normalized_weights = sample_weights * len(sample_weights) / sample_weights.sum()
+        weights_tensor = torch.from_numpy(normalized_weights).float().to(transformer.device)
+        logger.info(f"Using sample weights (min={sample_weights.min():.3f}, max={sample_weights.max():.3f}, "
+                   f"mean={sample_weights.mean():.3f})")
 
     # Optimizer
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=learning_rate)
@@ -445,21 +457,29 @@ def train_distillation(
             idx = perm[i:i+batch_size]
             batch_queries = queries_tensor[idx]
             batch_targets = targets_tensor[idx]
+            batch_weights = weights_tensor[idx] if weights_tensor is not None else None
 
             # Forward
             predicted = transformer.forward(batch_queries)
 
-            # Combined MSE + cosine loss
-            mse_loss = F.mse_loss(predicted, batch_targets)
+            # Per-sample losses for weighted averaging
+            # MSE per sample: mean over embedding dim
+            mse_per_sample = ((predicted - batch_targets) ** 2).mean(dim=1)
 
-            # Cosine loss (1 - cosine_sim)
+            # Cosine similarity per sample
             pred_norm = F.normalize(predicted, p=2, dim=1)
             target_norm = F.normalize(batch_targets, p=2, dim=1)
-            cosine_sim = (pred_norm * target_norm).sum(dim=1).mean()
-            cosine_loss = 1 - cosine_sim
+            cosine_sim_per_sample = (pred_norm * target_norm).sum(dim=1)
+            cosine_loss_per_sample = 1 - cosine_sim_per_sample
 
-            # Combined loss
-            loss = (1 - cosine_weight) * mse_loss + cosine_weight * cosine_loss
+            # Combined per-sample loss
+            loss_per_sample = (1 - cosine_weight) * mse_per_sample + cosine_weight * cosine_loss_per_sample
+
+            # Apply importance weights if provided
+            if batch_weights is not None:
+                loss = (loss_per_sample * batch_weights).mean()
+            else:
+                loss = loss_per_sample.mean()
 
             # Backward
             optimizer.zero_grad()

@@ -69,8 +69,9 @@ class FederatedProjectionWrapper:
     Used as the teacher model for transformer distillation.
     """
 
-    def __init__(self, model_path: Path):
+    def __init__(self, model_path: Path, routing_mode: str = "centroid"):
         self.model_path = Path(model_path)
+        self.routing_mode = routing_mode
 
         # Load model metadata
         logger.info(f"Loading federated model from {model_path}...")
@@ -108,6 +109,7 @@ class FederatedProjectionWrapper:
             self.embed_dim = 384  # Default
 
         logger.info(f"Embedding dimension: {self.embed_dim}")
+        logger.info(f"Routing mode: {self.routing_mode}")
 
     def _load_routing_data(self):
         """Load query embeddings and index-to-cluster mapping for routing."""
@@ -145,9 +147,11 @@ class FederatedProjectionWrapper:
 
     def project(self, q_emb: np.ndarray, top_k_routing: int = 10, k_coverage: float = None) -> np.ndarray:
         """
-        Project query using federated softmax routing over cluster centroids.
+        Project query using federated softmax routing.
 
-        Flow: query → sim(query, centroids) → softmax → Σ weight_i × (query @ W_i)
+        Routing mode:
+        - "centroid": sim(query, centroids) → softmax → weighted projection
+        - "question": sim(query, all questions) → aggregate to clusters → weighted projection
 
         Args:
             q_emb: Query embedding (embed_dim,)
@@ -157,6 +161,11 @@ class FederatedProjectionWrapper:
         Returns:
             Projected embedding (embed_dim,)
         """
+        # Dispatch based on routing mode
+        if self.routing_mode == "question":
+            return self._project_question_routing(q_emb, top_k_routing)
+
+        # Centroid-based routing (default)
         # Normalize query
         q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
 
@@ -243,6 +252,344 @@ class FederatedProjectionWrapper:
 
             return proj
 
+    def compute_routing_entropy(self, q_emb: np.ndarray) -> float:
+        """
+        Compute entropy of routing weights (higher = more uncertain).
+
+        Useful diagnostic: high entropy samples are near decision boundaries.
+        """
+        q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
+
+        if self.routing_mode == "question":
+            # Question-based routing entropy
+            sims = q_norm @ self.query_embeddings.T
+            sims_shifted = (sims - np.max(sims)) / self.temperature
+            weights = np.exp(sims_shifted)
+            weights /= weights.sum()
+        else:
+            # Centroid-based routing entropy
+            if self.cluster_centroids is not None:
+                sims = q_norm @ self.cluster_centroids.T
+            else:
+                sims = q_norm @ self.query_embeddings.T
+            sims_shifted = (sims - np.max(sims)) / self.temperature
+            weights = np.exp(sims_shifted)
+            weights /= weights.sum()
+
+        # Compute entropy: -Σ w_i log(w_i)
+        weights = weights[weights > 1e-10]  # Avoid log(0)
+        entropy = -np.sum(weights * np.log(weights))
+
+        # Normalize by max entropy (log(n))
+        max_entropy = np.log(len(weights))
+        return entropy / max_entropy if max_entropy > 0 else 0.0
+
+    def compute_entropy_weights(self, query_embeddings: np.ndarray, clip_range: tuple = (0.5, 2.0)) -> np.ndarray:
+        """
+        Compute entropy-based importance weights for a batch of queries.
+
+        Higher entropy = more uncertain routing = more informative sample.
+
+        Args:
+            query_embeddings: Array of query embeddings
+            clip_range: (min_weight, max_weight) to prevent extreme values
+
+        Returns:
+            Array of weights, normalized so mean ≈ 1.0, clipped to range
+        """
+        entropies = np.array([
+            self.compute_routing_entropy(q) for q in query_embeddings
+        ])
+
+        # Convert entropy to importance weights
+        # Higher entropy = higher weight (more informative)
+        # Normalize so mean = 1.0 (preserves expected loss scale)
+        if entropies.mean() > 0:
+            weights = entropies / entropies.mean()
+        else:
+            weights = np.ones_like(entropies)
+
+        # Clip to prevent extreme weights that destabilize training
+        weights = np.clip(weights, clip_range[0], clip_range[1])
+
+        # Re-normalize after clipping
+        weights = weights / weights.mean()
+
+        return weights
+
+    def compute_embedding_uncertainty(self, query_embeddings: np.ndarray) -> np.ndarray:
+        """
+        Compute uncertainty proxy from embedding properties.
+
+        Uses embedding norm deviation as a proxy for BERT uncertainty:
+        - Embeddings far from the mean norm are less "typical"
+        - This correlates with model uncertainty (unusual inputs)
+
+        Returns:
+            Array of uncertainty values (higher = more uncertain)
+        """
+        # Compute norms
+        norms = np.linalg.norm(query_embeddings, axis=1)
+        mean_norm = norms.mean()
+
+        # Deviation from mean norm (normalized)
+        # Higher deviation = less typical = more uncertain
+        uncertainty = np.abs(norms - mean_norm) / mean_norm
+
+        return uncertainty
+
+    def compute_bert_entropy(self, texts: list, model_name: str = "nomic-ai/nomic-embed-text-v1.5") -> np.ndarray:
+        """
+        Compute token-level entropy from BERT hidden states.
+
+        This measures how "spread out" the model's internal representations are,
+        which correlates with embedding uncertainty.
+
+        Args:
+            texts: List of input texts
+            model_name: HuggingFace model name
+
+        Returns:
+            Array of entropy values per text (higher = more uncertain)
+        """
+        try:
+            from transformers import AutoModel, AutoTokenizer
+            import torch
+        except ImportError:
+            logger.warning("transformers/torch not available, falling back to embedding uncertainty")
+            return None
+
+        logger.info(f"Loading {model_name} for entropy computation...")
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModel.from_pretrained(model_name, trust_remote_code=True, output_hidden_states=True)
+        model.eval()
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model.to(device)
+
+        entropies = []
+        batch_size = 32
+
+        with torch.no_grad():
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i+batch_size]
+                inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+
+                outputs = model(**inputs)
+
+                # Get last hidden state
+                hidden_states = outputs.last_hidden_state  # [batch, seq_len, hidden_dim]
+
+                # Compute per-token variance across hidden dimensions
+                # High variance = uncertain representation
+                token_variance = hidden_states.var(dim=-1)  # [batch, seq_len]
+
+                # Average across tokens (ignoring padding)
+                attention_mask = inputs['attention_mask']
+                masked_variance = token_variance * attention_mask
+                avg_variance = masked_variance.sum(dim=1) / attention_mask.sum(dim=1)
+
+                entropies.extend(avg_variance.cpu().numpy())
+
+        return np.array(entropies)
+
+    def compute_cluster_priors(self, prior_type: str = "uniform") -> np.ndarray:
+        """
+        Compute prior probability P(cluster) for each cluster.
+
+        Args:
+            prior_type: "uniform", "size", or "entropy"
+                - uniform: equal probability for all clusters
+                - size: proportional to number of questions in cluster
+                - entropy: based on internal cluster entropy (TODO: Fisher/BERT)
+
+        Returns:
+            Array of prior probabilities, sums to 1.0
+        """
+        n_clusters = len(self.cluster_ids)
+
+        if prior_type == "uniform":
+            prior = np.ones(n_clusters) / n_clusters
+
+        elif prior_type == "size":
+            # Count questions per cluster
+            cluster_sizes = np.zeros(n_clusters)
+            for idx, cid in self.idx_to_cluster.items():
+                cluster_idx = self.cluster_ids.index(cid) if cid in self.cluster_ids else -1
+                if cluster_idx >= 0:
+                    cluster_sizes[cluster_idx] += 1
+            # Normalize to probability
+            prior = cluster_sizes / cluster_sizes.sum() if cluster_sizes.sum() > 0 else np.ones(n_clusters) / n_clusters
+
+        elif prior_type == "entropy":
+            # Compute internal entropy per cluster (spread of questions within cluster)
+            # Higher entropy = more diverse cluster = higher prior (more informative)
+            cluster_entropies = np.zeros(n_clusters)
+            for i, cid in enumerate(self.cluster_ids):
+                # Get questions in this cluster
+                cluster_indices = [idx for idx, c in self.idx_to_cluster.items() if c == cid]
+                if len(cluster_indices) > 1:
+                    # Compute pairwise similarities within cluster
+                    cluster_embs = self.query_embeddings[cluster_indices]
+                    cluster_embs_norm = cluster_embs / (np.linalg.norm(cluster_embs, axis=1, keepdims=True) + 1e-8)
+                    # Average similarity (lower = more spread = higher entropy)
+                    sim_matrix = cluster_embs_norm @ cluster_embs_norm.T
+                    avg_sim = (sim_matrix.sum() - len(cluster_indices)) / (len(cluster_indices) * (len(cluster_indices) - 1) + 1e-8)
+                    # Convert to entropy-like measure (1 - similarity)
+                    cluster_entropies[i] = 1 - avg_sim
+                else:
+                    cluster_entropies[i] = 0.5  # Default for single-item clusters
+            # Normalize to probability
+            prior = cluster_entropies / cluster_entropies.sum() if cluster_entropies.sum() > 0 else np.ones(n_clusters) / n_clusters
+
+        elif prior_type == "embedding":
+            # Use embedding uncertainty (norm deviation) aggregated by cluster
+            # Higher uncertainty = more informative cluster
+            uncertainties = self.compute_embedding_uncertainty(self.query_embeddings)
+            cluster_uncertainty = np.zeros(n_clusters)
+            for i, cid in enumerate(self.cluster_ids):
+                cluster_indices = [idx for idx, c in self.idx_to_cluster.items() if c == cid]
+                if cluster_indices:
+                    cluster_uncertainty[i] = uncertainties[cluster_indices].mean()
+            # Normalize to probability
+            prior = cluster_uncertainty / cluster_uncertainty.sum() if cluster_uncertainty.sum() > 0 else np.ones(n_clusters) / n_clusters
+
+        else:
+            raise ValueError(f"Unknown prior_type: {prior_type}")
+
+        return prior
+
+    def compute_bayesian_importance(self, q_emb: np.ndarray, prior: np.ndarray) -> float:
+        """
+        Compute importance weight using Bayesian posterior.
+
+        P(cluster | query) ∝ P(cluster) × P(query | cluster)
+                          ∝ prior × cosine_similarity
+
+        Importance = entropy of posterior (higher = more uncertain = more informative)
+
+        Args:
+            q_emb: Query embedding
+            prior: Prior probabilities P(cluster), shape (n_clusters,)
+
+        Returns:
+            Importance weight (normalized entropy of posterior)
+        """
+        q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
+
+        # Likelihood: P(query | cluster) ∝ cosine similarity
+        if self.cluster_centroids is not None:
+            likelihood = q_norm @ self.cluster_centroids.T
+        else:
+            # Fallback: average similarity to questions in each cluster
+            likelihood = np.zeros(len(self.cluster_ids))
+            for i, cid in enumerate(self.cluster_ids):
+                cluster_indices = [idx for idx, c in self.idx_to_cluster.items() if c == cid]
+                if cluster_indices:
+                    cluster_embs = self.query_embeddings[cluster_indices]
+                    cluster_embs_norm = cluster_embs / (np.linalg.norm(cluster_embs, axis=1, keepdims=True) + 1e-8)
+                    likelihood[i] = (q_norm @ cluster_embs_norm.T).mean()
+
+        # Shift to positive (cosine can be negative)
+        likelihood = likelihood - likelihood.min() + 1e-8
+
+        # Posterior: prior × likelihood, normalized
+        posterior = prior * likelihood
+        posterior = posterior / posterior.sum()
+
+        # Importance = entropy of posterior (normalized)
+        posterior_safe = posterior[posterior > 1e-10]
+        entropy = -np.sum(posterior_safe * np.log(posterior_safe))
+        max_entropy = np.log(len(posterior))
+
+        return entropy / max_entropy if max_entropy > 0 else 0.0
+
+    def compute_bayesian_weights(self, query_embeddings: np.ndarray,
+                                  prior_type: str = "entropy",
+                                  clip_range: tuple = (0.5, 2.0)) -> np.ndarray:
+        """
+        Compute Bayesian importance weights for training.
+
+        Uses stat-mech inspired formulation:
+        - Prior P(cluster) from entropy/size/uniform
+        - Likelihood P(query|cluster) from cosine similarity
+        - Posterior P(cluster|query) = normalized(prior × likelihood)
+        - Importance = entropy of posterior
+
+        Args:
+            query_embeddings: Array of query embeddings
+            prior_type: "uniform", "size", or "entropy"
+            clip_range: (min_weight, max_weight) to prevent extreme values
+
+        Returns:
+            Array of importance weights, normalized so mean ≈ 1.0
+        """
+        # Compute cluster priors
+        prior = self.compute_cluster_priors(prior_type)
+        logger.info(f"Cluster priors ({prior_type}): min={prior.min():.4f}, max={prior.max():.4f}")
+
+        # Compute Bayesian importance for each query
+        importances = np.array([
+            self.compute_bayesian_importance(q, prior) for q in query_embeddings
+        ])
+
+        # Normalize so mean = 1.0
+        if importances.mean() > 0:
+            weights = importances / importances.mean()
+        else:
+            weights = np.ones_like(importances)
+
+        # Clip and re-normalize
+        weights = np.clip(weights, clip_range[0], clip_range[1])
+        weights = weights / weights.mean()
+
+        return weights
+
+    def _project_question_routing(self, q_emb: np.ndarray, top_k_clusters: int = 10) -> np.ndarray:
+        """
+        Project using per-question routing with cluster aggregation.
+
+        Flow: query → sim(query, all questions) → softmax → aggregate to cluster weights → Σ weight_k × (query @ W_k)
+
+        This provides richer routing signal than centroid-only routing.
+        """
+        q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
+
+        # Compute similarity to all training questions
+        sims = q_norm @ self.query_embeddings.T
+
+        # Softmax over questions
+        sims_shifted = (sims - np.max(sims)) / self.temperature
+        question_weights = np.exp(sims_shifted)
+        question_weights /= question_weights.sum()
+
+        # Aggregate to cluster weights (sum of question weights per cluster)
+        cluster_weights = {}
+        for idx, w in enumerate(question_weights):
+            cid = self.idx_to_cluster.get(int(idx))
+            if cid:
+                cluster_weights[cid] = cluster_weights.get(cid, 0.0) + w
+
+        # Get top-k clusters by aggregated weight
+        sorted_clusters = sorted(cluster_weights.items(), key=lambda x: x[1], reverse=True)
+        top_clusters = sorted_clusters[:top_k_clusters]
+
+        # Weighted projection
+        proj = np.zeros_like(q_emb)
+        total_weight = 0.0
+
+        for cid, w in top_clusters:
+            if cid in self.clusters:
+                W = self.clusters[cid]["W"]
+                proj += w * (q_emb @ W)
+                total_weight += w
+
+        if total_weight > 0:
+            proj /= total_weight
+
+        return proj
+
     def project_batch(self, q_embs: np.ndarray, top_k_routing: int = 10, k_coverage: float = None) -> np.ndarray:
         """Project a batch of query embeddings."""
         return np.array([self.project(q, top_k_routing, k_coverage) for q in q_embs])
@@ -291,6 +638,16 @@ def main():
                        help="Top-k clusters for routing (default: 10)")
     parser.add_argument("--k-coverage", type=float, default=None,
                        help="Use coverage-based k instead of fixed (e.g., 0.5 for 50%%)")
+    parser.add_argument("--routing-mode", type=str, default="centroid",
+                       choices=["centroid", "question"],
+                       help="Routing mode: centroid (sim to centroids) or question (sim to all questions, aggregated)")
+    parser.add_argument("--importance-weighting", type=str, default=None,
+                       choices=["entropy", "embedding", "bert", "bayesian-uniform", "bayesian-size", "bayesian-entropy", "bayesian-embedding"],
+                       help="Importance weighting: entropy (routing), embedding (norm deviation), bert (token-level entropy, requires --training-data), bayesian-* (stat-mech with prior)")
+    parser.add_argument("--training-data", type=Path, default=None,
+                       help="JSONL file with 'question' field for BERT entropy computation")
+    parser.add_argument("--entropy-weighting", action="store_true",
+                       help="[DEPRECATED] Use --importance-weighting entropy instead")
     parser.add_argument("--export-onnx", type=Path, default=None,
                        help="Export trained model to ONNX format for browser deployment")
     parser.add_argument("--onnx-opset", type=int, default=14,
@@ -309,7 +666,7 @@ def main():
     print("=" * 60)
 
     # Load federated model (teacher)
-    federated = FederatedProjectionWrapper(args.input_model)
+    federated = FederatedProjectionWrapper(args.input_model, routing_mode=args.routing_mode)
 
     n_clusters = federated.num_clusters
     embed_dim = federated.embed_dim
@@ -318,6 +675,7 @@ def main():
     print(f"  Clusters (N): {n_clusters}")
     print(f"  Embedding dim: {embed_dim}")
     print(f"  Temperature: {federated.temperature}")
+    print(f"  Routing mode: {federated.routing_mode}")
 
     # Handle architecture modes
     if args.architecture == "suggest":
@@ -370,6 +728,23 @@ def main():
 
         ff_dim = args.ff_dim or embed_dim * 2
 
+        # Compute importance weights for compare mode if enabled
+        compare_sample_weights = None
+        compare_weighting_mode = args.importance_weighting or ("entropy" if args.entropy_weighting else None)
+
+        if compare_weighting_mode:
+            print(f"Computing importance weights ({compare_weighting_mode}) for comparison...")
+            if compare_weighting_mode == "entropy":
+                compare_sample_weights = federated.compute_entropy_weights(train_queries)
+            elif compare_weighting_mode == "embedding":
+                uncertainties = federated.compute_embedding_uncertainty(train_queries)
+                compare_sample_weights = uncertainties / uncertainties.mean() if uncertainties.mean() > 0 else np.ones_like(uncertainties)
+                compare_sample_weights = np.clip(compare_sample_weights, 0.5, 2.0)
+                compare_sample_weights = compare_sample_weights / compare_sample_weights.mean()
+            elif compare_weighting_mode.startswith("bayesian-"):
+                prior_type = compare_weighting_mode.replace("bayesian-", "")
+                compare_sample_weights = federated.compute_bayesian_weights(train_queries, prior_type=prior_type)
+
         comparison_results = []
 
         for i, c in enumerate(candidates):
@@ -393,7 +768,8 @@ def main():
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 log_interval=args.compare_epochs,  # Only log at end
-                cosine_weight=args.cosine_weight
+                cosine_weight=args.cosine_weight,
+                sample_weights=compare_sample_weights
             )
 
             # Evaluate
@@ -497,7 +873,8 @@ def main():
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
                 log_interval=20,
-                cosine_weight=args.cosine_weight
+                cosine_weight=args.cosine_weight,
+                sample_weights=compare_sample_weights
             )
             results = evaluate_equivalence(transformer, federated, test_queries)
             print(f"Final cosine: {results['mean_cosine_sim']:.4f}")
@@ -585,6 +962,52 @@ def main():
     print(f"  Transformer params: {transformer_params:,}")
     print(f"  Ratio: {compression:.1f}x smaller")
 
+    # Compute importance weights if enabled
+    sample_weights = None
+    weighting_mode = args.importance_weighting or ("entropy" if args.entropy_weighting else None)
+
+    if weighting_mode:
+        print(f"\nComputing importance weights ({weighting_mode})...")
+        if weighting_mode == "entropy":
+            sample_weights = federated.compute_entropy_weights(train_queries)
+        elif weighting_mode == "embedding":
+            # Direct embedding uncertainty as importance weight
+            uncertainties = federated.compute_embedding_uncertainty(train_queries)
+            sample_weights = uncertainties / uncertainties.mean() if uncertainties.mean() > 0 else np.ones_like(uncertainties)
+            sample_weights = np.clip(sample_weights, 0.5, 2.0)
+            sample_weights = sample_weights / sample_weights.mean()
+        elif weighting_mode == "bert":
+            # BERT token-level entropy - requires original texts
+            if args.training_data is None:
+                logger.error("BERT weighting requires --training-data with question texts")
+                return 1
+            if not args.training_data.exists():
+                logger.error(f"Training data not found: {args.training_data}")
+                return 1
+            # Load question texts
+            print(f"  Loading questions from {args.training_data}...")
+            all_texts = []
+            with open(args.training_data, 'r') as f:
+                for line in f:
+                    obj = json.loads(line)
+                    all_texts.append(obj.get('question', ''))
+            # Get texts for train indices only
+            train_texts = [all_texts[i] for i in train_idx]
+            print(f"  Computing BERT entropy for {len(train_texts)} samples...")
+            bert_entropies = federated.compute_bert_entropy(train_texts)
+            if bert_entropies is None:
+                logger.error("BERT entropy computation failed (missing transformers/torch?)")
+                return 1
+            # Convert to importance weights (higher entropy = higher weight)
+            sample_weights = bert_entropies / bert_entropies.mean() if bert_entropies.mean() > 0 else np.ones_like(bert_entropies)
+            sample_weights = np.clip(sample_weights, 0.5, 2.0)
+            sample_weights = sample_weights / sample_weights.mean()
+        elif weighting_mode.startswith("bayesian-"):
+            prior_type = weighting_mode.replace("bayesian-", "")
+            sample_weights = federated.compute_bayesian_weights(train_queries, prior_type=prior_type)
+        print(f"  Importance weights: min={sample_weights.min():.3f}, max={sample_weights.max():.3f}, "
+              f"std={sample_weights.std():.3f}")
+
     # Train via distillation
     print(f"\nTraining for {args.epochs} epochs (cosine_weight={args.cosine_weight})...")
     losses = train_distillation(
@@ -595,7 +1018,8 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.lr,
         log_interval=20,
-        cosine_weight=args.cosine_weight
+        cosine_weight=args.cosine_weight,
+        sample_weights=sample_weights
     )
 
     # Evaluate on test set
