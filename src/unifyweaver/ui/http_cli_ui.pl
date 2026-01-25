@@ -28,6 +28,7 @@
     exec_panel_spec/1,
     feedback_panel_spec/1,
     shell_panel_spec/1,
+    results_panel_spec/1,
 
     % Testing
     test_http_cli_ui/0
@@ -131,7 +132,10 @@ http_cli_interface(
                         case(feedback, [use_spec(feedback_panel_spec)]),
                         case(shell, [use_spec(shell_panel_spec)])
                     ])
-                ])
+                ]),
+
+                % Results panel (visible for grep, find, cat, exec)
+                use_spec(results_panel_spec)
             ])
         ])
     ])
@@ -202,16 +206,31 @@ user_header_spec(
 
 %! working_dir_bar_spec(-Spec) is det
 working_dir_bar_spec(
-    container(panel, [class(working_dir_bar), padding(10, 15)], [
+    container(panel, [class(working_dir_bar), padding(8, 12)], [
         layout(flex, [align(center), gap(10), wrap(true)], [
-            component(text, [content("Working directory:"), style(muted)]),
-            component(code, [content(working_dir)]),
+            % Root selector
+            component(text, [content("Root:"), style(muted), size(12)]),
+            component(select, [
+                bind(browse_root),
+                on_change(on_root_change),
+                options([
+                    option(sandbox, "Sandbox"),
+                    option(project, "Project"),
+                    option(home, "Home")
+                ]),
+                size(small),
+                style("padding: 4px 8px; background: #1a1a2e; border: 1px solid #16213e; color: #cdd6f4; border-radius: 3px; font-size: 12px;")
+            ]),
+            % Path display
+            component(text, [content("Path:"), style(muted), size(12)]),
+            component(code, [content(working_dir), style("color: #4ade80;")]),
             when(not_eq(working_dir, "."), [
                 component(button, [
-                    label("Reset to root"),
+                    label("Reset"),
                     on_click(reset_working_dir),
                     variant(ghost),
-                    size(small)
+                    size(small),
+                    style("padding: 4px 10px; background: #16213e; font-size: 11px;")
                 ])
             ])
         ])
@@ -549,6 +568,19 @@ shell_panel_spec(
                 ])
             ])
         ])
+    ])
+).
+
+%! results_panel_spec(-Spec) is det
+%  Results panel with syntax highlighting for code viewing.
+%  Shows results for grep, find, cat, and exec tabs.
+%  NOTE: This spec generates a custom results panel with highlight.js integration.
+%  The generator handles this specially via generate_results_panel/1.
+results_panel_spec(
+    custom_results_panel([
+        show_when([grep, find, cat, exec]),
+        syntax_highlight(true),
+        actions([download, copy, clear])
     ])
 ).
 

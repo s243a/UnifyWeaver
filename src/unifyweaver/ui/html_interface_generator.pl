@@ -83,6 +83,9 @@ generate_html_head(Title, Theme, Head) :-
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>~w</title>
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <!-- Highlight.js for syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
 ~w
   </style>
@@ -316,13 +319,61 @@ generate_component_css(Colors, _Spacing, Borders, CSS) :-
     }
     .shell-input:focus { outline: none; }
     .prompt { color: ~w; font-family: monospace; }
+    /* Code viewer with syntax highlighting */
+    .code-viewer {
+      position: relative;
+      background: #282c34;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .code-viewer pre {
+      margin: 0;
+      padding: 15px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .code-viewer code {
+      background: transparent;
+      padding: 0;
+    }
+    .code-viewer .line-numbers {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 50px;
+      background: rgba(0,0,0,0.3);
+      padding: 15px 10px;
+      text-align: right;
+      color: #5c6370;
+      font-size: 13px;
+      line-height: 1.5;
+      font-family: monospace;
+      user-select: none;
+    }
+    .code-viewer.with-line-numbers pre {
+      padding-left: 60px;
+    }
+    .results_panel {
+      background: ~w;
+      padding: 15px;
+      border-radius: ~wpx;
+    }
+    .results_text {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-size: 13px;
+      line-height: 1.5;
+      font-family: monospace;
+    }
 ', [SurfaceColor, MutedColor, BorderRadius, BorderRadius, SecondaryColor, PrimaryColor,
     SecondaryColor, SurfaceColor, BorderRadius, BorderRadius, BorderRadius, MutedColor,
     SecondaryColor, BorderRadius, PrimaryColor, PrimaryColor, BorderRadius,
     SecondaryColor, BorderRadius, ErrorColor, SuccessColor, WarningColor, MutedColor,
     SurfaceColor, PrimaryColor, SecondaryColor, BorderRadius, SuccessColor, MutedColor,
     PrimaryColor, SecondaryColor, BorderRadius, SecondaryColor, BorderRadius, BorderRadius,
-    SuccessColor]).
+    SuccessColor, SurfaceColor, BorderRadius]).
 
 get_color(Name, Colors, Value, _Default) :-
     Term =.. [Name, Value],
@@ -421,6 +472,37 @@ generate_content_item(foreach(Collection, Var, Content), Code) :- !,
     format(atom(Code), '    <template v-for="~w in ~w" :key="~w">\n~w\n    </template>',
            [Var, VueCollection, Var, InnerCode]).
 
+generate_content_item(custom_results_panel(_Options), Code) :- !,
+    % Generate custom results panel with syntax highlighting
+    Code = '
+  <!-- Results Panel with Syntax Highlighting -->
+  <div v-if="results && [\'grep\', \'find\', \'cat\', \'exec\'].includes(tab)" class="results_panel" style="margin-top: 15px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <span style="color: #94a3b8; font-size: 14px;">{{ resultHeader }}</span>
+        <span v-if="resultCount > 0" class="count">({{ resultCount }} items)</span>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button v-if="tab === \'cat\'" @click="downloadFile" style="padding: 6px 12px; background: #16213e; font-size: 12px;">📥 Download</button>
+        <button @click="copyResults" style="padding: 6px 12px; background: #16213e; font-size: 12px;">📋 Copy</button>
+        <button @click="clearResults" style="padding: 6px 12px; background: #16213e; font-size: 12px;">Clear</button>
+      </div>
+    </div>
+    <div class="results">
+      <!-- Syntax highlighted code for cat tab -->
+      <template v-if="tab === \'cat\'">
+        <div class="code-viewer with-line-numbers">
+          <div class="line-numbers" v-html="results.split(\'\\n\').map((_, i) => i + 1).join(\'\\n\')"></div>
+          <pre><code :class="\'language-\' + detectedLanguage">{{ results }}</code></pre>
+        </div>
+      </template>
+      <!-- Plain text for other tabs -->
+      <template v-else>
+        <pre class="results_text">{{ results }}</pre>
+      </template>
+    </div>
+  </div>'.
+
 generate_content_item(Item, Code) :-
     % Fallback - don't serialize the entire term, just indicate what type it is
     functor(Item, Functor, _),
@@ -505,6 +587,7 @@ const app = createApp({
     // UI state
     const tab = ref("browse");
     const workingDir = ref(".");
+    const browseRoot = ref("sandbox");  // sandbox | project | home
     const results = ref("");
     const resultCount = ref(0);
 
@@ -576,10 +659,20 @@ const app = createApp({
       localStorage.removeItem("token");
     };
 
+    // Root selector
+    const onRootChange = () => {
+      workingDir.value = ".";
+      loadBrowse(".");
+    };
+    const resetWorkingDir = () => {
+      workingDir.value = ".";
+      loadBrowse(".");
+    };
+
     // Browse methods
     const loadBrowse = async (path = browse.path) => {
       loading.value = true;
-      const res = await apiCall("/browse", "POST", { path, workingDir: workingDir.value });
+      const res = await apiCall("/browse", "POST", { path, root: browseRoot.value });
       if (res.success) {
         browse.path = res.data.path;
         browse.entries = res.data.entries || [];
@@ -592,7 +685,28 @@ const app = createApp({
     };
 
     const navigateTo = (path) => loadBrowse(path);
+    const navigateUp = () => { if (browse.parent) loadBrowse(browse.parent); };
+    const handleEntryClick = (entry) => {
+      if (entry.type === "directory") {
+        const newPath = browse.path === "." ? entry.name : `${browse.path}/${entry.name}`;
+        loadBrowse(newPath);
+      } else {
+        const filePath = browse.path === "." ? entry.name : `${browse.path}/${entry.name}`;
+        browse.selected = filePath;
+      }
+    };
     const selectFile = (path) => { browse.selected = path; };
+    const viewFile = () => {
+      if (browse.selected) {
+        cat.path = browse.selected;
+        tab.value = "cat";
+        doCat();
+      }
+    };
+    const searchHere = () => {
+      grep.path = browse.path;
+      tab.value = "grep";
+    };
 
     // Search methods
     const doGrep = async () => {
@@ -600,9 +714,10 @@ const app = createApp({
       const res = await apiCall("/grep", "POST", {
         pattern: grep.pattern,
         path: grep.path || workingDir.value,
-        options: grep.options
+        options: grep.options,
+        root: browseRoot.value
       });
-      results.value = res.success ? res.data.output : res.error;
+      results.value = res.success ? (res.data.matches || []).join("\\n") : res.error;
       resultCount.value = res.data?.count || 0;
       loading.value = false;
     };
@@ -612,9 +727,10 @@ const app = createApp({
       const res = await apiCall("/find", "POST", {
         pattern: find.pattern,
         path: find.path || workingDir.value,
-        options: find.options
+        options: find.options,
+        root: browseRoot.value
       });
-      results.value = res.success ? res.data.output : res.error;
+      results.value = res.success ? (res.data.files || []).join("\\n") : res.error;
       resultCount.value = res.data?.count || 0;
       loading.value = false;
     };
@@ -623,7 +739,8 @@ const app = createApp({
       loading.value = true;
       const res = await apiCall("/cat", "POST", {
         path: cat.path,
-        workingDir: workingDir.value
+        cwd: workingDir.value,
+        root: browseRoot.value
       });
       results.value = res.success ? res.data.content : res.error;
       loading.value = false;
@@ -631,9 +748,15 @@ const app = createApp({
 
     const doExec = async () => {
       loading.value = true;
+      // Parse command line into command and args
+      const parts = exec.commandLine.trim().split(/\\s+/);
+      const command = parts[0] || "";
+      const args = parts.slice(1);
       const res = await apiCall("/exec", "POST", {
-        command: exec.commandLine,
-        workingDir: workingDir.value
+        command,
+        args,
+        cwd: workingDir.value,
+        root: browseRoot.value
       });
       results.value = res.success ? res.data.stdout : res.error;
       loading.value = false;
@@ -655,31 +778,34 @@ const app = createApp({
     };
 
     // Shell methods
+    // Strip ANSI escape codes for text display
+    const stripAnsi = (str) => str.replace(/\\x1b\\[[0-9;]*[a-zA-Z]|\\x1b\\][^\\x07]*\\x07|\\x1b\\[\\?[0-9;]*[a-zA-Z]/g, "").replace(/\\r\\n/g, "\\n").replace(/\\r/g, "");
+
     const connectShell = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}`;
+      const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}&root=${browseRoot.value}`;
       shell.ws = new WebSocket(wsUrl);
-      shell.ws.onopen = () => { shell.connected = true; shell.output = "Connected to shell.\\\\n"; };
+      shell.ws.onopen = () => { shell.connected = true; shell.output = `Connected to shell (${browseRoot.value} root).\\n`; };
       shell.ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "output" || msg.type === "error") {
-            shell.output += msg.data;
+            shell.output += stripAnsi(msg.data);
           } else if (msg.type === "prompt") {
-            shell.output += "$ ";
+            shell.output += `${browseRoot.value}:~$ `;
           }
         } catch {
-          shell.output += e.data;
+          shell.output += stripAnsi(e.data);
         }
         scrollShell();
       };
-      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\\\nDisconnected.\\\\n"; };
+      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\nDisconnected.\\n"; };
       shell.ws.onerror = () => { shell.connected = false; };
     };
 
     const sendShellCommand = () => {
       if (shell.ws && shell.connected && shell.input) {
-        shell.ws.send(JSON.stringify({ type: "input", data: shell.input + "\\\\n" }));
+        shell.ws.send(JSON.stringify({ type: "input", data: shell.input + "\\n" }));
         shell.input = "";
       }
     };
@@ -758,6 +884,84 @@ const app = createApp({
       return (bytes / 1024 / 1024).toFixed(1) + " MB";
     };
 
+    // Language detection for syntax highlighting
+    const detectLanguage = (filename) => {
+      const ext = (filename || "").split(".").pop()?.toLowerCase() || "";
+      const langMap = {
+        js: "javascript", ts: "typescript", jsx: "javascript", tsx: "typescript",
+        py: "python", rb: "ruby", rs: "rust", go: "go", java: "java",
+        c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp",
+        html: "html", htm: "html", xml: "xml", svg: "xml",
+        css: "css", scss: "scss", less: "less", sass: "scss",
+        json: "json", yaml: "yaml", yml: "yaml", toml: "ini",
+        md: "markdown", sh: "bash", bash: "bash", zsh: "bash",
+        sql: "sql", pl: "prolog", pro: "prolog", ex: "elixir", exs: "elixir",
+        php: "php", swift: "swift", kt: "kotlin", lua: "lua",
+        dockerfile: "dockerfile", makefile: "makefile"
+      };
+      return langMap[ext] || "plaintext";
+    };
+
+    const detectedLanguage = computed(() => detectLanguage(cat.path));
+
+    const resultHeader = computed(() => {
+      switch (tab.value) {
+        case "grep": return "Search Results";
+        case "find": return "Found Files";
+        case "cat": return cat.path || "File Contents";
+        case "exec": return "Command Output";
+        default: return "Results";
+      }
+    });
+
+    // Results panel actions
+    const clearResults = () => {
+      results.value = "";
+      resultCount.value = 0;
+    };
+
+    const copyResults = async () => {
+      try {
+        await navigator.clipboard.writeText(results.value);
+        alert("Copied to clipboard!");
+      } catch (err) {
+        // Fallback for older browsers
+        const ta = document.createElement("textarea");
+        ta.value = results.value;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        alert("Copied to clipboard!");
+      }
+    };
+
+    const downloadFile = () => {
+      if (!results.value) return;
+      const filename = cat.path.split("/").pop() || "file.txt";
+      const blob = new Blob([results.value], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
+    // Apply syntax highlighting after results change
+    watch(results, () => {
+      if (tab.value === "cat" && results.value && window.hljs) {
+        setTimeout(() => {
+          const codeBlocks = document.querySelectorAll(".code-viewer code");
+          codeBlocks.forEach((block) => {
+            window.hljs.highlightElement(block);
+          });
+        }, 50);
+      }
+    });
+
     // Lifecycle
     onMounted(() => {
       checkAuth();
@@ -772,13 +976,14 @@ const app = createApp({
 
     return {
       authRequired, user, loginEmail, loginPassword, loginError, loading, token,
-      tab, workingDir, results, resultCount,
+      tab, workingDir, browseRoot, results, resultCount, detectedLanguage, resultHeader,
       browse, grep, find, cat, exec, feedback, shell, shellTextMode,
-      doLogin, doLogout, loadBrowse, navigateTo, selectFile,
+      doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile,
+      handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
       doGrep, doFind, doCat, doExec, doFeedback,
       connectShell, disconnectShell, sendShellCommand, clearShell,
       toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
-      formatSize
+      formatSize, clearResults, copyResults, downloadFile
     };
   }
 });

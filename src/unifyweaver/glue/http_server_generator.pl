@@ -136,7 +136,7 @@ generate_server_imports(ServiceSpec, typescript, Code) :-
 
     % WebSocket import if needed
     (   WSConfig \= none
-    ->  WSImport = 'import WebSocket, { WebSocketServer } from \'ws\';'
+    ->  WSImport = 'import WebSocket, { WebSocketServer } from \'ws\';\nimport * as pty from \'node-pty\';'
     ;   WSImport = ''
     ),
 
@@ -176,6 +176,10 @@ const AUTH_REQUIRED = process.env.AUTH_REQUIRED === \'true\';
 
 // Commands allowed for search operations
 const SEARCH_COMMANDS = [\'grep\', \'find\', \'cat\', \'head\', \'tail\', \'ls\', \'wc\', \'pwd\'];
+
+// Browse roots - support sandbox, project, and home directories
+const PROJECT_ROOT = process.env.PROJECT_ROOT || path.resolve(__dirname, \'../../..\');
+const HOME_ROOT = process.env.HOME || \'/data/data/com.termux/files/home\';
 
 // Feedback log file
 const FEEDBACK_FILE = process.env.FEEDBACK_FILE || path.join(SANDBOX_ROOT, \'comet-feedback.log\');', [Port, OriginsArray]).
@@ -219,11 +223,30 @@ interface FileEntry {
 // Helper Functions
 // ============================================================================
 
-function resolveWorkingDir(cwd?: string): string {
-  if (!cwd || cwd === \'.\') return SANDBOX_ROOT;
-  const resolved = path.resolve(SANDBOX_ROOT, cwd);
-  if (!resolved.startsWith(SANDBOX_ROOT)) return SANDBOX_ROOT;
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return SANDBOX_ROOT;
+/**
+ * Get the base directory for a given root type
+ */
+function getRootDir(root?: string): string {
+  switch (root) {
+    case \'project\':
+      return PROJECT_ROOT;
+    case \'home\':
+      return HOME_ROOT;
+    case \'sandbox\':
+    default:
+      return SANDBOX_ROOT;
+  }
+}
+
+/**
+ * Resolve a working directory relative to the specified root
+ */
+function resolveWorkingDir(cwd?: string, root?: string): string {
+  const rootDir = getRootDir(root);
+  if (!cwd || cwd === \'.\') return rootDir;
+  const resolved = path.resolve(rootDir, cwd);
+  if (!resolved.startsWith(rootDir)) return rootDir;
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return rootDir;
   return resolved;
 }
 
@@ -381,11 +404,14 @@ generate_handler_body(commands, _, Body) :-
   });'.
 
 generate_handler_body(browse, _, Body) :-
-    Body = '  const { path: browsePath = \'.\' } = body as any;
+    Body = '  const { path: browsePath = \'.\', root = \'sandbox\' } = body as any;
 
-  const targetPath = path.resolve(SANDBOX_ROOT, browsePath);
-  if (!targetPath.startsWith(SANDBOX_ROOT)) {
-    return sendJSON(res, 403, { success: false, error: \'Path outside sandbox\' });
+  // Determine root directory based on selection
+  const rootDir = getRootDir(root);
+
+  const targetPath = path.resolve(rootDir, browsePath);
+  if (!targetPath.startsWith(rootDir)) {
+    return sendJSON(res, 403, { success: false, error: \'Path outside root\' });
   }
 
   if (!fs.existsSync(targetPath)) {
@@ -419,13 +445,15 @@ generate_handler_body(browse, _, Body) :-
     return a.name.localeCompare(b.name);
   });
 
-  const relativePath = path.relative(SANDBOX_ROOT, targetPath) || \'.\';
+  const relativePath = path.relative(rootDir, targetPath) || \'.\';
 
   sendJSON(res, 200, {
     success: true,
     data: {
       path: relativePath,
       absolutePath: targetPath,
+      root,
+      rootDir,
       parent: relativePath !== \'.\' ? path.dirname(relativePath) || \'.\' : null,
       entries,
       count: entries.length
@@ -433,13 +461,13 @@ generate_handler_body(browse, _, Body) :-
   });'.
 
 generate_handler_body(grep, _, Body) :-
-    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd } = body as any;
+    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd, root } = body as any;
 
   if (!pattern) {
     return sendJSON(res, 400, { success: false, error: \'Missing pattern\' });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const args = [\'-r\', \'-n\', \'--color=never\', ...options, pattern, searchPath];
   const cmdString = [\'grep\', ...args].join(\' \');
   const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
@@ -455,9 +483,9 @@ generate_handler_body(grep, _, Body) :-
   });'.
 
 generate_handler_body(find, _, Body) :-
-    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd } = body as any;
+    Body = '  const { pattern, path: searchPath = \'.\', options = [], cwd, root } = body as any;
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const args = [searchPath];
   if (pattern) args.push(\'-name\', pattern);
   args.push(...options);
@@ -475,13 +503,13 @@ generate_handler_body(find, _, Body) :-
   });'.
 
 generate_handler_body(cat, _, Body) :-
-    Body = '  const { path: filePath, options = [], cwd } = body as any;
+    Body = '  const { path: filePath, options = [], cwd, root } = body as any;
 
   if (!filePath) {
     return sendJSON(res, 400, { success: false, error: \'Missing path\' });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const cmdString = [\'cat\', ...options, filePath].join(\' \');
   const result = await execute(cmdString, { role: \'user\', cwd: workingDir });
 
@@ -498,7 +526,7 @@ generate_handler_body(cat, _, Body) :-
   });'.
 
 generate_handler_body(exec, _, Body) :-
-    Body = '  const { command, args = [], cwd } = body as any;
+    Body = '  const { command, args = [], cwd, root } = body as any;
 
   if (!command) {
     return sendJSON(res, 400, { success: false, error: \'Missing command\' });
@@ -508,7 +536,7 @@ generate_handler_body(exec, _, Body) :-
     return sendJSON(res, 403, { success: false, error: `Command not allowed. Allowed: ${SEARCH_COMMANDS.join(\', \')}` });
   }
 
-  const workingDir = resolveWorkingDir(cwd);
+  const workingDir = resolveWorkingDir(cwd, root);
   const expandedArgs = expandGlobs(args, workingDir);
   const validation = validateCommand(command, expandedArgs, { role: \'user\' });
 
@@ -687,15 +715,15 @@ generate_websocket_handler(ServiceSpec, typescript, Code) :-
     ;   websocket_roles(WSConfig, WSRoles),
         roles_to_ts_array_simple(WSRoles, RolesArray),
         format(atom(Code), '// ============================================================================
-// WebSocket Shell Session
+// WebSocket Shell Session (using node-pty for proper PTY support)
 // ============================================================================
 
-interface ShellSession {
+interface PTYSession {
   ws: WebSocket;
   user: TokenPayload;
-  process: ChildProcessWithoutNullStreams | null;
-  currentDir: string;
-  inputBuffer: string;
+  pty: pty.IPty | null;
+  rootType: string;
+  rootDir: string;
 }
 
 function setupWebSocket(server: http.Server | https.Server): void {
@@ -704,11 +732,13 @@ function setupWebSocket(server: http.Server | https.Server): void {
   wss.on(\'connection\', (ws: WebSocket, req: http.IncomingMessage) => {
     const parsedUrl = url.parse(req.url || \'\', true);
     const token = parsedUrl.query.token as string;
+    const rootType = (parsedUrl.query.root as string) || \'sandbox\';
+    const cols = parseInt(parsedUrl.query.cols as string) || 80;
+    const rows = parseInt(parsedUrl.query.rows as string) || 24;
 
     let payload: TokenPayload;
 
     if (AUTH_REQUIRED) {
-      // Auth required - must have valid token
       if (!token) {
         ws.send(JSON.stringify({ type: \'error\', data: \'Authentication required\' }));
         ws.close(1008, \'Authentication required\');
@@ -723,7 +753,6 @@ function setupWebSocket(server: http.Server | https.Server): void {
       }
       payload = verified;
 
-      // Check for required roles
       const requiredRoles = ~w;
       const hasRequiredRole = requiredRoles.length === 0 || requiredRoles.some(r => payload.roles.includes(r as Role));
       if (!hasRequiredRole) {
@@ -732,7 +761,6 @@ function setupWebSocket(server: http.Server | https.Server): void {
         return;
       }
     } else {
-      // Auth not required - use guest payload with full access
       payload = {
         sub: \'guest\',
         email: \'guest@local\',
@@ -743,176 +771,94 @@ function setupWebSocket(server: http.Server | https.Server): void {
       };
     }
 
-    console.log(`Shell session started for ${payload.email}`);
-    handleShellConnection(ws, payload);
+    console.log(`Shell session started for ${payload.email} (root: ${rootType}, ${cols}x${rows})`);
+    handlePTYConnection(ws, payload, rootType, cols, rows);
   });
 }
 
-function handleShellConnection(ws: WebSocket, user: TokenPayload): void {
-  const session: ShellSession = {
+function handlePTYConnection(ws: WebSocket, user: TokenPayload, rootType: string, cols: number, rows: number): void {
+  const rootDir = getRootDir(rootType);
+
+  // Spawn a real PTY shell
+  const shell = process.env.SHELL || \'/bin/bash\';
+  const ptyProcess = pty.spawn(shell, [], {
+    name: \'xterm-256color\',
+    cols,
+    rows,
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      HOME: rootDir,
+      TERM: \'xterm-256color\',
+      COLORTERM: \'truecolor\',
+      PS1: `\\\\[\\\\033[32m\\\\]${rootType}\\\\[\\\\033[0m\\\\]:\\\\[\\\\033[34m\\\\]\\\\w\\\\[\\\\033[0m\\\\]\\\\$ `
+    }
+  });
+
+  const session: PTYSession = {
     ws,
     user,
-    process: null,
-    currentDir: SANDBOX_ROOT,
-    inputBuffer: \'\'
+    pty: ptyProcess,
+    rootType,
+    rootDir
   };
 
-  // Send welcome message
-  const welcome = `\\r\\nConnected to UnifyWeaver Shell\\r\\nUser: ${user.email} [${user.roles.join(\', \')}]\\r\\nWorking directory: ${SANDBOX_ROOT}\\r\\nType \"help\" for commands, \"exit\" to disconnect\\r\\n\\r\\n`;
-  ws.send(JSON.stringify({ type: \'output\', data: welcome }));
-  ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+  // Send PTY output to WebSocket
+  ptyProcess.onData((data: string) => {
+    try {
+      ws.send(JSON.stringify({ type: \'output\', data }));
+    } catch (err) {
+      // WebSocket might be closed
+    }
+  });
 
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    console.log(`PTY exited for ${user.email} (code: ${exitCode}, signal: ${signal})`);
+    try {
+      ws.send(JSON.stringify({ type: \'exit\', code: exitCode, signal }));
+      ws.close();
+    } catch (err) {
+      // WebSocket might already be closed
+    }
+  });
+
+  // Handle WebSocket messages
   ws.on(\'message\', (data: Buffer | string) => {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.type === \'input\') {
-        handleShellInput(session, msg.data);
+
+      if (msg.type === \'input\' && session.pty) {
+        // Send input directly to PTY
+        session.pty.write(msg.data);
+      } else if (msg.type === \'resize\' && session.pty) {
+        // Handle terminal resize
+        const newCols = msg.cols || 80;
+        const newRows = msg.rows || 24;
+        session.pty.resize(newCols, newRows);
+        console.log(`Resized terminal for ${user.email} to ${newCols}x${newRows}`);
       }
     } catch (err) {
-      console.error(\'Shell message error:\', err);
+      // Try handling as raw input
+      if (session.pty) {
+        session.pty.write(data.toString());
+      }
     }
   });
 
   ws.on(\'close\', () => {
-    if (session.process) {
-      session.process.kill();
-      session.process = null;
+    if (session.pty) {
+      session.pty.kill();
+      session.pty = null;
     }
     console.log(`Shell session closed for ${user.email}`);
   });
-}
 
-function handleShellInput(session: ShellSession, input: string): void {
-  const { ws } = session;
-
-  // Process each character in the input
-  for (const char of input) {
-    processShellChar(session, char);
-  }
-}
-
-function processShellChar(session: ShellSession, char: string): void {
-  const { ws } = session;
-
-  // Enter key
-  if (char === \'\\r\' || char === \'\\n\') {
-    ws.send(JSON.stringify({ type: \'output\', data: \'\\r\\n\' }));
-    const command = session.inputBuffer.trim();
-    session.inputBuffer = \'\';
-    if (command) {
-      executeShellCommand(session, command);
-    } else {
-      ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
+  ws.on(\'error\', (err) => {
+    console.error(`WebSocket error for ${user.email}:`, err.message);
+    if (session.pty) {
+      session.pty.kill();
+      session.pty = null;
     }
-  }
-  // Backspace
-  else if (char === \'\\x7f\' || char === \'\\b\') {
-    if (session.inputBuffer.length > 0) {
-      session.inputBuffer = session.inputBuffer.slice(0, -1);
-      ws.send(JSON.stringify({ type: \'output\', data: \'\\b \\b\' }));
-    }
-  }
-  // Ctrl+C
-  else if (char === \'\\x03\') {
-    if (session.process) {
-      session.process.kill(\'SIGINT\');
-      session.process = null;
-    }
-    ws.send(JSON.stringify({ type: \'output\', data: \'^C\\r\\n\' }));
-    session.inputBuffer = \'\';
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-  }
-  // Printable characters
-  else if (char >= \' \' && char <= \'~~\') {
-    session.inputBuffer += char;
-    ws.send(JSON.stringify({ type: \'output\', data: char }));
-  }
-}
-
-function executeShellCommand(session: ShellSession, command: string): void {
-  const { ws } = session;
-
-  // Built-in: help
-  if (command === \'help\') {
-    const helpText = `\\r\\nUnifyWeaver Shell - Built-in Commands:\\r\\n  help    - Show this help\\r\\n  cd DIR  - Change directory\\r\\n  pwd     - Print working directory\\r\\n  exit    - Disconnect\\r\\n\\r\\nYou can run any shell command. Output is streamed in real-time.\\r\\n\\r\\n`;
-    ws.send(JSON.stringify({ type: \'output\', data: helpText }));
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-    return;
-  }
-
-  // Built-in: exit
-  if (command === \'exit\' || command === \'quit\') {
-    ws.send(JSON.stringify({ type: \'output\', data: \'Goodbye!\\r\\n\' }));
-    ws.close();
-    return;
-  }
-
-  // Built-in: cd
-  if (command.startsWith(\'cd \') || command === \'cd\') {
-    const targetDir = command.slice(3).trim() || SANDBOX_ROOT;
-    let newDir: string;
-
-    if (path.isAbsolute(targetDir)) {
-      newDir = targetDir;
-    } else if (targetDir === \'~~\') {
-      newDir = SANDBOX_ROOT;
-    } else if (targetDir.startsWith(\'~~/\')) {
-      newDir = path.join(SANDBOX_ROOT, targetDir.slice(2));
-    } else {
-      newDir = path.resolve(session.currentDir, targetDir);
-    }
-
-    // Security: ensure within sandbox
-    if (!newDir.startsWith(SANDBOX_ROOT)) {
-      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: Access denied - outside sandbox\\x1b[0m\\r\\n` }));
-      ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-      return;
-    }
-
-    if (fs.existsSync(newDir) && fs.statSync(newDir).isDirectory()) {
-      session.currentDir = newDir;
-    } else {
-      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mcd: ${targetDir}: No such directory\\x1b[0m\\r\\n` }));
-    }
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-    return;
-  }
-
-  // Built-in: pwd
-  if (command === \'pwd\') {
-    ws.send(JSON.stringify({ type: \'output\', data: session.currentDir + \'\\r\\n\' }));
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-    return;
-  }
-
-  // Execute shell command
-  const proc = spawn(\'sh\', [\'-c\', command], {
-    cwd: session.currentDir,
-    env: { ...process.env, HOME: SANDBOX_ROOT, TERM: \'xterm-256color\' }
-  });
-
-  session.process = proc;
-
-  proc.stdout.on(\'data\', (data: Buffer) => {
-    ws.send(JSON.stringify({ type: \'output\', data: data.toString().replace(/\\n/g, \'\\r\\n\') }));
-  });
-
-  proc.stderr.on(\'data\', (data: Buffer) => {
-    ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31m${data.toString().replace(/\\n/g, \'\\r\\n\')}\\x1b[0m` }));
-  });
-
-  proc.on(\'close\', (code: number) => {
-    session.process = null;
-    if (code !== 0) {
-      ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[33m[exit code: ${code}]\\x1b[0m\\r\\n` }));
-    }
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
-  });
-
-  proc.on(\'error\', (err: Error) => {
-    session.process = null;
-    ws.send(JSON.stringify({ type: \'output\', data: `\\x1b[31mError: ${err.message}\\x1b[0m\\r\\n` }));
-    ws.send(JSON.stringify({ type: \'prompt\', cwd: session.currentDir }));
   });
 }', [RolesArray])
     ).
@@ -1084,8 +1030,10 @@ generate_html_interface_function(_ServiceSpec, typescript, Code) :-
 %  Escape content for JavaScript template literal (backticks).
 escape_for_js_template(Input, Output) :-
     atom_string(Input, Str),
+    % Escape backslashes first (must be done before other escapes)
+    string_replace(Str, "\\", "\\\\", Str0),
     % Escape backticks and ${
-    string_replace(Str, "`", "\\`", Str1),
+    string_replace(Str0, "`", "\\`", Str1),
     string_replace(Str1, "${", "\\${", Str2),
     atom_string(Output, Str2).
 

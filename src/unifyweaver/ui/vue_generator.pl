@@ -616,8 +616,11 @@ generate_component(select, Options, Indent, _GenOpts, Code) :-
     get_option(options, Options, Opts, []),
     get_option(placeholder, Options, Placeholder, 'Select...'),
     get_option(label, Options, Label, ''),
+    get_option(on_change, Options, OnChange, ''),
+    get_option(style, Options, Style, ''),
 
     indent_string(Indent, IndentStr),
+    snake_to_camel(Bind, CamelBind),
 
     (is_binding(Opts) ->
         binding_to_vue(Opts, VueOpts),
@@ -626,19 +629,30 @@ generate_component(select, Options, Indent, _GenOpts, Code) :-
         generate_static_options(Opts, OptionsCode)
     ),
 
+    % Build on_change handler if provided
+    (OnChange \= '' ->
+        onclick_to_vue(OnChange, VueChange),
+        format(atom(ChangeAttr), ' @change="~w"', [VueChange])
+    ; ChangeAttr = ''),
+
+    % Build style attribute
+    (Style \= '' ->
+        format(atom(StyleAttr), ' style="~w"', [Style])
+    ; StyleAttr = ' style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;"'),
+
     (Label \= '' ->
         format(atom(Code),
 '~w<div class="form-group">
 ~w  <label>~w</label>
-~w  <select v-model="~w" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
+~w  <select v-model="~w"~w~w>
 ~w    <option value="" disabled>~w</option>
 ~w    ~w
 ~w  </select>
 ~w</div>~n',
-               [IndentStr, IndentStr, Label, IndentStr, Bind, IndentStr, Placeholder, IndentStr, OptionsCode, IndentStr, IndentStr])
+               [IndentStr, IndentStr, Label, IndentStr, CamelBind, ChangeAttr, StyleAttr, IndentStr, Placeholder, IndentStr, OptionsCode, IndentStr, IndentStr])
     ;
-        format(atom(Code), '~w<select v-model="~w" style="width: 100%; padding: 10px;"><option value="" disabled>~w</option>~w</select>~n',
-               [IndentStr, Bind, Placeholder, OptionsCode])
+        format(atom(Code), '~w<select v-model="~w"~w~w><option value="" disabled>~w</option>~w</select>~n',
+               [IndentStr, CamelBind, ChangeAttr, StyleAttr, Placeholder, OptionsCode])
     ).
 
 % Switch component
