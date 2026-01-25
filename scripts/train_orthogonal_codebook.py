@@ -933,6 +933,449 @@ def evaluate_orthogonal_transformer(
 
 
 # =============================================================================
+# Full Rotation Teacher (for validation)
+# =============================================================================
+
+class FullRotationTeacher:
+    """
+    Teacher using full rotational manifold from federated model.
+
+    Blends cluster bivectors and applies via matrix exponential.
+    This is the "ground truth" for comparison with compressed codebook.
+    """
+
+    def __init__(self, federated_model_path: str):
+        """Load federated model and compute cluster bivectors."""
+        from scipy.linalg import logm
+
+        model_path = Path(federated_model_path)
+        with open(model_path, 'rb') as f:
+            self.meta = pickle.load(f)
+
+        self.cluster_ids = self.meta["cluster_ids"]
+        self.temperature = self.meta.get("temperature", 0.1)
+        self.num_clusters = len(self.cluster_ids)
+        self.cluster_centroids = self.meta.get("cluster_centroids")
+
+        # Load routing data
+        cluster_dir = model_path.with_suffix('')
+        routing_path = cluster_dir / "routing_data.npz"
+        if routing_path.exists():
+            routing_data = np.load(routing_path)
+            self.query_embeddings = routing_data['query_embeddings']
+        else:
+            raise FileNotFoundError(f"Routing data not found: {routing_path}")
+
+        # Load cluster W matrices and compute bivectors
+        self.cluster_bivectors = {}
+        self.d = None
+
+        for cid in self.cluster_ids:
+            if cid.startswith("cluster_"):
+                cluster_path = cluster_dir / f"{cid}.npz"
+            else:
+                cluster_path = cluster_dir / f"cluster_{cid}.npz"
+
+            if cluster_path.exists():
+                data = np.load(cluster_path)
+                if "W" in data:
+                    W = data["W"]
+                elif "W_stack" in data:
+                    W = data["W_stack"][0]
+                else:
+                    continue
+
+                if self.d is None:
+                    self.d = W.shape[0]
+
+                # Compute bivector (log of rotation)
+                try:
+                    A = logm(W)
+                    A = np.real(A)
+                    A = (A - A.T) / 2  # Ensure antisymmetric
+                    self.cluster_bivectors[cid] = A
+                except Exception as e:
+                    log_info(f"  Warning: logm failed for {cid}: {e}")
+
+        log_info(f"FullRotationTeacher: {len(self.cluster_bivectors)} cluster bivectors, d={self.d}")
+
+    def project(self, query_emb: np.ndarray, top_k: int = 10) -> np.ndarray:
+        """
+        Project query using full rotational blending.
+
+        Blends top-K cluster bivectors and applies via matrix exponential.
+        """
+        q_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+
+        # Compute routing weights
+        if self.cluster_centroids is not None:
+            sims = q_norm @ self.cluster_centroids.T
+        else:
+            sims = q_norm @ self.query_embeddings.T
+
+        sims_shifted = (sims - np.max(sims)) / self.temperature
+        weights = np.exp(sims_shifted)
+        weights /= weights.sum()
+
+        top_indices = np.argsort(weights)[-top_k:]
+
+        # Blend bivectors
+        blended_bivector = np.zeros((self.d, self.d), dtype=np.float64)
+        total_weight = 0.0
+
+        for idx in top_indices:
+            cid = self.cluster_ids[idx]
+            if cid in self.cluster_bivectors:
+                w = weights[idx]
+                blended_bivector += w * self.cluster_bivectors[cid]
+                total_weight += w
+
+        if total_weight > 0:
+            blended_bivector /= total_weight
+
+        # Apply rotation via matrix exponential
+        R = expm(blended_bivector)
+        return (R @ query_emb).astype(np.float32)
+
+    def compute_outputs_batched(
+        self,
+        query_embeddings: np.ndarray,
+        top_k: int = 10,
+    ) -> np.ndarray:
+        """Compute outputs for multiple queries (slow - uses matrix exp)."""
+        n_samples = len(query_embeddings)
+        outputs = np.zeros_like(query_embeddings)
+
+        start_time = time.time()
+        for i, query in enumerate(query_embeddings):
+            outputs[i] = self.project(query, top_k)
+
+            if (i + 1) % 100 == 0:
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed
+                remaining = (n_samples - i - 1) / rate
+                log_info(f"    Full rotation: {i+1}/{n_samples} ({rate:.1f}/s, ~{remaining:.0f}s remaining)")
+
+        elapsed = time.time() - start_time
+        log_info(f"  Full rotation complete: {elapsed:.1f}s ({n_samples/elapsed:.1f}/s)")
+        return outputs
+
+
+class WeightedVectorBaseline:
+    """
+    Simple weighted vector baseline (no rotation).
+
+    This is the standard approach: blend cluster outputs via weighted sum.
+    """
+
+    def __init__(self, federated_model_path: str):
+        model_path = Path(federated_model_path)
+        with open(model_path, 'rb') as f:
+            self.meta = pickle.load(f)
+
+        self.cluster_ids = self.meta["cluster_ids"]
+        self.temperature = self.meta.get("temperature", 0.1)
+        self.cluster_centroids = self.meta.get("cluster_centroids")
+
+        # Load routing data
+        cluster_dir = model_path.with_suffix('')
+        routing_data = np.load(cluster_dir / "routing_data.npz")
+        self.query_embeddings = routing_data['query_embeddings']
+
+        # Load cluster W matrices (for linear projection)
+        self.cluster_W = {}
+        for cid in self.cluster_ids:
+            # Handle both "cluster_X" and "X" naming conventions
+            if cid.startswith("cluster_"):
+                cluster_path = cluster_dir / f"{cid}.npz"
+            else:
+                cluster_path = cluster_dir / f"cluster_{cid}.npz"
+
+            if cluster_path.exists():
+                data = np.load(cluster_path)
+                if "W" in data:
+                    self.cluster_W[cid] = data["W"]
+                elif "W_stack" in data:
+                    self.cluster_W[cid] = data["W_stack"][0]
+
+        log_info(f"WeightedVectorBaseline: {len(self.cluster_W)} clusters")
+
+    def project(self, query_emb: np.ndarray, top_k: int = 10) -> np.ndarray:
+        """Project using weighted vector blending (no rotation)."""
+        q_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+
+        # Routing
+        if self.cluster_centroids is not None:
+            sims = q_norm @ self.cluster_centroids.T
+        else:
+            sims = q_norm @ self.query_embeddings.T
+
+        sims_shifted = (sims - np.max(sims)) / self.temperature
+        weights = np.exp(sims_shifted)
+        weights /= weights.sum()
+
+        top_indices = np.argsort(weights)[-top_k:]
+
+        # Weighted vector blend
+        output = np.zeros_like(query_emb)
+        total_weight = 0.0
+
+        for idx in top_indices:
+            cid = self.cluster_ids[idx]
+            if cid in self.cluster_W:
+                w = weights[idx]
+                # Apply cluster projection and blend
+                output += w * (self.cluster_W[cid] @ query_emb)
+                total_weight += w
+
+        if total_weight > 0:
+            output /= total_weight
+
+        return output.astype(np.float32)
+
+    def compute_outputs_batched(self, queries: np.ndarray, top_k: int = 10) -> np.ndarray:
+        """Batch computation."""
+        outputs = np.zeros_like(queries)
+        for i, q in enumerate(queries):
+            outputs[i] = self.project(q, top_k)
+        return outputs
+
+
+def validate_against_full_rotation(
+    codebook: FastOrthogonalCodebook,
+    federated_model_path: str,
+    n_samples: int = 500,
+    top_k: int = 10,
+) -> Dict:
+    """
+    Compare orthogonal codebook outputs to full rotational manifold.
+
+    Args:
+        codebook: FastOrthogonalCodebook to validate
+        federated_model_path: Path to federated model
+        n_samples: Number of samples to compare
+        top_k: Top-K for routing
+
+    Returns:
+        Dict with comparison metrics
+    """
+    log_info(f"\nValidating orthogonal codebook against full rotation manifold...")
+
+    # Load full rotation teacher
+    full_teacher = FullRotationTeacher(federated_model_path)
+
+    # Load query embeddings
+    model_path = Path(federated_model_path)
+    cluster_dir = model_path.with_suffix('')
+    routing_data = np.load(cluster_dir / "routing_data.npz")
+    all_queries = routing_data['query_embeddings'].astype(np.float32)
+
+    # Sample queries
+    if n_samples < len(all_queries):
+        indices = np.random.choice(len(all_queries), n_samples, replace=False)
+        queries = all_queries[indices]
+    else:
+        queries = all_queries
+        n_samples = len(queries)
+
+    log_info(f"  Comparing {n_samples} samples...")
+
+    # Compute full rotation outputs (slow)
+    log_info("  Computing full rotation outputs (matrix exp)...")
+    full_outputs = full_teacher.compute_outputs_batched(queries, top_k)
+
+    # Compute orthogonal codebook outputs (fast)
+    log_info("  Computing orthogonal codebook outputs (Rodrigues)...")
+    start = time.time()
+    orth_outputs, _, _ = codebook.route_and_apply(queries, top_k=top_k)
+    orth_time = time.time() - start
+    log_info(f"    Orthogonal: {n_samples} samples in {orth_time:.2f}s ({n_samples/orth_time:.0f}/s)")
+
+    # Compute metrics
+    # Cosine similarity
+    full_norms = np.linalg.norm(full_outputs, axis=1, keepdims=True) + 1e-8
+    orth_norms = np.linalg.norm(orth_outputs, axis=1, keepdims=True) + 1e-8
+    full_normed = full_outputs / full_norms
+    orth_normed = orth_outputs / orth_norms
+    cosine_sims = np.sum(full_normed * orth_normed, axis=1)
+
+    # MSE
+    mse_values = np.mean((full_outputs - orth_outputs) ** 2, axis=1)
+
+    # Angle between outputs (in degrees)
+    angles = np.arccos(np.clip(cosine_sims, -1, 1)) * 180 / np.pi
+
+    results = {
+        'n_samples': n_samples,
+        'mean_cosine_sim': float(np.mean(cosine_sims)),
+        'std_cosine_sim': float(np.std(cosine_sims)),
+        'min_cosine_sim': float(np.min(cosine_sims)),
+        'max_cosine_sim': float(np.max(cosine_sims)),
+        'mean_mse': float(np.mean(mse_values)),
+        'mean_angle_deg': float(np.mean(angles)),
+        'max_angle_deg': float(np.max(angles)),
+    }
+
+    return results
+
+
+def evaluate_hit_at_k(
+    codebook: FastOrthogonalCodebook,
+    federated_model_path: str,
+    k_values: List[int] = [1, 5, 10, 20],
+    top_k_routing: int = 10,
+) -> Dict:
+    """
+    Evaluate hit@K for RAG retrieval.
+
+    For each query, project query and all targets, find if correct target is in top-K.
+    """
+    log_info(f"\nEvaluating hit@K for RAG retrieval...")
+
+    # Load data
+    model_path = Path(federated_model_path)
+    cluster_dir = model_path.with_suffix('')
+    routing_data = np.load(cluster_dir / "routing_data.npz")
+
+    queries = routing_data['query_embeddings'].astype(np.float32)
+    targets = routing_data['target_embeddings'].astype(np.float32)
+    n_samples = len(queries)
+
+    log_info(f"  {n_samples} query-target pairs")
+
+    # Load models
+    full_teacher = FullRotationTeacher(federated_model_path)
+    baseline = WeightedVectorBaseline(federated_model_path)
+
+    results = {}
+
+    # Evaluate each approach
+    for approach_name, project_fn in [
+        ("raw", lambda x: x),  # No projection (raw embeddings)
+        ("orthogonal", lambda x: codebook.route_and_apply(x, top_k=top_k_routing)[0]),
+        ("baseline", lambda x: baseline.compute_outputs_batched(x, top_k=top_k_routing)),
+    ]:
+        log_info(f"  Evaluating {approach_name}...")
+
+        # Project queries and targets
+        t0 = time.time()
+        proj_queries = project_fn(queries)
+        proj_targets = project_fn(targets)
+        proj_time = time.time() - t0
+
+        # Normalize for cosine similarity
+        proj_queries = proj_queries / (np.linalg.norm(proj_queries, axis=1, keepdims=True) + 1e-8)
+        proj_targets = proj_targets / (np.linalg.norm(proj_targets, axis=1, keepdims=True) + 1e-8)
+
+        # Compute all pairwise similarities
+        similarities = proj_queries @ proj_targets.T  # (n_samples, n_samples)
+
+        # For each query, rank targets and check hit@K
+        hits = {k: 0 for k in k_values}
+
+        for i in range(n_samples):
+            # Get similarity scores for this query
+            sims = similarities[i]
+            # Rank targets (descending)
+            ranked_indices = np.argsort(sims)[::-1]
+            # Find position of correct target (index i)
+            correct_rank = np.where(ranked_indices == i)[0][0]
+
+            for k in k_values:
+                if correct_rank < k:
+                    hits[k] += 1
+
+        hit_rates = {k: hits[k] / n_samples for k in k_values}
+
+        results[approach_name] = {
+            'hit_rates': hit_rates,
+            'time': proj_time,
+            'samples_per_sec': n_samples / proj_time if proj_time > 0 else float('inf'),
+        }
+
+    return results
+
+
+def compare_all_approaches(
+    codebook: FastOrthogonalCodebook,
+    federated_model_path: str,
+    n_samples: int = 200,
+    top_k: int = 10,
+) -> Dict:
+    """
+    Compare orthogonal codebook, full rotation, and weighted baseline.
+
+    Returns metrics for each approach compared to full rotation (ground truth).
+    """
+    log_info(f"\nComparing all approaches on {n_samples} samples...")
+
+    # Load models
+    full_teacher = FullRotationTeacher(federated_model_path)
+    baseline = WeightedVectorBaseline(federated_model_path)
+
+    # Load queries
+    model_path = Path(federated_model_path)
+    cluster_dir = model_path.with_suffix('')
+    routing_data = np.load(cluster_dir / "routing_data.npz")
+    all_queries = routing_data['query_embeddings'].astype(np.float32)
+
+    if n_samples < len(all_queries):
+        indices = np.random.choice(len(all_queries), n_samples, replace=False)
+        queries = all_queries[indices]
+    else:
+        queries = all_queries
+        n_samples = len(queries)
+
+    # Compute outputs from each approach
+    log_info("  Computing full rotation outputs...")
+    t0 = time.time()
+    full_outputs = full_teacher.compute_outputs_batched(queries, top_k)
+    full_time = time.time() - t0
+
+    log_info("  Computing orthogonal codebook outputs...")
+    t0 = time.time()
+    orth_outputs, _, _ = codebook.route_and_apply(queries, top_k=top_k)
+    orth_time = time.time() - t0
+
+    log_info("  Computing weighted baseline outputs...")
+    t0 = time.time()
+    baseline_outputs = baseline.compute_outputs_batched(queries, top_k)
+    baseline_time = time.time() - t0
+
+    def compute_metrics(pred, target):
+        """Compute cosine similarity metrics."""
+        pred_norm = pred / (np.linalg.norm(pred, axis=1, keepdims=True) + 1e-8)
+        target_norm = target / (np.linalg.norm(target, axis=1, keepdims=True) + 1e-8)
+        cos_sims = np.sum(pred_norm * target_norm, axis=1)
+        return {
+            'mean_cos': float(np.mean(cos_sims)),
+            'std_cos': float(np.std(cos_sims)),
+            'min_cos': float(np.min(cos_sims)),
+            'max_cos': float(np.max(cos_sims)),
+        }
+
+    # Compare each to full rotation
+    orth_vs_full = compute_metrics(orth_outputs, full_outputs)
+    baseline_vs_full = compute_metrics(baseline_outputs, full_outputs)
+
+    # Also compare orthogonal to baseline directly
+    orth_vs_baseline = compute_metrics(orth_outputs, baseline_outputs)
+
+    return {
+        'n_samples': n_samples,
+        'top_k': top_k,
+        'times': {
+            'full_rotation': full_time,
+            'orthogonal': orth_time,
+            'baseline': baseline_time,
+        },
+        'orth_vs_full': orth_vs_full,
+        'baseline_vs_full': baseline_vs_full,
+        'orth_vs_baseline': orth_vs_baseline,
+    }
+
+
+# =============================================================================
 # Codebook I/O
 # =============================================================================
 
@@ -994,6 +1437,14 @@ def main():
                        help="Test codebook with sample data")
     parser.add_argument("--train", action="store_true",
                        help="Train FastOrthogonalTransformer")
+    parser.add_argument("--validate", action="store_true",
+                       help="Validate orthogonal codebook against full rotation manifold")
+    parser.add_argument("--compare", action="store_true",
+                       help="Compare orthogonal vs full rotation vs weighted baseline")
+    parser.add_argument("--hit-at-k", action="store_true",
+                       help="Evaluate hit@K for RAG retrieval")
+    parser.add_argument("--validate-samples", type=int, default=500,
+                       help="Number of samples for validation/comparison")
 
     # Parameters
     parser.add_argument("--n-components", type=int, default=64,
@@ -1197,6 +1648,180 @@ def main():
             print("\n~ Fair: Room for improvement")
         else:
             print("\n~ Needs work: Consider more training or different architecture")
+
+    elif args.validate:
+        # Validate orthogonal codebook against full rotation manifold
+        if not args.federated_model:
+            log_info("ERROR: --federated-model required for validation")
+            return 1
+
+        if not args.orthogonal_codebook and not args.codebook:
+            log_info("ERROR: --orthogonal-codebook or --codebook required for validation")
+            return 1
+
+        # Load or create orthogonal codebook
+        if args.orthogonal_codebook:
+            log_info(f"\nLoading orthogonal codebook: {args.orthogonal_codebook}")
+            codebook = load_orthogonal_codebook(args.orthogonal_codebook)
+        else:
+            log_info(f"\nLoading codebook: {args.codebook}")
+            data = np.load(args.codebook, allow_pickle=True)
+            bivectors = data['basis']
+            codebook_keys = data.get('codebook_keys')
+
+            log_info(f"  Original shape: {bivectors.shape}")
+            log_info("Orthogonalizing...")
+
+            orth_bivectors, planes = orthogonalize_codebook(bivectors)
+            codebook = FastOrthogonalCodebook(orth_bivectors, codebook_keys)
+
+        # Run validation
+        results = validate_against_full_rotation(
+            codebook=codebook,
+            federated_model_path=args.federated_model,
+            n_samples=args.validate_samples,
+            top_k=args.top_k,
+        )
+
+        print(f"\n{'=' * 60}")
+        print("Validation: Orthogonal Codebook vs Full Rotation Manifold")
+        print(f"{'=' * 60}")
+        print(f"  Samples: {results['n_samples']}")
+        print(f"  Codebook: {codebook.n_components} orthogonal planes")
+        print(f"  Full model: 124 cluster bivectors (matrix exp)")
+        print()
+        print(f"  Mean Cosine Sim: {results['mean_cosine_sim']:.4f} ± {results['std_cosine_sim']:.4f}")
+        print(f"  Min/Max Cosine: [{results['min_cosine_sim']:.4f}, {results['max_cosine_sim']:.4f}]")
+        print(f"  Mean Angle: {results['mean_angle_deg']:.2f}° (max: {results['max_angle_deg']:.2f}°)")
+        print(f"  Mean MSE: {results['mean_mse']:.6f}")
+        print(f"{'=' * 60}")
+
+        if results['mean_cosine_sim'] > 0.95:
+            print("\n✓ Excellent: Orthogonal codebook closely approximates full rotation")
+        elif results['mean_cosine_sim'] > 0.90:
+            print("\n✓ Good: Reasonable approximation quality")
+        elif results['mean_cosine_sim'] > 0.80:
+            print("\n~ Fair: Some information loss, may need more planes")
+        else:
+            print("\n✗ Poor: Significant information loss, consider larger codebook")
+
+    elif args.compare:
+        # Compare all approaches
+        if not args.federated_model:
+            log_info("ERROR: --federated-model required for comparison")
+            return 1
+
+        if not args.orthogonal_codebook and not args.codebook:
+            log_info("ERROR: --orthogonal-codebook or --codebook required")
+            return 1
+
+        # Load codebook
+        if args.orthogonal_codebook:
+            codebook = load_orthogonal_codebook(args.orthogonal_codebook)
+        else:
+            data = np.load(args.codebook, allow_pickle=True)
+            bivectors = data['basis']
+            orth_bivectors, _ = orthogonalize_codebook(bivectors)
+            codebook = FastOrthogonalCodebook(orth_bivectors, data.get('codebook_keys'))
+
+        # Run comparison
+        results = compare_all_approaches(
+            codebook=codebook,
+            federated_model_path=args.federated_model,
+            n_samples=args.validate_samples,
+            top_k=args.top_k,
+        )
+
+        print(f"\n{'=' * 70}")
+        print("Comparison: Orthogonal Codebook vs Full Rotation vs Weighted Baseline")
+        print(f"{'=' * 70}")
+        print(f"Samples: {results['n_samples']}, Top-K: {results['top_k']}")
+        print(f"Orthogonal planes: {codebook.n_components}")
+        print()
+
+        print("Speed (samples/sec):")
+        print(f"  Full rotation:  {results['n_samples']/results['times']['full_rotation']:>8.1f}/s")
+        print(f"  Orthogonal:     {results['n_samples']/results['times']['orthogonal']:>8.1f}/s")
+        print(f"  Baseline:       {results['n_samples']/results['times']['baseline']:>8.1f}/s")
+        print()
+
+        print("Cosine Similarity vs Full Rotation (ground truth):")
+        print(f"  Orthogonal:     {results['orth_vs_full']['mean_cos']:.4f} ± {results['orth_vs_full']['std_cos']:.4f}")
+        print(f"  Baseline:       {results['baseline_vs_full']['mean_cos']:.4f} ± {results['baseline_vs_full']['std_cos']:.4f}")
+        print()
+
+        print("Orthogonal vs Baseline (direct):")
+        print(f"  Cosine:         {results['orth_vs_baseline']['mean_cos']:.4f} ± {results['orth_vs_baseline']['std_cos']:.4f}")
+        print(f"{'=' * 70}")
+
+        # Analysis
+        orth_score = results['orth_vs_full']['mean_cos']
+        base_score = results['baseline_vs_full']['mean_cos']
+
+        if orth_score > base_score:
+            print(f"\n✓ Orthogonal is closer to full rotation than baseline ({orth_score:.3f} > {base_score:.3f})")
+        elif base_score > orth_score:
+            print(f"\n✗ Baseline is closer to full rotation than orthogonal ({base_score:.3f} > {orth_score:.3f})")
+        else:
+            print(f"\n~ Both approaches similar distance from full rotation")
+
+    elif args.hit_at_k:
+        # Evaluate hit@K for RAG
+        if not args.federated_model:
+            log_info("ERROR: --federated-model required")
+            return 1
+
+        if not args.orthogonal_codebook and not args.codebook:
+            log_info("ERROR: --orthogonal-codebook or --codebook required")
+            return 1
+
+        # Load codebook
+        if args.orthogonal_codebook:
+            codebook = load_orthogonal_codebook(args.orthogonal_codebook)
+        else:
+            data = np.load(args.codebook, allow_pickle=True)
+            bivectors = data['basis']
+            orth_bivectors, _ = orthogonalize_codebook(bivectors)
+            codebook = FastOrthogonalCodebook(orth_bivectors, data.get('codebook_keys'))
+
+        # Run hit@K evaluation
+        results = evaluate_hit_at_k(
+            codebook=codebook,
+            federated_model_path=args.federated_model,
+            k_values=[1, 5, 10, 20, 50],
+            top_k_routing=args.top_k,
+        )
+
+        print(f"\n{'=' * 70}")
+        print("Hit@K Evaluation for RAG Retrieval")
+        print(f"{'=' * 70}")
+        print(f"Orthogonal planes: {codebook.n_components}, Top-K routing: {args.top_k}")
+        print()
+
+        # Print header
+        k_values = [1, 5, 10, 20, 50]
+        header = f"{'Approach':<15} | " + " | ".join([f"Hit@{k:2d}" for k in k_values]) + " | Speed"
+        print(header)
+        print("-" * len(header))
+
+        # Print results for each approach
+        for approach in ["raw", "orthogonal", "baseline"]:
+            r = results[approach]
+            hits_str = " | ".join([f"{r['hit_rates'][k]*100:5.1f}%" for k in k_values])
+            speed_str = f"{r['samples_per_sec']:,.0f}/s"
+            print(f"{approach:<15} | {hits_str} | {speed_str}")
+
+        print(f"{'=' * 70}")
+
+        # Analysis
+        raw_h1 = results['raw']['hit_rates'][1]
+        orth_h1 = results['orthogonal']['hit_rates'][1]
+        base_h1 = results['baseline']['hit_rates'][1]
+
+        print(f"\nHit@1 comparison:")
+        print(f"  Raw embeddings: {raw_h1*100:.1f}%")
+        print(f"  Orthogonal:     {orth_h1*100:.1f}% ({'+' if orth_h1 > raw_h1 else ''}{(orth_h1-raw_h1)*100:.1f}%)")
+        print(f"  Baseline:       {base_h1*100:.1f}% ({'+' if base_h1 > raw_h1 else ''}{(base_h1-raw_h1)*100:.1f}%)")
 
     else:
         parser.print_help()

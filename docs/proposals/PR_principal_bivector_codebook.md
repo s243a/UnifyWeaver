@@ -389,6 +389,27 @@ The transformer achieves near-perfect match because:
 
 This validates the orthogonal approach from Appendix B as the practical path forward for rotation-based semantic projection.
 
+### RAG Retrieval Evaluation (Hit@K)
+
+Comparison of retrieval performance on 1,888 query-target pairs:
+
+| Approach | Hit@1 | Hit@5 | Hit@10 | Speed |
+|----------|-------|-------|--------|-------|
+| Raw embeddings | 57.5% | 82.6% | 89.0% | - |
+| **Orthogonal (64 planes)** | **57.4%** | **82.6%** | **89.1%** | **12,811/s** |
+| Weighted baseline | 43.6% | 63.7% | 70.8% | 264/s |
+
+**Key findings:**
+
+1. **Orthogonal matches raw embeddings** for retrieval (-0.1% Hit@1) while being dramatically faster
+2. **Weighted baseline hurts retrieval** by 13.9% Hit@1 despite being "closer" to full rotation in cosine similarity
+3. **Orthogonal is 48× faster** than weighted baseline with much better retrieval
+4. **Speed headroom**: Even with 384 planes (max for d=768), orthogonal runs at ~44,000/s (78× faster than baseline)
+
+The "information loss" measured against full rotation (0.21 cosine) is irrelevant for RAG - the orthogonal codebook preserves retrieval-relevant structure while providing dramatic speedups.
+
+**Rotation angles**: The orthogonal codebook applies small rotations (~4° mean), acting as a fast near-identity transform that preserves the embedding geometry.
+
 ### Note on Evaluation
 
 The test script initially reported this as "Poor" because it compared transformer output against LDA projections. However, this comparison is **not meaningful** because:
