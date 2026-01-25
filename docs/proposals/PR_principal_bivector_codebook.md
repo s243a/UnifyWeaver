@@ -433,6 +433,61 @@ The correct evaluation compares transformer vs rotation-based teacher on held-ou
 4. **Gradient flow**: Should codebook be frozen or fine-tuned?
 5. **Next steps**: Compare orthogonal codebook projection quality vs original federated model on downstream tasks.
 
+## Storage and Compression Analysis
+
+### Current Storage Costs
+
+| Model | Size | Notes |
+|-------|------|-------|
+| Full federated model | 288.5 MB | 124 cluster W matrices (768×768 each) |
+| Orthogonal codebook | 303.0 MB | 64 bivector matrices (768×768 each) |
+| Bivector codebook | 306.9 MB | 64 PCA components |
+
+**Current issue**: The orthogonal codebook stores full 768×768 antisymmetric matrices for each plane, providing no compression benefit over the federated model.
+
+### Compact Plane Representation (Future Work)
+
+Each orthogonal rotation plane can be represented compactly as:
+- Two orthonormal basis vectors: `u, v ∈ R^768`
+- One rotation angle: `θ ∈ R`
+
+This gives: `64 planes × (768 + 768 + 1) × 4 bytes = 394 KB`
+
+**Potential compression**: 730× smaller than current codebook.
+
+The Rodrigues formula can reconstruct the rotation from (u, v, θ):
+```
+R(x) = x + sin(θ)(v⊗u - u⊗v)x + (1-cos(θ))((u·x)u + (v·x)v - x_plane)
+```
+
+Where `x_plane` is the projection of x onto the (u,v) plane.
+
+### Per-Embedding Compression (Future Work)
+
+Instead of storing full 768-dim embeddings, we could store routing parameters:
+
+| Representation | Size | Compression | Trade-off |
+|----------------|------|-------------|-----------|
+| Raw embedding | 3,072 bytes | 1× | Full fidelity |
+| 64 routing weights | 256 bytes | 12× | Requires codebook at query time |
+| Top-8 sparse (idx + weight) | 64 bytes | 48× | Lossy, may affect retrieval |
+
+**Reconstruction**: At query time, apply the stored routing weights to the codebook to reconstruct the projected embedding.
+
+**Open question**: Does storing routing weights instead of embeddings preserve retrieval quality? The Hit@K evaluation suggests the orthogonal projection preserves retrieval structure, so this may be viable.
+
+### Speed vs Compression Trade-off
+
+Current orthogonal approach prioritizes **speed and retrieval quality over compression**:
+
+| Metric | Orthogonal | Baseline | Improvement |
+|--------|------------|----------|-------------|
+| **Hit@1** | **57.4%** | 43.6% | **+13.8% better retrieval** |
+| **Speed** | 12,811/s | 264/s | **48× faster** |
+| Storage | 303 MB | 288 MB | No benefit |
+
+The dramatic improvements in both retrieval accuracy and speed justify the approach for real-time RAG applications, even without compression benefits. The storage cost is comparable to the federated model it replaces.
+
 ## Theoretical Justification: Why Rotation (Minimal Transformation)?
 
 ### The Problem with Standard Blending
