@@ -1022,34 +1022,52 @@ def evaluate_transformer(
     transformer: BivectorCodebookTransformer,
     teacher: BivectorTeacher,
     test_queries: np.ndarray,
+    batch_size: int = 64,
 ) -> Dict:
-    """Evaluate transformer against teacher on test set."""
+    """Evaluate transformer against teacher on test set using batched computation."""
+    _import_torch()
     transformer.eval_mode()
 
     eval_start = time.time()
-    mse_values = []
-    cosine_sims = []
+    n_samples = len(test_queries)
 
-    for i, query in enumerate(test_queries):
-        teacher_out = teacher.project(query)
-        trans_out = transformer.project(query)
+    # Compute teacher outputs using batched method
+    logger.info(f"Computing teacher outputs for {n_samples} test samples...")
+    _, teacher_outputs = teacher.compute_targets_batched(
+        test_queries,
+        top_k=10,
+        batch_size=batch_size,
+        device=str(transformer.device),
+    )
 
-        mse = np.mean((teacher_out - trans_out) ** 2)
-        mse_values.append(mse)
+    # Compute transformer outputs in batches
+    logger.info("Computing transformer outputs...")
+    trans_outputs = []
 
-        cos_sim = np.dot(teacher_out, trans_out) / (
-            np.linalg.norm(teacher_out) * np.linalg.norm(trans_out) + 1e-8
-        )
-        cosine_sims.append(cos_sim)
+    queries_tensor = torch.from_numpy(test_queries).float().to(transformer.device)
 
-        if (i + 1) % 100 == 0:
-            elapsed = time.time() - eval_start
-            rate = (i + 1) / elapsed
-            remaining = (len(test_queries) - i - 1) / rate
-            logger.info(f"  Eval: {i+1}/{len(test_queries)} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
+    with torch.no_grad():
+        for batch_start in range(0, n_samples, batch_size):
+            batch_end = min(batch_start + batch_size, n_samples)
+            batch_queries = queries_tensor[batch_start:batch_end]
+
+            batch_out, _, _, _ = transformer.forward(batch_queries)
+            trans_outputs.append(batch_out.cpu().numpy())
+
+    trans_outputs = np.concatenate(trans_outputs, axis=0)
+
+    # Compute metrics
+    mse_values = np.mean((teacher_outputs - trans_outputs) ** 2, axis=1)
+
+    # Cosine similarity per sample
+    teacher_norms = np.linalg.norm(teacher_outputs, axis=1, keepdims=True) + 1e-8
+    trans_norms = np.linalg.norm(trans_outputs, axis=1, keepdims=True) + 1e-8
+    teacher_normed = teacher_outputs / teacher_norms
+    trans_normed = trans_outputs / trans_norms
+    cosine_sims = np.sum(teacher_normed * trans_normed, axis=1)
 
     eval_elapsed = time.time() - eval_start
-    logger.info(f"Evaluation complete: {eval_elapsed:.2f}s ({len(test_queries)/eval_elapsed:.1f} samples/s)")
+    logger.info(f"Evaluation complete: {eval_elapsed:.2f}s ({n_samples/eval_elapsed:.1f} samples/s)")
 
     return {
         'mean_mse': np.mean(mse_values),
@@ -1058,7 +1076,7 @@ def evaluate_transformer(
         'std_cosine_sim': np.std(cosine_sims),
         'min_cosine_sim': np.min(cosine_sims),
         'max_cosine_sim': np.max(cosine_sims),
-        'n_samples': len(test_queries),
+        'n_samples': n_samples,
     }
 
 
