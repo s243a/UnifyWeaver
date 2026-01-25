@@ -368,13 +368,12 @@ generate_component_css(Colors, _Spacing, Borders, CSS) :-
       font-family: monospace;
     }
 ', [SurfaceColor, MutedColor, BorderRadius, BorderRadius, SecondaryColor, PrimaryColor,
-    SecondaryColor, BorderRadius,
     SecondaryColor, SurfaceColor, BorderRadius, BorderRadius, BorderRadius, MutedColor,
     SecondaryColor, BorderRadius, PrimaryColor, PrimaryColor, BorderRadius,
     SecondaryColor, BorderRadius, ErrorColor, SuccessColor, WarningColor, MutedColor,
     SurfaceColor, PrimaryColor, SecondaryColor, BorderRadius, SuccessColor, MutedColor,
     PrimaryColor, SecondaryColor, BorderRadius, SecondaryColor, BorderRadius, BorderRadius,
-    SuccessColor]).
+    SuccessColor, SurfaceColor, BorderRadius]).
 
 get_color(Name, Colors, Value, _Default) :-
     Term =.. [Name, Value],

@@ -575,39 +575,39 @@ function getHTMLInterface(): string {
     .tab.active { background: #0f3460; color: #e94560; }
     .tab:hover { background: #0f3460; }
     .panel {
-      background: 5;
+      background: #16213e;
       padding: 20px;
-      border-radius: 0 #0f3460px #16213epx 5px;
+      border-radius: 0 5px 5px 5px;
     }
     .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; color: 5; }
+    label { display: block; margin-bottom: 5px; color: #94a3b8; }
     input, textarea, select {
       width: 100%;
       padding: 10px;
-      background: 5;
+      background: #0f3460;
       border: 1px solid #1a1a2e;
       color: #eee;
-      border-radius: #94a3b8px;
+      border-radius: 5px;
       font-family: monospace;
     }
     input:focus, textarea:focus, select:focus {
       outline: none;
-      border-color: #0f3460;
+      border-color: #e94560;
     }
     button {
       padding: 10px 20px;
-      background: 5;
+      background: #e94560;
       border: none;
       color: #fff;
       cursor: pointer;
-      border-radius: #e94560px;
+      border-radius: 5px;
       font-weight: bold;
     }
     button:hover { background: #ff6b6b; }
     button:disabled { background: #444; cursor: not-allowed; }
     .results {
       margin-top: 20px;
-      background: #e94560;
+      background: #0f3460;
       padding: 15px;
       border-radius: 5px;
       max-height: 500px;
@@ -619,19 +619,19 @@ function getHTMLInterface(): string {
       font-size: 13px;
       line-height: 1.5;
     }
-    .error { color: #0f3460; }
-    .success { color: 5; }
-    .warning { color: #ff6b6b; }
-    .count { color: #4ade80; font-size: 14px; margin-bottom: 10px; }
+    .error { color: #ff6b6b; }
+    .success { color: #4ade80; }
+    .warning { color: #fbbf24; }
+    .count { color: #94a3b8; font-size: 14px; margin-bottom: 10px; }
     .login-container {
       max-width: 400px;
       margin: 50px auto;
       padding: 30px;
-      background: #fbbf24;
+      background: #16213e;
       border-radius: 10px;
     }
     .login-container h2 {
-      color: #94a3b8;
+      color: #e94560;
       margin-bottom: 20px;
       text-align: center;
     }
@@ -639,9 +639,9 @@ function getHTMLInterface(): string {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: #16213e;
+      background: #0f3460;
       padding: 10px 15px;
-      border-radius: #e94560px;
+      border-radius: 5px;
       margin-bottom: 15px;
       flex-wrap: wrap;
       gap: 10px;
@@ -651,7 +651,7 @@ function getHTMLInterface(): string {
       align-items: center;
       gap: 10px;
     }
-    .user-email { color: #0f3460; font-weight: bold; }
+    .user-email { color: #4ade80; font-weight: bold; }
     .user-roles {
       display: flex;
       gap: 5px;
@@ -661,14 +661,14 @@ function getHTMLInterface(): string {
       background: #1a1a2e;
       border-radius: 3px;
       font-size: 11px;
-      color: 5;
+      color: #94a3b8;
     }
-    .role-badge.shell { background: #4ade80; color: #fff; }
+    .role-badge.shell { background: #e94560; color: #fff; }
     .role-badge.admin { background: #3b82f6; color: #fff; }
     .working-dir-bar {
-      background: #94a3b8;
+      background: #0f3460;
       padding: 10px 15px;
-      border-radius: #e94560px;
+      border-radius: 5px;
       margin-bottom: 15px;
       display: flex;
       align-items: center;
@@ -695,7 +695,7 @@ function getHTMLInterface(): string {
     .terminal {
       background: #000;
       padding: 15px;
-      border-radius: #0f3460px;
+      border-radius: 5px;
       font-family: monospace;
       min-height: 300px;
       max-height: 500px;
@@ -714,7 +714,7 @@ function getHTMLInterface(): string {
       font-family: monospace;
     }
     .shell-input:focus { outline: none; }
-    .prompt { color: 5; font-family: monospace; }
+    .prompt { color: #4ade80; font-family: monospace; }
     /* Code viewer with syntax highlighting */
     .code-viewer {
       position: relative;
@@ -752,9 +752,9 @@ function getHTMLInterface(): string {
       padding-left: 60px;
     }
     .results_panel {
-      background: 5;
+      background: #16213e;
       padding: 15px;
-      border-radius: #4ade80px;
+      border-radius: 5px;
     }
     .results_text {
       white-space: pre-wrap;
