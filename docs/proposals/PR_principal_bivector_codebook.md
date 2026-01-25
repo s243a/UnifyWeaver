@@ -405,3 +405,81 @@ This matters for semantic search: if query A is "between" queries B and C in emb
 - VQ-VAE and codebook learning
 - Mixture of Experts sparse routing
 - Isometry and metric preservation in embeddings
+
+## Appendix A: Matrix Logarithm and the Rotation Manifold
+
+### Why Matrix Logarithm?
+
+The rotation group SO(n) is a **Lie group** - a smooth manifold with group structure. Every Lie group has an associated **Lie algebra** which is its tangent space at the identity.
+
+For SO(n):
+- **Lie group**: SO(n) = {R ∈ ℝⁿˣⁿ : RᵀR = I, det(R) = 1} (rotation matrices)
+- **Lie algebra**: so(n) = {A ∈ ℝⁿˣⁿ : Aᵀ = -A} (antisymmetric matrices)
+
+The **exponential map** connects them:
+```
+exp: so(n) → SO(n)
+exp(A) = I + A + A²/2! + A³/3! + ... = R
+```
+
+The **logarithm map** is its inverse:
+```
+log: SO(n) → so(n)
+log(R) = A  where  exp(A) = R
+```
+
+### Why This Matters
+
+1. **Linear operations in the tangent space**: Antisymmetric matrices form a vector space. We can add, scale, and do PCA on them. Rotation matrices do not form a vector space (the sum of two rotations is not a rotation).
+
+2. **Interpolation**: To interpolate between rotations R₁ and R₂:
+   - Compute A₁ = log(R₁), A₂ = log(R₂)
+   - Interpolate: A_t = (1-t)A₁ + tA₂
+   - Result: R_t = exp(A_t) is a valid rotation for all t ∈ [0,1]
+
+3. **Principal components**: PCA on rotation matrices is meaningless. PCA on their logarithms (antisymmetric matrices) finds principal rotation directions.
+
+### The Bivector Connection
+
+In geometric algebra, a **bivector** B represents an oriented plane. For rotations in ℝⁿ:
+- A bivector B corresponds to an antisymmetric matrix A
+- The rotation by angle θ in the plane of B is: R = exp(θA)
+- Components A_ij (i < j) represent rotation in the (i,j) plane
+
+This is why we call log(R) a "bivector" - it encodes both:
+- **Which planes** to rotate in (non-zero components)
+- **How much** to rotate (magnitude of components)
+
+### Derivation: Logarithm of a Rotation Matrix
+
+For a rotation matrix R ∈ SO(n), the logarithm can be computed via eigendecomposition.
+
+**2D case** (simple):
+```
+R = [cos θ  -sin θ]    A = log(R) = [  0   -θ]
+    [sin θ   cos θ]                 [  θ    0]
+
+where θ = atan2(R₂₁, R₁₁)
+```
+
+**General case** (n dimensions):
+1. Compute eigendecomposition: R = VΛV⁻¹
+2. Eigenvalues of rotation are e^{±iθₖ} for rotation angles θₖ
+3. log(R) = V·log(Λ)·V⁻¹ where log(e^{±iθ}) = ±iθ
+4. Result is real and antisymmetric (imaginary parts cancel)
+
+In practice, use `scipy.linalg.logm(R)` and enforce antisymmetry:
+```python
+A = scipy.linalg.logm(R)
+A = (A - A.T) / 2  # Ensure antisymmetric (numerical stability)
+```
+
+### Citations
+
+- **Lie Groups and Lie Algebras**: Hall, B.C. (2015). *Lie Groups, Lie Algebras, and Representations*. Springer. Chapter 2-3 cover the exponential map.
+
+- **Matrix Exponential/Logarithm**: Higham, N.J. (2008). *Functions of Matrices: Theory and Computation*. SIAM. Chapter 11 covers the matrix logarithm.
+
+- **Rotation Interpolation**: Shoemake, K. (1985). "Animating Rotation with Quaternion Curves". *SIGGRAPH*. While focused on quaternions, establishes why interpolation must happen in the tangent space.
+
+- **SO(n) Geometry**: Absil, P.-A., Mahony, R., & Sepulchre, R. (2008). *Optimization Algorithms on Matrix Manifolds*. Princeton. Chapter 3 covers SO(n) as a Riemannian manifold.
