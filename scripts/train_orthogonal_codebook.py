@@ -648,6 +648,291 @@ class FastOrthogonalTransformer:
 
 
 # =============================================================================
+# Teacher for Training
+# =============================================================================
+
+class OrthogonalTeacher:
+    """
+    Teacher that projects using orthogonal codebook with Rodrigues formula.
+
+    Much faster than BivectorTeacher because it avoids matrix exponential.
+    """
+
+    def __init__(
+        self,
+        federated_model_path: str,
+        codebook: FastOrthogonalCodebook,
+    ):
+        """
+        Args:
+            federated_model_path: Path to federated .pkl model
+            codebook: FastOrthogonalCodebook for rotation
+        """
+        self.codebook = codebook
+        self.d = codebook.d
+        self.n_components = codebook.n_components
+
+        # Load federated model for routing
+        self._load_federated_model(federated_model_path)
+
+        log_info(
+            f"OrthogonalTeacher: {self.num_clusters} clusters, "
+            f"routing to {self.n_components} orthogonal planes"
+        )
+
+    def _load_federated_model(self, model_path: str):
+        """Load federated model for routing."""
+        model_path = Path(model_path)
+        with open(model_path, 'rb') as f:
+            self.meta = pickle.load(f)
+
+        self.cluster_ids = self.meta["cluster_ids"]
+        self.temperature = self.meta.get("temperature", 0.1)
+        self.num_clusters = len(self.cluster_ids)
+        self.cluster_centroids = self.meta.get("cluster_centroids")
+
+        # Load routing data
+        cluster_dir = model_path.with_suffix('')
+        routing_path = cluster_dir / "routing_data.npz"
+        if routing_path.exists():
+            routing_data = np.load(routing_path)
+            self.query_embeddings = routing_data['query_embeddings']
+        else:
+            raise FileNotFoundError(f"Routing data not found: {routing_path}")
+
+    def get_target_output(
+        self,
+        query_emb: np.ndarray,
+        top_k: int = 8,
+    ) -> np.ndarray:
+        """
+        Get target output using orthogonal codebook routing.
+
+        Args:
+            query_emb: Query embedding (d,) or (batch, d)
+
+        Returns:
+            output: Rotated output (d,) or (batch, d)
+        """
+        was_1d = query_emb.ndim == 1
+        if was_1d:
+            query_emb = query_emb[np.newaxis, :]
+
+        output, _, _ = self.codebook.route_and_apply(query_emb, top_k=top_k)
+
+        if was_1d:
+            output = output[0]
+
+        return output
+
+    def compute_targets_batched(
+        self,
+        query_embeddings: np.ndarray,
+        top_k: int = 8,
+        batch_size: int = 256,
+    ) -> np.ndarray:
+        """
+        Compute target outputs using Rodrigues formula (very fast).
+
+        Args:
+            query_embeddings: (N, d) query embeddings
+            top_k: Number of codebook entries to blend
+            batch_size: Batch size for processing
+
+        Returns:
+            outputs: (N, d) target outputs after rotation
+        """
+        n_samples = len(query_embeddings)
+        all_outputs = np.zeros_like(query_embeddings)
+
+        start_time = time.time()
+        for batch_start in range(0, n_samples, batch_size):
+            batch_end = min(batch_start + batch_size, n_samples)
+            batch_queries = query_embeddings[batch_start:batch_end]
+
+            batch_outputs, _, _ = self.codebook.route_and_apply(
+                batch_queries, top_k=top_k
+            )
+            all_outputs[batch_start:batch_end] = batch_outputs
+
+            if (batch_end) % 1000 == 0 or batch_end == n_samples:
+                elapsed = time.time() - start_time
+                rate = batch_end / elapsed
+                log_info(f"    Targets: {batch_end}/{n_samples} ({rate:.0f}/s)")
+
+        elapsed = time.time() - start_time
+        log_info(f"  Target computation: {elapsed:.2f}s ({n_samples/elapsed:.0f}/s)")
+
+        return all_outputs
+
+
+# =============================================================================
+# Training Functions
+# =============================================================================
+
+def train_orthogonal_transformer(
+    transformer: FastOrthogonalTransformer,
+    teacher: OrthogonalTeacher,
+    query_embeddings: np.ndarray,
+    num_epochs: int = 50,
+    batch_size: int = 32,
+    learning_rate: float = 1e-4,
+    log_interval: int = 10,
+    top_k: int = 8,
+) -> List[float]:
+    """
+    Train FastOrthogonalTransformer.
+
+    Args:
+        transformer: FastOrthogonalTransformer to train
+        teacher: OrthogonalTeacher for target outputs
+        query_embeddings: Training queries (N, d)
+        num_epochs: Number of epochs
+        batch_size: Batch size
+        learning_rate: Learning rate
+        log_interval: Log every N epochs
+        top_k: Top-K for teacher routing
+
+    Returns:
+        List of loss values per epoch
+    """
+    torch, nn, F = _import_torch()
+
+    n_samples = len(query_embeddings)
+
+    # Pre-compute target outputs (very fast with Rodrigues)
+    log_info("Computing target outputs from teacher (Rodrigues)...")
+    target_outputs = teacher.compute_targets_batched(
+        query_embeddings, top_k=top_k, batch_size=256
+    )
+
+    # Convert to tensors
+    queries_tensor = torch.from_numpy(query_embeddings).float().to(transformer.device)
+    outputs_tensor = torch.from_numpy(target_outputs).float().to(transformer.device)
+
+    # Optimizer
+    optimizer = torch.optim.AdamW(transformer.parameters(), lr=learning_rate)
+
+    # Training loop
+    transformer.train_mode()
+    losses = []
+
+    log_info(f"Training for {num_epochs} epochs, {n_samples} samples")
+
+    training_start = time.time()
+    for epoch in range(num_epochs):
+        epoch_start = time.time()
+        perm = torch.randperm(n_samples)
+        epoch_loss = 0.0
+        epoch_cosine = 0.0
+        n_batches = 0
+
+        for i in range(0, n_samples, batch_size):
+            idx = perm[i:i+batch_size]
+            batch_queries = queries_tensor[idx]
+            batch_targets = outputs_tensor[idx]
+
+            # Forward pass
+            predicted, weights, top_k_idx, scale = transformer.forward(batch_queries)
+
+            # Loss: MSE + cosine
+            mse_loss = F.mse_loss(predicted, batch_targets)
+
+            pred_norm = F.normalize(predicted, dim=1)
+            target_norm = F.normalize(batch_targets, dim=1)
+            cosine_sim = (pred_norm * target_norm).sum(dim=1).mean()
+
+            loss = 0.5 * mse_loss + 0.5 * (1 - cosine_sim)
+
+            # Backward
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            epoch_cosine += cosine_sim.item()
+            n_batches += 1
+
+        avg_loss = epoch_loss / n_batches
+        avg_cosine = epoch_cosine / n_batches
+        losses.append(avg_loss)
+
+        epoch_elapsed = time.time() - epoch_start
+        total_elapsed = time.time() - training_start
+        avg_epoch_time = total_elapsed / (epoch + 1)
+        remaining = avg_epoch_time * (num_epochs - epoch - 1)
+
+        if (epoch + 1) % log_interval == 0 or epoch == 0:
+            log_info(
+                f"Epoch {epoch+1}/{num_epochs} ({epoch_elapsed:.1f}s), "
+                f"Loss: {avg_loss:.6f}, Cos: {avg_cosine:.4f} "
+                f"[ETA: {remaining/60:.1f}m]"
+            )
+
+    total_time = time.time() - training_start
+    transformer.eval_mode()
+    log_info(f"Training complete: {total_time/60:.1f}m. Final loss: {losses[-1]:.6f}")
+
+    return losses
+
+
+def evaluate_orthogonal_transformer(
+    transformer: FastOrthogonalTransformer,
+    teacher: OrthogonalTeacher,
+    test_queries: np.ndarray,
+    batch_size: int = 128,
+    top_k: int = 8,
+) -> Dict:
+    """Evaluate transformer against teacher on test set."""
+    torch, nn, F = _import_torch()
+    transformer.eval_mode()
+
+    n_samples = len(test_queries)
+
+    # Compute teacher outputs
+    log_info(f"Computing teacher outputs for {n_samples} test samples...")
+    teacher_outputs = teacher.compute_targets_batched(
+        test_queries, top_k=top_k, batch_size=256
+    )
+
+    # Compute transformer outputs
+    log_info("Computing transformer outputs...")
+    trans_outputs = []
+
+    queries_tensor = torch.from_numpy(test_queries).float().to(transformer.device)
+
+    with torch.no_grad():
+        for batch_start in range(0, n_samples, batch_size):
+            batch_end = min(batch_start + batch_size, n_samples)
+            batch_queries = queries_tensor[batch_start:batch_end]
+
+            batch_out, _, _, _ = transformer.forward(batch_queries)
+            trans_outputs.append(batch_out.cpu().numpy())
+
+    trans_outputs = np.concatenate(trans_outputs, axis=0)
+
+    # Compute metrics
+    mse_values = np.mean((teacher_outputs - trans_outputs) ** 2, axis=1)
+
+    # Cosine similarity
+    teacher_norms = np.linalg.norm(teacher_outputs, axis=1, keepdims=True) + 1e-8
+    trans_norms = np.linalg.norm(trans_outputs, axis=1, keepdims=True) + 1e-8
+    teacher_normed = teacher_outputs / teacher_norms
+    trans_normed = trans_outputs / trans_norms
+    cosine_sims = np.sum(teacher_normed * trans_normed, axis=1)
+
+    return {
+        'mean_mse': np.mean(mse_values),
+        'std_mse': np.std(mse_values),
+        'mean_cosine_sim': np.mean(cosine_sims),
+        'std_cosine_sim': np.std(cosine_sims),
+        'min_cosine_sim': np.min(cosine_sims),
+        'max_cosine_sim': np.max(cosine_sims),
+        'n_samples': n_samples,
+    }
+
+
+# =============================================================================
 # Codebook I/O
 # =============================================================================
 
@@ -697,6 +982,7 @@ def main():
 
     # Input
     parser.add_argument("--codebook", help="Path to existing bivector codebook (.npz)")
+    parser.add_argument("--orthogonal-codebook", help="Path to orthogonal codebook (.npz)")
     parser.add_argument("--federated-model", help="Path to federated model (.pkl)")
 
     # Operations
@@ -706,12 +992,22 @@ def main():
                        help="Build canonical orthogonal codebook from scratch")
     parser.add_argument("--test", action="store_true",
                        help="Test codebook with sample data")
+    parser.add_argument("--train", action="store_true",
+                       help="Train FastOrthogonalTransformer")
 
     # Parameters
     parser.add_argument("--n-components", type=int, default=64,
                        help="Number of codebook entries")
     parser.add_argument("--top-k", type=int, default=8,
                        help="Top-K entries to blend")
+
+    # Training parameters
+    parser.add_argument("--epochs", type=int, default=50, help="Training epochs")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
+    parser.add_argument("--test-split", type=float, default=0.2, help="Test split ratio")
+    parser.add_argument("--layers", type=int, default=3, help="Transformer layers")
+    parser.add_argument("--heads", type=int, default=4, help="Attention heads")
 
     # Output
     parser.add_argument("--output", help="Path to save orthogonal codebook")
@@ -794,6 +1090,113 @@ def main():
 
             log_info(f"  Matrix exp (10 samples): {exp_elapsed*1000:.2f}ms")
             log_info(f"  Speedup estimate: {(exp_elapsed/10 * batch_size) / elapsed:.1f}x")
+
+    elif args.train:
+        # Full training with orthogonal codebook
+        if not args.federated_model:
+            log_info("ERROR: --federated-model required for training")
+            return 1
+
+        if not args.orthogonal_codebook and not args.codebook:
+            log_info("ERROR: --orthogonal-codebook or --codebook required for training")
+            return 1
+
+        # Load or create orthogonal codebook
+        if args.orthogonal_codebook:
+            log_info(f"\nLoading orthogonal codebook: {args.orthogonal_codebook}")
+            codebook = load_orthogonal_codebook(args.orthogonal_codebook)
+        else:
+            log_info(f"\nLoading codebook: {args.codebook}")
+            data = np.load(args.codebook, allow_pickle=True)
+            bivectors = data['basis']
+            codebook_keys = data.get('codebook_keys')
+
+            log_info(f"  Original shape: {bivectors.shape}")
+            log_info("Orthogonalizing...")
+
+            # Orthogonalize
+            orth_bivectors, planes = orthogonalize_codebook(bivectors)
+            codebook = FastOrthogonalCodebook(orth_bivectors, codebook_keys)
+
+        # Load federated model routing data
+        federated_path = Path(args.federated_model)
+        cluster_dir = federated_path.with_suffix('')
+        routing_path = cluster_dir / "routing_data.npz"
+
+        if not routing_path.exists():
+            log_info(f"ERROR: Routing data not found: {routing_path}")
+            return 1
+
+        routing_data = np.load(routing_path)
+        query_embeddings = routing_data['query_embeddings'].astype(np.float32)
+        log_info(f"  Loaded {len(query_embeddings)} query embeddings")
+
+        # Create teacher
+        log_info("\nCreating OrthogonalTeacher...")
+        teacher = OrthogonalTeacher(args.federated_model, codebook)
+
+        # Create transformer
+        log_info("\nCreating FastOrthogonalTransformer...")
+        transformer = FastOrthogonalTransformer(
+            codebook=codebook,
+            num_layers=args.layers,
+            num_heads=args.heads,
+            top_k=args.top_k,
+        )
+
+        # Count parameters
+        total_params = sum(p.numel() for p in transformer.parameters())
+        log_info(f"  Parameters: {total_params:,}")
+        log_info(f"  Codebook size: {codebook.n_components}")
+        log_info(f"  Top-K: {args.top_k}")
+        log_info(f"  Device: {transformer.device}")
+
+        # Split train/test
+        n_test = int(len(query_embeddings) * args.test_split)
+        indices = np.random.permutation(len(query_embeddings))
+        train_idx = indices[:-n_test]
+        test_idx = indices[-n_test:]
+
+        train_queries = query_embeddings[train_idx]
+        test_queries = query_embeddings[test_idx]
+
+        log_info(f"\nTrain: {len(train_queries)}, Test: {len(test_queries)}")
+
+        # Train
+        log_info(f"\nTraining for {args.epochs} epochs...")
+        losses = train_orthogonal_transformer(
+            transformer=transformer,
+            teacher=teacher,
+            query_embeddings=train_queries,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.lr,
+            log_interval=10,
+            top_k=args.top_k,
+        )
+
+        # Evaluate
+        log_info("\nEvaluating on test set...")
+        results = evaluate_orthogonal_transformer(
+            transformer, teacher, test_queries,
+            batch_size=128, top_k=args.top_k
+        )
+
+        print(f"\n{'=' * 40}")
+        print("Results (vs orthogonal teacher):")
+        print(f"  Mean Cosine Sim: {results['mean_cosine_sim']:.4f} ± {results['std_cosine_sim']:.4f}")
+        print(f"  Min/Max Cosine: [{results['min_cosine_sim']:.4f}, {results['max_cosine_sim']:.4f}]")
+        print(f"  Mean MSE: {results['mean_mse']:.6f}")
+        print(f"{'=' * 40}")
+
+        if results['mean_cosine_sim'] > 0.90:
+            print("\n✓ Excellent: Transformer closely matches orthogonal teacher")
+        elif results['mean_cosine_sim'] > 0.80:
+            print("\n✓ Good: Transformer reasonably matches teacher")
+        elif results['mean_cosine_sim'] > 0.70:
+            print("\n~ Fair: Room for improvement")
+        else:
+            print("\n~ Needs work: Consider more training or different architecture")
 
     else:
         parser.print_help()
