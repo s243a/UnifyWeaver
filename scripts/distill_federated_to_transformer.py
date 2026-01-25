@@ -642,8 +642,10 @@ def main():
                        choices=["centroid", "question"],
                        help="Routing mode: centroid (sim to centroids) or question (sim to all questions, aggregated)")
     parser.add_argument("--importance-weighting", type=str, default=None,
-                       choices=["entropy", "embedding", "bayesian-uniform", "bayesian-size", "bayesian-entropy", "bayesian-embedding"],
-                       help="Importance weighting: entropy (routing), embedding (norm deviation), bayesian-* (stat-mech with prior)")
+                       choices=["entropy", "embedding", "bert", "bayesian-uniform", "bayesian-size", "bayesian-entropy", "bayesian-embedding"],
+                       help="Importance weighting: entropy (routing), embedding (norm deviation), bert (token-level entropy, requires --training-data), bayesian-* (stat-mech with prior)")
+    parser.add_argument("--training-data", type=Path, default=None,
+                       help="JSONL file with 'question' field for BERT entropy computation")
     parser.add_argument("--entropy-weighting", action="store_true",
                        help="[DEPRECATED] Use --importance-weighting entropy instead")
     parser.add_argument("--export-onnx", type=Path, default=None,
@@ -972,6 +974,32 @@ def main():
             # Direct embedding uncertainty as importance weight
             uncertainties = federated.compute_embedding_uncertainty(train_queries)
             sample_weights = uncertainties / uncertainties.mean() if uncertainties.mean() > 0 else np.ones_like(uncertainties)
+            sample_weights = np.clip(sample_weights, 0.5, 2.0)
+            sample_weights = sample_weights / sample_weights.mean()
+        elif weighting_mode == "bert":
+            # BERT token-level entropy - requires original texts
+            if args.training_data is None:
+                logger.error("BERT weighting requires --training-data with question texts")
+                return 1
+            if not args.training_data.exists():
+                logger.error(f"Training data not found: {args.training_data}")
+                return 1
+            # Load question texts
+            print(f"  Loading questions from {args.training_data}...")
+            all_texts = []
+            with open(args.training_data, 'r') as f:
+                for line in f:
+                    obj = json.loads(line)
+                    all_texts.append(obj.get('question', ''))
+            # Get texts for train indices only
+            train_texts = [all_texts[i] for i in train_idx]
+            print(f"  Computing BERT entropy for {len(train_texts)} samples...")
+            bert_entropies = federated.compute_bert_entropy(train_texts)
+            if bert_entropies is None:
+                logger.error("BERT entropy computation failed (missing transformers/torch?)")
+                return 1
+            # Convert to importance weights (higher entropy = higher weight)
+            sample_weights = bert_entropies / bert_entropies.mean() if bert_entropies.mean() > 0 else np.ones_like(bert_entropies)
             sample_weights = np.clip(sample_weights, 0.5, 2.0)
             sample_weights = sample_weights / sample_weights.mean()
         elif weighting_mode.startswith("bayesian-"):
