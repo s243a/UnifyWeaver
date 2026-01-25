@@ -37,11 +37,44 @@ import argparse
 import sys
 import logging
 import math
+import time
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 import pickle
 
 import numpy as np
+
+
+class Timer:
+    """Context manager for timing code blocks."""
+
+    def __init__(self, name: str, logger=None):
+        self.name = name
+        self.logger = logger
+        self.start_time = None
+        self.elapsed = None
+
+    def __enter__(self):
+        self.start_time = time.time()
+        if self.logger:
+            self.logger.info(f"[START] {self.name}...")
+        return self
+
+    def __exit__(self, *args):
+        self.elapsed = time.time() - self.start_time
+        if self.logger:
+            self.logger.info(f"[DONE] {self.name} ({self.elapsed:.2f}s)")
+        return False
+
+    @staticmethod
+    def format_duration(seconds: float) -> str:
+        """Format seconds as human-readable duration."""
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        elif seconds < 3600:
+            return f"{seconds/60:.1f}m"
+        else:
+            return f"{seconds/3600:.1f}h"
 
 # Add project paths
 project_root = Path(__file__).parent.parent
@@ -127,7 +160,8 @@ def build_bivector_codebook(
     generators = []
     valid_cluster_ids = []
 
-    for cid in cluster_ids:
+    logm_start = time.time()
+    for i, cid in enumerate(cluster_ids):
         W = cluster_rotations[cid]
         A = matrix_log_safe(W)
 
@@ -137,6 +171,16 @@ def build_bivector_codebook(
             valid_cluster_ids.append(cid)
         else:
             logger.warning(f"Cluster {cid}: zero or invalid rotation generator, skipping")
+
+        # Progress for large numbers of clusters
+        if (i + 1) % 50 == 0:
+            elapsed = time.time() - logm_start
+            rate = (i + 1) / elapsed
+            remaining = (len(cluster_ids) - i - 1) / rate
+            logger.info(f"  Matrix log: {i+1}/{len(cluster_ids)} ({elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining)")
+
+    logm_elapsed = time.time() - logm_start
+    logger.info(f"  Matrix logarithm computation: {logm_elapsed:.2f}s for {len(cluster_ids)} matrices")
 
     if len(generators) < n_components:
         logger.warning(
@@ -150,8 +194,11 @@ def build_bivector_codebook(
     flat_generators = np.array([g.flatten() for g in generators])
 
     # PCA on rotation space
+    pca_start = time.time()
     pca = PCA(n_components=n_components)
     pca.fit(flat_generators)
+    pca_elapsed = time.time() - pca_start
+    logger.info(f"  PCA fitting: {pca_elapsed:.2f}s")
 
     # Reshape principal components back to antisymmetric matrices
     basis = []
@@ -706,6 +753,7 @@ def train_bivector_codebook_transformer(
 
     # Pre-compute target coefficients
     logger.info("Computing target coefficients from teacher...")
+    target_start = time.time()
     target_coefficients = []
     target_outputs = []
 
@@ -715,7 +763,13 @@ def train_bivector_codebook_transformer(
         target_outputs.append(teacher.project(query))
 
         if (i + 1) % 500 == 0:
-            logger.info(f"  Processed {i+1}/{n_samples}")
+            elapsed = time.time() - target_start
+            rate = (i + 1) / elapsed
+            remaining = (n_samples - i - 1) / rate
+            logger.info(f"  Processed {i+1}/{n_samples} ({elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining)")
+
+    target_elapsed = time.time() - target_start
+    logger.info(f"  Target computation complete: {target_elapsed:.2f}s ({n_samples/target_elapsed:.1f} samples/s)")
 
     target_coefficients = np.stack(target_coefficients)
     target_outputs = np.stack(target_outputs)
@@ -737,7 +791,9 @@ def train_bivector_codebook_transformer(
         f"coeff_weight={coefficient_weight}, output_weight={output_weight}"
     )
 
+    training_start = time.time()
     for epoch in range(num_epochs):
+        epoch_start = time.time()
         perm = torch.randperm(n_samples)
         epoch_loss = 0.0
         epoch_coeff_loss = 0.0
@@ -789,16 +845,23 @@ def train_bivector_codebook_transformer(
         avg_loss = epoch_loss / n_batches
         losses.append(avg_loss)
 
+        epoch_elapsed = time.time() - epoch_start
+        total_elapsed = time.time() - training_start
+        avg_epoch_time = total_elapsed / (epoch + 1)
+        remaining = avg_epoch_time * (num_epochs - epoch - 1)
+
         if (epoch + 1) % log_interval == 0 or epoch == 0:
             logger.info(
-                f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.6f}, "
+                f"Epoch {epoch+1}/{num_epochs} ({epoch_elapsed:.1f}s), Loss: {avg_loss:.6f}, "
                 f"Coeff: {epoch_coeff_loss/n_batches:.6f}, "
                 f"Output: {epoch_output_loss/n_batches:.6f}, "
-                f"Cos: {cosine_sim.item():.4f}"
+                f"Cos: {cosine_sim.item():.4f} "
+                f"[ETA: {Timer.format_duration(remaining)}]"
             )
 
+    total_training_time = time.time() - training_start
     transformer.eval_mode()
-    logger.info(f"Training complete. Final loss: {losses[-1]:.6f}")
+    logger.info(f"Training complete in {Timer.format_duration(total_training_time)}. Final loss: {losses[-1]:.6f}")
 
     return losses
 
@@ -811,10 +874,11 @@ def evaluate_transformer(
     """Evaluate transformer against teacher on test set."""
     transformer.eval_mode()
 
+    eval_start = time.time()
     mse_values = []
     cosine_sims = []
 
-    for query in test_queries:
+    for i, query in enumerate(test_queries):
         teacher_out = teacher.project(query)
         trans_out = transformer.project(query)
 
@@ -825,6 +889,15 @@ def evaluate_transformer(
             np.linalg.norm(teacher_out) * np.linalg.norm(trans_out) + 1e-8
         )
         cosine_sims.append(cos_sim)
+
+        if (i + 1) % 100 == 0:
+            elapsed = time.time() - eval_start
+            rate = (i + 1) / elapsed
+            remaining = (len(test_queries) - i - 1) / rate
+            logger.info(f"  Eval: {i+1}/{len(test_queries)} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
+
+    eval_elapsed = time.time() - eval_start
+    logger.info(f"Evaluation complete: {eval_elapsed:.2f}s ({len(test_queries)/eval_elapsed:.1f} samples/s)")
 
     return {
         'mean_mse': np.mean(mse_values),
