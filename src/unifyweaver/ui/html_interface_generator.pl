@@ -778,6 +778,9 @@ const app = createApp({
     };
 
     // Shell methods
+    // Strip ANSI escape codes for text display
+    const stripAnsi = (str) => str.replace(/\\x1b\\[[0-9;]*[a-zA-Z]|\\x1b\\][^\\x07]*\\x07|\\x1b\\[\\?[0-9;]*[a-zA-Z]/g, "").replace(/\\r\\n/g, "\\n").replace(/\\r/g, "");
+
     const connectShell = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}&root=${browseRoot.value}`;
@@ -787,12 +790,12 @@ const app = createApp({
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "output" || msg.type === "error") {
-            shell.output += msg.data;
+            shell.output += stripAnsi(msg.data);
           } else if (msg.type === "prompt") {
             shell.output += `${browseRoot.value}:~$ `;
           }
         } catch {
-          shell.output += e.data;
+          shell.output += stripAnsi(e.data);
         }
         scrollShell();
       };
