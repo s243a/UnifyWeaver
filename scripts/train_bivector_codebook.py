@@ -76,6 +76,61 @@ class Timer:
         else:
             return f"{seconds/3600:.1f}h"
 
+
+def auto_batch_size(
+    embed_dim: int = 768,
+    target_memory_fraction: float = 0.3,
+    min_batch: int = 8,
+    max_batch: int = 256,
+) -> int:
+    """
+    Automatically determine batch size based on available GPU memory.
+
+    For matrix exponential of (batch, d, d) matrices:
+    - Each matrix: d² × 4 bytes (float32)
+    - With overhead for intermediate computations: ~3× memory
+
+    Args:
+        embed_dim: Embedding dimension (d)
+        target_memory_fraction: Fraction of free GPU memory to use (default 30%)
+        min_batch: Minimum batch size
+        max_batch: Maximum batch size
+
+    Returns:
+        Recommended batch size
+    """
+    _import_torch()
+
+    # Default for CPU
+    if not torch.cuda.is_available():
+        logger.info("  No GPU available, using default batch_size=32")
+        return 32
+
+    try:
+        # Get free GPU memory
+        device = torch.cuda.current_device()
+        total_memory = torch.cuda.get_device_properties(device).total_memory
+        allocated_memory = torch.cuda.memory_allocated(device)
+        free_memory = total_memory - allocated_memory
+
+        # Memory per matrix in batch (with 3x overhead for intermediate ops)
+        bytes_per_matrix = embed_dim * embed_dim * 4 * 3  # float32, 3x overhead
+        target_memory = free_memory * target_memory_fraction
+
+        # Calculate batch size
+        batch_size = int(target_memory / bytes_per_matrix)
+        batch_size = max(min_batch, min(max_batch, batch_size))
+
+        logger.info(
+            f"  Auto batch size: {batch_size} "
+            f"(GPU free: {free_memory/1e9:.1f}GB, target: {target_memory/1e9:.2f}GB)"
+        )
+        return batch_size
+
+    except Exception as e:
+        logger.warning(f"  Could not query GPU memory: {e}, using default batch_size=64")
+        return 64
+
 # Add project paths
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -714,6 +769,110 @@ class BivectorTeacher:
         result = R @ query_emb * scale
         return result
 
+    def compute_targets_batched(
+        self,
+        query_embeddings: np.ndarray,
+        top_k: int = 10,
+        batch_size: int = 64,
+        device: str = "auto",
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute target coefficients and outputs for multiple queries using batched GPU operations.
+
+        This is much faster than calling project() per-sample because it uses
+        torch.matrix_exp which is batched and GPU-accelerated.
+
+        Args:
+            query_embeddings: (N, d) query embeddings
+            top_k: Number of clusters to blend per query
+            batch_size: Batch size for matrix exponential (memory consideration)
+                       Each 768x768 matrix is ~2.4MB, so batch_size=64 uses ~150MB
+                       Use 0 or "auto" to auto-detect based on GPU memory
+            device: Device for computation ("auto", "cuda", "cpu")
+
+        Returns:
+            coefficients: (N, n_components) target coefficients
+            outputs: (N, d) target outputs after rotation
+        """
+        _import_torch()
+
+        n_samples = len(query_embeddings)
+
+        # Device selection
+        if device == "auto":
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
+        else:
+            device = torch.device(device)
+
+        # Auto batch size if requested
+        if batch_size <= 0:
+            batch_size = auto_batch_size(embed_dim=self.d)
+
+        # Convert basis to tensor
+        basis_tensor = torch.from_numpy(self.basis).float().to(device)  # (n_components, d, d)
+
+        # Pre-allocate outputs
+        all_coefficients = np.zeros((n_samples, self.n_components), dtype=np.float32)
+        all_outputs = np.zeros((n_samples, self.d), dtype=np.float32)
+
+        # Process in batches for coefficient computation (CPU-bound routing)
+        logger.info(f"  Computing coefficients for {n_samples} samples...")
+        coeff_start = time.time()
+
+        for i in range(n_samples):
+            coeffs, _ = self.get_target_coefficients(query_embeddings[i], top_k)
+            all_coefficients[i] = coeffs
+
+            if (i + 1) % 500 == 0:
+                elapsed = time.time() - coeff_start
+                rate = (i + 1) / elapsed
+                remaining = (n_samples - i - 1) / rate
+                logger.info(f"    Coefficients: {i+1}/{n_samples} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
+
+        coeff_elapsed = time.time() - coeff_start
+        logger.info(f"  Coefficients done: {coeff_elapsed:.2f}s ({n_samples/coeff_elapsed:.1f}/s)")
+
+        # Now compute outputs with batched matrix exponential (GPU-accelerated)
+        logger.info(f"  Computing rotations with batch_size={batch_size} on {device}...")
+        rotation_start = time.time()
+
+        coeffs_tensor = torch.from_numpy(all_coefficients).float().to(device)
+        queries_tensor = torch.from_numpy(query_embeddings).float().to(device)
+
+        for batch_start in range(0, n_samples, batch_size):
+            batch_end = min(batch_start + batch_size, n_samples)
+            batch_coeffs = coeffs_tensor[batch_start:batch_end]  # (B, n_components)
+            batch_queries = queries_tensor[batch_start:batch_end]  # (B, d)
+
+            # Reconstruct bivectors: B = Σ cᵢ × Bᵢ
+            # batch_coeffs: (B, n_components), basis_tensor: (n_components, d, d)
+            # Result: (B, d, d)
+            batch_bivectors = torch.einsum('bc,cij->bij', batch_coeffs, basis_tensor)
+
+            # Batched matrix exponential (GPU-accelerated)
+            batch_R = torch.matrix_exp(batch_bivectors)  # (B, d, d)
+
+            # Apply rotation: R @ query
+            batch_outputs = torch.bmm(batch_R, batch_queries.unsqueeze(-1)).squeeze(-1)  # (B, d)
+
+            all_outputs[batch_start:batch_end] = batch_outputs.cpu().numpy()
+
+            if (batch_end) % (batch_size * 10) == 0 or batch_end == n_samples:
+                elapsed = time.time() - rotation_start
+                rate = batch_end / elapsed
+                remaining = (n_samples - batch_end) / rate if batch_end < n_samples else 0
+                logger.info(f"    Rotations: {batch_end}/{n_samples} ({elapsed:.1f}s, ~{remaining:.1f}s remaining)")
+
+        rotation_elapsed = time.time() - rotation_start
+        logger.info(f"  Rotations done: {rotation_elapsed:.2f}s ({n_samples/rotation_elapsed:.1f}/s)")
+
+        return all_coefficients, all_outputs
+
 
 # =============================================================================
 # Training
@@ -729,6 +888,7 @@ def train_bivector_codebook_transformer(
     log_interval: int = 10,
     coefficient_weight: float = 0.5,
     output_weight: float = 0.5,
+    target_batch_size: int = 64,
 ) -> List[float]:
     """
     Train BivectorCodebookTransformer.
@@ -738,11 +898,12 @@ def train_bivector_codebook_transformer(
         teacher: BivectorTeacher for target coefficients
         query_embeddings: Training queries (N, d)
         num_epochs: Number of epochs
-        batch_size: Batch size
+        batch_size: Batch size for training
         learning_rate: Learning rate
         log_interval: Log every N epochs
         coefficient_weight: Weight for coefficient loss
         output_weight: Weight for output reconstruction loss
+        target_batch_size: Batch size for teacher target computation (GPU memory)
 
     Returns:
         List of loss values per epoch
@@ -751,28 +912,19 @@ def train_bivector_codebook_transformer(
 
     n_samples = len(query_embeddings)
 
-    # Pre-compute target coefficients
-    logger.info("Computing target coefficients from teacher...")
+    # Pre-compute target coefficients using batched GPU computation
+    logger.info("Computing target coefficients from teacher (batched)...")
     target_start = time.time()
-    target_coefficients = []
-    target_outputs = []
 
-    for i, query in enumerate(query_embeddings):
-        coeffs, scale = teacher.get_target_coefficients(query)
-        target_coefficients.append(coeffs)
-        target_outputs.append(teacher.project(query))
-
-        if (i + 1) % 500 == 0:
-            elapsed = time.time() - target_start
-            rate = (i + 1) / elapsed
-            remaining = (n_samples - i - 1) / rate
-            logger.info(f"  Processed {i+1}/{n_samples} ({elapsed:.1f}s elapsed, ~{remaining:.1f}s remaining)")
+    target_coefficients, target_outputs = teacher.compute_targets_batched(
+        query_embeddings,
+        top_k=10,
+        batch_size=target_batch_size,
+        device=str(transformer.device),
+    )
 
     target_elapsed = time.time() - target_start
-    logger.info(f"  Target computation complete: {target_elapsed:.2f}s ({n_samples/target_elapsed:.1f} samples/s)")
-
-    target_coefficients = np.stack(target_coefficients)
-    target_outputs = np.stack(target_outputs)
+    logger.info(f"  Total target computation: {target_elapsed:.2f}s ({n_samples/target_elapsed:.1f} samples/s)")
 
     # Convert to tensors
     queries_tensor = torch.from_numpy(query_embeddings).float().to(transformer.device)
@@ -934,7 +1086,9 @@ def main():
     # Training
     parser.add_argument("--epochs", type=int, default=100, help="Training epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for training")
+    parser.add_argument("--target-batch-size", type=int, default=64,
+                       help="Batch size for teacher target computation (0=auto based on GPU memory)")
     parser.add_argument("--test-split", type=float, default=0.2, help="Test split ratio")
 
     # Model architecture
@@ -1057,6 +1211,7 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.lr,
         log_interval=20,
+        target_batch_size=args.target_batch_size,
     )
 
     # Evaluate
