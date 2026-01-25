@@ -782,7 +782,7 @@ const app = createApp({
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}&root=${browseRoot.value}`;
       shell.ws = new WebSocket(wsUrl);
-      shell.ws.onopen = () => { shell.connected = true; shell.output = `Connected to shell (${browseRoot.value} root).\\\\n`; };
+      shell.ws.onopen = () => { shell.connected = true; shell.output = `Connected to shell (${browseRoot.value} root).\\n`; };
       shell.ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
@@ -796,13 +796,13 @@ const app = createApp({
         }
         scrollShell();
       };
-      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\\\nDisconnected.\\\\n"; };
+      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\nDisconnected.\\n"; };
       shell.ws.onerror = () => { shell.connected = false; };
     };
 
     const sendShellCommand = () => {
       if (shell.ws && shell.connected && shell.input) {
-        shell.ws.send(JSON.stringify({ type: "input", data: shell.input + "\\\\n" }));
+        shell.ws.send(JSON.stringify({ type: "input", data: shell.input + "\\n" }));
         shell.input = "";
       }
     };
