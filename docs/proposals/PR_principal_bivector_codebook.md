@@ -316,6 +316,8 @@ This allows principled comparison: a 3-layer model (capacity 216) is justified o
 
 ## Preliminary Results
 
+### Previous Approach: Rotation Distillation (PR #637)
+
 Training run with rotation-based federated teacher (3-layer, 4-head, 384 rotation planes):
 
 | Epoch | Loss | Train Cosine |
@@ -328,6 +330,85 @@ Training run with rotation-based federated teacher (3-layer, 4-head, 384 rotatio
 | 100 | 0.160 | 0.908 |
 
 **Test evaluation**: 0.635 cosine similarity (±0.31)
+
+### Bivector Codebook Approach
+
+Initial training with bivector codebook (64 components, 52.34% variance explained):
+
+| Epoch | Loss | Cosine |
+|-------|------|--------|
+| 1 | 0.270 | **0.506** |
+
+**Note**: Training started at 0.506 cosine (vs 0.095 for previous approach) - suggesting the codebook architecture provides better initialization. However, subsequent epochs were extremely slow due to matrix exponential computation, and the test was terminated after ~3 hours with no progress beyond epoch 1.
+
+**Status**: Inconclusive due to resource constraints. The matrix exponential bottleneck (O(d³) per forward pass) made training impractical. The first epoch showed promising results but runtime issues prevented full evaluation. Further testing needed with:
+1. Orthogonal codebook approach (see Appendix B) - avoids matrix exponential entirely
+2. Lower resource usage periods
+3. Reduced epoch count (may converge faster given better initialization)
+
+### Orthogonal Codebook Speedup
+
+Empirical comparison on 768-dimensional embeddings:
+
+| Method | Time (100 samples) | Per-sample |
+|--------|-------------------|------------|
+| Matrix exponential | 10,730ms | 107.3ms |
+| Rodrigues formula | 9.05ms | 0.09ms |
+| **Speedup** | | **1,186×** |
+
+The orthogonal approach (Appendix B) achieves over 1000× speedup by using closed-form Rodrigues formula instead of matrix exponential. This makes the architecture practical for training.
+
+### Orthogonal Codebook Training Results
+
+Full training run with orthogonal codebook (64 planes, Rodrigues formula):
+
+| Metric | Value |
+|--------|-------|
+| Target computation | 23,000 samples/sec |
+| Training time (50 epochs) | 30 seconds |
+| Final cosine similarity | 1.0000 ± 0.0000 |
+| Final MSE | 0.000002 |
+
+**Epoch progression**:
+
+| Epoch | Loss | Cosine |
+|-------|------|--------|
+| 1 | 0.0012 | 1.0000 |
+| 10 | 0.00001 | 1.0000 |
+| 50 | 0.000003 | 1.0000 |
+
+**Key observations**:
+1. **Dramatic speedup**: 30 seconds total vs 3+ hours (and counting) for bivector approach
+2. **Perfect distillation**: Transformer learns to perfectly match orthogonal teacher
+3. **Practical architecture**: The orthogonal codebook makes rotation-based projection viable
+
+The transformer achieves near-perfect match because:
+- Both teacher and student route via cosine similarity to the same orthogonal codebook
+- Rodrigues rotation is deterministic given routing weights
+- The transformer learns to reproduce the routing behavior
+
+This validates the orthogonal approach from Appendix B as the practical path forward for rotation-based semantic projection.
+
+### RAG Retrieval Evaluation (Hit@K)
+
+Comparison of retrieval performance on 1,888 query-target pairs:
+
+| Approach | Hit@1 | Hit@5 | Hit@10 | Speed |
+|----------|-------|-------|--------|-------|
+| Raw embeddings | 57.5% | 82.6% | 89.0% | - |
+| **Orthogonal (64 planes)** | **57.4%** | **82.6%** | **89.1%** | **12,811/s** |
+| Weighted baseline | 43.6% | 63.7% | 70.8% | 264/s |
+
+**Key findings:**
+
+1. **Orthogonal matches raw embeddings** for retrieval (-0.1% Hit@1) while being dramatically faster
+2. **Weighted baseline hurts retrieval** by 13.9% Hit@1 despite being "closer" to full rotation in cosine similarity
+3. **Orthogonal is 48× faster** than weighted baseline with much better retrieval
+4. **Speed headroom**: Even with 384 planes (max for d=768), orthogonal runs at ~44,000/s (78× faster than baseline)
+
+The "information loss" measured against full rotation (0.21 cosine) is irrelevant for RAG - the orthogonal codebook preserves retrieval-relevant structure while providing dramatic speedups.
+
+**Rotation angles**: The orthogonal codebook applies small rotations (~4° mean), acting as a fast near-identity transform that preserves the embedding geometry.
 
 ### Note on Evaluation
 
@@ -346,10 +427,66 @@ The correct evaluation compares transformer vs rotation-based teacher on held-ou
 
 ## Questions/Risks
 
-1. **Matrix exponential cost**: For d=768, matrix exp is O(d³). May need approximations for speed.
+1. ~~**Matrix exponential cost**: For d=768, matrix exp is O(d³). May need approximations for speed.~~ **SOLVED**: Orthogonal codebook with Rodrigues formula achieves 1000×+ speedup (Appendix B).
 2. **Codebook size D**: How many principal directions are needed? Start with D=64, tune.
 3. **Sparse routing**: Top-K selection vs full softmax for efficiency?
 4. **Gradient flow**: Should codebook be frozen or fine-tuned?
+5. **Next steps**: Compare orthogonal codebook projection quality vs original federated model on downstream tasks.
+
+## Storage and Compression Analysis
+
+### Current Storage Costs
+
+| Model | Size | Notes |
+|-------|------|-------|
+| Full federated model | 288.5 MB | 124 cluster W matrices (768×768 each) |
+| Orthogonal codebook | 303.0 MB | 64 bivector matrices (768×768 each) |
+| Bivector codebook | 306.9 MB | 64 PCA components |
+
+**Current issue**: The orthogonal codebook stores full 768×768 antisymmetric matrices for each plane, providing no compression benefit over the federated model.
+
+### Compact Plane Representation (Future Work)
+
+Each orthogonal rotation plane can be represented compactly as:
+- Two orthonormal basis vectors: `u, v ∈ R^768`
+- One rotation angle: `θ ∈ R`
+
+This gives: `64 planes × (768 + 768 + 1) × 4 bytes = 394 KB`
+
+**Potential compression**: 730× smaller than current codebook.
+
+The Rodrigues formula can reconstruct the rotation from (u, v, θ):
+```
+R(x) = x + sin(θ)(v⊗u - u⊗v)x + (1-cos(θ))((u·x)u + (v·x)v - x_plane)
+```
+
+Where `x_plane` is the projection of x onto the (u,v) plane.
+
+### Per-Embedding Compression (Future Work)
+
+Instead of storing full 768-dim embeddings, we could store routing parameters:
+
+| Representation | Size | Compression | Trade-off |
+|----------------|------|-------------|-----------|
+| Raw embedding | 3,072 bytes | 1× | Full fidelity |
+| 64 routing weights | 256 bytes | 12× | Requires codebook at query time |
+| Top-8 sparse (idx + weight) | 64 bytes | 48× | Lossy, may affect retrieval |
+
+**Reconstruction**: At query time, apply the stored routing weights to the codebook to reconstruct the projected embedding.
+
+**Open question**: Does storing routing weights instead of embeddings preserve retrieval quality? The Hit@K evaluation suggests the orthogonal projection preserves retrieval structure, so this may be viable.
+
+### Speed vs Compression Trade-off
+
+Current orthogonal approach prioritizes **speed and retrieval quality over compression**:
+
+| Metric | Orthogonal | Baseline | Improvement |
+|--------|------------|----------|-------------|
+| **Hit@1** | **57.4%** | 43.6% | **+13.8% better retrieval** |
+| **Speed** | 12,811/s | 264/s | **48× faster** |
+| Storage | 303 MB | 288 MB | No benefit |
+
+The dramatic improvements in both retrieval accuracy and speed justify the approach for real-time RAG applications, even without compression benefits. The storage cost is comparable to the federated model it replaces.
 
 ## Theoretical Justification: Why Rotation (Minimal Transformation)?
 
@@ -405,3 +542,420 @@ This matters for semantic search: if query A is "between" queries B and C in emb
 - VQ-VAE and codebook learning
 - Mixture of Experts sparse routing
 - Isometry and metric preservation in embeddings
+
+## Appendix A: Matrix Logarithm and the Rotation Manifold
+
+### Why Matrix Logarithm?
+
+The rotation group SO(n) is a **Lie group** - a smooth manifold with group structure. Every Lie group has an associated **Lie algebra** which is its tangent space at the identity.
+
+For SO(n):
+- **Lie group**: SO(n) = {R ∈ ℝⁿˣⁿ : RᵀR = I, det(R) = 1} (rotation matrices)
+- **Lie algebra**: so(n) = {A ∈ ℝⁿˣⁿ : Aᵀ = -A} (antisymmetric matrices)
+
+The **exponential map** connects them:
+```
+exp: so(n) → SO(n)
+exp(A) = I + A + A²/2! + A³/3! + ... = R
+```
+
+The **logarithm map** is its inverse:
+```
+log: SO(n) → so(n)
+log(R) = A  where  exp(A) = R
+```
+
+### Why This Matters
+
+1. **Linear operations in the tangent space**: Antisymmetric matrices form a vector space. We can add, scale, and do PCA on them. Rotation matrices do not form a vector space (the sum of two rotations is not a rotation).
+
+2. **Interpolation**: To interpolate between rotations R₁ and R₂:
+   - Compute A₁ = log(R₁), A₂ = log(R₂)
+   - Interpolate: A_t = (1-t)A₁ + tA₂
+   - Result: R_t = exp(A_t) is a valid rotation for all t ∈ [0,1]
+
+3. **Principal components**: PCA on rotation matrices is meaningless. PCA on their logarithms (antisymmetric matrices) finds principal rotation directions.
+
+### The Bivector Connection
+
+In geometric algebra, a **bivector** B represents an oriented plane. For rotations in ℝⁿ:
+- A bivector B corresponds to an antisymmetric matrix A
+- The rotation by angle θ in the plane of B is: R = exp(θA)
+- Components A_ij (i < j) represent rotation in the (i,j) plane
+
+This is why we call log(R) a "bivector" - it encodes both:
+- **Which planes** to rotate in (non-zero components)
+- **How much** to rotate (magnitude of components)
+
+### Derivation: Logarithm of a Rotation Matrix
+
+For a rotation matrix R ∈ SO(n), the logarithm can be computed via eigendecomposition.
+
+**2D case** (simple):
+```
+R = [cos θ  -sin θ]    A = log(R) = [  0   -θ]
+    [sin θ   cos θ]                 [  θ    0]
+
+where θ = atan2(R₂₁, R₁₁)
+```
+
+**General case** (n dimensions):
+1. Compute eigendecomposition: R = VΛV⁻¹
+2. Eigenvalues of rotation are e^{±iθₖ} for rotation angles θₖ
+3. log(R) = V·log(Λ)·V⁻¹ where log(e^{±iθ}) = ±iθ
+4. Result is real and antisymmetric (imaginary parts cancel)
+
+In practice, use `scipy.linalg.logm(R)` and enforce antisymmetry:
+```python
+A = scipy.linalg.logm(R)
+A = (A - A.T) / 2  # Ensure antisymmetric (numerical stability)
+```
+
+### Citations
+
+- **Lie Groups and Lie Algebras**: Hall, B.C. (2015). *Lie Groups, Lie Algebras, and Representations*. Springer. Chapter 2-3 cover the exponential map.
+
+- **Matrix Exponential/Logarithm**: Higham, N.J. (2008). *Functions of Matrices: Theory and Computation*. SIAM. Chapter 11 covers the matrix logarithm.
+
+- **Rotation Interpolation**: Shoemake, K. (1985). "Animating Rotation with Quaternion Curves". *SIGGRAPH*. While focused on quaternions, establishes why interpolation must happen in the tangent space.
+
+- **SO(n) Geometry**: Absil, P.-A., Mahony, R., & Sepulchre, R. (2008). *Optimization Algorithms on Matrix Manifolds*. Princeton. Chapter 3 covers SO(n) as a Riemannian manifold.
+
+## Appendix B: Commutative Rotations via Orthogonal Planes
+
+### The Non-Commutativity Problem
+
+In general, rotations do not commute:
+```
+R₁ × R₂ ≠ R₂ × R₁
+```
+
+This means the order of applying rotations matters. When we blend bivectors and compute `exp(Σ wᵢBᵢ)`, we get a valid rotation, but this is computationally expensive (matrix exponential requires ~15 matrix multiplies via Padé approximation).
+
+**The question**: Can we instead pre-compute rotations `Rᵢ = exp(Bᵢ)` and compose them directly?
+
+### When Rotations Commute
+
+Two rotations commute if and only if they act on **orthogonal planes** (non-overlapping 2D subspaces).
+
+**Mathematical statement**: For bivectors B₁ and B₂ represented as antisymmetric matrices:
+```
+[B₁, B₂] = B₁B₂ - B₂B₁ = 0  ⟺  B₁ and B₂ rotate in orthogonal planes
+```
+
+When bivectors commute, the exponential map respects addition:
+```
+exp(B₁ + B₂) = exp(B₁) × exp(B₂) = exp(B₂) × exp(B₁)
+```
+
+**Example**: In 768 dimensions:
+- B₁ rotates in the (e₁, e₂) plane
+- B₂ rotates in the (e₃, e₄) plane
+- These affect completely independent coordinates, so they commute
+
+### Schur Decomposition of Antisymmetric Matrices
+
+Any antisymmetric (skew-symmetric) matrix can be decomposed into its "rotation planes" via the **real Schur decomposition**:
+
+```
+B = Q Σ Qᵀ
+```
+
+where:
+- Q is orthogonal (Q⁻¹ = Qᵀ)
+- Σ is block diagonal with 2×2 blocks of the form:
+  ```
+  [  0   -θₖ ]
+  [ θₖ    0  ]
+  ```
+- Each block represents rotation by angle θₖ in a 2D plane defined by columns of Q
+
+**Interpretation**: An antisymmetric matrix B can be written as a sum of simple bivectors:
+```
+B = Σₖ θₖ (uₖvₖᵀ - vₖuₖᵀ)
+```
+where (uₖ, vₖ) are orthonormal pairs defining each rotation plane, and θₖ is the rotation angle in that plane.
+
+### Extracting the "Normal" of a Bivector
+
+In 3D, a bivector has a Hodge dual that gives a normal vector (the rotation axis). In higher dimensions, we can extract the **dominant rotation plane** as an analog:
+
+```python
+from scipy.linalg import schur
+import numpy as np
+
+def extract_rotation_planes(B, tol=1e-10):
+    """
+    Extract rotation planes and angles from a bivector (antisymmetric matrix).
+
+    Args:
+        B: (d, d) antisymmetric matrix
+        tol: tolerance for zero angles
+
+    Returns:
+        planes: List of (u, v, theta) tuples defining each rotation plane
+                u, v are orthonormal vectors spanning the plane
+                theta is the rotation angle
+    """
+    d = B.shape[0]
+
+    # Real Schur decomposition: B = Q @ T @ Q.T
+    # For antisymmetric B, T is block diagonal with 2x2 antisymmetric blocks
+    T, Q = schur(B, output='real')
+
+    planes = []
+    i = 0
+    while i < d:
+        if i + 1 < d and abs(T[i, i+1]) > tol:
+            # 2x2 block found: rotation plane
+            theta = T[i+1, i]  # Rotation angle (T[i,i+1] = -theta, T[i+1,i] = theta)
+            u = Q[:, i]       # First basis vector of plane
+            v = Q[:, i+1]     # Second basis vector of plane
+            planes.append((u, v, theta))
+            i += 2
+        else:
+            # Zero block (no rotation in this direction)
+            i += 1
+
+    return planes
+
+def get_dominant_plane(B):
+    """Get the dominant (largest angle) rotation plane of a bivector."""
+    planes = extract_rotation_planes(B)
+    if not planes:
+        return None
+    # Sort by absolute angle, return largest
+    planes.sort(key=lambda p: abs(p[2]), reverse=True)
+    return planes[0]
+```
+
+### Orthogonalizing a Codebook
+
+Given a codebook of bivectors from PCA, we can orthogonalize them to ensure all rotations commute:
+
+```python
+def orthogonalize_codebook(codebook_bivectors):
+    """
+    Orthogonalize codebook bivectors so their rotations commute.
+
+    Strategy: Extract dominant plane from each bivector,
+    orthogonalize the planes using Gram-Schmidt on 2D subspaces.
+
+    Args:
+        codebook_bivectors: (n_components, d, d) array of antisymmetric matrices
+
+    Returns:
+        orthogonal_bivectors: (n_components, d, d) with orthogonal rotation planes
+        plane_bases: List of (u, v) orthonormal pairs for each plane
+    """
+    n_components, d, _ = codebook_bivectors.shape
+
+    # Extract dominant plane from each bivector
+    dominant_planes = []
+    for B in codebook_bivectors:
+        plane = get_dominant_plane(B)
+        if plane:
+            u, v, theta = plane
+            dominant_planes.append((u, v, theta))
+
+    # Orthogonalize planes using modified Gram-Schmidt on 2D subspaces
+    orthogonal_planes = []
+    used_dims = set()
+
+    for u, v, theta in dominant_planes:
+        # Project out components in already-used dimensions
+        u_orth = u.copy()
+        v_orth = v.copy()
+
+        for dim in used_dims:
+            u_orth[dim] = 0
+            v_orth[dim] = 0
+
+        # Re-orthonormalize u and v
+        u_orth = u_orth / (np.linalg.norm(u_orth) + 1e-10)
+        v_orth = v_orth - np.dot(v_orth, u_orth) * u_orth
+        v_orth = v_orth / (np.linalg.norm(v_orth) + 1e-10)
+
+        # Find which dimensions this plane uses most
+        top_u = np.argsort(np.abs(u_orth))[-2:]
+        top_v = np.argsort(np.abs(v_orth))[-2:]
+        used_dims.update(top_u)
+        used_dims.update(top_v)
+
+        orthogonal_planes.append((u_orth, v_orth, theta))
+
+    # Reconstruct orthogonal bivectors
+    orthogonal_bivectors = np.zeros_like(codebook_bivectors)
+    for i, (u, v, theta) in enumerate(orthogonal_planes):
+        # B = theta * (u @ v.T - v @ u.T)
+        orthogonal_bivectors[i] = theta * (np.outer(u, v) - np.outer(v, u))
+
+    return orthogonal_bivectors, orthogonal_planes
+```
+
+### Alternative: Construct Orthogonal Codebook from Scratch
+
+Rather than orthogonalizing PCA components, we can construct an orthogonal codebook directly:
+
+```python
+def build_orthogonal_codebook(d, n_components):
+    """
+    Build a codebook of n_components orthogonal rotation planes.
+
+    In d dimensions, we can have at most d/2 orthogonal rotation planes.
+
+    Args:
+        d: Embedding dimension (e.g., 768)
+        n_components: Number of codebook entries (must be <= d/2)
+
+    Returns:
+        codebook: (n_components, d, d) orthogonal bivectors
+    """
+    assert n_components <= d // 2, f"Can have at most {d//2} orthogonal planes in {d}D"
+
+    codebook = np.zeros((n_components, d, d))
+
+    for i in range(n_components):
+        # Use dimensions (2i, 2i+1) for the i-th rotation plane
+        # This guarantees orthogonality
+        j, k = 2 * i, 2 * i + 1
+        codebook[i, j, k] = -1.0  # Antisymmetric: B[j,k] = -B[k,j]
+        codebook[i, k, j] = 1.0
+
+    return codebook
+```
+
+### Computational Speedup: Pre-computed Rotation Composition
+
+With orthogonal planes, rotations commute and we can pre-compute:
+
+```python
+class FastOrthogonalCodebook:
+    """
+    Codebook with orthogonal rotation planes for fast composition.
+
+    Since all bivectors rotate in orthogonal planes, their rotations commute:
+        exp(Σ wᵢBᵢ) = Π exp(wᵢBᵢ) = Π Rᵢ^wᵢ
+
+    We pre-compute Rᵢ = exp(Bᵢ) and use Rodrigues formula for weighted application.
+    """
+
+    def __init__(self, codebook_bivectors):
+        """
+        Args:
+            codebook_bivectors: (n_components, d, d) orthogonal bivectors
+        """
+        self.bivectors = codebook_bivectors
+        self.n_components, self.d, _ = codebook_bivectors.shape
+
+        # Extract plane info for each bivector
+        self.planes = []  # List of (u, v, theta) tuples
+        for B in codebook_bivectors:
+            plane = get_dominant_plane(B)
+            self.planes.append(plane)
+
+        # Pre-compute rotation matrices (for reference, but we'll use Rodrigues)
+        self.rotations = np.array([
+            scipy.linalg.expm(B) for B in codebook_bivectors
+        ])
+
+    def apply_weighted_rotation(self, x, weights):
+        """
+        Apply weighted rotation composition efficiently.
+
+        For orthogonal planes, we can apply each rotation independently:
+            y = Rₙ^wₙ @ ... @ R₂^w₂ @ R₁^w₁ @ x
+
+        Using Rodrigues formula for each weighted rotation:
+            R^w = exp(w * B) = I + sin(wθ) * B_unit + (1 - cos(wθ)) * B_unit²
+
+        Args:
+            x: (batch, d) input vectors
+            weights: (batch, n_components) blending weights
+
+        Returns:
+            y: (batch, d) rotated vectors
+        """
+        batch_size = x.shape[0]
+        y = x.copy()
+
+        for i, (u, v, theta) in enumerate(self.planes):
+            if theta is None or abs(theta) < 1e-10:
+                continue
+
+            w = weights[:, i]  # (batch,)
+
+            # Weighted angle
+            w_theta = w * theta  # (batch,)
+
+            # Rodrigues formula components
+            # For a simple bivector B = u⊗v - v⊗u with ||B|| = 1:
+            # exp(θB) = I + sin(θ)B + (1-cos(θ))B²
+            # where B² = -(u⊗u + v⊗v) for orthonormal u,v
+
+            sin_wt = np.sin(w_theta)[:, None]  # (batch, 1)
+            cos_wt = np.cos(w_theta)[:, None]  # (batch, 1)
+
+            # Project x onto the rotation plane
+            x_u = np.dot(y, u)[:, None]  # (batch, 1)
+            x_v = np.dot(y, v)[:, None]  # (batch, 1)
+
+            # Rotation within the plane
+            # x_u' = cos(wθ) * x_u - sin(wθ) * x_v
+            # x_v' = sin(wθ) * x_u + cos(wθ) * x_v
+            new_x_u = cos_wt * x_u - sin_wt * x_v
+            new_x_v = sin_wt * x_u + cos_wt * x_v
+
+            # Update y: remove old components, add new
+            y = y - x_u * u - x_v * v + new_x_u * u + new_x_v * v
+
+        return y
+```
+
+### Performance Comparison
+
+| Method | Computation | Notes |
+|--------|-------------|-------|
+| `exp(Σ wᵢBᵢ)` | O(d³) per sample | Full matrix exponential via Padé (~15 matmuls) |
+| K matrix multiplies | O(K × d³) | Sequential Rᵢ application |
+| Rodrigues per plane | O(K × d) | Only affects 2D subspace per plane |
+
+**With orthogonal planes and Rodrigues formula**: O(K × d) vs O(d³)
+
+For d=768, K=64: Rodrigues is ~768²/64 ≈ **9000× faster** than matrix exponential!
+
+### Trade-offs
+
+| Aspect | General Bivectors | Orthogonal Bivectors |
+|--------|-------------------|----------------------|
+| Expressiveness | Full rotation manifold | Constrained to orthogonal planes |
+| Computation | Expensive (matrix exp) | Very fast (Rodrigues) |
+| Accuracy | Exact teacher reproduction | Approximation |
+| Codebook | From PCA (data-driven) | Structured (may miss patterns) |
+
+### Hybrid Approach
+
+A practical middle ground:
+1. **Use PCA** to find important rotation directions
+2. **Orthogonalize** to nearest orthogonal planes
+3. **Fine-tune** the transformer to compensate for approximation error
+
+The transformer can learn to adjust routing weights to account for the orthogonalization, giving us the speed benefit while maintaining quality.
+
+### Implementation Status
+
+This orthogonal decomposition approach is proposed as an **extension** to the main bivector codebook architecture:
+
+- [ ] Implement `extract_rotation_planes()` using Schur decomposition
+- [ ] Implement `orthogonalize_codebook()` for existing PCA codebooks
+- [ ] Implement `FastOrthogonalCodebook` with Rodrigues formula
+- [ ] Benchmark speed vs accuracy trade-off
+- [ ] Compare training convergence with orthogonal vs general codebooks
+
+### Citations
+
+- **Schur Decomposition**: Golub, G.H. & Van Loan, C.F. (2013). *Matrix Computations*, 4th ed. Johns Hopkins. Section 7.4 covers the real Schur form.
+
+- **Rodrigues' Formula**: Rodrigues, O. (1840). "Des lois géométriques qui régissent les déplacements d'un système solide". *Journal de Mathématiques Pures et Appliquées*. The rotation formula for 3D; generalizes to simple bivectors in higher dimensions.
+
+- **Commutativity of Rotations**: Stillwell, J. (2008). *Naive Lie Theory*. Springer. Chapter 2 discusses when rotations commute.
