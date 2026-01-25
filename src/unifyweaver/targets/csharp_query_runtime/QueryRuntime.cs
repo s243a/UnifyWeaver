@@ -2015,6 +2015,12 @@ namespace UnifyWeaver.QueryRuntime
                     case NegationNode negation:
                         return TryEstimateRowUpperBound(negation.Input, context, out upperBound);
 
+                    case AggregateNode aggregate:
+                        return TryEstimateRowUpperBound(aggregate.Input, context, out upperBound);
+
+                    case AggregateSubplanNode aggregateSubplan:
+                        return TryEstimateRowUpperBound(aggregateSubplan.Input, context, out upperBound);
+
                     case OrderByNode orderBy:
                         return TryEstimateRowUpperBound(orderBy.Input, context, out upperBound);
 
@@ -3237,6 +3243,8 @@ namespace UnifyWeaver.QueryRuntime
                 SelectionNode selection => EstimateBuildCost(selection.Input),
                 ArithmeticNode arithmetic => EstimateBuildCost(arithmetic.Input),
                 NegationNode negation => EstimateBuildCost(negation.Input),
+                AggregateNode aggregate => EstimateBuildCost(aggregate.Input),
+                AggregateSubplanNode aggregateSubplan => EstimateBuildCost(aggregateSubplan.Input),
                 OrderByNode orderBy => EstimateBuildCost(orderBy.Input),
                 OffsetNode offset => EstimateBuildCost(offset.Input),
                 MaterializeNode => 5,
