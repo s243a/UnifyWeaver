@@ -1030,8 +1030,10 @@ generate_html_interface_function(_ServiceSpec, typescript, Code) :-
 %  Escape content for JavaScript template literal (backticks).
 escape_for_js_template(Input, Output) :-
     atom_string(Input, Str),
+    % Escape backslashes first (must be done before other escapes)
+    string_replace(Str, "\\", "\\\\", Str0),
     % Escape backticks and ${
-    string_replace(Str, "`", "\\`", Str1),
+    string_replace(Str0, "`", "\\`", Str1),
     string_replace(Str1, "${", "\\${", Str2),
     atom_string(Output, Str2).
 

@@ -1018,7 +1018,7 @@ function getHTMLInterface(): string {
       <!-- Syntax highlighted code for cat tab -->
       <template v-if="tab === 'cat'">
         <div class="code-viewer with-line-numbers">
-          <div class="line-numbers" v-html="results.split('\n').map((_, i) => i + 1).join('\n')"></div>
+          <div class="line-numbers" v-html="results.split('\\n').map((_, i) => i + 1).join('\\n')"></div>
           <pre><code :class="'language-' + detectedLanguage">{{ results }}</code></pre>
         </div>
       </template>
@@ -1177,7 +1177,7 @@ const app = createApp({
         options: grep.options,
         root: browseRoot.value
       });
-      results.value = res.success ? (res.data.matches || []).join("\n") : res.error;
+      results.value = res.success ? (res.data.matches || []).join("\\n") : res.error;
       resultCount.value = res.data?.count || 0;
       loading.value = false;
     };
@@ -1190,7 +1190,7 @@ const app = createApp({
         options: find.options,
         root: browseRoot.value
       });
-      results.value = res.success ? (res.data.files || []).join("\n") : res.error;
+      results.value = res.success ? (res.data.files || []).join("\\n") : res.error;
       resultCount.value = res.data?.count || 0;
       loading.value = false;
     };
@@ -1209,7 +1209,7 @@ const app = createApp({
     const doExec = async () => {
       loading.value = true;
       // Parse command line into command and args
-      const parts = exec.commandLine.trim().split(/\s+/);
+      const parts = exec.commandLine.trim().split(/\\s+/);
       const command = parts[0] || "";
       const args = parts.slice(1);
       const res = await apiCall("/exec", "POST", {
@@ -1242,7 +1242,7 @@ const app = createApp({
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = \`\${protocol}//\${location.host}/shell?token=\${token.value}&root=\${browseRoot.value}\`;
       shell.ws = new WebSocket(wsUrl);
-      shell.ws.onopen = () => { shell.connected = true; shell.output = \`Connected to shell (\${browseRoot.value} root).\\n\`; };
+      shell.ws.onopen = () => { shell.connected = true; shell.output = \`Connected to shell (\${browseRoot.value} root).\\\\n\`; };
       shell.ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
@@ -1256,13 +1256,13 @@ const app = createApp({
         }
         scrollShell();
       };
-      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\nDisconnected.\\n"; };
+      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\\\nDisconnected.\\\\n"; };
       shell.ws.onerror = () => { shell.connected = false; };
     };
 
     const sendShellCommand = () => {
       if (shell.ws && shell.connected && shell.input) {
-        shell.ws.send(JSON.stringify({ type: "input", data: shell.input + "\\n" }));
+        shell.ws.send(JSON.stringify({ type: "input", data: shell.input + "\\\\n" }));
         shell.input = "";
       }
     };
