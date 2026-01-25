@@ -26,6 +26,10 @@
     validate_python_imports/2,
     validate_file_access/3,
     validate_cache_directory/2,
+    % Package installation control
+    validate_npm_package/2,
+    validate_cdn_package/2,
+    is_package_allowed/2,
     % Higher-order firewall implications
     firewall_implies/2,
     firewall_implies_default/2,
@@ -56,6 +60,8 @@
 % - file_read_patterns([pattern1, pattern2, ...]) - Allowed file read patterns
 % - file_write_patterns([pattern1, pattern2, ...]) - Allowed file write patterns
 % - cache_dirs([dir1, dir2, ...]) - Allowed cache directories
+% - npm_packages([pkg1, pkg2, ...]) - Whitelist of allowed npm packages
+% - cdn_packages([url1, url2, ...]) - Whitelist of allowed CDN URL patterns
 %
 % @example Deny LLM service for sensitive predicate
 %   :- assertz(firewall:rule_firewall(sensitive_pred/2, [denied([llm])])).
@@ -346,6 +352,113 @@ validate_cache_directory(CacheFile, Firewall) :-
     ->  true
     ;   format(user_error, 'Firewall blocks cache access: ~w~n', [CacheFile]),
         fail
+    ).
+
+%% ============================================
+%% PACKAGE INSTALLATION CONTROL
+%% ============================================
+%
+% Controls which npm packages and CDN resources can be included in generated code.
+% This allows firewall policies to restrict external dependencies.
+%
+% Policy terms:
+% - npm_packages([pkg1, pkg2, ...]) - Whitelist of allowed npm packages
+% - cdn_packages([url1, url2, ...]) - Whitelist of allowed CDN URLs/patterns
+% - denied([pkg1, url1, ...]) - Blacklist (takes precedence over allowlists)
+
+%% validate_npm_package(+Package, +Firewall) is semidet.
+%
+% Validates that an npm package is allowed by the firewall policy.
+%
+% @arg Package The npm package name (e.g., 'xterm', '@xterm/addon-fit')
+% @arg Firewall The firewall policy terms
+%
+% @example Validate xterm package
+%   ?- validate_npm_package(xterm, [npm_packages([xterm, vue])]).
+%   true.
+validate_npm_package(Package, Firewall) :-
+    % Check deny list first
+    findall(D, (member(denied(Ds), Firewall), member(D, Ds)), DenyFlat),
+    (   member(Package, DenyFlat)
+    ->  format(user_error, 'Firewall blocks npm package: ~w (denied)~n', [Package]),
+        fail
+    ;   true
+    ),
+
+    % Check npm_packages allowlist (if present)
+    findall(P, (member(npm_packages(Ps), Firewall), member(P, Ps)), AllowedPackages),
+    (   AllowedPackages == []
+    ->  true  % No npm restrictions - allow all
+    ;   member(Package, AllowedPackages)
+    ->  true
+    ;   member_pattern(Package, AllowedPackages)
+    ->  true  % Allow wildcards like '@xterm/*'
+    ;   format(user_error, 'Firewall blocks npm package: ~w (not in allowlist)~n', [Package]),
+        fail
+    ).
+
+%% validate_cdn_package(+URL, +Firewall) is semidet.
+%
+% Validates that a CDN URL is allowed by the firewall policy.
+%
+% @arg URL The CDN URL (e.g., 'https://unpkg.com/xterm@5.3.0/...')
+% @arg Firewall The firewall policy terms
+%
+% @example Validate CDN URL
+%   ?- validate_cdn_package('https://unpkg.com/vue@3', [cdn_packages(['*unpkg.com*', '*cdnjs*'])]).
+%   true.
+validate_cdn_package(URL, Firewall) :-
+    % Check deny list first
+    findall(D, (member(denied(Ds), Firewall), member(D, Ds)), DenyFlat),
+    (   member_pattern(URL, DenyFlat)
+    ->  format(user_error, 'Firewall blocks CDN package: ~w (denied)~n', [URL]),
+        fail
+    ;   true
+    ),
+
+    % Check cdn_packages allowlist (if present)
+    findall(P, (member(cdn_packages(Ps), Firewall), member(P, Ps)), AllowedCDNs),
+    (   AllowedCDNs == []
+    ->  true  % No CDN restrictions - allow all
+    ;   member_pattern(URL, AllowedCDNs)
+    ->  true
+    ;   format(user_error, 'Firewall blocks CDN package: ~w (not in allowlist)~n', [URL]),
+        fail
+    ).
+
+%% is_package_allowed(+Package, +Firewall) is semidet.
+%
+% Check if a package (npm or CDN) is allowed without error messages.
+% Useful for conditional inclusion - generator can check and use fallback.
+%
+% @arg Package The package name or URL
+% @arg Firewall The firewall policy terms
+%
+% @example Check if xterm is allowed
+%   ?- is_package_allowed(xterm, [npm_packages([vue])]).
+%   false.  % silently fails
+is_package_allowed(Package, Firewall) :-
+    % Check deny list
+    findall(D, (member(denied(Ds), Firewall), member(D, Ds)), DenyFlat),
+    \+ member(Package, DenyFlat),
+    \+ member_pattern(Package, DenyFlat),
+
+    % Check npm allowlist
+    findall(P, (member(npm_packages(Ps), Firewall), member(P, Ps)), NpmAllowed),
+    (   NpmAllowed == [] -> true
+    ;   member(Package, NpmAllowed) -> true
+    ;   member_pattern(Package, NpmAllowed) -> true
+    ;   fail
+    ),
+
+    % Check cdn allowlist (for URLs)
+    (   (atom(Package), sub_atom(Package, _, _, _, '://'))
+    ->  findall(C, (member(cdn_packages(Cs), Firewall), member(C, Cs)), CdnAllowed),
+        (   CdnAllowed == [] -> true
+        ;   member_pattern(Package, CdnAllowed) -> true
+        ;   fail
+        )
+    ;   true
     ).
 
 %% ============================================
@@ -759,6 +872,55 @@ firewall_implies_default(environment(mobile_restricted_ports),
 firewall_implies_default(environment(mobile_restricted_ports),
                         prefer(service(_, port(Alternative)), service(_, port(Standard)))) :-
     member(Alternative-Standard, [8022-22, 8080-80, 8443-443, 3000-80]).
+
+%% ============================================
+%% PACKAGE INSTALLATION IMPLICATIONS
+%% ============================================
+%
+% Implications for controlling npm packages and CDN resources.
+
+%% 23. Restricted environment → No external packages
+%
+% In restricted/sandboxed environments, deny all npm package installation
+% and only allow built-in or pre-approved packages.
+firewall_implies_default(environment(restricted),
+                        npm_packages([])).
+
+firewall_implies_default(environment(restricted),
+                        cdn_packages([])).
+
+%% 24. Offline mode → No CDN packages
+%
+% In offline mode, CDN packages cannot be loaded.
+firewall_implies_default(mode(offline),
+                        cdn_packages([])).
+
+%% 25. Minimal dependencies policy → Allow only essential packages
+%
+% When minimal dependencies are preferred, only allow essential packages.
+firewall_implies_default(dependencies(minimal),
+                        npm_packages([vue])).
+
+firewall_implies_default(dependencies(minimal),
+                        cdn_packages(['*vue*'])).
+
+%% 26. Terminal package preferences
+%
+% When terminal UI is needed, prefer xterm.js but allow text fallback.
+firewall_implies_default(ui_feature(terminal),
+                        npm_packages([xterm, '@xterm/addon-fit', '@xterm/addon-web-links'])).
+
+firewall_implies_default(ui_feature(terminal),
+                        cdn_packages(['*xterm*', '*unpkg.com*'])).
+
+%% 27. Syntax highlighting package preferences
+%
+% When syntax highlighting is needed, allow highlight.js.
+firewall_implies_default(ui_feature(syntax_highlighting),
+                        npm_packages(['highlight.js'])).
+
+firewall_implies_default(ui_feature(syntax_highlighting),
+                        cdn_packages(['*highlight.js*', '*cdnjs*hljs*'])).
 %% set_firewall_mode(+Mode) is det.
 %
 % Sets the firewall enforcement mode.

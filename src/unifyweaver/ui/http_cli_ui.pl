@@ -463,6 +463,10 @@ feedback_panel_spec(
 ).
 
 %! shell_panel_spec(-Spec) is det
+%  Shell panel with xterm.js terminal support and text mode fallback.
+%  - xterm.js is used when available and NOT in text mode
+%  - Text mode is the fallback (always available, used on mobile)
+%  - Capture mode is the manual keyboard capture fallback
 shell_panel_spec(
     container(panel, [class(panel), style("padding: 0;")], [
         layout(stack, [spacing(0)], [
@@ -478,9 +482,13 @@ shell_panel_spec(
                     unless(var('shell.connected'), [
                         component(text, [content("● Disconnected"), style("color: #ff6b6b; font-size: 12px;")])
                     ]),
-                    % Text Mode / Capture Mode toggle
+                    % xterm available indicator
+                    when(var(xterm_available), [
+                        component(text, [content("(xterm)"), style("color: #89b4fa; font-size: 11px;")])
+                    ]),
+                    % Text Mode / Terminal Mode toggle
                     component(button, [
-                        label(var(shell_text_mode), "Capture", "Text Mode"),
+                        label(var(shell_text_mode), "Terminal", "Text Mode"),
                         on_click(toggle_shell_mode),
                         variant(ghost),
                         size(small),
@@ -512,44 +520,52 @@ shell_panel_spec(
                 ])
             ]),
 
-            % Terminal wrapper with relative positioning (matches prototype structure)
-            container(panel, [class(terminal_wrapper), style("position: relative;")], [
-                % Terminal output area
-                container(panel, [id(shell_output),
-                                  on_click(focus_capture_input),
-                                  style("background: #0a0a0a; padding: 10px; height: 350px; overflow-y: auto; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; user-select: text;")], [
-                    when(empty(var('shell.output')), [
-                        component(text, [
-                            content("Click \"Connect\" to start a shell session."),
-                            style("color: #94a3b8;")
+            % xterm.js terminal container (shown when xterm available AND NOT in text mode)
+            when(and(var(xterm_available), not(var(shell_text_mode))), [
+                container(panel, [id(xterm_container), class(xterm_container),
+                                  style("min-height: 350px; background: #1e1e2e;")], [])
+            ]),
+
+            % Text mode terminal wrapper (shown when in text mode OR xterm not available)
+            when(or(var(shell_text_mode), not(var(xterm_available))), [
+                container(panel, [class(terminal_wrapper), style("position: relative;")], [
+                    % Terminal output area (text mode)
+                    container(panel, [id(shell_output),
+                                      on_click(focus_capture_input),
+                                      style("background: #0a0a0a; padding: 10px; height: 350px; overflow-y: auto; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; user-select: text;")], [
+                        when(empty(var('shell.output')), [
+                            component(text, [
+                                content("Click \"Connect\" to start a shell session."),
+                                style("color: #94a3b8;")
+                            ])
+                        ]),
+                        unless(empty(var('shell.output')), [
+                            component(pre, [content(var('shell.output')), class(terminal_text)])
                         ])
                     ]),
-                    unless(empty(var('shell.output')), [
-                        component(pre, [content(var('shell.output')), class(terminal_text)])
-                    ])
-                ]),
-                % Hidden capture input (sibling of terminal, inside relative wrapper)
-                unless(var(shell_text_mode), [
-                    component(text_input, [
-                        id(shell_capture_input),
-                        on_input(handle_capture_input),
-                        on_keydown(handle_capture_keydown),
-                        type(text),
-                        autocomplete(off),
-                        style("position: absolute; bottom: 10px; left: 10px; right: 10px; opacity: 0.01; height: 40px; font-size: 16px; background: transparent; border: none; color: transparent; caret-color: #4ade80;")
+                    % Hidden capture input for capture mode (shown when NOT in text mode and xterm not available)
+                    when(and(not(var(shell_text_mode)), not(var(xterm_available))), [
+                        component(text_input, [
+                            id(shell_capture_input),
+                            on_input(handle_capture_input),
+                            on_keydown(handle_capture_keydown),
+                            type(text),
+                            autocomplete(off),
+                            style("position: absolute; bottom: 10px; left: 10px; right: 10px; opacity: 0.01; height: 40px; font-size: 16px; background: transparent; border: none; color: transparent; caret-color: #4ade80;")
+                        ])
                     ])
                 ])
             ]),
 
-            % Capture mode instructions
-            unless(var(shell_text_mode), [
+            % Capture mode instructions (shown when NOT in text mode and xterm NOT available)
+            when(and(not(var(shell_text_mode)), not(var(xterm_available))), [
                 component(text, [
                     content("Capture mode: Tap the terminal area to open keyboard. Characters sent immediately."),
                     style("padding: 8px 12px; background: #16213e; border-top: 1px solid #0f3460; font-size: 12px; color: #94a3b8;")
                 ])
             ]),
 
-            % Text mode input line
+            % Text mode input line (shown only in text mode)
             when(var(shell_text_mode), [
                 layout(flex, [gap(10), style("background: #16213e; padding: 8px 12px;")], [
                     component(text, [content("$"), style("color: #4ade80; font-family: monospace;")]),

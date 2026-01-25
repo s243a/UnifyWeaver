@@ -86,6 +86,10 @@ generate_html_head(Title, Theme, Head) :-
   <!-- Highlight.js for syntax highlighting -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- xterm.js for terminal emulation (optional - falls back to text mode) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <style>
 ~w
   </style>
@@ -319,6 +323,16 @@ generate_component_css(Colors, _Spacing, Borders, CSS) :-
     }
     .shell-input:focus { outline: none; }
     .prompt { color: ~w; font-family: monospace; }
+    /* xterm.js terminal container */
+    .xterm-container {
+      background: #1e1e2e;
+      padding: 10px;
+      border-radius: 5px;
+      min-height: 300px;
+    }
+    .xterm-container .xterm {
+      padding: 5px;
+    }
     /* Code viewer with syntax highlighting */
     .code-viewer {
       position: relative;
@@ -781,25 +795,129 @@ const app = createApp({
     // Strip ANSI escape codes for text display
     const stripAnsi = (str) => str.replace(/\\x1b\\[[0-9;]*[a-zA-Z]|\\x1b\\][^\\x07]*\\x07|\\x1b\\[\\?[0-9;]*[a-zA-Z]/g, "").replace(/\\r\\n/g, "\\n").replace(/\\r/g, "");
 
+    // xterm.js terminal instance (null if not available)
+    let terminal = null;
+    let fitAddon = null;
+    const xtermAvailable = ref(typeof window.Terminal !== "undefined");
+
+    const initXterm = () => {
+      if (!xtermAvailable.value) return false;
+      try {
+        const container = document.getElementById("xterm_container");
+        if (!container) return false;
+
+        terminal = new window.Terminal({
+          cursorBlink: true,
+          fontSize: 14,
+          fontFamily: "Menlo, Monaco, \\"Courier New\\", monospace",
+          theme: {
+            background: "#1e1e2e",
+            foreground: "#cdd6f4",
+            cursor: "#f5e0dc",
+            cursorAccent: "#1e1e2e",
+            selectionBackground: "#585b70",
+            black: "#45475a",
+            red: "#f38ba8",
+            green: "#a6e3a1",
+            yellow: "#f9e2af",
+            blue: "#89b4fa",
+            magenta: "#f5c2e7",
+            cyan: "#94e2d5",
+            white: "#bac2de"
+          }
+        });
+
+        // Load fit addon if available
+        if (window.FitAddon) {
+          fitAddon = new window.FitAddon.FitAddon();
+          terminal.loadAddon(fitAddon);
+        }
+
+        terminal.open(container);
+        if (fitAddon) fitAddon.fit();
+
+        // Handle input from terminal
+        terminal.onData((data) => {
+          if (shell.ws && shell.connected) {
+            shell.ws.send(JSON.stringify({ type: "input", data }));
+          }
+        });
+
+        // Handle resize
+        window.addEventListener("resize", handleTerminalResize);
+
+        return true;
+      } catch (e) {
+        console.warn("xterm.js initialization failed:", e);
+        xtermAvailable.value = false;
+        return false;
+      }
+    };
+
+    const handleTerminalResize = () => {
+      if (fitAddon && terminal) {
+        fitAddon.fit();
+        if (shell.ws && shell.connected) {
+          shell.ws.send(JSON.stringify({
+            type: "resize",
+            cols: terminal.cols,
+            rows: terminal.rows
+          }));
+        }
+      }
+    };
+
     const connectShell = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}&root=${browseRoot.value}`;
+      const cols = terminal ? terminal.cols : 80;
+      const rows = terminal ? terminal.rows : 24;
+      const wsUrl = `${protocol}//${location.host}/shell?token=${token.value}&root=${browseRoot.value}&cols=${cols}&rows=${rows}`;
       shell.ws = new WebSocket(wsUrl);
-      shell.ws.onopen = () => { shell.connected = true; shell.output = `Connected to shell (${browseRoot.value} root).\\n`; };
+
+      shell.ws.onopen = () => {
+        shell.connected = true;
+        if (terminal) {
+          terminal.writeln("\\x1b[1;34m╔══════════════════════════════════════╗");
+          terminal.writeln("║     Connected to PTY Shell           ║");
+          terminal.writeln("╚══════════════════════════════════════╝\\x1b[0m");
+        } else {
+          shell.output = `Connected to shell (${browseRoot.value} root).\\n`;
+        }
+      };
+
       shell.ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "output" || msg.type === "error") {
-            shell.output += stripAnsi(msg.data);
+            if (terminal && !shellTextMode.value) {
+              terminal.write(msg.data);
+            } else {
+              shell.output += stripAnsi(msg.data);
+            }
           } else if (msg.type === "prompt") {
-            shell.output += `${browseRoot.value}:~$ `;
+            if (!terminal || shellTextMode.value) {
+              shell.output += `${browseRoot.value}:~$ `;
+            }
           }
         } catch {
-          shell.output += stripAnsi(e.data);
+          if (terminal && !shellTextMode.value) {
+            terminal.write(e.data);
+          } else {
+            shell.output += stripAnsi(e.data);
+          }
         }
         scrollShell();
       };
-      shell.ws.onclose = () => { shell.connected = false; shell.output += "\\nDisconnected.\\n"; };
+
+      shell.ws.onclose = () => {
+        shell.connected = false;
+        if (terminal && !shellTextMode.value) {
+          terminal.writeln("\\r\\n\\x1b[31mDisconnected.\\x1b[0m");
+        } else {
+          shell.output += "\\nDisconnected.\\n";
+        }
+      };
+
       shell.ws.onerror = () => { shell.connected = false; };
     };
 
@@ -810,20 +928,33 @@ const app = createApp({
       }
     };
 
-    const clearShell = () => { shell.output = ""; };
+    const clearShell = () => {
+      shell.output = "";
+      if (terminal) terminal.clear();
+    };
 
     const disconnectShell = () => {
       if (shell.ws) {
         shell.ws.close();
         shell.ws = null;
       }
+      if (terminal) {
+        window.removeEventListener("resize", handleTerminalResize);
+        terminal.dispose();
+        terminal = null;
+        fitAddon = null;
+      }
     };
 
     const toggleShellMode = () => {
       shellTextMode.value = !shellTextMode.value;
       if (!shellTextMode.value) {
-        // Switching to capture mode - focus the hidden input
-        setTimeout(() => focusCaptureInput(), 100);
+        // Switching to terminal/capture mode
+        if (xtermAvailable.value && !terminal) {
+          setTimeout(() => initXterm(), 100);
+        } else {
+          setTimeout(() => focusCaptureInput(), 100);
+        }
       }
     };
 
@@ -969,21 +1100,28 @@ const app = createApp({
     });
 
     watch(tab, (newTab) => {
-      if (newTab === "shell" && !shell.connected && user.value?.roles?.includes("shell")) {
-        connectShell();
+      if (newTab === "shell" && user.value?.roles?.includes("shell")) {
+        // Initialize xterm if available and in terminal mode
+        if (xtermAvailable.value && !shellTextMode.value && !terminal) {
+          setTimeout(() => initXterm(), 100);
+        }
+        // Connect if not already connected
+        if (!shell.connected) {
+          setTimeout(() => connectShell(), xtermAvailable.value ? 200 : 0);
+        }
       }
     });
 
     return {
       authRequired, user, loginEmail, loginPassword, loginError, loading, token,
       tab, workingDir, browseRoot, results, resultCount, detectedLanguage, resultHeader,
-      browse, grep, find, cat, exec, feedback, shell, shellTextMode,
+      browse, grep, find, cat, exec, feedback, shell, shellTextMode, xtermAvailable,
       doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile,
       handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
       doGrep, doFind, doCat, doExec, doFeedback,
       connectShell, disconnectShell, sendShellCommand, clearShell,
       toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
-      formatSize, clearResults, copyResults, downloadFile
+      initXterm, formatSize, clearResults, copyResults, downloadFile
     };
   }
 });

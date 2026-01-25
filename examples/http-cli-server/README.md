@@ -12,11 +12,14 @@ Prolog (`spec.pl`) and generate TypeScript code using UnifyWeaver's generators.
 ## Features
 
 - **PTY Shell**: Real pseudo-terminal via node-pty with full terminal emulation
+- **xterm.js Terminal**: Rich terminal UI with colors, cursor control, and proper keyboard handling
+- **Text Mode Fallback**: Plain HTML fallback when xterm.js is unavailable or blocked
 - **Syntax Highlighting**: Code viewing with highlight.js (20+ languages)
 - **Root Selector**: Switch between sandbox, project, and home directories
 - **Results Panel**: Download/copy buttons for grep, find, cat, exec output
 - **HTTPS Support**: Self-signed or custom certificates
 - **Role-based Auth**: JWT tokens with shell/admin/user roles
+- **Firewall Package Control**: Control which npm/CDN packages are allowed in generated code
 
 ## Files
 
@@ -110,9 +113,15 @@ Switch between three directory roots:
 ### Shell Features
 
 - Real PTY via node-pty (not character emulation)
+- **xterm.js** terminal emulation with catppuccin theme
+- Auto-detects xterm.js availability on page load
+- Falls back to text mode if xterm.js blocked or unavailable
 - ANSI escape code stripping for text display
-- Terminal resize support
-- Capture mode (mobile keyboard) and text mode
+- Terminal resize support (via FitAddon)
+- Three input modes:
+  - **Terminal**: xterm.js with full keyboard handling
+  - **Text Mode**: Simple input field for command entry
+  - **Capture Mode**: Hidden input for mobile keyboards (fallback)
 
 ### Syntax Highlighting
 
@@ -171,8 +180,30 @@ Benefits of the declarative approach:
 - Can target multiple languages (TypeScript, Python, Go)
 - Validates specification before generation
 
+## Firewall Package Control
+
+The firewall system (`src/unifyweaver/core/firewall.pl`) can control which
+packages are included in generated code:
+
+```prolog
+% Allow only specific npm packages
+:- assertz(firewall:firewall_default([
+    npm_packages([vue, xterm, '@xterm/addon-fit']),
+    cdn_packages(['*unpkg.com*', '*jsdelivr.net*', '*cdnjs*'])
+])).
+
+% Deny xterm.js (forces text mode fallback)
+:- assertz(firewall:firewall_default([
+    denied([xterm])
+])).
+```
+
+The generator checks `is_package_allowed/2` and uses fallback implementations
+when packages are blocked by firewall policy.
+
 ## Related
 
+- `../../src/unifyweaver/core/firewall.pl` - Package installation control
 - `../../src/unifyweaver/sources/service_source.pl` - Service source type
 - `../../src/unifyweaver/glue/http_server_generator.pl` - Server generator
 - `../../src/unifyweaver/glue/auth_generator.pl` - Auth generator
