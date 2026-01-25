@@ -89,20 +89,24 @@ def compute_optimal_rotation_params(
     input_vec: np.ndarray,
     target_vec: np.ndarray,
     plane_indices: List[Tuple[int, int]],
-    compute_scale: bool = True
+    compute_scale: bool = True,
+    method: str = "plane_projection"
 ) -> Tuple[np.ndarray, Optional[float]]:
     """
     Compute optimal Givens rotation angles and scale to transform input to target.
 
-    This iteratively computes the optimal angle for each plane, applying
-    the rotation before computing the next angle. This greedy approach
-    finds a good (though not globally optimal) set of angles.
+    Methods:
+    - "plane_projection" (default): Project overall rotation onto Givens planes.
+      Fast O(k) - computes the rotation in input-target plane, then projects.
+    - "iterative": Greedy sequential optimization of each plane.
+      Slower O(k*d) but may be more accurate for complex transforms.
 
     Args:
         input_vec: Input vector (embed_dim,)
         target_vec: Target vector (embed_dim,)
         plane_indices: List of (i, j) dimension pairs for Givens rotations
         compute_scale: Whether to compute optimal scale factor
+        method: "plane_projection" (fast) or "iterative" (accurate)
 
     Returns:
         Tuple of:
@@ -118,42 +122,83 @@ def compute_optimal_rotation_params(
     else:
         scale = 1.0 if compute_scale else None
 
-    # Work with scaled target for angle computation
-    if compute_scale and scale is not None:
-        # We want: scale * R @ input ≈ target
-        # So: R @ input ≈ target / scale
-        effective_target = target_vec / scale if scale > 1e-8 else target_vec
+    # Work with normalized vectors for angle computation
+    if input_norm > 1e-8:
+        input_normalized = input_vec / input_norm
     else:
-        effective_target = target_vec
+        input_normalized = input_vec
 
-    # Iteratively compute optimal angles
-    current = input_vec.copy()
-    angles = []
+    if target_norm > 1e-8:
+        target_normalized = target_vec / target_norm
+    else:
+        target_normalized = target_vec
 
-    for (i, j) in plane_indices:
-        # Compute optimal angle for this plane
-        theta = compute_optimal_givens_angle(
-            current[i], current[j],
-            effective_target[i], effective_target[j]
-        )
-        angles.append(theta)
+    if method == "plane_projection":
+        # FAST: Compute overall rotation angle, then project to Givens planes
+        # The rotation happens primarily in the plane spanned by input and target
 
-        # Apply this rotation to current vector
-        cos_t = math.cos(theta)
-        sin_t = math.sin(theta)
-        new_i = cos_t * current[i] - sin_t * current[j]
-        new_j = sin_t * current[i] + cos_t * current[j]
-        current[i] = new_i
-        current[j] = new_j
+        # Overall rotation angle
+        cos_theta = np.clip(np.dot(input_normalized, target_normalized), -1, 1)
+        overall_theta = math.acos(cos_theta)
 
-    return np.array(angles, dtype=np.float32), scale
+        # For each Givens plane, compute how much rotation projects onto it
+        # This is based on the 2D projection of input and target onto each plane
+        angles = []
+        for (i, j) in plane_indices:
+            # 2D projections
+            input_2d = np.array([input_normalized[i], input_normalized[j]])
+            target_2d = np.array([target_normalized[i], target_normalized[j]])
+
+            # Angle in this 2D plane
+            input_angle = math.atan2(input_2d[1], input_2d[0])
+            target_angle = math.atan2(target_2d[1], target_2d[0])
+
+            theta = target_angle - input_angle
+
+            # Normalize to [-π, π]
+            while theta > math.pi:
+                theta -= 2 * math.pi
+            while theta < -math.pi:
+                theta += 2 * math.pi
+
+            angles.append(theta)
+
+        return np.array(angles, dtype=np.float32), scale
+
+    else:  # iterative method
+        # SLOW but accurate: Sequential greedy optimization
+        if compute_scale and scale is not None and scale > 1e-8:
+            effective_target = target_vec / scale
+        else:
+            effective_target = target_vec
+
+        current = input_vec.copy()
+        angles = []
+
+        for (i, j) in plane_indices:
+            theta = compute_optimal_givens_angle(
+                current[i], current[j],
+                effective_target[i], effective_target[j]
+            )
+            angles.append(theta)
+
+            # Apply this rotation to current vector
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            new_i = cos_t * current[i] - sin_t * current[j]
+            new_j = sin_t * current[i] + cos_t * current[j]
+            current[i] = new_i
+            current[j] = new_j
+
+        return np.array(angles, dtype=np.float32), scale
 
 
 def compute_optimal_rotation_params_batch(
     input_vecs: np.ndarray,
     target_vecs: np.ndarray,
     plane_indices: List[Tuple[int, int]],
-    compute_scale: bool = True
+    compute_scale: bool = True,
+    method: str = "plane_projection"
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
     Batch version of compute_optimal_rotation_params.
@@ -163,6 +208,7 @@ def compute_optimal_rotation_params_batch(
         target_vecs: Target vectors (batch, embed_dim)
         plane_indices: List of (i, j) dimension pairs
         compute_scale: Whether to compute scale factors
+        method: "plane_projection" (fast, vectorized) or "iterative"
 
     Returns:
         Tuple of:
@@ -172,18 +218,65 @@ def compute_optimal_rotation_params_batch(
     batch_size = len(input_vecs)
     num_planes = len(plane_indices)
 
-    all_angles = np.zeros((batch_size, num_planes), dtype=np.float32)
-    all_scales = np.zeros(batch_size, dtype=np.float32) if compute_scale else None
+    if method == "plane_projection":
+        # FAST VECTORIZED: Compute all angles in parallel
+        logger.info(f"  Computing rotations (vectorized): {batch_size} samples, {num_planes} planes...")
 
-    for b in range(batch_size):
-        angles, scale = compute_optimal_rotation_params(
-            input_vecs[b], target_vecs[b], plane_indices, compute_scale
-        )
-        all_angles[b] = angles
+        # Compute scales
+        input_norms = np.linalg.norm(input_vecs, axis=1, keepdims=True)
+        target_norms = np.linalg.norm(target_vecs, axis=1, keepdims=True)
+
         if compute_scale:
-            all_scales[b] = scale
+            all_scales = (target_norms / (input_norms + 1e-8)).squeeze()
+        else:
+            all_scales = None
 
-    return all_angles, all_scales
+        # Normalize
+        input_normalized = input_vecs / (input_norms + 1e-8)
+        target_normalized = target_vecs / (target_norms + 1e-8)
+
+        # Compute angles for each plane (vectorized over batch)
+        all_angles = np.zeros((batch_size, num_planes), dtype=np.float32)
+
+        for k, (i, j) in enumerate(plane_indices):
+            # Extract 2D components for all samples
+            input_i = input_normalized[:, i]
+            input_j = input_normalized[:, j]
+            target_i = target_normalized[:, i]
+            target_j = target_normalized[:, j]
+
+            # Compute angles
+            input_angle = np.arctan2(input_j, input_i)
+            target_angle = np.arctan2(target_j, target_i)
+
+            theta = target_angle - input_angle
+
+            # Normalize to [-π, π]
+            theta = np.arctan2(np.sin(theta), np.cos(theta))
+
+            all_angles[:, k] = theta
+
+        logger.info(f"  Done computing {batch_size * num_planes:,} rotation angles")
+        return all_angles, all_scales
+
+    else:
+        # Fallback to sequential (for iterative method)
+        all_angles = np.zeros((batch_size, num_planes), dtype=np.float32)
+        all_scales = np.zeros(batch_size, dtype=np.float32) if compute_scale else None
+
+        log_interval = max(1, batch_size // 10)
+        for b in range(batch_size):
+            angles, scale = compute_optimal_rotation_params(
+                input_vecs[b], target_vecs[b], plane_indices, compute_scale, method="iterative"
+            )
+            all_angles[b] = angles
+            if compute_scale:
+                all_scales[b] = scale
+
+            if (b + 1) % log_interval == 0 or b == batch_size - 1:
+                logger.info(f"  Computing rotations: {b+1}/{batch_size} ({100*(b+1)/batch_size:.0f}%)")
+
+        return all_angles, all_scales
 
 # Lazy imports for PyTorch
 torch = None
@@ -667,13 +760,17 @@ def train_rotation_distillation(
     _import_torch()
 
     # Generate target projections from teacher
-    logger.info("Generating teacher target projections...")
+    n_samples = len(query_embeddings)
+    logger.info(f"Generating teacher target projections for {n_samples} samples...")
     teacher_outputs = []
-    for i in range(len(query_embeddings)):
+    log_interval = max(1, n_samples // 10)
+    for i in range(n_samples):
         proj = teacher_projection.project(query_embeddings[i])
         if isinstance(proj, tuple):
             proj = proj[0]
         teacher_outputs.append(proj)
+        if (i + 1) % log_interval == 0:
+            logger.info(f"  Teacher projections: {i+1}/{n_samples} ({100*(i+1)/n_samples:.0f}%)")
     teacher_outputs = np.stack(teacher_outputs)
 
     # Convert to tensors
@@ -795,13 +892,17 @@ def train_rotation_distillation_angle_supervised(
     _import_torch()
 
     # Generate target projections from teacher
-    logger.info("Generating teacher target projections...")
+    n_samples = len(query_embeddings)
+    logger.info(f"Generating teacher target projections for {n_samples} samples...")
     teacher_outputs = []
-    for i in range(len(query_embeddings)):
+    log_interval = max(1, n_samples // 10)
+    for i in range(n_samples):
         proj = teacher_projection.project(query_embeddings[i])
         if isinstance(proj, tuple):
             proj = proj[0]
         teacher_outputs.append(proj)
+        if (i + 1) % log_interval == 0:
+            logger.info(f"  Teacher projections: {i+1}/{n_samples} ({100*(i+1)/n_samples:.0f}%)")
     teacher_outputs = np.stack(teacher_outputs)
 
     # Compute optimal rotation parameters for all samples

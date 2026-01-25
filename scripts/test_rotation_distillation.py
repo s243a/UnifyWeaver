@@ -7,6 +7,13 @@ Rotation-based transformer distillation from LDA multi-head projection.
 Instead of fitting output vectors directly, this constrains the transformer
 to learn rotation angles and scaling factors - a minimal geometric transform.
 
+TODO: Properly test rotation-based distillation with held-out evaluation:
+  - Use question rewording redundancy for train/test split (avoid leakage)
+  - Evaluate transformer vs rotation-based teacher (same manifold)
+  - Apply information criteria (AIC/BIC with capacity proxy) to justify model size
+  - Compare 2-layer vs 3-layer architectures on rotation manifold
+  See: docs/proposals/PR_principal_bivector_codebook.md
+
 Key idea: The transformation from query → projected is decomposed into:
     projected = scale * R(θ₁, θ₂, ..., θₖ) @ query
 
@@ -1186,9 +1193,254 @@ class SyntheticMinimalProjection:
         return result * blended_scale
 
 
+class FederatedTeacher:
+    """
+    Wrapper to use a federated Procrustes model as teacher.
+
+    Standard projection: weighted blend of output vectors.
+    """
+
+    def __init__(self, model_path: str):
+        """
+        Args:
+            model_path: Path to federated model (.pkl file)
+        """
+        import pickle
+
+        self.model_path = Path(model_path)
+        with open(model_path, 'rb') as f:
+            self.meta = pickle.load(f)
+
+        self.cluster_ids = self.meta["cluster_ids"]
+        self.temperature = self.meta.get("temperature", 0.1)
+        self.num_clusters = len(self.cluster_ids)
+
+        # Load cluster centroids
+        self.cluster_centroids = self.meta.get("cluster_centroids")
+
+        # Load routing data
+        cluster_dir = self.model_path.with_suffix('')
+        routing_path = cluster_dir / "routing_data.npz"
+        if routing_path.exists():
+            routing_data = np.load(routing_path)
+            self.query_embeddings = routing_data['query_embeddings']
+        else:
+            raise FileNotFoundError(f"Routing data not found: {routing_path}")
+
+        # Load cluster W matrices
+        self.clusters = {}
+        for cid in self.cluster_ids:
+            # Handle both "cluster_0" and "0" formats
+            if cid.startswith("cluster_"):
+                cluster_path = cluster_dir / f"{cid}.npz"
+            else:
+                cluster_path = cluster_dir / f"cluster_{cid}.npz"
+            if cluster_path.exists():
+                data = np.load(cluster_path)
+                # Handle both "W" and "W_stack" formats
+                if "W" in data:
+                    W = data["W"]
+                elif "W_stack" in data:
+                    W = data["W_stack"][0]  # First (and usually only) W matrix
+                else:
+                    continue
+                self.clusters[cid] = {"W": W}
+
+        self.embed_dim = self.query_embeddings.shape[1]
+
+        logger.info(f"Loaded federated teacher: {self.num_clusters} clusters, dim={self.embed_dim}")
+
+    @property
+    def num_heads(self) -> int:
+        return self.num_clusters
+
+    def project(self, query_emb: np.ndarray, top_k: int = 10) -> np.ndarray:
+        """Standard weighted vector projection."""
+        q_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+
+        if self.cluster_centroids is not None:
+            sims = q_norm @ self.cluster_centroids.T
+        else:
+            sims = q_norm @ self.query_embeddings.T
+
+        sims_shifted = (sims - np.max(sims)) / self.temperature
+        weights = np.exp(sims_shifted)
+        weights /= weights.sum()
+
+        top_indices = np.argsort(weights)[-top_k:]
+
+        proj = np.zeros_like(query_emb)
+        total_weight = 0.0
+
+        for idx in top_indices:
+            cid = self.cluster_ids[idx]
+            if cid in self.clusters:
+                W = self.clusters[cid]["W"]
+                w = weights[idx]
+                proj += w * (query_emb @ W)
+                total_weight += w
+
+        if total_weight > 0:
+            proj /= total_weight
+
+        return proj
+
+
+class FederatedMinimalTeacher:
+    """
+    Federated model using rotation parameter interpolation.
+
+    Instead of blending output vectors:
+        output = Σ wᵢ × (query @ Wᵢ)
+
+    Blend rotation parameters:
+        For each cluster: compute optimal angles from query → (query @ Wᵢ)
+        Blend: angles = Σ wᵢ × anglesᵢ, scale = Σ wᵢ × scaleᵢ
+        Output: scale × R(angles) @ query
+
+    This keeps the projection in the rotation manifold.
+    """
+
+    def __init__(self, federated_teacher: FederatedTeacher, rotation_planes: int = 64):
+        """
+        Args:
+            federated_teacher: FederatedTeacher instance
+            rotation_planes: Number of Givens rotation planes
+        """
+        self.base_teacher = federated_teacher
+        self.embed_dim = federated_teacher.embed_dim
+        self.rotation_planes = rotation_planes
+        self.temperature = federated_teacher.temperature
+
+        # Create rotation layer for plane indices
+        self.rotation_layer = GivensRotationLayer(self.embed_dim, rotation_planes)
+
+        # Pre-compute rotation parameters for each cluster
+        logger.info("Pre-computing cluster rotation parameters...")
+        self.cluster_rotations = {}
+
+        for cid in federated_teacher.cluster_ids:
+            if cid in federated_teacher.clusters:
+                W = federated_teacher.clusters[cid]["W"]
+                # Use cluster centroid as reference input
+                idx = federated_teacher.cluster_ids.index(cid)
+                if federated_teacher.cluster_centroids is not None:
+                    centroid = federated_teacher.cluster_centroids[idx]
+                else:
+                    centroid = np.mean(federated_teacher.query_embeddings, axis=0)
+
+                # Compute target for this cluster
+                target = centroid @ W
+
+                # Compute optimal rotation from centroid → target
+                from rotation_transformer import compute_optimal_rotation_params
+                angles, scale = compute_optimal_rotation_params(
+                    centroid, target,
+                    self.rotation_layer.plane_indices,
+                    compute_scale=True
+                )
+                self.cluster_rotations[cid] = {
+                    'angles': angles,
+                    'scale': scale if scale is not None else 1.0
+                }
+
+        logger.info(f"  Computed rotations for {len(self.cluster_rotations)} clusters")
+
+    @property
+    def num_heads(self) -> int:
+        return self.base_teacher.num_heads
+
+    def project(self, query_emb: np.ndarray, top_k: int = 10) -> np.ndarray:
+        """
+        Project using rotation parameter interpolation.
+
+        1. Compute routing weights (same as standard)
+        2. Blend rotation parameters across clusters
+        3. Apply blended rotation to query
+        """
+        q_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+
+        # Compute routing weights
+        if self.base_teacher.cluster_centroids is not None:
+            sims = q_norm @ self.base_teacher.cluster_centroids.T
+        else:
+            sims = q_norm @ self.base_teacher.query_embeddings.T
+
+        sims_shifted = (sims - np.max(sims)) / self.temperature
+        weights = np.exp(sims_shifted)
+        weights /= weights.sum()
+
+        top_indices = np.argsort(weights)[-top_k:]
+
+        # Blend rotation parameters
+        blended_angles = np.zeros(self.rotation_planes, dtype=np.float32)
+        blended_scale = 0.0
+        total_weight = 0.0
+
+        for idx in top_indices:
+            cid = self.base_teacher.cluster_ids[idx]
+            if cid in self.cluster_rotations:
+                w = weights[idx]
+                rot = self.cluster_rotations[cid]
+                blended_angles += w * rot['angles']
+                blended_scale += w * rot['scale']
+                total_weight += w
+
+        if total_weight > 0:
+            blended_angles /= total_weight
+            blended_scale /= total_weight
+
+        # Apply blended rotation to query
+        result = query_emb.copy()
+        for k, (i, j) in enumerate(self.rotation_layer.plane_indices):
+            theta = blended_angles[k]
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            xi, xj = result[i], result[j]
+            result[i] = cos_t * xi - sin_t * xj
+            result[j] = sin_t * xi + cos_t * xj
+
+        return result * blended_scale
+
+    def get_blended_params(self, query_emb: np.ndarray, top_k: int = 10) -> Tuple[np.ndarray, float]:
+        """Get the blended rotation parameters for a query."""
+        q_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+
+        if self.base_teacher.cluster_centroids is not None:
+            sims = q_norm @ self.base_teacher.cluster_centroids.T
+        else:
+            sims = q_norm @ self.base_teacher.query_embeddings.T
+
+        sims_shifted = (sims - np.max(sims)) / self.temperature
+        weights = np.exp(sims_shifted)
+        weights /= weights.sum()
+
+        top_indices = np.argsort(weights)[-top_k:]
+
+        blended_angles = np.zeros(self.rotation_planes, dtype=np.float32)
+        blended_scale = 0.0
+        total_weight = 0.0
+
+        for idx in top_indices:
+            cid = self.base_teacher.cluster_ids[idx]
+            if cid in self.cluster_rotations:
+                w = weights[idx]
+                rot = self.cluster_rotations[cid]
+                blended_angles += w * rot['angles']
+                blended_scale += w * rot['scale']
+                total_weight += w
+
+        if total_weight > 0:
+            blended_angles /= total_weight
+            blended_scale /= total_weight
+
+        return blended_angles, blended_scale
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test rotation-based transformer distillation")
-    parser.add_argument("--db", help="Path to LDA database (optional if --synthetic)")
+    parser.add_argument("--db", help="Path to LDA database (optional)")
+    parser.add_argument("--federated-model", help="Path to federated Procrustes model (.pkl)")
     parser.add_argument("--synthetic", action="store_true",
                        help="Use synthetic data for testing (no database required)")
     parser.add_argument("--mh-id", type=int, default=1, help="Multi-head projection ID")
@@ -1223,16 +1475,34 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.synthetic and (not args.db or not Path(args.db).exists()):
-        logger.error(f"Database not found: {args.db}. Use --synthetic for testing without a database.")
+    # Validate input sources
+    has_federated = args.federated_model and Path(args.federated_model).exists()
+    has_db = args.db and Path(args.db).exists()
+
+    if not args.synthetic and not has_federated and not has_db:
+        logger.error("Must provide one of: --synthetic, --federated-model, or --db")
         return 1
 
     print("=" * 60)
-    print("Rotation-Based Transformer Distillation Test")
+    print("Rotation-Based Transformer Distillation")
     print("=" * 60)
 
     # Load or create projections
-    if args.synthetic:
+    if has_federated:
+        # Use federated Procrustes model as teacher
+        print(f"\nUsing FEDERATED MODEL: {args.federated_model}")
+
+        federated_teacher = FederatedTeacher(args.federated_model)
+        minimal_proj = FederatedMinimalTeacher(federated_teacher, args.rotation_planes)
+        standard_proj = federated_teacher  # For comparison
+        db = None
+        embed_dim = federated_teacher.embed_dim
+
+        # Query embeddings come from the federated model's routing data
+        query_embeddings = federated_teacher.query_embeddings.astype(np.float32)
+        print(f"  Loaded {len(query_embeddings)} query embeddings (dim={embed_dim})")
+
+    elif args.synthetic:
         print("\nUsing SYNTHETIC data for testing")
         standard_proj = SyntheticProjection(
             embed_dim=384,
@@ -1241,19 +1511,21 @@ def main():
         )
         minimal_proj = SyntheticMinimalProjection(standard_proj, args.rotation_planes)
         db = None
+        embed_dim = 384
 
         # Generate synthetic query embeddings
         np.random.seed(123)
-        query_embeddings = np.random.randn(args.synthetic_samples, 384).astype(np.float32)
+        query_embeddings = np.random.randn(args.synthetic_samples, embed_dim).astype(np.float32)
         # Normalize
         query_embeddings = query_embeddings / np.linalg.norm(query_embeddings, axis=1, keepdims=True)
     else:
         db = LDAProjectionDB(args.db)
         standard_proj = LDAProjectionWrapper(db, args.mh_id)
         minimal_proj = MinimalTransformProjection(db, args.mh_id, args.rotation_planes)
+        embed_dim = standard_proj.embed_dim if hasattr(standard_proj, 'embed_dim') else 384
 
-    n_heads = standard_proj.num_heads
-    print(f"\nMulti-head projection: {n_heads} heads")
+    n_heads = standard_proj.num_heads if hasattr(standard_proj, 'num_heads') else 'N/A'
+    print(f"\nTeacher capacity: {n_heads} equivalent heads")
     print(f"Teacher type: {args.teacher}")
 
     # Select teacher based on argument
@@ -1264,8 +1536,8 @@ def main():
         teacher = standard_proj
         print("  Using Standard Projection (blends output vectors)")
 
-    # Get training data
-    if not args.synthetic:
+    # Get training data (if not already loaded)
+    if not has_federated and not args.synthetic:
         print("\nCollecting training queries from database...")
 
         model = db.get_model('all-MiniLM-L6-v2')
@@ -1331,7 +1603,7 @@ def main():
     print(f"  Architecture: H={args.heads}, L={args.layers}")
 
     transformer = RotationTransformer(
-        embed_dim=384,
+        embed_dim=embed_dim,
         num_rotation_planes=args.rotation_planes,
         num_heads=args.heads,
         num_layers=args.layers,
@@ -1396,15 +1668,17 @@ def main():
     print(f"{'=' * 40}")
 
     # Interpretation
+    teacher_type = "rotation-based teacher" if args.teacher == "rotation" else "standard teacher"
     if results['mean_cosine_sim'] > 0.95:
-        print("\n✓ Excellent: Rotation transform closely approximates LDA projection")
+        print(f"\n✓ Excellent: Transformer closely approximates {teacher_type}")
     elif results['mean_cosine_sim'] > 0.90:
-        print("\n✓ Good: Rotation transform reasonably approximates LDA projection")
+        print(f"\n✓ Good: Transformer reasonably approximates {teacher_type}")
     elif results['mean_cosine_sim'] > 0.80:
-        print("\n~ Fair: Rotation transform partially approximates LDA projection")
+        print(f"\n~ Fair: Transformer partially approximates {teacher_type}")
     else:
-        print("\n✗ Poor: Rotation transform does not well approximate LDA projection")
-        print("  Consider increasing rotation planes or using per-dim scaling")
+        print(f"\n~ Moderate: Transformer has room for improvement vs {teacher_type}")
+        print("  Note: Both teacher and student operate in the same rotation manifold")
+        print("  Consider: more rotation planes, different architecture, or regularization")
 
     # Compare to direct output transformer
     print(f"\nTransform interpretability:")
