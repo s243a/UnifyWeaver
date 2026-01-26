@@ -28,6 +28,7 @@
 :- dynamic user:test_label_cat_reach_param/4.
 :- dynamic user:test_cat/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
+:- dynamic user:test_recursive_label_path_cat_selective/4.
 :- dynamic user:test_sparse_input_fact/3.
 :- dynamic user:test_sparse_input_filtered/3.
 :- dynamic user:test_post_agg_param/2.
@@ -205,6 +206,7 @@ test_csharp_query_target :-
         verify_recursive_selection_scan_uses_scan_index,
         verify_recursive_multi_key_recursive_join_uses_partial_index,
         verify_recursive_multi_key_recursive_selection_join_uses_partial_index,
+        verify_recursive_multi_key_recursive_selection_join_selective_probe_uses_partial_index,
         verify_parameterized_sparse_input_positions_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
@@ -548,6 +550,19 @@ setup_test_data :-
         test_recursive_label_path_cat_filtered(X, Y, L, cat1),
         test_recursive_label_path_cat_filtered(Y, Z, L, cat1)
     )),
+    assertz(user:test_recursive_label_path_cat_selective(a, b, red, cat1)),
+    assertz(user:test_recursive_label_path_cat_selective(b, c, red, cat1)),
+    forall(between(1, 80, I),
+        (   format(atom(NodeA), 's~w', [I]),
+            I2 is I + 1000,
+            format(atom(NodeB), 's~w', [I2]),
+            assertz(user:test_recursive_label_path_cat_selective(NodeA, NodeB, blue, cat2))
+        )),
+    assertz(user:(test_recursive_label_path_cat_selective(X, Z, L, Cat) :-
+        test_cat(Cat),
+        test_recursive_label_path_cat_selective(X, Y, L, cat1),
+        test_recursive_label_path_cat_selective(Y, Z, L, cat1)
+    )),
     assertz(user:mode(test_sparse_input_filtered(+, -, +))),
     assertz(user:test_sparse_input_fact(a, 1, red)),
     assertz(user:test_sparse_input_fact(a, 2, red)),
@@ -773,6 +788,7 @@ cleanup_test_data :-
     retractall(user:test_reachable(_, _)),
     retractall(user:test_cat(_)),
     retractall(user:test_recursive_label_path_cat_filtered(_, _, _, _)),
+    retractall(user:test_recursive_label_path_cat_selective(_, _, _, _)),
     cleanup_csv_dynamic_source.
 
 verify_fact_plan :-
@@ -1794,6 +1810,27 @@ verify_recursive_multi_key_recursive_selection_join_uses_partial_index :-
          'b,c,red,cat1',
          'a,c,red,cat1',
          'STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
+        [],
+        HarnessSource).
+
+verify_recursive_multi_key_recursive_selection_join_selective_probe_uses_partial_index :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_selective/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_selective, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    (   Left = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_selective, arity:4}, role:_, width:_}, predicate:_, width:_},
+        Right = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_selective, arity:4}, role:_, width:_}, predicate:_, width:_}
+    ;   Right = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_selective, arity:4}, role:_, width:_}, predicate:_, width:_},
+        Left = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_selective, arity:4}, role:_, width:_}, predicate:_, width:_}
+    ),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
         [],
         HarnessSource).
 
@@ -3340,6 +3377,28 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
    var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+harness_source_with_strategy_flag_quiet(ModuleClass, Params, Strategy, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+~wforeach (var _ in ~w)
+{
+}
+var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
 
 harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, Strategy, Source) :-
     (   Params == []
