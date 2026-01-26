@@ -149,6 +149,30 @@ Goodbye!
 | `--threshold` | Minimum similarity score | 0.0 |
 | `--cluster` | Restrict to specific cluster | all |
 
+## Fast Inference with Orthogonal Codebook
+
+For mobile/edge deployment, use the orthogonal codebook transformer:
+
+```bash
+# Evaluate Hit@K on orthogonal codebook
+python3 scripts/train_orthogonal_codebook.py \
+  --hit-at-k \
+  --federated-model models/federated.pkl \
+  --orthogonal-codebook models/orthogonal_codebook.npz
+```
+
+**Performance comparison:**
+
+| Approach | Hit@1 | Speed |
+|----------|-------|-------|
+| Raw embeddings | 57.5% | baseline |
+| **Orthogonal** | **57.3%** | 27,713/s |
+| Weighted baseline | 14.1% | 706/s |
+
+The orthogonal codebook is **39× faster** than the weighted baseline while matching raw embedding quality.
+
+See `docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md` for theory.
+
 ## Related
 
 **Parent Skill:**

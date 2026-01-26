@@ -933,6 +933,396 @@ def evaluate_orthogonal_transformer(
 
 
 # =============================================================================
+# Multi-Source Orthogonal Teacher
+# =============================================================================
+
+class MultiSourceOrthogonalTeacher:
+    """
+    Teacher that combines multiple federated models for unified training.
+
+    Supports training a single transformer that can project queries from
+    multiple federated models (e.g., skills + Q/A pairs from books).
+    """
+
+    def __init__(
+        self,
+        federated_model_paths: List[str],
+        codebook: FastOrthogonalCodebook,
+    ):
+        """
+        Args:
+            federated_model_paths: List of paths to federated .pkl models
+            codebook: FastOrthogonalCodebook for rotation
+        """
+        self.codebook = codebook
+        self.d = codebook.d
+        self.n_components = codebook.n_components
+
+        # Load all federated models
+        self.sources = []
+        self.all_query_embeddings = []
+        self.source_indices = []  # Track which queries belong to which source
+
+        for i, path in enumerate(federated_model_paths):
+            source_data = self._load_federated_source(path, i)
+            if source_data is not None:
+                self.sources.append(source_data)
+
+                # Track queries and their source
+                n_queries = len(source_data['query_embeddings'])
+                self.all_query_embeddings.append(source_data['query_embeddings'])
+                self.source_indices.extend([i] * n_queries)
+
+        # Concatenate all queries
+        if self.all_query_embeddings:
+            self.query_embeddings = np.concatenate(self.all_query_embeddings, axis=0)
+        else:
+            self.query_embeddings = np.zeros((0, self.d), dtype=np.float32)
+
+        self.source_indices = np.array(self.source_indices)
+
+        log_info(
+            f"MultiSourceOrthogonalTeacher: {len(self.sources)} sources, "
+            f"{len(self.query_embeddings)} total queries, "
+            f"routing to {self.n_components} orthogonal planes"
+        )
+
+    def _load_federated_source(self, model_path: str, source_id: int) -> Optional[Dict]:
+        """Load a single federated model source."""
+        model_path = Path(model_path)
+
+        try:
+            with open(model_path, 'rb') as f:
+                meta = pickle.load(f)
+
+            cluster_ids = meta.get("cluster_ids", [])
+            temperature = meta.get("temperature", 0.1)
+            num_clusters = len(cluster_ids)
+            cluster_centroids = meta.get("cluster_centroids")
+
+            # Load routing data
+            cluster_dir = model_path.with_suffix('')
+            routing_path = cluster_dir / "routing_data.npz"
+
+            if routing_path.exists():
+                routing_data = np.load(routing_path)
+                query_embeddings = routing_data['query_embeddings'].astype(np.float32)
+            else:
+                log_info(f"  Warning: No routing data for {model_path.name}")
+                return None
+
+            log_info(
+                f"  Source {source_id}: {model_path.name} - "
+                f"{num_clusters} clusters, {len(query_embeddings)} queries"
+            )
+
+            return {
+                'path': model_path,
+                'cluster_ids': cluster_ids,
+                'temperature': temperature,
+                'num_clusters': num_clusters,
+                'cluster_centroids': cluster_centroids,
+                'cluster_dir': cluster_dir,
+                'query_embeddings': query_embeddings,
+                'source_id': source_id,
+            }
+
+        except Exception as e:
+            log_info(f"  Warning: Failed to load {model_path}: {e}")
+            return None
+
+    def get_target_output(
+        self,
+        query_emb: np.ndarray,
+        top_k: int = 8,
+    ) -> np.ndarray:
+        """
+        Get target output using orthogonal codebook routing.
+
+        Args:
+            query_emb: Query embedding (d,) or (batch, d)
+
+        Returns:
+            output: Rotated output (d,) or (batch, d)
+        """
+        was_1d = query_emb.ndim == 1
+        if was_1d:
+            query_emb = query_emb[np.newaxis, :]
+
+        output, _, _ = self.codebook.route_and_apply(query_emb, top_k=top_k)
+
+        if was_1d:
+            output = output[0]
+
+        return output
+
+    def compute_targets_batched(
+        self,
+        query_embeddings: np.ndarray,
+        top_k: int = 8,
+        batch_size: int = 256,
+    ) -> np.ndarray:
+        """
+        Compute target outputs using Rodrigues formula (very fast).
+
+        Args:
+            query_embeddings: (N, d) query embeddings
+            top_k: Number of codebook entries to blend
+            batch_size: Batch size for processing
+
+        Returns:
+            outputs: (N, d) target outputs after rotation
+        """
+        n_samples = len(query_embeddings)
+        all_outputs = np.zeros_like(query_embeddings)
+
+        start_time = time.time()
+        for batch_start in range(0, n_samples, batch_size):
+            batch_end = min(batch_start + batch_size, n_samples)
+            batch_queries = query_embeddings[batch_start:batch_end]
+
+            batch_outputs, _, _ = self.codebook.route_and_apply(
+                batch_queries, top_k=top_k
+            )
+            all_outputs[batch_start:batch_end] = batch_outputs
+
+            if (batch_end) % 1000 == 0 or batch_end == n_samples:
+                elapsed = time.time() - start_time
+                rate = batch_end / elapsed
+                log_info(f"    Targets: {batch_end}/{n_samples} ({rate:.0f}/s)")
+
+        elapsed = time.time() - start_time
+        log_info(f"  Target computation: {elapsed:.2f}s ({n_samples/elapsed:.0f}/s)")
+
+        return all_outputs
+
+
+def build_combined_orthogonal_codebook(
+    federated_model_paths: List[str],
+    n_components: int = 64,
+    method: str = "pca",
+    pca_algorithm: str = "auto",
+) -> FastOrthogonalCodebook:
+    """
+    Build an orthogonal codebook from multiple federated models.
+
+    Extracts cluster bivectors from all models and builds a combined
+    orthogonal codebook.
+
+    Args:
+        federated_model_paths: List of paths to federated .pkl models
+        n_components: Number of orthogonal planes in codebook
+        method: "pca" for PCA-based extraction, "canonical" for axis-aligned
+
+    Returns:
+        FastOrthogonalCodebook combining all sources
+    """
+    from scipy.linalg import logm
+
+    log_info(f"\nBuilding combined orthogonal codebook from {len(federated_model_paths)} sources...")
+
+    all_bivectors = []
+    source_info = []
+    d = None
+
+    for model_path in federated_model_paths:
+        model_path = Path(model_path)
+
+        try:
+            with open(model_path, 'rb') as f:
+                meta = pickle.load(f)
+
+            cluster_dir = model_path.with_suffix('')
+
+            # Handle two different model formats:
+            # 1. New format: cluster_ids list + cluster_X.npz files
+            # 2. Old format: clusters dict with W_file references
+            cluster_ids = meta.get("cluster_ids", [])
+            clusters_dict = meta.get("clusters", {})
+
+            n_loaded = 0
+
+            if cluster_ids:
+                # New format with cluster_ids
+                for cid in cluster_ids:
+                    # Handle both naming conventions
+                    if cid.startswith("cluster_"):
+                        cluster_path = cluster_dir / f"{cid}.npz"
+                    else:
+                        cluster_path = cluster_dir / f"cluster_{cid}.npz"
+
+                    if not cluster_path.exists():
+                        continue
+
+                    data = np.load(cluster_path)
+
+                    if "W" in data:
+                        W = data["W"]
+                    elif "W_stack" in data:
+                        W = data["W_stack"][0]
+                    else:
+                        continue
+
+                    if d is None:
+                        d = W.shape[0]
+
+                    # Compute bivector (log of rotation)
+                    try:
+                        A = logm(W)
+                        A = np.real(A)
+                        A = (A - A.T) / 2  # Ensure antisymmetric
+                        all_bivectors.append(A)
+                        source_info.append({
+                            'source': model_path.name,
+                            'cluster': cid,
+                        })
+                        n_loaded += 1
+                    except Exception:
+                        pass
+
+            elif clusters_dict:
+                # Old format with clusters dict containing W_file references
+                for cid, cluster_info in clusters_dict.items():
+                    w_file = cluster_info.get("W_file", "")
+                    if not w_file:
+                        continue
+
+                    cluster_path = cluster_dir / w_file
+                    if not cluster_path.exists():
+                        continue
+
+                    data = np.load(cluster_path)
+
+                    if "W" in data:
+                        W = data["W"]
+                    elif "W_stack" in data:
+                        W = data["W_stack"][0]
+                    else:
+                        continue
+
+                    if d is None:
+                        d = W.shape[0]
+
+                    # Compute bivector (log of rotation)
+                    try:
+                        A = logm(W)
+                        A = np.real(A)
+                        A = (A - A.T) / 2  # Ensure antisymmetric
+                        all_bivectors.append(A)
+                        source_info.append({
+                            'source': model_path.name,
+                            'cluster': cid,
+                        })
+                        n_loaded += 1
+                    except Exception:
+                        pass
+
+            log_info(f"  {model_path.name}: {n_loaded} cluster bivectors")
+
+        except Exception as e:
+            log_info(f"  Warning: Failed to load {model_path}: {e}")
+
+    if not all_bivectors:
+        raise ValueError("No bivectors loaded from any source")
+
+    all_bivectors = np.array(all_bivectors)
+    log_info(f"  Total bivectors: {len(all_bivectors)}, d={d}")
+
+    if method == "pca":
+        # Use PCA to find dominant rotation directions
+        log_info("  Extracting dominant planes via PCA...")
+
+        # Flatten bivectors for PCA - use float32 to save memory
+        n_bivectors = len(all_bivectors)
+        flat_bivectors = all_bivectors.reshape(n_bivectors, -1).astype(np.float32)
+
+        # Center
+        mean_flat = flat_bivectors.mean(axis=0)
+        centered = flat_bivectors - mean_flat
+
+        n_pca = min(n_components * 2, n_bivectors)
+
+        # Auto-select algorithm based on matrix dimensions
+        # Key insight: For n_samples << n_features, numpy SVD with full_matrices=False
+        # is efficient because it only computes n_samples singular values.
+        # TruncatedSVD can be slower when n_components is close to n_samples.
+        n_features = d * d  # 768² = 589,824 for nomic embeddings
+        algo = pca_algorithm
+
+        if algo == "auto":
+            # When n_samples is small (<500), numpy SVD is efficient even with many features
+            # because full_matrices=False only computes min(n_samples, n_features) singular values
+            if n_bivectors < 500:
+                algo = "full"
+                log_info(f"  Auto: {n_bivectors} samples × {n_features} features, using full SVD (efficient for small n)")
+            elif n_bivectors > 2000:
+                algo = "incremental"
+                log_info(f"  Auto: {n_bivectors} samples × {n_features} features, using incremental PCA")
+            else:
+                algo = "randomized"
+                log_info(f"  Auto: {n_bivectors} samples × {n_features} features, using randomized SVD")
+
+        if algo == "full":
+            log_info(f"  Using full SVD for {n_pca} components...")
+            from numpy.linalg import svd
+            U, S, Vt = svd(centered, full_matrices=False)
+            top_components = Vt[:n_pca]
+            explained_var = np.sum(S[:n_pca]**2) / np.sum(S**2)
+            log_info(f"  Explained variance ratio: {explained_var:.4f}")
+
+        elif algo == "randomized":
+            log_info(f"  Using randomized SVD for {n_pca} components...")
+            try:
+                from sklearn.decomposition import TruncatedSVD
+                svd = TruncatedSVD(n_components=n_pca, random_state=42, algorithm='randomized')
+                svd.fit(centered)
+                top_components = svd.components_
+                log_info(f"  Explained variance ratio: {svd.explained_variance_ratio_.sum():.4f}")
+            except MemoryError:
+                log_info("  Memory limit hit, falling back to incremental PCA...")
+                algo = "incremental"
+
+        if algo == "incremental":
+            log_info(f"  Using incremental PCA for {n_pca} components...")
+            from sklearn.decomposition import IncrementalPCA
+            batch_size = max(10, min(50, n_bivectors // 4))
+            ipca = IncrementalPCA(n_components=n_pca, batch_size=batch_size)
+            ipca.fit(centered)
+            top_components = ipca.components_
+            log_info(f"  Explained variance ratio: {ipca.explained_variance_ratio_.sum():.4f}")
+
+        # Free memory
+        del centered, flat_bivectors
+
+        # Reconstruct as bivectors
+        pca_bivectors = []
+        for i in range(len(top_components)):
+            B = top_components[i].reshape(d, d)
+            B = (B - B.T) / 2  # Ensure antisymmetric
+            norm = np.linalg.norm(B)
+            if norm > 1e-8:
+                B = B / norm
+                pca_bivectors.append(B)
+
+        pca_bivectors = np.array(pca_bivectors[:n_components])
+        log_info(f"  PCA components: {len(pca_bivectors)}")
+
+        # Orthogonalize
+        orth_bivectors, planes = orthogonalize_codebook(pca_bivectors)
+
+    else:  # canonical
+        log_info("  Building canonical orthogonal planes...")
+        orth_bivectors, planes = build_canonical_orthogonal_codebook(d, n_components)
+
+    # Create codebook
+    codebook = FastOrthogonalCodebook(orth_bivectors)
+
+    log_info(f"  Created codebook: {codebook.n_components} orthogonal planes")
+
+    return codebook
+
+
+# =============================================================================
 # Full Rotation Teacher (for validation)
 # =============================================================================
 
@@ -1222,13 +1612,18 @@ def validate_against_full_rotation(
 def evaluate_hit_at_k(
     codebook: FastOrthogonalCodebook,
     federated_model_path: str,
-    k_values: List[int] = [1, 5, 10, 20],
+    k_values: List[int] = [1, 5, 10, 20, 50],
     top_k_routing: int = 10,
 ) -> Dict:
     """
     Evaluate hit@K for RAG retrieval.
 
-    For each query, project query and all targets, find if correct target is in top-K.
+    Tests two modes:
+    1. Symmetric: Project both queries and targets (what the old code did)
+    2. Asymmetric: Project queries only, targets stay raw (actual RAG use case)
+
+    The asymmetric mode is the realistic evaluation - queries are transformed
+    to move closer to their answer embeddings in cosine space.
     """
     log_info(f"\nEvaluating hit@K for RAG retrieval...")
 
@@ -1247,9 +1642,33 @@ def evaluate_hit_at_k(
     full_teacher = FullRotationTeacher(federated_model_path)
     baseline = WeightedVectorBaseline(federated_model_path)
 
+    def compute_hit_rates(proj_queries, targets_to_use, k_values, n_samples):
+        """Compute hit@K rates for given projected queries and targets."""
+        # Normalize for cosine similarity
+        proj_queries = proj_queries / (np.linalg.norm(proj_queries, axis=1, keepdims=True) + 1e-8)
+        targets_norm = targets_to_use / (np.linalg.norm(targets_to_use, axis=1, keepdims=True) + 1e-8)
+
+        # Compute all pairwise similarities
+        similarities = proj_queries @ targets_norm.T  # (n_samples, n_samples)
+
+        # For each query, rank targets and check hit@K
+        hits = {k: 0 for k in k_values}
+
+        for i in range(n_samples):
+            sims = similarities[i]
+            ranked_indices = np.argsort(sims)[::-1]
+            correct_rank = np.where(ranked_indices == i)[0][0]
+
+            for k in k_values:
+                if correct_rank < k:
+                    hits[k] += 1
+
+        return {k: hits[k] / n_samples for k in k_values}
+
     results = {}
 
-    # Evaluate each approach
+    # Evaluate each approach in ASYMMETRIC mode (project queries only - realistic RAG)
+    log_info("\n  === Asymmetric Mode (project queries only) ===")
     for approach_name, project_fn in [
         ("raw", lambda x: x),  # No projection (raw embeddings)
         ("orthogonal", lambda x: codebook.route_and_apply(x, top_k=top_k_routing)[0]),
@@ -1257,35 +1676,12 @@ def evaluate_hit_at_k(
     ]:
         log_info(f"  Evaluating {approach_name}...")
 
-        # Project queries and targets
         t0 = time.time()
         proj_queries = project_fn(queries)
-        proj_targets = project_fn(targets)
         proj_time = time.time() - t0
 
-        # Normalize for cosine similarity
-        proj_queries = proj_queries / (np.linalg.norm(proj_queries, axis=1, keepdims=True) + 1e-8)
-        proj_targets = proj_targets / (np.linalg.norm(proj_targets, axis=1, keepdims=True) + 1e-8)
-
-        # Compute all pairwise similarities
-        similarities = proj_queries @ proj_targets.T  # (n_samples, n_samples)
-
-        # For each query, rank targets and check hit@K
-        hits = {k: 0 for k in k_values}
-
-        for i in range(n_samples):
-            # Get similarity scores for this query
-            sims = similarities[i]
-            # Rank targets (descending)
-            ranked_indices = np.argsort(sims)[::-1]
-            # Find position of correct target (index i)
-            correct_rank = np.where(ranked_indices == i)[0][0]
-
-            for k in k_values:
-                if correct_rank < k:
-                    hits[k] += 1
-
-        hit_rates = {k: hits[k] / n_samples for k in k_values}
+        # Asymmetric: queries projected, targets raw
+        hit_rates = compute_hit_rates(proj_queries, targets, k_values, n_samples)
 
         results[approach_name] = {
             'hit_rates': hit_rates,
@@ -1394,6 +1790,93 @@ def save_orthogonal_codebook(codebook: FastOrthogonalCodebook, path: str):
     log_info(f"Saved orthogonal codebook to {path}")
 
 
+def save_orthogonal_transformer(
+    transformer: FastOrthogonalTransformer,
+    codebook: FastOrthogonalCodebook,
+    path: str,
+    metadata: Optional[Dict] = None,
+):
+    """
+    Save trained orthogonal transformer model.
+
+    Saves both the transformer state dict and the codebook together.
+    """
+    torch, _, _ = _import_torch()
+    if torch is None:
+        raise ImportError("PyTorch required to save transformer")
+
+    save_dict = {
+        # Transformer state
+        'input_proj_state': transformer.input_proj.state_dict(),
+        'encoder_state': transformer.encoder.state_dict(),
+        'routing_head_state': transformer.routing_head.state_dict(),
+        'scale_head_state': transformer.scale_head.state_dict(),
+
+        # Codebook data
+        'codebook_bivectors': codebook.bivectors,
+        'codebook_plane_u': codebook.plane_u,
+        'codebook_plane_v': codebook.plane_v,
+        'codebook_plane_theta': codebook.plane_theta,
+        'codebook_keys': codebook.codebook_keys,
+
+        # Architecture config
+        'embed_dim': transformer.embed_dim,
+        'n_components': transformer.n_components,
+        'num_layers': transformer.num_layers,
+        'num_heads': transformer.num_heads,
+        'top_k': transformer.top_k,
+
+        # Optional metadata
+        'metadata': metadata or {},
+    }
+
+    torch.save(save_dict, path)
+    log_info(f"Saved orthogonal transformer to {path}")
+
+
+def load_orthogonal_transformer(path: str) -> Tuple[FastOrthogonalTransformer, FastOrthogonalCodebook]:
+    """
+    Load trained orthogonal transformer model.
+
+    Returns both the transformer and the codebook.
+    """
+    torch, _, _ = _import_torch()
+    if torch is None:
+        raise ImportError("PyTorch required to load transformer")
+
+    save_dict = torch.load(path, map_location='cpu')
+
+    # Reconstruct codebook
+    codebook = FastOrthogonalCodebook.__new__(FastOrthogonalCodebook)
+    codebook.bivectors = save_dict['codebook_bivectors']
+    codebook.plane_u = save_dict['codebook_plane_u']
+    codebook.plane_v = save_dict['codebook_plane_v']
+    codebook.plane_theta = save_dict['codebook_plane_theta']
+    codebook.codebook_keys = save_dict['codebook_keys']
+    codebook.d = save_dict['embed_dim']
+    codebook.n_components = save_dict['n_components']
+    codebook.planes = [(codebook.plane_u[i], codebook.plane_v[i], codebook.plane_theta[i])
+                       for i in range(codebook.n_components)]
+
+    # Reconstruct transformer
+    transformer = FastOrthogonalTransformer(
+        codebook=codebook,
+        num_layers=save_dict['num_layers'],
+        num_heads=save_dict['num_heads'],
+        top_k=save_dict['top_k'],
+    )
+
+    # Load state dicts
+    transformer.input_proj.load_state_dict(save_dict['input_proj_state'])
+    transformer.encoder.load_state_dict(save_dict['encoder_state'])
+    transformer.routing_head.load_state_dict(save_dict['routing_head_state'])
+    transformer.scale_head.load_state_dict(save_dict['scale_head_state'])
+
+    log_info(f"Loaded orthogonal transformer: {codebook.n_components} planes, {save_dict['num_layers']} layers")
+
+    return transformer, codebook
+
+
 def load_orthogonal_codebook(path: str) -> FastOrthogonalCodebook:
     """Load orthogonal codebook from .npz file."""
     data = np.load(path)
@@ -1427,16 +1910,22 @@ def main():
     parser.add_argument("--codebook", help="Path to existing bivector codebook (.npz)")
     parser.add_argument("--orthogonal-codebook", help="Path to orthogonal codebook (.npz)")
     parser.add_argument("--federated-model", help="Path to federated model (.pkl)")
+    parser.add_argument("--federated-models", nargs="+",
+                       help="Multiple federated models for multi-source training")
 
     # Operations
     parser.add_argument("--orthogonalize", action="store_true",
                        help="Orthogonalize existing codebook")
     parser.add_argument("--build-canonical", action="store_true",
                        help="Build canonical orthogonal codebook from scratch")
+    parser.add_argument("--build-combined", action="store_true",
+                       help="Build combined orthogonal codebook from multiple federated models")
     parser.add_argument("--test", action="store_true",
                        help="Test codebook with sample data")
     parser.add_argument("--train", action="store_true",
                        help="Train FastOrthogonalTransformer")
+    parser.add_argument("--train-multisource", action="store_true",
+                       help="Train on multiple federated models")
     parser.add_argument("--validate", action="store_true",
                        help="Validate orthogonal codebook against full rotation manifold")
     parser.add_argument("--compare", action="store_true",
@@ -1445,6 +1934,12 @@ def main():
                        help="Evaluate hit@K for RAG retrieval")
     parser.add_argument("--validate-samples", type=int, default=500,
                        help="Number of samples for validation/comparison")
+    parser.add_argument("--codebook-method", choices=["pca", "canonical"], default="pca",
+                       help="Method for building combined codebook")
+    parser.add_argument("--pca-algorithm", choices=["auto", "full", "randomized", "incremental"],
+                       default="auto",
+                       help="PCA algorithm: auto (choose based on size), full (numpy SVD), "
+                            "randomized (sklearn TruncatedSVD), incremental (sklearn IncrementalPCA)")
 
     # Parameters
     parser.add_argument("--n-components", type=int, default=64,
@@ -1462,6 +1957,7 @@ def main():
 
     # Output
     parser.add_argument("--output", help="Path to save orthogonal codebook")
+    parser.add_argument("--save-transformer", help="Path to save trained transformer model (.pt)")
 
     args = parser.parse_args()
 
@@ -1498,6 +1994,22 @@ def main():
 
         bivectors, planes = build_canonical_orthogonal_codebook(d, args.n_components)
         codebook = FastOrthogonalCodebook(bivectors)
+
+        if args.output:
+            save_orthogonal_codebook(codebook, args.output)
+
+    elif args.build_combined:
+        # Build combined codebook from multiple federated models
+        if not args.federated_models:
+            log_info("ERROR: --federated-models required for --build-combined")
+            return 1
+
+        codebook = build_combined_orthogonal_codebook(
+            federated_model_paths=args.federated_models,
+            n_components=args.n_components,
+            method=args.codebook_method,
+            pca_algorithm=args.pca_algorithm,
+        )
 
         if args.output:
             save_orthogonal_codebook(codebook, args.output)
@@ -1648,6 +2160,131 @@ def main():
             print("\n~ Fair: Room for improvement")
         else:
             print("\n~ Needs work: Consider more training or different architecture")
+
+    elif args.train_multisource:
+        # Multi-source training on multiple federated models
+        if not args.federated_models:
+            log_info("ERROR: --federated-models required for multi-source training")
+            return 1
+
+        log_info(f"\n{'=' * 60}")
+        log_info("Multi-Source Orthogonal Codebook Training")
+        log_info(f"{'=' * 60}")
+        log_info(f"Sources: {len(args.federated_models)}")
+        for i, path in enumerate(args.federated_models):
+            log_info(f"  {i}: {Path(path).name}")
+
+        # Load or build codebook
+        if args.orthogonal_codebook:
+            log_info(f"\nLoading orthogonal codebook: {args.orthogonal_codebook}")
+            codebook = load_orthogonal_codebook(args.orthogonal_codebook)
+        else:
+            # Build combined codebook from all sources
+            log_info("\nBuilding combined orthogonal codebook...")
+            codebook = build_combined_orthogonal_codebook(
+                federated_model_paths=args.federated_models,
+                n_components=args.n_components,
+                method=args.codebook_method,
+                pca_algorithm=args.pca_algorithm,
+            )
+
+            if args.output:
+                save_orthogonal_codebook(codebook, args.output)
+
+        # Create multi-source teacher
+        log_info("\nCreating MultiSourceOrthogonalTeacher...")
+        teacher = MultiSourceOrthogonalTeacher(args.federated_models, codebook)
+
+        # Create transformer
+        log_info("\nCreating FastOrthogonalTransformer...")
+        transformer = FastOrthogonalTransformer(
+            codebook=codebook,
+            num_layers=args.layers,
+            num_heads=args.heads,
+            top_k=args.top_k,
+        )
+
+        # Count parameters
+        total_params = sum(p.numel() for p in transformer.parameters())
+        log_info(f"  Parameters: {total_params:,}")
+        log_info(f"  Codebook size: {codebook.n_components}")
+        log_info(f"  Top-K: {args.top_k}")
+        log_info(f"  Device: {transformer.device}")
+
+        # Get combined queries from teacher
+        query_embeddings = teacher.query_embeddings
+        log_info(f"\nTotal queries from all sources: {len(query_embeddings)}")
+
+        # Split train/test
+        n_test = int(len(query_embeddings) * args.test_split)
+        indices = np.random.permutation(len(query_embeddings))
+        train_idx = indices[:-n_test]
+        test_idx = indices[-n_test:]
+
+        train_queries = query_embeddings[train_idx]
+        test_queries = query_embeddings[test_idx]
+
+        log_info(f"Train: {len(train_queries)}, Test: {len(test_queries)}")
+
+        # Show source distribution in train/test
+        train_sources = teacher.source_indices[train_idx]
+        test_sources = teacher.source_indices[test_idx]
+        for i, source in enumerate(teacher.sources):
+            train_count = np.sum(train_sources == i)
+            test_count = np.sum(test_sources == i)
+            log_info(f"  Source {i} ({source['path'].name}): {train_count} train, {test_count} test")
+
+        # Train
+        log_info(f"\nTraining for {args.epochs} epochs...")
+        losses = train_orthogonal_transformer(
+            transformer=transformer,
+            teacher=teacher,
+            query_embeddings=train_queries,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.lr,
+            log_interval=10,
+            top_k=args.top_k,
+        )
+
+        # Evaluate
+        log_info("\nEvaluating on test set...")
+        results = evaluate_orthogonal_transformer(
+            transformer, teacher, test_queries,
+            batch_size=128, top_k=args.top_k
+        )
+
+        print(f"\n{'=' * 60}")
+        print("Results (Multi-Source Training)")
+        print(f"{'=' * 60}")
+        print(f"  Sources: {len(args.federated_models)}")
+        print(f"  Total queries: {len(query_embeddings)}")
+        print(f"  Codebook: {codebook.n_components} orthogonal planes")
+        print()
+        print(f"  Mean Cosine Sim: {results['mean_cosine_sim']:.4f} ± {results['std_cosine_sim']:.4f}")
+        print(f"  Min/Max Cosine: [{results['min_cosine_sim']:.4f}, {results['max_cosine_sim']:.4f}]")
+        print(f"  Mean MSE: {results['mean_mse']:.6f}")
+        print(f"{'=' * 60}")
+
+        if results['mean_cosine_sim'] > 0.90:
+            print("\n✓ Excellent: Transformer learned to project across all sources")
+        elif results['mean_cosine_sim'] > 0.80:
+            print("\n✓ Good: Reasonable multi-source projection")
+        elif results['mean_cosine_sim'] > 0.70:
+            print("\n~ Fair: Room for improvement, consider more planes")
+        else:
+            print("\n~ Needs work: Try more components or different architecture")
+
+        # Save transformer model
+        if args.save_transformer:
+            metadata = {
+                'sources': [str(p) for p in args.federated_models],
+                'n_sources': len(args.federated_models),
+                'total_queries': len(query_embeddings),
+                'mean_cosine_sim': results['mean_cosine_sim'],
+                'codebook_method': args.codebook_method,
+            }
+            save_orthogonal_transformer(transformer, codebook, args.save_transformer, metadata)
 
     elif args.validate:
         # Validate orthogonal codebook against full rotation manifold
