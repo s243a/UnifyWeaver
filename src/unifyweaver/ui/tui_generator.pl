@@ -176,13 +176,38 @@ generate_node(container(Type, ContainerOpts, Content), Indent, Options, Code) :-
 generate_node(component(Type, CompOpts), Indent, Options, Code) :- !,
     generate_component(Type, CompOpts, Indent, Options, Code).
 
-% Conditional nodes
+% Conditional nodes - container form
 generate_node(container(when, Condition, Content), Indent, Options, Code) :- !,
     generate_conditional(Condition, Content, Indent, Options, Code).
 
-% Foreach nodes
+% Conditional nodes - direct form: when(Condition, [Children])
+generate_node(when(Condition, Children), Indent, Options, Code) :- !,
+    condition_to_shell(Condition, ShellCond),
+    NewIndent is Indent + 1,
+    (is_list(Children) ->
+        generate_children(Children, NewIndent, Options, ChildCode)
+    ;
+        generate_node(Children, NewIndent, Options, ChildCode)
+    ),
+    indent_string(Indent, IndentStr),
+    format(atom(Code), '~wif ~w; then~n~w~wfi~n', [IndentStr, ShellCond, ChildCode, IndentStr]).
+
+% Foreach nodes - container form
 generate_node(container(foreach, ForeachOpts, Template), Indent, Options, Code) :- !,
     generate_foreach(ForeachOpts, Template, Indent, Options, Code).
+
+% Foreach nodes - direct form: foreach(Collection, ItemVar, [Children])
+generate_node(foreach(Collection, ItemVar, Children), Indent, Options, Code) :- !,
+    binding_to_shell(Collection, ShellCollection),
+    NewIndent is Indent + 1,
+    (is_list(Children) ->
+        generate_children(Children, NewIndent, Options, ChildCode)
+    ;
+        generate_node(Children, NewIndent, Options, ChildCode)
+    ),
+    indent_string(Indent, IndentStr),
+    format(atom(Code), '~wfor ~w in ~w; do~n~w~wdone~n',
+           [IndentStr, ItemVar, ShellCollection, ChildCode, IndentStr]).
 
 % Pattern expansion
 generate_node(use_pattern(PatternName, Args), Indent, Options, Code) :- !,
@@ -382,7 +407,26 @@ generate_component(text, Options, Indent, _GenOpts, Code) :- !,
     text_style_codes(Style, StyleCode),
     ansi_reset(Reset),
 
-    format(atom(Code), '~wecho -e "~w~w~w"~n', [IndentStr, StyleCode, Content, Reset]).
+    % Convert var() bindings to shell variable references
+    content_to_shell(Content, ShellContent),
+
+    format(atom(Code), '~wecho -e "~w~w~w"~n', [IndentStr, StyleCode, ShellContent, Reset]).
+
+% Convert content to shell representation
+content_to_shell(var(X), Code) :- !,
+    var_to_shell_name(X, ShellName),
+    format(atom(Code), '$~w', [ShellName]).
+content_to_shell(format_size(V), Code) :- !,
+    content_to_shell(V, Inner),
+    format(atom(Code), '$(numfmt --to=iec ~w 2>/dev/null || echo ~w)', [Inner, Inner]).
+content_to_shell((A, B), Code) :- !,
+    % Handle tuples like (var(x), " items")
+    content_to_shell(A, CA),
+    content_to_shell(B, CB),
+    format(atom(Code), '~w~w', [CA, CB]).
+content_to_shell(X, X) :- atom(X), !.
+content_to_shell(X, X) :- string(X), !.
+content_to_shell(X, S) :- term_to_atom(X, S).
 
 % Heading component
 generate_component(heading, Options, Indent, _GenOpts, Code) :- !,
@@ -814,7 +858,8 @@ label_to_shell(Text, Text).
 % ============================================================================
 
 condition_to_shell(var(X), Code) :- !,
-    format(atom(Code), '[ -n "$~w" ]', [X]).
+    var_to_shell_name(X, ShellName),
+    format(atom(Code), '[ -n "$~w" ]', [ShellName]).
 condition_to_shell(not(C), Code) :- !,
     condition_to_shell(C, Inner),
     format(atom(Code), '! ~w', [Inner]).
@@ -846,14 +891,27 @@ condition_to_shell(Term, Code) :-
     format(atom(Code), '~w', [Term]).
 
 value_to_shell(var(X), Code) :- !,
-    format(atom(Code), '$~w', [X]).
+    var_to_shell_name(X, ShellName),
+    format(atom(Code), '$~w', [ShellName]).
 value_to_shell(X, X).
 
 %! binding_to_shell(+Binding, -Code) is det
 binding_to_shell(var(X), Code) :- !,
-    format(atom(Code), '"$~w"', [X]).
+    var_to_shell_name(X, ShellName),
+    format(atom(Code), '"$~w"', [ShellName]).
 binding_to_shell(X, Code) :-
     format(atom(Code), '"~w"', [X]).
+
+%! var_to_shell_name(+VarName, -ShellName) is det
+%  Convert dotted var names to underscore: browse.entries -> browse_entries
+var_to_shell_name(X, ShellName) :-
+    atom_string(X, XStr),
+    ( sub_string(XStr, _, _, _, ".") ->
+        atomic_list_concat(Parts, '.', X),
+        atomic_list_concat(Parts, '_', ShellName)
+    ;
+        ShellName = X
+    ).
 
 %! is_binding(+Term) is nondet
 is_binding(var(_)).

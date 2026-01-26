@@ -47,7 +47,9 @@ echo -e "[48;5;236m┌───────────────────
   echo ""
   echo ""
   echo ""
-  echo "# Unknown node: when(var(browse.entries),[component(text,[content(var(browse.entries.length), items),class(count)])])"
+  if [ -n "$browse_entries" ]; then
+    echo -e "[38;5;255m[0m"
+  fi
   echo ""
   echo ""
   echo ""
@@ -63,7 +65,11 @@ echo -e "[48;5;236m┌───────────────────
   echo ""
   echo ""
   echo ""
-  echo "# Unknown node: foreach(var(browse.entries),entry,[container(panel,[class(file_entry),on_click(handle_entry_click(var(entry))),border_left(var(entry.type),directory,primary,info)],[layout(flex,[justify(between),align(center)],[layout(flex,[gap(8)],[component(icon,[name(var(entry.type),directory,folder,file)]),component(text,[content(var(entry.name))])]),component(text,[content(format_size(var(entry.size))),style(muted),size(12)])])])])"
+  for entry in "$browse_entries"; do
+    echo -e "[48;5;236m┌──────────────────────────────────────────────────────────┐[0m"
+      echo -e "format_size(var(entry.size))  "
+    echo -e "[48;5;236m└──────────────────────────────────────────────────────────┘[0m"
+  done
   echo ""
   echo ""
   echo ""
@@ -79,7 +85,9 @@ echo -e "[48;5;236m┌───────────────────
   echo ""
   echo ""
   echo ""
-  echo "# Unknown node: when(and(empty(var(browse.entries)),not(var(loading))),[component(text,[content(Empty directory),style(muted),align(center)])])"
+  if [ -z "$browse_entries" ] && ! [ -n "$loading" ]; then
+    echo -e "[38;5;255mEmpty directory[0m"
+  fi
   echo ""
   echo ""
   echo ""
@@ -95,7 +103,33 @@ echo -e "[48;5;236m┌───────────────────
   echo ""
   echo ""
   echo ""
-  echo "# Unknown node: when(var(browse.selected),[container(panel,[class(selected_file)],[layout(stack,[spacing(10)],[component(text,[content(Selected file:),style(muted),size(12)]),component(code,[content(var(browse.selected))]),layout(flex,[gap(10),wrap(true)],[component(button,[label(View Contents),on_click(view_file)]),component(button,[label(📥 Download),on_click(download_file),variant(primary)]),component(button,[label(Search Here),on_click(search_here),variant(secondary)])])])])])"
+  if [ -n "$browse_selected" ]; then
+    echo -e "[48;5;236m┌──────────────────────────────────────────────────────────┐[0m"
+      echo -e "[38;5;255mSelected file:[0m"
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo -e "[48;5;236m[38;5;255m var(browse.selected) [0m"
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo ""
+      echo -e "[ View Contents ]  [ 📥 Download ]  [ Search Here ]  "
+    echo -e "[48;5;236m└──────────────────────────────────────────────────────────┘[0m"
+  fi
 echo -e "[48;5;236m└──────────────────────────────────────────────────────────┘[0m"
 
 
