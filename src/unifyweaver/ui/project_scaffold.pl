@@ -25,10 +25,10 @@
 :- use_module(library(lists)).
 
 % Load the UI generators
-:- use_module(library(vue_generator), [generate_vue_template/2]).
-:- use_module(library(react_generator), [generate_react_template/2]).
-:- use_module(library(flutter_generator), [generate_flutter_widget/2]).
-:- use_module(library(tui_generator), [generate_tui_script/3]).
+:- use_module(vue_generator, [generate_vue_template/2]).
+:- use_module(react_generator, [generate_react_template/2]).
+:- use_module(flutter_generator, [generate_flutter_widget/2]).
+:- use_module(tui_generator, [generate_tui_script/3]).
 
 % ============================================================================
 % MAIN ENTRY POINTS
