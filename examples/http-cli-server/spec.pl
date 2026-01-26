@@ -48,7 +48,9 @@ http_cli_service(Spec) :-
             endpoint(find, post, '/find', [roles([user, admin, shell])]),
             endpoint(cat, post, '/cat', [roles([user, admin, shell])]),
             endpoint(exec, post, '/exec', [roles([admin, shell])]),
-            endpoint(feedback, post, '/feedback', [roles([user, admin, shell])])
+            endpoint(feedback, post, '/feedback', [roles([user, admin, shell])]),
+            endpoint(upload, post, '/upload', [roles([admin, shell])]),
+            endpoint(download, get, '/download', [roles([user, admin, shell])])
         ]),
 
         % WebSocket shell

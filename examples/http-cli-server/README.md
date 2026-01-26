@@ -17,6 +17,8 @@ Prolog (`spec.pl`) and generate TypeScript code using UnifyWeaver's generators.
 - **Syntax Highlighting**: Code viewing with highlight.js (20+ languages)
 - **Root Selector**: Switch between sandbox, project, and home directories
 - **Results Panel**: Download/copy buttons for grep, find, cat, exec output
+- **File Upload**: Upload files with File System Access API support for Android 14+
+- **File Download**: Download files from the server with proper MIME types
 - **HTTPS Support**: Self-signed or custom certificates
 - **Role-based Auth**: JWT tokens with shell/admin/user roles
 - **Firewall Package Control**: Control which npm/CDN packages are allowed in generated code
@@ -95,7 +97,8 @@ The generated server includes a complete Vue.js single-page application:
 
 | Tab | Description | Required Role |
 |-----|-------------|---------------|
-| Browse | File browser with navigation | user |
+| Browse | File browser with navigation and download | user |
+| Upload | Upload files to server | admin, shell |
 | Grep | Regex search in files | user |
 | Find | Find files by pattern | user |
 | Cat | View file with syntax highlighting | user |
@@ -123,6 +126,21 @@ Switch between three directory roots:
   - **Text Mode**: Simple input field for command entry
   - **Capture Mode**: Hidden input for mobile keyboards (fallback)
 
+### Upload Features
+
+- **File System Access API**: Uses `showOpenFilePicker()` on Chrome for better file browser
+- **Android 14+ Support**: Works around Android 14's media-centric file picker limitations
+- **Immediate Upload**: Files upload automatically after selection (no separate button)
+- **Standard Fallback**: Falls back to `<input type="file">` on Firefox and older browsers
+- **Size Limits**: 50MB per upload request
+- **Path Validation**: Prevents directory traversal attacks
+
+### Download Features
+
+- **Browse Integration**: Download button appears when a file is selected
+- **MIME Type Detection**: Proper Content-Type headers for common file types
+- **Size Limits**: 100MB maximum download size
+
 ### Syntax Highlighting
 
 File viewing uses highlight.js with support for:
@@ -149,6 +167,8 @@ The `spec.pl` file defines:
   - `POST /cat` - Read file contents
   - `POST /exec` - Execute commands (admin/shell only)
   - `POST /feedback` - Submit feedback
+  - `POST /upload` - Upload files (admin/shell only, multipart/form-data)
+  - `GET /download` - Download files (authenticated)
 
 ### Authentication Specification
 
