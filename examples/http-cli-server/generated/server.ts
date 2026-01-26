@@ -1170,14 +1170,15 @@ function getHTMLInterface(): string {
           <label>Destination Path (relative to root, empty = working dir)</label>
           <input type="text" v-model="upload.destination" placeholder="e.g., uploads/ or leave empty" style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px;">
         </div>
-        <div id="upload_dropzone" class="upload_dropzone" style="border: 2px dashed #0f3460; padding: 40px; text-align: center; cursor: pointer; border-radius: 8px; transition: border-color 0.2s;" @click="triggerFileInput">
-          <div style="display: flex; flex-direction: column; gap: 10px; align-items: center; ">
-            <span style="font-size: 18px;">📁 Click to select files</span>
-            <span style="muted">or drag and drop</span>
+        <div class="upload_dropzone" style="border: 2px dashed #0f3460; padding: 20px; text-align: center; border-radius: 8px;">
+          <div style="display: flex; flex-direction: column; gap: 15px; align-items: center; ">
+            <span style="font-size: 18px;">📁 Select files to upload</span>
             <span style="muted">Max 50MB per file</span>
+            <button @click="openFilePicker" style="padding: 10px 20px; background: #e94560; border: none; color: #fff; cursor: pointer; border-radius: 5px; font-weight: bold">📂 Open File Picker</button>
+            <span style="muted">Or use standard input:</span>
+            <input type="file" id="upload_file_input" multiple accept="*/*,application/pdf,text/plain" @change="handleFileSelect" style="padding: 10px;">
           </div>
         </div>
-        <!-- Component: file_input [id(upload_file_input),multiple(true),on_change(handle_file_select),style(display: none;)] -->
         <template v-if="upload.selectedFiles.length">
           <div class="selected_files" style="background: #16213e; padding: 15px; border-radius: 5px;">
             <div style="display: flex; flex-direction: column; gap: 8px; align-items: stretch; ">
@@ -1547,6 +1548,59 @@ const app = createApp({
       document.getElementById("upload_file_input")?.click();
     };
 
+    // File System Access API - uploads immediately after selection
+    const openFilePicker = async () => {
+      if (!window.showOpenFilePicker) {
+        upload.result = "File System Access API not available in this browser";
+        upload.resultType = "error";
+        return;
+      }
+      try {
+        const handles = await window.showOpenFilePicker({ multiple: true });
+        const files = [];
+        for (const handle of handles) {
+          const file = await handle.getFile();
+          files.push(file);
+        }
+        if (files.length === 0) return;
+
+        // Upload immediately
+        upload.uploading = true;
+        upload.result = "Uploading " + files.length + " file(s)...";
+
+        const formData = new FormData();
+        formData.append("destination", upload.destination || workingDir.value);
+        formData.append("root", browseRoot.value);
+        for (const file of files) {
+          formData.append("files", file);
+        }
+
+        const response = await fetch("/upload", {
+          method: "POST",
+          headers: token.value ? { "Authorization": \`Bearer \${token.value}\` } : {},
+          body: formData
+        });
+
+        const result = await response.json();
+        upload.uploading = false;
+
+        if (result.success) {
+          upload.result = \`Uploaded \${result.data.count} file(s) to \${result.data.destination}\`;
+          upload.resultType = "success";
+          if (tab.value === "browse") loadBrowse();
+        } else {
+          upload.result = result.error || "Upload failed";
+          upload.resultType = "error";
+        }
+      } catch (err) {
+        upload.uploading = false;
+        if (err.name !== "AbortError") {
+          upload.result = err.message;
+          upload.resultType = "error";
+        }
+      }
+    };
+
     const handleFileSelect = (e) => {
       const files = e.target.files;
       upload.selectedFiles = Array.from(files).map(f => ({
@@ -1562,10 +1616,15 @@ const app = createApp({
     };
 
     const doUpload = async () => {
-      if (!upload.selectedFiles.length) return;
+      console.log("doUpload called, files:", upload.selectedFiles);
+      if (!upload.selectedFiles.length) {
+        upload.result = "No files selected";
+        upload.resultType = "error";
+        return;
+      }
 
       upload.uploading = true;
-      upload.result = "";
+      upload.result = "Starting upload...";
 
       const formData = new FormData();
       formData.append("destination", upload.destination || workingDir.value);
@@ -2001,7 +2060,7 @@ const app = createApp({
       browse, grep, find, cat, exec, feedback, shell, shellTextMode, xtermAvailable, upload,
       doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile,
       handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
-      doGrep, doFind, doCat, doExec, doFeedback, doUpload,
+      doGrep, doFind, doCat, doExec, doFeedback, doUpload, openFilePicker,
       connectShell, disconnectShell, sendShellCommand, clearShell,
       toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
       initXterm, formatSize, clearResults, copyResults, downloadResults,
@@ -2082,6 +2141,11 @@ async function handleRequest(
   const user = token ? verifyToken(token) : null;
 
   try {
+    // Handle upload separately - don't parse body as JSON (it's multipart)
+    if (method === 'POST' && pathname === '/upload') {
+      return handle_upload(req, res, {}, user);
+    }
+
     const body = await parseBody(req);
 
     // Route to handlers

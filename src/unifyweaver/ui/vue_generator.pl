@@ -404,6 +404,23 @@ generate_container(collapse, Options, Content, Indent, GenOpts, Code) :-
            [IndentStr, NextIndentStr, Expanded, Expanded, Header,
             NextIndentStr, Expanded, ContentCode, NextIndentStr, IndentStr]).
 
+% Label container - for file input association
+generate_container(label, Options, Content, Indent, GenOpts, Code) :-
+    get_option(for, Options, For, ''),
+    get_option(class, Options, Class, ''),
+    get_option(style, Options, Style, ''),
+
+    indent_string(Indent, IndentStr),
+    NextIndent is Indent + 1,
+    generate_node(Content, NextIndent, GenOpts, ContentCode),
+
+    (For \= '' -> format(atom(ForAttr), ' for="~w"', [For]) ; ForAttr = ''),
+    (Class \= '' -> format(atom(ClassAttr), ' class="~w"', [Class]) ; ClassAttr = ''),
+    (Style \= '' -> format(atom(StyleAttr), ' style="~w"', [Style]) ; StyleAttr = ''),
+
+    format(atom(Code), '~w<label~w~w~w>~n~w~w</label>~n',
+           [IndentStr, ForAttr, ClassAttr, StyleAttr, ContentCode, IndentStr]).
+
 % Default container fallback
 generate_container(Type, _Options, Content, Indent, GenOpts, Code) :-
     NextIndent is Indent + 1,
@@ -608,6 +625,28 @@ generate_component(textarea, Options, Indent, _GenOpts, Code) :-
         format(atom(Code), '~w<textarea v-model="~w" placeholder="~w" rows="~w" style="width: 100%; padding: 10px;"></textarea>~n',
                [IndentStr, CamelBind, Placeholder, Rows])
     ).
+
+% File input component - uses label wrapper for mobile compatibility
+generate_component(file_input, Options, Indent, _GenOpts, Code) :-
+    get_option(id, Options, Id, 'file_input'),
+    get_option(multiple, Options, Multiple, false),
+    get_option(on_change, Options, OnChange, ''),
+    get_option(accept, Options, Accept, ''),
+    get_option(style, Options, Style, ''),
+
+    indent_string(Indent, IndentStr),
+
+    % Build attributes
+    (Multiple == true -> MultipleAttr = ' multiple' ; MultipleAttr = ''),
+    (Accept \= '' -> format(atom(AcceptAttr), ' accept="~w"', [Accept]) ; AcceptAttr = ''),
+    (OnChange \= '' ->
+        onclick_to_vue(OnChange, VueChange),
+        format(atom(ChangeAttr), ' @change="~w"', [VueChange])
+    ; ChangeAttr = ''),
+    (Style \= '' -> format(atom(StyleAttr), ' style="~w"', [Style]) ; StyleAttr = ''),
+
+    format(atom(Code), '~w<input type="file" id="~w"~w~w~w~w>~n',
+           [IndentStr, Id, MultipleAttr, AcceptAttr, ChangeAttr, StyleAttr]).
 
 % Checkbox component
 generate_component(checkbox, Options, Indent, _GenOpts, Code) :-

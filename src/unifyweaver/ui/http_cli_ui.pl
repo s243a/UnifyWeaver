@@ -348,26 +348,29 @@ upload_panel_spec(
                 placeholder("e.g., uploads/ or leave empty")
             ]),
 
-            % File drop zone / selector
+            % File selection options
             container(panel, [
-                id(upload_dropzone),
                 class(upload_dropzone),
-                on_click(trigger_file_input),
-                style("border: 2px dashed #0f3460; padding: 40px; text-align: center; cursor: pointer; border-radius: 8px; transition: border-color 0.2s;")
+                style("border: 2px dashed #0f3460; padding: 20px; text-align: center; border-radius: 8px;")
             ], [
-                layout(stack, [spacing(10), align(center)], [
-                    component(text, [content("📁 Click to select files"), style("font-size: 18px;")]),
-                    component(text, [content("or drag and drop"), style(muted)]),
-                    component(text, [content("Max 50MB per file"), style(muted), size(12)])
+                layout(stack, [spacing(15), align(center)], [
+                    component(text, [content("📁 Select files to upload"), style("font-size: 18px;")]),
+                    component(text, [content("Max 50MB per file"), style(muted), size(12)]),
+                    % File System Access API button (better picker on Android 14+)
+                    component(button, [
+                        label("📂 Open File Picker"),
+                        on_click(open_file_picker),
+                        style("margin-top: 10px;")
+                    ]),
+                    component(text, [content("Or use standard input:"), style(muted), size(12)]),
+                    component(file_input, [
+                        id(upload_file_input),
+                        multiple(true),
+                        accept("*/*,application/pdf,text/plain"),
+                        on_change(handle_file_select),
+                        style("padding: 10px;")
+                    ])
                 ])
-            ]),
-
-            % Hidden file input
-            component(file_input, [
-                id(upload_file_input),
-                multiple(true),
-                on_change(handle_file_select),
-                style("display: none;")
             ]),
 
             % Selected files list

@@ -909,6 +909,11 @@ async function handleRequest(
   const user = token ? verifyToken(token) : null;
 
   try {
+    // Handle upload separately - don\'t parse body as JSON (it\'s multipart)
+    if (method === \'POST\' && pathname === \'/upload\') {
+      return handle_upload(req, res, {}, user);
+    }
+
     const body = await parseBody(req);
 
     // Route to handlers

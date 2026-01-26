@@ -767,6 +767,59 @@ const app = createApp({
       document.getElementById("upload_file_input")?.click();
     };
 
+    // File System Access API - uploads immediately after selection
+    const openFilePicker = async () => {
+      if (!window.showOpenFilePicker) {
+        upload.result = "File System Access API not available in this browser";
+        upload.resultType = "error";
+        return;
+      }
+      try {
+        const handles = await window.showOpenFilePicker({ multiple: true });
+        const files = [];
+        for (const handle of handles) {
+          const file = await handle.getFile();
+          files.push(file);
+        }
+        if (files.length === 0) return;
+
+        // Upload immediately
+        upload.uploading = true;
+        upload.result = "Uploading " + files.length + " file(s)...";
+
+        const formData = new FormData();
+        formData.append("destination", upload.destination || workingDir.value);
+        formData.append("root", browseRoot.value);
+        for (const file of files) {
+          formData.append("files", file);
+        }
+
+        const response = await fetch("/upload", {
+          method: "POST",
+          headers: token.value ? { "Authorization": `Bearer ${token.value}` } : {},
+          body: formData
+        });
+
+        const result = await response.json();
+        upload.uploading = false;
+
+        if (result.success) {
+          upload.result = `Uploaded ${result.data.count} file(s) to ${result.data.destination}`;
+          upload.resultType = "success";
+          if (tab.value === "browse") loadBrowse();
+        } else {
+          upload.result = result.error || "Upload failed";
+          upload.resultType = "error";
+        }
+      } catch (err) {
+        upload.uploading = false;
+        if (err.name !== "AbortError") {
+          upload.result = err.message;
+          upload.resultType = "error";
+        }
+      }
+    };
+
     const handleFileSelect = (e) => {
       const files = e.target.files;
       upload.selectedFiles = Array.from(files).map(f => ({
@@ -782,10 +835,15 @@ const app = createApp({
     };
 
     const doUpload = async () => {
-      if (!upload.selectedFiles.length) return;
+      console.log("doUpload called, files:", upload.selectedFiles);
+      if (!upload.selectedFiles.length) {
+        upload.result = "No files selected";
+        upload.resultType = "error";
+        return;
+      }
 
       upload.uploading = true;
-      upload.result = "";
+      upload.result = "Starting upload...";
 
       const formData = new FormData();
       formData.append("destination", upload.destination || workingDir.value);
@@ -1221,7 +1279,7 @@ const app = createApp({
       browse, grep, find, cat, exec, feedback, shell, shellTextMode, xtermAvailable, upload,
       doLogin, doLogout, loadBrowse, navigateTo, navigateUp, selectFile,
       handleEntryClick, viewFile, searchHere, onRootChange, resetWorkingDir,
-      doGrep, doFind, doCat, doExec, doFeedback, doUpload,
+      doGrep, doFind, doCat, doExec, doFeedback, doUpload, openFilePicker,
       connectShell, disconnectShell, sendShellCommand, clearShell,
       toggleShellMode, focusCaptureInput, handleCaptureInput, handleCaptureKeydown,
       initXterm, formatSize, clearResults, copyResults, downloadResults,
