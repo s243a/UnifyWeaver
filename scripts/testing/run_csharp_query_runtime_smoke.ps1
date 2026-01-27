@@ -18,7 +18,7 @@ param(
     [string]$OutputDir = "tmp/csharp_query_smoke",
 
     [Parameter(Mandatory = $false)]
-    [string]$ProjectFilter = "csharp_query_*",
+    [string]$ProjectFilter = "*",
 
     [Parameter(Mandatory = $false)]
     [switch]$KeepArtifacts,
@@ -165,7 +165,9 @@ $env:NUGET_PACKAGES = $nugetPackages
 $env:NUGET_HTTP_CACHE_PATH = $nugetHttpCache
 
 if (-not $SkipCodegen) {
-    $generatedDirs = Get-ChildItem -Path $outputPath -Directory -Filter "csharp_query_*" -ErrorAction SilentlyContinue
+    $generatedDirs = Get-ChildItem -Path $outputPath -Directory -ErrorAction SilentlyContinue | Where-Object {
+        Test-Path (Join-Path $_.FullName "expected_rows.txt")
+    }
     if ($generatedDirs) {
         $generatedDirs | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -269,7 +271,9 @@ foreach ($project in $projects) {
 }
 
 if (-not $KeepArtifacts) {
-    Get-ChildItem -Path $outputPath -Directory -Filter "csharp_query_*" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $outputPath -Directory -ErrorAction SilentlyContinue | Where-Object {
+        Test-Path (Join-Path $_.FullName "expected_rows.txt")
+    } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if ($failures -gt 0) {
