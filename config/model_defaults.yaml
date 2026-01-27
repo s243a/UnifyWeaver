@@ -1,0 +1,206 @@
+# UnifyWeaver Model Defaults
+# Maps tasks to default models. Override in .UnifyWeaver-models.yaml
+version: "1.1"
+
+# =============================================================================
+# Virtual Environments
+# =============================================================================
+environments:
+  # Default system Python (no venv)
+  system:
+    type: system
+    python_version: "3.8"       # Will be detected if not specified
+    allow_install: false        # Never install to system Python
+
+  # Project virtual environment
+  default:
+    type: venv
+    path: .venv
+    python_version: "3.11"
+    allow_install: true         # OK to pip install here
+    packages:
+      numpy: ">=2.0"
+      torch: ">=2.0"
+      sentence-transformers: ">=2.2"
+
+  # Legacy Python 3.8 environment
+  legacy:
+    type: venv
+    path: .venv38
+    python_version: "3.8"
+    allow_install: true
+    packages:
+      numpy: "<2.0,>=1.24"
+    notes: "For numpy 1.x compatibility"
+
+  # Conda environment example
+  # ml_conda:
+  #   type: conda
+  #   name: unifyweaver          # conda activate unifyweaver
+  #   python_version: "3.11"
+  #   allow_install: true        # OK to conda/pip install
+  #   packages:
+  #     numpy: ">=2.0"
+  #     pytorch: "*"             # conda package name
+
+# Environment selection rules
+environment_selection:
+  # Prefer environments in this order
+  preference_order:
+    - default
+    - legacy
+    - system
+
+  # Model-to-environment requirements
+  model_requirements:
+    # Models saved with numpy 2.x need compatible env
+    pearltrees_federated_nomic:
+      requires: "numpy>=2.0"
+      preferred_env: default
+
+    skills_qa_federated:
+      requires: "numpy>=2.0"
+      preferred_env: default
+
+    orthogonal_transformer_multisource:
+      requires: "numpy>=2.0,torch>=2.0"
+      preferred_env: default
+
+# Inference permissions - what the system can auto-discover
+inference_permissions:
+  discover_environments: false   # Don't auto-scan for venvs/conda envs
+  discover_models: true          # OK to find models in search_paths
+  resolve_dependencies: true     # OK to match models to compatible envs
+  auto_activate: false           # Don't auto-activate envs without asking
+
+# =============================================================================
+# Task-to-Model Mappings
+# =============================================================================
+defaults:
+
+  # Bookmark Filing - suggest folders for new bookmarks
+  bookmark_filing:
+    projection: pearltrees_federated_nomic
+    embedding: nomic-embed-text-v1.5
+    fallback:
+      projection: pearltrees_federated_single
+
+  # Folder Suggestion - recommend destinations for items
+  folder_suggestion:
+    projection: pearltrees_federated_nomic
+    embedding: nomic-embed-text-v1.5
+
+  # Mindmap Linking - add Pearltrees references to mindmaps
+  mindmap_linking:
+    projection: pearltrees_federated_nomic
+    embedding: nomic-embed-text-v1.5
+    threshold: 0.7
+
+  # Skills Q&A - answer questions about skills/documentation
+  skills_qa:
+    projection: skills_qa_federated
+    embedding: nomic-embed-text-v1.5
+    transformer: orthogonal_transformer_multisource
+
+  # Density Explorer - visualize embedding spaces
+  density_explorer:
+    embedding: nomic-embed-text-v1.5
+
+  # General Semantic Search
+  semantic_search:
+    embedding: nomic-embed-text-v1.5
+    projection: pearltrees_federated_nomic
+
+# =============================================================================
+# Model Search Paths (in priority order)
+# =============================================================================
+search_paths:
+  - models/                           # Local trained models
+  - .local/models/                    # User's local models
+  - ${DROPBOX}/UnifyWeaver/models/    # Dropbox sync (if configured)
+  - ${HOME}/.unifyweaver/models/      # User home directory
+
+# =============================================================================
+# Inference Settings
+# =============================================================================
+inference:
+  default_top_k: 10
+  default_threshold: 0.5
+  temperature: 0.1
+  use_transformer: false  # Use orthogonal transformer when available
+
+  # Model selection preferences (can be overridden in user config)
+  preferences:
+    # Prefer more recently trained models
+    prefer_newer: false
+
+    # Prefer federated models over transformer distillations
+    # (federated may have more up-to-date cluster structure)
+    prefer_federated: false
+
+    # Prefer transformer models for faster inference
+    # (transformer is 39x faster but trained on older federated models)
+    prefer_transformer: false
+
+# =============================================================================
+# Knowledge Models (for project understanding)
+# =============================================================================
+knowledge_models:
+  # Models containing project knowledge (skills, books, etc.)
+  # Listed in priority order - first available is used unless preferences override
+  candidates:
+    - orthogonal_transformer_multisource  # Combined skills+books, fast
+    - skills_qa_federated                  # Skills documentation
+    - books_qa_federated_nomic             # Books Q&A
+
+# =============================================================================
+# Use Modes - Different ways to use semantic search
+# =============================================================================
+use_modes:
+  # Agent mode: LLM with skills/reasoning, interactive
+  agent:
+    description: "Interactive agent with reasoning capabilities"
+    launcher: "scripts/launch_filing_agent.py"
+    skill_file: "docs/ai-skills/bookmark-filing-agent.md"
+    requires_llm: true
+    best_for:
+      - interactive_sessions
+      - complex_decisions
+      - ambiguous_classifications
+
+  # Loop mode: Direct inference with optional LLM for final decision
+  loop:
+    description: "Batch processing with optional LLM refinement"
+    script: "scripts/bookmark_filing_assistant.py"
+    requires_llm: false  # Optional
+    llm_providers: [claude, gemini, openai, anthropic, ollama]
+    best_for:
+      - batch_processing
+      - api_integration
+      - cost_sensitive
+
+  # Inference mode: Pure semantic search, no LLM
+  inference:
+    description: "Direct semantic search, fastest"
+    script: "scripts/infer_pearltrees_federated.py"
+    requires_llm: false
+    best_for:
+      - embedding_lookup
+      - high_throughput
+      - programmatic_use
+
+# Task-specific mode recommendations
+task_modes:
+  bookmark_filing:
+    recommended: loop        # Default for bookmark filing
+    interactive: agent       # When user wants conversation
+    batch: loop              # For bulk operations
+    api: loop                # For REST/MCP servers
+
+  folder_suggestion:
+    recommended: inference   # Usually just need top-k
+    interactive: agent       # When context matters
+
+  skills_qa:
+    recommended: agent       # Skills benefit from reasoning
+    fast: inference          # Quick lookups

@@ -156,12 +156,30 @@ python3 scripts/train_orthogonal_codebook.py \
 
 See `docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md` for theory and details.
 
+## Model Registry
+
+Trained models are tracked in the Model Registry. Query training commands:
+
+```bash
+# Show training command for a model
+python3 -m unifyweaver.config.model_registry --training pearltrees_federated_nomic
+
+# Check if model is available
+python3 -m unifyweaver.config.model_registry --check pearltrees_federated_nomic
+
+# List missing models for a task
+python3 -m unifyweaver.config.model_registry --missing bookmark_filing
+```
+
+See `skill_model_registry.md` for full registry documentation.
+
 ## Related
 
 **Parent Skill:**
 - `skill_ml_tools.md` - ML tools sub-master
 
 **Sibling Skills:**
+- `skill_model_registry.md` - Model discovery and selection
 - `skill_semantic_inference.md` - Run inference with trained model
 - `skill_embedding_models.md` - Model selection
 - `skill_hierarchy_objective.md` - Hierarchy optimization

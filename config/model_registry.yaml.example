@@ -1,0 +1,59 @@
+# UnifyWeaver User Model Registry Template
+# Copy this file to config/model_registry.yaml for your private configuration
+# This file is gitignored - your private paths won't be committed
+version: "1.0"
+
+# =============================================================================
+# Override Default Models for Tasks
+# =============================================================================
+overrides:
+  # Example: prefer a different model for bookmark filing
+  # bookmark_filing:
+  #   projection: pearltrees_federated_s243a_groups
+
+# =============================================================================
+# Private Model Paths
+# Configure paths to your private model storage
+# =============================================================================
+private_paths:
+  # Dropbox sync folder
+  # dropbox: ~/Dropbox/UnifyWeaver/models/
+
+  # Google Drive
+  # gdrive: ~/Google Drive/UnifyWeaver/models/
+
+  # Network share
+  # network: /mnt/shared/models/
+
+# =============================================================================
+# Additional Projection Models (Private)
+# Add models that shouldn't be in the public registry
+# =============================================================================
+projection_models:
+
+  # Example: Account-specific model with private Dropbox fallback
+  # pearltrees_federated_s243a_groups:
+  #   type: federated
+  #   description: "s243a_groups account model"
+  #   embedding_model: nomic-embed-text-v1.5
+  #   source:
+  #     local: "models/pearltrees_federated_s243a_groups.pkl"
+  #     private_fallback: "${DROPBOX}/UnifyWeaver/models/pearltrees_federated_s243a_groups.pkl"
+  #   training:
+  #     script: "scripts/train_pearltrees_federated.py"
+  #     data: "reports/pearltrees_targets_s243a_groups.jsonl"
+  #   accounts:
+  #     - s243a_groups
+
+# =============================================================================
+# HuggingFace Token (for private models)
+# =============================================================================
+# huggingface_token: ${HF_TOKEN}
+
+# =============================================================================
+# Custom Search Paths
+# Prepended to the default search paths
+# =============================================================================
+# search_paths:
+#   - ~/my-models/
+#   - /opt/unifyweaver/models/
