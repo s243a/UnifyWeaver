@@ -394,8 +394,18 @@ generate_component(button, Options, Indent, _GenOpts, Code) :- !,
     variant_button_style(Variant, VariantStyle),
     indent_string(Indent, IndentStr),
 
-    (OnClick \= '' -> format(atom(ClickAttr), ' onClick={~w}', [OnClick]) ; ClickAttr = ''),
-    (Disabled \= false -> format(atom(DisabledAttr), ' disabled={~w}', [Disabled]) ; DisabledAttr = ''),
+    (OnClick \= '' ->
+        onclick_to_jsx(OnClick, JsxClick),
+        format(atom(ClickAttr), ' onClick={() => ~w}', [JsxClick])
+    ;
+        ClickAttr = ''
+    ),
+    (Disabled \= false ->
+        disabled_to_jsx(Disabled, JsxDisabled),
+        format(atom(DisabledAttr), ' disabled={~w}', [JsxDisabled])
+    ;
+        DisabledAttr = ''
+    ),
 
     (Loading \= false ->
         format(atom(Code), '~w<button~w~w style={{ ~w }}>{~w ? "Loading..." : "~w"}</button>~n',
@@ -800,14 +810,61 @@ variant_alert_style(_, 'padding: "12px 16px", background: "#eee", borderRadius: 
 % Binding detection
 is_binding(var(_)) :- !.
 is_binding(bind(_)) :- !.
+is_binding(format_size(_)) :- !.
 is_binding(Term) :- atom(Term), atom_codes(Term, [C|_]), C \= 34, C \= 39.  % Not starting with quote
 
-binding_to_jsx(var(X), X) :- !.
-binding_to_jsx(bind(X), X) :- !.
+%! binding_to_jsx(+Binding, -JsxCode) is det
+%  Convert binding to JSX expression with optional chaining for safety.
+binding_to_jsx(var(X), JsxCode) :- !,
+    dotted_to_optional_chain(X, JsxCode).
+binding_to_jsx(bind(X), JsxCode) :- !,
+    dotted_to_optional_chain(X, JsxCode).
+binding_to_jsx(format_size(V), JsxCode) :- !,
+    binding_to_jsx(V, Inner),
+    format(atom(JsxCode), 'formatSize(~w)', [Inner]).
 binding_to_jsx(X, X) :- atom(X).
 
+%! dotted_to_optional_chain(+Name, -JsxName) is det
+%  Convert dotted name to optional chaining: browse.path -> browse?.path
+%  Also converts snake_case to camelCase for each part.
+dotted_to_optional_chain(Name, JsxName) :-
+    atom_string(Name, NameStr),
+    (sub_string(NameStr, _, _, _, ".") ->
+        split_string(NameStr, ".", "", Parts),
+        maplist(snake_str_to_camel, Parts, CamelParts),
+        join_with_optional_chain(CamelParts, JsxName)
+    ;
+        % Single name - convert snake_case to camelCase
+        snake_to_camel(Name, JsxName)
+    ).
+
+join_with_optional_chain([H], Result) :- !, atom_string(Result, H).
+join_with_optional_chain([H|T], Result) :-
+    join_with_optional_chain(T, Rest),
+    format(atom(Result), '~w?.~w', [H, Rest]).
+
+%! snake_str_to_camel(+SnakeStr, -CamelStr) is det
+%  Convert snake_case string to camelCase string.
+snake_str_to_camel(SnakeStr, CamelStr) :-
+    split_string(SnakeStr, "_", "", Parts),
+    parts_to_camel_str(Parts, CamelStr).
+
+parts_to_camel_str([], "") :- !.
+parts_to_camel_str([H], H) :- !.
+parts_to_camel_str([H|T], Result) :-
+    maplist(capitalize_str, T, CapT),
+    atomics_to_string([H|CapT], Result).
+
+capitalize_str("", "") :- !.
+capitalize_str(Str, Cap) :-
+    string_chars(Str, [H|T]),
+    char_type(H, to_lower(Lower)),
+    char_type(Upper, to_upper(Lower)),
+    string_chars(Cap, [Upper|T]).
+
 % Condition conversion for JSX
-condition_to_jsx(var(X), X) :- !.
+condition_to_jsx(var(X), JsxCode) :- !,
+    dotted_to_optional_chain(X, JsxCode).
 condition_to_jsx(Cond, Cond) :- atom(Cond), !.
 condition_to_jsx(not(C), JsxCond) :- !,
     condition_to_jsx(C, VC),
@@ -840,22 +897,103 @@ condition_to_jsx([], 'true') :- !.
 condition_to_jsx(Term, Jsx) :-
     term_to_atom(Term, Jsx).
 
-items_to_jsx(var(X), X) :- !.
+items_to_jsx(var(X), JsxX) :- !, dotted_to_optional_chain(X, JsxX).
 items_to_jsx(Items, Items) :- atom(Items), !.
 items_to_jsx(Items, JsxItems) :- is_list(Items), !, term_to_atom(Items, JsxItems).
 items_to_jsx(Term, Jsx) :- term_to_atom(Term, Jsx).
+
+%! onclick_to_jsx(+OnClick, -JsxCode) is det
+%  Convert on_click handler to JSX function call.
+onclick_to_jsx(navigate_up, 'navigateUp()') :- !.
+onclick_to_jsx(view_file, 'viewFile()') :- !.
+onclick_to_jsx(download_file, 'downloadFile()') :- !.
+onclick_to_jsx(search_here, 'searchHere()') :- !.
+onclick_to_jsx(set_working_dir(var(Path)), JsxCode) :- !,
+    dotted_to_optional_chain(Path, JsxPath),
+    format(atom(JsxCode), 'setWorkingDirTo(~w)', [JsxPath]).
+onclick_to_jsx(handle_entry_click(var(Entry)), JsxCode) :- !,
+    format(atom(JsxCode), 'handleEntryClick(~w)', [Entry]).
+onclick_to_jsx(Term, JsxCode) :-
+    % Convert snake_case to camelCase for function names
+    (Term =.. [Name|Args], Args \= [] ->
+        snake_to_camel(Name, CamelName),
+        maplist(arg_to_jsx, Args, JsxArgs),
+        atomic_list_concat(JsxArgs, ', ', ArgsStr),
+        format(atom(JsxCode), '~w(~w)', [CamelName, ArgsStr])
+    ;
+        snake_to_camel(Term, CamelTerm),
+        format(atom(JsxCode), '~w()', [CamelTerm])
+    ).
+
+%! disabled_to_jsx(+Disabled, -JsxCode) is det
+%  Convert disabled condition to JSX.
+disabled_to_jsx(true, 'true') :- !.
+disabled_to_jsx(false, 'false') :- !.
+disabled_to_jsx(var(X), JsxCode) :- !,
+    dotted_to_optional_chain(X, JsxCode).
+disabled_to_jsx(eq(A, B), JsxCode) :- !,
+    condition_to_jsx(eq(A, B), JsxCode).
+disabled_to_jsx(or(A, B), JsxCode) :- !,
+    condition_to_jsx(or(A, B), JsxCode).
+disabled_to_jsx(not(X), JsxCode) :- !,
+    disabled_to_jsx(X, Inner),
+    format(atom(JsxCode), '!~w', [Inner]).
+disabled_to_jsx(X, X).
+
+%! arg_to_jsx(+Arg, -JsxArg) is det
+arg_to_jsx(var(X), JsxX) :- !, dotted_to_optional_chain(X, JsxX).
+arg_to_jsx(X, X).
+
+%! snake_to_camel(+Snake, -Camel) is det
+%  Convert snake_case to camelCase.
+snake_to_camel(Snake, Camel) :-
+    atom_string(Snake, SnakeStr),
+    split_string(SnakeStr, "_", "", Parts),
+    parts_to_camel(Parts, CamelStr),
+    atom_string(Camel, CamelStr).
+
+parts_to_camel([], "") :- !.
+parts_to_camel([H], H) :- !.
+parts_to_camel([H|T], Result) :-
+    maplist(capitalize_string, T, CapT),
+    atomic_list_concat([H|CapT], '', Result).
+
+capitalize_string(Str, Cap) :-
+    string_chars(Str, [H|T]),
+    upcase_atom(H, HUp),
+    atom_chars(HUpAtom, [HUp]),
+    atom_string(HUpAtom, HUpStr),
+    string_chars(Cap, [HUp|T]).
 
 % Build style props
 build_style_props([], '', '') :- !.
 build_style_props(Pairs, BaseStyle, StyleAttr) :-
     findall(S, (member(K-V, Pairs), V \= '', format(atom(S), '~w: "~w"', [K, V])), Styles),
-    (BaseStyle \= '' -> append(Styles, [BaseStyle], AllStyles) ; AllStyles = Styles),
+    (BaseStyle \= '' ->
+        named_style_to_css(BaseStyle, CssStyle),
+        append(Styles, [CssStyle], AllStyles)
+    ;
+        AllStyles = Styles
+    ),
     (AllStyles \= [] ->
         atomic_list_concat(AllStyles, ', ', StyleStr),
         format(atom(StyleAttr), ' style={{ ~w }}', [StyleStr])
     ;
         StyleAttr = ''
     ).
+
+%! named_style_to_css(+StyleName, -CssProps) is det
+%  Convert named style references to actual CSS properties.
+named_style_to_css(muted, 'color: "#94a3b8", fontSize: 12') :- !.
+named_style_to_css(error, 'color: "#ff6b6b"') :- !.
+named_style_to_css(success, 'color: "#4ade80"') :- !.
+named_style_to_css(warning, 'color: "#fbbf24"') :- !.
+named_style_to_css(icon, 'fontSize: 18') :- !.
+named_style_to_css(header, 'fontWeight: "bold", fontSize: 18') :- !.
+named_style_to_css(code, 'fontFamily: "monospace", background: "#1a1a2e", padding: "2px 6px"') :- !.
+% If it's already CSS-like or unknown, pass through
+named_style_to_css(Style, Style) :- atom(Style), !.
+named_style_to_css(Style, StyleStr) :- term_to_atom(Style, StyleStr).
 
 build_dimension_style_jsx('', '', '') :- !.
 build_dimension_style_jsx(W, '', Style) :- W \= '', !, format(atom(Style), ' style={{ width: "~w" }}', [W]).
