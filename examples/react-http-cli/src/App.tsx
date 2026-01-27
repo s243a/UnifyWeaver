@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 
 // Configuration - update to match your server
-const API_BASE = 'https://localhost:3000'
+const API_BASE = 'https://localhost:3001'
 
 // Types
 interface FileEntry {
@@ -22,6 +22,14 @@ const formatSize = (bytes: number): string => {
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
+
+// Strip ANSI escape codes for clean terminal display
+const stripAnsi = (str: string): string => {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[\?[0-9;]*[a-zA-Z]/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '')
 }
 
 // API helper with auth
@@ -51,12 +59,16 @@ const api = {
   },
 
   async login(email: string, password: string) {
-    const res = await this.fetch('/login', {
+    const res = await this.fetch('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password })
     })
-    this.token = res.token
-    return res
+    // Server returns {success: true, data: {token, user}}
+    if (res.success && res.data) {
+      this.token = res.data.token
+      return res.data
+    }
+    throw new Error(res.error || 'Login failed')
   },
 
   logout() {
@@ -88,6 +100,7 @@ function App() {
   const [browsePath, setBrowsePath] = useState('.')
   const [browseEntries, setBrowseEntries] = useState<FileEntry[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [browseRoot, setBrowseRoot] = useState('sandbox') // sandbox | project | home
 
   // Upload state
   const [uploadFiles, setUploadFiles] = useState<File[]>([])
@@ -109,7 +122,7 @@ function App() {
     setLoginError('')
     try {
       const res = await api.login(loginEmail, loginPassword)
-      setUser({ email: res.email, roles: res.roles })
+      setUser({ email: res.user.email, roles: res.user.roles })
       loadBrowse('.')
     } catch (err: any) {
       setLoginError(err.message || 'Login failed')
@@ -129,18 +142,30 @@ function App() {
   }
 
   // Browse handlers
-  const loadBrowse = async (path: string) => {
+  const loadBrowse = async (path: string, root?: string) => {
     setLoading(true)
+    const useRoot = root || browseRoot
     try {
-      const res = await api.fetch(`/browse?path=${encodeURIComponent(path)}`)
-      setBrowsePath(res.path || path)
-      setBrowseEntries(res.entries || [])
+      const res = await api.fetch('/browse', {
+        method: 'POST',
+        body: JSON.stringify({ path, root: useRoot })
+      })
+      // Server returns {success: true, data: {path, entries}}
+      const data = res.data || res
+      setBrowsePath(data.path || path)
+      setBrowseEntries(data.entries || [])
       setSelectedFile(null)
     } catch (err: any) {
       console.error('Browse failed:', err)
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleRootChange = (newRoot: string) => {
+    setBrowseRoot(newRoot)
+    setBrowsePath('.')
+    loadBrowse('.', newRoot)
   }
 
   const handleEntryClick = (entry: FileEntry) => {
@@ -172,7 +197,7 @@ function App() {
     if (!selectedFile) return
     const path = browsePath === '.' ? selectedFile : `${browsePath}/${selectedFile}`
     try {
-      const res = await fetch(`${API_BASE}/download?path=${encodeURIComponent(path)}`, {
+      const res = await fetch(`${API_BASE}/download?path=${encodeURIComponent(path)}&root=${browseRoot}`, {
         headers: { 'Authorization': `Bearer ${api.token}` }
       })
       const blob = await res.blob()
@@ -194,6 +219,52 @@ function App() {
     }
   }
 
+  // File System Access API - better file picker on Android
+  const openFilePicker = async () => {
+    // @ts-ignore - File System Access API
+    if (!window.showOpenFilePicker) {
+      setUploadResult('File System Access API not available - use standard file input')
+      return
+    }
+    try {
+      // @ts-ignore
+      const handles = await window.showOpenFilePicker({ multiple: true })
+      const files: File[] = []
+      for (const handle of handles) {
+        const file = await handle.getFile()
+        files.push(file)
+      }
+      if (files.length === 0) return
+
+      // Upload immediately
+      setLoading(true)
+      setUploadResult(`Uploading ${files.length} file(s)...`)
+
+      const formData = new FormData()
+      formData.append('destination', workingDir)
+      formData.append('root', browseRoot)
+      files.forEach(file => formData.append('files', file))
+
+      const res = await fetch(`${API_BASE}/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${api.token}` },
+        body: formData
+      })
+      const json = await res.json()
+      if (json.success) {
+        setUploadResult(`Uploaded ${json.data.count} file(s) to ${json.data.destination}`)
+      } else {
+        setUploadResult(`Error: ${json.error || 'Upload failed'}`)
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setUploadResult(`Error: ${err.message}`)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleUpload = async () => {
     if (uploadFiles.length === 0) return
     setLoading(true)
@@ -202,6 +273,7 @@ function App() {
     const formData = new FormData()
     uploadFiles.forEach(file => formData.append('files', file))
     formData.append('destination', workingDir)
+    formData.append('root', browseRoot)
 
     try {
       const res = await fetch(`${API_BASE}/upload`, {
@@ -209,8 +281,13 @@ function App() {
         headers: { 'Authorization': `Bearer ${api.token}` },
         body: formData
       })
-      const data = await res.json()
-      setUploadResult(`Uploaded ${data.files?.length || 0} file(s)`)
+      const json = await res.json()
+      // Server returns {success: true, data: {count, destination, uploaded}}
+      if (json.success) {
+        setUploadResult(`Uploaded ${json.data.count} file(s) to ${json.data.destination}`)
+      } else {
+        setUploadResult(`Error: ${json.error || 'Upload failed'}`)
+      }
       setUploadFiles([])
     } catch (err: any) {
       setUploadResult(`Error: ${err.message}`)
@@ -226,8 +303,13 @@ function App() {
     setLoading(true)
     setCatContent('')
     try {
-      const res = await api.fetch(`/cat?path=${encodeURIComponent(targetPath)}`)
-      setCatContent(res.content || '')
+      const res = await api.fetch('/cat', {
+        method: 'POST',
+        body: JSON.stringify({ path: targetPath, root: browseRoot })
+      })
+      // Server returns {success: true, data: {content}}
+      const data = res.data || res
+      setCatContent(data.content || '')
     } catch (err: any) {
       setCatContent(`Error: ${err.message}`)
     } finally {
@@ -246,7 +328,15 @@ function App() {
     }
 
     shellWs.current.onmessage = (e) => {
-      setShellOutput(prev => prev + e.data)
+      try {
+        const msg = JSON.parse(e.data)
+        if (msg.type === 'output' && msg.data) {
+          setShellOutput(prev => prev + msg.data)
+        }
+      } catch {
+        // If not JSON, append as-is
+        setShellOutput(prev => prev + e.data)
+      }
     }
 
     shellWs.current.onclose = () => {
@@ -337,6 +427,15 @@ function App() {
 
       {/* Working directory bar */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 20, padding: '8px 12px', background: '#16213e', borderRadius: 5, flexWrap: 'wrap' }}>
+        <select
+          value={browseRoot}
+          onChange={e => handleRootChange(e.target.value)}
+          style={{ padding: '6px 10px', background: '#1a1a2e', border: '1px solid #0f3460', borderRadius: 5, color: '#fff', fontSize: 12 }}
+        >
+          <option value="sandbox">Sandbox</option>
+          <option value="project">Project</option>
+          <option value="home">Home</option>
+        </select>
         <span style={{ color: '#94a3b8', fontSize: 12 }}>Working Dir:</span>
         <code style={{ background: '#1a1a2e', padding: '4px 8px', borderRadius: 3, color: '#4ade80' }}>{workingDir}</code>
       </div>
@@ -419,12 +518,23 @@ function App() {
       {/* Upload panel */}
       {activeTab === 'upload' && (
         <div style={{ background: '#16213e', padding: 20, borderRadius: 5 }}>
-          <div style={{ border: '2px dashed #0f3460', padding: 30, borderRadius: 10, textAlign: 'center', marginBottom: 20 }}>
-            <p style={{ fontSize: 18, marginBottom: 10 }}>📁 Select files to upload</p>
-            <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 15 }}>Destination: {workingDir}</p>
+          <div style={{ marginBottom: 15, padding: 10, background: '#1a1a2e', borderRadius: 5 }}>
+            <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 5 }}>Destination: <code>{workingDir}</code> ({browseRoot})</p>
+          </div>
+
+          {/* File System Access API - better for Android */}
+          <div style={{ border: '2px dashed #4ade80', padding: 30, borderRadius: 10, textAlign: 'center', marginBottom: 15, cursor: 'pointer', background: '#0a2e1a' }} onClick={openFilePicker}>
+            <p style={{ fontSize: 18, marginBottom: 5 }}>📂 Open File Picker</p>
+            <p style={{ color: '#94a3b8', fontSize: 12 }}>Recommended for Android - picks and uploads immediately</p>
+          </div>
+
+          {/* Fallback standard file input */}
+          <div style={{ border: '2px dashed #0f3460', padding: 20, borderRadius: 10, textAlign: 'center', marginBottom: 20 }}>
+            <p style={{ fontSize: 14, marginBottom: 10, color: '#94a3b8' }}>Or use standard file input:</p>
             <input
               type="file"
               multiple
+              accept="*/*"
               onChange={handleFileSelect}
               style={{ padding: 10 }}
             />
@@ -442,13 +552,15 @@ function App() {
             </div>
           )}
 
-          <button
-            onClick={handleUpload}
-            disabled={loading || uploadFiles.length === 0}
-            style={{ width: '100%', padding: 12, background: uploadFiles.length === 0 ? '#555' : '#e94560', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}
-          >
-            {loading ? 'Uploading...' : '📤 Upload Files'}
-          </button>
+          {uploadFiles.length > 0 && (
+            <button
+              onClick={handleUpload}
+              disabled={loading}
+              style={{ width: '100%', padding: 12, background: '#e94560', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}
+            >
+              {loading ? 'Uploading...' : '📤 Upload Files'}
+            </button>
+          )}
 
           {uploadResult && (
             <p style={{ marginTop: 15, padding: 10, background: uploadResult.startsWith('Error') ? '#7f1d1d' : '#065f46', borderRadius: 5 }}>{uploadResult}</p>
@@ -478,9 +590,19 @@ function App() {
           </div>
 
           {catContent && (
-            <div style={{ background: '#0a0a0a', padding: 15, borderRadius: 5, maxHeight: 400, overflowY: 'auto' }}>
-              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap', color: '#cdd6f4' }}>{catContent}</pre>
-            </div>
+            <>
+              <div style={{ marginBottom: 10 }}>
+                <button
+                  onClick={() => { setActiveTab('browse'); setCatContent(''); }}
+                  style={{ padding: '8px 16px', background: '#0f3460', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}
+                >
+                  ← Back to Browse
+                </button>
+              </div>
+              <div style={{ background: '#0a0a0a', padding: 15, borderRadius: 5, maxHeight: 400, overflowY: 'auto' }}>
+                <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap', color: '#cdd6f4' }}>{catContent}</pre>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -504,7 +626,7 @@ function App() {
           </div>
 
           <div style={{ background: '#0a0a0a', padding: 10, height: 300, overflowY: 'auto', fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap' }}>
-            {shellOutput || 'Click "Connect" to start a shell session.'}
+            {shellOutput ? stripAnsi(shellOutput) : 'Click "Connect" to start a shell session.'}
           </div>
 
           <div style={{ display: 'flex', gap: 10, padding: '8px 12px', background: '#0f3460' }}>
