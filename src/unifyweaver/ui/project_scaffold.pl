@@ -278,6 +278,7 @@ generate_react_project(AppName, UISpec, Files) :-
     react_package_json(AppName, PackageJson),
     react_vite_config(ViteConfig),
     react_tsconfig(TsConfig),
+    react_tsconfig_node(TsConfigNode),
     react_index_html(AppName, IndexHtml),
     react_main_tsx(MainTsx),
     react_index_css(IndexCss),
@@ -289,6 +290,7 @@ generate_react_project(AppName, UISpec, Files) :-
         'package.json'-PackageJson,
         'vite.config.ts'-ViteConfig,
         'tsconfig.json'-TsConfig,
+        'tsconfig.node.json'-TsConfigNode,
         'index.html'-IndexHtml,
         'src/main.tsx'-MainTsx,
         'src/App.tsx'-AppComponent,
@@ -358,6 +360,20 @@ react_tsconfig(Content) :-
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]
+}
+'.
+
+react_tsconfig_node(Content) :-
+    Content = '{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true
+  },
+  "include": ["vite.config.ts"]
 }
 '.
 
@@ -938,21 +954,49 @@ button.secondary {
 wrap_react_component(JSX, Component) :-
     format(atom(Component), 'import React, { useState } from \'react\'
 
+// Helper function for formatting file sizes
+const formatSize = (bytes: number): string => {
+  if (!bytes || bytes === 0) return \'0 B\'
+  const k = 1024
+  const sizes = [\'B\', \'KB\', \'MB\', \'GB\']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + \' \' + sizes[i]
+}
+
 function App() {
   // State
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(\'\')
 
-  // Form state (add your bindings here)
-  const [formData, setFormData] = useState({})
+  // Browse state (example - wire up to your data source)
+  const [browse, setBrowse] = useState({
+    path: \'.\',
+    parent: null as string | null,
+    entries: [] as Array<{name: string, type: string, size: number}>,
+    selected: null as string | null
+  })
+
+  const [workingDir, setWorkingDir] = useState(\'.\')
 
   // Event handlers
-  const handleSubmit = () => {
-    console.log(\'Submit clicked\')
+  const navigateUp = () => {
+    console.log(\'Navigate up\')
   }
 
-  const handleClick = () => {
-    console.log(\'Click handler\')
+  const setWorkingDirTo = (path: string) => {
+    setWorkingDir(path)
+  }
+
+  const viewFile = () => {
+    console.log(\'View file:\', browse.selected)
+  }
+
+  const downloadFile = () => {
+    console.log(\'Download file:\', browse.selected)
+  }
+
+  const searchHere = () => {
+    console.log(\'Search in:\', browse.path)
   }
 
   return (
