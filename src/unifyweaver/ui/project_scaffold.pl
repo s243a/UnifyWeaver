@@ -17,7 +17,9 @@
 
 :- module(project_scaffold, [
     generate_project/4,
+    generate_project/5,           % With options (e.g., mode(dialog) for TUI)
     generate_project_files/4,
+    generate_project_files/5,     % With options
     project_file/4,
     test_project_scaffold/0
 ]).
@@ -25,10 +27,10 @@
 :- use_module(library(lists)).
 
 % Load the UI generators
-:- use_module(library(vue_generator), [generate_vue_template/2]).
-:- use_module(library(react_generator), [generate_react_template/2]).
-:- use_module(library(flutter_generator), [generate_flutter_widget/2]).
-:- use_module(library(tui_generator), [generate_tui_script/3]).
+:- use_module(vue_generator, [generate_vue_template/2]).
+:- use_module(react_generator, [generate_react_template/2]).
+:- use_module(flutter_generator, [generate_flutter_widget/2]).
+:- use_module(tui_generator, [generate_tui_script/3, generate_tui_script/4, generate_dialog_script/3]).
 
 % ============================================================================
 % MAIN ENTRY POINTS
@@ -41,6 +43,15 @@ generate_project(Target, AppName, UISpec, OutputDir) :-
     generate_project_files(Target, AppName, UISpec, Files),
     write_project_files(OutputDir, Files).
 
+%! generate_project(+Target, +AppName, +UISpec, +OutputDir, +Options) is det
+%  Generate a project with options.
+%  Options for TUI:
+%    - mode(echo) : Plain ANSI echo-based TUI (default)
+%    - mode(dialog) : Interactive dialog-based TUI
+generate_project(Target, AppName, UISpec, OutputDir, Options) :-
+    generate_project_files(Target, AppName, UISpec, Options, Files),
+    write_project_files(OutputDir, Files).
+
 %! generate_project_files(+Target, +AppName, +UISpec, -Files) is det
 %  Generate all project files as a list of path-content pairs.
 generate_project_files(vue, AppName, UISpec, Files) :-
@@ -51,6 +62,17 @@ generate_project_files(flutter, AppName, UISpec, Files) :-
     generate_flutter_project(AppName, UISpec, Files).
 generate_project_files(tui, AppName, UISpec, Files) :-
     generate_tui_project(AppName, UISpec, Files).
+
+%! generate_project_files(+Target, +AppName, +UISpec, +Options, -Files) is det
+%  Generate all project files with options.
+generate_project_files(vue, AppName, UISpec, _Options, Files) :-
+    generate_vue_project(AppName, UISpec, Files).
+generate_project_files(react, AppName, UISpec, _Options, Files) :-
+    generate_react_project(AppName, UISpec, Files).
+generate_project_files(flutter, AppName, UISpec, _Options, Files) :-
+    generate_flutter_project(AppName, UISpec, Files).
+generate_project_files(tui, AppName, UISpec, Options, Files) :-
+    generate_tui_project(AppName, UISpec, Options, Files).
 
 %! project_file(+Target, +FileType, +AppName, -Content) is det
 %  Get a specific project file content.
@@ -627,13 +649,32 @@ flutter build linux   # Linux
 % TUI/SHELL PROJECT GENERATION
 % ============================================================================
 
+%! generate_tui_project(+AppName, +UISpec, -Files) is det
+%  Generate TUI project with default (echo) mode.
 generate_tui_project(AppName, UISpec, Files) :-
-    % Generate shell script
-    generate_tui_script(UISpec, AppName, ShellScript),
+    generate_tui_project(AppName, UISpec, [], Files).
 
-    % Runner script
-    tui_runner_script(AppName, Runner),
-    tui_readme(AppName, Readme),
+%! generate_tui_project(+AppName, +UISpec, +Options, -Files) is det
+%  Generate TUI project with options.
+%  Options:
+%    - mode(echo) : Plain ANSI echo-based TUI (default)
+%    - mode(dialog) : Interactive dialog-based TUI
+generate_tui_project(AppName, UISpec, Options, Files) :-
+    % Determine mode
+    (member(mode(Mode), Options) -> true ; Mode = echo),
+
+    % Generate shell script based on mode
+    (Mode == dialog ->
+        generate_dialog_script(UISpec, AppName, ShellScript),
+        tui_dialog_runner_script(AppName, Runner),
+        tui_dialog_readme(AppName, Readme)
+    ;
+        generate_tui_script(UISpec, AppName, ShellScript),
+        tui_runner_script(AppName, Runner),
+        tui_readme(AppName, Readme)
+    ),
+
+    % Common files
     tui_makefile(AppName, Makefile),
 
     atom_concat(AppName, '.sh', ScriptName),
@@ -720,6 +761,93 @@ make run
 ├── Makefile        # Build/run commands
 └── README.md
 ```
+', [AppName, ScriptName, AppName, ScriptName]).
+
+%! tui_dialog_runner_script(+AppName, -Content) is det
+%  Generate runner script for dialog-based TUI.
+tui_dialog_runner_script(AppName, Content) :-
+    atom_concat(AppName, '.sh', ScriptName),
+    format(atom(Content), '#!/bin/bash
+# Runner script for ~w (dialog-based)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Check for required commands
+command -v dialog >/dev/null 2>&1 || { echo "dialog required but not installed."; echo "Install with: apt install dialog (Termux) or brew install dialog (macOS)"; exit 1; }
+
+# Run the TUI application
+exec bash "$SCRIPT_DIR/~w"
+', [AppName, ScriptName]).
+
+%! tui_dialog_readme(+AppName, -Content) is det
+%  Generate README for dialog-based TUI.
+tui_dialog_readme(AppName, Content) :-
+    atom_concat(AppName, '.sh', ScriptName),
+    format(atom(Content), '# ~w
+
+Generated by UnifyWeaver Project Scaffold Generator.
+
+An interactive terminal user interface application using dialog.
+
+## Requirements
+
+- Bash 4.0+
+- dialog (ncurses-based dialog utility)
+- A terminal with UTF-8 support
+
+### Installing dialog
+
+```bash
+# Termux (Android)
+apt install dialog
+
+# Debian/Ubuntu
+sudo apt install dialog
+
+# macOS
+brew install dialog
+
+# Fedora/RHEL
+sudo dnf install dialog
+```
+
+## Running
+
+```bash
+# Make executable (first time only)
+make install
+
+# Run the application
+make run
+
+# Or directly:
+./~w
+```
+
+## Features
+
+- Interactive menus and dialogs
+- File selection dialogs
+- Input boxes for user data
+- Message boxes for notifications
+- Keyboard navigation (arrow keys, Enter, Escape)
+
+## Project Structure
+
+```
+~w/
+├── ~w   # Main TUI application (dialog-based)
+├── run.sh          # Runner script
+├── Makefile        # Build/run commands
+└── README.md
+```
+
+## Dialog Controls
+
+- **Arrow keys**: Navigate menu items
+- **Enter**: Select item / Confirm
+- **Tab**: Switch between buttons (OK/Cancel)
+- **Escape**: Cancel / Go back
 ', [AppName, ScriptName, AppName, ScriptName]).
 
 % ============================================================================
