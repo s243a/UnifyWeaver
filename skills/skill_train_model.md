@@ -122,12 +122,64 @@ Creates a `.pkl` file containing:
 - Cluster assignments
 - Embedding cache
 
+## Fast Inference: Orthogonal Codebook (Recommended for Mobile)
+
+For mobile/edge deployment, train an orthogonal codebook transformer:
+
+```bash
+python3 scripts/train_orthogonal_codebook.py \
+  --train-multisource \
+  --federated-models models/skills_qa_federated.pkl models/books_qa_federated.pkl \
+  --codebook-method canonical \
+  --n-components 64 \
+  --epochs 50 \
+  --save-transformer models/orthogonal_transformer.pt
+```
+
+**Key benefits:**
+- **39× faster** than weighted baseline (27K/s vs 700/s)
+- **Matches raw embedding quality** (-0.2% Hit@1)
+- Uses Rodrigues formula: O(K×d) vs O(d³) matrix exp
+
+**Why it works:**
+- Canonical planes are perfectly commutative (independent learning)
+- Nomic's Matryoshka structure means 64 planes (dims 0-127) covers semantic core
+
+**When to use:**
+| Approach | Use Case |
+|----------|----------|
+| Orthogonal codebook | Mobile/edge, fast inference |
+| Weighted baseline | Server-side, many clusters |
+| Full rotation | Maximum accuracy |
+
+**Note:** 64 planes works well with Matryoshka embeddings (Nomic, OpenAI text-embedding-3). For non-Matryoshka models, you may need more planes (128+).
+
+See `docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md` for theory and details.
+
+## Model Registry
+
+Trained models are tracked in the Model Registry. Query training commands:
+
+```bash
+# Show training command for a model
+python3 -m unifyweaver.config.model_registry --training pearltrees_federated_nomic
+
+# Check if model is available
+python3 -m unifyweaver.config.model_registry --check pearltrees_federated_nomic
+
+# List missing models for a task
+python3 -m unifyweaver.config.model_registry --missing bookmark_filing
+```
+
+See `skill_model_registry.md` for full registry documentation.
+
 ## Related
 
 **Parent Skill:**
 - `skill_ml_tools.md` - ML tools sub-master
 
 **Sibling Skills:**
+- `skill_model_registry.md` - Model discovery and selection
 - `skill_semantic_inference.md` - Run inference with trained model
 - `skill_embedding_models.md` - Model selection
 - `skill_hierarchy_objective.md` - Hierarchy optimization
@@ -139,6 +191,7 @@ Creates a `.pkl` file containing:
 
 **Documentation:**
 - `docs/design/FEDERATED_MODEL_FORMAT.md` - Model format specification
+- `docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md` - Fast inference for mobile
 - `docs/QUICKSTART_MINDMAP_LINKING.md` - End-to-end workflow
 
 **Education (in `education/` subfolder):**

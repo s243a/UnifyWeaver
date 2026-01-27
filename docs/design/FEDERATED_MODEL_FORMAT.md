@@ -141,8 +141,23 @@ The `data_path` field enables automatic account lookup at inference time.
 ## Related Documentation
 
 - [Theory: Procrustes Analysis](../../sandbox/paper-minimum-projection/theory_book.md)
+- [Orthogonal Codebook Design](ORTHOGONAL_CODEBOOK_DESIGN.md) - Fast inference for mobile
 - [Book 13: Semantic Search](https://github.com/s243a/UnifyWeaver/blob/main/education/book-13-semantic-search/README.md)
 - [Bookmark Filing Guide](https://github.com/s243a/UnifyWeaver/blob/main/education/book-13-semantic-search/16_bookmark_filing.md)
+
+## Fast Inference: Orthogonal Codebook
+
+For mobile/edge deployment, the federated model can be distilled into an orthogonal codebook transformer that runs 39× faster while maintaining retrieval quality:
+
+```bash
+python3 scripts/train_orthogonal_codebook.py \
+  --train-multisource \
+  --federated-models MODEL1.pkl MODEL2.pkl \
+  --codebook-method canonical \
+  --save-transformer orthogonal_transformer.pt
+```
+
+See `ORTHOGONAL_CODEBOOK_DESIGN.md` for details.
 
 ## Clustering Methods
 

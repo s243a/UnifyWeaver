@@ -1,0 +1,161 @@
+# UnifyWeaver Model Registry - Public Defaults
+# This file contains model definitions that are shared across installations.
+# For private models (Dropbox, etc.), create config/model_registry.yaml
+version: "1.0"
+
+# =============================================================================
+# Embedding Models (foundation models for encoding text)
+# =============================================================================
+embedding_models:
+
+  nomic-embed-text-v1.5:
+    type: embedding
+    dimensions: 768
+    context_length: 8192
+    source:
+      huggingface: "nomic-ai/nomic-embed-text-v1.5"
+    features:
+      - asymmetric_search  # Supports different query/document prefixes
+      - matryoshka         # Can truncate to fewer dims (64, 128, 256)
+      - long_context       # 8K context window
+    prefixes:
+      query: "search_query: "
+      document: "search_document: "
+    recommended_for:
+      - qa_mapping
+      - bookmark_filing
+      - mindmap_linking
+      - long_documents
+    notes: |
+      Default embedding model for UnifyWeaver. Matryoshka property means
+      first 128 dims contain core semantic meaning - enables fast orthogonal
+      codebook with only 64 rotation planes.
+
+  all-MiniLM-L6-v2:
+    type: embedding
+    dimensions: 384
+    context_length: 256
+    source:
+      huggingface: "sentence-transformers/all-MiniLM-L6-v2"
+    features:
+      - fast_inference
+      - low_memory
+      - onnx_available
+    recommended_for:
+      - prototyping
+      - csharp_integration
+      - mobile_edge
+      - per_tree_clustering  # Good for many small clusters
+    notes: |
+      Smaller, faster model. Good for C#/ONNX integration and when
+      memory is limited. Use for per-tree clustering to reduce memory.
+
+  bge-small-en-v1.5:
+    type: embedding
+    dimensions: 384
+    context_length: 512
+    source:
+      huggingface: "BAAI/bge-small-en-v1.5"
+    features:
+      - instruction_tuned
+    prefixes:
+      query: "Represent this sentence for searching relevant passages: "
+    recommended_for:
+      - general_search
+      - retrieval
+
+# =============================================================================
+# Projection Models (trained for semantic search on specific data)
+# =============================================================================
+projection_models:
+
+  pearltrees_federated_nomic:
+    type: federated
+    description: "All-account Pearltrees semantic search with Nomic embeddings"
+    embedding_model: nomic-embed-text-v1.5
+    source:
+      local: "models/pearltrees_federated_nomic.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_full_multi_account.jsonl"
+      args:
+        cluster_method: embedding
+        cluster_criterion: effective_rank
+        model: "nomic-ai/nomic-embed-text-v1.5"
+    accounts:
+      - s243a
+      - s243a_groups
+    metrics:
+      clusters: 51
+
+  pearltrees_federated_single:
+    type: federated
+    description: "Single-account Pearltrees model (s243a only)"
+    embedding_model: nomic-embed-text-v1.5
+    source:
+      local: "models/pearltrees_federated_single.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_s243a.jsonl"
+      args:
+        cluster_method: embedding
+        cluster_criterion: effective_rank
+    accounts:
+      - s243a
+
+  skills_qa_federated:
+    type: federated
+    description: "Skills documentation Q&A retrieval"
+    embedding_model: nomic-embed-text-v1.5
+    source:
+      local: "models/skills_qa_federated.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: ".local/data/skills_qa.jsonl"
+      args:
+        cluster_method: embedding
+
+  books_qa_federated_nomic:
+    type: federated
+    description: "Books Q&A retrieval with Nomic embeddings"
+    embedding_model: nomic-embed-text-v1.5
+    source:
+      local: "models/books_qa_federated_nomic.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: ".local/data/books_qa.jsonl"
+
+# =============================================================================
+# Transformer Models (fast inference via orthogonal codebook)
+# =============================================================================
+transformer_models:
+
+  orthogonal_transformer_multisource:
+    type: orthogonal_codebook
+    description: "Fast mobile-ready projection (39x faster than weighted baseline)"
+    dimensions: 768
+    n_planes: 64
+    source:
+      local: "models/orthogonal_transformer_multisource.pt"
+    training:
+      script: "scripts/train_orthogonal_codebook.py"
+      federated_models:
+        - skills_qa_federated
+        - books_qa_federated_nomic
+      args:
+        train_multisource: true
+        codebook_method: canonical
+        n_components: 64
+        epochs: 50
+    metrics:
+      hit_at_1: 0.573
+      hit_at_5: 0.826
+      speed: "27K queries/sec"
+    recommended_for:
+      - mobile
+      - edge_deployment
+      - real_time
+    notes: |
+      Uses canonical (axis-aligned) rotation planes for perfect commutativity.
+      64 planes sufficient due to Matryoshka structure of Nomic embeddings.
+      See docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md for theory.

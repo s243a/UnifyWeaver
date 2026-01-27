@@ -64,6 +64,10 @@ __pycache__/
 *.conf
 .env
 
+# User-private model registry configs (not committed)
+.UnifyWeaver*
+config/model_registry.yaml
+
 # Claude Code (entire directory - user-specific)
 .claude/
 coro.json

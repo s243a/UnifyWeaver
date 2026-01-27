@@ -287,12 +287,27 @@ Processing long documents (>512 tokens)?
   └─► nomic-embed-text-v1.5 or ModernBERT (8K context)
 ```
 
+## Model Registry
+
+Models are managed via the Model Registry. Query available models:
+
+```bash
+# List all embedding models
+python3 -m unifyweaver.config.model_registry --list --type embedding
+
+# Get model for a task
+python3 -m unifyweaver.config.model_registry --task bookmark_filing
+```
+
+See `skill_model_registry.md` for full registry documentation.
+
 ## Related
 
 **Parent Skill:**
 - `skill_ml_tools.md` - ML tools sub-master
 
 **Sibling Skills:**
+- `skill_model_registry.md` - Model discovery and selection
 - `skill_train_model.md` - Training with embeddings
 - `skill_hierarchy_objective.md` - Entropy computation
 - `skill_semantic_inference.md` - Running inference
