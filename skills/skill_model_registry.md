@@ -390,6 +390,66 @@ Models saved with numpy 2.x cannot be loaded with numpy 1.x (and vice versa). Th
 4. Controls whether auto-discovery is permitted
 5. Tracks whether package installation is allowed per environment
 
+### Auto-Environment Inference
+
+Run inference with automatic environment detection - the registry finds an environment with numpy 2.x and uses it:
+
+```bash
+# Auto-detect environment and run query
+python3 -m unifyweaver.config.model_registry --infer pearltrees_federated_nomic --query "machine learning"
+
+# Interactive mode with auto-environment
+python3 -m unifyweaver.config.model_registry --infer pearltrees_federated_nomic --interactive
+
+# See which environment would be used (without running)
+python3 -m unifyweaver.config.model_registry --infer pearltrees_federated_nomic
+```
+
+Example output:
+```
+Using environment: hf_env
+  Python: /home/user/.hf-env/bin/python
+
+Running inference for 'pearltrees_federated_nomic' with query: machine learning...
+
+1. [0.4641] Machine learning algorithms
+   ID: 28831 | Cluster: cluster_161
+2. [0.4470] Data mining and machine learning software
+   ID: 28820 | Cluster: cluster_161
+```
+
+### Python API for Auto-Environment
+
+```python
+from unifyweaver.config.model_registry import ModelRegistry
+
+registry = ModelRegistry()
+
+# Find compatible environment (requires numpy 2.x)
+env_name = registry.find_compatible_environment('pearltrees_federated_nomic')
+print(f"Will use: {env_name}")
+
+# Run inference with auto-environment detection
+output = registry.run_inference_script(
+    'pearltrees_federated_nomic',
+    query='quantum computing',
+    top_k=5
+)
+print(output)
+
+# Run interactively
+registry.run_inference_script(
+    'pearltrees_federated_nomic',
+    interactive=True
+)
+
+# Run any command with the right environment
+registry.run_with_environment(
+    ['scripts/my_script.py', '--arg', 'value'],
+    model_name='pearltrees_federated_nomic'
+)
+```
+
 ## Related
 
 **Parent Skill:**

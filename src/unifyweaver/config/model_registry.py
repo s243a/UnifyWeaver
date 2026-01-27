@@ -1125,6 +1125,149 @@ class ModelRegistry:
         if env_info.get('conda_name'):
             self._inference_settings['environments'][name]['name'] = env_info['conda_name']
 
+    def find_compatible_environment(self, model_name: str = None, requires_numpy2: bool = True) -> Optional[str]:
+        """
+        Find an environment compatible with a model's requirements.
+
+        Args:
+            model_name: Model to find environment for (uses model_requirements config)
+            requires_numpy2: If True, require numpy >= 2.0
+
+        Returns:
+            Environment name or None
+        """
+        # Check model-specific requirements first
+        if model_name:
+            env_name = self.get_environment_for_model(model_name)
+            if env_name:
+                status = self.check_environment_available(env_name)
+                if status.get('available'):
+                    return env_name
+
+        # Search for compatible environment
+        env_selection = self._inference_settings.get('environment_selection', {})
+        pref_order = env_selection.get('preference_order', [])
+
+        # Add all configured environments
+        all_envs = list(pref_order) + [
+            e for e in self.get_environments().keys() if e not in pref_order
+        ]
+
+        for env_name in all_envs:
+            status = self.check_environment_available(env_name)
+            if not status.get('available'):
+                continue
+
+            env_config = status.get('config', {})
+            packages = env_config.get('packages', {})
+
+            # Check numpy requirement
+            if requires_numpy2:
+                numpy_req = packages.get('numpy', '')
+                if '>=2' in numpy_req or '>2' in numpy_req or '2.' in numpy_req:
+                    return env_name
+
+            # If no numpy requirement, any available env works
+            if not requires_numpy2:
+                return env_name
+
+        return None
+
+    def run_with_environment(
+        self,
+        command: List[str],
+        model_name: str = None,
+        env_name: str = None,
+        interactive: bool = False,
+    ) -> Union[int, str]:
+        """
+        Run a command using the appropriate environment for a model.
+
+        Args:
+            command: Command to run (script path and args, without python)
+            model_name: Model name to determine environment
+            env_name: Override environment name
+            interactive: If True, run interactively
+
+        Returns:
+            Exit code (if interactive) or stdout (if not interactive)
+        """
+        import subprocess
+
+        # Determine environment
+        if not env_name:
+            env_name = self.find_compatible_environment(model_name, requires_numpy2=True)
+
+        # Get Python executable
+        if env_name:
+            python_path = self.get_python_for_environment(env_name)
+            if python_path:
+                logger.info(f"Using environment '{env_name}': {python_path}")
+            else:
+                logger.warning(f"Environment '{env_name}' not available, falling back to system Python")
+                python_path = sys.executable
+        else:
+            logger.warning("No compatible environment found, using system Python")
+            python_path = sys.executable
+
+        # Build full command
+        full_cmd = [str(python_path)] + command
+
+        if interactive:
+            result = subprocess.run(full_cmd)
+            return result.returncode
+        else:
+            result = subprocess.run(full_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Command failed: {result.stderr}")
+            return result.stdout
+
+    def run_inference_script(
+        self,
+        model_name: str,
+        query: str = None,
+        interactive: bool = False,
+        top_k: int = 10,
+        **kwargs
+    ) -> Union[int, str]:
+        """
+        Run the inference script with the correct environment.
+
+        Args:
+            model_name: Model to use
+            query: Query text (if not interactive)
+            interactive: Run in interactive mode
+            top_k: Number of results
+            **kwargs: Additional arguments
+
+        Returns:
+            Exit code (if interactive) or stdout
+        """
+        model_path = self.get_model_path(model_name)
+        if not model_path:
+            raise FileNotFoundError(f"Model not found: {model_name}")
+
+        script = self.project_root / 'scripts' / 'infer_pearltrees_federated.py'
+        if not script.exists():
+            raise FileNotFoundError(f"Inference script not found: {script}")
+
+        cmd = [str(script), '--model', str(model_path), '--top-k', str(top_k)]
+
+        if interactive:
+            cmd.append('--interactive')
+        elif query:
+            cmd.extend(['--query', query])
+
+        for key, val in kwargs.items():
+            if val is not None:
+                cmd.extend([f'--{key.replace("_", "-")}', str(val)])
+
+        return self.run_with_environment(
+            cmd,
+            model_name=model_name,
+            interactive=interactive
+        )
+
 
 def main():
     """CLI interface for model registry."""
@@ -1161,6 +1304,12 @@ def main():
                         help='Discover available environments (requires permission or --force)')
     parser.add_argument('--force', action='store_true',
                         help='Force discovery even if not permitted in config')
+    parser.add_argument('--infer', metavar='MODEL',
+                        help='Run inference with auto-environment detection')
+    parser.add_argument('--interactive', '-i', action='store_true',
+                        help='Run in interactive mode (with --infer)')
+    parser.add_argument('--top-k', type=int, default=10,
+                        help='Number of results (with --infer)')
 
     args = parser.parse_args()
     registry = ModelRegistry()
@@ -1401,6 +1550,42 @@ def main():
                 print(f"Environment '{args.activate}' not available: {status.get('reason')}")
             else:
                 print(f"No activation needed for '{args.activate}'")
+
+    elif args.infer:
+        model_name = args.infer
+        query = args.query
+        interactive = args.interactive
+
+        # Find compatible environment
+        env_name = registry.find_compatible_environment(model_name, requires_numpy2=True)
+        if env_name:
+            status = registry.check_environment_available(env_name)
+            print(f"Using environment: {env_name}")
+            print(f"  Python: {status.get('python_path')}")
+        else:
+            print("Warning: No compatible environment found, using system Python")
+            print("  Models saved with numpy 2.x may fail to load")
+
+        try:
+            if interactive:
+                print(f"\nLaunching interactive inference for '{model_name}'...\n")
+                exit_code = registry.run_inference_script(model_name, interactive=True, top_k=args.top_k)
+                sys.exit(exit_code)
+            elif query:
+                print(f"\nRunning inference for '{model_name}' with query: {query[:50]}...\n")
+                output = registry.run_inference_script(model_name, query=query, top_k=args.top_k)
+                print(output)
+            else:
+                print(f"\nModel: {model_name}")
+                print(f"Use --query 'text' for single query, or --interactive for REPL")
+                model_path = registry.get_model_path(model_name)
+                if model_path:
+                    print(f"\nDirect command:")
+                    python_path = registry.get_python_for_environment(env_name) if env_name else sys.executable
+                    print(f"  {python_path} scripts/infer_pearltrees_federated.py --model {model_path} --interactive")
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
     elif args.discover_envs:
         permitted = registry.get_inference_permission('discover_environments')

@@ -12,7 +12,7 @@ environments:
     python_version: "3.8"       # Will be detected if not specified
     allow_install: false        # Never install to system Python
 
-  # Project virtual environment
+  # Project virtual environment (create with: python3.9 -m venv .venv)
   default:
     type: venv
     path: .venv
@@ -22,6 +22,15 @@ environments:
       numpy: ">=2.0"
       torch: ">=2.0"
       sentence-transformers: ">=2.2"
+
+  # HuggingFace environment with numpy 2.x
+  hf_env:
+    type: venv
+    path: ~/.hf-env
+    python_version: "3.9"
+    allow_install: false        # External env, don't modify
+    packages:
+      numpy: ">=2.0"
 
   # Legacy Python 3.8 environment
   legacy:
