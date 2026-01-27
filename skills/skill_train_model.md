@@ -169,7 +169,12 @@ python3 -m unifyweaver.config.model_registry --check pearltrees_federated_nomic
 
 # List missing models for a task
 python3 -m unifyweaver.config.model_registry --missing bookmark_filing
+
+# Find environment with numpy 2.x for training
+python3 -m unifyweaver.config.model_registry --smart-envs
 ```
+
+**Note:** Models trained with numpy 2.x can only be loaded in Python 3.9+ environments with numpy 2.x. Use `--smart-envs` to find compatible environments.
 
 See `skill_model_registry.md` for full registry documentation.
 

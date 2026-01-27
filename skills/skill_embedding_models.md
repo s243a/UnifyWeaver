@@ -297,6 +297,21 @@ python3 -m unifyweaver.config.model_registry --list --type embedding
 
 # Get model for a task
 python3 -m unifyweaver.config.model_registry --task bookmark_filing
+
+# Check which environment to use (numpy 2.x compatibility)
+python3 -m unifyweaver.config.model_registry --smart-envs
+```
+
+### Environment Requirements
+
+Models saved with numpy 2.x require Python 3.9+ environments:
+
+```bash
+# Find compatible environment
+python3 -m unifyweaver.config.model_registry --env-for pearltrees_federated_nomic
+
+# Set up environment with required packages
+python3 -m unifyweaver.config.model_registry --setup-env default --dry-run
 ```
 
 See `skill_model_registry.md` for full registry documentation.
