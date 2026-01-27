@@ -60,6 +60,12 @@ environment_selection:
     - legacy
     - system
 
+  # Default environment name pattern
+  # Use * as placeholder for Python version
+  # Examples: "venv-*" -> venv-3.11, "default" -> default (no version suffix)
+  # If env name contains version (venv-3.9, default39), it's auto-detected
+  default_env_pattern: "default"
+
   # Model-to-environment requirements
   model_requirements:
     # Models saved with numpy 2.x need compatible env

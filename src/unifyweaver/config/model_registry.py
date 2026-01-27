@@ -1173,6 +1173,492 @@ class ModelRegistry:
 
         return None
 
+    def smart_find_environment(
+        self,
+        requires: List[str] = None,
+        min_python: str = "3.9",
+        allow_discovery: bool = True,
+        prefer_writable: bool = True,
+    ) -> List[Dict]:
+        """
+        Smart environment detection with scoring to help user decide.
+
+        Args:
+            requires: List of required packages (e.g., ['numpy>=2.0', 'torch'])
+            min_python: Minimum Python version (default 3.9 for numpy 2.x)
+            allow_discovery: If True, discover environments not in config
+            prefer_writable: Prefer environments with allow_install=True
+
+        Returns:
+            List of candidate environments sorted by score (best first), each with:
+                name: environment name
+                score: compatibility score
+                available: bool
+                has_packages: list of required packages already present
+                missing_packages: list that need installing
+                python_ok: bool if Python version is sufficient
+                reasons: list explaining the score
+        """
+        requires = requires or ['numpy>=2.0']
+        candidates = []
+
+        # Parse min_python
+        try:
+            min_major, min_minor = map(int, min_python.split('.')[:2])
+        except ValueError:
+            min_major, min_minor = 3, 9
+
+        # Get configured environments
+        configured = set(self.get_environments().keys())
+
+        # Discover additional environments
+        discovered = []
+        if allow_discovery:
+            discovered = self._quick_discover_local_venvs()
+
+        # Add discovered to runtime config
+        for env_info in discovered:
+            if env_info['name'] not in configured:
+                self.add_discovered_environment(env_info)
+
+        # Score all environments
+        all_envs = list(self.get_environments().keys())
+
+        for env_name in all_envs:
+            status = self.check_environment_available(env_name)
+            env_config = self.get_environment(env_name) or {}
+
+            candidate = {
+                'name': env_name,
+                'score': 0,
+                'available': status.get('available', False),
+                'has_packages': [],
+                'missing_packages': list(requires),
+                'python_ok': False,
+                'python_version': None,
+                'reasons': [],
+                'python_path': status.get('python_path'),
+                'allow_install': env_config.get('allow_install', False),
+                'type': env_config.get('type', 'unknown'),
+                'path': env_config.get('path', ''),
+            }
+
+            if not status.get('available'):
+                candidate['reasons'].append('not available')
+                candidates.append(candidate)
+                continue
+
+            # Score: available
+            candidate['score'] += 1
+            candidate['reasons'].append('+1 available')
+
+            # Check Python version (critical for numpy 2.x)
+            # Priority: actual version > config > extracted from name
+            actual_py_ver = self._get_actual_python_version(status.get('python_path'))
+            if actual_py_ver:
+                py_ver = actual_py_ver
+            else:
+                py_ver = self._resolve_env_python_version(env_name, env_config) or ''
+            candidate['python_version'] = py_ver
+
+            if py_ver:
+                try:
+                    major, minor = map(int, py_ver.split('.')[:2])
+                    if major > min_major or (major == min_major and minor >= min_minor):
+                        candidate['python_ok'] = True
+                        candidate['score'] += 5
+                        candidate['reasons'].append(f'+5 Python {py_ver} >= {min_python}')
+                    else:
+                        candidate['score'] -= 10
+                        candidate['reasons'].append(f'-10 Python {py_ver} < {min_python}')
+                except ValueError:
+                    candidate['reasons'].append(f'? Python version unknown: {py_ver}')
+
+            # Score: has required packages
+            packages = env_config.get('packages', {})
+            has_pkgs = []
+            missing_pkgs = []
+
+            for req in requires:
+                pkg_name = req.split('>=')[0].split('<=')[0].split('==')[0].split('>')[0].split('<')[0]
+                pkg_constraint = req[len(pkg_name):] if len(req) > len(pkg_name) else ''
+
+                if pkg_name in packages:
+                    pkg_ver = packages[pkg_name]
+                    if not pkg_constraint or pkg_constraint in pkg_ver or pkg_ver == '*':
+                        has_pkgs.append(req)
+                        candidate['score'] += 10
+                        candidate['reasons'].append(f'+10 has {pkg_name}')
+                    else:
+                        missing_pkgs.append(req)
+                else:
+                    missing_pkgs.append(req)
+
+            candidate['has_packages'] = has_pkgs
+            candidate['missing_packages'] = missing_pkgs
+
+            # Score: allow_install (important if packages missing)
+            if env_config.get('allow_install', False):
+                if prefer_writable:
+                    candidate['score'] += 5
+                    candidate['reasons'].append('+5 writable')
+            elif missing_pkgs:
+                candidate['score'] -= 5
+                candidate['reasons'].append('-5 read-only with missing packages')
+
+            # Score: project-local venvs preferred
+            path = env_config.get('path', '')
+            if path in ['.venv', 'venv', '.env', 'env'] or path.startswith('./'):
+                candidate['score'] += 3
+                candidate['reasons'].append('+3 project-local')
+
+            # Score: is 'default' (slight preference)
+            if env_name == 'default':
+                candidate['score'] += 1
+                candidate['reasons'].append('+1 is default')
+
+            # Penalty: system Python
+            if env_config.get('type') == 'system':
+                candidate['score'] -= 20
+                candidate['reasons'].append('-20 system Python (avoid)')
+
+            candidates.append(candidate)
+
+        # Sort by score descending
+        candidates.sort(key=lambda x: (-x['score'], x['name']))
+        return candidates
+
+    def _get_actual_python_version(self, python_path) -> Optional[str]:
+        """Get actual Python version from executable."""
+        if not python_path or not Path(python_path).exists():
+            return None
+        try:
+            import subprocess
+            result = subprocess.run(
+                [str(python_path), '--version'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                # "Python 3.9.5" -> "3.9.5"
+                return result.stdout.strip().replace('Python ', '')
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_python_version_from_name(env_name: str) -> Optional[str]:
+        """
+        Extract Python version from environment name patterns.
+
+        Supports patterns like:
+            venv-3.9      -> 3.9
+            venv-3.11     -> 3.11
+            default39     -> 3.9
+            venv311       -> 3.11
+            .venv312      -> 3.12
+            py39-env      -> 3.9
+            env-py311     -> 3.11
+
+        Returns:
+            Python version string (e.g., "3.9") or None if not found
+        """
+        import re
+
+        # Pattern: explicit version with dot (e.g., venv-3.9, .venv-3.11)
+        match = re.search(r'[._-]?(\d+\.\d+)', env_name)
+        if match:
+            return match.group(1)
+
+        # Pattern: version without dot at end (e.g., default39, venv311, .venv312)
+        match = re.search(r'(\d)(\d{1,2})$', env_name)
+        if match:
+            major, minor = match.groups()
+            return f"{major}.{minor}"
+
+        # Pattern: py followed by version (e.g., py39-env, env-py311)
+        match = re.search(r'py(\d)(\d{1,2})', env_name, re.IGNORECASE)
+        if match:
+            major, minor = match.groups()
+            return f"{major}.{minor}"
+
+        return None
+
+    def _resolve_env_python_version(self, env_name: str, env_config: Dict) -> Optional[str]:
+        """
+        Resolve Python version for an environment.
+
+        Checks in order:
+        1. Explicit python_version in config
+        2. Extract from environment name pattern
+        3. Return None if unknown
+
+        Args:
+            env_name: Environment name
+            env_config: Environment configuration dict
+
+        Returns:
+            Python version string or None
+        """
+        # Check explicit config
+        py_version = env_config.get('python_version')
+        if py_version and py_version != 'unknown':
+            return py_version
+
+        # Try extracting from name
+        extracted = self._extract_python_version_from_name(env_name)
+        if extracted:
+            return extracted
+
+        return None
+
+    def get_default_env_name(self, python_version: str = None) -> str:
+        """
+        Get the default environment name, optionally for a specific Python version.
+
+        Uses the pattern from config if specified (e.g., "venv-*" where * is version).
+
+        Args:
+            python_version: Python version (e.g., "3.11")
+
+        Returns:
+            Environment name (e.g., "venv-3.11" or "default")
+        """
+        env_config = self._inference_settings.get('environment_selection', {})
+        pattern = env_config.get('default_env_pattern', 'default')
+
+        if '*' in pattern and python_version:
+            return pattern.replace('*', python_version)
+        elif '*' in pattern:
+            # Pattern specified but no version - use current Python
+            import sys
+            current_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+            return pattern.replace('*', current_ver)
+        else:
+            return pattern
+
+    def _quick_discover_local_venvs(self) -> List[Dict]:
+        """Quick discovery of local venvs without full subprocess checks."""
+        discovered = []
+        venv_names = ['.venv', 'venv', 'env', '.env']
+
+        for name in venv_names:
+            venv_path = self.project_root / name
+            python_path = venv_path / 'bin' / 'python'
+
+            if not python_path.exists():
+                python_path = venv_path / 'Scripts' / 'python.exe'
+
+            if python_path.exists():
+                discovered.append({
+                    'name': name,
+                    'type': 'venv',
+                    'path': str(venv_path),
+                    'python_path': python_path,
+                    'python_version': 'unknown',
+                    'discovered': True,
+                    'allow_install': True,  # Local venvs are writable
+                })
+
+        return discovered
+
+    def select_install_target(
+        self,
+        requires: List[str] = None,
+        auto: bool = False,
+    ) -> Union[Dict, List[Dict], None]:
+        """
+        Select the best environment for package installation.
+
+        Args:
+            requires: Required packages
+            auto: If True, auto-select best; if False, return ranked list
+
+        Returns:
+            If auto: best environment dict or None
+            If not auto: list of candidates sorted by score
+        """
+        candidates = self.smart_find_environment(
+            requires=requires,
+            allow_discovery=True,
+            prefer_writable=True,
+        )
+
+        # Filter to available environments with good Python
+        viable = [c for c in candidates if c['available'] and c['python_ok']]
+
+        if auto:
+            # Return best writable, or best overall
+            writable = [c for c in viable if c['allow_install']]
+            return writable[0] if writable else (viable[0] if viable else None)
+
+        return candidates  # Return full list for user to review
+
+    def create_environment(
+        self,
+        name: str,
+        python_executable: str = None,
+        packages: List[str] = None,
+        dry_run: bool = False,
+    ) -> bool:
+        """
+        Create a new virtual environment.
+
+        Args:
+            name: Environment name (must be configured)
+            python_executable: Python to use (default from config or python3.9)
+            packages: Packages to install after creation
+            dry_run: If True, just show what would be done
+
+        Returns:
+            True if successful
+        """
+        import subprocess
+
+        env_config = self.get_environment(name)
+        if not env_config:
+            logger.error(f"Environment '{name}' not configured")
+            return False
+
+        if env_config.get('type') != 'venv':
+            logger.error(f"Can only create venv type, not {env_config.get('type')}")
+            return False
+
+        path = env_config.get('path', '')
+        if not path:
+            logger.error(f"No path configured for '{name}'")
+            return False
+
+        venv_path = Path(os.path.expanduser(os.path.expandvars(path)))
+        if not venv_path.is_absolute():
+            venv_path = self.project_root / venv_path
+
+        # Determine Python executable
+        if not python_executable:
+            python_executable = env_config.get('python_executable')
+        if not python_executable:
+            py_ver = env_config.get('python_version', '3.9')
+            python_executable = f'python{py_ver}'
+
+        if dry_run:
+            print(f"Would create venv at: {venv_path}")
+            print(f"Using Python: {python_executable}")
+            if packages:
+                print(f"Would install: {', '.join(packages)}")
+            return True
+
+        if venv_path.exists():
+            logger.warning(f"Already exists: {venv_path}")
+            return False
+
+        logger.info(f"Creating venv at {venv_path}...")
+        try:
+            result = subprocess.run(
+                [python_executable, '-m', 'venv', str(venv_path)],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                logger.error(f"Failed: {result.stderr}")
+                return False
+        except FileNotFoundError:
+            logger.error(f"Python not found: {python_executable}")
+            return False
+
+        if packages:
+            return self.install_packages(name, packages)
+
+        return True
+
+    def install_packages(
+        self,
+        env_name: str,
+        packages: List[str],
+        dry_run: bool = False,
+    ) -> bool:
+        """
+        Install packages into an environment.
+
+        Args:
+            env_name: Target environment
+            packages: Packages to install
+            dry_run: If True, just show what would be done
+
+        Returns:
+            True if successful
+        """
+        import subprocess
+
+        env_config = self.get_environment(env_name)
+        if not env_config:
+            logger.error(f"Environment '{env_name}' not configured")
+            return False
+
+        if not env_config.get('allow_install', False):
+            logger.error(f"Installation not allowed for '{env_name}'")
+            return False
+
+        if env_config.get('type') == 'system':
+            logger.error("Cannot install to system Python")
+            return False
+
+        status = self.check_environment_available(env_name)
+        if not status.get('available'):
+            logger.error(f"Environment '{env_name}' not available")
+            return False
+
+        python_path = status.get('python_path')
+
+        if dry_run:
+            print(f"Would install to: {env_name}")
+            print(f"Python: {python_path}")
+            print(f"Packages: {', '.join(packages)}")
+            return True
+
+        logger.info(f"Installing to {env_name}: {', '.join(packages)}")
+        try:
+            result = subprocess.run(
+                [str(python_path), '-m', 'pip', 'install'] + packages,
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                logger.error(f"pip failed: {result.stderr}")
+                return False
+            logger.info("Installation successful")
+            return True
+        except Exception as e:
+            logger.error(f"Failed: {e}")
+            return False
+
+    def setup_environment(
+        self,
+        env_name: str = 'default',
+        packages: List[str] = None,
+        dry_run: bool = False,
+    ) -> bool:
+        """
+        Set up environment: create if needed, then install packages.
+
+        Args:
+            env_name: Environment name
+            packages: Packages (default: inference requirements)
+            dry_run: If True, just show what would be done
+
+        Returns:
+            True if successful
+        """
+        if packages is None:
+            packages = ['numpy>=2.0', 'torch>=2.0', 'sentence-transformers>=2.2', 'pyyaml']
+
+        status = self.check_environment_available(env_name)
+
+        if not status.get('available'):
+            if dry_run:
+                print(f"Would create environment: {env_name}")
+            if not self.create_environment(env_name, dry_run=dry_run):
+                if not dry_run:
+                    return False
+
+        return self.install_packages(env_name, packages, dry_run=dry_run)
+
     def run_with_environment(
         self,
         command: List[str],
@@ -1310,6 +1796,21 @@ def main():
                         help='Run in interactive mode (with --infer)')
     parser.add_argument('--top-k', type=int, default=10,
                         help='Number of results (with --infer)')
+    # Environment setup commands
+    parser.add_argument('--smart-envs', action='store_true',
+                        help='Smart environment detection with scoring')
+    parser.add_argument('--create-env', metavar='NAME',
+                        help='Create a virtual environment')
+    parser.add_argument('--setup-env', metavar='NAME', nargs='?', const='default',
+                        help='Set up environment (create + install packages)')
+    parser.add_argument('--install', metavar='ENV',
+                        help='Install inference packages to environment')
+    parser.add_argument('--packages', nargs='+',
+                        help='Packages to install (with --install or --setup-env)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Show what would be done without doing it')
+    parser.add_argument('--auto', action='store_true',
+                        help='Auto-select best environment without prompting')
 
     args = parser.parse_args()
     registry = ModelRegistry()
@@ -1619,6 +2120,99 @@ def main():
                 if activation:
                     print(f"    Activate: {activation}")
                 print()
+
+    elif args.smart_envs:
+        requires = args.packages or ['numpy>=2.0']
+        print(f"Smart environment detection (requires: {', '.join(requires)})")
+        print()
+
+        candidates = registry.smart_find_environment(
+            requires=requires,
+            allow_discovery=True,
+            prefer_writable=True,
+        )
+
+        if not candidates:
+            print("No environments found.")
+            sys.exit(1)
+
+        print(f"{'Rank':<5} {'Score':<6} {'Env Name':<20} {'Python':<10} {'Status'}")
+        print("-" * 70)
+
+        for i, c in enumerate(candidates, 1):
+            status_parts = []
+            if not c['available']:
+                status_parts.append('NOT AVAILABLE')
+            else:
+                if c['python_ok']:
+                    status_parts.append('Python OK')
+                else:
+                    status_parts.append('Python too old')
+                if c['has_packages']:
+                    status_parts.append(f"has: {','.join(c['has_packages'][:2])}")
+                if c['missing_packages']:
+                    status_parts.append(f"needs: {','.join(c['missing_packages'][:2])}")
+                if c['allow_install']:
+                    status_parts.append('writable')
+
+            py_ver = c['python_version'] or '?'
+            status = ', '.join(status_parts)
+            print(f"{i:<5} {c['score']:<6} {c['name']:<20} {py_ver:<10} {status}")
+
+        # Show recommendation
+        print()
+        viable = [c for c in candidates if c['available'] and c['python_ok']]
+        if viable:
+            best = viable[0]
+            writable_best = [c for c in viable if c['allow_install']]
+            if writable_best:
+                print(f"Recommended for installation: {writable_best[0]['name']}")
+            else:
+                print(f"Best available (read-only): {best['name']}")
+        else:
+            print("No viable environments found. Consider creating one:")
+            print(f"  python3 -m unifyweaver.config.model_registry --create-env default")
+
+    elif args.create_env:
+        env_name = args.create_env
+        packages = args.packages
+        dry_run = args.dry_run
+
+        print(f"Creating environment: {env_name}")
+        if registry.create_environment(env_name, packages=packages, dry_run=dry_run):
+            if not dry_run:
+                print(f"Environment '{env_name}' created successfully.")
+        else:
+            if not dry_run:
+                print(f"Failed to create environment '{env_name}'.")
+                sys.exit(1)
+
+    elif args.setup_env is not None:
+        env_name = args.setup_env
+        packages = args.packages
+        dry_run = args.dry_run
+
+        print(f"Setting up environment: {env_name}")
+        if registry.setup_environment(env_name, packages=packages, dry_run=dry_run):
+            if not dry_run:
+                print(f"Environment '{env_name}' is ready.")
+        else:
+            if not dry_run:
+                print(f"Failed to set up environment '{env_name}'.")
+                sys.exit(1)
+
+    elif args.install:
+        env_name = args.install
+        packages = args.packages or ['numpy>=2.0', 'torch>=2.0', 'sentence-transformers>=2.2']
+        dry_run = args.dry_run
+
+        if registry.install_packages(env_name, packages, dry_run=dry_run):
+            if not dry_run:
+                print("Installation complete.")
+        else:
+            if not dry_run:
+                print("Installation failed.")
+                sys.exit(1)
 
     else:
         parser.print_help()

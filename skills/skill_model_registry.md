@@ -450,6 +450,84 @@ registry.run_with_environment(
 )
 ```
 
+### Smart Environment Selection
+
+The registry scores environments to help you choose the best one:
+
+```bash
+# Show ranked environments with scores
+python3 -m unifyweaver.config.model_registry --smart-envs
+
+# With specific package requirements
+python3 -m unifyweaver.config.model_registry --smart-envs --packages numpy>=2.0 torch
+```
+
+Example output:
+```
+Smart environment detection (requires: numpy>=2.0)
+
+Rank  Score  Env Name             Python     Status
+----------------------------------------------------------------------
+1     17     hf_env               3.9.5      Python OK, has: numpy>=2.0, writable
+2     11     default              3.11       Python OK, needs: numpy>=2.0, writable
+3     -19    system               3.8        Python too old
+
+Recommended for installation: hf_env
+```
+
+**Scoring factors:**
+- +5 Python version >= 3.9 (required for numpy 2.x)
+- -10 Python version too old
+- +10 per required package already present
+- +5 if writable (allow_install: true)
+- +3 if project-local (.venv, venv)
+- -20 system Python (avoid modifying)
+
+### Environment Setup
+
+```bash
+# Create a new virtual environment
+python3 -m unifyweaver.config.model_registry --create-env default --dry-run
+
+# Set up environment (create + install packages)
+python3 -m unifyweaver.config.model_registry --setup-env default --dry-run
+
+# Install packages to an environment
+python3 -m unifyweaver.config.model_registry --install default --packages numpy>=2.0 torch
+```
+
+### Python Version Detection
+
+The registry can extract Python version from environment names:
+
+| Name Pattern | Detected Version |
+|--------------|-----------------|
+| `venv-3.9`   | 3.9             |
+| `venv-3.11`  | 3.11            |
+| `default39`  | 3.9             |
+| `venv311`    | 3.11            |
+| `.venv312`   | 3.12            |
+| `py39-env`   | 3.9             |
+
+Configure a naming pattern in `model_defaults.yaml`:
+
+```yaml
+environment_selection:
+  # Use * as placeholder for Python version
+  default_env_pattern: "venv-*"  # Creates venv-3.11 for Python 3.11
+```
+
+Python API:
+```python
+registry = ModelRegistry()
+
+# Get default env name for specific Python version
+env_name = registry.get_default_env_name("3.11")  # "venv-3.11" if pattern is "venv-*"
+
+# Extract version from name
+version = ModelRegistry._extract_python_version_from_name("venv-3.9")  # "3.9"
+```
+
 ## Related
 
 **Parent Skill:**
