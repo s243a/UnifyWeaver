@@ -14,6 +14,8 @@
     generate_tui/2,
     generate_tui/3,
     generate_tui_script/3,
+    generate_tui_script/4,        % With options (mode: echo|dialog)
+    generate_dialog_script/3,     % Dialog-based interactive script
     test_tui_generator/0
 ]).
 
@@ -156,6 +158,501 @@ trap "tput cnorm; echo -e \\"$RESET\\"" EXIT
 # Show cursor
 tput cnorm
 ', [ScriptName, Reset, BodyCode]).
+
+%! generate_tui_script(+Spec, +ScriptName, +Options, -Code) is det
+%  Generate a TUI script with options. Options include:
+%  - mode(echo) : Plain ANSI echo statements (default)
+%  - mode(dialog) : Interactive dialog-based UI
+generate_tui_script(Spec, ScriptName, Options, Code) :-
+    get_option(mode, Options, Mode, echo),
+    (Mode == dialog ->
+        generate_dialog_script(Spec, ScriptName, Code)
+    ;
+        generate_tui_script(Spec, ScriptName, Code)
+    ).
+
+%! generate_dialog_script(+Spec, +ScriptName, -Code) is det
+%  Generate an interactive dialog-based shell script.
+generate_dialog_script(Spec, ScriptName, Code) :-
+    generate_dialog_body(Spec, BodyCode),
+    format(atom(Code), '#!/bin/bash
+# Generated Dialog TUI script: ~w
+# Interactive terminal UI using dialog
+
+# Temporary file for dialog output
+TEMP=$(mktemp)
+trap "rm -f $TEMP" EXIT
+
+# State variables
+declare -A STATE
+CURRENT_DIR="."
+SELECTED_FILE=""
+WORKING_DIR="."
+
+# File browser function using menu (more reliable than fselect)
+browse_files() {
+    local dir="${1:-$CURRENT_DIR}"
+    dir="${dir:-.}"
+
+    # Convert to absolute path for reliable navigation
+    dir=$(cd "$dir" 2>/dev/null && pwd) || dir="."
+
+    # Build menu items and track paths separately
+    # Use 0-9, a-z for quick select keys
+    local keys="0123456789abcdefghijklmnopqrstuvwxyz"
+    local items=()
+    local paths=()
+    local types=()
+    local idx=0
+
+    get_key() { echo "${keys:$1:1}"; }
+
+    # Add parent directory option if not at root
+    if [ "$dir" != "/" ]; then
+        items+=("$(get_key $idx)" "[..] Parent Directory")
+        paths+=("$(dirname "$dir")")
+        types+=("parent")
+        ((idx++))
+    fi
+
+    # Add directories first
+    for entry in "$dir"/*/; do
+        if [ -d "$entry" ]; then
+            local name=$(basename "$entry")
+            items+=("$(get_key $idx)" "[D] $name")
+            paths+=("$entry")
+            types+=("dir")
+            ((idx++))
+        fi
+    done
+
+    # Add files
+    for entry in "$dir"/*; do
+        if [ -f "$entry" ]; then
+            local name=$(basename "$entry")
+            local size=$(du -h "$entry" 2>/dev/null | cut -f1)
+            items+=("$(get_key $idx)" "[F] $name ($size)")
+            paths+=("$entry")
+            types+=("file")
+            ((idx++))
+        fi
+    done
+
+    if [ ${#items[@]} -eq 0 ]; then
+        dialog --msgbox "Empty directory: $dir" 6 40
+        main_menu
+        return
+    fi
+
+    dialog --clear --title "Browse: $dir" \\
+        --menu "Select file or directory:" 20 70 12 \\
+        "${items[@]}" \\
+        2>"$TEMP"
+
+    local status=$?
+    local choice=$(<"$TEMP")
+
+    if [ $status -ne 0 ]; then
+        main_menu
+        return
+    fi
+
+    # Convert choice (0-9, a-z) back to index
+    key_to_idx() {
+        local key="$1"
+        local pos="${keys%%$key*}"
+        echo "${#pos}"
+    }
+
+    local idx=$(key_to_idx "$choice")
+    local selected_path="${paths[$idx]}"
+    local selected_type="${types[$idx]}"
+
+    case "$selected_type" in
+        parent|dir)
+            CURRENT_DIR="$selected_path"
+            browse_files
+            ;;
+        file)
+            SELECTED_FILE="$selected_path"
+            CURRENT_DIR="$dir"
+            file_actions
+            ;;
+        *)
+            main_menu
+            ;;
+    esac
+}
+
+# File action submenu
+file_actions() {
+    dialog --title "File: $(basename "$SELECTED_FILE")" \\
+        --menu "Select action:" 15 60 5 \\
+        1 "View Contents" \\
+        2 "Download/Copy" \\
+        3 "Search in Directory" \\
+        4 "Continue Browsing" \\
+        5 "Back to Main Menu" \\
+        2>"$TEMP"
+
+    choice=$(<"$TEMP")
+    case $choice in
+        1) view_selected_file ;;
+        2) download_selected_file ;;
+        3) search_in_dir ;;
+        4) browse_files ;;
+        *) main_menu ;;
+    esac
+}
+
+view_selected_file() {
+    if [ -f "$SELECTED_FILE" ]; then
+        dialog --title "$SELECTED_FILE" --textbox "$SELECTED_FILE" 22 76
+    fi
+    file_actions
+}
+
+download_selected_file() {
+    if [ -f "$SELECTED_FILE" ]; then
+        dialog --yesno "Copy to current directory?\\n\\n$SELECTED_FILE" 10 50
+        if [ $? -eq 0 ]; then
+            cp "$SELECTED_FILE" . 2>/dev/null && \\
+                dialog --msgbox "Copied: $(basename "$SELECTED_FILE")" 6 40 || \\
+                dialog --msgbox "Copy failed" 6 30
+        fi
+    fi
+    file_actions
+}
+
+search_in_dir() {
+    dialog --inputbox "Search pattern:" 8 50 2>"$TEMP"
+    pattern=$(<"$TEMP")
+    if [ -n "$pattern" ]; then
+        results=$(grep -r "$pattern" "$CURRENT_DIR" 2>/dev/null | head -30)
+        if [ -n "$results" ]; then
+            echo "$results" > /tmp/search_results.txt
+            dialog --title "Results for: $pattern" --textbox /tmp/search_results.txt 20 76
+            rm -f /tmp/search_results.txt
+        else
+            dialog --msgbox "No matches found" 6 40
+        fi
+    fi
+    file_actions
+}
+
+~w
+
+# Start main
+main_menu
+', [ScriptName, BodyCode]).
+
+%! generate_dialog_body(+Spec, -Code) is det
+%  Generate dialog commands from UI spec.
+%  First collects all interactive elements, then builds menu.
+generate_dialog_body(Spec, Code) :-
+    % Extract all buttons/actions from the spec tree
+    collect_dialog_actions(Spec, Actions),
+    (Actions = [] ->
+        % Fallback to generic dialog node generation
+        generate_dialog_node(Spec, Code)
+    ;
+        % Generate menu from collected actions
+        generate_dialog_from_actions(Actions, Code)
+    ).
+
+%! collect_dialog_actions(+Spec, -Actions) is det
+%  Recursively collect interactive elements from nested spec.
+%  Actions are action(Label, OnClick) terms.
+collect_dialog_actions(component(button, Opts), [action(Label, OnClick)]) :- !,
+    extract_button_label(Opts, Label),
+    get_option(on_click, Opts, OnClick, do_action).
+collect_dialog_actions(component(text_input, Opts), [input(Label, Bind)]) :- !,
+    get_option(label, Opts, Label, 'Input'),
+    get_option(bind, Opts, Bind, input).
+collect_dialog_actions(layout(_Type, _Opts, Children), Actions) :- !,
+    collect_dialog_actions_list(Children, Actions).
+collect_dialog_actions(container(_Type, _Opts, Content), Actions) :- !,
+    (is_list(Content) ->
+        collect_dialog_actions_list(Content, Actions)
+    ;
+        collect_dialog_actions(Content, Actions)
+    ).
+collect_dialog_actions(when(_Cond, Content), Actions) :- !,
+    (is_list(Content) ->
+        collect_dialog_actions_list(Content, Actions)
+    ;
+        collect_dialog_actions(Content, Actions)
+    ).
+collect_dialog_actions(foreach(_Coll, _Var, Template), Actions) :- !,
+    collect_dialog_actions(Template, Actions).
+collect_dialog_actions(_, []).
+
+collect_dialog_actions_list([], []) :- !.
+collect_dialog_actions_list([H|T], Actions) :-
+    collect_dialog_actions(H, HActions),
+    collect_dialog_actions_list(T, TActions),
+    append(HActions, TActions, Actions).
+
+%! extract_button_label(+Opts, -Label) is det
+%  Extract label from button options, handling various forms.
+extract_button_label(Opts, Label) :-
+    member(label(L), Opts), !,
+    (atom(L) -> Label = L
+    ; L = (_Cond, _True, False) -> Label = False  % conditional label: use default
+    ; term_to_atom(L, Label)
+    ).
+extract_button_label(_, 'Action').
+
+%! generate_dialog_from_actions(+Actions, -Code) is det
+%  Generate dialog script from collected actions.
+generate_dialog_from_actions(Actions, Code) :-
+    % Filter to just buttons/actions, skip inputs for now
+    include(is_button_action, Actions, ButtonActions),
+    length(ButtonActions, N),
+    TotalItems is N + 2,  % Add Browse and Exit
+    generate_action_menu_items(ButtonActions, 1, MenuItems, CaseItems),
+    generate_action_functions(ButtonActions, Functions),
+    N1 is N + 1,
+    N2 is N + 2,
+    format(atom(Code), '# Main menu function
+main_menu() {
+    dialog --clear --title "File Browser" \\
+        --menu "Select an action:" 18 60 ~w \\
+        0 "📁 Browse Files" \\
+~w        ~w "Exit" \\
+        2>"$TEMP"
+
+    choice=$(<"$TEMP")
+    case $choice in
+        0) browse_files ;;
+~w        ~w) exit 0 ;;
+        *) exit 0 ;;
+    esac
+}
+
+~w
+', [TotalItems, MenuItems, N1, CaseItems, N2, Functions]).
+
+is_button_action(action(_, _)).
+
+generate_action_menu_items([], _, '', '') :- !.
+generate_action_menu_items([action(Label, _OnClick)|Rest], N, MenuItems, CaseItems) :-
+    N1 is N + 1,
+    format(atom(FuncName), 'action_~w', [N]),
+    % Sanitize label for shell (remove quotes)
+    sanitize_shell_string(Label, SafeLabel),
+    format(atom(MenuItem), '        ~w "~w" \\~n', [N, SafeLabel]),
+    format(atom(CaseItem), '        ~w) ~w ;;~n', [N, FuncName]),
+    generate_action_menu_items(Rest, N1, RestMenu, RestCase),
+    atom_concat(MenuItem, RestMenu, MenuItems),
+    atom_concat(CaseItem, RestCase, CaseItems).
+
+generate_action_functions(Actions, Code) :-
+    generate_action_functions(Actions, 1, Code).
+
+generate_action_functions([], _, '') :- !.
+generate_action_functions([action(Label, OnClick)|Rest], N, Code) :-
+    N1 is N + 1,
+    format(atom(FuncName), 'action_~w', [N]),
+    sanitize_shell_string(Label, SafeLabel),
+    % Generate implementation based on action type
+    generate_action_impl(OnClick, SafeLabel, ImplCode),
+    format(atom(Func), '~w() {
+~w
+}
+
+', [FuncName, ImplCode]),
+    generate_action_functions(Rest, N1, RestCode),
+    atom_concat(Func, RestCode, Code).
+
+%! generate_action_impl(+OnClick, +Label, -Code) is det
+%  Generate actual implementation for known action types.
+generate_action_impl(navigate_up, _, Code) :- !,
+    Code = '    # Navigate up one directory (convert to absolute path first)
+    local absdir=$(cd "${CURRENT_DIR:-.}" 2>/dev/null && pwd) || absdir="/"
+    if [ "$absdir" != "/" ]; then
+        CURRENT_DIR=$(dirname "$absdir")
+    else
+        CURRENT_DIR="/"
+    fi
+    browse_files'.
+
+generate_action_impl(view_file, _, Code) :- !,
+    Code = '    # View file contents
+    if [ -n "$SELECTED_FILE" ] && [ -f "$SELECTED_FILE" ]; then
+        dialog --title "$SELECTED_FILE" --textbox "$SELECTED_FILE" 22 76
+    else
+        dialog --msgbox "No file selected" 6 40
+    fi
+    main_menu'.
+
+generate_action_impl(download_file, _, Code) :- !,
+    Code = '    # Download/copy file
+    if [ -n "$SELECTED_FILE" ] && [ -f "$SELECTED_FILE" ]; then
+        dialog --yesno "Copy $SELECTED_FILE to current directory?" 8 50
+        if [ $? -eq 0 ]; then
+            cp "$SELECTED_FILE" . 2>/dev/null && \
+                dialog --msgbox "File copied to $(pwd)/$(basename "$SELECTED_FILE")" 8 50 || \
+                dialog --msgbox "Copy failed" 6 40
+        fi
+    else
+        dialog --msgbox "No file selected" 6 40
+    fi
+    main_menu'.
+
+generate_action_impl(search_here, _, Code) :- !,
+    Code = '    # Search in current directory
+    dialog --inputbox "Enter search pattern:" 8 50 2>"$TEMP"
+    pattern=$(<"$TEMP")
+    if [ -n "$pattern" ]; then
+        results=$(grep -r "$pattern" "${CURRENT_DIR:-.}" 2>/dev/null | head -30)
+        if [ -n "$results" ]; then
+            echo "$results" > /tmp/search_results.txt
+            dialog --title "Search Results" --textbox /tmp/search_results.txt 20 76
+            rm -f /tmp/search_results.txt
+        else
+            dialog --msgbox "No matches found for: $pattern" 6 50
+        fi
+    fi
+    main_menu'.
+
+generate_action_impl(set_working_dir(_), _, Code) :- !,
+    Code = '    # Set working directory
+    if [ -n "$CURRENT_DIR" ]; then
+        WORKING_DIR="$CURRENT_DIR"
+        dialog --msgbox "Working directory set to:\\n$WORKING_DIR" 8 50
+    fi
+    main_menu'.
+
+% Fallback for unknown actions
+generate_action_impl(OnClick, Label, Code) :-
+    format(atom(Code), '    # ~w
+    dialog --msgbox "~w\\nAction: ~w" 8 50
+    main_menu', [OnClick, Label, OnClick]).
+
+%! sanitize_shell_string(+Input, -Output) is det
+%  Remove or escape characters that cause issues in shell strings.
+sanitize_shell_string(Input, Output) :-
+    atom_string(Input, Str),
+    % Remove internal double quotes
+    string_replace(Str, "\"", "", Str1),
+    % Remove internal single quotes
+    string_replace(Str1, "'", "", Str2),
+    atom_string(Output, Str2).
+
+%! string_replace(+String, +Search, +Replace, -Result) is det
+%  Replace all occurrences of Search with Replace in String.
+string_replace(String, Search, Replace, Result) :-
+    split_string(String, Search, "", Parts),
+    atomics_to_string(Parts, Replace, Result).
+
+% Dialog node generation - tabs become menu items
+generate_dialog_node(layout(tabs, _Opts, Tabs), Code) :- !,
+    generate_dialog_menu_from_tabs(Tabs, MenuItems, Functions),
+    format(atom(Code), '# Main menu function
+main_menu() {
+    dialog --clear --title "Menu" \\
+        --menu "Select an option:" 15 50 ~w \\
+~w        2>"$TEMP"
+
+    choice=$(<"$TEMP")
+    case $choice in
+~w        *) exit 0 ;;
+    esac
+}
+
+~w', [Tabs, MenuItems, Functions, Functions]).
+
+% Fallback - generate menu from any layout with children
+generate_dialog_node(layout(_Type, _Opts, Children), Code) :- !,
+    length(Children, N),
+    generate_dialog_menu_items(Children, 1, MenuItems, CaseItems, Functions),
+    format(atom(Code), '# Main menu function
+main_menu() {
+    dialog --clear --title "Menu" \\
+        --menu "Select an option:" 15 50 ~w \\
+~w        2>"$TEMP"
+
+    choice=$(<"$TEMP")
+    case $choice in
+~w        *) exit 0 ;;
+    esac
+}
+
+~w', [N, MenuItems, CaseItems, Functions]).
+
+generate_dialog_node(container(panel, Opts, Content), Code) :- !,
+    get_option(title, Opts, Title, 'Panel'),
+    generate_dialog_node(Content, ContentCode),
+    format(atom(Code), '# Panel: ~w
+~w', [Title, ContentCode]).
+
+generate_dialog_node(component(button, Opts), Code) :- !,
+    get_option(label, Opts, Label, 'Button'),
+    get_option(on_click, Opts, OnClick, noop),
+    format(atom(Code), '# Button: ~w -> ~w~n', [Label, OnClick]).
+
+generate_dialog_node(component(text_input, Opts), Code) :- !,
+    get_option(label, Opts, Label, 'Input'),
+    get_option(bind, Opts, Bind, 'input'),
+    var_to_shell_name(Bind, ShellBind),
+    format(atom(Code), '    dialog --inputbox "~w:" 8 50 2>"$TEMP"
+    STATE[~w]=$(<"$TEMP")
+', [Label, ShellBind]).
+
+generate_dialog_node(component(select, Opts), Code) :- !,
+    get_option(label, Opts, Label, 'Select'),
+    get_option(options, Opts, Options, []),
+    get_option(bind, Opts, Bind, 'choice'),
+    var_to_shell_name(Bind, ShellBind),
+    generate_dialog_select_items(Options, 1, SelectItems),
+    length(Options, N),
+    format(atom(Code), '    dialog --menu "~w:" 15 50 ~w \\
+~w        2>"$TEMP"
+    STATE[~w]=$(<"$TEMP")
+', [Label, N, SelectItems, ShellBind]).
+
+generate_dialog_node([], '') :- !.
+generate_dialog_node([H|T], Code) :- !,
+    generate_dialog_node(H, HCode),
+    generate_dialog_node(T, TCode),
+    atom_concat(HCode, TCode, Code).
+
+generate_dialog_node(_, '# Unsupported node\n').
+
+% Helper: generate menu items from children (legacy)
+generate_dialog_menu_items([], _, '', '', '') :- !.
+generate_dialog_menu_items([Child|Rest], N, MenuItems, CaseItems, Functions) :-
+    N1 is N + 1,
+    get_child_label(Child, Label),
+    get_child_action(Child, Action),
+    format(atom(MenuItem), '        ~w "~w" \\~n', [N, Label]),
+    format(atom(CaseItem), '        ~w) ~w ;;~n', [N, Action]),
+    format(atom(Function), '~w() {~n    dialog --msgbox "~w selected" 6 40~n    main_menu~n}~n~n', [Action, Label]),
+    generate_dialog_menu_items(Rest, N1, RestMenu, RestCase, RestFuncs),
+    atom_concat(MenuItem, RestMenu, MenuItems),
+    atom_concat(CaseItem, RestCase, CaseItems),
+    atom_concat(Function, RestFuncs, Functions).
+
+get_child_label(component(button, Opts), Label) :- extract_button_label(Opts, Label), !.
+get_child_label(component(_, Opts), Label) :- get_option(label, Opts, Label, 'Item'), !.
+get_child_label(container(_, Opts, _), Label) :- get_option(title, Opts, Label, 'Item'), !.
+get_child_label(layout(_, _, _), 'Section') :- !.
+get_child_label(when(_, _), 'Conditional') :- !.
+get_child_label(_, 'Item').
+
+get_child_action(component(button, Opts), Action) :- get_option(on_click, Opts, Action, do_action), !.
+get_child_action(_, do_action).
+
+% Helper: generate select options
+generate_dialog_select_items([], _, '') :- !.
+generate_dialog_select_items([option(Val, Label)|Rest], N, Items) :-
+    N1 is N + 1,
+    format(atom(Item), '        ~w "~w" \\~n', [Val, Label]),
+    generate_dialog_select_items(Rest, N1, RestItems),
+    atom_concat(Item, RestItems, Items).
+generate_dialog_select_items([_|Rest], N, Items) :-
+    generate_dialog_select_items(Rest, N, Items).
 
 % ============================================================================
 % NODE GENERATION
