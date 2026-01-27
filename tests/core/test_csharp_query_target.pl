@@ -40,6 +40,7 @@
 :- dynamic user:test_sale_item_alice_laptop/1.
 :- dynamic user:test_sale_item_alice_laptop_via_constraints/1.
 :- dynamic user:test_sale_item_param/3.
+:- dynamic user:test_sale_item_param_tag/4.
 :- dynamic user:test_bothscan_left/3.
 :- dynamic user:test_bothscan_right/3.
 :- dynamic user:test_bothscan_join/4.
@@ -194,6 +195,7 @@ test_csharp_query_target :-
         verify_stratified_negation_mutual_lower_stratum_runtime,
         verify_parameterized_multi_key_join_runtime,
         verify_parameterized_multi_key_join_strategy_partial_index,
+        verify_param_seed_filtered_probe_uses_scan_index_partial,
         verify_multi_key_both_scan_join_strategy_partial_index,
         verify_both_scan_join_selective_probe_uses_partial_index,
         verify_hash_build_prefers_smaller_non_scan_side,
@@ -313,6 +315,10 @@ setup_test_data :-
         Product = laptop
     )),
     assertz(user:(test_sale_item_param(Customer, Product, Amount) :-
+        test_sale_item(Customer, Product, Amount)
+    )),
+    assertz(user:(test_sale_item_param_tag(Customer, Product, Tag, Amount) :-
+        Tag = foo,
         test_sale_item(Customer, Product, Amount)
     )),
     assertz(user:test_bothscan_left(alice, laptop, 1)),
@@ -471,6 +477,7 @@ setup_test_data :-
     assertz(user:mode(test_any_mode(?, -))),
     assertz(user:test_any_mode(alice, bob)),
     assertz(user:mode(test_sale_item_param(+, +, -))),
+    assertz(user:mode(test_sale_item_param_tag(+, +, +, -))),
     assertz(user:mode(test_group_reach_param(+, +, -))),
     assertz(user:test_group_reach_param(alice, laptop, 0)),
     assertz(user:test_group_reach_param(bob, phone, 0)),
@@ -693,6 +700,7 @@ cleanup_test_data :-
     retractall(user:test_sale_item_alice_laptop(_)),
     retractall(user:test_sale_item_alice_laptop_via_constraints(_)),
     retractall(user:test_sale_item_param(_, _, _)),
+    retractall(user:test_sale_item_param_tag(_, _, _, _)),
     retractall(user:test_bothscan_left(_, _, _)),
     retractall(user:test_bothscan_right(_, _, _)),
     retractall(user:test_bothscan_join(_, _, _, _)),
@@ -740,6 +748,7 @@ cleanup_test_data :-
     retractall(user:test_any_mode(_, _)),
     retractall(user:mode(test_any_mode(_, _))),
     retractall(user:mode(test_sale_item_param(_, _, _))),
+    retractall(user:mode(test_sale_item_param_tag(_, _, _, _))),
     retractall(user:mode(test_tiny_probe_param(_, _))),
     retractall(user:test_group_step(_, _, _, _)),
     retractall(user:test_group_reach_param(_, _, _)),
@@ -1501,6 +1510,28 @@ verify_parameterized_multi_key_join_strategy_partial_index :-
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,laptop,10', 'alice,laptop,2', 'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
         [[alice, laptop]],
+        HarnessSource).
+
+verify_param_seed_filtered_probe_uses_scan_index_partial :-
+    csharp_query_target:build_query_plan(test_sale_item_param_tag/4, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(param_seed{type:param_seed, predicate:predicate{name:test_sale_item_param_tag, arity:4}, input_positions:[0, 1, 2], width:4}, Root),
+    sub_term(selection{type:selection, input:param_seed{type:param_seed, predicate:predicate{name:test_sale_item_param_tag, arity:4}, input_positions:[0, 1, 2], width:4}, predicate:_, width:_}, Root),
+    sub_term(join{type:join, left:_, right:_, left_keys:[0, 1], right_keys:[0, 1], left_width:_, right_width:_, width:_}, Root),
+    findall([Customer, Product, bar],
+        (   between(1, 65, I),
+            format(atom(Customer), 'c~w', [I]),
+            format(atom(Product), 'p~w', [I])
+        ),
+        NoiseParams),
+    Params = [[alice, laptop, foo] | NoiseParams],
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, Params, 'KeyJoinScanIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,laptop,foo,10',
+         'alice,laptop,foo,2',
+         'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        Params,
         HarnessSource).
 
 verify_multi_key_both_scan_join_strategy_partial_index :-
