@@ -338,7 +338,7 @@ def format_candidates(candidates: List[Candidate], json_output: bool = False) ->
 
 def build_merged_tree(candidates: List[Candidate], data: List[dict]) -> 'TreeNode':
     """Build a merged tree from candidates with full paths."""
-    
+
     class TreeNode:
         def __init__(self, name):
             self.name = name
@@ -346,21 +346,28 @@ def build_merged_tree(candidates: List[Candidate], data: List[dict]) -> 'TreeNod
             self.is_result = False
             self.score = 0.0
             self.rank = 0
-    
+
     root = TreeNode('ROOT')
-    
+
+    # Build tree_id -> data index mapping for efficient lookup
+    # Note: dataset_index is model's internal index, NOT the JSONL index
+    tree_id_to_data_idx = {}
+    for i, d in enumerate(data):
+        tid = d.get('tree_id', '')
+        if tid:
+            tree_id_to_data_idx[tid] = i
+        # Also index by URI suffix for fallback
+        uri = d.get('uri', '')
+        if uri:
+            # Extract tree_id from URI like "pearltrees://12345"
+            uri_id = uri.split('/')[-1] if '/' in uri else uri.replace('pearltrees://', '')
+            if uri_id and uri_id not in tree_id_to_data_idx:
+                tree_id_to_data_idx[uri_id] = i
+
     for c in candidates:
-        # Find the data entry by dataset_index if available
-        idx = None
-        if c.dataset_index >= 0 and c.dataset_index < len(data):
-            idx = c.dataset_index
-        else:
-            # Fallback matching
-            for i, d in enumerate(data):
-                if d.get('tree_id') == c.tree_id or d.get('uri', '').endswith(c.tree_id):
-                    idx = i
-                    break
-        
+        # Find the data entry by tree_id (NOT dataset_index, which is model-internal)
+        idx = tree_id_to_data_idx.get(c.tree_id)
+
         if idx is None:
             # Fallback: use title as single node
             if c.title not in root.children:
