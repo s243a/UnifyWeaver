@@ -23,6 +23,7 @@ These are similar to the issues found and fixed in the React generator.
 | Aspect | Details |
 |--------|---------|
 | **Setup** | Download Flutter SDK linux-arm64, add to PATH |
+| **Download** | ~700 MB (compressed), ~2 GB (extracted) |
 | **Pros** | Simplest setup, no proot overhead, direct filesystem access |
 | **Cons** | Some packages may have Termux-specific issues |
 | **Best for** | Flutter Web development/testing |
@@ -39,6 +40,7 @@ flutter config --enable-web
 | Aspect | Details |
 |--------|---------|
 | **Setup** | `proot-distro login debian`, install Flutter inside |
+| **Download** | ~400 MB (Debian base, if not installed) + ~700 MB (Flutter SDK) |
 | **Pros** | Standard Linux environment, better compatibility |
 | **Cons** | Proot overhead, filesystem path translation complexity |
 | **Best for** | If raw Termux has issues, or for Android APK builds |
@@ -48,6 +50,7 @@ flutter config --enable-web
 | Aspect | Details |
 |--------|---------|
 | **Setup** | [FlutterArch](https://github.com/bdloser404/FlutterArch) script installs Flutter in Arch proot |
+| **Download** | ~500 MB (Arch base) + ~700 MB (Flutter SDK) + extras |
 | **Pros** | Automated setup, includes Neovim config for Flutter dev |
 | **Cons** | Requires separate Arch proot install, script maintained by third party |
 | **Best for** | Users who prefer Arch, want turnkey Flutter setup |
@@ -57,6 +60,7 @@ flutter config --enable-web
 | Aspect | Details |
 |--------|---------|
 | **Setup** | Standard Flutter install on Windows or WSL |
+| **Download** | ~1 GB (Flutter SDK Windows) + ~1 GB (Android SDK cmdline tools) + ~2-5 GB (Android SDK components) |
 | **Pros** | Full Flutter support, Android Studio integration |
 | **Cons** | Can't develop on mobile, requires separate machine |
 | **Best for** | Final APK builds, comprehensive testing |
@@ -66,9 +70,20 @@ flutter config --enable-web
 | Aspect | Details |
 |--------|---------|
 | **Setup** | Flutter SDK + browser only |
+| **Download** | ~700 MB (Flutter SDK only, no Android SDK needed) |
 | **Pros** | No Android SDK needed, quick iteration |
 | **Cons** | Can't test mobile-specific features |
 | **Best for** | Generator validation, UI prototyping |
+
+### Download Size Summary
+
+| Option | Total Download | Disk Space |
+|--------|---------------|------------|
+| Raw Termux (Web) | ~700 MB | ~2 GB |
+| Proot Debian | ~1.1 GB | ~3 GB |
+| Proot Arch | ~1.2 GB+ | ~3.5 GB |
+| Windows/WSL (full) | ~4-7 GB | ~8-12 GB |
+| Web Only | ~700 MB | ~2 GB |
 
 ### Recommendation
 
