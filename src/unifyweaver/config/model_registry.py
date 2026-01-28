@@ -272,6 +272,10 @@ class ModelRegistry:
         if permissions:
             self._inference_settings['inference_permissions'] = permissions
 
+        # Parse auto_environment setting
+        if 'auto_environment' in data:
+            self._inference_settings['auto_environment'] = data['auto_environment']
+
     def _discover_local_models(self):
         """Auto-discover models not in registry."""
         models_dir = self.project_root / 'models'
@@ -1059,6 +1063,65 @@ class ModelRegistry:
         permissions = self._inference_settings.get('inference_permissions', {})
         return permissions.get(permission, False)
 
+    def is_auto_environment_enabled(self) -> bool:
+        """Check if auto-environment detection is enabled in config."""
+        return self._inference_settings.get('auto_environment', False)
+
+    def auto_reexec_if_needed(self, requires_numpy2: bool = True) -> bool:
+        """
+        Re-execute current script with compatible environment if needed.
+
+        Call this at the start of inference scripts to auto-switch environments.
+        Returns True if we're in the right environment, False if re-exec failed.
+        If re-exec succeeds, this function doesn't return (process is replaced).
+
+        Args:
+            requires_numpy2: Whether numpy 2.x is required (default True)
+
+        Returns:
+            True if current environment is compatible
+            False if re-exec was needed but failed
+
+        Example:
+            from unifyweaver.config.model_registry import ModelRegistry
+            registry = ModelRegistry()
+            if not registry.auto_reexec_if_needed():
+                sys.exit(1)  # Couldn't find compatible environment
+        """
+        # Check if auto_environment is enabled
+        if not self.is_auto_environment_enabled():
+            return True  # Disabled, assume current env is fine
+
+        # Check current numpy version
+        try:
+            import numpy as np
+            numpy_version = np.__version__
+            numpy_major = int(numpy_version.split('.')[0])
+            if requires_numpy2 and numpy_major >= 2:
+                return True  # Already have numpy 2.x
+            if not requires_numpy2:
+                return True  # No numpy requirement
+        except ImportError:
+            pass  # numpy not installed, need to switch
+
+        # Find compatible environment
+        env_name = self.find_compatible_environment(requires_numpy2=requires_numpy2)
+        if not env_name:
+            logger.warning("No compatible environment found for numpy 2.x")
+            return False
+
+        # Get Python path for that environment
+        python_path = self.get_python_for_environment(env_name)
+        if not python_path or not Path(python_path).exists():
+            logger.warning(f"Python not found for environment: {env_name}")
+            return False
+
+        # Re-exec with the correct Python
+        logger.info(f"Auto-switching to environment: {env_name}")
+        os.execv(str(python_path), [str(python_path)] + sys.argv)
+        # execv doesn't return if successful
+        return False  # Should never reach here
+
     def discover_environments(self, force: bool = False) -> List[Dict]:
         """
         Auto-discover virtual environments if permitted.
@@ -1808,6 +1871,43 @@ class ModelRegistry:
             model_name=model_name,
             interactive=interactive
         )
+
+
+def auto_environment(requires_numpy2: bool = True) -> bool:
+    """
+    Convenience function to auto-switch to compatible environment.
+
+    Call this at the very start of inference scripts (before importing numpy).
+    If the current environment is incompatible, this re-execs the script
+    with the correct Python and doesn't return.
+
+    Args:
+        requires_numpy2: Whether numpy 2.x is required (default True)
+
+    Returns:
+        True if current environment is compatible (or auto_environment disabled)
+        False if no compatible environment found
+
+    Example:
+        #!/usr/bin/env python3
+        # At the very top of your script, before other imports:
+        import sys
+        sys.path.insert(0, 'src')
+        from unifyweaver.config.model_registry import auto_environment
+        if not auto_environment():
+            print("Error: No compatible environment found", file=sys.stderr)
+            sys.exit(1)
+
+        # Now safe to import numpy and load models
+        import numpy as np
+        ...
+    """
+    try:
+        registry = ModelRegistry()
+        return registry.auto_reexec_if_needed(requires_numpy2=requires_numpy2)
+    except Exception as e:
+        logger.warning(f"auto_environment failed: {e}")
+        return True  # Assume current env is fine on error
 
 
 def main():

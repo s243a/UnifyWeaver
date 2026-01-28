@@ -1,8 +1,8 @@
 """UnifyWeaver configuration modules."""
 
-from .model_registry import ModelRegistry, ModelMetadata
+from .model_registry import ModelRegistry, ModelMetadata, auto_environment
 
-__all__ = ['ModelRegistry', 'ModelMetadata']
+__all__ = ['ModelRegistry', 'ModelMetadata', 'auto_environment']
 
 
 def load_knowledge_model(prefer_newer=None, prefer_federated=None, prefer_transformer=None):

@@ -88,6 +88,10 @@ inference_permissions:
   resolve_dependencies: true     # OK to match models to compatible envs
   auto_activate: false           # Don't auto-activate envs without asking
 
+# Auto-environment: automatically use correct Python for numpy 2.x models
+# When true, inference scripts re-exec with compatible environment
+auto_environment: true
+
 # =============================================================================
 # Task-to-Model Mappings
 # =============================================================================

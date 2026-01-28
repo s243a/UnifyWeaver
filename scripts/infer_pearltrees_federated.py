@@ -26,7 +26,20 @@ Usage:
         --json
 """
 
+# Auto-environment: switch to numpy 2.x compatible Python if needed
+# This must be before importing numpy. Set AUTO_ENV_DEBUG=1 for debug output.
 import sys
+import os
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_script_dir)
+sys.path.insert(0, os.path.join(_project_root, 'src'))
+try:
+    from unifyweaver.config.model_registry import auto_environment
+    if not auto_environment():
+        print("Warning: No compatible environment found for numpy 2.x", file=sys.stderr)
+except ImportError:
+    pass  # Registry not available, continue with current environment
+
 import json
 import pickle
 import logging
