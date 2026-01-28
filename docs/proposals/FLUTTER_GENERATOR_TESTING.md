@@ -18,81 +18,111 @@ These are similar to the issues found and fixed in the React generator.
 
 ## Test Environment Options
 
-### Option 1: Raw Termux (Recommended for Web)
+### Critical Limitation: Flutter SDK Architecture
 
-| Aspect | Details |
-|--------|---------|
-| **Setup** | Download Flutter SDK linux-arm64, add to PATH |
-| **Download** | ~700 MB (compressed), ~2 GB (extracted) |
-| **Pros** | Simplest setup, no proot overhead, direct filesystem access |
-| **Cons** | Some packages may have Termux-specific issues |
-| **Best for** | Flutter Web development/testing |
+**Flutter does not provide ARM64 Linux binaries.** The official Flutter SDK releases are x86_64 only for Linux. This significantly limits options for testing on ARM64 devices like Android phones running Termux.
 
-```bash
-curl -LO https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.27.4-stable.tar.xz
-tar xf flutter_linux_3.27.4-stable.tar.xz
-export PATH="$HOME/flutter/bin:$PATH"
-flutter config --enable-web
+| Platform | Architecture | Flutter SDK Available |
+|----------|--------------|----------------------|
+| Linux | x86_64 | ✅ Yes |
+| Linux | ARM64 | ❌ No official binaries |
+| Windows | x86_64 | ✅ Yes |
+| macOS | x86_64/ARM64 | ✅ Yes (universal) |
+
+### Android/Termux Limitations
+
+Testing revealed that **QEMU user-mode emulation does not work on non-rooted Android** due to OS-level sandboxing:
+
+```
+qemu-x86_64: unable to stat "/proc/self/exe": No such file or directory
+libc: failed to connect to tombstoned: No such file or directory
 ```
 
-### Option 2: Proot Debian
+**Why this happens:**
+- Android restricts `/proc/self/exe` access for security
+- The `tombstoned` crash handler is not accessible from Termux
+- QEMU user-mode relies on Linux kernel features that Android sandboxes
+
+**Rooted devices** may not have these limitations, as root access can bypass Android's sandboxing. However, this is untested.
+
+**Compiling Flutter from source** on ARM64 Android is theoretically possible but impractical:
+- Requires building the Dart SDK first (complex C++ build)
+- Flutter engine requires Ninja, GN, and extensive toolchain
+- Build time would be measured in hours on mobile hardware
+- Storage requirements exceed what most devices have available
+
+### Option 1: Dart-Only Validation (Termux)
 
 | Aspect | Details |
 |--------|---------|
-| **Setup** | `proot-distro login debian`, install Flutter inside |
-| **Download** | ~400 MB (Debian base, if not installed) + ~700 MB (Flutter SDK) |
-| **Pros** | Standard Linux environment, better compatibility |
-| **Cons** | Proot overhead, filesystem path translation complexity |
-| **Best for** | If raw Termux has issues, or for Android APK builds |
+| **Setup** | `pkg install dart` |
+| **Download** | ~85 MB |
+| **What works** | Syntax validation, basic static analysis |
+| **What doesn't** | Flutter-specific widgets, full analyzer, builds |
+| **Best for** | Quick syntax checks during development |
 
-### Option 3: Proot Arch (FlutterArch)
+```bash
+pkg install dart
+cd examples/flutter-cli
+dart analyze lib/  # Will show Flutter import errors but catches syntax issues
+```
 
-| Aspect | Details |
-|--------|---------|
-| **Setup** | [FlutterArch](https://github.com/bdloser404/FlutterArch) script installs Flutter in Arch proot |
-| **Download** | ~500 MB (Arch base) + ~700 MB (Flutter SDK) + extras |
-| **Pros** | Automated setup, includes Neovim config for Flutter dev |
-| **Cons** | Requires separate Arch proot install, script maintained by third party |
-| **Best for** | Users who prefer Arch, want turnkey Flutter setup |
-
-### Option 4: Windows/WSL (Desktop)
+### Option 2: Windows/WSL (Recommended)
 
 | Aspect | Details |
 |--------|---------|
 | **Setup** | Standard Flutter install on Windows or WSL |
 | **Download** | ~1 GB (Flutter SDK Windows) + ~1 GB (Android SDK cmdline tools) + ~2-5 GB (Android SDK components) |
 | **Pros** | Full Flutter support, Android Studio integration |
-| **Cons** | Can't develop on mobile, requires separate machine |
-| **Best for** | Final APK builds, comprehensive testing |
+| **Cons** | Requires separate machine |
+| **Best for** | Full testing, APK builds, comprehensive validation |
 
-### Option 5: Flutter Web Only (Minimal)
+### Option 3: GitHub Actions CI
 
 | Aspect | Details |
 |--------|---------|
-| **Setup** | Flutter SDK + browser only |
-| **Download** | ~700 MB (Flutter SDK only, no Android SDK needed) |
-| **Pros** | No Android SDK needed, quick iteration |
-| **Cons** | Can't test mobile-specific features |
-| **Best for** | Generator validation, UI prototyping |
+| **Setup** | Add workflow file to repository |
+| **Download** | None (runs in cloud) |
+| **Pros** | Automated, no local setup required |
+| **Cons** | Slower feedback loop, requires push to test |
+| **Best for** | Automated validation on every PR |
+
+### Option 4: Proot with x86_64 (Non-rooted - Does NOT Work)
+
+Attempted but failed due to Android sandboxing:
+
+```bash
+# This does NOT work on non-rooted Android
+pkg install proot-distro qemu-user-x86-64
+proot -q qemu-x86_64 -r /path/to/x86_64/rootfs /bin/sh
+# Error: unable to stat "/proc/self/exe"
+```
+
+### Option 5: Rooted Device (Untested)
+
+Rooted devices with proper Linux compatibility layers (e.g., Linux Deploy, chroot environments) may be able to:
+- Run QEMU user-mode emulation properly
+- Or run a full x86_64 Linux VM with KVM (if hardware supports it)
+
+This is untested and not recommended for most users.
 
 ### Download Size Summary
 
-| Option | Total Download | Disk Space |
-|--------|---------------|------------|
-| Raw Termux (Web) | ~700 MB | ~2 GB |
-| Proot Debian | ~1.1 GB | ~3 GB |
-| Proot Arch | ~1.2 GB+ | ~3.5 GB |
-| Windows/WSL (full) | ~4-7 GB | ~8-12 GB |
-| Web Only | ~700 MB | ~2 GB |
+| Option | Total Download | Disk Space | Works on Termux |
+|--------|---------------|------------|-----------------|
+| Dart-only | ~85 MB | ~400 MB | ✅ Yes |
+| Windows/WSL | ~4-7 GB | ~8-12 GB | N/A |
+| GitHub Actions | 0 | 0 | N/A |
+| Proot + QEMU | ~1.1 GB | ~3 GB | ❌ No (sandboxing) |
 
 ### Recommendation
 
-**Start with Option 1 (Raw Termux) + Option 5 (Web only)**. This provides:
-- Fastest iteration cycle
-- Minimal setup friction
-- Sufficient coverage for generator validation
+**For Termux/Android development:**
+1. Use **Dart-only validation** for quick syntax checks
+2. Push to **GitHub Actions** for full Flutter analysis
+3. Use **Windows/WSL** for comprehensive testing and builds
 
-Fall back to Option 2 (Debian) or Option 3 (Arch) if raw Termux has compatibility issues. Use Option 4 (Windows/WSL) for final Android builds.
+**Do not attempt** proot + QEMU on non-rooted Android - it will fail due to OS sandboxing.
 
 ## Philosophy: Why Flutter Web is Sufficient for Development
 
