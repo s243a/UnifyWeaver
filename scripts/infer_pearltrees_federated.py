@@ -446,8 +446,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
-    parser.add_argument("--model", type=Path, required=True,
+    # Model selection - can use --model (path) or --infer (name from registry)
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument("--model", type=Path, default=None,
                        help="Path to model .pkl file")
+    model_group.add_argument("--infer", type=str, metavar="MODEL_NAME", default=None,
+                       help="Model name from registry (e.g., pearltrees_federated_nomic)")
+    parser.add_argument("--task", type=str, default="bookmark_filing",
+                       help="Task for default model lookup (default: bookmark_filing)")
     parser.add_argument("--query", type=str, default=None,
                        help="Query to search for")
     parser.add_argument("--top-k", type=int, default=5,
@@ -462,19 +468,80 @@ def main():
                        help="Output results as merged hierarchical tree")
     parser.add_argument("--data", type=Path, default=None,
                        help="Path to original JSONL data (for --tree mode)")
-    parser.add_argument("--embedder", type=str, default="nomic-ai/nomic-embed-text-v1.5",
-                       help="Embedding model to use")
+    parser.add_argument("--embedder", type=str, default=None,
+                       help="Embedding model to use (default: from registry or nomic)")
     parser.add_argument("--account", type=str, default=None,
                        help="Filter results to this account only (e.g., s243a, s243a_groups)")
 
     args = parser.parse_args()
+
+    # Resolve model path from registry if needed
+    model_path = args.model
+    embedder = args.embedder
+
+    if args.infer or not model_path:
+        # Use registry to resolve model
+        try:
+            from unifyweaver.config.model_registry import ModelRegistry
+            registry = ModelRegistry()
+
+            if args.infer:
+                # Lookup by model name
+                model_path = registry.get_model_path(args.infer)
+                if not model_path:
+                    print(f"Error: Model '{args.infer}' not found in registry", file=sys.stderr)
+                    sys.exit(1)
+                # Get embedder from model metadata
+                model_meta = registry.get_model(args.infer)
+                if model_meta and model_meta.embedding_model and not embedder:
+                    embedder = model_meta.embedding_model
+                    if not embedder.startswith(('/', '~')):
+                        # Convert short name to HuggingFace path if needed
+                        hf_map = {
+                            'nomic-embed-text-v1.5': 'nomic-ai/nomic-embed-text-v1.5',
+                            'all-MiniLM-L6-v2': 'sentence-transformers/all-MiniLM-L6-v2',
+                            'bge-small-en-v1.5': 'BAAI/bge-small-en-v1.5',
+                        }
+                        embedder = hf_map.get(embedder, embedder)
+            else:
+                # Use default model for task
+                task_models = registry.get_for_task(args.task)
+                if 'projection' in task_models:
+                    model_meta = task_models['projection']
+                    model_name = model_meta.name if hasattr(model_meta, 'name') else str(model_meta)
+                    model_path = registry.get_model_path(model_name)
+                    if not model_path:
+                        print(f"Error: Default model '{model_name}' for task '{args.task}' not found", file=sys.stderr)
+                        sys.exit(1)
+                    logger.info(f"Using default model for {args.task}: {model_name}")
+                    # Get embedder from model metadata
+                    if model_meta.embedding_model and not embedder:
+                        embedder = model_meta.embedding_model
+                        hf_map = {
+                            'nomic-embed-text-v1.5': 'nomic-ai/nomic-embed-text-v1.5',
+                            'all-MiniLM-L6-v2': 'sentence-transformers/all-MiniLM-L6-v2',
+                            'bge-small-en-v1.5': 'BAAI/bge-small-en-v1.5',
+                        }
+                        embedder = hf_map.get(embedder, embedder)
+                else:
+                    print(f"Error: No projection model configured for task '{args.task}'", file=sys.stderr)
+                    print("Use --model to specify a model path, or --infer to specify a model name", file=sys.stderr)
+                    sys.exit(1)
+        except ImportError:
+            print("Error: Model registry not available and --model not specified", file=sys.stderr)
+            print("Either install unifyweaver or provide --model PATH", file=sys.stderr)
+            sys.exit(1)
+
+    # Default embedder if still not set
+    if not embedder:
+        embedder = "nomic-ai/nomic-embed-text-v1.5"
 
     # Determine data path - prefer: CLI arg > model metadata > default
     if args.data:
         data_path = args.data
     else:
         # Check if model has stored data_path
-        with open(args.model, "rb") as f:
+        with open(model_path, "rb") as f:
             meta = pickle.load(f)
         stored_path = meta.get("data_path")
         if stored_path and Path(stored_path).exists():
@@ -484,7 +551,7 @@ def main():
             data_path = Path("reports/pearltrees_targets_full_multi_account.jsonl")
 
     # Load engine (pass data_path for account lookup)
-    engine = FederatedInferenceEngine(args.model, args.embedder, data_path=data_path)
+    engine = FederatedInferenceEngine(model_path, embedder, data_path=data_path)
 
     # Load data if tree mode requested
     data = None
