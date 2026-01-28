@@ -199,6 +199,7 @@ test_csharp_query_target :-
         verify_multi_key_both_scan_join_strategy_partial_index,
         verify_both_scan_join_selective_probe_uses_partial_index,
         verify_hash_build_prefers_smaller_non_scan_side,
+        verify_hash_build_rowcount_tie_uses_cost_tie_breaker,
         verify_both_scan_join_prefers_cached_fact_index,
         verify_multi_constant_pattern_scan_prefers_fact_index,
         verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
@@ -1629,6 +1630,67 @@ verify_hash_build_prefers_smaller_non_scan_side :-
         ['k1',
          'k2',
          'STRATEGY_USED:KeyJoinHashBuildLeft=true'],
+        [],
+        HarnessSource).
+
+verify_hash_build_rowcount_tie_uses_cost_tie_breaker :-
+    Plan = plan{
+        head:predicate{name:test_hash_build_rowcount_tie_break, arity:1},
+        root:projection{
+            type:projection,
+            input:join{
+                type:join,
+                left:aggregate{
+                    type:aggregate,
+                    input:relation_scan{
+                        type:relation_scan,
+                        predicate:predicate{name:test_hashbuild_tie_left, arity:1},
+                        width:1
+                    },
+                    predicate:predicate{name:test_hashbuild_tie_data, arity:2},
+                    op:count,
+                    args:[operand{kind:column, index:0}, operand{kind:wildcard}],
+                    group_indices:[],
+                    value_index: -1,
+                    width:2
+                },
+                right:aggregate{
+                    type:aggregate,
+                    input:relation_scan{
+                        type:relation_scan,
+                        predicate:predicate{name:test_hashbuild_tie_right, arity:1},
+                        width:1
+                    },
+                    predicate:predicate{name:test_hashbuild_tie_data, arity:2},
+                    op:count,
+                    args:[operand{kind:column, index:0}, operand{kind:wildcard}],
+                    group_indices:[],
+                    value_index: -1,
+                    width:2
+                },
+                left_keys:[0],
+                right_keys:[0],
+                left_width:2,
+                right_width:2,
+                width:4
+            },
+            columns:[0],
+            width:1
+        },
+        is_recursive:false,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_hashbuild_tie_left, arity:1}, facts:[[k1], [k2]]},
+            relation{predicate:predicate{name:test_hashbuild_tie_right, arity:1}, facts:[[k1], [k2]]},
+            relation{predicate:predicate{name:test_hashbuild_tie_data, arity:2}, facts:[[k1, v1], [k2, v2]]}
+        ]
+    },
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinHashBuildRight', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['k1',
+         'k2',
+         'STRATEGY_USED:KeyJoinHashBuildRight=true'],
         [],
         HarnessSource).
 
