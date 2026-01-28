@@ -92,6 +92,7 @@ projection_models:
     type: federated
     description: "Single-account Pearltrees model (s243a only)"
     embedding_model: nomic-embed-text-v1.5
+    scope: single_account
     source:
       local: "models/pearltrees_federated_single.pkl"
     training:
@@ -102,6 +103,148 @@ projection_models:
         cluster_criterion: effective_rank
     accounts:
       - s243a
+
+  # ---------------------------------------------------------------------------
+  # Alternative Embedding Models (MiniLM, BGE)
+  # ---------------------------------------------------------------------------
+  # These exist for comparison/fallback. Nomic is recommended for best quality.
+
+  pearltrees_federated_minilm:
+    type: federated
+    description: "Pearltrees with MiniLM (384 dims, smaller/faster)"
+    embedding_model: all-MiniLM-L6-v2
+    scope: multi_account
+    tags: [alternative, low_memory, onnx_compatible]
+    source:
+      local: "models/pearltrees_federated_minilm.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_full_multi_account.jsonl"
+      args:
+        cluster_method: embedding
+        model: "sentence-transformers/all-MiniLM-L6-v2"
+    notes: |
+      Use when memory is constrained or for C#/ONNX integration.
+      Lower quality than Nomic but half the dimensions (384 vs 768).
+
+  pearltrees_federated_bge:
+    type: federated
+    description: "Pearltrees with BGE embeddings (384 dims)"
+    embedding_model: bge-small-en-v1.5
+    scope: multi_account
+    tags: [alternative]
+    source:
+      local: "models/pearltrees_federated_bge.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_full_multi_account.jsonl"
+      args:
+        cluster_method: embedding
+        model: "BAAI/bge-small-en-v1.5"
+    notes: |
+      Alternative to Nomic using BGE embeddings.
+      Nomic generally performs better for asymmetric search.
+
+  # ---------------------------------------------------------------------------
+  # Account-Specific Models
+  # ---------------------------------------------------------------------------
+
+  pearltrees_federated_s243a:
+    type: federated
+    description: "s243a account Pearltrees (personal bookmarks)"
+    embedding_model: nomic-embed-text-v1.5
+    scope: single_account
+    tags: [account_specific]
+    source:
+      local: "models/pearltrees_federated_s243a.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_s243a.jsonl"
+      args:
+        cluster_method: embedding
+        cluster_criterion: effective_rank
+    accounts:
+      - s243a
+
+  pearltrees_federated_s243a_groups:
+    type: federated
+    description: "s243a groups/teams Pearltrees"
+    embedding_model: nomic-embed-text-v1.5
+    scope: single_account
+    tags: [account_specific]
+    source:
+      local: "models/pearltrees_federated_s243a_groups.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_s243a_groups.jsonl"
+      args:
+        cluster_method: embedding
+        cluster_criterion: effective_rank
+    accounts:
+      - s243a_groups
+
+  # ---------------------------------------------------------------------------
+  # Domain-Specific Models
+  # ---------------------------------------------------------------------------
+
+  pearltrees_physics_pearls:
+    type: federated
+    description: "Physics domain subset"
+    embedding_model: nomic-embed-text-v1.5
+    scope: domain
+    domain: physics
+    tags: [domain_specific]
+    source:
+      local: "models/pearltrees_physics_pearls.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_physics.jsonl"
+
+  pearltrees_full_pearls:
+    type: federated
+    description: "Full pearls dataset (all items, not just trees)"
+    embedding_model: nomic-embed-text-v1.5
+    scope: multi_account
+    tags: [full_dataset]
+    source:
+      local: "models/pearltrees_full_pearls.pkl"
+    training:
+      script: "scripts/train_pearltrees_federated.py"
+      data: "reports/pearltrees_targets_full_pearls.jsonl"
+
+  # ---------------------------------------------------------------------------
+  # Holdout/Validation Models (for testing, not production)
+  # ---------------------------------------------------------------------------
+
+  holdout_federated_nomic:
+    type: federated
+    description: "Holdout validation set (Nomic) - for testing only"
+    embedding_model: nomic-embed-text-v1.5
+    scope: holdout
+    tags: [holdout, validation, experimental]
+    source:
+      local: "models/holdout_federated_nomic.pkl"
+    notes: "Used for model evaluation. Not for production use."
+
+  holdout_federated_minilm:
+    type: federated
+    description: "Holdout validation set (MiniLM) - for testing only"
+    embedding_model: all-MiniLM-L6-v2
+    scope: holdout
+    tags: [holdout, validation, experimental]
+    source:
+      local: "models/holdout_federated_minilm.pkl"
+    notes: "Used for model evaluation. Not for production use."
+
+  holdout_federated_bge:
+    type: federated
+    description: "Holdout validation set (BGE) - for testing only"
+    embedding_model: bge-small-en-v1.5
+    scope: holdout
+    tags: [holdout, validation, experimental]
+    source:
+      local: "models/holdout_federated_bge.pkl"
+    notes: "Used for model evaluation. Not for production use."
 
   skills_qa_federated:
     type: federated

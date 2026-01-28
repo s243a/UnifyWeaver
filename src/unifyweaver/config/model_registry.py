@@ -63,6 +63,10 @@ class ModelMetadata:
     recommended_for: List[str] = field(default_factory=list)
     accounts: List[str] = field(default_factory=list)
     notes: str = ""
+    # Filtering attributes
+    scope: str = ""  # multi_account, single_account, domain, holdout
+    tags: List[str] = field(default_factory=list)  # alternative, experimental, etc.
+    domain: str = ""  # physics, etc. for domain-specific models
 
     def get_path(self, search_paths: List[Path], project_root: Path) -> Optional[Path]:
         """Resolve model path from search paths."""
@@ -201,6 +205,9 @@ class ModelRegistry:
                         recommended_for=info.get('recommended_for', []),
                         accounts=info.get('accounts', []),
                         notes=info.get('notes', ''),
+                        scope=info.get('scope', ''),
+                        tags=info.get('tags', []),
+                        domain=info.get('domain', ''),
                     )
 
         # Parse task defaults
@@ -323,11 +330,59 @@ class ModelRegistry:
             return None
         return model.get_path(self._search_paths, self.project_root)
 
-    def list_models(self, model_type: Optional[str] = None) -> List[ModelMetadata]:
-        """List all registered models."""
+    def list_models(
+        self,
+        model_type: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+        scope: Optional[str] = None,
+        domain: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
+        available_only: bool = False,
+    ) -> List[ModelMetadata]:
+        """
+        List registered models with optional filtering.
+
+        Args:
+            model_type: Filter by type (embedding, federated, orthogonal_codebook)
+            embedding_model: Filter by underlying embedding model name
+            scope: Filter by scope (multi_account, single_account, domain, holdout)
+            domain: Filter by domain (physics, etc.)
+            tags: Include only models with ALL of these tags
+            exclude_tags: Exclude models with ANY of these tags
+            available_only: Only return models that are available (file exists)
+
+        Returns:
+            List of matching ModelMetadata objects
+        """
         models = list(self._registry.values())
+
         if model_type:
             models = [m for m in models if m.type == model_type]
+
+        if embedding_model:
+            # Match partial names (e.g., "minilm" matches "all-MiniLM-L6-v2")
+            embedding_lower = embedding_model.lower()
+            models = [m for m in models if m.embedding_model and
+                      embedding_lower in m.embedding_model.lower()]
+
+        if scope:
+            models = [m for m in models if m.scope == scope]
+
+        if domain:
+            models = [m for m in models if m.domain == domain]
+
+        if tags:
+            # Model must have ALL specified tags
+            models = [m for m in models if all(t in m.tags for t in tags)]
+
+        if exclude_tags:
+            # Exclude models with ANY of these tags
+            models = [m for m in models if not any(t in m.tags for t in exclude_tags)]
+
+        if available_only:
+            models = [m for m in models if self.check_model_available(m.name)]
+
         return models
 
     def get_training_command(self, name: str) -> Optional[str]:
@@ -1761,7 +1816,16 @@ def main():
 
     parser = argparse.ArgumentParser(description='UnifyWeaver Model Registry')
     parser.add_argument('--list', '-l', action='store_true', help='List all models')
-    parser.add_argument('--type', '-t', help='Filter by model type')
+    parser.add_argument('--type', '-t', help='Filter by model type (embedding, federated, orthogonal_codebook)')
+    parser.add_argument('--embedding', '-e', help='Filter by embedding model (e.g., nomic, minilm, bge)')
+    parser.add_argument('--scope', help='Filter by scope (multi_account, single_account, domain, holdout)')
+    parser.add_argument('--domain', help='Filter by domain (e.g., physics)')
+    parser.add_argument('--tag', action='append', dest='tags', help='Include models with this tag (can repeat)')
+    parser.add_argument('--exclude-tag', action='append', dest='exclude_tags',
+                        help='Exclude models with this tag (can repeat)')
+    parser.add_argument('--available', action='store_true', help='Only show available models')
+    parser.add_argument('--all', action='store_true',
+                        help='Show all models including holdout/experimental (default excludes these)')
     parser.add_argument('--task', help='Show models for a task')
     parser.add_argument('--training', '-T', help='Show training command for model')
     parser.add_argument('--path', '-p', help='Show resolved path for model')
@@ -1816,7 +1880,37 @@ def main():
     registry = ModelRegistry()
 
     if args.list:
-        models = registry.list_models(args.type)
+        # Build exclude_tags list - default excludes holdout/experimental unless --all
+        exclude_tags = args.exclude_tags or []
+        if not args.all:
+            exclude_tags.extend(['holdout', 'experimental', 'validation'])
+
+        models = registry.list_models(
+            model_type=args.type,
+            embedding_model=args.embedding,
+            scope=args.scope,
+            domain=args.domain,
+            tags=args.tags,
+            exclude_tags=exclude_tags if exclude_tags else None,
+            available_only=args.available,
+        )
+
+        if not models:
+            print("No models match the specified filters.")
+            sys.exit(0)
+
+        # Sort: Nomic models first, then by type, then by name
+        def sort_key(m):
+            # Nomic preferred (0), others later (1)
+            nomic_score = 0 if m.embedding_model and 'nomic' in m.embedding_model.lower() else 1
+            # Alternative/fallback models last
+            alt_score = 1 if 'alternative' in m.tags else 0
+            # Type order: embedding, federated, transformer
+            type_order = {'embedding': 0, 'federated': 1, 'orthogonal_codebook': 2}.get(m.type, 3)
+            return (nomic_score, alt_score, type_order, m.name)
+
+        models.sort(key=sort_key)
+
         for m in models:
             if registry.check_model_available(m.name):
                 available = "+"
@@ -1826,8 +1920,24 @@ def main():
                 available = "-"
             age = registry.get_model_age_days(m.name)
             age_str = f"{age:.1f}d" if age else "n/a"
-            desc = m.description[:40] if m.description else ""
-            print(f"[{available}] {m.name} ({m.type}, {age_str}): {desc}...")
+
+            # Build info string
+            info_parts = [m.type]
+            if m.embedding_model:
+                # Shorten embedding model name
+                emb_short = m.embedding_model.split('/')[-1][:12]
+                info_parts.append(emb_short)
+            if m.scope:
+                info_parts.append(m.scope)
+            if m.tags:
+                info_parts.append(','.join(m.tags[:2]))
+
+            info_str = ', '.join(info_parts)
+            desc = m.description[:35] if m.description else ""
+            print(f"[{available}] {m.name}")
+            print(f"      ({info_str}, {age_str})")
+            if desc:
+                print(f"      {desc}...")
 
     elif args.task:
         models = registry.get_for_task(args.task)

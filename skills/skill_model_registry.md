@@ -46,15 +46,23 @@ python3 -m unifyweaver.config.model_registry --mode-for bookmark_filing
 
 ## Commands
 
-### List All Models
+### List Models
 
 ```bash
+# List all production models (excludes holdout/experimental by default)
 python3 -m unifyweaver.config.model_registry --list
+
+# Include holdout/experimental models
+python3 -m unifyweaver.config.model_registry --list --all
+
+# Only available models (file exists)
+python3 -m unifyweaver.config.model_registry --list --available
 ```
 
-Output shows `[+]` for available models, `[-]` for missing.
+Output shows `[+]` for available models, `[H]` for HuggingFace (downloadable), `[-]` for missing.
+Models are sorted with Nomic-based models first (recommended).
 
-### List by Type
+### Filter by Type
 
 ```bash
 # Embedding models only
@@ -62,6 +70,48 @@ python3 -m unifyweaver.config.model_registry --list --type embedding
 
 # Projection models only
 python3 -m unifyweaver.config.model_registry --list --type federated
+
+# Transformer models (fast inference)
+python3 -m unifyweaver.config.model_registry --list --type orthogonal_codebook
+```
+
+### Filter by Embedding Model
+
+```bash
+# Show only MiniLM-based models (smaller, C#/ONNX compatible)
+python3 -m unifyweaver.config.model_registry --list --embedding minilm
+
+# Show only BGE-based models
+python3 -m unifyweaver.config.model_registry --list --embedding bge
+
+# Nomic is default/preferred, so these are shown first
+python3 -m unifyweaver.config.model_registry --list --embedding nomic
+```
+
+### Filter by Scope
+
+```bash
+# Multi-account models (all Pearltrees accounts)
+python3 -m unifyweaver.config.model_registry --list --scope multi_account
+
+# Single account models
+python3 -m unifyweaver.config.model_registry --list --scope single_account
+
+# Domain-specific models
+python3 -m unifyweaver.config.model_registry --list --scope domain
+```
+
+### Filter by Tags
+
+```bash
+# Show alternative/fallback models
+python3 -m unifyweaver.config.model_registry --list --tag alternative
+
+# Account-specific models
+python3 -m unifyweaver.config.model_registry --list --tag account_specific
+
+# Exclude specific tags
+python3 -m unifyweaver.config.model_registry --list --exclude-tag alternative
 ```
 
 ### Get Models for Task
