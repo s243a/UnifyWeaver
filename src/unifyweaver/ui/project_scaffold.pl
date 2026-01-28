@@ -1010,9 +1010,18 @@ export default App
 ', [JSX]).
 
 %! wrap_flutter_widget(+WidgetBody, -Widget) is det
-%  Wrap Flutter widget body in a complete StatefulWidget.
+%  Wrap Flutter widget body in a complete StatefulWidget with state and handlers.
 wrap_flutter_widget(WidgetBody, Widget) :-
     format(atom(Widget), 'import \'package:flutter/material.dart\';
+import \'dart:math\';
+
+// Helper function for formatting file sizes
+String formatSize(dynamic bytes) {
+  if (bytes == null || bytes == 0) return \'0 B\';
+  const sizes = [\'B\', \'KB\', \'MB\', \'GB\'];
+  final i = (bytes > 0) ? (log(bytes) / log(1024)).floor() : 0;
+  return \'\\${(bytes / pow(1024, i)).toStringAsFixed(1)} \\${sizes[i]}\';
+}
 
 class App extends StatefulWidget {
   const App({super.key});
@@ -1022,34 +1031,90 @@ class App extends StatefulWidget {
 }
 
 class _AppState extends State<App> {
-  // State
-  bool loading = false;
-  String error = \'\';
+  // Loading and error state
+  bool _loading = false;
+  String _error = \'\';
 
-  // Form state (add your bindings here)
-  final Map<String, dynamic> formData = {};
+  // Browse state
+  final Map<String, dynamic> _browse = {
+    \'path\': \'.\',
+    \'entries\': <Map<String, dynamic>>[
+      {\'name\': \'example.txt\', \'type\': \'file\', \'size\': 1024},
+      {\'name\': \'folder\', \'type\': \'directory\', \'size\': 0},
+    ],
+    \'selected\': null,
+    \'parent\': false,
+  };
 
-  // Controllers for text fields
-  final TextEditingController _textController = TextEditingController();
+  // Working directory
+  String _workingDir = \'.\';
+
+  // Controllers
+  final TextEditingController _pathController = TextEditingController();
 
   @override
   void dispose() {
-    _textController.dispose();
+    _pathController.dispose();
     super.dispose();
   }
 
-  // Event handlers
-  void handleSubmit() {
-    debugPrint(\'Submit clicked\');
+  // Navigation handlers
+  void navigateUp() {
+    setState(() {
+      final parts = (_browse[\'path\'] as String).split(\'/\');
+      if (parts.length > 1) {
+        parts.removeLast();
+        _browse[\'path\'] = parts.join(\'/\');
+        if (_browse[\'path\'].isEmpty) _browse[\'path\'] = \'.\';
+      }
+      _browse[\'parent\'] = _browse[\'path\'] != \'.\';
+    });
+    debugPrint(\'Navigate up to: \\${_browse[\"path\"]}\');
   }
 
-  void handleClick() {
-    debugPrint(\'Click handler\');
+  void handleEntryClick(Map<String, dynamic> entry) {
+    setState(() {
+      if (entry[\'type\'] == \'directory\') {
+        final currentPath = _browse[\'path\'] as String;
+        _browse[\'path\'] = currentPath == \'.\'
+            ? entry[\'name\']
+            : \'\\$currentPath/\\${entry[\"name\"]}\';
+        _browse[\'parent\'] = true;
+        _browse[\'selected\'] = null;
+      } else {
+        _browse[\'selected\'] = entry[\'name\'];
+      }
+    });
+  }
+
+  void setWorkingDir() {
+    setState(() {
+      _workingDir = _browse[\'path\'] as String;
+    });
+    debugPrint(\'Working dir set to: \\$_workingDir\');
+  }
+
+  void viewFile() {
+    final selected = _browse[\'selected\'];
+    if (selected != null) {
+      debugPrint(\'View file: \\$selected\');
+    }
+  }
+
+  void downloadFile() {
+    final selected = _browse[\'selected\'];
+    if (selected != null) {
+      debugPrint(\'Download file: \\$selected\');
+    }
+  }
+
+  void searchHere() {
+    debugPrint(\'Search in: \\${_browse[\"path\"]}\');
   }
 
   @override
   Widget build(BuildContext context) {
-    return ~w
+    return ~w;
   }
 }
 ', [WidgetBody]).
