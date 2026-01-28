@@ -87,14 +87,19 @@ generate_node(unless(Condition, Content), Indent, Options, Code) :- !,
     indent_string(Indent, IndentStr),
     format(atom(Code), '~wif (!(~w)) ~w', [IndentStr, DartCond, ContentCode]).
 
-% Foreach iteration
+% Foreach iteration - generates a Column wrapping mapped items
 generate_node(foreach(Items, Var, Template), Indent, Options, Code) :- !,
     items_to_dart(Items, DartItems),
-    NextIndent is Indent + 1,
-    generate_node(Template, NextIndent, Options, TemplateCode),
+    NextIndent is Indent + 2,
+    % Track loop variable so dotted_to_dart doesn't add underscore prefix
+    get_option(loop_vars, Options, ExistingLoopVars, []),
+    NewOptions = [loop_vars([Var|ExistingLoopVars])|Options],
+    generate_node(Template, NextIndent, NewOptions, TemplateCode),
     indent_string(Indent, IndentStr),
-    format(atom(Code), '~w...~w.map((~w) => ~w).toList(),~n',
-           [IndentStr, DartItems, Var, TemplateCode]).
+    indent_string(Indent + 1, NextIndentStr),
+    % Wrap in Column for proper widget tree structure
+    format(atom(Code), '~wColumn(~n~wchildren: ~w.map((~w) => ~w).toList(),~n~w),~n',
+           [IndentStr, NextIndentStr, DartItems, Var, TemplateCode, IndentStr]).
 
 % List of nodes
 generate_node([], _Indent, _Options, '') :- !.
@@ -325,7 +330,7 @@ generate_container(Type, _Options, Content, Indent, GenOpts, Code) :-
 %! generate_component(+Type, +Options, +Indent, +GenOpts, -Code) is det
 
 % Text component
-generate_component(text, Options, Indent, _GenOpts, Code) :- !,
+generate_component(text, Options, Indent, GenOpts, Code) :- !,
     get_option(content, Options, Content, ''),
     get_option(style, Options, Style, ''),
     get_option(size, Options, Size, 0),
@@ -335,20 +340,59 @@ generate_component(text, Options, Indent, _GenOpts, Code) :- !,
 
     build_text_style(Style, Size, Color, StyleCode),
 
-    (is_binding(Content) ->
-        binding_to_dart(Content, DartBinding),
+    % Handle different content types: binding, function call, or literal
+    content_to_dart(Content, GenOpts, DartContentRaw, IsLiteral),
+
+    % For dynamic values (map access), add .toString() for Text widget
+    (IsLiteral = false, needs_tostring(DartContentRaw) ->
+        format(atom(DartContent), '~w.toString()', [DartContentRaw])
+    ;
+        DartContent = DartContentRaw
+    ),
+
+    (IsLiteral = true ->
         (StyleCode \= '' ->
-            format(atom(Code), '~wText(~w, style: ~w),~n', [IndentStr, DartBinding, StyleCode])
+            format(atom(Code), '~wText("~w", style: ~w),~n', [IndentStr, DartContent, StyleCode])
         ;
-            format(atom(Code), '~wText(~w),~n', [IndentStr, DartBinding])
+            format(atom(Code), '~wText("~w"),~n', [IndentStr, DartContent])
         )
     ;
         (StyleCode \= '' ->
-            format(atom(Code), '~wText("~w", style: ~w),~n', [IndentStr, Content, StyleCode])
+            format(atom(Code), '~wText(~w, style: ~w),~n', [IndentStr, DartContent, StyleCode])
         ;
-            format(atom(Code), '~wText("~w"),~n', [IndentStr, Content])
+            format(atom(Code), '~wText(~w),~n', [IndentStr, DartContent])
         )
     ).
+
+%! needs_tostring(+DartExpr) is semidet
+%  Check if expression is a dynamic map access that needs .toString()
+needs_tostring(Expr) :-
+    atom(Expr),
+    sub_atom(Expr, _, _, _, '['),
+    \+ sub_atom(Expr, _, _, _, '(').  % Not already a function call
+
+%! content_to_dart(+Content, -DartContent, -IsLiteral) is det
+%  Convert content to Dart expression, indicating if it's a string literal.
+%  Backward compatible version without Options.
+content_to_dart(Content, DartContent, IsLiteral) :-
+    content_to_dart(Content, [], DartContent, IsLiteral).
+
+%! content_to_dart(+Content, +Options, -DartContent, -IsLiteral) is det
+%  Convert content to Dart expression with loop variable context.
+content_to_dart(var(X), Opts, DartX, false) :- !, dotted_to_dart(X, Opts, DartX).
+content_to_dart(bind(X), Opts, DartX, false) :- !, dotted_to_dart(X, Opts, DartX).
+content_to_dart(format_size(Arg), Opts, DartCode, false) :- !,
+    format_func_to_dart(format_size(Arg), Opts, DartCode).
+content_to_dart(Content, Opts, DartContent, false) :-
+    compound(Content),
+    Content =.. [Func|Args],
+    Func \= var, Func \= bind, !,
+    snake_to_camel(Func, CamelFunc),
+    maplist(arg_to_dart(Opts), Args, DartArgs),
+    atomic_list_concat(DartArgs, ', ', ArgsStr),
+    format(atom(DartContent), '~w(~w)', [CamelFunc, ArgsStr]).
+content_to_dart(Content, _, Content, true) :- atom(Content), !.
+content_to_dart(Content, _, Content, true).
 
 % Heading component
 generate_component(heading, Options, Indent, _GenOpts, Code) :- !,
@@ -384,14 +428,14 @@ generate_component(button, Options, Indent, _GenOpts, Code) :- !,
     indent_string(Indent, IndentStr),
     button_widget(Variant, ButtonWidget),
     label_to_flutter(Label, LabelCode),
+    onclick_to_dart(OnClick, DartOnClick),
 
-    (OnClick \= '' -> format(atom(OnPressedCode), 'onPressed: ~w', [OnClick]) ; OnPressedCode = 'onPressed: null'),
     (Disabled \= false ->
-        format(atom(Code), '~w~w(~n~w  ~w,~n~w  child: ~w,~n~w),~n',
-               [IndentStr, ButtonWidget, IndentStr, 'onPressed: null', IndentStr, LabelCode, IndentStr])
+        format(atom(Code), '~w~w(~n~w  onPressed: null,~n~w  child: ~w,~n~w),~n',
+               [IndentStr, ButtonWidget, IndentStr, IndentStr, LabelCode, IndentStr])
     ;
-        format(atom(Code), '~w~w(~n~w  ~w,~n~w  child: ~w,~n~w),~n',
-               [IndentStr, ButtonWidget, IndentStr, OnPressedCode, IndentStr, LabelCode, IndentStr])
+        format(atom(Code), '~w~w(~n~w  onPressed: ~w,~n~w  child: ~w,~n~w),~n',
+               [IndentStr, ButtonWidget, IndentStr, DartOnClick, IndentStr, LabelCode, IndentStr])
     ).
 
 % Icon button component
@@ -401,9 +445,10 @@ generate_component(icon_button, Options, Indent, _GenOpts, Code) :- !,
 
     indent_string(Indent, IndentStr),
     icon_to_flutter(Icon, FlutterIcon),
+    onclick_to_dart(OnClick, DartOnClick),
 
     format(atom(Code), '~wIconButton(~n~w  icon: Icon(~w),~n~w  onPressed: ~w,~n~w),~n',
-           [IndentStr, IndentStr, FlutterIcon, IndentStr, OnClick, IndentStr]).
+           [IndentStr, IndentStr, FlutterIcon, IndentStr, DartOnClick, IndentStr]).
 
 % Text input component
 generate_component(text_input, Options, Indent, _GenOpts, Code) :- !,
@@ -591,12 +636,18 @@ generate_component(icon, Options, Indent, _GenOpts, Code) :- !,
     format(atom(Code), '~wIcon(~w, size: ~w),~n', [IndentStr, FlutterIcon, Size]).
 
 % Code component
-generate_component(code, Options, Indent, _GenOpts, Code) :- !,
+generate_component(code, Options, Indent, GenOpts, Code) :- !,
     get_option(content, Options, Content, ''),
 
     indent_string(Indent, IndentStr),
     (is_binding(Content) ->
-        binding_to_dart(Content, DartContent),
+        binding_to_dart(Content, GenOpts, DartContentRaw),
+        % Add .toString() for dynamic map access
+        (needs_tostring(DartContentRaw) ->
+            format(atom(DartContent), '~w.toString()', [DartContentRaw])
+        ;
+            DartContent = DartContentRaw
+        ),
         format(atom(Code), '~wContainer(~n~w  padding: EdgeInsets.all(8),~n~w  decoration: BoxDecoration(~n~w    color: Color(0xFF1a1a2e),~n~w    borderRadius: BorderRadius.circular(3),~n~w  ),~n~w  child: Text(~w, style: TextStyle(fontFamily: "monospace")),~n~w),~n',
                [IndentStr, IndentStr, IndentStr, IndentStr, IndentStr, IndentStr, IndentStr, DartContent, IndentStr])
     ;
@@ -605,12 +656,18 @@ generate_component(code, Options, Indent, _GenOpts, Code) :- !,
     ).
 
 % Pre component
-generate_component(pre, Options, Indent, _GenOpts, Code) :- !,
+generate_component(pre, Options, Indent, GenOpts, Code) :- !,
     get_option(content, Options, Content, ''),
 
     indent_string(Indent, IndentStr),
     (is_binding(Content) ->
-        binding_to_dart(Content, DartContent),
+        binding_to_dart(Content, GenOpts, DartContentRaw),
+        % Add .toString() for dynamic map access
+        (needs_tostring(DartContentRaw) ->
+            format(atom(DartContent), '~w.toString()', [DartContentRaw])
+        ;
+            DartContent = DartContentRaw
+        ),
         format(atom(Code), '~wText(~w, style: TextStyle(fontFamily: "monospace")),~n', [IndentStr, DartContent])
     ;
         format(atom(Code), '~wText("~w", style: TextStyle(fontFamily: "monospace")),~n', [IndentStr, Content])
@@ -665,10 +722,33 @@ generate_component(Type, Options, Indent, _GenOpts, Code) :-
 % ============================================================================
 
 generate_conditional(Condition, Content, Indent, GenOpts, Code) :- !,
-    condition_to_dart(Condition, DartCond),
+    condition_to_dart(Condition, GenOpts, DartCondRaw),
+    % In Dart, dynamic values need explicit null check for truthiness
+    make_dart_truthy(DartCondRaw, DartCond),
     generate_node(Content, Indent, GenOpts, ContentCode),
     indent_string(Indent, IndentStr),
     format(atom(Code), '~wif (~w) ~w', [IndentStr, DartCond, ContentCode]).
+
+%! make_dart_truthy(+RawCond, -DartCond) is det
+%  Wrap simple variable/property access with != null for Dart truthiness.
+%  Don't wrap if it already contains comparison operators.
+make_dart_truthy(Cond, Result) :-
+    atom(Cond),
+    atom_string(Cond, CondStr),
+    % Don't add != null if already a boolean expression
+    (   (sub_string(CondStr, _, _, _, "==");
+         sub_string(CondStr, _, _, _, "!=");
+         sub_string(CondStr, _, _, _, "&&");
+         sub_string(CondStr, _, _, _, "||");
+         sub_string(CondStr, _, _, _, ".isEmpty");
+         sub_string(CondStr, _, _, _, ".isNotEmpty"))
+    ->  Result = Cond
+    ;   % Check if it's a map access or variable that needs null check
+        (   (sub_atom(Cond, _, _, _, '['); sub_atom(Cond, 0, 1, _, '_'))
+        ->  format(atom(Result), '~w != null', [Cond])
+        ;   Result = Cond
+        )
+    ).
 
 % ============================================================================
 % HELPER PREDICATES
@@ -822,47 +902,169 @@ is_binding(var(_)) :- !.
 is_binding(bind(_)) :- !.
 is_binding(Term) :- atom(Term), atom_codes(Term, [C|_]), C \= 34, C \= 39.
 
-binding_to_dart(var(X), X) :- !.
-binding_to_dart(bind(X), X) :- !.
-binding_to_dart(X, X) :- atom(X).
+% Binding conversion - with backward compatibility
+binding_to_dart(X, DartX) :- binding_to_dart(X, [], DartX).
 
-% Condition conversion for Dart
-condition_to_dart(var(X), X) :- !.
-condition_to_dart(Cond, Cond) :- atom(Cond), !.
-condition_to_dart(not(C), DartCond) :- !,
-    condition_to_dart(C, VC),
+binding_to_dart(var(X), Opts, DartX) :- !, dotted_to_dart(X, Opts, DartX).
+binding_to_dart(bind(X), Opts, DartX) :- !, dotted_to_dart(X, Opts, DartX).
+binding_to_dart(X, Opts, DartX) :- atom(X), !, dotted_to_dart(X, Opts, DartX).
+binding_to_dart(X, _, X).
+
+% Condition conversion for Dart - with backward compatibility
+condition_to_dart(Cond, DartCond) :- condition_to_dart(Cond, [], DartCond).
+
+condition_to_dart(var(X), Opts, DartX) :- !,
+    dotted_to_dart(X, Opts, DartX).
+condition_to_dart(Cond, Opts, DartCond) :- atom(Cond), !,
+    dotted_to_dart(Cond, Opts, DartCond).
+condition_to_dart(not(C), Opts, DartCond) :- !,
+    condition_to_dart(C, Opts, VC),
     format(atom(DartCond), '!~w', [VC]).
-condition_to_dart(and(A, B), DartCond) :- !,
-    condition_to_dart(A, VA),
-    condition_to_dart(B, VB),
+condition_to_dart(and(A, B), Opts, DartCond) :- !,
+    condition_to_dart(A, Opts, VA),
+    condition_to_dart(B, Opts, VB),
     format(atom(DartCond), '(~w && ~w)', [VA, VB]).
-condition_to_dart(or(A, B), DartCond) :- !,
-    condition_to_dart(A, VA),
-    condition_to_dart(B, VB),
+condition_to_dart(or(A, B), Opts, DartCond) :- !,
+    condition_to_dart(A, Opts, VA),
+    condition_to_dart(B, Opts, VB),
     format(atom(DartCond), '(~w || ~w)', [VA, VB]).
-condition_to_dart(eq(A, B), DartCond) :- !,
-    condition_to_dart(A, VA),
-    condition_to_dart(B, VB),
+condition_to_dart(eq(A, B), Opts, DartCond) :- !,
+    condition_to_dart(A, Opts, VA),
+    condition_to_dart(B, Opts, VB),
     format(atom(DartCond), '(~w == ~w)', [VA, VB]).
-condition_to_dart(not_eq(A, B), DartCond) :- !,
-    condition_to_dart(A, VA),
-    condition_to_dart(B, VB),
+condition_to_dart(not_eq(A, B), Opts, DartCond) :- !,
+    condition_to_dart(A, Opts, VA),
+    condition_to_dart(B, Opts, VB),
     format(atom(DartCond), '(~w != ~w)', [VA, VB]).
-condition_to_dart(empty(C), DartCond) :- !,
-    condition_to_dart(C, VC),
+condition_to_dart(empty(C), Opts, DartCond) :- !,
+    condition_to_dart(C, Opts, VC),
     format(atom(DartCond), '(~w == null || ~w.isEmpty)', [VC, VC]).
-condition_to_dart([H|T], DartCond) :- !,
-    condition_to_dart(H, VH),
-    condition_to_dart(T, VT),
+condition_to_dart([H|T], Opts, DartCond) :- !,
+    condition_to_dart(H, Opts, VH),
+    condition_to_dart(T, Opts, VT),
     format(atom(DartCond), '(~w && ~w)', [VH, VT]).
-condition_to_dart([], 'true') :- !.
-condition_to_dart(Term, Dart) :-
+condition_to_dart([], _, 'true') :- !.
+condition_to_dart(Term, _, Dart) :-
     term_to_atom(Term, Dart).
 
-items_to_dart(var(X), X) :- !.
+items_to_dart(var(X), DartX) :- !, dotted_to_dart(X, DartX).
 items_to_dart(Items, Items) :- atom(Items), !.
 items_to_dart(Items, DartItems) :- is_list(Items), !, term_to_atom(Items, DartItems).
 items_to_dart(Term, Dart) :- term_to_atom(Term, Dart).
+
+% ============================================================================
+% DART NAMING CONVENTIONS
+% ============================================================================
+
+%! snake_to_camel(+SnakeName, -CamelName) is det
+%  Convert snake_case to camelCase for Dart naming conventions.
+snake_to_camel(Name, CamelName) :-
+    atom_string(Name, NameStr),
+    split_string(NameStr, "_", "", Parts),
+    Parts = [First|Rest],
+    maplist(capitalize_first, Rest, CapRest),
+    append([First], CapRest, AllParts),
+    atomics_to_string(AllParts, CamelStr),
+    atom_string(CamelName, CamelStr).
+
+capitalize_first(Str, Cap) :-
+    string_chars(Str, [H|T]),
+    upcase_atom(H, HU),
+    atom_chars(HU, [HUC]),
+    string_chars(Cap, [HUC|T]).
+capitalize_first("", "").
+
+%! dotted_to_dart(+Name, -DartName) is det
+%  Convert dotted names like browse.path to Dart map access _browse['path']
+%  or to proper camelCase state variable access.
+%  For loop variables (entry, item, etc), no underscore prefix is added.
+dotted_to_dart(Name, DartName) :-
+    dotted_to_dart(Name, [], DartName).
+
+%! dotted_to_dart(+Name, +Options, -DartName) is det
+%  Convert with loop variable context.
+%  State variables get underscore prefix, loop variables don't.
+dotted_to_dart(Name, Options, DartName) :-
+    atom_string(Name, NameStr),
+    get_option(loop_vars, Options, LoopVars, []),
+    (   sub_string(NameStr, _, _, _, ".")
+    ->  split_string(NameStr, ".", "", Parts),
+        Parts = [Obj|Fields],
+        atom_string(ObjAtom, Obj),
+        (   member(ObjAtom, LoopVars)
+        ->  % Loop variable - no underscore prefix
+            foldl(add_field_access, Fields, Obj, DartName)
+        ;   % State variable - add underscore prefix
+            snake_to_camel_str(Obj, CamelObj),
+            format(string(DartStr), "_~w", [CamelObj]),
+            foldl(add_field_access, Fields, DartStr, DartName)
+        )
+    ;   atom_string(NameAtom, NameStr),
+        (   member(NameAtom, LoopVars)
+        ->  DartName = Name
+        ;   % State variable - add underscore prefix for Dart convention
+            snake_to_camel(Name, CamelName),
+            format(atom(DartName), '_~w', [CamelName])
+        )
+    ).
+
+snake_to_camel_str(Str, CamelStr) :-
+    atom_string(Atom, Str),
+    snake_to_camel(Atom, CamelAtom),
+    atom_string(CamelAtom, CamelStr).
+
+add_field_access(Field, Acc, Result) :-
+    format(atom(Result), "~w['~w']", [Acc, Field]).
+
+%! onclick_to_dart(+OnClick, -DartCode) is det
+%  Convert onclick handler to Dart function call syntax.
+onclick_to_dart('', 'null') :- !.
+onclick_to_dart(null, 'null') :- !.
+onclick_to_dart(navigate_up, '() => navigateUp()') :- !.
+onclick_to_dart(view_file, '() => viewFile()') :- !.
+onclick_to_dart(download_file, '() => downloadFile()') :- !.
+onclick_to_dart(search_here, '() => searchHere()') :- !.
+onclick_to_dart(set_working_dir, '() => setWorkingDir()') :- !.
+onclick_to_dart(handle_entry_click(var(Entry)), DartCode) :- !,
+    dotted_to_dart(Entry, DartEntry),
+    format(atom(DartCode), '() => handleEntryClick(~w)', [DartEntry]).
+onclick_to_dart(Term, DartCode) :-
+    compound(Term), !,
+    Term =.. [Name|Args],
+    snake_to_camel(Name, CamelName),
+    (   Args = []
+    ->  format(atom(DartCode), '() => ~w()', [CamelName])
+    ;   maplist(arg_to_dart, Args, DartArgs),
+        atomic_list_concat(DartArgs, ', ', ArgsStr),
+        format(atom(DartCode), '() => ~w(~w)', [CamelName, ArgsStr])
+    ).
+onclick_to_dart(Name, DartCode) :-
+    atom(Name), !,
+    snake_to_camel(Name, CamelName),
+    format(atom(DartCode), '() => ~w()', [CamelName]).
+
+% Backward compatible version
+arg_to_dart(X, Dart) :- arg_to_dart([], X, Dart).
+
+arg_to_dart(Opts, var(X), Dart) :- !, dotted_to_dart(X, Opts, Dart).
+arg_to_dart(Opts, bind(X), Dart) :- !, dotted_to_dart(X, Opts, Dart).
+arg_to_dart(_, X, X) :- atom(X), !.
+arg_to_dart(_, X, Dart) :- term_to_atom(X, Dart).
+
+%! format_func_to_dart(+FuncCall, -DartCode) is det
+%  Convert format functions like format_size(var(X)) to formatSize(x).
+%  Backward compatible version.
+format_func_to_dart(FuncCall, DartCode) :- format_func_to_dart(FuncCall, [], DartCode).
+
+format_func_to_dart(format_size(var(X)), Opts, DartCode) :- !,
+    dotted_to_dart(X, Opts, DartX),
+    format(atom(DartCode), 'formatSize(~w)', [DartX]).
+format_func_to_dart(format_size(bind(X)), Opts, DartCode) :- !,
+    dotted_to_dart(X, Opts, DartX),
+    format(atom(DartCode), 'formatSize(~w)', [DartX]).
+format_func_to_dart(format_size(X), _, DartCode) :- !,
+    format(atom(DartCode), 'formatSize(~w)', [X]).
+format_func_to_dart(X, _, X).
 
 % Dropdown items generator
 generate_dropdown_items([], '[]') :- !.

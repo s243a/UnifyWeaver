@@ -119,6 +119,8 @@ tmp/
 
 # Downloaded libraries (use setup scripts to install)
 lib/
+# Exception: Flutter project lib/ directories contain generated source code
+!examples/*/lib/
 
 # ONNX models (download locally, too large for git)
 models/
