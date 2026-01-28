@@ -177,6 +177,94 @@ For our HTTP CLI app, Chrome Android APIs cover everything we need:
 
 None of the native-only features apply to generator validation.
 
+## APK Installation Methods (Termux)
+
+When building Android APKs from Termux/proot, there are three ways to install:
+
+### Method 1: Shared Storage + File Manager
+
+```bash
+# Copy APK to Android's shared storage
+cp build/app/outputs/flutter-apk/app-release.apk /sdcard/Download/
+
+# Then use Android's file manager to tap and install
+```
+
+**Pros:** No extra tools needed, works on all devices
+**Cons:** Manual step, requires "Install from unknown sources" enabled
+
+### Method 2: Termux API
+
+```bash
+# Install termux-api package (one-time)
+pkg install termux-api
+
+# Open APK with Android's installer
+termux-open app-release.apk
+```
+
+**Pros:** Single command, triggers native installer
+**Cons:** Requires termux-api app installed from F-Droid
+
+### Method 3: ADB (Wireless Debugging)
+
+```bash
+# Enable wireless debugging in Android Developer Options
+# Connect to device (get IP:port from Developer Options)
+adb connect 192.168.1.x:port
+
+# Install APK
+adb install app-release.apk
+```
+
+**Pros:** Silent install, good for automation, can install to other devices
+**Cons:** Requires Developer Options enabled, ADB setup
+
+### Recommendation
+
+For development iteration: **Method 2 (termux-open)** is quickest.
+For CI/automation: **Method 3 (ADB)** is most scriptable.
+
+## React Native vs Flutter
+
+Since we have both React and Flutter generators, it's worth comparing the native frameworks:
+
+| Aspect | React Native | Flutter |
+|--------|--------------|---------|
+| **Language** | JavaScript/TypeScript | Dart |
+| **Rendering** | Native platform widgets | Custom rendering engine (Skia) |
+| **UI Consistency** | Looks native per-platform | Identical across platforms |
+| **Web Support** | Limited (react-native-web) | First-class (Flutter Web) |
+| **Desktop** | Community-driven | Official support |
+| **Performance** | JS bridge overhead | Compiled to native, no bridge |
+| **Hot Reload** | Yes | Yes (faster) |
+| **Bundle Size** | Smaller (~7-15 MB) | Larger (~15-25 MB) |
+| **Learning Curve** | Easier if you know React | New language (Dart) |
+
+### Why Flutter May Be Better for Cross-Environment
+
+1. **Single rendering engine** - UI looks identical on web, mobile, desktop
+2. **No JavaScript bridge** - Better performance, fewer serialization issues
+3. **First-class web support** - Same codebase runs in browser
+4. **Official desktop support** - Windows, macOS, Linux
+5. **Dart's consistency** - Same language everywhere (vs JS quirks)
+
+### Why React Native Might Be Preferred
+
+1. **Existing React knowledge** - Lower barrier if team knows React
+2. **Native look-and-feel** - Uses platform widgets (iOS looks iOS, Android looks Android)
+3. **Smaller bundles** - Important for markets with slow connections
+4. **Larger ecosystem** - More packages on npm vs pub.dev
+5. **Expo** - Simplified development workflow
+
+### For UnifyWeaver
+
+Both generators are valuable:
+- **React generator** → React Native (with react-native-web for mobile)
+- **Flutter generator** → Flutter (native mobile/desktop/web)
+
+Flutter's consistency across platforms makes it slightly easier for generator development - we generate one codebase that works everywhere without platform-specific adjustments.
+
 ## Implementation Plan
 
 ### Phase 1: Environment Setup
