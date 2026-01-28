@@ -35,18 +35,19 @@ storybook-react/
 
 ## Generating Components
 
-Components in this example are generated from UnifyWeaver Prolog specifications:
+Components can be regenerated from UnifyWeaver Prolog specifications:
 
-```prolog
-% Generate theme toggle component
-?- generate_theme_toggle([light, dark], Toggle).
-
-% Generate animation CSS
-?- generate_all_presets_css(CSS).
-
-% Generate dashboard template
-?- generate_template(analytics_dashboard, Code).
+```bash
+# Generate components from UI primitives
+swipl generate.pl
 ```
+
+This runs the Prolog generator which creates React components in `src/components/generated/`:
+
+- `Button.tsx` - Button variants (primary, secondary, danger, ghost)
+- `TextInput.tsx` - Text input with labels and validation
+
+The generator uses the UI primitives from `src/unifyweaver/ui/` to produce type-safe React components.
 
 ## Adding New Stories
 
