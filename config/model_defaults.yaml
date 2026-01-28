@@ -92,6 +92,10 @@ inference_permissions:
 # When true, inference scripts re-exec with compatible environment
 auto_environment: true
 
+# When true, --accounts implies --tree (hierarchical display)
+# Use --no-tree to override when this is enabled
+hierarchical_accounts_default: false
+
 # =============================================================================
 # Task-to-Model Mappings
 # =============================================================================

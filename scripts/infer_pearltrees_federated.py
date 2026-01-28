@@ -45,7 +45,7 @@ import pickle
 import logging
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 from dataclasses import dataclass
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -221,7 +221,7 @@ class FederatedInferenceEngine:
         return proj
     
     def search(self, query: str, top_k: int = 5, top_k_routing: int = 10,
-               account_filter: Optional[str] = None) -> List[Candidate]:
+               account_filter: Optional[Union[str, List[str]]] = None) -> List[Candidate]:
         """
         Search for best folders to file a bookmark.
 
@@ -229,7 +229,8 @@ class FederatedInferenceEngine:
             query: Bookmark title, URL, or description
             top_k: Number of candidates to return
             top_k_routing: Number of training queries to use for routing
-            account_filter: If set, only return candidates from this account
+            account_filter: If set, only return candidates from this account (str)
+                           or accounts (list of str)
 
         Returns:
             List of Candidate objects with scores
@@ -252,7 +253,8 @@ class FederatedInferenceEngine:
             scores = q_proj_norm @ self.cluster_centroids.T
 
         # Get sorted indices (fetch more if filtering by account)
-        fetch_k = top_k * 5 if account_filter else top_k
+        # Need larger multiplier since filtered accounts may be sparse in top results
+        fetch_k = top_k * 50 if account_filter else top_k
         all_indices = np.argsort(scores)[::-1][:fetch_k]
 
         # Build candidates
@@ -266,8 +268,12 @@ class FederatedInferenceEngine:
                 account = self.global_target_accounts[idx]
 
             # Skip if account filter is set and doesn't match
-            if account_filter and account != account_filter:
-                continue
+            if account_filter:
+                if isinstance(account_filter, list):
+                    if account not in account_filter:
+                        continue
+                elif account != account_filter:
+                    continue
 
             # Get cluster ID for this target
             cluster_id = self.idx_to_cluster.get(idx, "unknown")
@@ -466,14 +472,51 @@ def main():
                        help="Output results as JSON")
     parser.add_argument("--tree", action="store_true",
                        help="Output results as merged hierarchical tree")
+    parser.add_argument("--no-tree", action="store_true", dest="no_tree",
+                       help="Disable tree output (overrides config default)")
     parser.add_argument("--data", type=Path, default=None,
                        help="Path to original JSONL data (for --tree mode)")
     parser.add_argument("--embedder", type=str, default=None,
                        help="Embedding model to use (default: from registry or nomic)")
     parser.add_argument("--account", type=str, default=None,
-                       help="Filter results to this account only (e.g., s243a, s243a_groups)")
+                       help="Filter results to single account (e.g., s243a)")
+    parser.add_argument("--accounts", type=str, default=None,
+                       help="Filter to multiple accounts, comma-separated (e.g., s243a,s243a_groups)")
+    parser.add_argument("--accounts-tree", type=str, default=None, dest="accounts_tree",
+                       help="Filter to accounts AND show hierarchical tree (shorthand for --accounts + --tree)")
 
     args = parser.parse_args()
+
+    # Handle --accounts-tree shorthand
+    if args.accounts_tree:
+        args.accounts = args.accounts_tree
+        args.tree = True
+
+    # Handle account filtering (--account or --accounts)
+    account_filter = None
+    if args.accounts:
+        # Comma-separated list of accounts
+        account_filter = [a.strip() for a in args.accounts.split(',')]
+    elif args.account:
+        # Single account (backwards compatible)
+        account_filter = args.account
+
+    # Check if --accounts should imply --tree (from config)
+    hierarchical_default = False
+    if args.accounts and not args.tree and not args.no_tree:
+        try:
+            from unifyweaver.config.model_registry import ModelRegistry
+            registry = ModelRegistry()
+            hierarchical_default = registry.is_hierarchical_accounts_default()
+            if hierarchical_default:
+                args.tree = True
+                logger.info("Hierarchical display enabled (config: hierarchical_accounts_default)")
+        except ImportError:
+            pass
+
+    # --no-tree overrides everything
+    if args.no_tree:
+        args.tree = False
 
     # Resolve model path from registry if needed
     model_path = args.model
@@ -565,10 +608,10 @@ def main():
             args.tree = False
 
     if args.interactive:
-        interactive_mode(engine, args.top_k, account_filter=args.account)
+        interactive_mode(engine, args.top_k, account_filter=account_filter)
     elif args.query:
         candidates = engine.search(args.query, args.top_k, args.top_k_routing,
-                                   account_filter=args.account)
+                                   account_filter=account_filter)
         
         if args.tree and data:
             tree = build_merged_tree(candidates, data)

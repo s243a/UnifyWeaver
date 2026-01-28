@@ -276,6 +276,10 @@ class ModelRegistry:
         if 'auto_environment' in data:
             self._inference_settings['auto_environment'] = data['auto_environment']
 
+        # Parse hierarchical_accounts_default setting
+        if 'hierarchical_accounts_default' in data:
+            self._inference_settings['hierarchical_accounts_default'] = data['hierarchical_accounts_default']
+
     def _discover_local_models(self):
         """Auto-discover models not in registry."""
         models_dir = self.project_root / 'models'
@@ -1066,6 +1070,10 @@ class ModelRegistry:
     def is_auto_environment_enabled(self) -> bool:
         """Check if auto-environment detection is enabled in config."""
         return self._inference_settings.get('auto_environment', False)
+
+    def is_hierarchical_accounts_default(self) -> bool:
+        """Check if --accounts should imply --tree by default."""
+        return self._inference_settings.get('hierarchical_accounts_default', False)
 
     def auto_reexec_if_needed(self, requires_numpy2: bool = True) -> bool:
         """
