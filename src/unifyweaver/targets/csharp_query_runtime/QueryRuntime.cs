@@ -1099,8 +1099,10 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.FactSets.Clear();
             _cacheContext.FactIndices.Clear();
             _cacheContext.JoinIndices.Clear();
+            _cacheContext.TransitiveClosureResults.Clear();
             _cacheContext.TransitiveClosureSeededResults.Clear();
             _cacheContext.TransitiveClosureSeededByTargetResults.Clear();
+            _cacheContext.GroupedTransitiveClosureResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededByTargetResults.Clear();
         }
@@ -1759,6 +1761,48 @@ namespace UnifyWeaver.QueryRuntime
             foreach (var key in context.RecursiveJoinIndices.Keys.Where(key => key.Predicate.Equals(predicate)).ToList())
             {
                 context.RecursiveJoinIndices.Remove(key);
+            }
+
+            foreach (var key in context.TransitiveClosureResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.TransitiveClosureResults.Remove(key);
+            }
+
+            foreach (var key in context.TransitiveClosureSeededResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.TransitiveClosureSeededResults.Remove(key);
+            }
+
+            foreach (var key in context.TransitiveClosureSeededByTargetResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.TransitiveClosureSeededByTargetResults.Remove(key);
+            }
+
+            foreach (var key in context.GroupedTransitiveClosureResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.GroupedTransitiveClosureResults.Remove(key);
+            }
+
+            foreach (var key in context.GroupedTransitiveClosureSeededResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.GroupedTransitiveClosureSeededResults.Remove(key);
+            }
+
+            foreach (var key in context.GroupedTransitiveClosureSeededByTargetResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.GroupedTransitiveClosureSeededByTargetResults.Remove(key);
             }
         }
 
@@ -5834,6 +5878,17 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordStrategy(closure, "TransitiveClosure");
 
                 var predicate = closure.Predicate;
+                var cacheKey = (closure.EdgeRelation, predicate);
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}";
+
+                if (context.TransitiveClosureResults.TryGetValue(cacheKey, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: false, built: true);
+
                 var edges = GetFactsList(closure.EdgeRelation, context);
                 var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
 
@@ -5895,6 +5950,7 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
+                context.TransitiveClosureResults[cacheKey] = totalRows;
                 return totalRows;
             }
             finally
@@ -5930,6 +5986,18 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordStrategy(closure, "GroupedTransitiveClosure");
 
                 var predicate = closure.Predicate;
+                var signature = string.Join(",", closure.GroupIndices);
+                var cacheKey = (closure.EdgeRelation, predicate, signature);
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups=[{signature}]";
+
+                if (context.GroupedTransitiveClosureResults.TryGetValue(cacheKey, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("GroupedTransitiveClosure", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("GroupedTransitiveClosure", traceKey, hit: false, built: true);
+
                 var edges = GetFactsList(closure.EdgeRelation, context);
 
                 var edgeKeyIndices = new int[groupCount + 1];
@@ -6017,6 +6085,7 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
+                context.GroupedTransitiveClosureResults[cacheKey] = totalRows;
                 return totalRows;
             }
             finally
@@ -7636,10 +7705,14 @@ namespace UnifyWeaver.QueryRuntime
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
+                TransitiveClosureResults = parent?.TransitiveClosureResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
                 TransitiveClosureSeededResults = parent?.TransitiveClosureSeededResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 TransitiveClosureSeededByTargetResults = parent?.TransitiveClosureSeededByTargetResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                GroupedTransitiveClosureResults = parent?.GroupedTransitiveClosureResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), IReadOnlyList<object[]>>();
                 GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
@@ -7683,9 +7756,13 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
 
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>> TransitiveClosureResults { get; }
+
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededByTargetResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), IReadOnlyList<object[]>> GroupedTransitiveClosureResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
 

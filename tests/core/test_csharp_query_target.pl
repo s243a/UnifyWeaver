@@ -228,6 +228,8 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
         verify_parameterized_reachability_cache_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_reuse_runtime,
+        verify_transitive_closure_cache_reuse_runtime,
+        verify_grouped_transitive_closure_cache_reuse_runtime,
         verify_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_inferred_plan,
@@ -2333,6 +2335,34 @@ verify_parameterized_reachability_by_target_cache_reuse_runtime :-
          'bob,charlie',
          'CACHE_HIT:TransitiveClosureSeededByTarget=true'],
         [[charlie]],
+        HarnessSource).
+
+verify_transitive_closure_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_reachable/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_flag(ModuleClass, [], 'TransitiveClosure', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,bob',
+         'bob,charlie',
+         'alice,charlie',
+         'CACHE_HIT:TransitiveClosure=true'],
+        [],
+        HarnessSource).
+
+verify_grouped_transitive_closure_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_flag(ModuleClass, [], 'GroupedTransitiveClosure', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'b,c,red,cat1',
+         'a,c,red,cat1',
+         'a,b,red,cat2',
+         'a,d,blue,cat1',
+         'd,e,blue,cat1',
+         'a,e,blue,cat1',
+         'CACHE_HIT:GroupedTransitiveClosure=true'],
+        [],
         HarnessSource).
 
 verify_mutual_recursion_plan :-
