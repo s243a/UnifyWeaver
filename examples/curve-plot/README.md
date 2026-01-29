@@ -4,23 +4,26 @@ This example demonstrates the UnifyWeaver cross-target pipeline for mathematical
 
 **Pipeline:** Prolog -> LLVM IR -> WebAssembly -> TypeScript -> Chart.js
 
+**Fully Generated:** All output files (LLVM IR, TypeScript, HTML) are generated from `curve_module.pl`.
+
 ## Overview
 
 The demo shows how to:
 1. Define mathematical curves in Prolog (`curve_module.pl`)
 2. Compile curve evaluation to WASM via LLVM
 3. Generate TypeScript bindings for the WASM module
-4. Visualize curves using Chart.js in the browser
+4. Generate complete HTML/CSS/JavaScript web application
+5. Visualize curves using Chart.js in the browser
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `curve_module.pl` | Prolog module defining curves and LLVM code generation |
-| `index.html` | Browser demo with Chart.js visualization |
+| `curve_module.pl` | Prolog module - source of truth for all generation |
+| `index.html` | (Generated) Complete web app with Chart.js visualization |
 | `curve_wasm.ts` | (Generated) TypeScript bindings for WASM |
 | `curve_plot.ll` | (Generated) LLVM IR for curve evaluation |
-| `curve_plot.wasm` | (Generated) WebAssembly module |
+| `curve_plot.wasm` | (Generated) WebAssembly module (after compilation) |
 
 ## Supported Curve Types
 
@@ -32,16 +35,32 @@ The demo shows how to:
 
 ## Quick Start
 
+### Generate All Files
+
+```bash
+cd examples/curve-plot
+swipl -g "consult('curve_module.pl'), curve_module:generate_all" -t halt
+```
+
+This generates:
+- `curve_plot.ll` - LLVM IR for curve evaluation
+- `curve_wasm.ts` - TypeScript bindings
+- `index.html` - Complete web application
+
 ### Browser Demo (JavaScript fallback)
 
-Simply open `index.html` in a browser to see the demo with a JavaScript fallback implementation.
+Simply open `index.html` in a browser. The app uses a JavaScript fallback if WASM isn't compiled.
 
-### Full WASM Pipeline
+```bash
+python3 -m http.server 8080
+# Open http://localhost:8080
+```
 
-1. **Generate LLVM IR and TypeScript bindings:**
+### Full WASM Pipeline (optional)
+
+1. **Generate files (if not already done):**
    ```bash
-   cd examples/curve-plot
-   swipl curve_module.pl
+   swipl -g "consult('curve_module.pl'), curve_module:generate_all" -t halt
    ```
 
 2. **Build WebAssembly module:**
@@ -146,3 +165,8 @@ declare_component(source, my_chart, custom_chart, [
 - [wasm-graph example](../wasm-graph/) - Graph visualization with Cytoscape.js
 - [LLVM Target documentation](../../docs/LLVM_TARGET.md)
 - [Cross-Target Glue guide](../../docs/guides/cross-target-glue.md)
+
+## Reference
+
+Original hand-written index.html preserved in git history:
+https://github.com/s243a/UnifyWeaver/blob/8de1dfd/examples/curve-plot/index.html
