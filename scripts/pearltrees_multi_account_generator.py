@@ -317,13 +317,14 @@ class MultiAccountParser:
         
         return current_section_type
 
-    def parse_all(self, repair_missing: bool = True):
+    def parse_all(self, repair_missing: bool = True, api_trees_dir: Optional[Path] = None):
         """Parse all registered RDF files in two passes, optionally repairing missing trees.
 
         Args:
             repair_missing: If True, synthesize missing trees from RefPearl/AliasPearl references.
                            This works around a Pearltrees export bug where referenced trees
                            are sometimes not included in the export.
+            api_trees_dir: Optional directory containing API tree JSON files for parent enrichment.
         """
         # Pass 1: Parse all Trees, Sections, RefPearls from all files
         for account_name, rdf_file in self.account_files.items():
@@ -338,6 +339,10 @@ class MultiAccountParser:
         # Pass 3: Repair missing trees (optional, enabled by default)
         if repair_missing:
             self.repair_missing_trees()
+
+        # Pass 4: Load API parent relationships (fills gaps not covered by RDF)
+        if api_trees_dir:
+            self.load_api_parents(api_trees_dir)
 
         logger.info(f"Total trees: {len(self.trees)}")
         logger.info(f"Total pearls: {len(self.pearls)}")
@@ -400,6 +405,108 @@ class MultiAccountParser:
         """Check if a tree is a 'drop zone' (temporary holding area)."""
         title_lower = tree_node.title.lower()
         return "drop zone" in title_lower or "dropzone" in title_lower
+
+    def load_api_parents(self, api_trees_dir: Path) -> int:
+        """
+        Load parent relationships from API tree JSON files.
+
+        API data contains explicit parentTree field which is more reliable
+        than RDF relationships for some trees (e.g., "science" which has
+        no RefPearl parent in RDF).
+
+        Args:
+            api_trees_dir: Directory containing tree JSON files (e.g., 10647426.json)
+
+        Returns:
+            Number of parent relationships added.
+        """
+        if not api_trees_dir.exists():
+            logger.warning(f"API trees directory not found: {api_trees_dir}")
+            return 0
+
+        # Build URI lookup by tree_id
+        tree_id_to_uri: Dict[str, str] = {}
+        for uri, node in self.trees.items():
+            tree_id_to_uri[node.tree_id] = uri
+
+        parents_added = 0
+
+        for tree_file in api_trees_dir.glob('*.json'):
+            try:
+                with open(tree_file) as f:
+                    data = json.load(f)
+
+                # Handle list-at-root format
+                if not isinstance(data, dict):
+                    continue
+
+                # Get api_response.info which contains tree info and parentTree
+                resp = data.get('api_response', data.get('response', {}))
+                if not isinstance(resp, dict):
+                    continue
+
+                info = resp.get('info', {})
+                if not isinstance(info, dict):
+                    continue
+
+                # Get tree ID from info.id or fall back to file stem
+                tree_id = str(info.get('id', tree_file.stem))
+                if not tree_id:
+                    continue
+
+                # Find this tree's URI
+                tree_uri = tree_id_to_uri.get(tree_id)
+                if not tree_uri:
+                    continue
+
+                node = self.trees[tree_uri]
+
+                # Skip if already has parent
+                if node.parent_uri:
+                    continue
+
+                # Get parent from API: api_response.info.parentTree
+                parent_tree = info.get('parentTree', {})
+                if not parent_tree or not isinstance(parent_tree, dict) or 'id' not in parent_tree:
+                    continue
+
+                parent_id = str(parent_tree.get('id', ''))
+                parent_title = parent_tree.get('title', 'Unknown')
+
+                if not parent_id:
+                    continue
+
+                # Find parent URI
+                parent_uri = tree_id_to_uri.get(parent_id)
+
+                # If parent doesn't exist, synthesize it
+                if not parent_uri:
+                    # Build a synthetic URI
+                    parent_uri = f"https://www.pearltrees.com/synthetic/id{parent_id}"
+
+                    # Create synthetic tree node for parent
+                    parent_node = TreeNode(
+                        uri=parent_uri,
+                        tree_id=parent_id,
+                        title=parent_title,
+                        account=node.account,  # Assume same account
+                        parent_uri=None
+                    )
+                    self.trees[parent_uri] = parent_node
+                    tree_id_to_uri[parent_id] = parent_uri
+                    logger.debug(f"Synthesized parent tree from API: {parent_title} ({parent_id})")
+
+                # Set parent relationship
+                node.parent_uri = parent_uri
+                parents_added += 1
+                logger.debug(f"API parent: {node.title} -> {self.trees[parent_uri].title}")
+
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.debug(f"Error reading {tree_file}: {e}")
+                continue
+
+        logger.info(f"Loaded {parents_added} parent relationships from API")
+        return parents_added
 
     def repair_missing_trees(self) -> int:
         """
@@ -679,6 +786,8 @@ def main():
                        help="Only include items with this string in their path")
     parser.add_argument("--item-type", type=str, default="tree", choices=["tree", "pearl"],
                        help="Type of items to generate: 'tree' (folders) or 'pearl' (bookmarks/links)")
+    parser.add_argument("--api-trees", type=Path, default=None,
+                       help="Directory containing API tree JSON files for parent relationship enrichment")
     
     args = parser.parse_args()
     
@@ -694,8 +803,8 @@ def main():
     
     for name, filepath in args.account:
         mp.add_rdf_file(Path(filepath), name)
-    
-    mp.parse_all()
+
+    mp.parse_all(api_trees_dir=args.api_trees)
 
     # Generate targets based on item type
     if args.item_type == "pearl":

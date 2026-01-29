@@ -60,6 +60,21 @@ JSONL with `target_text` field (materialized paths work best):
 {"id": "456", "target_text": "Science/Biology/Genetics", "title": "CRISPR Guide"}
 ```
 
+## Generating Training Data
+
+Generate training data from Pearltrees RDF exports:
+
+```bash
+# Multi-account with API parent enrichment (recommended)
+python3 scripts/pearltrees_multi_account_generator.py \
+  --account s243a context/PT/pearltrees_export_s243a.rdf \
+  --account s243a_groups context/PT/pearltrees_export_s243a_groups.rdf \
+  --api-trees .local/data/pearltrees_api/trees \
+  reports/pearltrees_targets_full_multi_account.jsonl
+```
+
+The `--api-trees` option enriches paths with parent relationships from cached API data, filling gaps not covered by RDF RefPearls.
+
 ## Embedding Models
 
 | Model | Dimensions | Notes |

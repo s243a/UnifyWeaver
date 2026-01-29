@@ -141,13 +141,73 @@ Goodbye!
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `--model` | Path to trained .pkl model | Required |
+| `--model` | Path to trained .pkl model | From registry |
+| `--infer MODEL` | Model name from registry | - |
 | `--query` | Query text for inference | - |
-| `--input` | Input file for batch mode | - |
-| `--output` | Output file for results | stdout |
-| `--top-k` | Number of results to return | 10 |
-| `--threshold` | Minimum similarity score | 0.0 |
-| `--cluster` | Restrict to specific cluster | all |
+| `--top-k` | Number of results to return | 5 |
+| `--interactive` | Enter REPL mode | - |
+| `--json` | Output as JSON | - |
+| `--tree` | Show results as merged hierarchical tree | - |
+| `--data` | JSONL data for account lookup and tree mode | - |
+| `--tree-data` | Fallback JSONL files for tree display | - |
+| `--rdf` | RDF export for parent relationship enrichment | - |
+| `--api-trees` | API trees directory for parent info | - |
+| `--queue-missing` | Queue trees missing parent info for harvesting | - |
+| `--harvest-queue` | Path to harvest queue JSON file | auto |
+| `--account` | Filter to single account | - |
+| `--accounts` | Filter to multiple accounts (comma-separated) | - |
+| `--accounts-tree` | Filter + tree display (shorthand) | - |
+
+## Hierarchical Tree Display
+
+Show results as a merged tree with full folder paths:
+
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --query "quantum physics" \
+  --tree \
+  --data reports/pearltrees_targets_full_multi_account.jsonl
+```
+
+**With RDF enrichment** (fills in missing parent relationships):
+
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --query "quantum physics" \
+  --tree \
+  --data reports/pearltrees_targets_full_multi_account.jsonl \
+  --rdf context/PT/pearltrees_export_s243a.rdf \
+  --api-trees .local/data/pearltrees_api/trees
+```
+
+**Queue missing data for harvesting:**
+
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --query "quantum physics" \
+  --tree \
+  --rdf context/PT/pearltrees_export_s243a.rdf \
+  --api-trees .local/data/pearltrees_api/trees \
+  --queue-missing
+```
+
+Trees with incomplete parent info are queued to `{api-trees}/../harvest_queue.json`.
+
+## Account Filtering
+
+Filter results to specific Pearltrees accounts:
+
+```bash
+# Single account
+python3 scripts/infer_pearltrees_federated.py \
+  --query "machine learning" \
+  --account s243a
+
+# Multiple accounts with tree display
+python3 scripts/infer_pearltrees_federated.py \
+  --query "machine learning" \
+  --accounts-tree s243a,s243a_groups
+```
 
 ## Fast Inference with Orthogonal Codebook
 

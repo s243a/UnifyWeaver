@@ -336,12 +336,260 @@ def format_candidates(candidates: List[Candidate], json_output: bool = False) ->
     return "\n".join(lines)
 
 
+def enrich_tree_data_with_rdf(tree_data_map: Dict[str, dict], rdf_path: Path,
+                               api_trees_dir: Optional[Path] = None,
+                               queue_missing: bool = False,
+                               harvest_queue_path: Optional[Path] = None) -> int:
+    """Enrich tree_data_map entries with parent relationships from RDF and API.
+
+    For entries with incomplete paths (not starting from account root),
+    uses RDF RefPearl/AliasPearl relationships to build complete paths.
+    Falls back to API tree data for parent info when RDF doesn't have it.
+
+    Args:
+        tree_data_map: Dict mapping tree_id -> entry dict (modified in place)
+        rdf_path: Path to Pearltrees RDF export file
+        api_trees_dir: Optional path to API trees directory for fallback parent info
+        queue_missing: If True, queue trees with missing parent info for harvesting
+        harvest_queue_path: Path to harvest queue JSON file (required if queue_missing=True)
+
+    Returns:
+        Number of entries enriched
+    """
+    import re
+
+    if not rdf_path.exists():
+        logger.warning(f"RDF file not found: {rdf_path}")
+        return 0
+
+    with open(rdf_path, 'r') as f:
+        content = f.read()
+
+    # Extract tree titles from pt:Tree elements
+    tree_pattern = re.compile(
+        r'<pt:Tree rdf:about="[^"]*id(\d+)">\s*'
+        r'<dcterms:title><!\[CDATA\[([^\]]+)\]\]></dcterms:title>',
+        re.MULTILINE | re.DOTALL
+    )
+    tree_titles = {}
+    for tree_id, title in tree_pattern.findall(content):
+        tree_titles[tree_id] = title
+
+    def extract_parent_from_url(parent_url: str) -> Optional[Tuple[str, str]]:
+        """Extract parent_id and parent_title from a parentTree URL."""
+        parent_id_match = re.search(r'id(\d+)$', parent_url)
+        if parent_id_match:
+            parent_id = parent_id_match.group(1)
+            parent_title = tree_titles.get(parent_id, '')
+            return (parent_id, parent_title)
+        else:
+            # Account root URL
+            account_match = re.search(r'pearltrees\.com/([^/#]+)$', parent_url)
+            if account_match:
+                return (f"account:{account_match.group(1)}", account_match.group(1))
+        return None
+
+    def make_pearl_pattern_with_date(pearl_type: str):
+        """Pattern that captures title, child_id, parent_url, and inTreeSinceDate."""
+        return re.compile(
+            rf'<pt:{pearl_type}[^>]*>\s*'
+            r'<dcterms:title><!\[CDATA\[([^\]]+)\]\]></dcterms:title>\s*'
+            r'<rdfs:seeAlso rdf:resource="[^"]*id(\d+)"[^/]*/>\s*'
+            r'<pt:parentTree rdf:resource="([^"]*)"[^/]*/>\s*'
+            r'<pt:inTreeSinceDate>([^<]*)</pt:inTreeSinceDate>',
+            re.MULTILINE | re.DOTALL
+        )
+
+    # Build parent map: child_id -> (parent_id, parent_title)
+    # Priority: 1) API data (explicit parentTree), 2) RDF RefPearl, 3) RDF AliasPearl
+    # Use oldest inTreeSinceDate for RDF entries to find canonical parent
+    parent_map = {}
+    parent_dates = {}  # Track dates to prefer oldest
+    api_parents = set()  # Track which entries came from API (higher priority)
+
+    # Load API parent info FIRST (most reliable - explicit parentTree field)
+    if api_trees_dir and api_trees_dir.exists():
+        api_count = 0
+        for tree_file in api_trees_dir.glob('*.json'):
+            try:
+                with open(tree_file) as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    continue
+                resp = data.get('api_response', data.get('response', {}))
+                if not isinstance(resp, dict):
+                    continue
+                info = resp.get('info', {})
+                tree_id = str(info.get('id', tree_file.stem))
+                parent = info.get('parentTree', {})
+                if parent and isinstance(parent, dict) and 'id' in parent:
+                    parent_id = str(parent['id'])
+                    parent_title = parent.get('title', '')
+                    parent_map[tree_id] = (parent_id, parent_title)
+                    api_parents.add(tree_id)
+                    # Also store title if we don't have it
+                    if parent_id not in tree_titles and parent_title:
+                        tree_titles[parent_id] = parent_title
+                    api_count += 1
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+        if api_count:
+            logger.info(f"Loaded {api_count} parent relationships from API")
+
+    # Then load RDF RefPearl (canonical hierarchy), then AliasPearl as fallback
+    # Only add if not already from API (API is more reliable)
+    for pearl_type in ['RefPearl', 'AliasPearl']:
+        pattern = make_pearl_pattern_with_date(pearl_type)
+        for title, child_id, parent_url, date_str in pattern.findall(content):
+            # Skip if we have API data for this tree
+            if child_id in api_parents:
+                continue
+            result = extract_parent_from_url(parent_url)
+            if result:
+                # Keep entry with oldest date (canonical/original location)
+                if child_id not in parent_map or date_str < parent_dates.get(child_id, ''):
+                    parent_map[child_id] = result
+                    parent_dates[child_id] = date_str
+
+    logger.info(f"Loaded {len(parent_map)} total parent relationships (API + RDF)")
+
+    def get_path_to_root(tree_id: str, visited: set = None) -> List[Tuple[str, str]]:
+        """Build path from tree_id to root as list of (id, title) tuples."""
+        if visited is None:
+            visited = set()
+        if tree_id in visited:
+            return []  # Cycle detected
+        visited.add(tree_id)
+
+        path = []
+        current = tree_id
+        while current and current in parent_map:
+            parent_id, parent_title = parent_map[current]
+            if parent_id is None or parent_id in visited:
+                break
+            visited.add(parent_id)
+            path.append((parent_id, parent_title or tree_titles.get(parent_id, '')))
+            if parent_id.startswith('account:'):
+                break
+            current = parent_id
+        return list(reversed(path))
+
+    # Enrich entries that need fuller paths
+    # But preserve existing good paths from training data
+    enriched_count = 0
+    for tree_id, entry in tree_data_map.items():
+        path_ids = entry.get('path_ids', [])
+
+        # Extract path_ids from target_text first line if not present as field
+        if not path_ids:
+            target_text = entry.get('target_text', '')
+            if target_text:
+                first_line = target_text.split('\n')[0]
+                if first_line.startswith('/'):
+                    path_ids = first_line.strip('/').split('/')
+
+        # Check if existing path is already good (has reasonable depth)
+        # Training data paths are typically 5+ levels deep and correct
+        existing_depth = len(path_ids) if path_ids else 0
+        if existing_depth >= 5:
+            # Path is already good, don't overwrite
+            # Just add path_ids field if missing
+            if 'path_ids' not in entry and path_ids:
+                entry['path_ids'] = path_ids
+            continue
+
+        # Try to build/extend path from parent_map
+        rdf_path_to_root = get_path_to_root(tree_id)
+        if rdf_path_to_root:
+            new_depth = len(rdf_path_to_root) + 1  # +1 for the tree itself
+
+            # Only use new path if it's better (longer) than existing
+            if new_depth > existing_depth:
+                # Build new path_ids and path_nodes
+                new_path_ids = [pid for pid, _ in rdf_path_to_root] + [tree_id]
+                new_path_nodes = [title for _, title in rdf_path_to_root]
+                tree_title = entry.get('raw_title', entry.get('query', tree_titles.get(tree_id, '')))
+                new_path_nodes.append(tree_title)
+
+                # Update entry
+                entry['path_ids'] = new_path_ids
+                entry['path_depth'] = len(new_path_ids)
+
+                # Rebuild target_text with new path
+                id_line = '/' + '/'.join(str(i).replace('account:', '') for i in new_path_ids)
+                path_lines = ['- ' + node for node in new_path_nodes]
+                entry['target_text'] = id_line + '\n' + '\n'.join(path_lines)
+
+                # Set account from path
+                if new_path_ids[0].startswith('account:'):
+                    entry['account'] = new_path_ids[0].replace('account:', '')
+
+                enriched_count += 1
+
+    # Queue trees with missing/incomplete parent info for harvesting
+    if queue_missing and harvest_queue_path:
+        missing_trees = []
+        for tree_id, entry in tree_data_map.items():
+            # Check if tree still has incomplete path after enrichment
+            path_ids = entry.get('path_ids', [])
+            if not path_ids:
+                target_text = entry.get('target_text', '')
+                if target_text:
+                    first_line = target_text.split('\n')[0]
+                    if first_line.startswith('/'):
+                        path_ids = first_line.strip('/').split('/')
+
+            # If path is still short and tree not in parent_map, it needs fetching
+            if len(path_ids) < 5 and tree_id not in parent_map:
+                # Check if we already have API data for this tree
+                api_file = api_trees_dir / f"{tree_id}.json" if api_trees_dir else None
+                if api_file and api_file.exists():
+                    continue  # Already have data, just missing parent chain
+
+                missing_trees.append({
+                    'tree_id': tree_id,
+                    'title': entry.get('raw_title', entry.get('query', 'Unknown')),
+                    'account': entry.get('account', 's243a'),
+                    'uri': f"https://www.pearltrees.com/{entry.get('account', 's243a')}/id{tree_id}",
+                    'queued_by': 'inference',
+                    'reason': 'missing_parent_info'
+                })
+
+        if missing_trees:
+            # Load existing queue or create new
+            queue_data = {'count': 0, 'maps': []}
+            if harvest_queue_path.exists():
+                try:
+                    with open(harvest_queue_path) as f:
+                        queue_data = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    pass
+
+            # Add new trees (avoid duplicates by tree_id)
+            existing_ids = {m['tree_id'] for m in queue_data.get('maps', [])}
+            new_trees = [t for t in missing_trees if t['tree_id'] not in existing_ids]
+
+            if new_trees:
+                queue_data['maps'].extend(new_trees)
+                queue_data['count'] = len(queue_data['maps'])
+
+                with open(harvest_queue_path, 'w') as f:
+                    json.dump(queue_data, f, indent=2)
+
+                logger.info(f"Queued {len(new_trees)} trees with missing parent info to {harvest_queue_path}")
+
+    return enriched_count
+
+
 def build_merged_tree(candidates: List[Candidate], tree_data_map: Dict[str, dict]) -> 'TreeNode':
     """Build a merged tree from candidates with full paths.
 
     Args:
         candidates: List of search result candidates
         tree_data_map: Dict mapping tree_id -> entry dict with target_text paths
+
+    Uses supplementary data to bridge/complete truncated paths when possible.
+    ID-based bridging is preferred over title-based for reliability.
     """
 
     class TreeNode:
@@ -353,6 +601,27 @@ def build_merged_tree(candidates: List[Candidate], tree_data_map: Dict[str, dict
             self.rank = 0
 
     root = TreeNode('ROOT')
+
+    # Build tree_id -> full path info lookup from tree_data_map
+    # This allows ID-based bridging of truncated paths
+    id_to_path_info = {}
+    for entry in tree_data_map.values():
+        path_ids = entry.get('path_ids', [])
+        if path_ids:
+            target_text = entry.get('target_text', '')
+            lines = target_text.split('\n')[1:]  # Skip ID line
+            path_nodes = [line.lstrip('- ') for line in lines if line.lstrip('- ')]
+            # Map each tree_id in the path to the full path info
+            for i, tid in enumerate(path_ids):
+                existing = id_to_path_info.get(tid)
+                # Keep the entry with the longest path to root (more context)
+                if not existing or len(path_nodes) > len(existing['path_nodes']):
+                    id_to_path_info[tid] = {
+                        'path_nodes': path_nodes,
+                        'path_ids': path_ids,
+                        'account': entry.get('account', ''),
+                        'index_in_path': i
+                    }
 
     for c in candidates:
         # Look up entry by tree_id
@@ -373,17 +642,41 @@ def build_merged_tree(candidates: List[Candidate], tree_data_map: Dict[str, dict
             continue
 
         path_text = d.get('target_text', '')
-        lines = path_text.split('\n')[1:]  # Skip ID line
+        lines = path_text.split('\n')
 
-        # Extract path nodes
+        # Extract path IDs from first line (format: /id1 or /id1/id2/id3...)
+        path_ids = d.get('path_ids', [])
+        if not path_ids and lines and lines[0].startswith('/'):
+            # Parse path_ids from target_text first line
+            id_line = lines[0].lstrip('/')
+            if id_line:
+                path_ids = id_line.split('/')
+
+        # Extract path nodes from remaining lines
         path_nodes = []
-        for line in lines:
+        for line in lines[1:]:
             stripped = line.lstrip('- ')
             if stripped:
                 path_nodes.append(stripped)
 
-        # Check if path starts with account root - if not, prefix with "account ..."
         account = d.get('account', c.account) or c.account
+
+        # Try to bridge/complete truncated paths using ID-based lookup
+        # If the first node's tree_id is found with parent nodes above it, prepend them
+        if path_ids and len(path_ids) > 0 and path_nodes and path_nodes[0] != account:
+            first_id = path_ids[0]
+            bridged = id_to_path_info.get(first_id)
+            if bridged:
+                bridge_idx = bridged['index_in_path']
+                # If bridge_idx > 0, there are parent nodes above this node
+                if bridge_idx > 0:
+                    bridge_path = bridged['path_nodes']
+                    parent_path = bridge_path[:bridge_idx]
+                    path_nodes = parent_path + path_nodes
+                    if bridged['account']:
+                        account = bridged['account']
+
+        # Check if path starts with account root - if not, prefix with "account ..."
         if account and path_nodes and path_nodes[0] != account:
             # Path is truncated - doesn't start from account root
             path_nodes.insert(0, f"{account} ...")
@@ -491,6 +784,10 @@ def main():
                        help="Comma-separated fallback JSONL files for tree display (checked in order)")
     parser.add_argument("--tree-data-only", action="store_true", dest="tree_data_only",
                        help="Exclude primary --data from tree lookup, use only --tree-data sources")
+    parser.add_argument("--rdf", type=str, default=None,
+                       help="RDF export file to enrich tree paths with parent relationships")
+    parser.add_argument("--api-trees", type=str, default=None, dest="api_trees",
+                       help="API trees directory for fallback parent info (used with --rdf)")
     parser.add_argument("--embedder", type=str, default=None,
                        help="Embedding model to use (default: from registry or nomic)")
     parser.add_argument("--account", type=str, default=None,
@@ -499,8 +796,16 @@ def main():
                        help="Filter to multiple accounts, comma-separated (e.g., s243a,s243a_groups)")
     parser.add_argument("--accounts-tree", type=str, default=None, dest="accounts_tree",
                        help="Filter to accounts AND show hierarchical tree (shorthand for --accounts + --tree)")
+    parser.add_argument("--queue-missing", action="store_true", dest="queue_missing",
+                       help="Queue trees with missing parent info for harvesting (requires --api-trees)")
+    parser.add_argument("--harvest-queue", type=str, default=None, dest="harvest_queue",
+                       help="Path to harvest queue JSON file (default: {api-trees}/../harvest_queue.json)")
 
     args = parser.parse_args()
+
+    # Validate --queue-missing requires --api-trees
+    if args.queue_missing and not args.api_trees:
+        parser.error("--queue-missing requires --api-trees to be specified")
 
     # Handle --accounts-tree shorthand
     if args.accounts_tree:
@@ -630,17 +935,30 @@ def main():
                 else:
                     logger.warning(f"Tree data file not found: {path}")
 
-        # Load each source, first match by tree_id wins
+        # Load each source, prefer deeper paths for same tree_id
         for source_type, source_path in tree_sources:
             count_before = len(tree_data_map)
+            count_updated = 0
             with open(source_path) as f:
                 for line in f:
                     entry = json.loads(line)
                     tid = entry.get('tree_id', '')
-                    if tid and tid not in tree_data_map:
+                    if not tid:
+                        continue
+                    new_depth = entry.get('path_depth', 1)
+                    if tid not in tree_data_map:
                         tree_data_map[tid] = entry
+                    else:
+                        # Prefer deeper path (API data typically has fuller paths)
+                        existing_depth = tree_data_map[tid].get('path_depth', 1)
+                        if new_depth > existing_depth:
+                            tree_data_map[tid] = entry
+                            count_updated += 1
             count_added = len(tree_data_map) - count_before
-            logger.info(f"Loaded {count_added} new entries from {source_type}: {source_path}")
+            if count_updated:
+                logger.info(f"Loaded {count_added} new + {count_updated} updated entries from {source_type}: {source_path}")
+            else:
+                logger.info(f"Loaded {count_added} new entries from {source_type}: {source_path}")
             sources_loaded += 1
 
         if not tree_data_map:
@@ -648,6 +966,28 @@ def main():
             args.tree = False
         else:
             logger.info(f"Total tree entries: {len(tree_data_map)} from {sources_loaded} source(s)")
+
+        # Enrich with RDF parent relationships if --rdf specified
+        if args.rdf and tree_data_map:
+            rdf_path = Path(args.rdf)
+            api_trees_dir = Path(args.api_trees) if args.api_trees else None
+
+            # Determine harvest queue path
+            harvest_queue_path = None
+            if args.queue_missing:
+                if args.harvest_queue:
+                    harvest_queue_path = Path(args.harvest_queue)
+                elif api_trees_dir:
+                    # Default: sibling of api-trees directory
+                    harvest_queue_path = api_trees_dir.parent / "harvest_queue.json"
+
+            enriched = enrich_tree_data_with_rdf(
+                tree_data_map, rdf_path, api_trees_dir,
+                queue_missing=args.queue_missing,
+                harvest_queue_path=harvest_queue_path
+            )
+            if enriched:
+                logger.info(f"Enriched {enriched} entries with RDF/API parent relationships")
 
     if args.interactive:
         interactive_mode(engine, args.top_k, account_filter=account_filter)
