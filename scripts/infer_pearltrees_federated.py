@@ -45,8 +45,9 @@ import pickle
 import logging
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple, Optional, Union, Literal
 from dataclasses import dataclass
+from scipy.linalg import logm, expm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -74,9 +75,13 @@ class FederatedInferenceEngine:
     """
 
     def __init__(self, model_path: Path, embedder_name: str = "nomic-ai/nomic-embed-text-v1.5",
-                 data_path: Optional[Path] = None):
+                 data_path: Optional[Path] = None,
+                 routing_method: Literal["weighted", "rotational", "rotational-fast"] = "weighted",
+                 rotation_planes: Optional[int] = None):
         self.model_path = Path(model_path)
         self.embedder_name = embedder_name
+        self.routing_method = routing_method
+        self.rotation_planes = rotation_planes  # None = use all planes
 
         # Load model metadata
         logger.info(f"Loading model from {model_path}...")
@@ -165,18 +170,61 @@ class FederatedInferenceEngine:
     def _load_clusters(self):
         """Load W matrices from each cluster."""
         self.clusters = {}
-        
+
         for cid in self.cluster_ids:
             cluster_path = self.cluster_dir / f"{cid}.npz"
             if cluster_path.exists():
                 data = np.load(cluster_path)
+                W = data["W_stack"][0]  # Single W per cluster
                 self.clusters[cid] = {
-                    "W": data["W_stack"][0],  # Single W per cluster
+                    "W": W,
                     "target_embeddings": data["target_embeddings"],
                     "indices": data["indices"]
                 }
-        
+
         logger.info(f"Loaded {len(self.clusters)} cluster W matrices")
+
+        # Pre-compute orthogonal decomposition if using rotational-fast
+        if self.routing_method == "rotational-fast":
+            self._precompute_plane_angles()
+
+    def _precompute_plane_angles(self):
+        """
+        Decompose each cluster's W into canonical plane rotation angles.
+
+        For a 768-dim space, we have 384 canonical planes: (0,1), (2,3), ...
+        Each W is approximated by rotations in these planes.
+        """
+        logger.info("Pre-computing orthogonal plane decomposition for fast routing...")
+
+        for cid, cluster_data in self.clusters.items():
+            W = cluster_data["W"].astype(np.float64)
+            d = W.shape[0]
+            n_planes = d // 2
+
+            # Ensure W is a proper rotation
+            if np.linalg.det(W) < 0:
+                W = W.copy()
+                W[:, -1] *= -1
+
+            # Extract rotation angles from each 2x2 block on the diagonal
+            # For a pure rotation in canonical planes, W has block-diagonal structure
+            # We approximate by projecting onto this structure
+            angles = np.zeros(n_planes, dtype=np.float32)
+
+            for i in range(n_planes):
+                # Extract 2x2 block for plane (2i, 2i+1)
+                block = W[2*i:2*i+2, 2*i:2*i+2]
+                # Average the cos(θ) estimates from diagonal
+                cos_theta = (block[0, 0] + block[1, 1]) / 2
+                # Average the sin(θ) estimates from off-diagonal
+                sin_theta = (block[1, 0] - block[0, 1]) / 2
+                # Compute angle
+                angles[i] = np.arctan2(sin_theta, cos_theta)
+
+            cluster_data["plane_angles"] = angles
+
+        logger.info(f"Pre-computed {n_planes} plane angles for {len(self.clusters)} clusters")
     
     @property
     def embedder(self):
@@ -194,32 +242,154 @@ class FederatedInferenceEngine:
     def project_query(self, q_emb: np.ndarray, top_k_routing: int = 10) -> np.ndarray:
         """
         Project query using query-level routing.
-        
+
+        Supports two methods:
+        - weighted: Linear blend of W matrices (faster, default)
+        - rotational: Blend in bivector space via logm/expm (more accurate)
+
         1. Find top-k most similar training queries
         2. For each, look up its cluster's W
-        3. Compute weighted projection
+        3. Compute projection using selected method
         """
         # Compute similarities to all training queries
         sims = q_emb @ self.query_embeddings.T
-        
+
         # Softmax weights
         sims_shifted = (sims - np.max(sims)) / self.temperature
         weights = np.exp(sims_shifted)
         weights /= weights.sum()
-        
+
         # Get top-k training queries
         top_indices = np.argsort(weights)[-top_k_routing:]
-        
-        # Weighted projection using their clusters' W
+
+        if self.routing_method == "rotational":
+            return self._project_rotational(q_emb, weights, top_indices)
+        elif self.routing_method == "rotational-fast":
+            return self._project_rotational_fast(q_emb, weights, top_indices)
+        else:
+            return self._project_weighted(q_emb, weights, top_indices)
+
+    def _project_weighted(self, q_emb: np.ndarray, weights: np.ndarray,
+                          top_indices: np.ndarray) -> np.ndarray:
+        """Weighted linear blend of W matrices (fast, approximate)."""
         proj = np.zeros_like(q_emb)
         for idx in top_indices:
             cid = self.idx_to_cluster.get(int(idx))
             if cid and cid in self.clusters:
                 W = self.clusters[cid]["W"]
                 proj += weights[idx] * (q_emb @ W)
-        
         return proj
-    
+
+    def _project_rotational(self, q_emb: np.ndarray, weights: np.ndarray,
+                            top_indices: np.ndarray) -> np.ndarray:
+        """
+        Rotational interpolation in bivector space (accurate, slower).
+
+        Converts W matrices to bivectors (log space), blends them,
+        then converts back via matrix exponential.
+        """
+        # Collect unique clusters and their weights
+        cluster_weights = {}
+        for idx in top_indices:
+            cid = self.idx_to_cluster.get(int(idx))
+            if cid and cid in self.clusters:
+                if cid not in cluster_weights:
+                    cluster_weights[cid] = 0.0
+                cluster_weights[cid] += weights[idx]
+
+        if not cluster_weights:
+            return np.zeros_like(q_emb)
+
+        # Normalize weights to sum to 1 for the selected clusters
+        total_weight = sum(cluster_weights.values())
+        for cid in cluster_weights:
+            cluster_weights[cid] /= total_weight
+
+        # Blend bivectors (log of rotation matrices)
+        d = q_emb.shape[0]
+        blended_bivector = np.zeros((d, d), dtype=np.float64)
+
+        for cid, w in cluster_weights.items():
+            W = self.clusters[cid]["W"].astype(np.float64)
+            # Ensure W is a proper rotation (det = 1)
+            # If det < 0, it's a reflection - flip sign of last column
+            if np.linalg.det(W) < 0:
+                W = W.copy()
+                W[:, -1] *= -1
+
+            # Compute log (bivector) - the skew-symmetric matrix
+            try:
+                bivector = logm(W)
+                # Extract real part (logm can return complex for numerical reasons)
+                bivector = np.real(bivector)
+                blended_bivector += w * bivector
+            except Exception as e:
+                # Fallback to weighted for this cluster
+                logger.debug(f"logm failed for cluster {cid}: {e}, using weighted fallback")
+                return self._project_weighted(q_emb, weights, top_indices)
+
+        # Convert back to rotation matrix
+        try:
+            W_blended = expm(blended_bivector)
+            W_blended = np.real(W_blended).astype(np.float32)
+        except Exception as e:
+            logger.debug(f"expm failed: {e}, using weighted fallback")
+            return self._project_weighted(q_emb, weights, top_indices)
+
+        return q_emb @ W_blended
+
+    def _project_rotational_fast(self, q_emb: np.ndarray, weights: np.ndarray,
+                                  top_indices: np.ndarray) -> np.ndarray:
+        """
+        Fast rotational interpolation using orthogonal plane decomposition.
+
+        Instead of logm/expm (O(d³)), blends pre-computed plane angles
+        and applies rotation using vectorized 2x2 rotations (O(d)).
+        """
+        # Collect unique clusters and their weights
+        cluster_weights = {}
+        for idx in top_indices:
+            cid = self.idx_to_cluster.get(int(idx))
+            if cid and cid in self.clusters:
+                if cid not in cluster_weights:
+                    cluster_weights[cid] = 0.0
+                cluster_weights[cid] += weights[idx]
+
+        if not cluster_weights:
+            return np.zeros_like(q_emb)
+
+        # Normalize weights
+        total_weight = sum(cluster_weights.values())
+        for cid in cluster_weights:
+            cluster_weights[cid] /= total_weight
+
+        # Blend plane angles (simple weighted average of scalars!)
+        d = q_emb.shape[0]
+        max_planes = d // 2
+        # Use configured number of planes, or all if not specified
+        n_planes = self.rotation_planes if self.rotation_planes else max_planes
+        n_planes = min(n_planes, max_planes)  # Don't exceed available planes
+
+        blended_angles = np.zeros(n_planes, dtype=np.float32)
+
+        for cid, w in cluster_weights.items():
+            angles = self.clusters[cid].get("plane_angles")
+            if angles is not None:
+                blended_angles += w * angles[:n_planes]
+
+        # Apply rotation via vectorized 2x2 blocks (Rodrigues for canonical planes)
+        # For plane i, rotate coordinates (2i, 2i+1)
+        result = q_emb.copy()
+        cos_angles = np.cos(blended_angles)
+        sin_angles = np.sin(blended_angles)
+
+        for i in range(n_planes):
+            x0, x1 = result[2*i], result[2*i+1]
+            result[2*i] = x0 * cos_angles[i] - x1 * sin_angles[i]
+            result[2*i+1] = x0 * sin_angles[i] + x1 * cos_angles[i]
+
+        return result
+
     def search(self, query: str, top_k: int = 5, top_k_routing: int = 10,
                account_filter: Optional[Union[str, List[str]]] = None) -> List[Candidate]:
         """
@@ -770,6 +940,13 @@ def main():
                        help="Number of candidates to return")
     parser.add_argument("--top-k-routing", type=int, default=10,
                        help="Number of training queries for routing")
+    parser.add_argument("--routing-method", type=str, default="weighted",
+                       choices=["weighted", "rotational", "rotational-fast"],
+                       help="Routing method: weighted (fast), rotational (accurate via bivector), "
+                            "rotational-fast (orthogonal decomposition, O(K×d))")
+    parser.add_argument("--rotation-planes", type=int, default=None,
+                       help="Number of rotation planes for rotational-fast (default: all d/2 planes). "
+                            "With Matryoshka embeddings, 64-128 planes often suffice.")
     parser.add_argument("--interactive", action="store_true",
                        help="Run in interactive mode")
     parser.add_argument("--json", action="store_true",
@@ -914,7 +1091,11 @@ def main():
             data_path = Path("reports/pearltrees_targets_full_multi_account.jsonl")
 
     # Load engine (pass data_path for account lookup)
-    engine = FederatedInferenceEngine(model_path, embedder, data_path=data_path)
+    routing_method = getattr(args, 'routing_method', 'weighted')
+    rotation_planes = getattr(args, 'rotation_planes', None)
+    engine = FederatedInferenceEngine(model_path, embedder, data_path=data_path,
+                                       routing_method=routing_method,
+                                       rotation_planes=rotation_planes)
 
     # Load data if tree mode requested
     # Build tree_id -> entry mapping from multiple sources (first match wins)

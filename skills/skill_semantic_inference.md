@@ -145,6 +145,9 @@ Goodbye!
 | `--infer MODEL` | Model name from registry | - |
 | `--query` | Query text for inference | - |
 | `--top-k` | Number of results to return | 5 |
+| `--top-k-routing` | Number of training queries for routing | 10 |
+| `--routing-method` | Routing method (see below) | weighted |
+| `--rotation-planes` | Number of planes for rotational-fast | all (d/2) |
 | `--interactive` | Enter REPL mode | - |
 | `--json` | Output as JSON | - |
 | `--tree` | Show results as merged hierarchical tree | - |
@@ -157,6 +160,27 @@ Goodbye!
 | `--account` | Filter to single account | - |
 | `--accounts` | Filter to multiple accounts (comma-separated) | - |
 | `--accounts-tree` | Filter + tree display (shorthand) | - |
+
+## Routing Methods
+
+Three methods for combining cluster projections:
+
+| Method | Description | Speed | Use Case |
+|--------|-------------|-------|----------|
+| `weighted` | Linear blend of transformed vectors | Fast | Default, good balance |
+| `rotational` | Blend in bivector space (logm/expm) | Slow | Maximum accuracy |
+| `rotational-fast` | Orthogonal plane decomposition | Medium | Speed + accuracy |
+
+**Example with rotational-fast (64 planes):**
+
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --query "machine learning" \
+  --routing-method rotational-fast \
+  --rotation-planes 64
+```
+
+With Matryoshka embeddings (Nomic), 64-128 planes often suffice since first dimensions are most important.
 
 ## Hierarchical Tree Display
 

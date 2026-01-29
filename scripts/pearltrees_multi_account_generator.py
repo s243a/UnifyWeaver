@@ -788,7 +788,9 @@ def main():
                        help="Type of items to generate: 'tree' (folders) or 'pearl' (bookmarks/links)")
     parser.add_argument("--api-trees", type=Path, default=None,
                        help="Directory containing API tree JSON files for parent relationship enrichment")
-    
+    parser.add_argument("--filter-accounts", type=str, default=None,
+                       help="Only include items from these accounts (comma-separated, e.g., 's243a,s243a_groups')")
+
     args = parser.parse_args()
     
     if not args.account:
@@ -813,7 +815,59 @@ def main():
     else:
         targets = mp.generate_tree_targets(args.query_template, args.filter_path)
         logger.info(f"Generated {len(targets)} tree targets.")
-    
+
+    # Filter by account hierarchy if specified
+    # Rules:
+    # 1. Keep all entries where account field is in allowed_accounts
+    # 2. Exclude entries with "drop zone" in path
+    # 3. For other accounts, require path connects through allowed_accounts hierarchy
+    if args.filter_accounts:
+        allowed_accounts = set(a.strip() for a in args.filter_accounts.split(','))
+        original_count = len(targets)
+
+        def is_drop_zone(target):
+            """Check if target's path contains a drop zone."""
+            target_text = target.get('target_text', '').lower()
+            return 'drop zone' in target_text or 'dropzone' in target_text
+
+        def path_contains_allowed(target):
+            """Check if target's path contains any node from allowed accounts."""
+            target_text = target.get('target_text', '')
+            if not target_text:
+                return False
+            lines = target_text.split('\n')
+            for line in lines:
+                if line.strip().startswith('- '):
+                    content = line.strip()[2:]  # Remove "- " prefix
+                    if '@' in content:
+                        account = content.split('@')[-1].strip()
+                        if account in allowed_accounts:
+                            return True
+                    else:
+                        node_name = content.strip()
+                        if node_name in allowed_accounts:
+                            return True
+            return False
+
+        def should_keep(target):
+            """Apply the three-rule filter."""
+            # Rule 2: Exclude drop zones
+            if is_drop_zone(target):
+                return False
+
+            account = target.get('account', '')
+
+            # Rule 1: Keep all entries from allowed accounts
+            if account in allowed_accounts:
+                return True
+
+            # Rule 3: For other accounts, require path connects through hierarchy
+            return path_contains_allowed(target)
+
+        targets = [t for t in targets if should_keep(t)]
+        filtered_count = original_count - len(targets)
+        logger.info(f"Filtered by account rules: kept {len(targets)}, removed {filtered_count} (drop zones + unconnected external)")
+
     logger.info(f"Writing to {args.output_jsonl}...")
     with open(args.output_jsonl, 'w') as f:
         for t in targets:
