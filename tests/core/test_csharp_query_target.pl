@@ -198,6 +198,7 @@ test_csharp_query_target :-
         verify_param_seed_filtered_probe_uses_scan_index_partial,
         verify_multi_key_both_scan_join_strategy_partial_index,
         verify_both_scan_join_selective_probe_uses_partial_index,
+        verify_both_scan_join_filter_selective_probe_uses_partial_index,
         verify_hash_build_prefers_smaller_non_scan_side,
         verify_hash_build_rowcount_tie_uses_cost_tie_breaker,
         verify_both_scan_join_prefers_cached_fact_index,
@@ -1563,6 +1564,69 @@ verify_both_scan_join_selective_probe_uses_partial_index :-
     csharp_query_target:build_query_plan(test_bothscan_probe_join/1, [target(csharp_query)], Plan),
     get_dict(root, Plan, Root),
     sub_term(join{type:join, left:_, right:_, left_keys:[0, 1], right_keys:[0, 1], left_width:_, right_width:_, width:_}, Root),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinScanIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['v1',
+         'v2',
+         'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [],
+        HarnessSource).
+
+verify_both_scan_join_filter_selective_probe_uses_partial_index :-
+    % Manual plan to ensure the selective filter stays on the probe side (selection under join),
+    % which exercises runtime "tiny probe" detection beyond pattern-based rowcount estimates.
+    csharp_target:set_compilation_module(user),
+    csharp_target:gather_fact_rows(test_bothscan_probe_left, 3, LeftFacts),
+    csharp_target:gather_fact_rows(test_bothscan_probe_right, 5, RightFacts),
+    Plan = plan{
+        head:predicate{name:test_bothscan_probe_filter_join_plan, arity:1},
+        root:projection{
+            type:projection,
+            input:join{
+                type:join,
+                left:relation_scan{
+                    type:relation_scan,
+                    predicate:predicate{name:test_bothscan_probe_left, arity:3},
+                    width:3
+                },
+                right:selection{
+                    type:selection,
+                    input:pattern_scan{
+                        type:pattern_scan,
+                        predicate:predicate{name:test_bothscan_probe_right, arity:5},
+                        pattern:[
+                            operand{kind:wildcard},
+                            operand{kind:wildcard},
+                            operand{kind:wildcard},
+                            operand{kind:value, value:foo},
+                            operand{kind:wildcard}
+                        ],
+                        width:5
+                    },
+                    predicate:condition{
+                        type:lt,
+                        left:operand{kind:column, index:2},
+                        right:operand{kind:value, value:3}
+                    },
+                    width:5
+                },
+                left_keys:[0, 1],
+                right_keys:[0, 1],
+                left_width:3,
+                right_width:5,
+                width:8
+            },
+            columns:[2],
+            width:1
+        },
+        is_recursive:false,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_bothscan_probe_left, arity:3}, facts:LeftFacts},
+            relation{predicate:predicate{name:test_bothscan_probe_right, arity:5}, facts:RightFacts}
+        ]
+    },
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinScanIndexPartial', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
