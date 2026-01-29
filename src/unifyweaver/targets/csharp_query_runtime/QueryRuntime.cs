@@ -3422,11 +3422,32 @@ namespace UnifyWeaver.QueryRuntime
             {
                 buildLeft = forceBuildLeft.Value;
             }
-            else if (context is not null &&
-                     TryEstimateRowUpperBound(join.Left, context, out var leftUpperBound) &&
-                     TryEstimateRowUpperBound(join.Right, context, out var rightUpperBound))
+            else if (context is not null)
             {
-                buildLeft = leftUpperBound <= rightUpperBound;
+                var leftHasEstimate = TryEstimateRowUpperBound(join.Left, context, out var leftUpperBound) &&
+                                      leftUpperBound != int.MaxValue;
+                var rightHasEstimate = TryEstimateRowUpperBound(join.Right, context, out var rightUpperBound) &&
+                                       rightUpperBound != int.MaxValue;
+
+                if (leftHasEstimate && rightHasEstimate)
+                {
+                    if (leftUpperBound < rightUpperBound)
+                    {
+                        buildLeft = true;
+                    }
+                    else if (rightUpperBound < leftUpperBound)
+                    {
+                        buildLeft = false;
+                    }
+                }
+                else if (leftHasEstimate && !rightHasEstimate)
+                {
+                    buildLeft = true;
+                }
+                else if (!leftHasEstimate && rightHasEstimate)
+                {
+                    buildLeft = false;
+                }
             }
 
             static bool TryGetRecursiveRows(
