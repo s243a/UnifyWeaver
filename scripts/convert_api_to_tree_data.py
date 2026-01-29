@@ -128,7 +128,8 @@ def get_path_to_root(tree_id: str, trees: Dict[str, dict], parent_map: Dict[str,
     """Get path from tree to root as list of titles.
 
     Uses parent_map which maps tree_id -> (parent_id, parent_title).
-    This allows building paths even when parent trees weren't fetched.
+    This allows building paths even when parent trees weren't fetched,
+    because we store parent titles in the parent_map.
     """
     path = []
     current_id = tree_id
@@ -140,29 +141,47 @@ def get_path_to_root(tree_id: str, trees: Dict[str, dict], parent_map: Dict[str,
             break
         visited.add(current_id)
 
-        # Get title for current node
+        # Get title and parent info for current node
         if current_id in trees:
             title = trees[current_id]['title']
-        elif current_id == tree_id:
-            # This shouldn't happen, but handle it
-            title = f"Unknown({current_id})"
+            # Get parent from the tree's own info.parentTree
+            resp = trees[current_id].get('response', {})
+            info = resp.get('info', {})
+            parent_tree = info.get('parentTree', {})
+            if parent_tree and 'id' in parent_tree:
+                next_id = str(parent_tree['id'])
+                next_title = parent_tree.get('title', '')
+                # Store in parent_map for future lookups
+                if next_id not in parent_map:
+                    parent_map[next_id] = (None, next_title)  # No parent of parent known
+            else:
+                next_id = None
         else:
-            # Parent node not in trees, but we have its title from parent_map
-            # (this was set when we processed the child)
+            # Node not in trees - check if we have its title from parent_map
             title = None
+            next_id = None
+            # Look for this ID as a parent in parent_map entries
             for child_id, (parent_id, parent_title) in parent_map.items():
                 if parent_id == current_id and parent_title:
                     title = parent_title
                     break
             if not title:
+                # Check if current_id is stored as a key with title info
+                if current_id in parent_map:
+                    _, stored_title = parent_map[current_id]
+                    if stored_title:
+                        title = stored_title
+            if not title:
                 title = f"Unknown({current_id})"
 
         path.append(title)
 
-        # Move to parent
+        # Move to parent - first check parent_map, then use next_id from tree
         parent_info = parent_map.get(current_id)
-        if parent_info:
-            current_id = parent_info[0]  # parent_id
+        if parent_info and parent_info[0]:
+            current_id = parent_info[0]
+        elif next_id:
+            current_id = next_id
         else:
             current_id = None
 
