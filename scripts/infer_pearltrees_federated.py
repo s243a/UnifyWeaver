@@ -336,8 +336,13 @@ def format_candidates(candidates: List[Candidate], json_output: bool = False) ->
     return "\n".join(lines)
 
 
-def build_merged_tree(candidates: List[Candidate], data: List[dict]) -> 'TreeNode':
-    """Build a merged tree from candidates with full paths."""
+def build_merged_tree(candidates: List[Candidate], tree_data_map: Dict[str, dict]) -> 'TreeNode':
+    """Build a merged tree from candidates with full paths.
+
+    Args:
+        candidates: List of search result candidates
+        tree_data_map: Dict mapping tree_id -> entry dict with target_text paths
+    """
 
     class TreeNode:
         def __init__(self, name):
@@ -349,26 +354,11 @@ def build_merged_tree(candidates: List[Candidate], data: List[dict]) -> 'TreeNod
 
     root = TreeNode('ROOT')
 
-    # Build tree_id -> data index mapping for efficient lookup
-    # Note: dataset_index is model's internal index, NOT the JSONL index
-    tree_id_to_data_idx = {}
-    for i, d in enumerate(data):
-        tid = d.get('tree_id', '')
-        if tid:
-            tree_id_to_data_idx[tid] = i
-        # Also index by URI suffix for fallback
-        uri = d.get('uri', '')
-        if uri:
-            # Extract tree_id from URI like "pearltrees://12345"
-            uri_id = uri.split('/')[-1] if '/' in uri else uri.replace('pearltrees://', '')
-            if uri_id and uri_id not in tree_id_to_data_idx:
-                tree_id_to_data_idx[uri_id] = i
-
     for c in candidates:
-        # Find the data entry by tree_id (NOT dataset_index, which is model-internal)
-        idx = tree_id_to_data_idx.get(c.tree_id)
+        # Look up entry by tree_id
+        d = tree_data_map.get(c.tree_id)
 
-        if idx is None:
+        if d is None:
             # Fallback: use title as single node
             if c.title not in root.children:
                 root.children[c.title] = TreeNode(c.title)
@@ -377,8 +367,6 @@ def build_merged_tree(candidates: List[Candidate], data: List[dict]) -> 'TreeNod
             node.score = c.score
             node.rank = c.rank
             continue
-        
-        d = data[idx]
         path_text = d.get('target_text', '')
         lines = path_text.split('\n')[1:]  # Skip ID line
         
@@ -482,7 +470,11 @@ def main():
     parser.add_argument("--no-tree", action="store_true", dest="no_tree",
                        help="Disable tree output (overrides config default)")
     parser.add_argument("--data", type=Path, default=None,
-                       help="Path to original JSONL data (for --tree mode)")
+                       help="Path to original JSONL data (for account lookup and --tree mode)")
+    parser.add_argument("--tree-data", type=str, default=None, dest="tree_data",
+                       help="Comma-separated fallback JSONL files for tree display (checked in order)")
+    parser.add_argument("--tree-data-only", action="store_true", dest="tree_data_only",
+                       help="Exclude primary --data from tree lookup, use only --tree-data sources")
     parser.add_argument("--embedder", type=str, default=None,
                        help="Embedding model to use (default: from registry or nomic)")
     parser.add_argument("--account", type=str, default=None,
@@ -604,15 +596,42 @@ def main():
     engine = FederatedInferenceEngine(model_path, embedder, data_path=data_path)
 
     # Load data if tree mode requested
-    data = None
+    # Build tree_id -> entry mapping from multiple sources (first match wins)
+    tree_data_map = None
     if args.tree:
-        if data_path.exists():
-            with open(data_path) as f:
-                data = [json.loads(line) for line in f]
-            logger.info(f"Loaded {len(data)} entries for tree display")
-        else:
-            logger.warning(f"Data file not found: {data_path}, tree mode disabled")
+        tree_data_map = {}
+        sources_loaded = 0
+
+        # Collect data sources in priority order
+        tree_sources = []
+        if not args.tree_data_only and data_path and data_path.exists():
+            tree_sources.append(('primary', data_path))
+        if args.tree_data:
+            for path_str in args.tree_data.split(','):
+                path = Path(path_str.strip())
+                if path.exists():
+                    tree_sources.append(('fallback', path))
+                else:
+                    logger.warning(f"Tree data file not found: {path}")
+
+        # Load each source, first match by tree_id wins
+        for source_type, source_path in tree_sources:
+            count_before = len(tree_data_map)
+            with open(source_path) as f:
+                for line in f:
+                    entry = json.loads(line)
+                    tid = entry.get('tree_id', '')
+                    if tid and tid not in tree_data_map:
+                        tree_data_map[tid] = entry
+            count_added = len(tree_data_map) - count_before
+            logger.info(f"Loaded {count_added} new entries from {source_type}: {source_path}")
+            sources_loaded += 1
+
+        if not tree_data_map:
+            logger.warning("No tree data sources available, tree mode disabled")
             args.tree = False
+        else:
+            logger.info(f"Total tree entries: {len(tree_data_map)} from {sources_loaded} source(s)")
 
     if args.interactive:
         interactive_mode(engine, args.top_k, account_filter=account_filter)
@@ -620,8 +639,8 @@ def main():
         candidates = engine.search(args.query, args.top_k, args.top_k_routing,
                                    account_filter=account_filter)
         
-        if args.tree and data:
-            tree = build_merged_tree(candidates, data)
+        if args.tree and tree_data_map:
+            tree = build_merged_tree(candidates, tree_data_map)
             print(f"Query: {args.query}")
             print(f"\nMerged tree of top {args.top_k} results:")
             print("=" * 60)
