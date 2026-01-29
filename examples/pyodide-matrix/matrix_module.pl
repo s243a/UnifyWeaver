@@ -604,12 +604,12 @@ generate_html_javascript(JS) :-
             const results = document.getElementById('results');
             try {
                 const [inverse, eigen, svdResult, det, transform, eigenLines] = await Promise.all([
-                    callPython(`import json; json.dumps(matrix_inverse(${matrixJson})`),
-                    callPython(`import json; json.dumps(matrix_eigenvalues(${matrixJson})`),
-                    callPython(`import json; json.dumps(matrix_svd(${matrixJson})`),
-                    callPython(`import json; json.dumps(matrix_determinant(${matrixJson})`),
-                    callPython(`import json; json.dumps(generate_transform_points(${matrixJson})`),
-                    callPython(`import json; json.dumps(generate_eigenvector_lines(${matrixJson})`)
+                    callPython(`import json; json.dumps(matrix_inverse(${matrixJson}))`),
+                    callPython(`import json; json.dumps(matrix_eigenvalues(${matrixJson}))`),
+                    callPython(`import json; json.dumps(matrix_svd(${matrixJson}))`),
+                    callPython(`import json; json.dumps(matrix_determinant(${matrixJson}))`),
+                    callPython(`import json; json.dumps(generate_transform_points(${matrixJson}))`),
+                    callPython(`import json; json.dumps(generate_eigenvector_lines(${matrixJson}))`)
                 ]);
                 let html = '';
                 html += `<span class=\\\"result-label\\\">Determinant:</span> <span class=\\\"result-value\\\">${det.toFixed(4)}</span>\\n\\n`;
