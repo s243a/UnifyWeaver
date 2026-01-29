@@ -359,30 +359,46 @@ def build_merged_tree(candidates: List[Candidate], tree_data_map: Dict[str, dict
         d = tree_data_map.get(c.tree_id)
 
         if d is None:
-            # Fallback: use title as single node
-            if c.title not in root.children:
-                root.children[c.title] = TreeNode(c.title)
-            node = root.children[c.title]
+            # No path data - show as root item with account prefix if available
+            if c.account:
+                label = f"{c.account} .../  {c.title}"
+            else:
+                label = c.title
+            if label not in root.children:
+                root.children[label] = TreeNode(label)
+            node = root.children[label]
             node.is_result = True
             node.score = c.score
             node.rank = c.rank
             continue
+
         path_text = d.get('target_text', '')
         lines = path_text.split('\n')[1:]  # Skip ID line
-        
-        current = root
+
+        # Extract path nodes
+        path_nodes = []
         for line in lines:
             stripped = line.lstrip('- ')
-            if not stripped:
-                continue
-            if stripped not in current.children:
-                current.children[stripped] = TreeNode(stripped)
-            current = current.children[stripped]
-        
+            if stripped:
+                path_nodes.append(stripped)
+
+        # Check if path starts with account root - if not, prefix with "account ..."
+        account = d.get('account', c.account) or c.account
+        if account and path_nodes and path_nodes[0] != account:
+            # Path is truncated - doesn't start from account root
+            path_nodes.insert(0, f"{account} ...")
+
+        # Build tree from path
+        current = root
+        for node_name in path_nodes:
+            if node_name not in current.children:
+                current.children[node_name] = TreeNode(node_name)
+            current = current.children[node_name]
+
         current.is_result = True
         current.score = c.score
         current.rank = c.rank
-    
+
     return root
 
 
