@@ -67,6 +67,14 @@ The generated app includes:
 - Load/clear sample data
 - Responsive Cytoscape.js visualization
 
+### Mobile Support
+
+On mobile devices (< 768px width):
+- Layout is 150% of screen width for better usability
+- Swipe horizontally to navigate between sidebar and graph
+- One finger on graph: pan the graph
+- Two fingers on graph: scroll the page (navigate to sidebar)
+
 ## Architecture
 
 ```

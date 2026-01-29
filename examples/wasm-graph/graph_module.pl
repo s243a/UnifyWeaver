@@ -240,7 +240,14 @@ generate_html_css(CSS) :-
     .info-panel h3 { font-size: 0.9rem; margin-bottom: 0.5rem; color: #00d4ff; }
     .info-panel p { font-size: 0.85rem; color: #aaa; }
     .layout-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-    .layout-buttons button { flex: 1; min-width: 80px; }".
+    .layout-buttons button { flex: 1; min-width: 80px; }
+
+    /* Mobile: wider than screen to allow horizontal scroll */
+    @media (max-width: 768px) {
+      body { min-width: 150vw; overflow-x: auto; }
+      main { grid-template-columns: 280px 1fr; min-width: 150vw; }
+      #graph { min-width: 100vw; }
+    }".
 
 %% generate_html_body(-Body)
 generate_html_body(Body) :-
@@ -357,7 +364,7 @@ generate_html_javascript(JS) :-
         const node = evt.target;
         document.getElementById('selectedInfo').style.display = 'block';
         document.getElementById('selectedNodeInfo').textContent =
-          `ID: $${node.id()}, Label: $${node.data('label')}`;
+          `ID: ${node.id()}, Label: ${node.data('label')}`;
       });
 
       cy.on('tap', function(evt) {
@@ -367,6 +374,27 @@ generate_html_javascript(JS) :-
       });
 
       updateEdgeList();
+
+      // Two-finger touch scrolls page (to navigate back to sidebar)
+      const graphEl = document.getElementById('graph');
+      let twoFingerStart = null;
+      graphEl.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+          twoFingerStart = { x: e.touches[0].clientX, scrollX: window.scrollX };
+          cy.userPanningEnabled(false);
+        }
+      }, { passive: true });
+      graphEl.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2 && twoFingerStart) {
+          const dx = twoFingerStart.x - e.touches[0].clientX;
+          window.scrollTo(twoFingerStart.scrollX + dx, 0);
+        }
+      }, { passive: true });
+      graphEl.addEventListener('touchend', () => {
+        twoFingerStart = null;
+        cy.userPanningEnabled(true);
+      }, { passive: true });
+
       document.getElementById('status').textContent = 'Ready';
       document.getElementById('status').className = 'status ready';
     }
@@ -381,16 +409,16 @@ generate_html_javascript(JS) :-
       if (!from || !to) return;
 
       // Add nodes if they don't exist
-      if (!cy.$(`#$${from}`).length) {
+      if (!cy.$(`#${from}`).length) {
         cy.add({ data: { id: from, label: from } });
       }
-      if (!cy.$(`#$${to}`).length) {
+      if (!cy.$(`#${to}`).length) {
         cy.add({ data: { id: to, label: to } });
       }
 
       // Add edge
-      const edgeId = `e_$${from}_$${to}`;
-      if (!cy.$(`#$${edgeId}`).length) {
+      const edgeId = `e_${from}_${to}`;
+      if (!cy.$(`#${edgeId}`).length) {
         cy.add({ data: { id: edgeId, source: from, target: to } });
       }
 
@@ -419,7 +447,7 @@ generate_html_javascript(JS) :-
     };
 
     window.removeEdge = function(edgeId) {
-      cy.$(`#$${edgeId}`).remove();
+      cy.$(`#${edgeId}`).remove();
       // Remove orphan nodes
       cy.nodes().forEach(node => {
         if (node.degree() === 0) node.remove();
@@ -432,8 +460,8 @@ generate_html_javascript(JS) :-
       document.getElementById('edgeCount').textContent = edges.length;
       document.getElementById('edges').innerHTML = edges.map(e =>
         `<div class=\"item\">
-          <span class=\"relation\"><span class=\"name\">$${e.source().id()}</span> → <span class=\"name\">$${e.target().id()}</span></span>
-          <button class=\"danger\" onclick=\"removeEdge('$${e.id()}')\">×</button>
+          <span class=\"relation\"><span class=\"name\">${e.source().id()}</span> → <span class=\"name\">${e.target().id()}</span></span>
+          <button class=\"danger\" onclick=\"removeEdge('${e.id()}')\">×</button>
         </div>`
       ).join('');
     }
