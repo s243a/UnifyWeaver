@@ -47,29 +47,89 @@ def load_api_responses(db_path: Path) -> Dict[str, dict]:
     return trees
 
 
-def build_parent_map(trees: Dict[str, dict]) -> Dict[str, str]:
-    """Build child_tree_id -> parent_tree_id mapping from contentTree references."""
+def load_tree_files(trees_dir: Path) -> Dict[str, dict]:
+    """Load tree data from individual JSON files.
+
+    Expects files with 'api_response' key (Pearltrees API format).
+    """
+    trees = {}
+    skipped = 0
+
+    if not trees_dir.exists():
+        logger.warning(f"Trees directory not found: {trees_dir}")
+        return trees
+
+    for f in trees_dir.glob("*.json"):
+        try:
+            with open(f) as fp:
+                data = json.load(fp)
+
+            # Validate structure - must be a dict with api_response
+            if not isinstance(data, dict):
+                skipped += 1
+                continue
+            if 'api_response' not in data:
+                skipped += 1
+                continue
+
+            tree_id = str(data.get('tree_id', f.stem))
+            resp = data.get('api_response', {})
+            title = resp.get('tree', {}).get('title', '')
+            trees[tree_id] = {
+                'tree_id': tree_id,
+                'title': title,
+                'response': resp
+            }
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to load {f}: {e}")
+
+    if skipped:
+        logger.info(f"Skipped {skipped} files without api_response structure")
+    logger.info(f"Loaded {len(trees)} trees from {trees_dir}")
+    return trees
+
+
+def build_parent_map(trees: Dict[str, dict]) -> Dict[str, tuple]:
+    """Build child_tree_id -> (parent_tree_id, parent_title) mapping.
+
+    Uses info.parentTree for direct parent reference (preferred),
+    falls back to contentTree references in pearls.
+    """
     parent_map = {}
 
     for tree_id, tree_data in trees.items():
         resp = tree_data.get('response', {})
+
+        # Primary: use info.parentTree (direct parent reference)
+        info = resp.get('info', {})
+        parent_tree = info.get('parentTree', {})
+        if parent_tree and 'id' in parent_tree:
+            parent_id = str(parent_tree['id'])
+            parent_title = parent_tree.get('title', '')
+            parent_map[tree_id] = (parent_id, parent_title)
+            continue
+
+        # Fallback: scan for contentTree references (less reliable)
         tree_info = resp.get('tree', {})
         pearls = tree_info.get('pearls', [])
-
         for pearl in pearls:
             content_tree = pearl.get('contentTree', {})
             if content_tree and 'id' in content_tree:
                 child_id = str(content_tree['id'])
-                # This tree contains a reference to child_id
-                parent_map[child_id] = tree_id
+                if child_id not in parent_map:
+                    parent_map[child_id] = (tree_id, tree_data['title'])
 
     logger.info(f"Built parent map with {len(parent_map)} child->parent relationships")
     return parent_map
 
 
-def get_path_to_root(tree_id: str, trees: Dict[str, dict], parent_map: Dict[str, str],
+def get_path_to_root(tree_id: str, trees: Dict[str, dict], parent_map: Dict[str, tuple],
                      max_depth: int = 20) -> List[str]:
-    """Get path from tree to root as list of titles."""
+    """Get path from tree to root as list of titles.
+
+    Uses parent_map which maps tree_id -> (parent_id, parent_title).
+    This allows building paths even when parent trees weren't fetched.
+    """
     path = []
     current_id = tree_id
     visited = set()
@@ -80,12 +140,31 @@ def get_path_to_root(tree_id: str, trees: Dict[str, dict], parent_map: Dict[str,
             break
         visited.add(current_id)
 
+        # Get title for current node
         if current_id in trees:
             title = trees[current_id]['title']
-            path.append(title)
+        elif current_id == tree_id:
+            # This shouldn't happen, but handle it
+            title = f"Unknown({current_id})"
+        else:
+            # Parent node not in trees, but we have its title from parent_map
+            # (this was set when we processed the child)
+            title = None
+            for child_id, (parent_id, parent_title) in parent_map.items():
+                if parent_id == current_id and parent_title:
+                    title = parent_title
+                    break
+            if not title:
+                title = f"Unknown({current_id})"
+
+        path.append(title)
 
         # Move to parent
-        current_id = parent_map.get(current_id)
+        parent_info = parent_map.get(current_id)
+        if parent_info:
+            current_id = parent_info[0]  # parent_id
+        else:
+            current_id = None
 
     # Reverse to get root -> leaf order
     path.reverse()
@@ -133,9 +212,31 @@ def convert_to_jsonl(trees: Dict[str, dict], parent_map: Dict[str, str],
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Pearltrees API DB to tree data JSONL")
-    parser.add_argument("--db", type=Path, required=True,
+    parser = argparse.ArgumentParser(
+        description="Convert Pearltrees API data to tree data JSONL",
+        epilog="""
+Examples:
+  # From database:
+  python3 scripts/convert_api_to_tree_data.py \\
+    --db .local/data/pearltrees_api/api_responses.db \\
+    --output .local/data/api_tree_paths.jsonl
+
+  # From tree files directory:
+  python3 scripts/convert_api_to_tree_data.py \\
+    --trees-dir .local/data/pearltrees_api/trees \\
+    --output .local/data/api_tree_paths.jsonl
+
+  # Combine both sources:
+  python3 scripts/convert_api_to_tree_data.py \\
+    --db .local/data/pearltrees_api/api_responses.db \\
+    --trees-dir .local/data/pearltrees_api/trees \\
+    --output .local/data/api_tree_paths.jsonl
+        """
+    )
+    parser.add_argument("--db", type=Path, default=None,
                        help="Path to api_responses.db")
+    parser.add_argument("--trees-dir", type=Path, default=None, dest="trees_dir",
+                       help="Path to directory with tree JSON files")
     parser.add_argument("--output", type=Path, required=True,
                        help="Output JSONL file path")
     parser.add_argument("--account", type=str, default="s243a",
@@ -143,12 +244,36 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.db.exists():
-        logger.error(f"Database not found: {args.db}")
+    if not args.db and not args.trees_dir:
+        parser.error("At least one of --db or --trees-dir is required")
+
+    # Load data from all sources
+    trees = {}
+
+    if args.db and args.db.exists():
+        db_trees = load_api_responses(args.db)
+        trees.update(db_trees)
+    elif args.db:
+        logger.warning(f"Database not found: {args.db}")
+
+    if args.trees_dir:
+        file_trees = load_tree_files(args.trees_dir)
+        # Merge, preferring file data (more likely to have info.parentTree)
+        for tree_id, data in file_trees.items():
+            if tree_id not in trees:
+                trees[tree_id] = data
+            else:
+                # If file has info.parentTree and db doesn't, use file
+                file_resp = data.get('response', {})
+                db_resp = trees[tree_id].get('response', {})
+                if file_resp.get('info', {}).get('parentTree') and not db_resp.get('info', {}).get('parentTree'):
+                    trees[tree_id] = data
+
+    if not trees:
+        logger.error("No trees loaded from any source")
         return 1
 
-    # Load data
-    trees = load_api_responses(args.db)
+    logger.info(f"Total trees loaded: {len(trees)}")
 
     # Build parent relationships
     parent_map = build_parent_map(trees)
