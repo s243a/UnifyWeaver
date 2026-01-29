@@ -585,3 +585,43 @@ We have implemented procedural recursion in the `csharp_native` target. The next
 **Goal:** Verify generated C# code in a full .NET environment.
 - Requires an environment with the .NET SDK.
 - End-to-end verification of recursive predicates and pipelines to ensure runtime correctness.
+
+---
+
+## UI/GUI App Generation Testing
+
+### Apps Needing Generation Pipelines
+
+Several example apps exist but lack complete Prolog-based generation scripts:
+
+| App | Current State | Needed |
+|-----|---------------|--------|
+| `examples/pyodide-matrix/` | Has `matrix_module.pl` (generates Python/TS) | Add HTML generation or `generate.pl` script |
+| `examples/curve-plot/` | Has `curve_module.pl` (generates WASM/TS) | Add HTML generation or `generate.pl` script |
+| `examples/wasm-graph/` | Manual TypeScript + HTML | Add `generate.pl` using `graph_generator.pl` |
+| `examples/react-cli/` | Manual React app | Add `generate.pl` using `react_generator.pl` |
+| `examples/react-http-cli/` | Manual React app | Add `generate.pl` using `react_generator.pl` + `html_interface_generator.pl` |
+
+**Goal:** Each example app should be fully regenerable from Prolog specifications via a `generate.pl` script.
+
+### Visualization Generators Needing Testing
+
+These generators exist in `src/unifyweaver/glue/` but lack example apps demonstrating their output:
+
+| Generator | Output | Status |
+|-----------|--------|--------|
+| `chord_generator.pl` | React chord diagrams | Untested |
+| `funnel_chart_generator.pl` | React funnel charts | Untested |
+| `gauge_chart_generator.pl` | React gauge/meter charts | Untested |
+| `radar_chart_generator.pl` | React radar/spider charts | Untested |
+| `sankey_generator.pl` | React Sankey flow diagrams | Untested |
+| `plot3d_generator.pl` | React/Plotly 3D plots | Untested |
+| `heatmap_generator.pl` | React/seaborn heatmaps | Untested |
+| `treemap_generator.pl` | React/Plotly treemaps | Untested |
+| `matplotlib_generator.pl` | Python matplotlib code | Untested |
+| `animation_generator.pl` | CSS keyframes/transitions | Untested |
+| `interaction_generator.pl` | Pan/zoom, tooltips, drill-down | Untested |
+| `virtual_scroll_generator.pl` | Large list rendering | Untested |
+| `lazy_loading_generator.pl` | Pagination, infinite scroll | Untested |
+
+**Goal:** Create example apps for each visualization generator, either standalone HTML or integrated into Storybook.
