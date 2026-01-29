@@ -1,76 +1,122 @@
 # WASM Graph Visualization Example
 
-Demonstrates UnifyWeaver's WASM string support with Cytoscape.js graph rendering.
+Demonstrates UnifyWeaver's graph visualization with Cytoscape.js.
+
+**Fully Generated:** All output files (HTML, TypeScript) are generated from `graph_module.pl`.
 
 ## Quick Start
 
+### Generate All Files
+
 ```bash
-# 1. Generate WASM module from Prolog
-cd /path/to/UnifyWeaver
-swipl -g "use_module('src/unifyweaver/targets/llvm_target'),
-          compile_wasm_string_module([func(ancestor, 2, transitive_closure)], 
-                                      [module_name(family_graph)], Code),
-          write_llvm_program(Code, 'examples/wasm-graph/family_graph.ll')" -t halt
+cd examples/wasm-graph
+swipl -g "consult('graph_module.pl'), graph_module:generate_all" -t halt
+```
 
-# 2. Build WASM (requires LLVM with WASM backend)
-./build.sh
+This generates:
+- `index.html` - Complete web application with Cytoscape.js
+- `graph_wasm.ts` - TypeScript bindings for WASM (with JS fallback)
 
-# 3. Serve and view
-npx serve .
-# Open http://localhost:3000
+### View in Browser
+
+```bash
+python3 -m http.server 8080
+# Open http://localhost:8080
 ```
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `build.sh` | Compiles .ll → .wasm |
-| `family_graph.ts` | Generated TypeScript bindings |
-| `graph.ts` | Cytoscape.js integration |
-| `index.html` | Demo page |
+| `graph_module.pl` | Prolog module - source of truth for all generation |
+| `index.html` | (Generated) Complete web app with Cytoscape.js |
+| `graph_wasm.ts` | (Generated) TypeScript bindings with JS fallback |
+| `family_graph.ts` | (Legacy) Old TypeScript bindings |
+| `build.sh` | (Legacy) WASM build script |
+
+## Graph Definition
+
+Define graphs in Prolog:
+
+```prolog
+% Nodes with properties
+node(abraham, [label("Abraham"), type(person), generation(1)]).
+node(isaac, [label("Isaac"), type(person), generation(2)]).
+
+% Edges with properties
+edge(abraham, isaac, [relation(parent)]).
+
+% Graph configuration
+graph_config([
+    title("Family Tree"),
+    layout(cose),
+    theme(dark),
+    node_color('#7c3aed'),
+    edge_color('#00d4ff')
+]).
+```
+
+## Features
+
+The generated app includes:
+- Family tree with 8 nodes and parent relationships
+- Layout options: Force, Circle, Grid, Tree
+- Add custom edges (creates nodes automatically)
+- Remove edges individually
+- Click nodes to see details
+- Load/clear sample data
+- Responsive Cytoscape.js visualization
 
 ## Architecture
 
 ```
-Prolog (parent/2, ancestor/2)
-    ↓ compile_wasm_string_module/3
-LLVM IR (family_graph.ll)
-    ↓ llc + wasm-ld
-WASM (family_graph.wasm)
-    ↓ GraphWasm.load()
-TypeScript + Cytoscape.js
+graph_module.pl
+├── node/2              # Node definitions
+├── edge/3              # Edge definitions
+├── graph_config/1      # Graph configuration
+├── generate_all/0      # Main entry point
+├── generate_html/1     # Complete HTML app
+└── generate_ts_bindings/1  # TypeScript WASM bindings
+```
+
+### Pipeline
+
+```
+Prolog (node/2, edge/3)
+    ↓ graph_module.pl
+HTML + JavaScript (Cytoscape.js)
     ↓
 Browser Graph Visualization
 ```
 
-## Example Usage
+## Advanced: WASM Backend (Optional)
 
-```typescript
-import { GraphWasm } from './family_graph';
-import cytoscape from 'cytoscape';
+For high-performance graph operations, compile to WASM:
 
-const graph = await GraphWasm.load('family_graph.wasm');
+```bash
+# Generate LLVM IR
+swipl -g "use_module('src/unifyweaver/targets/llvm_target'),
+          compile_wasm_string_module([func(ancestor, 2, transitive_closure)],
+                                      [module_name(family_graph)], Code),
+          write_llvm_program(Code, 'examples/wasm-graph/family_graph.ll')" -t halt
 
-// Add edges
-graph.addEdge('tom', 'bob');
-graph.addEdge('bob', 'alice');
-graph.addEdge('alice', 'eve');
-
-// Render with Cytoscape
-const edges = graph.getEdges();
-const cy = cytoscape({
-  container: document.getElementById('graph'),
-  elements: edges.flatMap(([from, to]) => [
-    { data: { id: from } },
-    { data: { id: to } },
-    { data: { source: from, target: to } }
-  ])
-});
+# Build WASM
+./build.sh
 ```
+
+The TypeScript bindings automatically use WASM if available, otherwise fall back to JavaScript.
 
 ## Dependencies
 
+- SWI-Prolog (for code generation)
+- Modern browser with ES6 module support
+- Cytoscape.js (loaded from CDN)
+
+Optional (for WASM):
 - LLVM 14+ with wasm32 target
 - wasm-ld (from lld package)
-- Node.js / npm
-- Cytoscape.js (`npm install cytoscape`)
+
+## Reference
+
+Original hand-written index.html preserved in git history:
+https://github.com/s243a/UnifyWeaver/blob/main/examples/wasm-graph/index.html (pre-generation)

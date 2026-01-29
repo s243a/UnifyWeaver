@@ -1,0 +1,7 @@
+# Generated files (can be regenerated from graph_module.pl)
+graph_wasm.ts
+
+# WASM build artifacts
+*.o
+*.wasm
+*.ll
