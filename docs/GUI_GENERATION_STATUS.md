@@ -6,8 +6,8 @@ This document tracks the status of GUI/UI app generation in UnifyWeaver.
 
 | Category | Count |
 |----------|-------|
-| Fully generated apps | 4 |
-| Partially generated apps | 3 |
+| Fully generated apps | 6 |
+| Partially generated apps | 1 |
 | Manual apps (need generators) | 4 |
 | Untested visualization generators | 13 |
 
@@ -45,13 +45,27 @@ These apps can be completely regenerated from Prolog via `generate.pl` or `gener
 **Output:** dialog_cli.sh with ncurses menus
 **Status:** ✅ Tested
 
+### 5. pyodide-matrix
+**Path:** `examples/pyodide-matrix/`
+**Generator:** `matrix_module.pl` has `generate_all/0`
+**Architecture:** Prolog → Python (NumPy) + TypeScript bindings + HTML/Chart.js
+**Output:** matrix_lib.py, matrix_wasm.ts, index.html
+**Status:** ✅ Tested in browser
+
+### 6. curve-plot
+**Path:** `examples/curve-plot/`
+**Generator:** `curve_module.pl` has `generate_all/0`
+**Architecture:** Prolog → LLVM IR → WebAssembly + TypeScript/Chart.js + HTML
+**Output:** curve_plot.ll, curve_wasm.ts, index.html
+**Status:** ✅ Tested in browser (JS fallback)
+
 ---
 
 ## Partially Generated Apps
 
 These apps have Prolog modules that generate some code, but HTML/scaffolding is manual.
 
-### 5. http-cli-server
+### 7. http-cli-server
 **Path:** `examples/http-cli-server/`
 **Generator:** `generate.sh` calls multiple generators
 **Architecture:**
@@ -65,28 +79,6 @@ These apps have Prolog modules that generate some code, but HTML/scaffolding is 
 
 **Manual:** spec.pl (declarative specification - intentionally manual)
 **Status:** ✅ Tested with HTTPS and authentication
-
-### 6. pyodide-matrix
-**Path:** `examples/pyodide-matrix/`
-**Generator:** `matrix_module.pl` has `generate_all/0`
-**Architecture:** Prolog → Python (NumPy) + TypeScript bindings + HTML/Chart.js
-**Generated:**
-- matrix_lib.py - NumPy operations
-- matrix_wasm.ts - TypeScript bindings
-- index.html - Complete web app with Chart.js visualization
-
-**Status:** ✅ Fully generated, browser app ready for testing
-
-### 7. curve-plot
-**Path:** `examples/curve-plot/`
-**Generator:** `curve_module.pl` has `generate_curve_wasm/2`
-**Architecture:** Prolog → LLVM IR → WebAssembly + TypeScript/Chart.js
-**Generated:**
-- LLVM IR for curve functions
-- TypeScript Chart.js bindings
-
-**Manual:** index.html (16KB) - needs HTML generator
-**Status:** ⚠️ Generation partial, browser app untested
 
 ---
 
@@ -207,8 +199,8 @@ These generators exist in `src/unifyweaver/glue/` but have no example apps.
 ### Priority 1: Add generators to existing apps
 1. `wasm-graph/generate.pl` - Use `graph_generator.pl`
 2. `react-cli/generate.pl` - Use `react_generator.pl` + `project_scaffold.pl`
-3. `pyodide-matrix/` - Add HTML generation to `matrix_module.pl`
-4. `curve-plot/` - Add HTML generation to `curve_module.pl`
+3. ~~`pyodide-matrix/`~~ - ✅ Done: HTML generation added to `matrix_module.pl`
+4. ~~`curve-plot/`~~ - ✅ Done: HTML generation added to `curve_module.pl`
 
 ### Priority 2: Test visualization generators
 Add Storybook stories for each chart type:

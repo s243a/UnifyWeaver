@@ -1,0 +1,5 @@
+# Generated files (can be regenerated from curve_module.pl)
+curve_plot.ll
+curve_wasm.ts
+curve_plot.o
+curve_plot.wasm
