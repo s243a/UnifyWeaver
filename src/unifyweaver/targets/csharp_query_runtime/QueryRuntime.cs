@@ -2369,14 +2369,12 @@ namespace UnifyWeaver.QueryRuntime
                                 var joinIndexCached = context.JoinIndices.ContainsKey((leftScanPredicate, leftSignature));
 
                                 const int TinyProbeUpperBound = 64;
-                                var probeIsTiny = keyCount > 1 && estimatedRightProbe <= TinyProbeUpperBound;
-
-                                if (probeIsTiny &&
-                                    !joinIndexCached &&
+                                if (!joinIndexCached &&
+                                    keyCount > 1 &&
                                     (context.FixpointDepth == 0 || IsRecursiveProbe(join.Right)))
                                 {
-                                    trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
                                     var probeSource = Evaluate(join.Right, context);
+                                    using var probeEnumerator = probeSource.GetEnumerator();
                                     var probeRows = new List<(object[] Tuple, object[] Keys)>();
                                     var distinctKeys = new HashSet<object>[joinKeyCount];
                                     for (var i = 0; i < joinKeyCount; i++)
@@ -2384,8 +2382,10 @@ namespace UnifyWeaver.QueryRuntime
                                         distinctKeys[i] = new HashSet<object>();
                                     }
 
-                                    foreach (var rightTuple in probeSource)
+                                    var probeTooLarge = false;
+                                    while (probeEnumerator.MoveNext())
                                     {
+                                        var rightTuple = probeEnumerator.Current;
                                         if (rightTuple is null) continue;
                                         if (!ProbeMatchesScanJoinKeyConstants(rightTuple, join.RightKeys, join.LeftKeys, leftScanPattern)) continue;
 
@@ -2398,91 +2398,152 @@ namespace UnifyWeaver.QueryRuntime
                                         }
 
                                         probeRows.Add((rightTuple, keyValues));
+                                        if (probeRows.Count > TinyProbeUpperBound)
+                                        {
+                                            probeTooLarge = true;
+                                            break;
+                                        }
                                     }
 
-                                    if (probeRows.Count == 0)
+                                    if (!probeTooLarge)
                                     {
+                                        trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
+                                        if (probeRows.Count == 0)
+                                        {
+                                            yield break;
+                                        }
+
+                                        var pivotPos = 0;
+                                        var bestDistinct = distinctKeys[0].Count;
+                                        var bestCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[0]));
+                                        for (var i = 1; i < joinKeyCount; i++)
+                                        {
+                                            var candidateDistinct = distinctKeys[i].Count;
+                                            var candidateCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[i]));
+
+                                            if (candidateCached && !bestCached)
+                                            {
+                                                pivotPos = i;
+                                                bestDistinct = candidateDistinct;
+                                                bestCached = true;
+                                                continue;
+                                            }
+
+                                            if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                                            {
+                                                pivotPos = i;
+                                                bestDistinct = candidateDistinct;
+                                            }
+                                        }
+
+                                        var pivotLeftKey = join.LeftKeys[pivotPos];
+
+                                        var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
+                                        foreach (var probeRow in probeRows)
+                                        {
+                                            var pivotKey = probeRow.Keys[pivotPos];
+                                            if (!probeIndex.TryGetValue(pivotKey, out var bucket))
+                                            {
+                                                bucket = new List<(object[] Tuple, object[] Keys)>();
+                                                probeIndex[pivotKey] = bucket;
+                                            }
+
+                                            bucket.Add(probeRow);
+                                        }
+
+                                        if (probeIndex.Count == 0)
+                                        {
+                                            yield break;
+                                        }
+
+                                        var factIndex = GetFactIndex(leftScanPredicate, pivotLeftKey, leftFacts, context);
+                                        foreach (var entry in probeIndex)
+                                        {
+                                            if (!factIndex.TryGetValue(entry.Key, out var leftBucket))
+                                            {
+                                                continue;
+                                            }
+
+                                            foreach (var leftTuple in leftBucket)
+                                            {
+                                                if (leftTuple is null) continue;
+                                                if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
+                                                if (leftScanPattern is not null && !TupleMatchesPattern(leftTuple, leftScanPattern)) continue;
+
+                                                foreach (var probeRow in entry.Value)
+                                                {
+                                                    var match = true;
+                                                    for (var i = 0; i < joinKeyCount; i++)
+                                                    {
+                                                        if (i == pivotPos) continue;
+                                                        var leftValue = GetLookupKey(leftTuple, join.LeftKeys[i], NullFactIndexKey);
+                                                        if (!Equals(leftValue, probeRow.Keys[i]))
+                                                        {
+                                                            match = false;
+                                                            break;
+                                                        }
+                                                    }
+
+                                                    if (!match)
+                                                    {
+                                                        continue;
+                                                    }
+
+                                                    yield return BuildJoinOutput(leftTuple, probeRow.Tuple, join.LeftWidth, join.RightWidth, join.Width);
+                                                }
+                                            }
+                                        }
+
                                         yield break;
                                     }
 
-                                    var pivotPos = 0;
-                                    var bestDistinct = distinctKeys[0].Count;
-                                    var bestCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[0]));
-                                    for (var i = 1; i < joinKeyCount; i++)
-                                    {
-                                        var candidateDistinct = distinctKeys[i].Count;
-                                        var candidateCached = context.FactIndices.ContainsKey((leftScanPredicate, join.LeftKeys[i]));
+                                    trace?.RecordStrategy(join, "KeyJoinScanIndex");
+                                    var scanScanIndexFallbackLeft = GetJoinIndex(leftScanPredicate, leftIndexKeys, leftFacts, context);
 
-                                        if (candidateCached && !bestCached)
-                                        {
-                                            pivotPos = i;
-                                            bestDistinct = candidateDistinct;
-                                            bestCached = true;
-                                            continue;
-                                        }
-
-                                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
-                                        {
-                                            pivotPos = i;
-                                            bestDistinct = candidateDistinct;
-                                        }
-                                    }
-
-                                    var pivotLeftKey = join.LeftKeys[pivotPos];
-
-                                    var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
                                     foreach (var probeRow in probeRows)
                                     {
-                                        var pivotKey = probeRow.Keys[pivotPos];
-                                        if (!probeIndex.TryGetValue(pivotKey, out var bucket))
-                                        {
-                                            bucket = new List<(object[] Tuple, object[] Keys)>();
-                                            probeIndex[pivotKey] = bucket;
-                                        }
+                                        var rightTuple = probeRow.Tuple;
+                                        if (rightTuple is null) continue;
 
-                                        bucket.Add(probeRow);
-                                    }
+                                        var key = leftIndexKeys.Count == keyCount
+                                            ? BuildKeyFromTuple(rightTuple, join.RightKeys)
+                                            : BuildScanJoinLookupKey(rightTuple, join.RightKeys, join.LeftKeys, leftIndexKeys, leftScanPattern);
+                                        var wrapper = new RowWrapper(key);
 
-                                    if (probeIndex.Count == 0)
-                                    {
-                                        yield break;
-                                    }
-
-                                    var factIndex = GetFactIndex(leftScanPredicate, pivotLeftKey, leftFacts, context);
-                                    foreach (var entry in probeIndex)
-                                    {
-                                        if (!factIndex.TryGetValue(entry.Key, out var leftBucket))
+                                        if (!scanScanIndexFallbackLeft.TryGetValue(wrapper, out var bucket))
                                         {
                                             continue;
                                         }
 
-                                        foreach (var leftTuple in leftBucket)
+                                        foreach (var leftTuple in bucket)
                                         {
                                             if (leftTuple is null) continue;
                                             if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
-                                            if (leftScanPattern is not null && !TupleMatchesPattern(leftTuple, leftScanPattern)) continue;
+                                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                        }
+                                    }
 
-                                            foreach (var probeRow in entry.Value)
-                                            {
-                                                var match = true;
-                                                for (var i = 0; i < joinKeyCount; i++)
-                                                {
-                                                    if (i == pivotPos) continue;
-                                                    var leftValue = GetLookupKey(leftTuple, join.LeftKeys[i], NullFactIndexKey);
-                                                    if (!Equals(leftValue, probeRow.Keys[i]))
-                                                    {
-                                                        match = false;
-                                                        break;
-                                                    }
-                                                }
+                                    while (probeEnumerator.MoveNext())
+                                    {
+                                        var rightTuple = probeEnumerator.Current;
+                                        if (rightTuple is null) continue;
+                                        if (!ProbeMatchesScanJoinKeyConstants(rightTuple, join.RightKeys, join.LeftKeys, leftScanPattern)) continue;
 
-                                                if (!match)
-                                                {
-                                                    continue;
-                                                }
+                                        var key = leftIndexKeys.Count == keyCount
+                                            ? BuildKeyFromTuple(rightTuple, join.RightKeys)
+                                            : BuildScanJoinLookupKey(rightTuple, join.RightKeys, join.LeftKeys, leftIndexKeys, leftScanPattern);
+                                        var wrapper = new RowWrapper(key);
 
-                                                yield return BuildJoinOutput(leftTuple, probeRow.Tuple, join.LeftWidth, join.RightWidth, join.Width);
-                                            }
+                                        if (!scanScanIndexFallbackLeft.TryGetValue(wrapper, out var bucket))
+                                        {
+                                            continue;
+                                        }
+
+                                        foreach (var leftTuple in bucket)
+                                        {
+                                            if (leftTuple is null) continue;
+                                            if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
+                                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                         }
                                     }
 
@@ -2547,14 +2608,12 @@ namespace UnifyWeaver.QueryRuntime
                                 var joinIndexCached = context.JoinIndices.ContainsKey((rightScanPredicate, rightSignature));
 
                                 const int TinyProbeUpperBound = 64;
-                                var probeIsTiny = keyCount > 1 && estimatedLeftProbe <= TinyProbeUpperBound;
-
-                                if (probeIsTiny &&
-                                    !joinIndexCached &&
+                                if (!joinIndexCached &&
+                                    keyCount > 1 &&
                                     (context.FixpointDepth == 0 || IsRecursiveProbe(join.Left)))
                                 {
-                                    trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
                                     var probeSource = Evaluate(join.Left, context);
+                                    using var probeEnumerator = probeSource.GetEnumerator();
                                     var probeRows = new List<(object[] Tuple, object[] Keys)>();
                                     var distinctKeys = new HashSet<object>[joinKeyCount];
                                     for (var i = 0; i < joinKeyCount; i++)
@@ -2562,8 +2621,10 @@ namespace UnifyWeaver.QueryRuntime
                                         distinctKeys[i] = new HashSet<object>();
                                     }
 
-                                    foreach (var leftTuple in probeSource)
+                                    var probeTooLarge = false;
+                                    while (probeEnumerator.MoveNext())
                                     {
+                                        var leftTuple = probeEnumerator.Current;
                                         if (leftTuple is null) continue;
                                         if (!ProbeMatchesScanJoinKeyConstants(leftTuple, join.LeftKeys, join.RightKeys, rightScanPattern)) continue;
 
@@ -2576,91 +2637,152 @@ namespace UnifyWeaver.QueryRuntime
                                         }
 
                                         probeRows.Add((leftTuple, keyValues));
+                                        if (probeRows.Count > TinyProbeUpperBound)
+                                        {
+                                            probeTooLarge = true;
+                                            break;
+                                        }
                                     }
 
-                                    if (probeRows.Count == 0)
+                                    if (!probeTooLarge)
                                     {
+                                        trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
+                                        if (probeRows.Count == 0)
+                                        {
+                                            yield break;
+                                        }
+
+                                        var pivotPos = 0;
+                                        var bestDistinct = distinctKeys[0].Count;
+                                        var bestCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[0]));
+                                        for (var i = 1; i < joinKeyCount; i++)
+                                        {
+                                            var candidateDistinct = distinctKeys[i].Count;
+                                            var candidateCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[i]));
+
+                                            if (candidateCached && !bestCached)
+                                            {
+                                                pivotPos = i;
+                                                bestDistinct = candidateDistinct;
+                                                bestCached = true;
+                                                continue;
+                                            }
+
+                                            if (candidateCached == bestCached && candidateDistinct > bestDistinct)
+                                            {
+                                                pivotPos = i;
+                                                bestDistinct = candidateDistinct;
+                                            }
+                                        }
+
+                                        var pivotRightKey = join.RightKeys[pivotPos];
+
+                                        var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
+                                        foreach (var probeRow in probeRows)
+                                        {
+                                            var pivotKey = probeRow.Keys[pivotPos];
+                                            if (!probeIndex.TryGetValue(pivotKey, out var bucket))
+                                            {
+                                                bucket = new List<(object[] Tuple, object[] Keys)>();
+                                                probeIndex[pivotKey] = bucket;
+                                            }
+
+                                            bucket.Add(probeRow);
+                                        }
+
+                                        if (probeIndex.Count == 0)
+                                        {
+                                            yield break;
+                                        }
+
+                                        var factIndex = GetFactIndex(rightScanPredicate, pivotRightKey, rightFacts, context);
+                                        foreach (var entry in probeIndex)
+                                        {
+                                            if (!factIndex.TryGetValue(entry.Key, out var rightBucket))
+                                            {
+                                                continue;
+                                            }
+
+                                            foreach (var rightTuple in rightBucket)
+                                            {
+                                                if (rightTuple is null) continue;
+                                                if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
+                                                if (rightScanPattern is not null && !TupleMatchesPattern(rightTuple, rightScanPattern)) continue;
+
+                                                foreach (var probeRow in entry.Value)
+                                                {
+                                                    var match = true;
+                                                    for (var i = 0; i < joinKeyCount; i++)
+                                                    {
+                                                        if (i == pivotPos) continue;
+                                                        var rightValue = GetLookupKey(rightTuple, join.RightKeys[i], NullFactIndexKey);
+                                                        if (!Equals(rightValue, probeRow.Keys[i]))
+                                                        {
+                                                            match = false;
+                                                            break;
+                                                        }
+                                                    }
+
+                                                    if (!match)
+                                                    {
+                                                        continue;
+                                                    }
+
+                                                    yield return BuildJoinOutput(probeRow.Tuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                                }
+                                            }
+                                        }
+
                                         yield break;
                                     }
 
-                                    var pivotPos = 0;
-                                    var bestDistinct = distinctKeys[0].Count;
-                                    var bestCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[0]));
-                                    for (var i = 1; i < joinKeyCount; i++)
-                                    {
-                                        var candidateDistinct = distinctKeys[i].Count;
-                                        var candidateCached = context.FactIndices.ContainsKey((rightScanPredicate, join.RightKeys[i]));
+                                    trace?.RecordStrategy(join, "KeyJoinScanIndex");
+                                    var scanScanIndexFallbackRight = GetJoinIndex(rightScanPredicate, rightIndexKeys, rightFacts, context);
 
-                                        if (candidateCached && !bestCached)
-                                        {
-                                            pivotPos = i;
-                                            bestDistinct = candidateDistinct;
-                                            bestCached = true;
-                                            continue;
-                                        }
-
-                                        if (candidateCached == bestCached && candidateDistinct > bestDistinct)
-                                        {
-                                            pivotPos = i;
-                                            bestDistinct = candidateDistinct;
-                                        }
-                                    }
-
-                                    var pivotRightKey = join.RightKeys[pivotPos];
-
-                                    var probeIndex = new Dictionary<object, List<(object[] Tuple, object[] Keys)>>();
                                     foreach (var probeRow in probeRows)
                                     {
-                                        var pivotKey = probeRow.Keys[pivotPos];
-                                        if (!probeIndex.TryGetValue(pivotKey, out var bucket))
-                                        {
-                                            bucket = new List<(object[] Tuple, object[] Keys)>();
-                                            probeIndex[pivotKey] = bucket;
-                                        }
+                                        var leftTuple = probeRow.Tuple;
+                                        if (leftTuple is null) continue;
 
-                                        bucket.Add(probeRow);
-                                    }
+                                        var key = rightIndexKeys.Count == keyCount
+                                            ? BuildKeyFromTuple(leftTuple, join.LeftKeys)
+                                            : BuildScanJoinLookupKey(leftTuple, join.LeftKeys, join.RightKeys, rightIndexKeys, rightScanPattern);
+                                        var wrapper = new RowWrapper(key);
 
-                                    if (probeIndex.Count == 0)
-                                    {
-                                        yield break;
-                                    }
-
-                                    var factIndex = GetFactIndex(rightScanPredicate, pivotRightKey, rightFacts, context);
-                                    foreach (var entry in probeIndex)
-                                    {
-                                        if (!factIndex.TryGetValue(entry.Key, out var rightBucket))
+                                        if (!scanScanIndexFallbackRight.TryGetValue(wrapper, out var bucket))
                                         {
                                             continue;
                                         }
 
-                                        foreach (var rightTuple in rightBucket)
+                                        foreach (var rightTuple in bucket)
                                         {
                                             if (rightTuple is null) continue;
                                             if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
-                                            if (rightScanPattern is not null && !TupleMatchesPattern(rightTuple, rightScanPattern)) continue;
+                                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                        }
+                                    }
 
-                                            foreach (var probeRow in entry.Value)
-                                            {
-                                                var match = true;
-                                                for (var i = 0; i < joinKeyCount; i++)
-                                                {
-                                                    if (i == pivotPos) continue;
-                                                    var rightValue = GetLookupKey(rightTuple, join.RightKeys[i], NullFactIndexKey);
-                                                    if (!Equals(rightValue, probeRow.Keys[i]))
-                                                    {
-                                                        match = false;
-                                                        break;
-                                                    }
-                                                }
+                                    while (probeEnumerator.MoveNext())
+                                    {
+                                        var leftTuple = probeEnumerator.Current;
+                                        if (leftTuple is null) continue;
+                                        if (!ProbeMatchesScanJoinKeyConstants(leftTuple, join.LeftKeys, join.RightKeys, rightScanPattern)) continue;
 
-                                                if (!match)
-                                                {
-                                                    continue;
-                                                }
+                                        var key = rightIndexKeys.Count == keyCount
+                                            ? BuildKeyFromTuple(leftTuple, join.LeftKeys)
+                                            : BuildScanJoinLookupKey(leftTuple, join.LeftKeys, join.RightKeys, rightIndexKeys, rightScanPattern);
+                                        var wrapper = new RowWrapper(key);
 
-                                                yield return BuildJoinOutput(probeRow.Tuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
-                                            }
+                                        if (!scanScanIndexFallbackRight.TryGetValue(wrapper, out var bucket))
+                                        {
+                                            continue;
+                                        }
+
+                                        foreach (var rightTuple in bucket)
+                                        {
+                                            if (rightTuple is null) continue;
+                                            if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
+                                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                         }
                                     }
 
