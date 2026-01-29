@@ -6,9 +6,9 @@ This document tracks the status of GUI/UI app generation in UnifyWeaver.
 
 | Category | Count |
 |----------|-------|
-| Fully generated apps | 6 |
+| Fully generated apps | 7 |
 | Partially generated apps | 1 |
-| Manual apps (need generators) | 4 |
+| Manual apps (need generators) | 3 |
 | Untested visualization generators | 13 |
 
 ---
@@ -59,13 +59,20 @@ These apps can be completely regenerated from Prolog via `generate.pl` or `gener
 **Output:** curve_plot.ll, curve_wasm.ts, index.html
 **Status:** ✅ Tested in browser (JS fallback)
 
+### 7. wasm-graph
+**Path:** `examples/wasm-graph/`
+**Generator:** `graph_module.pl` has `generate_all/0`
+**Architecture:** Prolog → HTML + JavaScript (Cytoscape.js)
+**Output:** index.html, graph_wasm.ts
+**Status:** ✅ Tested in browser
+
 ---
 
 ## Partially Generated Apps
 
 These apps have Prolog modules that generate some code, but HTML/scaffolding is manual.
 
-### 7. http-cli-server
+### 8. http-cli-server
 **Path:** `examples/http-cli-server/`
 **Generator:** `generate.sh` calls multiple generators
 **Architecture:**
@@ -85,13 +92,6 @@ These apps have Prolog modules that generate some code, but HTML/scaffolding is 
 ## Manual Apps (Need Generators)
 
 These apps exist but have no Prolog generation - they were handcrafted.
-
-### 8. wasm-graph
-**Path:** `examples/wasm-graph/`
-**Current:** Manual TypeScript + HTML
-**Needed:** `generate.pl` using `graph_generator.pl`
-**Architecture:** Should be Prolog → `graph_generator.pl` → Cytoscape.js/React
-**Status:** ❌ No generator
 
 ### 9. react-cli
 **Path:** `examples/react-cli/`
@@ -197,7 +197,7 @@ These generators exist in `src/unifyweaver/glue/` but have no example apps.
 ## Next Steps
 
 ### Priority 1: Add generators to existing apps
-1. `wasm-graph/generate.pl` - Use `graph_generator.pl`
+1. ~~`wasm-graph/`~~ - ✅ Done: `graph_module.pl` generates HTML + Cytoscape.js
 2. `react-cli/generate.pl` - Use `react_generator.pl` + `project_scaffold.pl`
 3. ~~`pyodide-matrix/`~~ - ✅ Done: HTML generation added to `matrix_module.pl`
 4. ~~`curve-plot/`~~ - ✅ Done: HTML generation added to `curve_module.pl`
