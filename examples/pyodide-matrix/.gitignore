@@ -1,0 +1,3 @@
+# Generated files - run `swipl -g "consult('matrix_module.pl'), generate_all" -t halt` to regenerate
+matrix_lib.py
+matrix_wasm.ts
