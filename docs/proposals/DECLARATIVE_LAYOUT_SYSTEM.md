@@ -937,15 +937,20 @@ Pre-built visualization templates:
 ### Infrastructure (Complete)
 - **CI/CD integration** - GitHub Actions workflow with visualization tests (478 tests)
 - **Storybook integration** - Component documentation and visual testing setup
+- **Prolog component generation** - Generate React components from UI primitives
 
 **Implementations:**
 - `.github/workflows/test.yml` - Automated test runner including visualization glue tests
 - `examples/storybook-react/` - Storybook example project for generated components
+- `examples/storybook-react/generate.pl` - Prolog script to generate Button/TextInput components
 
 **Example Usage:**
 ```bash
 # Run all tests (CI will do this automatically)
 swipl -g "consult('tests/integration/glue/test_visualization_glue.pl'), run_tests, halt(0)"
+
+# Generate components from Prolog UI primitives
+cd examples/storybook-react && swipl generate.pl
 
 # Start Storybook for component documentation
 cd examples/storybook-react && npm install && npm run storybook
