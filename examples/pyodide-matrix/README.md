@@ -49,15 +49,19 @@ This example demonstrates the security advantages of Pyodide:
 
 ## Generated Files
 
-The Prolog module can generate standalone Python and TypeScript files:
+All files in this example are generated from `matrix_module.pl`:
 
 ```bash
-swipl -g "matrix_module:generate_all" -t halt matrix_module.pl
+swipl -g "consult('matrix_module.pl'), generate_all" -t halt
 ```
 
 This creates:
 - `matrix_lib.py` - Python module with NumPy operations
 - `matrix_wasm.ts` - TypeScript bindings
+- `index.html` - Complete web app with Chart.js visualization
+
+The original hand-written index.html (before generation was added) can be found at:
+https://github.com/s243a/UnifyWeaver/blob/92ea1592a4205ddba1f1c94953abde8eca2913f4/examples/pyodide-matrix/index.html
 
 ## Matrix Presets
 

@@ -69,13 +69,13 @@ These apps have Prolog modules that generate some code, but HTML/scaffolding is 
 ### 6. pyodide-matrix
 **Path:** `examples/pyodide-matrix/`
 **Generator:** `matrix_module.pl` has `generate_all/0`
-**Architecture:** Prolog → Python (NumPy) + TypeScript bindings
+**Architecture:** Prolog → Python (NumPy) + TypeScript bindings + HTML/Chart.js
 **Generated:**
 - matrix_lib.py - NumPy operations
 - matrix_wasm.ts - TypeScript bindings
+- index.html - Complete web app with Chart.js visualization
 
-**Manual:** index.html (23KB) - needs HTML generator
-**Status:** ⚠️ Generation partial, browser app untested
+**Status:** ✅ Fully generated, browser app ready for testing
 
 ### 7. curve-plot
 **Path:** `examples/curve-plot/`
