@@ -2213,12 +2213,15 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     case MaterializeNode materialize:
+                    {
                         if (context.Materialized.TryGetValue(materialize.Id, out var cached))
                         {
                             upperBound = cached.Count;
                             return true;
                         }
-                        return false;
+
+                        return TryEstimateRowUpperBound(materialize.Plan, context, out upperBound);
+                    }
 
                     default:
                         return false;

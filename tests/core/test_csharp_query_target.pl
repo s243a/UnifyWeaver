@@ -201,6 +201,7 @@ test_csharp_query_target :-
         verify_both_scan_join_filter_selective_probe_uses_partial_index,
         verify_hash_build_prefers_smaller_non_scan_side,
         verify_hash_build_rowcount_tie_uses_cost_tie_breaker,
+        verify_hash_build_prefers_smaller_materialize_input_rowcount,
         verify_both_scan_join_prefers_cached_fact_index,
         verify_multi_constant_pattern_scan_prefers_fact_index,
         verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
@@ -1755,6 +1756,77 @@ verify_hash_build_rowcount_tie_uses_cost_tie_breaker :-
         ['k1',
          'k2',
          'STRATEGY_USED:KeyJoinHashBuildRight=true'],
+        [],
+        HarnessSource).
+
+verify_hash_build_prefers_smaller_materialize_input_rowcount :-
+    Plan = plan{
+        head:predicate{name:test_hash_build_materialize_rowcount, arity:1},
+        root:projection{
+            type:projection,
+            input:join{
+                type:join,
+                left:aggregate{
+                    type:aggregate,
+                    input:materialize{
+                        type:materialize,
+                        id:mat_left,
+                        plan:relation_scan{
+                            type:relation_scan,
+                            predicate:predicate{name:test_hashbuild_mat_small, arity:1},
+                            width:1
+                        },
+                        width:1
+                    },
+                    predicate:predicate{name:test_hashbuild_mat_data, arity:2},
+                    op:count,
+                    args:[operand{kind:column, index:0}, operand{kind:wildcard}],
+                    group_indices:[],
+                    value_index: -1,
+                    width:2
+                },
+                right:aggregate{
+                    type:aggregate,
+                    input:materialize{
+                        type:materialize,
+                        id:mat_right,
+                        plan:relation_scan{
+                            type:relation_scan,
+                            predicate:predicate{name:test_hashbuild_mat_big, arity:1},
+                            width:1
+                        },
+                        width:1
+                    },
+                    predicate:predicate{name:test_hashbuild_mat_data, arity:2},
+                    op:count,
+                    args:[operand{kind:column, index:0}, operand{kind:wildcard}],
+                    group_indices:[],
+                    value_index: -1,
+                    width:2
+                },
+                left_keys:[0],
+                right_keys:[0],
+                left_width:2,
+                right_width:2,
+                width:4
+            },
+            columns:[0],
+            width:1
+        },
+        is_recursive:false,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_hashbuild_mat_small, arity:1}, facts:[[k1], [k2]]},
+            relation{predicate:predicate{name:test_hashbuild_mat_big, arity:1}, facts:[[k1], [k2], [k3], [k4], [k5], [k6], [k7], [k8], [k9], [k10], [k11], [k12], [k13], [k14], [k15], [k16], [k17], [k18], [k19], [k20], [k21], [k22], [k23], [k24], [k25], [k26], [k27], [k28], [k29], [k30], [k31], [k32], [k33], [k34], [k35], [k36], [k37], [k38], [k39], [k40], [k41], [k42], [k43], [k44], [k45], [k46], [k47], [k48], [k49], [k50], [k51], [k52], [k53], [k54], [k55], [k56], [k57], [k58], [k59], [k60], [k61], [k62], [k63], [k64], [k65], [k66], [k67], [k68], [k69], [k70], [k71], [k72], [k73], [k74], [k75], [k76], [k77], [k78], [k79], [k80], [k81], [k82], [k83], [k84], [k85], [k86], [k87], [k88], [k89], [k90], [k91], [k92], [k93], [k94], [k95], [k96], [k97], [k98], [k99], [k100]]},
+            relation{predicate:predicate{name:test_hashbuild_mat_data, arity:2}, facts:[[k1, v1], [k2, v2], [k3, v3], [k4, v4], [k5, v5], [k6, v6], [k7, v7], [k8, v8], [k9, v9], [k10, v10], [k11, v11], [k12, v12], [k13, v13], [k14, v14], [k15, v15], [k16, v16], [k17, v17], [k18, v18], [k19, v19], [k20, v20], [k21, v21], [k22, v22], [k23, v23], [k24, v24], [k25, v25], [k26, v26], [k27, v27], [k28, v28], [k29, v29], [k30, v30], [k31, v31], [k32, v32], [k33, v33], [k34, v34], [k35, v35], [k36, v36], [k37, v37], [k38, v38], [k39, v39], [k40, v40], [k41, v41], [k42, v42], [k43, v43], [k44, v44], [k45, v45], [k46, v46], [k47, v47], [k48, v48], [k49, v49], [k50, v50], [k51, v51], [k52, v52], [k53, v53], [k54, v54], [k55, v55], [k56, v56], [k57, v57], [k58, v58], [k59, v59], [k60, v60], [k61, v61], [k62, v62], [k63, v63], [k64, v64], [k65, v65], [k66, v66], [k67, v67], [k68, v68], [k69, v69], [k70, v70], [k71, v71], [k72, v72], [k73, v73], [k74, v74], [k75, v75], [k76, v76], [k77, v77], [k78, v78], [k79, v79], [k80, v80], [k81, v81], [k82, v82], [k83, v83], [k84, v84], [k85, v85], [k86, v86], [k87, v87], [k88, v88], [k89, v89], [k90, v90], [k91, v91], [k92, v92], [k93, v93], [k94, v94], [k95, v95], [k96, v96], [k97, v97], [k98, v98], [k99, v99], [k100, v100]]}
+        ]
+    },
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinHashBuildLeft', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['k1',
+         'k2',
+         'STRATEGY_USED:KeyJoinHashBuildLeft=true'],
         [],
         HarnessSource).
 
