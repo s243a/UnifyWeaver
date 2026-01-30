@@ -6,7 +6,7 @@ This document tracks the status of GUI/UI app generation in UnifyWeaver.
 
 | Category | Count |
 |----------|-------|
-| Fully generated apps | 7 |
+| Fully generated apps | 8 |
 | Partially generated apps | 1 |
 | Manual apps (need generators) | 3 |
 | Untested visualization generators | 13 |
@@ -66,13 +66,25 @@ These apps can be completely regenerated from Prolog via `generate.pl` or `gener
 **Output:** index.html, graph_wasm.ts
 **Status:** ✅ Tested in browser
 
+### 8. density-explorer (generated)
+**Path:** `tools/density_explorer/`
+**Generator:** `density_module.pl` has `generate_all/0`
+**Architecture:** Prolog → HTML + JavaScript (Plotly.js)
+**Output:** generated/index.html (does not overwrite web/index.html)
+**Features:**
+- Declarative control definitions (tabs, checkboxes, sliders)
+- Density heatmap with contours and scatter overlay
+- Mobile-responsive with orientation-aware colorbar
+- Touch controls: drag to pan, pinch to zoom
+**Status:** ✅ Tested in browser (mobile and desktop)
+
 ---
 
 ## Partially Generated Apps
 
 These apps have Prolog modules that generate some code, but HTML/scaffolding is manual.
 
-### 8. http-cli-server
+### 9. http-cli-server
 **Path:** `examples/http-cli-server/`
 **Generator:** `generate.sh` calls multiple generators
 **Architecture:**
@@ -93,21 +105,21 @@ These apps have Prolog modules that generate some code, but HTML/scaffolding is 
 
 These apps exist but have no Prolog generation - they were handcrafted.
 
-### 9. react-cli
+### 10. react-cli
 **Path:** `examples/react-cli/`
 **Current:** Manual React/Vite app
 **Needed:** `generate.pl` using `react_generator.pl` + `project_scaffold.pl`
 **Architecture:** Should be Prolog → React/TypeScript via Vite
 **Status:** ❌ No generator
 
-### 10. react-http-cli
+### 11. react-http-cli
 **Path:** `examples/react-http-cli/`
 **Current:** Manual React app (24KB App.tsx)
 **Needed:** `generate.pl` using `react_generator.pl` + `html_interface_generator.pl`
 **Architecture:** Should be Prolog → React/TypeScript + HTTP client
 **Status:** ❌ No generator
 
-### 11. rust-ffi-node
+### 12. rust-ffi-node
 **Path:** `examples/python-bridges/rust-ffi-node/`
 **Current:** Manual Express + React frontend
 **Needed:** `generate.pl` for frontend
@@ -201,6 +213,7 @@ These generators exist in `src/unifyweaver/glue/` but have no example apps.
 2. `react-cli/generate.pl` - Use `react_generator.pl` + `project_scaffold.pl`
 3. ~~`pyodide-matrix/`~~ - ✅ Done: HTML generation added to `matrix_module.pl`
 4. ~~`curve-plot/`~~ - ✅ Done: HTML generation added to `curve_module.pl`
+5. ~~`density-explorer/`~~ - ✅ Done: `density_module.pl` generates to `generated/index.html`
 
 ### Priority 2: Test visualization generators
 Add Storybook stories for each chart type:
