@@ -7204,6 +7204,26 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordStrategy(closure, "TransitiveClosurePairs");
 
+                const int MaxMemoizedPairSeeds = 32;
+                var canMemoizePairs =
+                    _cacheContext is not null &&
+                    bySource.Count <= MaxMemoizedPairSeeds &&
+                    byTarget.Count <= MaxMemoizedPairSeeds;
+
+                if (canMemoizePairs && bySource.Count <= byTarget.Count)
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedForward");
+                    return ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, bySource, context);
+                }
+
+                if (canMemoizePairs)
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedBackward");
+                    return ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, byTarget, context);
+                }
+
                 if (bySource.Count <= byTarget.Count)
                 {
                     trace?.RecordStrategy(closure, "TransitiveClosurePairsForward");
@@ -7217,6 +7237,98 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsMemoizedBySource(
+            TransitiveClosureNode closure,
+            IReadOnlyDictionary<object?, HashSet<object?>> targetsBySource,
+            EvaluationContext context)
+        {
+            var totalRows = new List<object[]>();
+
+            foreach (var entry in targetsBySource)
+            {
+                var source = entry.Key;
+                var targets = entry.Value;
+                if (targets.Count == 0)
+                {
+                    continue;
+                }
+
+                var seedParams = new List<object[]>(1) { new object[] { source! } };
+                var reachableRows = ExecuteSeededTransitiveClosure(closure, seedParams, context);
+
+                if (targets.Contains(null))
+                {
+                    foreach (var row in reachableRows)
+                    {
+                        totalRows.Add(row);
+                    }
+
+                    continue;
+                }
+
+                foreach (var row in reachableRows)
+                {
+                    if (row is null || row.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    if (targets.Contains(row[1]))
+                    {
+                        totalRows.Add(row);
+                    }
+                }
+            }
+
+            return totalRows;
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
+            TransitiveClosureNode closure,
+            IReadOnlyDictionary<object?, HashSet<object?>> sourcesByTarget,
+            EvaluationContext context)
+        {
+            var totalRows = new List<object[]>();
+
+            foreach (var entry in sourcesByTarget)
+            {
+                var target = entry.Key;
+                var sources = entry.Value;
+                if (sources.Count == 0)
+                {
+                    continue;
+                }
+
+                var seedParams = new List<object[]>(1) { new object[] { target! } };
+                var reachableRows = ExecuteSeededTransitiveClosureByTarget(closure, seedParams, context);
+
+                if (sources.Contains(null))
+                {
+                    foreach (var row in reachableRows)
+                    {
+                        totalRows.Add(row);
+                    }
+
+                    continue;
+                }
+
+                foreach (var row in reachableRows)
+                {
+                    if (row is null || row.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    if (sources.Contains(row[0]))
+                    {
+                        totalRows.Add(row);
+                    }
+                }
+            }
+
+            return totalRows;
         }
 
         private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsForward(
