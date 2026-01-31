@@ -775,13 +775,13 @@
                         dim: 768
                     }
                 },
-                default: 'minilm'
+                default: 'nomic'
             }
         };
 
         // Track current embedding state
         let currentDatasetUrl = 'data/physics.json';
-        let currentEmbeddingType = 'minilm';
+        let currentEmbeddingType = 'nomic';
         let originalEmbeddings = null;  // Store original embeddings from dataset
 
         const valueDisplays = {
@@ -818,19 +818,44 @@
             if (!response.ok) throw new Error('Data not found');
             currentData = await response.json();
             currentDatasetUrl = 'data/physics.json';
-            currentEmbeddingType = 'minilm';
-
-            // Store original embeddings for restoration
-            if (currentData.embeddings) {
-                originalEmbeddings = currentData.embeddings;
-            }
 
             renderPlot();
             updateInfo();
             updateTreeToggle();
             updatePeaksList();
-            updateEmbeddingsInfo();
             updateEmbeddingSelector();
+
+            // Load default embeddings (Nomic) - better for projection model
+            const config = datasetEmbeddings[currentDatasetUrl];
+            const defaultEmb = config?.default || 'nomic';
+            const embConfig = config?.embeddings?.[defaultEmb];
+
+            if (embConfig?.url) {
+                try {
+                    const embResponse = await fetch(embConfig.url);
+                    if (embResponse.ok) {
+                        const embData = await embResponse.json();
+                        if (embData.embeddings?.length === currentData.points.length) {
+                            currentData.embeddings = embData.embeddings;
+                            originalEmbeddings = embData.embeddings;
+                            currentEmbeddingType = defaultEmb;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to load default embeddings:', e);
+                    // Fall back to baked-in embeddings if available
+                    if (currentData.embeddings) {
+                        originalEmbeddings = currentData.embeddings;
+                        currentEmbeddingType = 'minilm';
+                    }
+                }
+            } else if (currentData.embeddings) {
+                // Use baked-in embeddings
+                originalEmbeddings = currentData.embeddings;
+                currentEmbeddingType = 'minilm';
+            }
+
+            updateEmbeddingsInfo();
         }
 
         async function loadPyodideInBackground() {
@@ -1427,7 +1452,9 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
                 return;
             }
 
-            if (!currentData?.embeddings || currentData.embeddings.length === 0) {
+            // Use originalEmbeddings if available, otherwise currentData.embeddings
+            const sourceEmbeddings = originalEmbeddings || currentData?.embeddings;
+            if (!sourceEmbeddings || sourceEmbeddings.length === 0) {
                 setStatus('No embeddings available for projection', 'error');
                 return;
             }
@@ -1437,7 +1464,7 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
 
             try {
                 // Get first 5 embeddings as test
-                const testEmbeddings = currentData.embeddings.slice(0, 5);
+                const testEmbeddings = sourceEmbeddings.slice(0, 5);
                 const blend = parseFloat(embedBlendSlider.value);
 
                 const startTime = performance.now();
@@ -1626,6 +1653,7 @@ _real_titles = None
                 // Validate embedding count matches points
                 if (embData.embeddings && embData.embeddings.length === currentData.points.length) {
                     currentData.embeddings = embData.embeddings;
+                    originalEmbeddings = embData.embeddings;  // Store for projection
                     currentEmbeddingType = selected;
 
                     if (pyodideReady) {
@@ -2779,11 +2807,13 @@ json.dumps(data)
 
                 // Check if we should apply projection blending
                 const blend = parseFloat(embedBlendSlider.value);
-                const useProjection = projectionSession && blend > 0 && currentData?.embeddings;
+                // Use originalEmbeddings if available, otherwise currentData.embeddings
+                const sourceEmbeddings = originalEmbeddings || currentData?.embeddings;
+                const useProjection = projectionSession && blend > 0 && sourceEmbeddings;
 
                 if (useProjection) {
                     setStatus('Applying projection blend...', 'loading');
-                    const blendedEmbeddings = await applyProjectionToEmbeddings(currentData.embeddings);
+                    const blendedEmbeddings = await applyProjectionToEmbeddings(sourceEmbeddings);
                     const titles = currentData.points.map(p => p.title);
 
                     // Send blended embeddings to Pyodide
@@ -2807,6 +2837,11 @@ json.dumps({'data': data, 'used_real': _used_real})
                 const parsed = JSON.parse(result);
                 currentData = parsed.data;
                 const usedReal = parsed.used_real;
+
+                // Restore original embeddings so projection can be tested again
+                if (originalEmbeddings) {
+                    currentData.embeddings = originalEmbeddings;
+                }
 
                 // Clear original trees since we have fresh ones
                 originalTrees = null;
