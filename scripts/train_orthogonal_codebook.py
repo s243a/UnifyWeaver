@@ -23,11 +23,33 @@ Usage:
         --orthogonalize \
         --output models/orthogonal_codebook.npz
 
-    # Train with orthogonal codebook
+    # Train with orthogonal teacher (fast)
     python scripts/train_orthogonal_codebook.py \
         --federated-model models/federated.pkl \
         --codebook models/orthogonal_codebook.npz \
         --epochs 50
+
+    # Train with rotational teacher (accurate, distills logm/expm into transformer)
+    python scripts/train_orthogonal_codebook.py \
+        --train \
+        --federated-model models/pearltrees_federated_nomic.pkl \
+        --build-canonical \
+        --n-components 64 \
+        --layers 3 \
+        --teacher rotational \
+        --epochs 50 \
+        --save-transformer models/orthogonal_transformer.pt
+
+    # Train with JAX rotational teacher (uses JAX XLA for matrix_exp)
+    python scripts/train_orthogonal_codebook.py \
+        --train \
+        --federated-model models/pearltrees_federated_nomic.pkl \
+        --build-canonical \
+        --n-components 64 \
+        --layers 3 \
+        --teacher jax \
+        --epochs 50 \
+        --save-transformer models/orthogonal_transformer_jax.pt
 """
 
 import argparse
@@ -766,6 +788,568 @@ class OrthogonalTeacher:
         return all_outputs
 
 
+class RotationalTeacher:
+    """
+    GPU-accelerated teacher using full rotational blending (logm/expm).
+
+    Key optimization: Pre-compute logm(W) for all clusters at init (one-time cost),
+    then use GPU matrix_exp for fast batched inference.
+
+    Performance: ~1000+/s on GPU vs ~0.2/s without pre-computation.
+    """
+
+    def __init__(self, federated_model_path: str, top_k_routing: int = 10, use_gpu: bool = True):
+        """
+        Args:
+            federated_model_path: Path to federated .pkl model
+            top_k_routing: Number of training queries for routing
+            use_gpu: Whether to use GPU acceleration (requires PyTorch)
+        """
+        from scipy.linalg import logm as scipy_logm
+        self.scipy_logm = scipy_logm
+        self.top_k_routing = top_k_routing
+        self.use_gpu = use_gpu
+
+        self.model_path = federated_model_path
+        self._load_federated_model(federated_model_path)
+        self._precompute_bivectors()  # Key optimization - caches to disk!
+        self._setup_gpu()
+
+        log_info(
+            f"RotationalTeacher: {self.num_clusters} clusters, "
+            f"top_k_routing={top_k_routing}, GPU={'enabled' if self.device != 'cpu' else 'disabled'}"
+        )
+
+    def _load_federated_model(self, model_path: str):
+        """Load federated model with W matrices."""
+        model_path = Path(model_path)
+        with open(model_path, 'rb') as f:
+            self.meta = pickle.load(f)
+
+        self.cluster_ids = self.meta["cluster_ids"]
+        self.temperature = self.meta.get("temperature", 0.1)
+        self.num_clusters = len(self.cluster_ids)
+
+        # Load routing data
+        cluster_dir = model_path.with_suffix('')
+        routing_path = cluster_dir / "routing_data.npz"
+        if routing_path.exists():
+            routing_data = np.load(routing_path)
+            self.query_embeddings = routing_data['query_embeddings']
+            keys = routing_data['idx_to_cluster_keys']
+            values = routing_data['idx_to_cluster_values']
+            self.idx_to_cluster = {int(k): str(v) for k, v in zip(keys, values)}
+        else:
+            raise FileNotFoundError(f"Routing data not found: {routing_path}")
+
+        # Load W matrices from each cluster
+        self.clusters = {}
+        for cid in self.cluster_ids:
+            cluster_path = cluster_dir / f"{cid}.npz"
+            if cluster_path.exists():
+                data = np.load(cluster_path)
+                self.clusters[cid] = {"W": data["W_stack"][0]}
+
+        self.d = self.query_embeddings.shape[1]
+        log_info(f"  Loaded {len(self.clusters)} cluster W matrices")
+
+    def _precompute_bivectors(self):
+        """Pre-compute logm(W) for all clusters - caches to disk for reuse!"""
+        # Try to load cached bivectors first
+        cache_path = Path(self.model_path).with_suffix('.bivectors.npz')
+        if cache_path.exists():
+            log_info(f"  Loading cached cluster bivectors from {cache_path}...")
+            cached = np.load(cache_path, allow_pickle=True)
+            self.bivectors = cached['bivectors'].astype(np.float32)
+            self.cid_to_idx = dict(cached['cid_to_idx'].item())
+            self.idx_to_cid = {int(k): v for k, v in cached['idx_to_cid'].item().items()}
+            log_info(f"  Loaded {len(self.bivectors)} cached bivectors")
+
+            # Create query mapping
+            self.query_to_bivector_idx = np.zeros(len(self.query_embeddings), dtype=np.int32)
+            for idx in range(len(self.query_embeddings)):
+                cid = self.idx_to_cluster.get(idx)
+                if cid and cid in self.cid_to_idx:
+                    self.query_to_bivector_idx[idx] = self.cid_to_idx[cid]
+            return
+
+        log_info(f"  Pre-computing cluster bivectors (will cache to {cache_path.name})...")
+        start = time.time()
+
+        # Create ordered list of cluster IDs for indexing
+        self.cid_to_idx = {}
+        self.idx_to_cid = {}
+        bivectors = []
+
+        for i, cid in enumerate(self.cluster_ids):
+            if cid not in self.clusters:
+                continue
+            self.cid_to_idx[cid] = len(bivectors)
+            self.idx_to_cid[len(bivectors)] = cid
+
+            W = self.clusters[cid]["W"].astype(np.float64)
+            # Ensure W is a proper rotation (det = 1)
+            if np.linalg.det(W) < 0:
+                W = W.copy()
+                W[:, -1] *= -1
+
+            try:
+                bivector = np.real(self.scipy_logm(W))
+            except Exception:
+                bivector = np.zeros((self.d, self.d), dtype=np.float64)
+
+            bivectors.append(bivector)
+
+            if (len(bivectors)) % 20 == 0:
+                log_info(f"    logm: {len(bivectors)}/{self.num_clusters}")
+
+        self.bivectors = np.array(bivectors, dtype=np.float32)  # (n_clusters, d, d)
+        elapsed = time.time() - start
+        log_info(f"  Pre-computed {len(bivectors)} bivectors in {elapsed:.1f}s")
+
+        # Save to cache
+        np.savez_compressed(
+            cache_path,
+            bivectors=self.bivectors,
+            cid_to_idx=self.cid_to_idx,
+            idx_to_cid=self.idx_to_cid,
+        )
+        size_mb = cache_path.stat().st_size / (1024 * 1024)
+        log_info(f"  Saved bivector cache to {cache_path} ({size_mb:.1f} MB)")
+
+        # Create mapping from training query index to cluster bivector index
+        self.query_to_bivector_idx = np.zeros(len(self.query_embeddings), dtype=np.int32)
+        for idx in range(len(self.query_embeddings)):
+            cid = self.idx_to_cluster.get(idx)
+            if cid and cid in self.cid_to_idx:
+                self.query_to_bivector_idx[idx] = self.cid_to_idx[cid]
+            else:
+                self.query_to_bivector_idx[idx] = 0  # Fallback
+
+    def _setup_gpu(self):
+        """Setup GPU tensors if available."""
+        torch, _, _ = _import_torch()
+        if torch is None or not self.use_gpu:
+            self.device = 'cpu'
+            self.torch = None
+            return
+
+        self.torch = torch
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        # Move data to GPU
+        self.bivectors_gpu = torch.from_numpy(self.bivectors).to(self.device)
+        self.query_embeddings_gpu = torch.from_numpy(
+            self.query_embeddings.astype(np.float32)
+        ).to(self.device)
+        self.query_to_bivector_idx_gpu = torch.from_numpy(
+            self.query_to_bivector_idx
+        ).to(self.device)
+
+    def compute_targets_batched(
+        self,
+        query_embeddings: np.ndarray,
+        batch_size: int = 256,
+        **kwargs
+    ) -> np.ndarray:
+        """
+        Compute target outputs using GPU-accelerated rotational blending.
+
+        Args:
+            query_embeddings: (N, d) query embeddings
+            batch_size: Batch size for GPU processing
+
+        Returns:
+            outputs: (N, d) target outputs after rotation
+        """
+        if self.torch is None or self.device == 'cpu':
+            return self._compute_targets_cpu(query_embeddings)
+
+        return self._compute_targets_gpu(query_embeddings, batch_size)
+
+    def _compute_targets_gpu(self, query_embeddings: np.ndarray, batch_size: int) -> np.ndarray:
+        """GPU-accelerated target computation."""
+        torch = self.torch
+        n_samples = len(query_embeddings)
+        all_outputs = np.zeros_like(query_embeddings)
+
+        queries_gpu = torch.from_numpy(query_embeddings.astype(np.float32)).to(self.device)
+
+        start_time = time.time()
+        with torch.no_grad():
+            for batch_start in range(0, n_samples, batch_size):
+                batch_end = min(batch_start + batch_size, n_samples)
+                batch_queries = queries_gpu[batch_start:batch_end]  # (B, d)
+                B = len(batch_queries)
+
+                # Compute similarities to all training queries: (B, N_train)
+                sims = batch_queries @ self.query_embeddings_gpu.T
+
+                # Softmax with temperature
+                sims_shifted = (sims - sims.max(dim=1, keepdim=True).values) / self.temperature
+                weights = torch.softmax(sims_shifted, dim=1)  # (B, N_train)
+
+                # Get top-k indices for each query
+                _, top_indices = torch.topk(weights, self.top_k_routing, dim=1)  # (B, K)
+
+                # Gather weights for top-k
+                top_weights = torch.gather(weights, 1, top_indices)  # (B, K)
+                top_weights = top_weights / top_weights.sum(dim=1, keepdim=True)  # Normalize
+
+                # Get bivector indices for top-k training queries
+                top_bivector_idx = self.query_to_bivector_idx_gpu[top_indices]  # (B, K)
+
+                # Blend bivectors for each query
+                blended = torch.zeros(B, self.d, self.d, device=self.device)
+                for k in range(self.top_k_routing):
+                    biv_idx = top_bivector_idx[:, k]  # (B,)
+                    w = top_weights[:, k:k+1, None]  # (B, 1, 1)
+                    blended += w * self.bivectors_gpu[biv_idx]  # (B, d, d)
+
+                # Apply matrix exponential (GPU-accelerated)
+                W_blended = torch.linalg.matrix_exp(blended)  # (B, d, d)
+
+                # Apply rotation: q @ W
+                batch_out = torch.bmm(batch_queries.unsqueeze(1), W_blended).squeeze(1)
+                all_outputs[batch_start:batch_end] = batch_out.cpu().numpy()
+
+                if (batch_end) % 1000 == 0 or batch_end == n_samples:
+                    elapsed = time.time() - start_time
+                    rate = batch_end / elapsed
+                    eta = (n_samples - batch_end) / rate if rate > 0 else 0
+                    log_info(f"    GPU rotational: {batch_end}/{n_samples} ({rate:.0f}/s, ETA: {eta:.0f}s)")
+
+        elapsed = time.time() - start_time
+        log_info(f"  GPU rotational computation: {elapsed:.1f}s ({n_samples/elapsed:.0f}/s)")
+        return all_outputs
+
+    def _compute_targets_cpu(self, query_embeddings: np.ndarray) -> np.ndarray:
+        """CPU fallback (slower)."""
+        from scipy.linalg import expm as scipy_expm
+
+        n_samples = len(query_embeddings)
+        all_outputs = np.zeros_like(query_embeddings)
+
+        start_time = time.time()
+        for i, q_emb in enumerate(query_embeddings):
+            # Compute similarities
+            sims = q_emb @ self.query_embeddings.T
+            sims_shifted = (sims - np.max(sims)) / self.temperature
+            weights = np.exp(sims_shifted)
+            weights /= weights.sum()
+
+            # Get top-k
+            top_indices = np.argsort(weights)[-self.top_k_routing:]
+            top_weights = weights[top_indices]
+            top_weights /= top_weights.sum()
+
+            # Blend pre-computed bivectors
+            blended = np.zeros((self.d, self.d), dtype=np.float32)
+            for k, idx in enumerate(top_indices):
+                biv_idx = self.query_to_bivector_idx[idx]
+                blended += top_weights[k] * self.bivectors[biv_idx]
+
+            # Apply matrix exp
+            W_blended = scipy_expm(blended.astype(np.float64)).astype(np.float32)
+            all_outputs[i] = q_emb @ W_blended
+
+            if (i + 1) % 100 == 0 or i + 1 == n_samples:
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed
+                eta = (n_samples - i - 1) / rate if rate > 0 else 0
+                log_info(f"    CPU rotational: {i+1}/{n_samples} ({rate:.1f}/s, ETA: {eta:.0f}s)")
+
+        elapsed = time.time() - start_time
+        log_info(f"  CPU rotational computation: {elapsed:.1f}s ({n_samples/elapsed:.1f}/s)")
+        return all_outputs
+
+
+# =============================================================================
+# JAX-Accelerated Rotational Teacher
+# =============================================================================
+
+def _import_jax():
+    """Import JAX lazily."""
+    try:
+        import jax
+        import jax.numpy as jnp
+        from jax.scipy.linalg import expm as jax_expm
+        return jax, jnp, jax_expm
+    except ImportError:
+        return None, None, None
+
+
+class JaxRotationalTeacher:
+    """
+    JAX-accelerated teacher using full rotational blending (logm/expm).
+
+    Uses JAX's JIT compilation and vmap for efficient batched matrix exponential.
+    Can be significantly faster than PyTorch on both CPU and GPU due to XLA optimization.
+
+    Key features:
+    - JIT-compiled matrix exponential
+    - Vectorized batch processing with vmap
+    - Compatible with the same bivector cache as RotationalTeacher
+    """
+
+    def __init__(self, federated_model_path: str, top_k_routing: int = 10, use_gpu: bool = True):
+        """
+        Args:
+            federated_model_path: Path to federated .pkl model
+            top_k_routing: Number of training queries for routing
+            use_gpu: Whether to try GPU (JAX will use available accelerators)
+        """
+        jax, jnp, jax_expm = _import_jax()
+        if jax is None:
+            raise ImportError("JAX is required for JaxRotationalTeacher. Install with: pip install jax jaxlib")
+
+        from scipy.linalg import logm as scipy_logm
+        self.scipy_logm = scipy_logm
+        self.jax = jax
+        self.jnp = jnp
+        self.jax_expm = jax_expm
+        self.top_k_routing = top_k_routing
+
+        self.model_path = federated_model_path
+        self._load_federated_model(federated_model_path)
+        self._precompute_bivectors()  # Reuses same cache as RotationalTeacher
+        self._setup_jax_functions()
+
+        # Report available devices
+        devices = jax.devices()
+        device_types = [str(d.device_kind) for d in devices]
+        log_info(
+            f"JaxRotationalTeacher: {self.num_clusters} clusters, "
+            f"top_k_routing={top_k_routing}, devices={device_types}"
+        )
+
+    def _load_federated_model(self, model_path: str):
+        """Load federated model with W matrices."""
+        model_path = Path(model_path)
+        with open(model_path, 'rb') as f:
+            self.meta = pickle.load(f)
+
+        self.cluster_ids = self.meta["cluster_ids"]
+        self.temperature = self.meta.get("temperature", 0.1)
+        self.num_clusters = len(self.cluster_ids)
+
+        # Load routing data
+        cluster_dir = model_path.with_suffix('')
+        routing_path = cluster_dir / "routing_data.npz"
+        if routing_path.exists():
+            routing_data = np.load(routing_path)
+            self.query_embeddings = routing_data['query_embeddings']
+            keys = routing_data['idx_to_cluster_keys']
+            values = routing_data['idx_to_cluster_values']
+            self.idx_to_cluster = {int(k): str(v) for k, v in zip(keys, values)}
+        else:
+            raise FileNotFoundError(f"Routing data not found: {routing_path}")
+
+        # Load W matrices from each cluster
+        self.clusters = {}
+        for cid in self.cluster_ids:
+            cluster_path = cluster_dir / f"{cid}.npz"
+            if cluster_path.exists():
+                data = np.load(cluster_path)
+                self.clusters[cid] = {"W": data["W_stack"][0]}
+
+        self.d = self.query_embeddings.shape[1]
+        log_info(f"  Loaded {len(self.clusters)} cluster W matrices")
+
+    def _precompute_bivectors(self):
+        """Pre-compute logm(W) for all clusters - reuses same cache as RotationalTeacher!"""
+        # Try to load cached bivectors first
+        cache_path = Path(self.model_path).with_suffix('.bivectors.npz')
+        if cache_path.exists():
+            log_info(f"  Loading cached cluster bivectors from {cache_path}...")
+            cached = np.load(cache_path, allow_pickle=True)
+            self.bivectors = cached['bivectors'].astype(np.float32)
+            self.cid_to_idx = dict(cached['cid_to_idx'].item())
+            self.idx_to_cid = {int(k): v for k, v in cached['idx_to_cid'].item().items()}
+            log_info(f"  Loaded {len(self.bivectors)} cached bivectors")
+
+            # Create query mapping
+            self.query_to_bivector_idx = np.zeros(len(self.query_embeddings), dtype=np.int32)
+            for idx in range(len(self.query_embeddings)):
+                cid = self.idx_to_cluster.get(idx)
+                if cid and cid in self.cid_to_idx:
+                    self.query_to_bivector_idx[idx] = self.cid_to_idx[cid]
+            return
+
+        log_info(f"  Pre-computing cluster bivectors (will cache to {cache_path.name})...")
+        start = time.time()
+
+        # Create ordered list of cluster IDs for indexing
+        self.cid_to_idx = {}
+        self.idx_to_cid = {}
+        bivectors = []
+
+        for i, cid in enumerate(self.cluster_ids):
+            if cid not in self.clusters:
+                continue
+            self.cid_to_idx[cid] = len(bivectors)
+            self.idx_to_cid[len(bivectors)] = cid
+
+            W = self.clusters[cid]["W"].astype(np.float64)
+            # Ensure W is a proper rotation (det = 1)
+            if np.linalg.det(W) < 0:
+                W = W.copy()
+                W[:, -1] *= -1
+
+            try:
+                bivector = np.real(self.scipy_logm(W))
+            except Exception:
+                bivector = np.zeros((self.d, self.d), dtype=np.float64)
+
+            bivectors.append(bivector)
+
+            if (len(bivectors)) % 20 == 0:
+                log_info(f"    logm: {len(bivectors)}/{self.num_clusters}")
+
+        self.bivectors = np.array(bivectors, dtype=np.float32)  # (n_clusters, d, d)
+        elapsed = time.time() - start
+        log_info(f"  Pre-computed {len(bivectors)} bivectors in {elapsed:.1f}s")
+
+        # Save to cache
+        np.savez_compressed(
+            cache_path,
+            bivectors=self.bivectors,
+            cid_to_idx=self.cid_to_idx,
+            idx_to_cid=self.idx_to_cid,
+        )
+        size_mb = cache_path.stat().st_size / (1024 * 1024)
+        log_info(f"  Saved bivector cache to {cache_path} ({size_mb:.1f} MB)")
+
+        # Create mapping from training query index to cluster bivector index
+        self.query_to_bivector_idx = np.zeros(len(self.query_embeddings), dtype=np.int32)
+        for idx in range(len(self.query_embeddings)):
+            cid = self.idx_to_cluster.get(idx)
+            if cid and cid in self.cid_to_idx:
+                self.query_to_bivector_idx[idx] = self.cid_to_idx[cid]
+            else:
+                self.query_to_bivector_idx[idx] = 0  # Fallback
+
+    def _setup_jax_functions(self):
+        """Setup JIT-compiled JAX functions."""
+        jax = self.jax
+        jnp = self.jnp
+        jax_expm = self.jax_expm
+
+        # Convert data to JAX arrays
+        self.bivectors_jax = jnp.array(self.bivectors)
+        self.query_embeddings_jax = jnp.array(self.query_embeddings.astype(np.float32))
+        self.query_to_bivector_idx_jax = jnp.array(self.query_to_bivector_idx)
+
+        # JIT-compiled single query processing
+        @jax.jit
+        def process_single_query(query, query_embs, bivectors, query_to_biv_idx, temp, top_k):
+            """Process a single query with rotational blending."""
+            # Compute similarities: (N_train,)
+            sims = query @ query_embs.T
+
+            # Softmax with temperature
+            sims_shifted = (sims - jnp.max(sims)) / temp
+            weights = jax.nn.softmax(sims_shifted)
+
+            # Get top-k indices
+            top_indices = jnp.argsort(weights)[-top_k:]
+            top_weights = weights[top_indices]
+            top_weights = top_weights / jnp.sum(top_weights)  # Normalize
+
+            # Get bivector indices for top-k training queries
+            top_biv_idx = query_to_biv_idx[top_indices]
+
+            # Blend bivectors
+            blended = jnp.zeros((query.shape[0], query.shape[0]), dtype=jnp.float32)
+            for k in range(top_k):
+                blended = blended + top_weights[k] * bivectors[top_biv_idx[k]]
+
+            # Apply matrix exponential
+            W_blended = jax_expm(blended)
+
+            # Apply rotation: q @ W
+            return query @ W_blended
+
+        self._process_single = process_single_query
+
+        # Vectorized version using vmap
+        @jax.jit
+        def process_batch(queries, query_embs, bivectors, query_to_biv_idx, temp, top_k):
+            """Process a batch of queries."""
+            # vmap over the batch dimension
+            vmapped_fn = jax.vmap(
+                lambda q: process_single_query(q, query_embs, bivectors, query_to_biv_idx, temp, top_k)
+            )
+            return vmapped_fn(queries)
+
+        self._process_batch = process_batch
+
+    def compute_targets_batched(
+        self,
+        query_embeddings: np.ndarray,
+        batch_size: int = 256,
+        **kwargs
+    ) -> np.ndarray:
+        """
+        Compute target outputs using JAX-accelerated rotational blending.
+
+        Args:
+            query_embeddings: (N, d) query embeddings
+            batch_size: Batch size for processing
+
+        Returns:
+            outputs: (N, d) target outputs after rotation
+        """
+        jnp = self.jnp
+        n_samples = len(query_embeddings)
+        all_outputs = np.zeros_like(query_embeddings)
+
+        queries_jax = jnp.array(query_embeddings.astype(np.float32))
+
+        start_time = time.time()
+
+        # Warm up JIT compilation with first batch
+        log_info("  JAX JIT compilation (first batch)...")
+        first_batch = queries_jax[:min(batch_size, n_samples)]
+        _ = self._process_batch(
+            first_batch,
+            self.query_embeddings_jax,
+            self.bivectors_jax,
+            self.query_to_bivector_idx_jax,
+            self.temperature,
+            self.top_k_routing
+        )
+        self.jax.block_until_ready(_)
+        jit_time = time.time() - start_time
+        log_info(f"  JIT compilation: {jit_time:.1f}s")
+
+        start_time = time.time()
+        for batch_start in range(0, n_samples, batch_size):
+            batch_end = min(batch_start + batch_size, n_samples)
+            batch_queries = queries_jax[batch_start:batch_end]
+
+            batch_out = self._process_batch(
+                batch_queries,
+                self.query_embeddings_jax,
+                self.bivectors_jax,
+                self.query_to_bivector_idx_jax,
+                self.temperature,
+                self.top_k_routing
+            )
+            self.jax.block_until_ready(batch_out)
+            all_outputs[batch_start:batch_end] = np.array(batch_out)
+
+            if (batch_end) % 1000 == 0 or batch_end == n_samples:
+                elapsed = time.time() - start_time
+                rate = batch_end / elapsed if elapsed > 0 else 0
+                eta = (n_samples - batch_end) / rate if rate > 0 else 0
+                log_info(f"    JAX rotational: {batch_end}/{n_samples} ({rate:.0f}/s, ETA: {eta:.0f}s)")
+
+        elapsed = time.time() - start_time
+        log_info(f"  JAX rotational computation: {elapsed:.1f}s ({n_samples/elapsed:.0f}/s)")
+        return all_outputs
+
+
 # =============================================================================
 # Training Functions
 # =============================================================================
@@ -779,6 +1363,7 @@ def train_orthogonal_transformer(
     learning_rate: float = 1e-4,
     log_interval: int = 10,
     top_k: int = 8,
+    precomputed_targets: Optional[np.ndarray] = None,
 ) -> List[float]:
     """
     Train FastOrthogonalTransformer.
@@ -792,6 +1377,7 @@ def train_orthogonal_transformer(
         learning_rate: Learning rate
         log_interval: Log every N epochs
         top_k: Top-K for teacher routing
+        precomputed_targets: Optional pre-computed teacher targets (skips slow computation)
 
     Returns:
         List of loss values per epoch
@@ -800,11 +1386,15 @@ def train_orthogonal_transformer(
 
     n_samples = len(query_embeddings)
 
-    # Pre-compute target outputs (very fast with Rodrigues)
-    log_info("Computing target outputs from teacher (Rodrigues)...")
-    target_outputs = teacher.compute_targets_batched(
-        query_embeddings, top_k=top_k, batch_size=256
-    )
+    # Use pre-computed targets or compute them
+    if precomputed_targets is not None:
+        log_info(f"Using {len(precomputed_targets)} pre-computed teacher targets")
+        target_outputs = precomputed_targets
+    else:
+        log_info("Computing target outputs from teacher...")
+        target_outputs = teacher.compute_targets_batched(
+            query_embeddings, top_k=top_k, batch_size=256
+        )
 
     # Convert to tensors
     queries_tensor = torch.from_numpy(query_embeddings).float().to(transformer.device)
@@ -882,6 +1472,7 @@ def evaluate_orthogonal_transformer(
     test_queries: np.ndarray,
     batch_size: int = 128,
     top_k: int = 8,
+    precomputed_targets: Optional[np.ndarray] = None,
 ) -> Dict:
     """Evaluate transformer against teacher on test set."""
     torch, nn, F = _import_torch()
@@ -889,11 +1480,15 @@ def evaluate_orthogonal_transformer(
 
     n_samples = len(test_queries)
 
-    # Compute teacher outputs
-    log_info(f"Computing teacher outputs for {n_samples} test samples...")
-    teacher_outputs = teacher.compute_targets_batched(
-        test_queries, top_k=top_k, batch_size=256
-    )
+    # Use pre-computed targets or compute them
+    if precomputed_targets is not None:
+        log_info(f"Using {len(precomputed_targets)} pre-computed teacher targets")
+        teacher_outputs = precomputed_targets
+    else:
+        log_info(f"Computing teacher outputs for {n_samples} test samples...")
+        teacher_outputs = teacher.compute_targets_batched(
+            test_queries, top_k=top_k, batch_size=256
+        )
 
     # Compute transformer outputs
     log_info("Computing transformer outputs...")
@@ -1954,6 +2549,12 @@ def main():
     parser.add_argument("--test-split", type=float, default=0.2, help="Test split ratio")
     parser.add_argument("--layers", type=int, default=3, help="Transformer layers")
     parser.add_argument("--heads", type=int, default=4, help="Attention heads")
+    parser.add_argument("--teacher", choices=["orthogonal", "rotational", "jax"], default="orthogonal",
+                       help="Teacher type: orthogonal (fast), rotational (PyTorch logm/expm), jax (JAX logm/expm)")
+    parser.add_argument("--top-k-routing", type=int, default=10,
+                       help="Top-K routing queries for rotational teacher")
+    parser.add_argument("--target-cache",
+                       help="Path to cache/load teacher targets (~32MB). Saves hours on rotational teacher.")
 
     # Output
     parser.add_argument("--output", help="Path to save orthogonal codebook")
@@ -1983,8 +2584,8 @@ def main():
         if args.output:
             save_orthogonal_codebook(codebook, args.output)
 
-    elif args.build_canonical:
-        # Build canonical codebook
+    elif args.build_canonical and not args.train:
+        # Build canonical codebook (standalone mode, not combined with --train)
         d = 768  # Default embedding dim
         if args.federated_model:
             with open(args.federated_model, 'rb') as f:
@@ -2060,12 +2661,22 @@ def main():
             log_info("ERROR: --federated-model required for training")
             return 1
 
-        if not args.orthogonal_codebook and not args.codebook:
-            log_info("ERROR: --orthogonal-codebook or --codebook required for training")
+        if not args.orthogonal_codebook and not args.codebook and not args.build_canonical:
+            log_info("ERROR: --orthogonal-codebook, --codebook, or --build-canonical required for training")
             return 1
 
         # Load or create orthogonal codebook
-        if args.orthogonal_codebook:
+        if args.build_canonical:
+            # Build canonical codebook on the fly
+            d = 768  # Default embedding dim
+            with open(args.federated_model, 'rb') as f:
+                meta = pickle.load(f)
+            d = meta.get('embed_dim', 768)
+
+            log_info(f"\nBuilding canonical orthogonal codebook: {args.n_components} planes in {d}D")
+            bivectors, planes = build_canonical_orthogonal_codebook(d, args.n_components)
+            codebook = FastOrthogonalCodebook(bivectors)
+        elif args.orthogonal_codebook:
             log_info(f"\nLoading orthogonal codebook: {args.orthogonal_codebook}")
             codebook = load_orthogonal_codebook(args.orthogonal_codebook)
         else:
@@ -2095,8 +2706,15 @@ def main():
         log_info(f"  Loaded {len(query_embeddings)} query embeddings")
 
         # Create teacher
-        log_info("\nCreating OrthogonalTeacher...")
-        teacher = OrthogonalTeacher(args.federated_model, codebook)
+        if args.teacher == "rotational":
+            log_info("\nCreating RotationalTeacher (PyTorch logm/expm blending)...")
+            teacher = RotationalTeacher(args.federated_model, top_k_routing=args.top_k_routing)
+        elif args.teacher == "jax":
+            log_info("\nCreating JaxRotationalTeacher (JAX logm/expm blending)...")
+            teacher = JaxRotationalTeacher(args.federated_model, top_k_routing=args.top_k_routing)
+        else:
+            log_info("\nCreating OrthogonalTeacher...")
+            teacher = OrthogonalTeacher(args.federated_model, codebook)
 
         # Create transformer
         log_info("\nCreating FastOrthogonalTransformer...")
@@ -2114,7 +2732,35 @@ def main():
         log_info(f"  Top-K: {args.top_k}")
         log_info(f"  Device: {transformer.device}")
 
-        # Split train/test
+        # Pre-compute ALL teacher targets before splitting (can be cached to save hours)
+        all_targets = None
+        if args.target_cache:
+            cache_path = Path(args.target_cache)
+            if cache_path.exists():
+                log_info(f"\nLoading cached teacher targets from {cache_path}...")
+                cached = np.load(cache_path)
+                if 'targets' in cached and len(cached['targets']) == len(query_embeddings):
+                    all_targets = cached['targets'].astype(np.float32)
+                    log_info(f"  Loaded {len(all_targets)} cached targets")
+                else:
+                    log_info(f"  Cache mismatch (expected {len(query_embeddings)}, "
+                            f"got {len(cached.get('targets', []))}), recomputing...")
+
+        if all_targets is None:
+            log_info(f"\nComputing teacher targets for {len(query_embeddings)} samples...")
+            all_targets = teacher.compute_targets_batched(
+                query_embeddings, top_k=args.top_k, batch_size=256
+            )
+
+            # Save to cache
+            if args.target_cache:
+                cache_path = Path(args.target_cache)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(cache_path, targets=all_targets)
+                size_mb = cache_path.stat().st_size / (1024 * 1024)
+                log_info(f"  Saved targets to {cache_path} ({size_mb:.1f} MB)")
+
+        # Split train/test (both queries AND targets together)
         n_test = int(len(query_embeddings) * args.test_split)
         indices = np.random.permutation(len(query_embeddings))
         train_idx = indices[:-n_test]
@@ -2122,10 +2768,12 @@ def main():
 
         train_queries = query_embeddings[train_idx]
         test_queries = query_embeddings[test_idx]
+        train_targets = all_targets[train_idx]
+        test_targets = all_targets[test_idx]
 
         log_info(f"\nTrain: {len(train_queries)}, Test: {len(test_queries)}")
 
-        # Train
+        # Train with pre-computed targets
         log_info(f"\nTraining for {args.epochs} epochs...")
         losses = train_orthogonal_transformer(
             transformer=transformer,
@@ -2136,13 +2784,15 @@ def main():
             learning_rate=args.lr,
             log_interval=10,
             top_k=args.top_k,
+            precomputed_targets=train_targets,
         )
 
-        # Evaluate
+        # Evaluate with pre-computed targets
         log_info("\nEvaluating on test set...")
         results = evaluate_orthogonal_transformer(
             transformer, teacher, test_queries,
-            batch_size=128, top_k=args.top_k
+            batch_size=128, top_k=args.top_k,
+            precomputed_targets=test_targets,
         )
 
         print(f"\n{'=' * 40}")
@@ -2160,6 +2810,17 @@ def main():
             print("\n~ Fair: Room for improvement")
         else:
             print("\n~ Needs work: Consider more training or different architecture")
+
+        # Save transformer model
+        if args.save_transformer:
+            metadata = {
+                'federated_model': str(args.federated_model),
+                'teacher_type': args.teacher,
+                'top_k_routing': args.top_k_routing,
+                'n_queries': len(query_embeddings),
+                'mean_cosine_sim': results['mean_cosine_sim'],
+            }
+            save_orthogonal_transformer(transformer, codebook, args.save_transformer, metadata)
 
     elif args.train_multisource:
         # Multi-source training on multiple federated models
