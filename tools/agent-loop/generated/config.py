@@ -43,6 +43,9 @@ class AgentConfig:
     # Skills (paths to skill files)
     skills: list[str] = field(default_factory=list)
 
+    # Loop control
+    max_iterations: int = 0  # 0 = unlimited, N = pause after N tool iterations
+
     # Additional options
     timeout: int = 300
     show_tokens: bool = True
@@ -94,6 +97,7 @@ def _load_agent_config(name: str, data: dict) -> AgentConfig:
         max_context_tokens=data.get('max_context_tokens', 100000),
         max_messages=data.get('max_messages', 50),
         skills=data.get('skills', []),
+        max_iterations=data.get('max_iterations', 0),
         timeout=data.get('timeout', 300),
         show_tokens=data.get('show_tokens', True),
         extra=data.get('extra', {})

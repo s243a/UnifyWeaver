@@ -12,7 +12,7 @@ from pathlib import Path
 from backends import AgentBackend, CoroBackend
 from context import ContextManager, ContextBehavior
 from tools import ToolHandler
-from config import load_config, load_config_from_dir, get_default_config, AgentConfig, save_example_config
+from config import load_config, load_config_from_dir, get_default_config, AgentConfig, Config, save_example_config
 
 
 class AgentLoop:
@@ -24,13 +24,17 @@ class AgentLoop:
         context: ContextManager | None = None,
         tools: ToolHandler | None = None,
         show_tokens: bool = True,
-        auto_execute_tools: bool = False
+        auto_execute_tools: bool = False,
+        max_iterations: int = 0,
+        config: Config | None = None
     ):
         self.backend = backend
         self.context = context or ContextManager()
         self.tools = tools or ToolHandler()
         self.show_tokens = show_tokens
         self.auto_execute_tools = auto_execute_tools
+        self.max_iterations = max_iterations  # 0 = unlimited
+        self.config = config  # For backend switching
         self.running = True
 
     def run(self) -> None:
@@ -67,7 +71,9 @@ class AgentLoop:
         """Print the startup header."""
         print("UnifyWeaver Agent Loop")
         print(f"Backend: {self.backend.name}")
-        print("Type 'exit' to quit, 'clear' to reset context, 'help' for commands")
+        iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
+        print(f"Max iterations: {iterations_str}")
+        print("Type 'exit' to quit, '/help' for commands")
         print()
 
     def _get_input(self) -> str | None:
@@ -79,7 +85,13 @@ class AgentLoop:
 
     def _handle_command(self, user_input: str) -> bool:
         """Handle special commands. Returns True if command was handled."""
-        cmd = user_input.strip().lower()
+        text = user_input.strip()
+        cmd = text.lower()
+
+        # Handle both with and without slash prefix
+        if cmd.startswith('/'):
+            cmd = cmd[1:]
+            text = text[1:]
 
         if cmd == 'exit' or cmd == 'quit':
             self.running = False
@@ -98,27 +110,88 @@ class AgentLoop:
             self._print_status()
             return True
 
+        # /iterations N - set max iterations
+        if cmd.startswith('iterations'):
+            return self._handle_iterations_command(text)
+
+        # /backend <name> - switch backend
+        if cmd.startswith('backend'):
+            return self._handle_backend_command(text)
+
         return False
+
+    def _handle_iterations_command(self, text: str) -> bool:
+        """Handle /iterations N command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
+            print(f"[Current max iterations: {iterations_str}]")
+            print("[Usage: /iterations N (0 = unlimited)]\n")
+            return True
+
+        try:
+            n = int(parts[1])
+            if n < 0:
+                raise ValueError("Must be >= 0")
+            self.max_iterations = n
+            iterations_str = "unlimited" if n == 0 else str(n)
+            print(f"[Max iterations set to: {iterations_str}]\n")
+        except ValueError as e:
+            print(f"[Error: Invalid number - {e}]\n")
+        return True
+
+    def _handle_backend_command(self, text: str) -> bool:
+        """Handle /backend <name> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print(f"[Current backend: {self.backend.name}]")
+            if self.config:
+                print(f"[Available: {', '.join(self.config.agents.keys())}]")
+            print("[Usage: /backend <agent-name>]\n")
+            return True
+
+        agent_name = parts[1].strip()
+
+        if not self.config:
+            print("[Error: No config loaded, cannot switch backends]\n")
+            return True
+
+        if agent_name not in self.config.agents:
+            print(f"[Error: Unknown agent '{agent_name}']")
+            print(f"[Available: {', '.join(self.config.agents.keys())}]\n")
+            return True
+
+        try:
+            agent_config = self.config.agents[agent_name]
+            self.backend = create_backend_from_config(agent_config)
+            print(f"[Switched to backend: {self.backend.name}]\n")
+        except Exception as e:
+            print(f"[Error switching backend: {e}]\n")
+        return True
 
     def _print_help(self) -> None:
         """Print help message."""
         print("""
-Commands:
-  exit, quit  - Exit the agent loop
-  clear       - Clear conversation context
-  status      - Show context status (messages, tokens)
-  help        - Show this help message
+Commands (with or without / prefix):
+  /exit, /quit       - Exit the agent loop
+  /clear             - Clear conversation context
+  /status            - Show context status
+  /help              - Show this help message
+  /iterations [N]    - Show or set max iterations (0 = unlimited)
+  /backend [name]    - Show or switch backend/agent
 
 Just type your message to chat with the agent.
 """)
 
     def _print_status(self) -> None:
         """Print context status."""
+        iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
         print(f"""
-Context Status:
+Status:
+  Backend: {self.backend.name}
+  Max iterations: {iterations_str}
   Messages: {self.context.message_count}
   Tokens: {self.context.token_count}
-  Backend: {self.backend.name}
 """)
 
     def _process_message(self, user_input: str) -> None:
@@ -136,7 +209,26 @@ Context Status:
         )
 
         # Handle tool calls if present
+        iteration_count = 0
         while response.tool_calls:
+            iteration_count += 1
+
+            # Check iteration limit
+            if self.max_iterations > 0 and iteration_count > self.max_iterations:
+                print(f"\n[Paused after {self.max_iterations} iteration(s)]")
+                print("[Press Enter to continue, or type a message]")
+                try:
+                    cont = input("You: ")
+                    if cont.strip():
+                        # User provided new input - process it instead
+                        self.context.add_message('assistant', response.content, 0)
+                        self._process_message(cont)
+                        return
+                    # Reset counter and continue
+                    iteration_count = 1
+                except EOFError:
+                    return
+
             tool_results = []
 
             for tool_call in response.tool_calls:
@@ -155,7 +247,7 @@ Context Status:
             tool_message = "\n".join(tool_results)
             self.context.add_message('user', f"Tool results:\n{tool_message}")
 
-            print("\n[Continuing with tool results...]")
+            print(f"\n[Iteration {iteration_count}: continuing with tool results...]")
             response = self.backend.send_message(
                 f"Tool results:\n{tool_message}",
                 self.context.get_context()
@@ -315,6 +407,12 @@ def main():
         default=None,
         help='System prompt to use'
     )
+    parser.add_argument(
+        '--max-iterations', '-i',
+        type=int,
+        default=None,
+        help='Max tool iterations before pausing (0 = unlimited)'
+    )
 
     # Prompt
     parser.add_argument(
@@ -380,6 +478,8 @@ def main():
         agent_config.tools = []
     if args.system_prompt:
         agent_config.system_prompt = args.system_prompt
+    if args.max_iterations is not None:
+        agent_config.max_iterations = args.max_iterations
 
     # Create backend
     try:
@@ -413,7 +513,9 @@ def main():
         context=context,
         tools=tools,
         show_tokens=agent_config.show_tokens and not args.no_tokens,
-        auto_execute_tools=agent_config.auto_tools
+        auto_execute_tools=agent_config.auto_tools,
+        max_iterations=agent_config.max_iterations,
+        config=config
     )
 
     # Single prompt mode
