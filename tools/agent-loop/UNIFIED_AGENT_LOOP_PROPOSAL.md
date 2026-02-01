@@ -461,6 +461,12 @@ tools/agent-loop/
     ├── costs.py                    # API cost tracking
     ├── search.py                   # Session search
     ├── retry.py                    # Retry logic with backoff
+    ├── aliases.py                  # Command aliases
+    ├── templates.py                # Prompt templates
+    ├── history.py                  # History edit/delete/undo
+    ├── multiline.py                # Multi-line input handling
+    ├── completions.bash            # Bash tab completion
+    ├── completions.zsh             # Zsh tab completion
     ├── backends/
     │   ├── __init__.py
     │   ├── base.py                 # Abstract backend
@@ -636,7 +642,14 @@ User: Add 3 to that
 - [x] Streaming support for Claude/OpenAI APIs
 - [x] Retry logic with exponential backoff
 
-### Phase 8: ncurses Display Mode (Future)
+### Phase 8: Polish Features ✓
+- [x] Shell completions (bash + zsh)
+- [x] Command aliases with customization
+- [x] Prompt templates with variables
+- [x] History management (edit/delete/replay/undo)
+- [x] Multi-line input (code blocks, heredoc, continuation)
+
+### Phase 9: ncurses Display Mode (Future)
 - [ ] Add ncurses/terminfo based display
 - [ ] Spinner that updates in place
 - [ ] Progress bar for streaming
