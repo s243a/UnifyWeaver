@@ -10,6 +10,7 @@ import sys
 import argparse
 from backends import AgentBackend, CoroBackend
 from context import ContextManager, ContextBehavior
+from tools import ToolHandler
 
 
 class AgentLoop:
@@ -19,11 +20,15 @@ class AgentLoop:
         self,
         backend: AgentBackend,
         context: ContextManager | None = None,
-        show_tokens: bool = True
+        tools: ToolHandler | None = None,
+        show_tokens: bool = True,
+        auto_execute_tools: bool = False
     ):
         self.backend = backend
         self.context = context or ContextManager()
+        self.tools = tools or ToolHandler()
         self.show_tokens = show_tokens
+        self.auto_execute_tools = auto_execute_tools
         self.running = True
 
     def run(self) -> None:
@@ -128,6 +133,32 @@ Context Status:
             self.context.get_context()
         )
 
+        # Handle tool calls if present
+        while response.tool_calls:
+            tool_results = []
+
+            for tool_call in response.tool_calls:
+                # Execute the tool (with confirmation unless auto_execute)
+                if self.auto_execute_tools:
+                    # Skip confirmation
+                    self.tools.confirm_destructive = False
+
+                result = self.tools.execute(tool_call)
+                tool_results.append(self.tools.format_result_for_agent(result))
+
+                # Show result to user
+                print(f"  {result.output[:200]}{'...' if len(result.output) > 200 else ''}")
+
+            # Send tool results back to agent for continuation
+            tool_message = "\n".join(tool_results)
+            self.context.add_message('user', f"Tool results:\n{tool_message}")
+
+            print("\n[Continuing with tool results...]")
+            response = self.backend.send_message(
+                f"Tool results:\n{tool_message}",
+                self.context.get_context()
+            )
+
         # Display response
         print(f"\nAssistant: {response.content}\n")
 
@@ -180,6 +211,16 @@ def main():
         help='Model for Claude API backend (default: claude-sonnet-4-20250514)'
     )
     parser.add_argument(
+        '--auto-tools',
+        action='store_true',
+        help='Auto-execute tools without confirmation (use with caution)'
+    )
+    parser.add_argument(
+        '--no-tools',
+        action='store_true',
+        help='Disable tool execution entirely'
+    )
+    parser.add_argument(
         'prompt',
         nargs='?',
         help='Single prompt to run (non-interactive mode)'
@@ -211,11 +252,18 @@ def main():
     behavior = ContextBehavior(args.context_mode)
     context = ContextManager(behavior=behavior)
 
+    # Create tool handler
+    tools = None if args.no_tools else ToolHandler(
+        confirm_destructive=not args.auto_tools
+    )
+
     # Create and run loop
     loop = AgentLoop(
         backend=backend,
         context=context,
-        show_tokens=not args.no_tokens
+        tools=tools,
+        show_tokens=not args.no_tokens,
+        auto_execute_tools=args.auto_tools
     )
 
     # Single prompt mode
