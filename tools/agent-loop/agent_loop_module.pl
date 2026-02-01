@@ -74,14 +74,26 @@ agent_backend(openai, [
     supports_streaming(true)
 ]).
 
-agent_backend(ollama, [
+agent_backend(ollama_api, [
     type(api),
     endpoint("http://localhost:11434/api/chat"),
     model("llama3"),
-    description("Ollama local API backend"),
+    description("Ollama REST API backend for local models"),
+    default_host("localhost"),
+    default_port(11434),
     context_format(messages_array),
     auth_required(false),
     supports_streaming(true)
+]).
+
+agent_backend(ollama_cli, [
+    type(cli),
+    command("ollama"),
+    args(["run"]),
+    description("Ollama CLI backend using 'ollama run' command"),
+    default_model("llama3"),
+    context_format(conversation_history),
+    supports_streaming(false)
 ]).
 
 %% =============================================================================
