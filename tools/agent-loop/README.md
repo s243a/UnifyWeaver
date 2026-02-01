@@ -336,6 +336,52 @@ python3 agent_loop.py --list-sessions
 python3 agent_loop.py -s <session-id>
 ```
 
+## Testing Status
+
+### Tested Features
+
+| Feature | Backend | Status |
+|---------|---------|--------|
+| Single prompt mode | claude-code, coro | Working |
+| Interactive REPL | claude-code, coro | Working |
+| Config generation (`--init-config`) | - | Working |
+| Session listing (`--list-sessions`) | - | Working |
+| Agent variants (`-a`) | claude-code | Working |
+| Context modes | claude-code, coro | Working |
+| Help output | - | Working |
+
+### Untested Features
+
+| Feature | Reason |
+|---------|--------|
+| Claude API backend (`-b claude`) | Requires `pip install anthropic` |
+| OpenAI API backend (`-b openai`) | Requires `pip install openai` |
+| Ollama API backend (`-b ollama-api`) | Requires Ollama server running |
+| Ollama CLI backend (`-b ollama-cli`) | Requires Ollama installed |
+| Gemini CLI backend (`-b gemini`) | Requires Gemini CLI installed |
+| Streaming (`--stream`) | Requires API backend |
+| Cost tracking (`/cost`) | Requires API backend |
+| Session save/load | Not tested in this session |
+| Export (`/export`) | Not tested in this session |
+| Search (`--search`) | Not tested in this session |
+| Skills loading | Not tested in this session |
+| Prompt templates | Not tested in this session |
+| Command aliases | Not tested in this session |
+| Multi-line input | Not tested in this session |
+| Shell completions | Not tested in this session |
+
+### Tool Handling Note
+
+The CLI backends (coro, claude-code, gemini) manage their own tool execution internally. Our tool parsing (`tools.py`) is designed for:
+- API backends that return structured tool calls
+- Future CLI backends that output tool calls without executing them
+
+For CLI backends, the agent loop provides value through:
+- Context management across calls
+- Session persistence
+- Unified interface across backends
+- Configuration and agent variants
+
 ## Troubleshooting
 
 ### "Command not found: coro"
