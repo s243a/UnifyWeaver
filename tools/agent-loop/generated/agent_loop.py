@@ -8,9 +8,11 @@ Uses pure text output with no cursor control or escape codes.
 
 import sys
 import argparse
+from pathlib import Path
 from backends import AgentBackend, CoroBackend
 from context import ContextManager, ContextBehavior
 from tools import ToolHandler
+from config import load_config, load_config_from_dir, get_default_config, AgentConfig, save_example_config
 
 
 class AgentLoop:
@@ -174,22 +176,119 @@ Context Status:
             print(f"  [Tokens: {token_info}]\n")
 
 
+def create_backend_from_config(agent_config: AgentConfig) -> AgentBackend:
+    """Create a backend from an AgentConfig."""
+    backend_type = agent_config.backend
+
+    if backend_type == 'coro':
+        return CoroBackend(command=agent_config.command or 'claude')
+
+    elif backend_type == 'claude-code':
+        from backends import ClaudeCodeBackend
+        return ClaudeCodeBackend(
+            command=agent_config.command or 'claude',
+            model=agent_config.model or 'sonnet'
+        )
+
+    elif backend_type == 'gemini':
+        from backends import GeminiBackend
+        return GeminiBackend(
+            command=agent_config.command or 'gemini',
+            model=agent_config.model or 'gemini-2.5-flash'
+        )
+
+    elif backend_type == 'claude':
+        from backends import ClaudeAPIBackend
+        return ClaudeAPIBackend(
+            api_key=agent_config.api_key,
+            model=agent_config.model or 'claude-sonnet-4-20250514',
+            system_prompt=agent_config.system_prompt
+        )
+
+    elif backend_type == 'ollama-api':
+        from backends import OllamaAPIBackend
+        return OllamaAPIBackend(
+            host=agent_config.host or 'localhost',
+            port=agent_config.port or 11434,
+            model=agent_config.model or 'llama3',
+            system_prompt=agent_config.system_prompt,
+            timeout=agent_config.timeout
+        )
+
+    elif backend_type == 'ollama-cli':
+        from backends import OllamaCLIBackend
+        return OllamaCLIBackend(
+            command=agent_config.command or 'ollama',
+            model=agent_config.model or 'llama3',
+            timeout=agent_config.timeout
+        )
+
+    else:
+        raise ValueError(f"Unknown backend type: {backend_type}")
+
+
 def main():
     """Entry point."""
     parser = argparse.ArgumentParser(
         description="UnifyWeaver Agent Loop - Terminal-friendly AI assistant"
     )
+
+    # Agent selection (from config)
+    parser.add_argument(
+        '--agent', '-a',
+        default=None,
+        help='Agent variant from config file (e.g., yolo, claude-opus, ollama)'
+    )
+    parser.add_argument(
+        '--config', '-C',
+        default=None,
+        help='Path to config file (agents.yaml or agents.json)'
+    )
+    parser.add_argument(
+        '--list-agents',
+        action='store_true',
+        help='List available agent variants from config'
+    )
+    parser.add_argument(
+        '--init-config',
+        metavar='PATH',
+        help='Create example config file at PATH'
+    )
+
+    # Direct backend selection (overrides config)
     parser.add_argument(
         '--backend', '-b',
-        choices=['coro', 'claude', 'claude-code', 'gemini'],
-        default='coro',
-        help='Backend to use: coro (default), claude (API), claude-code (CLI), gemini (CLI)'
+        choices=['coro', 'claude', 'claude-code', 'gemini', 'ollama-api', 'ollama-cli'],
+        default=None,
+        help='Backend to use (overrides --agent config)'
     )
     parser.add_argument(
         '--command', '-c',
-        default='claude',
-        help='Command for CLI backends (default: claude)'
+        default=None,
+        help='Command for CLI backends'
     )
+    parser.add_argument(
+        '--model', '-m',
+        default=None,
+        help='Model to use'
+    )
+    parser.add_argument(
+        '--host',
+        default=None,
+        help='Host for network backends (ollama-api)'
+    )
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=None,
+        help='Port for network backends (ollama-api)'
+    )
+    parser.add_argument(
+        '--api-key',
+        help='API key for Claude API backend'
+    )
+
+    # Options
     parser.add_argument(
         '--no-tokens',
         action='store_true',
@@ -198,28 +297,26 @@ def main():
     parser.add_argument(
         '--context-mode',
         choices=['continue', 'fresh', 'sliding'],
-        default='continue',
-        help='Context behavior mode (default: continue)'
-    )
-    parser.add_argument(
-        '--api-key',
-        help='API key for Claude backend (or set ANTHROPIC_API_KEY env var)'
-    )
-    parser.add_argument(
-        '--model',
         default=None,
-        help='Model to use (claude: sonnet/opus, claude-code: sonnet/opus/haiku, gemini: gemini-2.5-flash)'
+        help='Context behavior mode'
     )
     parser.add_argument(
         '--auto-tools',
         action='store_true',
-        help='Auto-execute tools without confirmation (use with caution)'
+        help='Auto-execute tools without confirmation'
     )
     parser.add_argument(
         '--no-tools',
         action='store_true',
-        help='Disable tool execution entirely'
+        help='Disable tool execution'
     )
+    parser.add_argument(
+        '--system-prompt',
+        default=None,
+        help='System prompt to use'
+    )
+
+    # Prompt
     parser.add_argument(
         'prompt',
         nargs='?',
@@ -228,51 +325,95 @@ def main():
 
     args = parser.parse_args()
 
-    # Create backend
-    if args.backend == 'coro':
-        backend = CoroBackend(command=args.command)
-    elif args.backend == 'claude':
-        try:
-            from backends import ClaudeAPIBackend
-            model = args.model or 'claude-sonnet-4-20250514'
-            backend = ClaudeAPIBackend(
-                api_key=args.api_key,
-                model=model
-            )
-        except ImportError as e:
-            print(f"Claude API backend requires anthropic package: {e}", file=sys.stderr)
-            sys.exit(1)
-        except ValueError as e:
-            print(f"Configuration error: {e}", file=sys.stderr)
-            sys.exit(1)
-    elif args.backend == 'claude-code':
-        from backends import ClaudeCodeBackend
-        model = args.model or 'sonnet'
-        backend = ClaudeCodeBackend(command=args.command, model=model)
-    elif args.backend == 'gemini':
-        from backends import GeminiBackend
-        model = args.model or 'gemini-2.5-flash'
-        backend = GeminiBackend(command='gemini', model=model)
+    # Handle --init-config
+    if args.init_config:
+        path = Path(args.init_config)
+        save_example_config(path)
+        print(f"Created example config at: {path}")
+        return
+
+    # Load configuration
+    config = None
+    if args.config:
+        config = load_config(args.config)
     else:
-        print(f"Unknown backend: {args.backend}", file=sys.stderr)
+        config = load_config_from_dir()
+
+    if config is None:
+        config = get_default_config()
+
+    # Handle --list-agents
+    if args.list_agents:
+        print("Available agents:")
+        for name, agent in config.agents.items():
+            default_marker = " (default)" if name == config.default else ""
+            print(f"  {name}: {agent.backend} ({agent.model or 'default'}){default_marker}")
+        return
+
+    # Get agent config
+    agent_name = args.agent or config.default
+    if agent_name not in config.agents:
+        print(f"Unknown agent: {agent_name}", file=sys.stderr)
+        print(f"Available: {', '.join(config.agents.keys())}", file=sys.stderr)
+        sys.exit(1)
+
+    agent_config = config.agents[agent_name]
+
+    # Override with command line args
+    if args.backend:
+        agent_config.backend = args.backend
+    if args.command:
+        agent_config.command = args.command
+    if args.model:
+        agent_config.model = args.model
+    if args.host:
+        agent_config.host = args.host
+    if args.port:
+        agent_config.port = args.port
+    if args.api_key:
+        agent_config.api_key = args.api_key
+    if args.context_mode:
+        agent_config.context_mode = args.context_mode
+    if args.auto_tools:
+        agent_config.auto_tools = True
+    if args.no_tools:
+        agent_config.tools = []
+    if args.system_prompt:
+        agent_config.system_prompt = args.system_prompt
+
+    # Create backend
+    try:
+        backend = create_backend_from_config(agent_config)
+    except ImportError as e:
+        print(f"Backend requires additional package: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Create context manager
-    behavior = ContextBehavior(args.context_mode)
-    context = ContextManager(behavior=behavior)
+    behavior = ContextBehavior(agent_config.context_mode)
+    context = ContextManager(
+        behavior=behavior,
+        max_tokens=agent_config.max_context_tokens,
+        max_messages=agent_config.max_messages
+    )
 
     # Create tool handler
-    tools = None if args.no_tools else ToolHandler(
-        confirm_destructive=not args.auto_tools
-    )
+    tools = None
+    if agent_config.tools:
+        tools = ToolHandler(
+            allowed_tools=agent_config.tools,
+            confirm_destructive=not agent_config.auto_tools
+        )
 
     # Create and run loop
     loop = AgentLoop(
         backend=backend,
         context=context,
         tools=tools,
-        show_tokens=not args.no_tokens,
-        auto_execute_tools=args.auto_tools
+        show_tokens=agent_config.show_tokens and not args.no_tokens,
+        auto_execute_tools=agent_config.auto_tools
     )
 
     # Single prompt mode

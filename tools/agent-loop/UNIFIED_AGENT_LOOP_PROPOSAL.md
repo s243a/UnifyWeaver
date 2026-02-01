@@ -29,11 +29,20 @@ python3 agent_loop.py
 # Single prompt
 python3 agent_loop.py "list files in current directory"
 
+# Use named agent variants
+python3 agent_loop.py -a yolo "create hello.py"        # Fast, auto-tools
+python3 agent_loop.py -a claude-opus "complex task"    # Opus model
+python3 agent_loop.py -a ollama "local prompt"         # Local Ollama
+
 # Different backends
 python3 agent_loop.py -b claude-code "prompt"          # Claude Code CLI
-python3 agent_loop.py -b claude-code --model opus "prompt"
 python3 agent_loop.py -b gemini "prompt"               # Gemini CLI
-python3 agent_loop.py -b claude --api-key $KEY "prompt" # Claude API
+python3 agent_loop.py -b ollama-api --host 192.168.1.5 "prompt"  # Remote Ollama
+python3 agent_loop.py -b ollama-cli -m codellama "prompt"        # Ollama CLI
+
+# Configuration
+python3 agent_loop.py --list-agents                    # Show available agents
+python3 agent_loop.py --init-config agents.json        # Create config file
 
 # Options
 python3 agent_loop.py --help
@@ -396,6 +405,45 @@ loop_config([
 ]).
 ```
 
+## Configuration
+
+Agent variants can be defined in `agents.yaml` or `agents.json`:
+
+```json
+{
+  "default": "claude-sonnet",
+  "agents": {
+    "claude-sonnet": {
+      "backend": "claude-code",
+      "model": "sonnet"
+    },
+    "yolo": {
+      "backend": "claude-code",
+      "model": "haiku",
+      "auto_tools": true,
+      "system_prompt": "Be fast and take action."
+    },
+    "ollama-remote": {
+      "backend": "ollama-api",
+      "model": "codellama",
+      "host": "192.168.1.100",
+      "port": 11434
+    },
+    "coding-assistant": {
+      "backend": "claude-code",
+      "model": "sonnet",
+      "agent_md": "./agents/coding.md",
+      "skills": ["./skills/git.md"],
+      "tools": ["bash", "read", "write", "edit"]
+    }
+  }
+}
+```
+
+Config fields: `backend`, `model`, `host`, `port`, `api_key`, `command`,
+`system_prompt`, `agent_md`, `tools`, `auto_tools`, `context_mode`,
+`max_context_tokens`, `max_messages`, `skills`, `timeout`, `show_tokens`.
+
 ## File Structure
 
 ```
@@ -404,6 +452,7 @@ tools/agent-loop/
 ├── agent_loop_module.pl            # Prolog generator
 └── generated/
     ├── agent_loop.py               # Main loop
+    ├── config.py                   # Configuration system
     ├── context.py                  # Context manager
     ├── tools.py                    # Tool handler
     ├── backends/
@@ -412,7 +461,9 @@ tools/agent-loop/
     │   ├── coro.py                 # Coro CLI backend (--verbose)
     │   ├── claude_code.py          # Claude Code CLI (-p mode)
     │   ├── claude_api.py           # Claude API backend
-    │   └── gemini.py               # Gemini CLI backend
+    │   ├── gemini.py               # Gemini CLI backend
+    │   ├── ollama_api.py           # Ollama REST API backend
+    │   └── ollama_cli.py           # Ollama CLI backend
     └── stubs/                      # Prolog-generated stubs
         ├── README.md
         └── *.py
