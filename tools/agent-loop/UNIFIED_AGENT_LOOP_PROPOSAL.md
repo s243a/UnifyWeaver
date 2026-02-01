@@ -457,13 +457,17 @@ tools/agent-loop/
     ├── tools.py                    # Tool handler
     ├── sessions.py                 # Session persistence
     ├── skills.py                   # Skills/agent.md loader
+    ├── export.py                   # Export to markdown/HTML/JSON
+    ├── costs.py                    # API cost tracking
+    ├── search.py                   # Session search
+    ├── retry.py                    # Retry logic with backoff
     ├── backends/
     │   ├── __init__.py
     │   ├── base.py                 # Abstract backend
     │   ├── coro.py                 # Coro CLI backend (--verbose)
     │   ├── claude_code.py          # Claude Code CLI (-p mode)
-    │   ├── claude_api.py           # Claude API backend
-    │   ├── openai_api.py           # OpenAI API backend
+    │   ├── claude_api.py           # Claude API backend (+ streaming)
+    │   ├── openai_api.py           # OpenAI API backend (+ streaming)
     │   ├── gemini.py               # Gemini CLI backend
     │   ├── ollama_api.py           # Ollama REST API backend
     │   └── ollama_cli.py           # Ollama CLI backend
@@ -625,7 +629,14 @@ User: Add 3 to that
 - [x] Runtime slash commands (/backend, /iterations, /save, /load, /format)
 - [ ] Context summarization (future)
 
-### Phase 7: ncurses Display Mode (Future)
+### Phase 7: Utilities ✓
+- [x] Export to markdown/HTML/JSON/text
+- [x] API cost tracking with pricing database
+- [x] Session search across conversations
+- [x] Streaming support for Claude/OpenAI APIs
+- [x] Retry logic with exponential backoff
+
+### Phase 8: ncurses Display Mode (Future)
 - [ ] Add ncurses/terminfo based display
 - [ ] Spinner that updates in place
 - [ ] Progress bar for streaming
