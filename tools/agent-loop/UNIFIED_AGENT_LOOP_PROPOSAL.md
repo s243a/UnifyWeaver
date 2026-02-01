@@ -496,30 +496,30 @@ User: Add 3 to that
 
 ## Implementation Plan
 
-### Phase 1: Append-Only Prototype
-- [ ] Basic agent loop with stdin/stdout
-- [ ] Coro CLI backend (single-task mode)
-- [ ] Context manager with message history
-- [ ] Pure text output, no escape codes
-- [ ] Test in Termux
+### Phase 1: Append-Only Prototype ✓
+- [x] Basic agent loop with stdin/stdout
+- [x] Coro CLI backend (single-task mode)
+- [x] Context manager with message history
+- [x] Pure text output, no escape codes
+- [x] Test in Termux
 
-### Phase 2: Claude API Backend
-- [ ] Add Claude API backend
-- [ ] API key configuration
-- [ ] Token counting and display
+### Phase 2: Claude API Backend ✓
+- [x] Add Claude API backend
+- [x] API key configuration
+- [x] Token counting and display
 - [ ] Streaming support (optional)
 
-### Phase 3: Tool Handling
-- [ ] Parse tool calls from coro output
-- [ ] Execute bash, read, write, edit tools
-- [ ] Confirmation prompts for destructive operations
-- [ ] Tool result formatting and continuation
+### Phase 3: Tool Handling ✓
+- [x] Parse tool calls from coro output
+- [x] Execute bash, read, write, edit tools
+- [x] Confirmation prompts for destructive operations
+- [x] Tool result formatting and continuation
 
-### Phase 4: Prolog Generation
-- [ ] Create agent_loop_module.pl
-- [ ] Define backend specs in Prolog
-- [ ] Generate Python code from specs
-- [ ] Generate documentation
+### Phase 4: Prolog Generation ✓
+- [x] Create agent_loop_module.pl
+- [x] Define backend specs in Prolog
+- [x] Generate Python code from specs
+- [x] Generate documentation
 
 ### Phase 5: ncurses Display Mode (Future)
 - [ ] Add ncurses/terminfo based display
