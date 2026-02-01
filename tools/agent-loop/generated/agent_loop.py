@@ -181,14 +181,14 @@ def main():
     )
     parser.add_argument(
         '--backend', '-b',
-        choices=['coro', 'claude'],
+        choices=['coro', 'claude', 'claude-code', 'gemini'],
         default='coro',
-        help='Backend to use (default: coro)'
+        help='Backend to use: coro (default), claude (API), claude-code (CLI), gemini (CLI)'
     )
     parser.add_argument(
         '--command', '-c',
         default='claude',
-        help='Command for coro backend (default: claude)'
+        help='Command for CLI backends (default: claude)'
     )
     parser.add_argument(
         '--no-tokens',
@@ -207,8 +207,8 @@ def main():
     )
     parser.add_argument(
         '--model',
-        default='claude-sonnet-4-20250514',
-        help='Model for Claude API backend (default: claude-sonnet-4-20250514)'
+        default=None,
+        help='Model to use (claude: sonnet/opus, claude-code: sonnet/opus/haiku, gemini: gemini-2.5-flash)'
     )
     parser.add_argument(
         '--auto-tools',
@@ -234,9 +234,10 @@ def main():
     elif args.backend == 'claude':
         try:
             from backends import ClaudeAPIBackend
+            model = args.model or 'claude-sonnet-4-20250514'
             backend = ClaudeAPIBackend(
                 api_key=args.api_key,
-                model=args.model
+                model=model
             )
         except ImportError as e:
             print(f"Claude API backend requires anthropic package: {e}", file=sys.stderr)
@@ -244,6 +245,14 @@ def main():
         except ValueError as e:
             print(f"Configuration error: {e}", file=sys.stderr)
             sys.exit(1)
+    elif args.backend == 'claude-code':
+        from backends import ClaudeCodeBackend
+        model = args.model or 'sonnet'
+        backend = ClaudeCodeBackend(command=args.command, model=model)
+    elif args.backend == 'gemini':
+        from backends import GeminiBackend
+        model = args.model or 'gemini-2.5-flash'
+        backend = GeminiBackend(command='gemini', model=model)
     else:
         print(f"Unknown backend: {args.backend}", file=sys.stderr)
         sys.exit(1)

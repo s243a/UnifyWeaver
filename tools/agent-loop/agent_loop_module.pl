@@ -28,6 +28,27 @@ agent_backend(coro, [
     supports_streaming(false)
 ]).
 
+agent_backend(claude_code, [
+    type(cli),
+    command("claude"),
+    args(["-p", "--model"]),
+    description("Claude Code CLI backend using print mode"),
+    default_model("sonnet"),
+    models(["sonnet", "opus", "haiku"]),
+    context_format(conversation_history),
+    supports_streaming(false)
+]).
+
+agent_backend(gemini, [
+    type(cli),
+    command("gemini"),
+    args(["-p", "-m", "--output-format", "text"]),
+    description("Gemini CLI backend"),
+    default_model("gemini-2.5-flash"),
+    context_format(conversation_history),
+    supports_streaming(false)
+]).
+
 agent_backend(claude_api, [
     type(api),
     endpoint("https://api.anthropic.com/v1/messages"),
