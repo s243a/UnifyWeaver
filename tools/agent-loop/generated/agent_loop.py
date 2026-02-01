@@ -171,6 +171,15 @@ def main():
         help='Context behavior mode (default: continue)'
     )
     parser.add_argument(
+        '--api-key',
+        help='API key for Claude backend (or set ANTHROPIC_API_KEY env var)'
+    )
+    parser.add_argument(
+        '--model',
+        default='claude-sonnet-4-20250514',
+        help='Model for Claude API backend (default: claude-sonnet-4-20250514)'
+    )
+    parser.add_argument(
         'prompt',
         nargs='?',
         help='Single prompt to run (non-interactive mode)'
@@ -181,9 +190,21 @@ def main():
     # Create backend
     if args.backend == 'coro':
         backend = CoroBackend(command=args.command)
+    elif args.backend == 'claude':
+        try:
+            from backends import ClaudeAPIBackend
+            backend = ClaudeAPIBackend(
+                api_key=args.api_key,
+                model=args.model
+            )
+        except ImportError as e:
+            print(f"Claude API backend requires anthropic package: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ValueError as e:
+            print(f"Configuration error: {e}", file=sys.stderr)
+            sys.exit(1)
     else:
-        # TODO: Add Claude API backend
-        print(f"Backend '{args.backend}' not yet implemented", file=sys.stderr)
+        print(f"Unknown backend: {args.backend}", file=sys.stderr)
         sys.exit(1)
 
     # Create context manager
