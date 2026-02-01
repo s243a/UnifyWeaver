@@ -217,6 +217,19 @@ def get_default_config() -> Config:
         model='llama3'
     )
 
+    # OpenAI
+    config.agents['openai'] = AgentConfig(
+        name='openai',
+        backend='openai',
+        model='gpt-4o'
+    )
+
+    config.agents['gpt-4o-mini'] = AgentConfig(
+        name='gpt-4o-mini',
+        backend='openai',
+        model='gpt-4o-mini'
+    )
+
     return config
 
 
@@ -265,6 +278,16 @@ def save_example_config(path: str | Path):
                 "backend": "claude",
                 "model": "claude-sonnet-4-20250514",
                 "api_key": "$ANTHROPIC_API_KEY"
+            },
+            "openai": {
+                "backend": "openai",
+                "model": "gpt-4o",
+                "api_key": "$OPENAI_API_KEY"
+            },
+            "openai-mini": {
+                "backend": "openai",
+                "model": "gpt-4o-mini",
+                "api_key": "$OPENAI_API_KEY"
             },
             "coding-assistant": {
                 "backend": "claude-code",
