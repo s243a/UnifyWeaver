@@ -142,6 +142,76 @@ class OpenAIBackend(AgentBackend):
 
         return tool_calls
 
+    def send_message_streaming(
+        self,
+        message: str,
+        context: list[dict],
+        on_token: callable = None
+    ) -> AgentResponse:
+        """Send message with streaming response.
+
+        Args:
+            message: The message to send
+            context: Conversation context
+            on_token: Callback called for each token chunk (str) -> None
+        """
+        # Build messages array
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for msg in context:
+            if msg.get('role') in ('user', 'assistant'):
+                messages.append({
+                    "role": msg['role'],
+                    "content": msg['content']
+                })
+        messages.append({"role": "user", "content": message})
+
+        try:
+            content_parts = []
+
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=messages,
+                stream=True,
+                stream_options={"include_usage": True}
+            )
+
+            input_tokens = 0
+            output_tokens = 0
+
+            for chunk in stream:
+                # Handle content chunks
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        content_parts.append(delta.content)
+                        if on_token:
+                            on_token(delta.content)
+
+                # Handle usage (comes at the end)
+                if chunk.usage:
+                    input_tokens = chunk.usage.prompt_tokens
+                    output_tokens = chunk.usage.completion_tokens
+
+            content = "".join(content_parts)
+            return AgentResponse(
+                content=content,
+                tool_calls=[],
+                tokens={'input': input_tokens, 'output': output_tokens},
+                raw=None
+            )
+
+        except openai.APIError as e:
+            return AgentResponse(
+                content=f"[API Error: {e}]",
+                tokens={}
+            )
+        except Exception as e:
+            return AgentResponse(
+                content=f"[Error: {e}]",
+                tokens={}
+            )
+
     def supports_streaming(self) -> bool:
         """OpenAI API supports streaming."""
         return True

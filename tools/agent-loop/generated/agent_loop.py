@@ -15,6 +15,9 @@ from tools import ToolHandler
 from config import load_config, load_config_from_dir, get_default_config, AgentConfig, Config, save_example_config
 from sessions import SessionManager
 from skills import SkillsLoader
+from costs import CostTracker
+from export import ConversationExporter
+from search import SessionSearcher
 
 
 class AgentLoop:
@@ -30,7 +33,9 @@ class AgentLoop:
         max_iterations: int = 0,
         config: Config | None = None,
         session_manager: SessionManager | None = None,
-        session_id: str | None = None
+        session_id: str | None = None,
+        track_costs: bool = True,
+        streaming: bool = False
     ):
         self.backend = backend
         self.context = context or ContextManager()
@@ -41,6 +46,8 @@ class AgentLoop:
         self.config = config  # For backend switching
         self.session_manager = session_manager or SessionManager()
         self.session_id = session_id  # Current session ID if loaded/saved
+        self.cost_tracker = CostTracker() if track_costs else None
+        self.streaming = streaming
         self.running = True
 
     def run(self) -> None:
@@ -137,6 +144,22 @@ class AgentLoop:
         # /format [type] - set context format
         if cmd.startswith('format'):
             return self._handle_format_command(text)
+
+        # /export <path> - export conversation
+        if cmd.startswith('export'):
+            return self._handle_export_command(text)
+
+        # /cost - show cost tracking
+        if cmd == 'cost' or cmd == 'costs':
+            return self._handle_cost_command()
+
+        # /search <query> - search sessions
+        if cmd.startswith('search'):
+            return self._handle_search_command(text)
+
+        # /stream - toggle streaming mode
+        if cmd == 'stream' or cmd == 'streaming':
+            return self._handle_stream_command()
 
         return False
 
@@ -260,6 +283,78 @@ class AgentLoop:
             print("[Available: plain, markdown, json, xml]\n")
         return True
 
+    def _handle_export_command(self, text: str) -> bool:
+        """Handle /export <path> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /export <path>]")
+            print("[Formats: .md, .html, .json, .txt (auto-detected from extension)]\n")
+            return True
+
+        path = parts[1].strip()
+        try:
+            exporter = ConversationExporter(self.context)
+            exporter.save(path, title=self.session_id or "Conversation")
+            print(f"[Exported to: {path}]\n")
+        except Exception as e:
+            print(f"[Error exporting: {e}]\n")
+        return True
+
+    def _handle_cost_command(self) -> bool:
+        """Handle /cost command."""
+        if not self.cost_tracker:
+            print("[Cost tracking disabled]\n")
+            return True
+
+        summary = self.cost_tracker.get_summary()
+        print(f"""
+Cost Summary:
+  Requests: {summary['total_requests']}
+  Input tokens: {summary['total_input_tokens']:,}
+  Output tokens: {summary['total_output_tokens']:,}
+  Total tokens: {summary['total_tokens']:,}
+  Estimated cost: {summary['cost_formatted']}
+""")
+        return True
+
+    def _handle_search_command(self, text: str) -> bool:
+        """Handle /search <query> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /search <query>]\n")
+            return True
+
+        query = parts[1].strip()
+        try:
+            searcher = SessionSearcher(self.session_manager.sessions_dir)
+            results = searcher.search(query, limit=10)
+
+            if not results:
+                print(f"[No results for: {query}]\n")
+                return True
+
+            print(f"Search results for '{query}':")
+            for r in results:
+                role = "You" if r.role == "user" else "Asst"
+                snippet = r.content[r.match_start:r.match_end]
+                context = r.context_before[-20:] + "**" + snippet + "**" + r.context_after[:20]
+                print(f"  [{r.session_id}] {role}: ...{context}...")
+            print()
+        except Exception as e:
+            print(f"[Search error: {e}]\n")
+        return True
+
+    def _handle_stream_command(self) -> bool:
+        """Handle /stream command to toggle streaming mode."""
+        if not self.backend.supports_streaming():
+            print(f"[Backend {self.backend.name} does not support streaming]\n")
+            return True
+
+        self.streaming = not self.streaming
+        status = "enabled" if self.streaming else "disabled"
+        print(f"[Streaming {status}]\n")
+        return True
+
     def _print_help(self) -> None:
         """Print help message."""
         print("""
@@ -272,12 +367,18 @@ Commands (with or without / prefix):
 Loop Control:
   /iterations [N]    - Show or set max iterations (0 = unlimited)
   /backend [name]    - Show or switch backend/agent
-  /format [type]     - Show or set context format (plain/markdown/json/xml)
+  /format [type]     - Set context format (plain/markdown/json/xml)
+  /stream            - Toggle streaming mode for API backends
 
 Sessions:
   /save [name]       - Save current conversation
   /load <id>         - Load a saved conversation
   /sessions          - List saved sessions
+  /search <query>    - Search across saved sessions
+
+Export & Costs:
+  /export <path>     - Export conversation (.md, .html, .json, .txt)
+  /cost              - Show API cost tracking summary
 
 Just type your message to chat with the agent.
 """)
@@ -286,14 +387,18 @@ Just type your message to chat with the agent.
         """Print context status."""
         iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
         session_str = self.session_id or "(unsaved)"
+        streaming_str = "on" if self.streaming else "off"
+        cost_str = self.cost_tracker.format_status() if self.cost_tracker else "disabled"
         print(f"""
 Status:
   Backend: {self.backend.name}
   Session: {session_str}
+  Streaming: {streaming_str}
   Max iterations: {iterations_str}
   Context format: {self.context.format.value}
   Messages: {self.context.message_count}
-  Tokens: {self.context.token_count}
+  Context tokens: {self.context.token_count}
+  Cost: {cost_str}
 """)
 
     def _process_message(self, user_input: str) -> None:
@@ -304,11 +409,20 @@ Status:
         # Show that we're calling the backend
         print("\n[Calling backend...]")
 
-        # Get response from backend
-        response = self.backend.send_message(
-            user_input,
-            self.context.get_context()
-        )
+        # Get response from backend (with streaming if enabled)
+        if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
+            print("\nAssistant: ", end="", flush=True)
+            response = self.backend.send_message_streaming(
+                user_input,
+                self.context.get_context(),
+                on_token=lambda t: print(t, end="", flush=True)
+            )
+            print()  # Newline after streaming
+        else:
+            response = self.backend.send_message(
+                user_input,
+                self.context.get_context()
+            )
 
         # Handle tool calls if present
         iteration_count = 0
@@ -355,19 +469,31 @@ Status:
                 self.context.get_context()
             )
 
-        # Display response
-        print(f"\nAssistant: {response.content}\n")
+        # Display response (if not already streamed)
+        if not (self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming')):
+            print(f"\nAssistant: {response.content}\n")
+        else:
+            print()  # Just add spacing after streamed output
 
         # Add response to context
         output_tokens = response.tokens.get('output', 0)
+        input_tokens = response.tokens.get('input', 0)
         self.context.add_message('assistant', response.content, output_tokens)
+
+        # Track costs
+        if self.cost_tracker and response.tokens:
+            model = getattr(self.backend, 'model', 'unknown')
+            self.cost_tracker.record_usage(model, input_tokens, output_tokens)
 
         # Show token summary if enabled
         if self.show_tokens and response.tokens:
             token_info = ", ".join(
                 f"{k}: {v}" for k, v in response.tokens.items()
             )
-            print(f"  [Tokens: {token_info}]\n")
+            cost_info = ""
+            if self.cost_tracker:
+                cost_info = f" | Est. cost: {self.cost_tracker.get_summary()['cost_formatted']}"
+            print(f"  [Tokens: {token_info}{cost_info}]\n")
 
 
 def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str | None:
@@ -564,6 +690,25 @@ def main():
         help='Format for context when sent to backend'
     )
 
+    # Streaming and cost tracking
+    parser.add_argument(
+        '--stream',
+        action='store_true',
+        help='Enable streaming output for API backends'
+    )
+    parser.add_argument(
+        '--no-cost-tracking',
+        action='store_true',
+        help='Disable cost tracking'
+    )
+
+    # Search
+    parser.add_argument(
+        '--search',
+        metavar='QUERY',
+        help='Search across saved sessions and exit'
+    )
+
     # Prompt
     parser.add_argument(
         'prompt',
@@ -602,6 +747,21 @@ def main():
         print("Saved sessions:")
         for s in sessions:
             print(f"  {s.id}: {s.name} ({s.message_count} msgs, {s.backend})")
+        return
+
+    # Handle --search
+    if args.search:
+        searcher = SessionSearcher(session_manager.sessions_dir)
+        results = searcher.search(args.search, limit=20)
+        if not results:
+            print(f"No results for: {args.search}")
+            return
+        print(f"Search results for '{args.search}':")
+        for r in results:
+            role = "You" if r.role == "user" else "Asst"
+            snippet = r.content[r.match_start:r.match_end]
+            context = r.context_before[-20:] + "**" + snippet + "**" + r.context_after[:20]
+            print(f"  [{r.session_id}] {role}: ...{context}...")
         return
 
     # Handle --list-agents
@@ -697,7 +857,9 @@ def main():
         max_iterations=agent_config.max_iterations,
         config=config,
         session_manager=session_manager,
-        session_id=session_id
+        session_id=session_id,
+        track_costs=not args.no_cost_tracking,
+        streaming=args.stream
     )
 
     # Single prompt mode

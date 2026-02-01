@@ -119,6 +119,70 @@ class ClaudeAPIBackend(AgentBackend):
 
         return tool_calls
 
+    def send_message_streaming(
+        self,
+        message: str,
+        context: list[dict],
+        on_token: callable = None
+    ) -> AgentResponse:
+        """Send message with streaming response.
+
+        Args:
+            message: The message to send
+            context: Conversation context
+            on_token: Callback called for each token chunk (str) -> None
+        """
+        # Build messages array
+        messages = []
+        for msg in context:
+            if msg.get('role') in ('user', 'assistant'):
+                messages.append({
+                    "role": msg['role'],
+                    "content": msg['content']
+                })
+        messages.append({"role": "user", "content": message})
+
+        try:
+            content_parts = []
+            input_tokens = 0
+            output_tokens = 0
+
+            with self.client.messages.stream(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=self.system_prompt,
+                messages=messages
+            ) as stream:
+                for text in stream.text_stream:
+                    content_parts.append(text)
+                    if on_token:
+                        on_token(text)
+
+                # Get final message for token counts
+                response = stream.get_final_message()
+                if hasattr(response, 'usage'):
+                    input_tokens = response.usage.input_tokens
+                    output_tokens = response.usage.output_tokens
+
+            content = "".join(content_parts)
+            return AgentResponse(
+                content=content,
+                tool_calls=[],
+                tokens={'input': input_tokens, 'output': output_tokens},
+                raw=response
+            )
+
+        except anthropic.APIError as e:
+            return AgentResponse(
+                content=f"[API Error: {e}]",
+                tokens={}
+            )
+        except Exception as e:
+            return AgentResponse(
+                content=f"[Error: {e}]",
+                tokens={}
+            )
+
     def supports_streaming(self) -> bool:
         """Claude API supports streaming."""
         return True
