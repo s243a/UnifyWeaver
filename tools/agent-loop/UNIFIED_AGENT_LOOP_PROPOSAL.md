@@ -18,6 +18,27 @@ However, these agents work fine in **single-task mode** where you pass a task as
 4. **Backend agnostic** - Same interface for coro, Claude API, OpenAI, etc.
 5. **Prolog-generated** - Define agents declaratively, generate the loop
 
+## Quick Start
+
+```bash
+cd tools/agent-loop/generated
+
+# Interactive mode (default: coro backend)
+python3 agent_loop.py
+
+# Single prompt
+python3 agent_loop.py "list files in current directory"
+
+# Different backends
+python3 agent_loop.py -b claude-code "prompt"          # Claude Code CLI
+python3 agent_loop.py -b claude-code --model opus "prompt"
+python3 agent_loop.py -b gemini "prompt"               # Gemini CLI
+python3 agent_loop.py -b claude --api-key $KEY "prompt" # Claude API
+
+# Options
+python3 agent_loop.py --help
+```
+
 ## Architecture
 
 ```
@@ -278,12 +299,27 @@ class AgentLoop:
 
 agent_backend(coro, [
     type(cli),
-    command("coro"),
+    command("claude"),
     args(["--verbose"]),
     context_format(conversation_history),
-    output_parser(coro_parser),
-    tool_pattern("Tool call: (\\w+)\\((.*)\\)"),
-    token_pattern("Tokens: (\\d+) input \\+ (\\d+) output")
+    output_parser(coro_parser)
+]).
+
+agent_backend(claude_code, [
+    type(cli),
+    command("claude"),
+    args(["-p", "--model"]),
+    default_model("sonnet"),
+    models(["sonnet", "opus", "haiku"]),
+    context_format(conversation_history)
+]).
+
+agent_backend(gemini, [
+    type(cli),
+    command("gemini"),
+    args(["-p", "-m", "--output-format", "text"]),
+    default_model("gemini-2.5-flash"),
+    context_format(conversation_history)
 ]).
 
 agent_backend(claude_api, [
@@ -364,20 +400,22 @@ loop_config([
 
 ```
 tools/agent-loop/
-├── PROPOSAL.md              # This document
-├── agent_loop_module.pl     # Prolog generator
-├── generated/
-│   ├── agent_loop.py        # Main loop (generated)
-│   ├── backends/
-│   │   ├── __init__.py
-│   │   ├── base.py          # Abstract backend
-│   │   ├── coro.py          # Coro CLI backend
-│   │   ├── claude.py        # Claude API backend
-│   │   └── openai.py        # OpenAI API backend
-│   ├── context.py           # Context manager
-│   ├── tools.py             # Tool handler
-│   └── display.py           # Output renderer
-└── README.md                # Generated documentation
+├── UNIFIED_AGENT_LOOP_PROPOSAL.md  # This document
+├── agent_loop_module.pl            # Prolog generator
+└── generated/
+    ├── agent_loop.py               # Main loop
+    ├── context.py                  # Context manager
+    ├── tools.py                    # Tool handler
+    ├── backends/
+    │   ├── __init__.py
+    │   ├── base.py                 # Abstract backend
+    │   ├── coro.py                 # Coro CLI backend (--verbose)
+    │   ├── claude_code.py          # Claude Code CLI (-p mode)
+    │   ├── claude_api.py           # Claude API backend
+    │   └── gemini.py               # Gemini CLI backend
+    └── stubs/                      # Prolog-generated stubs
+        ├── README.md
+        └── *.py
 ```
 
 ## Termux Compatibility Notes
