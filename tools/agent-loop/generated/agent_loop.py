@@ -18,6 +18,10 @@ from skills import SkillsLoader
 from costs import CostTracker
 from export import ConversationExporter
 from search import SessionSearcher
+from aliases import AliasManager
+from templates import TemplateManager
+from history import HistoryManager
+from multiline import get_input_smart
 
 
 class AgentLoop:
@@ -48,6 +52,9 @@ class AgentLoop:
         self.session_id = session_id  # Current session ID if loaded/saved
         self.cost_tracker = CostTracker() if track_costs else None
         self.streaming = streaming
+        self.alias_manager = AliasManager()
+        self.template_manager = TemplateManager()
+        self.history_manager = HistoryManager(self.context)
         self.running = True
 
     def run(self) -> None:
@@ -70,6 +77,18 @@ class AgentLoop:
                 if self._handle_command(user_input):
                     continue
 
+                # Handle template invocation (@template_name ...)
+                if user_input.strip().startswith('@'):
+                    name, kwargs = self.template_manager.parse_template_invocation(user_input.strip())
+                    if name:
+                        template = self.template_manager.get(name)
+                        missing = template.missing_variables(**kwargs)
+                        if missing:
+                            print(f"[Template @{name} requires: {', '.join(missing)}]\n")
+                            continue
+                        user_input = template.render(**kwargs)
+                        print(f"[Using template @{name}]")
+
                 # Process the message
                 self._process_message(user_input)
 
@@ -90,14 +109,16 @@ class AgentLoop:
         print()
 
     def _get_input(self) -> str | None:
-        """Get input from user."""
-        try:
-            return input("You: ")
-        except EOFError:
-            return None
+        """Get input from user with multi-line support."""
+        return get_input_smart("You: ")
 
     def _handle_command(self, user_input: str) -> bool:
         """Handle special commands. Returns True if command was handled."""
+        # Apply alias resolution first
+        resolved = self.alias_manager.resolve(user_input)
+        if resolved != user_input:
+            user_input = resolved
+
         text = user_input.strip()
         cmd = text.lower()
 
@@ -112,6 +133,7 @@ class AgentLoop:
 
         if cmd == 'clear':
             self.context.clear()
+            self.history_manager = HistoryManager(self.context)
             print("[Context cleared]\n")
             return True
 
@@ -160,6 +182,34 @@ class AgentLoop:
         # /stream - toggle streaming mode
         if cmd == 'stream' or cmd == 'streaming':
             return self._handle_stream_command()
+
+        # Aliases
+        if cmd == 'aliases':
+            return self._handle_aliases_command()
+
+        # Templates
+        if cmd == 'templates':
+            return self._handle_templates_command()
+
+        # History
+        if cmd == 'history' or cmd.startswith('history '):
+            return self._handle_history_command(text)
+
+        # Undo
+        if cmd == 'undo':
+            return self._handle_undo_command()
+
+        # Delete message(s)
+        if cmd.startswith('delete ') or cmd.startswith('del '):
+            return self._handle_delete_command(text)
+
+        # Edit message
+        if cmd.startswith('edit '):
+            return self._handle_edit_command(text)
+
+        # Replay from message
+        if cmd.startswith('replay '):
+            return self._handle_replay_command(text)
 
         return False
 
@@ -355,6 +405,142 @@ Cost Summary:
         print(f"[Streaming {status}]\n")
         return True
 
+    def _handle_aliases_command(self) -> bool:
+        """Handle /aliases command."""
+        print(self.alias_manager.format_list())
+        print()
+        return True
+
+    def _handle_templates_command(self) -> bool:
+        """Handle /templates command."""
+        print(self.template_manager.format_list())
+        print()
+        return True
+
+    def _handle_history_command(self, text: str) -> bool:
+        """Handle /history [n] command."""
+        parts = text.split()
+        limit = 10
+        if len(parts) > 1:
+            try:
+                limit = int(parts[1])
+            except ValueError:
+                pass
+        print(self.history_manager.format_history(limit))
+        print()
+        return True
+
+    def _handle_undo_command(self) -> bool:
+        """Handle /undo command."""
+        if self.history_manager.undo():
+            print("[Undo successful]\n")
+        else:
+            print("[Nothing to undo]\n")
+        return True
+
+    def _handle_delete_command(self, text: str) -> bool:
+        """Handle /delete <n> or /delete <start>-<end> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /delete <index> or /delete <start>-<end> or /delete last [n]]\n")
+            return True
+
+        arg = parts[1].strip()
+
+        # Handle 'last [n]'
+        if arg.startswith('last'):
+            n = 1
+            sub_parts = arg.split()
+            if len(sub_parts) > 1:
+                try:
+                    n = int(sub_parts[1])
+                except ValueError:
+                    pass
+            count = self.history_manager.delete_last(n)
+            print(f"[Deleted {count} message(s)]\n")
+            return True
+
+        # Handle range 'start-end'
+        if '-' in arg:
+            try:
+                start, end = arg.split('-', 1)
+                start = int(start)
+                end = int(end)
+                count = self.history_manager.delete_range(start, end)
+                print(f"[Deleted {count} message(s)]\n")
+            except ValueError:
+                print("[Invalid range format]\n")
+            return True
+
+        # Handle single index
+        try:
+            index = int(arg)
+            if self.history_manager.delete_message(index):
+                print(f"[Deleted message {index}]\n")
+            else:
+                print(f"[Invalid index: {index}]\n")
+        except ValueError:
+            print("[Invalid index]\n")
+        return True
+
+    def _handle_edit_command(self, text: str) -> bool:
+        """Handle /edit <index> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /edit <index>]\n")
+            return True
+
+        try:
+            index = int(parts[1].strip())
+        except ValueError:
+            print("[Invalid index]\n")
+            return True
+
+        # Get current content
+        content = self.history_manager.get_full_content(index)
+        if content is None:
+            print(f"[Invalid index: {index}]\n")
+            return True
+
+        print(f"Current content of message {index}:")
+        print(content[:200] + "..." if len(content) > 200 else content)
+        print("\nEnter new content (or empty to cancel):")
+
+        try:
+            new_content = get_input_smart("New: ")
+            if new_content and new_content.strip():
+                if self.history_manager.edit_message(index, new_content):
+                    print(f"[Message {index} updated]\n")
+                else:
+                    print("[Edit failed]\n")
+            else:
+                print("[Edit cancelled]\n")
+        except EOFError:
+            print("[Edit cancelled]\n")
+        return True
+
+    def _handle_replay_command(self, text: str) -> bool:
+        """Handle /replay <index> command to re-send a message."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /replay <index>]\n")
+            return True
+
+        try:
+            index = int(parts[1].strip())
+        except ValueError:
+            print("[Invalid index]\n")
+            return True
+
+        content = self.history_manager.replay_from(index)
+        if content is None:
+            print(f"[Cannot replay: message {index} not found or not a user message]\n")
+            return True
+
+        print(f"[Replaying message {index}]")
+        self._process_message(content)
+        return True
+
     def _print_help(self) -> None:
         """Print help message."""
         print("""
@@ -379,6 +565,24 @@ Sessions:
 Export & Costs:
   /export <path>     - Export conversation (.md, .html, .json, .txt)
   /cost              - Show API cost tracking summary
+
+History:
+  /history [n]       - Show last n messages (default 10)
+  /delete <idx>      - Delete message at index
+  /delete <s>-<e>    - Delete messages from s to e
+  /delete last [n]   - Delete last n messages
+  /edit <idx>        - Edit message at index
+  /replay <idx>      - Re-send message at index
+  /undo              - Undo last history change
+
+Shortcuts:
+  /aliases           - List command aliases (e.g., /q -> /quit)
+  /templates         - List prompt templates
+
+Multi-line Input:
+  Start with ``` for code blocks
+  Start with <<< for heredoc mode
+  End lines with \\ for continuation
 
 Just type your message to chat with the agent.
 """)
