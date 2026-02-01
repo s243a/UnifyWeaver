@@ -455,12 +455,15 @@ tools/agent-loop/
     ├── config.py                   # Configuration system
     ├── context.py                  # Context manager
     ├── tools.py                    # Tool handler
+    ├── sessions.py                 # Session persistence
+    ├── skills.py                   # Skills/agent.md loader
     ├── backends/
     │   ├── __init__.py
     │   ├── base.py                 # Abstract backend
     │   ├── coro.py                 # Coro CLI backend (--verbose)
     │   ├── claude_code.py          # Claude Code CLI (-p mode)
     │   ├── claude_api.py           # Claude API backend
+    │   ├── openai_api.py           # OpenAI API backend
     │   ├── gemini.py               # Gemini CLI backend
     │   ├── ollama_api.py           # Ollama REST API backend
     │   └── ollama_cli.py           # Ollama CLI backend
@@ -610,14 +613,20 @@ User: Add 3 to that
 - [x] Generate Python code from specs
 - [x] Generate documentation
 
-### Phase 5: ncurses Display Mode (Future)
+### Phase 5: Additional Backends ✓
+- [x] OpenAI API backend (GPT-4, GPT-4o)
+- [x] Ollama backends (API and CLI)
+- [x] Gemini CLI backend
+
+### Phase 6: Advanced Features ✓
+- [x] Session persistence (save/load conversations)
+- [x] Skills and agent.md loading
+- [x] Multiple context formats (plain, markdown, json, xml)
+- [x] Runtime slash commands (/backend, /iterations, /save, /load, /format)
+- [ ] Context summarization (future)
+
+### Phase 7: ncurses Display Mode (Future)
 - [ ] Add ncurses/terminfo based display
 - [ ] Spinner that updates in place
 - [ ] Progress bar for streaming
 - [ ] Status line at bottom
-
-### Phase 6: Advanced Features (Future)
-- [ ] OpenAI and Ollama backends
-- [ ] Limited context display mode
-- [ ] Context summarization
-- [ ] Multiple context formats (plain, markdown, json, xml)

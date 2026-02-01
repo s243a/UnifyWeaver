@@ -10,9 +10,11 @@ import sys
 import argparse
 from pathlib import Path
 from backends import AgentBackend, CoroBackend
-from context import ContextManager, ContextBehavior
+from context import ContextManager, ContextBehavior, ContextFormat
 from tools import ToolHandler
 from config import load_config, load_config_from_dir, get_default_config, AgentConfig, Config, save_example_config
+from sessions import SessionManager
+from skills import SkillsLoader
 
 
 class AgentLoop:
@@ -26,7 +28,9 @@ class AgentLoop:
         show_tokens: bool = True,
         auto_execute_tools: bool = False,
         max_iterations: int = 0,
-        config: Config | None = None
+        config: Config | None = None,
+        session_manager: SessionManager | None = None,
+        session_id: str | None = None
     ):
         self.backend = backend
         self.context = context or ContextManager()
@@ -35,6 +39,8 @@ class AgentLoop:
         self.auto_execute_tools = auto_execute_tools
         self.max_iterations = max_iterations  # 0 = unlimited
         self.config = config  # For backend switching
+        self.session_manager = session_manager or SessionManager()
+        self.session_id = session_id  # Current session ID if loaded/saved
         self.running = True
 
     def run(self) -> None:
@@ -118,6 +124,20 @@ class AgentLoop:
         if cmd.startswith('backend'):
             return self._handle_backend_command(text)
 
+        # Session commands
+        if cmd.startswith('save'):
+            return self._handle_save_command(text)
+
+        if cmd.startswith('load'):
+            return self._handle_load_command(text)
+
+        if cmd == 'sessions':
+            return self._handle_sessions_command()
+
+        # /format [type] - set context format
+        if cmd.startswith('format'):
+            return self._handle_format_command(text)
+
         return False
 
     def _handle_iterations_command(self, text: str) -> bool:
@@ -169,6 +189,77 @@ class AgentLoop:
             print(f"[Error switching backend: {e}]\n")
         return True
 
+    def _handle_save_command(self, text: str) -> bool:
+        """Handle /save [name] command."""
+        parts = text.split(None, 1)
+        name = parts[1].strip() if len(parts) > 1 else None
+
+        try:
+            self.session_id = self.session_manager.save_session(
+                context=self.context,
+                session_id=self.session_id,
+                name=name,
+                backend_name=self.backend.name
+            )
+            print(f"[Session saved: {self.session_id}]\n")
+        except Exception as e:
+            print(f"[Error saving session: {e}]\n")
+        return True
+
+    def _handle_load_command(self, text: str) -> bool:
+        """Handle /load <session_id> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /load <session_id>]")
+            print("[Use /sessions to list available sessions]\n")
+            return True
+
+        session_id = parts[1].strip()
+
+        try:
+            context, metadata, extra = self.session_manager.load_session(session_id)
+            self.context = context
+            self.session_id = session_id
+            print(f"[Session loaded: {metadata.get('name', session_id)}]")
+            print(f"[Messages: {context.message_count}, Tokens: {context.token_count}]\n")
+        except FileNotFoundError:
+            print(f"[Session not found: {session_id}]\n")
+        except Exception as e:
+            print(f"[Error loading session: {e}]\n")
+        return True
+
+    def _handle_sessions_command(self) -> bool:
+        """Handle /sessions command."""
+        sessions = self.session_manager.list_sessions()
+        if not sessions:
+            print("[No saved sessions]\n")
+            return True
+
+        print("Saved sessions:")
+        for s in sessions[:10]:  # Show last 10
+            print(f"  {s.id}: {s.name} ({s.message_count} msgs, {s.backend})")
+        if len(sessions) > 10:
+            print(f"  ... and {len(sessions) - 10} more")
+        print()
+        return True
+
+    def _handle_format_command(self, text: str) -> bool:
+        """Handle /format [type] command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print(f"[Current format: {self.context.format.value}]")
+            print("[Available: plain, markdown, json, xml]\n")
+            return True
+
+        format_name = parts[1].strip().lower()
+        try:
+            self.context.format = ContextFormat(format_name)
+            print(f"[Context format set to: {format_name}]\n")
+        except ValueError:
+            print(f"[Unknown format: {format_name}]")
+            print("[Available: plain, markdown, json, xml]\n")
+        return True
+
     def _print_help(self) -> None:
         """Print help message."""
         print("""
@@ -177,8 +268,16 @@ Commands (with or without / prefix):
   /clear             - Clear conversation context
   /status            - Show context status
   /help              - Show this help message
+
+Loop Control:
   /iterations [N]    - Show or set max iterations (0 = unlimited)
   /backend [name]    - Show or switch backend/agent
+  /format [type]     - Show or set context format (plain/markdown/json/xml)
+
+Sessions:
+  /save [name]       - Save current conversation
+  /load <id>         - Load a saved conversation
+  /sessions          - List saved sessions
 
 Just type your message to chat with the agent.
 """)
@@ -186,10 +285,13 @@ Just type your message to chat with the agent.
     def _print_status(self) -> None:
         """Print context status."""
         iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
+        session_str = self.session_id or "(unsaved)"
         print(f"""
 Status:
   Backend: {self.backend.name}
+  Session: {session_str}
   Max iterations: {iterations_str}
+  Context format: {self.context.format.value}
   Messages: {self.context.message_count}
   Tokens: {self.context.token_count}
 """)
@@ -268,9 +370,23 @@ Status:
             print(f"  [Tokens: {token_info}]\n")
 
 
-def create_backend_from_config(agent_config: AgentConfig) -> AgentBackend:
+def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str | None:
+    """Build system prompt from config, agent.md, and skills."""
+    loader = SkillsLoader(base_dir=config_dir or Path.cwd())
+
+    return loader.build_system_prompt(
+        base_prompt=agent_config.system_prompt,
+        agent_md=agent_config.agent_md,
+        skills=agent_config.skills if agent_config.skills else None
+    ) or agent_config.system_prompt
+
+
+def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "") -> AgentBackend:
     """Create a backend from an AgentConfig."""
     backend_type = agent_config.backend
+
+    # Build system prompt with skills/agent.md
+    system_prompt = build_system_prompt(agent_config, config_dir)
 
     if backend_type == 'coro':
         return CoroBackend(command=agent_config.command or 'claude')
@@ -294,7 +410,16 @@ def create_backend_from_config(agent_config: AgentConfig) -> AgentBackend:
         return ClaudeAPIBackend(
             api_key=agent_config.api_key,
             model=agent_config.model or 'claude-sonnet-4-20250514',
-            system_prompt=agent_config.system_prompt
+            system_prompt=system_prompt
+        )
+
+    elif backend_type == 'openai':
+        from backends import OpenAIBackend
+        return OpenAIBackend(
+            api_key=agent_config.api_key,
+            model=agent_config.model or 'gpt-4o',
+            system_prompt=system_prompt,
+            base_url=agent_config.extra.get('base_url')
         )
 
     elif backend_type == 'ollama-api':
@@ -303,7 +428,7 @@ def create_backend_from_config(agent_config: AgentConfig) -> AgentBackend:
             host=agent_config.host or 'localhost',
             port=agent_config.port or 11434,
             model=agent_config.model or 'llama3',
-            system_prompt=agent_config.system_prompt,
+            system_prompt=system_prompt,
             timeout=agent_config.timeout
         )
 
@@ -350,7 +475,7 @@ def main():
     # Direct backend selection (overrides config)
     parser.add_argument(
         '--backend', '-b',
-        choices=['coro', 'claude', 'claude-code', 'gemini', 'ollama-api', 'ollama-cli'],
+        choices=['coro', 'claude', 'claude-code', 'gemini', 'openai', 'ollama-api', 'ollama-cli'],
         default=None,
         help='Backend to use (overrides --agent config)'
     )
@@ -414,6 +539,31 @@ def main():
         help='Max tool iterations before pausing (0 = unlimited)'
     )
 
+    # Session management
+    parser.add_argument(
+        '--session', '-s',
+        default=None,
+        help='Load a saved session by ID'
+    )
+    parser.add_argument(
+        '--list-sessions',
+        action='store_true',
+        help='List saved sessions'
+    )
+    parser.add_argument(
+        '--sessions-dir',
+        default=None,
+        help='Directory for session files (default: ~/.agent-loop/sessions)'
+    )
+
+    # Context format
+    parser.add_argument(
+        '--context-format',
+        choices=['plain', 'markdown', 'json', 'xml'],
+        default=None,
+        help='Format for context when sent to backend'
+    )
+
     # Prompt
     parser.add_argument(
         'prompt',
@@ -439,6 +589,20 @@ def main():
 
     if config is None:
         config = get_default_config()
+
+    # Create session manager
+    session_manager = SessionManager(args.sessions_dir)
+
+    # Handle --list-sessions
+    if args.list_sessions:
+        sessions = session_manager.list_sessions()
+        if not sessions:
+            print("No saved sessions")
+            return
+        print("Saved sessions:")
+        for s in sessions:
+            print(f"  {s.id}: {s.name} ({s.message_count} msgs, {s.backend})")
+        return
 
     # Handle --list-agents
     if args.list_agents:
@@ -483,7 +647,7 @@ def main():
 
     # Create backend
     try:
-        backend = create_backend_from_config(agent_config)
+        backend = create_backend_from_config(agent_config, config.config_dir)
     except ImportError as e:
         print(f"Backend requires additional package: {e}", file=sys.stderr)
         sys.exit(1)
@@ -491,13 +655,29 @@ def main():
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Create context manager
-    behavior = ContextBehavior(agent_config.context_mode)
-    context = ContextManager(
-        behavior=behavior,
-        max_tokens=agent_config.max_context_tokens,
-        max_messages=agent_config.max_messages
-    )
+    # Load session if specified
+    session_id = None
+    context = None
+
+    if args.session:
+        try:
+            context, metadata, extra = session_manager.load_session(args.session)
+            session_id = args.session
+            print(f"Loaded session: {metadata.get('name', session_id)}")
+        except FileNotFoundError:
+            print(f"Session not found: {args.session}", file=sys.stderr)
+            sys.exit(1)
+
+    # Create context manager if not loaded from session
+    if context is None:
+        behavior = ContextBehavior(agent_config.context_mode)
+        context_format = ContextFormat(args.context_format) if args.context_format else ContextFormat.PLAIN
+        context = ContextManager(
+            behavior=behavior,
+            max_tokens=agent_config.max_context_tokens,
+            max_messages=agent_config.max_messages,
+            format=context_format
+        )
 
     # Create tool handler
     tools = None
@@ -515,7 +695,9 @@ def main():
         show_tokens=agent_config.show_tokens and not args.no_tokens,
         auto_execute_tools=agent_config.auto_tools,
         max_iterations=agent_config.max_iterations,
-        config=config
+        config=config,
+        session_manager=session_manager,
+        session_id=session_id
     )
 
     # Single prompt mode

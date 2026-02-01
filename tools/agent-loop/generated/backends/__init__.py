@@ -18,3 +18,10 @@ try:
     __all__.append('ClaudeAPIBackend')
 except ImportError:
     pass
+
+# OpenAI API backend (optional - requires openai package)
+try:
+    from .openai_api import OpenAIBackend
+    __all__.append('OpenAIBackend')
+except ImportError:
+    pass
