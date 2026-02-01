@@ -380,79 +380,155 @@ tools/agent-loop/
 └── README.md                # Generated documentation
 ```
 
-## Implementation Plan
+## Termux Compatibility Notes
 
-### Phase 1: Prototype (Python only)
-- [ ] Create basic AgentLoop class
-- [ ] Implement CoroBackend (CLI single-task)
-- [ ] Simple context management (last N messages)
-- [ ] Basic tool call parsing for coro
-- [ ] Test with coro "what is 2+2" style tasks
+### What Works
+- `tput cr` (terminfo carriage return) - cursor moves to line start
+- `tput el` (terminfo clear to end of line)
+- ncurses-based apps like `dialog` - full TUI works
+- Basic ANSI colors and formatting
 
-### Phase 2: Claude API Backend
-- [ ] Implement ClaudeBackend
-- [ ] Proper message format for API
-- [ ] Tool use support
-- [ ] Streaming support
+### What Doesn't Work
+- Raw `\r` (carriage return) - creates new line instead of returning
+- Raw `\x1B[1G` (cursor to column 1) - doesn't work
+- Raw `\x1B[K` (clear line) - doesn't work
+- Coro-code's TUI - uses raw escapes, completely broken
+- xterm.js in browser - also shows broken coro TUI (sizing issues)
 
-### Phase 3: Tool Handling
-- [ ] Bash execution with confirmation
-- [ ] File read/write/edit
-- [ ] Safety checks (path validation, etc.)
+### Root Cause
+Termux requires terminfo-based terminal control (`tput`) rather than
+hardcoded ANSI escape sequences. Apps using raw escapes will break.
 
-### Phase 4: Prolog Generation
-- [ ] Create agent_loop_module.pl
-- [ ] Declarative backend definitions
-- [ ] Generate Python from Prolog specs
-- [ ] Configuration options
+### Implication for Agent Loop
+Start with **append-only mode** that uses no cursor control at all.
+This guarantees compatibility. Add optional terminfo-based display
+modes later for environments that support it.
 
-### Phase 5: Advanced Features
-- [ ] Context summarization (for long conversations)
-- [ ] Persistent sessions (save/load)
-- [ ] Multiple backend fallback
-- [ ] Web interface option
+---
 
-## Usage Examples
+## Display Modes
 
-### CLI Usage
-```bash
-# With coro backend
-./agent-loop.py --backend coro
+The agent loop supports multiple display modes, starting simple and adding complexity:
 
-# With Claude API
-./agent-loop.py --backend claude --api-key $ANTHROPIC_API_KEY
+### Mode 1: Append-Only (Initial Implementation)
 
-# With specific model
-./agent-loop.py --backend claude --model claude-opus-4-20250514
-```
+Simple terminal output with no cursor control. All output appends to the terminal.
+Works everywhere - Termux, pipes, logs, dumb terminals, etc.
 
-### Programmatic Usage
-```python
-from agent_loop import AgentLoop
-from backends.coro import CoroBackend
+**Features:**
+- Pure text output, no escape codes
+- Each message appends below previous
+- Progress shown as text lines
+- Full conversation visible by scrolling
 
-loop = AgentLoop(backend=CoroBackend())
-loop.run()
-```
-
-### Example Session
+**Example session:**
 ```
 UnifyWeaver Agent Loop
 Backend: CoroBackend
 Type 'exit' to quit, 'clear' to reset context
 
-You: What files are in the current directory?
+You: What is 2+2?
 
-  [Tool: bash]
+[Calling backend...]
+Assistant: The answer is 4.
 
-Assistant: The current directory contains:
-- README.md
-- src/
-- package.json
-...
+  [Tokens: {input: 42, output: 15}]
 
-  [Tokens: {'input': 234, 'output': 89}]
+You: exit
 
-You: Read the README.md
+Goodbye!
+```
 
-  [Tool: read]
+### Mode 2: ncurses-based (Future)
+
+Uses ncurses/terminfo for cursor control. Works in Termux and proper terminals.
+
+**Features:**
+- Spinner that updates in place
+- Progress bar for streaming
+- Status line at bottom
+- Uses \`tput\` for all cursor control
+
+### Mode 3: Limited Context Display (Future)
+
+Scrollable view showing only recent messages, with cursor position control.
+
+**Features:**
+- Show only last N lines of conversation
+- Scroll through history with keys
+- Input line stays at fixed position
+- Requires ncurses Mode 2 as foundation
+
+---
+
+## Context Modes
+
+Different ways to handle conversation context when sending to the backend:
+
+### Context Behavior
+
+| Mode | Description |
+|------|-------------|
+| `continue` | New query continues the conversation, uses full context |
+| `fresh` | Each query is independent, no prior context |
+| `summarize` | Summarize old context when it grows large |
+| `sliding` | Keep only the last N messages |
+
+### Context Format
+
+How context is formatted when sent to the backend:
+
+| Format | Use Case |
+|--------|----------|
+| `plain` | Simple text, each message on a line with role prefix |
+| `markdown` | Markdown formatted with headers for each message |
+| `json` | JSON array of message objects (for API backends) |
+| `xml` | XML structure with message elements |
+
+**Example plain format:**
+```
+User: What is 2+2?
+Assistant: 4
+User: Add 3 to that
+```
+
+---
+
+## Implementation Plan
+
+### Phase 1: Append-Only Prototype
+- [ ] Basic agent loop with stdin/stdout
+- [ ] Coro CLI backend (single-task mode)
+- [ ] Context manager with message history
+- [ ] Pure text output, no escape codes
+- [ ] Test in Termux
+
+### Phase 2: Claude API Backend
+- [ ] Add Claude API backend
+- [ ] API key configuration
+- [ ] Token counting and display
+- [ ] Streaming support (optional)
+
+### Phase 3: Tool Handling
+- [ ] Parse tool calls from coro output
+- [ ] Execute bash, read, write, edit tools
+- [ ] Confirmation prompts for destructive operations
+- [ ] Tool result formatting and continuation
+
+### Phase 4: Prolog Generation
+- [ ] Create agent_loop_module.pl
+- [ ] Define backend specs in Prolog
+- [ ] Generate Python code from specs
+- [ ] Generate documentation
+
+### Phase 5: ncurses Display Mode (Future)
+- [ ] Add ncurses/terminfo based display
+- [ ] Spinner that updates in place
+- [ ] Progress bar for streaming
+- [ ] Status line at bottom
+
+### Phase 6: Advanced Features (Future)
+- [ ] OpenAI and Ollama backends
+- [ ] Limited context display mode
+- [ ] Context summarization
+- [ ] Multiple context formats (plain, markdown, json, xml)
