@@ -26,6 +26,7 @@
 :- dynamic user:test_label_cat_edge/4.
 :- dynamic user:test_label_cat_reach/4.
 :- dynamic user:test_label_cat_reach_param/4.
+:- dynamic user:test_label_cat_reach_param_end/4.
 :- dynamic user:test_cat/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_recursive_label_path_cat_selective/4.
@@ -229,6 +230,8 @@ test_csharp_query_target :-
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_seed_cache_key_order_insensitive_runtime,
+        verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insensitive_runtime,
         verify_parameterized_reachability_cache_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_reuse_runtime,
         verify_parameterized_reachability_pairs_cache_reuse_runtime,
@@ -557,6 +560,14 @@ setup_test_data :-
         test_label_cat_edge(X, Y, L, Cat),
         test_label_cat_reach_param(Y, Z, L, Cat)
     )),
+    assertz(user:mode(test_label_cat_reach_param_end(-, +, +, +))),
+    assertz(user:(test_label_cat_reach_param_end(X, Y, L, Cat) :-
+        test_label_cat_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_label_cat_reach_param_end(X, Z, L, Cat) :-
+        test_label_cat_edge(X, Y, L, Cat),
+        test_label_cat_reach_param_end(Y, Z, L, Cat)
+    )),
     assertz(user:test_cat(cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(b, c, red, cat1)),
@@ -773,6 +784,8 @@ cleanup_test_data :-
     retractall(user:test_label_cat_reach(_, _, _, _)),
     retractall(user:test_label_cat_reach_param(_, _, _, _)),
     retractall(user:mode(test_label_cat_reach_param(_, _, _, _))),
+    retractall(user:test_label_cat_reach_param_end(_, _, _, _)),
+    retractall(user:mode(test_label_cat_reach_param_end(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
     retractall(user:mode(test_sparse_input_filtered(_, _, _))),
@@ -2514,6 +2527,36 @@ verify_parameterized_grouped_transitive_closure_cache_reuse_runtime :-
          'a,c,red,cat1',
          'CACHE_HIT:GroupedTransitiveClosureSeeded=true'],
         [[a, red, cat1]],
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_seed_cache_key_order_insensitive_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, red, cat1], [a, blue, cat1]],
+    ExecParams = [[a, blue, cat1], [a, red, cat1]],
+    harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, 'GroupedTransitiveClosureSeeded', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'a,d,blue,cat1',
+         'a,e,blue,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeeded=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insensitive_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_end/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[c, red, cat1], [e, blue, cat1]],
+    ExecParams = [[e, blue, cat1], [c, red, cat1]],
+    harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, 'GroupedTransitiveClosureSeededByTarget', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c,red,cat1',
+         'b,c,red,cat1',
+         'a,e,blue,cat1',
+         'd,e,blue,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true'],
+        ExecParams,
         HarnessSource).
 
 verify_parameterized_reachability_cache_reuse_runtime :-
