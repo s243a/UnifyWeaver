@@ -6830,6 +6830,66 @@ namespace UnifyWeaver.QueryRuntime
             return key;
         }
 
+        private static int CompareCacheSeedValues(object? left, object? right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return 0;
+            }
+
+            if (left is null)
+            {
+                return -1;
+            }
+
+            if (right is null)
+            {
+                return 1;
+            }
+
+            if (left is string leftString && right is string rightString)
+            {
+                return StringComparer.Ordinal.Compare(leftString, rightString);
+            }
+
+            var leftType = left.GetType();
+            var rightType = right.GetType();
+
+            if (leftType == rightType)
+            {
+                if (left is IComparable comparable)
+                {
+                    try
+                    {
+                        return comparable.CompareTo(right);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                return StringComparer.Ordinal.Compare(FormatCacheSeedValue(left), FormatCacheSeedValue(right));
+            }
+
+            var leftTypeName = leftType.FullName ?? leftType.Name;
+            var rightTypeName = rightType.FullName ?? rightType.Name;
+            var typeComparison = StringComparer.Ordinal.Compare(leftTypeName, rightTypeName);
+            if (typeComparison != 0)
+            {
+                return typeComparison;
+            }
+
+            return StringComparer.Ordinal.Compare(FormatCacheSeedValue(left), FormatCacheSeedValue(right));
+        }
+
+        private static string FormatCacheSeedValue(object value) =>
+            value switch
+            {
+                JsonElement element => element.GetRawText(),
+                IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
+                _ => value.ToString() ?? string.Empty
+            };
+
         private static bool EdgeMatchesFilters(object[] edge, IReadOnlyList<int> groupIndices, object?[] filters)
         {
             for (var i = 0; i < groupIndices.Count; i++)
@@ -6920,6 +6980,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
 
+                seeds.Sort(CompareCacheSeedValues);
                 var seedsKey = seeds.ToArray();
                 var cacheKey = (closure.EdgeRelation, closure.Predicate);
                 var traceKey = $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={seedsKey.Length}";
@@ -7059,6 +7120,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
 
+                seeds.Sort(CompareCacheSeedValues);
                 var seedsKey = seeds.ToArray();
                 var cacheKey = (closure.EdgeRelation, closure.Predicate);
                 var traceKey = $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:targets={seedsKey.Length}";
