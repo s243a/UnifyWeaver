@@ -65,6 +65,12 @@ The current implementation emits static C# builders that assemble the plan via n
 - Non-stratified programs are rejected: a predicate cannot (directly or indirectly) depend on itself through a negated edge.
 - Stratified derived predicates are materialised before use: the query planner emits a `ProgramNode` that evaluates lower-strata `define_relation` / `define_mutual_fixpoint` definitions first, then evaluates the final query body (so `\+` can consult derived results).
 
+## Ordering, Purity, and Effects
+- UnifyWeaver may reorder joins/goals when a predicate is declared `unordered(true)` (the default). Use `ordered` / `unordered(false)` to disable goal reordering when evaluation order is semantically meaningful (e.g. effectful predicates).
+- The query runtime’s default output order is unspecified (hash-set semantics). For deterministic ordering, use `order_by/...` (and `distinct(strategy(ordered))` when relevant) before `limit/offset`.
+- Cache/index reuse (e.g. `new QueryExecutorOptions(ReuseCaches: true)`) assumes deterministic/pure relations. Disable caches (or clear them via `executor.ClearCaches()`) if underlying facts/providers can change or have side effects.
+- Seeded transitive-closure caches treat the seed list as a set (deduped + order-insensitive), so calls with the same seeds in different orders share a cache entry.
+
 ## Current Limitations
 - Tail-recursive optimisation and memoised aggregates still fall back to iterative evaluation without specialised nodes.
 - Ordering/paging are opt-in via query plan modifiers (`order_by/1`, `order_by/2`, `limit/1`, `offset/1`); default results follow hash-set semantics.
@@ -109,8 +115,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 - Prepared-style cache reuse (useful for repeated parameterized calls):
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));`
   - `executor.ClearCaches();` (if underlying facts change)
-  - Note: cache reuse assumes deterministic/pure evaluation (no side effects). If order or effects matter, disable caches and compile with `ordered` / `unordered(false)`.
-  - Seeded transitive-closure caches treat the seed list as a set (deduped + order-insensitive) so repeated calls with the same seeds in a different order hit the same cache entry.
+  - See “Ordering, Purity, and Effects” below for ordering/side-effect assumptions.
 
 ## Configuration
 - New preference atom: `target(csharp_query)`.
