@@ -6494,6 +6494,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
 
+                orderedSeeds.Sort(CompareCacheSeedRows);
                 var flatSeedKey = BuildFlatSeedCacheKey(orderedSeeds, groupCount + 1);
                 var groupedKey = string.Join(",", closure.GroupIndices);
                 var cacheKey = (closure.EdgeRelation, closure.Predicate, groupedKey);
@@ -6738,6 +6739,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
 
+                orderedSeeds.Sort(CompareCacheSeedRows);
                 var flatSeedKey = BuildFlatSeedCacheKey(orderedSeeds, groupCount + 1);
                 var groupedKey = string.Join(",", closure.GroupIndices);
                 var cacheKey = (closure.EdgeRelation, closure.Predicate, groupedKey);
@@ -6828,6 +6830,36 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return key;
+        }
+
+        private static int CompareCacheSeedRows(object[] left, object[] right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return 0;
+            }
+
+            if (left is null)
+            {
+                return -1;
+            }
+
+            if (right is null)
+            {
+                return 1;
+            }
+
+            var max = Math.Min(left.Length, right.Length);
+            for (var i = 0; i < max; i++)
+            {
+                var comparison = CompareCacheSeedValues(left[i], right[i]);
+                if (comparison != 0)
+                {
+                    return comparison;
+                }
+            }
+
+            return left.Length.CompareTo(right.Length);
         }
 
         private static int CompareCacheSeedValues(object? left, object? right)
