@@ -1,11 +1,8 @@
-# PR: Rotational Teacher Distillation for Fast Orthogonal Inference
+# Rotational Teacher for Fast Orthogonal Inference
 
-## Title
-feat(training): Add rotational teacher with GPU acceleration and target caching
+## Overview
 
-## Summary
-
-This PR adds a rotational teacher for distilling the full federated model (logm/expm blending) into a fast orthogonal transformer. The key insight is that while the full rotational computation is expensive (~0.2/s on CPU), we can pre-compute targets once and cache them for instant retraining with different architectures.
+The rotational teacher distills the full federated model (logm/expm blending) into a fast orthogonal transformer. The key insight is that while the full rotational computation is expensive (~0.2/s on CPU), we can pre-compute targets once and cache them for instant retraining with different architectures.
 
 ## Key Features
 
