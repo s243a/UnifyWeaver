@@ -109,6 +109,8 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 - Prepared-style cache reuse (useful for repeated parameterized calls):
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));`
   - `executor.ClearCaches();` (if underlying facts change)
+  - Note: cache reuse assumes deterministic/pure evaluation (no side effects). If order or effects matter, disable caches and compile with `ordered` / `unordered(false)`.
+  - Seeded transitive-closure caches treat the seed list as a set (deduped + order-insensitive) so repeated calls with the same seeds in a different order hit the same cache entry.
 
 ## Configuration
 - New preference atom: `target(csharp_query)`.
