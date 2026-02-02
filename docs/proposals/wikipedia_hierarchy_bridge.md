@@ -33,7 +33,7 @@ python scripts/train_orthogonal_codebook.py \
     --build-canonical \
     --n-components 64 \
     --layers 3 \
-    --teacher rotational \
+    --teacher paired \
     --transformer-type composed \
     --epochs 50 \
     --output models/bivector_paired.pt
@@ -42,11 +42,141 @@ python scripts/train_orthogonal_codebook.py \
 **Key options:**
 | Option | Values | Current | Description |
 |--------|--------|---------|-------------|
-| `--teacher` | `rotational`, `jax`, `orthogonal` | `rotational` | Teacher model (rotational = logm/expm distillation) |
+| `--teacher` | `paired`, `rotational`, `jax`, `orthogonal` | `paired` | Teacher model (see Alternative Paths below) |
 | `--transformer-type` | `composed`, `additive`, `bivector-blend` | `composed` | Transformer architecture |
 | `--n-components` | int | `64` | Number of basis vectors/planes |
 | `--layers` | int | `3` | Transformer layers |
 | `--build-canonical` | flag | yes | Build canonical basis from federated clusters |
+| `--centroid-warmup` | int | `0` | Epochs to train on centroids first |
+
+---
+
+## Alternative Training Paths
+
+The federated model may not always be necessary. Here are the possible training paths:
+
+### Path A: Direct from JSONL (Skip Federated Model)
+
+```
+JSONL pairs → Embed with Nomic → K-means clustering → Centroids as basis → Train transformer
+```
+
+**When to use:** Simplest path when you just need a fast transformer and don't need cluster structure.
+
+**Implementation:**
+```python
+# 1. Load pairs from JSONL
+pairs = load_jsonl("pearltrees_targets.jsonl")
+
+# 2. Embed queries
+query_embeddings = embed(pairs['query'])
+target_embeddings = embed(pairs['target'])
+
+# 3. K-means for basis vectors (replaces federated clustering)
+centroids = kmeans(query_embeddings, n_clusters=64)
+
+# 4. Train transformer directly on pairs
+transformer.train(query_embeddings, target_embeddings, basis=centroids)
+```
+
+**Pros:** Faster, simpler pipeline
+**Cons:** Loses benefits of hierarchical clustering, no per-cluster W matrices
+
+### Path B: Federated Model + Paired Teacher (Current)
+
+```
+JSONL → Federated Model (clustering + W matrices) → Store pairs → Paired Teacher → Transformer
+```
+
+**What federated model provides:**
+1. Hierarchical clustering (embedding, path_depth, per-tree, mst methods)
+2. Per-cluster rotation matrices W (not used by paired teacher directly)
+3. Pre-computed target embeddings (W @ query + bias)
+4. Cluster centroids → basis vectors for transformer routing
+
+**What paired teacher uses:**
+- Pre-stored (query, target) pairs from `routing_data.npz`
+- Cluster centroids for basis vectors
+- Optional: centroid replay, cluster-based sampling
+
+**Pros:** Captures full transformation (rotation + translation)
+**Cons:** W matrices computed but not directly used; federated model overhead
+
+### Path C: Federated Model + Rotational Teacher
+
+```
+JSONL → Federated Model → Rotational Teacher (logm/expm) → Transformer
+```
+
+**How it works:**
+1. Federated model learns per-cluster W matrices
+2. Rotational teacher computes `logm(W)` → bivectors
+3. During training: `target = expm(weighted_bivector) @ query`
+
+**Modification needed for translation:**
+The transformation is actually `W @ query + bias`, not just `W @ query`.
+Rotational teacher needs modification to apply rotation AFTER bias:
+
+```python
+# Current (rotation only):
+target = expm(weighted_bivector) @ query
+
+# Modified (rotation + translation):
+# Option 1: Apply bias first, then rotate
+target = expm(weighted_bivector) @ (query + bias)
+
+# Option 2: Rotate then add bias
+target = expm(weighted_bivector) @ query + rotated_bias
+```
+
+**Advantage:** More direct weight updates since transformer learns weighted sum of
+(rotation, bias) pairs. Gradients flow more interpretably through the rotation structure.
+
+**Centroid replay with rotational teacher:**
+- Train on centroid → W @ centroid pairs
+- Uses the actual rotation matrices, not just paired data
+- Helps transformer learn cluster-specific transformations
+
+### Path D: Hybrid Approaches
+
+**D1: Rotational for centroids, Paired for samples**
+```python
+# Warmup: train on centroid rotations (uses W matrices)
+for epoch in range(centroid_warmup):
+    train_rotational(centroids, W_matrices)
+
+# Main training: use paired data (faster)
+for epoch in range(main_epochs):
+    train_paired(query_target_pairs)
+```
+
+**D2: Cluster-weighted sampling with paired teacher**
+```python
+# Ensure coverage across clusters
+for cluster in clusters:
+    batch = sample_from_cluster(cluster, n=batch_size // n_clusters)
+    train_paired(batch)
+```
+
+**D3: Direct from JSONL with centroid warmup**
+```python
+# Skip federated, but still do centroid-based warmup
+centroids = kmeans(query_embeddings, 64)
+centroid_targets = compute_mean_targets_per_cluster(...)
+train_warmup(centroids, centroid_targets)
+train_main(all_pairs)
+```
+
+### Summary: When to Use Each Path
+
+| Path | Federated Model | Teacher | Best For |
+|------|-----------------|---------|----------|
+| A | No (k-means only) | Paired | Fast iteration, simple pipeline |
+| B | Yes | Paired | Current default, captures full transformation |
+| C | Yes | Rotational | When you want interpretable rotation weights |
+| D1 | Yes | Both | Best of both: rotation structure + speed |
+| D2 | Yes | Paired | Ensure cluster coverage |
+| D3 | No | Paired | Centroid warmup without federated overhead |
 
 **Output:** `models/bivector_paired.pt` - fast transformer that approximates federated rotations
 
