@@ -22,6 +22,7 @@ from aliases import AliasManager
 from templates import TemplateManager
 from history import HistoryManager
 from multiline import get_input_smart
+from display import DisplayMode, Spinner
 
 
 class AgentLoop:
@@ -39,7 +40,8 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         session_id: str | None = None,
         track_costs: bool = True,
-        streaming: bool = False
+        streaming: bool = False,
+        display_mode: str = 'append'
     ):
         self.backend = backend
         self.context = context or ContextManager()
@@ -52,6 +54,7 @@ class AgentLoop:
         self.session_id = session_id  # Current session ID if loaded/saved
         self.cost_tracker = CostTracker() if track_costs else None
         self.streaming = streaming
+        self.display_mode = display_mode  # 'append' or 'ncurses'
         self.alias_manager = AliasManager()
         self.template_manager = TemplateManager()
         self.history_manager = HistoryManager(self.context)
@@ -611,10 +614,18 @@ Status:
         self.context.add_message('user', user_input)
 
         # Show that we're calling the backend
-        print("\n[Calling backend...]")
+        use_spinner = self.display_mode == 'ncurses' and DisplayMode.supports_ncurses()
+
+        if use_spinner:
+            spinner = Spinner("Calling backend...")
+            spinner.start()
+        else:
+            print("\n[Calling backend...]")
 
         # Get response from backend (with streaming if enabled)
         if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
+            if use_spinner:
+                spinner.stop()
             print("\nAssistant: ", end="", flush=True)
             response = self.backend.send_message_streaming(
                 user_input,
@@ -627,6 +638,8 @@ Status:
                 user_input,
                 self.context.get_context()
             )
+            if use_spinner:
+                spinner.stop()
 
         # Handle tool calls if present
         iteration_count = 0
@@ -913,6 +926,13 @@ def main():
         help='Search across saved sessions and exit'
     )
 
+    # Display mode
+    parser.add_argument(
+        '--fancy',
+        action='store_true',
+        help='Enable ncurses display mode with spinner (uses tput)'
+    )
+
     # Prompt
     parser.add_argument(
         'prompt',
@@ -1066,7 +1086,8 @@ def main():
         session_manager=session_manager,
         session_id=session_id,
         track_costs=not args.no_cost_tracking,
-        streaming=args.stream
+        streaming=args.stream,
+        display_mode='ncurses' if args.fancy else 'append'
     )
 
     # Single prompt mode
