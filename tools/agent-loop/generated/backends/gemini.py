@@ -1,13 +1,13 @@
-"""Gemini CLI backend using print mode."""
+"""Gemini CLI backend using positional prompt mode."""
 
 import subprocess
 from .base import AgentBackend, AgentResponse, ToolCall
 
 
 class GeminiBackend(AgentBackend):
-    """Gemini CLI backend using -p (print) mode."""
+    """Gemini CLI backend using positional prompt."""
 
-    def __init__(self, command: str = "gemini", model: str = "gemini-2.5-flash"):
+    def __init__(self, command: str = "gemini", model: str = "gemini-3-flash-preview"):
         self.command = command
         self.model = model
 
@@ -16,12 +16,14 @@ class GeminiBackend(AgentBackend):
         # Format the prompt with context
         prompt = self._format_prompt(message, context)
 
-        # Build command: gemini -p <prompt> -m <model> --output-format text
+        # Build command: gemini -m <model> -o text -p "<prompt>"
+        # Using -p for prompt (works in non-interactive mode)
+        # Using -o text for plain text output
         cmd = [
             self.command,
-            "-p", prompt,
             "-m", self.model,
-            "--output-format", "text"
+            "-o", "text",
+            "-p", prompt
         ]
 
         try:
@@ -29,7 +31,8 @@ class GeminiBackend(AgentBackend):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120  # 2 minute timeout
+                timeout=120,  # 2 minute timeout
+                stdin=subprocess.DEVNULL  # Don't wait for stdin
             )
             output = result.stdout
             if result.returncode != 0 and result.stderr:

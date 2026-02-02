@@ -342,13 +342,14 @@ python3 agent_loop.py -s <session-id>
 
 | Feature | Backend | Status |
 |---------|---------|--------|
-| Single prompt mode | claude-code, coro | Working |
+| Single prompt mode | claude-code, coro, gemini | Working |
 | Interactive REPL | claude-code, coro | Working |
 | Config generation (`--init-config`) | - | Working |
 | Session listing (`--list-sessions`) | - | Working |
 | Agent variants (`-a`) | claude-code | Working |
 | Context modes | claude-code, coro | Working |
 | Help output | - | Working |
+| Gemini CLI backend (`-b gemini`) | gemini | Working |
 
 ### Untested Features
 
@@ -358,7 +359,6 @@ python3 agent_loop.py -s <session-id>
 | OpenAI API backend (`-b openai`) | Requires `pip install openai` |
 | Ollama API backend (`-b ollama-api`) | Requires Ollama server running |
 | Ollama CLI backend (`-b ollama-cli`) | Requires Ollama installed |
-| Gemini CLI backend (`-b gemini`) | Requires Gemini CLI installed |
 | Streaming (`--stream`) | Requires API backend |
 | Cost tracking (`/cost`) | Requires API backend |
 | Session save/load | Not tested in this session |

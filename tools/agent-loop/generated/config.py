@@ -199,7 +199,7 @@ def get_default_config() -> Config:
     config.agents['gemini'] = AgentConfig(
         name='gemini',
         backend='gemini',
-        model='gemini-2.5-flash'
+        model='gemini-3-flash-preview'
     )
 
     # Local Ollama

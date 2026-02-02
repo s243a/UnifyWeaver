@@ -732,7 +732,7 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "") 
         from backends import GeminiBackend
         return GeminiBackend(
             command=agent_config.command or 'gemini',
-            model=agent_config.model or 'gemini-2.5-flash'
+            model=agent_config.model or 'gemini-3-flash-preview'
         )
 
     elif backend_type == 'claude':
@@ -988,6 +988,9 @@ def main():
     # Override with command line args
     if args.backend:
         agent_config.backend = args.backend
+        # Clear command so backend uses its own default
+        if not args.command:
+            agent_config.command = None
     if args.command:
         agent_config.command = args.command
     if args.model:
