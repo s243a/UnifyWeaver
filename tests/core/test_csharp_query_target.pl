@@ -27,6 +27,7 @@
 :- dynamic user:test_label_cat_reach/4.
 :- dynamic user:test_label_cat_reach_param/4.
 :- dynamic user:test_label_cat_reach_param_end/4.
+:- dynamic user:test_label_cat_reach_param_both/4.
 :- dynamic user:test_cat/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_recursive_label_path_cat_selective/4.
@@ -226,6 +227,7 @@ test_csharp_query_target :-
         verify_recursive_plan,
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
+        verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
         verify_parameterized_reachability_plan,
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
@@ -568,6 +570,14 @@ setup_test_data :-
         test_label_cat_edge(X, Y, L, Cat),
         test_label_cat_reach_param_end(Y, Z, L, Cat)
     )),
+    assertz(user:mode(test_label_cat_reach_param_both(+, +, +, +))),
+    assertz(user:(test_label_cat_reach_param_both(X, Y, L, Cat) :-
+        test_label_cat_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_label_cat_reach_param_both(X, Z, L, Cat) :-
+        test_label_cat_edge(X, Y, L, Cat),
+        test_label_cat_reach_param_both(Y, Z, L, Cat)
+    )),
     assertz(user:test_cat(cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(b, c, red, cat1)),
@@ -786,6 +796,8 @@ cleanup_test_data :-
     retractall(user:mode(test_label_cat_reach_param(_, _, _, _))),
     retractall(user:test_label_cat_reach_param_end(_, _, _, _)),
     retractall(user:mode(test_label_cat_reach_param_end(_, _, _, _))),
+    retractall(user:test_label_cat_reach_param_both(_, _, _, _)),
+    retractall(user:mode(test_label_cat_reach_param_both(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
     retractall(user:mode(test_sparse_input_filtered(_, _, _))),
@@ -2463,6 +2475,33 @@ verify_parameterized_grouped_transitive_closure_plan :-
         ['a,b,red,cat1',
          'a,c,red,cat1'],
         [[a, red, cat1]]).
+
+verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, input, input, input],
+    get_dict(root, Plan, transitive_closure_grouped{type:transitive_closure_grouped,
+        head:predicate{name:test_label_cat_reach_param_both, arity:4},
+        edge:predicate{name:test_label_cat_edge, arity:4},
+        group_indices:[2,3],
+        width:4
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0, 1, 2, 3 }'),
+    sub_string(Source, _, _, _, 'GroupedTransitiveClosureNode'),
+    \+ sub_string(Source, _, _, _, '$need'),
+    \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, b, red, cat1], [a, c, red, cat1], [a, d, red, cat1]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosurePairsForward', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosurePairsForward=true'],
+        Params,
+        HarnessSource).
 
 verify_parameterized_reachability_plan :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
