@@ -7,24 +7,29 @@ from .base import AgentBackend, AgentResponse, ToolCall
 class GeminiBackend(AgentBackend):
     """Gemini CLI backend using positional prompt."""
 
-    def __init__(self, command: str = "gemini", model: str = "gemini-3-flash-preview"):
+    def __init__(self, command: str = "gemini", model: str = "gemini-3-flash-preview",
+                 sandbox: bool = False, yolo: bool = True):
         self.command = command
         self.model = model
+        self.sandbox = sandbox  # Run in container (requires docker/podman)
+        self.yolo = yolo        # Auto-approve tools (default: yes for non-interactive)
 
     def send_message(self, message: str, context: list[dict]) -> AgentResponse:
         """Send message to Gemini CLI and get response."""
         # Format the prompt with context
         prompt = self._format_prompt(message, context)
 
-        # Build command: gemini -m <model> -o text -p "<prompt>"
-        # Using -p for prompt (works in non-interactive mode)
-        # Using -o text for plain text output
+        # Build command: gemini -m <model> -o text [-s] [-y] -p "<prompt>"
         cmd = [
             self.command,
             "-m", self.model,
             "-o", "text",
-            "-p", prompt
         ]
+        if self.sandbox:
+            cmd.append("-s")  # Sandbox mode - no tools
+        if self.yolo and not self.sandbox:
+            cmd.append("-y")  # Auto-approve tools
+        cmd.extend(["-p", prompt])
 
         try:
             result = subprocess.run(
