@@ -56,6 +56,10 @@
 :- dynamic user:test_multi_bound_pattern_cache/1.
 :- dynamic user:test_tiny_probe_fact/2.
 :- dynamic user:test_tiny_probe_param/2.
+:- dynamic user:test_tiny_probe_sampling_big/2.
+:- dynamic user:test_tiny_probe_sampling_src/2.
+:- dynamic user:test_tiny_probe_sampling_probe/1.
+:- dynamic user:test_tiny_probe_sampling_join/2.
 :- dynamic user:test_sale_count/1.
 :- dynamic user:test_sale_avg_for_alice/1.
 :- dynamic user:test_sales_by_customer/2.
@@ -207,6 +211,7 @@ test_csharp_query_target :-
         verify_both_scan_join_prefers_cached_fact_index,
         verify_multi_constant_pattern_scan_prefers_fact_index,
         verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
+        verify_tiny_probe_sampling_selective_derived_probe_prefers_hash_build,
         verify_fixpoint_tiny_probe_scan_uses_scan_index_without_cache_reuse,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
@@ -508,6 +513,20 @@ setup_test_data :-
     assertz(user:(test_tiny_probe_param(Name, Value) :-
         test_tiny_probe_fact(Name, Value)
     )),
+    forall(between(1, 100, N),
+           ( format(atom(Key), 'k~w', [N]),
+             format(atom(Value), 'v~w', [N]),
+             assertz(user:test_tiny_probe_sampling_big(Key, Value)),
+             ( N =< 2 -> Tag = wanted ; Tag = other ),
+             assertz(user:test_tiny_probe_sampling_src(Key, Tag))
+           )),
+    assertz(user:(test_tiny_probe_sampling_probe(Key) :-
+        test_tiny_probe_sampling_src(Key, wanted)
+    )),
+    assertz(user:(test_tiny_probe_sampling_join(Key, Value) :-
+        test_tiny_probe_sampling_big(Key, Value),
+        test_tiny_probe_sampling_probe(Key)
+    )),
     assertz(user:mode(test_scanindex_reach_param(+, -))),
     assertz(user:test_scanindex_reach_param(alice, 0)),
     assertz(user:test_scanindex_allowed(0)),
@@ -743,6 +762,10 @@ cleanup_test_data :-
     retractall(user:test_multi_bound_pattern_cache(_)),
     retractall(user:test_tiny_probe_fact(_, _)),
     retractall(user:test_tiny_probe_param(_, _)),
+    retractall(user:test_tiny_probe_sampling_big(_, _)),
+    retractall(user:test_tiny_probe_sampling_src(_, _)),
+    retractall(user:test_tiny_probe_sampling_probe(_)),
+    retractall(user:test_tiny_probe_sampling_join(_, _)),
     retractall(user:test_sale_count(_)),
     retractall(user:test_sale_avg_for_alice(_)),
     retractall(user:test_sales_by_customer(_, _)),
@@ -1905,6 +1928,74 @@ verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse :-
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,1', 'STRATEGY_USED:KeyJoinScanIndex=true'],
         [[alice]],
+        HarnessSource).
+
+verify_tiny_probe_sampling_selective_derived_probe_prefers_hash_build :-
+    findall([Key, Value],
+            ( between(1, 100, N),
+              format(atom(Key), 'k~w', [N]),
+              format(atom(Value), 'v~w', [N])
+            ),
+            BigFacts),
+    findall([Key, Tag],
+            ( between(1, 100, N),
+              format(atom(Key), 'k~w', [N]),
+              ( N =< 2 -> Tag = wanted ; Tag = other )
+            ),
+            SrcFacts),
+    Plan = plan{
+        head:predicate{name:test_tiny_probe_sampling_join, arity:2},
+        root:projection{
+            type:projection,
+            input:join{
+                type:join,
+                left:relation_scan{
+                    type:relation_scan,
+                    predicate:predicate{name:test_tiny_probe_sampling_big, arity:2},
+                    width:2
+                },
+                right:projection{
+                    type:projection,
+                    input:selection{
+                        type:selection,
+                        input:relation_scan{
+                            type:relation_scan,
+                            predicate:predicate{name:test_tiny_probe_sampling_src, arity:2},
+                            width:2
+                        },
+                        predicate:condition{
+                            type:eq,
+                            left:operand{kind:column, index:1},
+                            right:operand{kind:value, value:wanted}
+                        },
+                        width:2
+                    },
+                    columns:[0],
+                    width:1
+                },
+                left_keys:[0],
+                right_keys:[0],
+                left_width:2,
+                right_width:1,
+                width:3
+            },
+            columns:[0, 1],
+            width:2
+        },
+        is_recursive:false,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_tiny_probe_sampling_big, arity:2}, facts:BigFacts},
+            relation{predicate:predicate{name:test_tiny_probe_sampling_src, arity:2}, facts:SrcFacts}
+        ]
+    },
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, [], 'KeyJoinHashBuildRight', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['k1,v1',
+         'k2,v2',
+         'STRATEGY_USED:KeyJoinHashBuildRight=true'],
+        [],
         HarnessSource).
 
 verify_fixpoint_tiny_probe_scan_uses_scan_index_without_cache_reuse :-
