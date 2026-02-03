@@ -733,7 +733,9 @@ def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str 
     ) or agent_config.system_prompt
 
 
-def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "") -> AgentBackend:
+def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
+                               sandbox: bool = False, approval_mode: str = "yolo",
+                               allowed_tools: list[str] | None = None) -> AgentBackend:
     """Create a backend from an AgentConfig."""
     backend_type = agent_config.backend
 
@@ -754,7 +756,10 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "") 
         from backends import GeminiBackend
         return GeminiBackend(
             command=agent_config.command or 'gemini',
-            model=agent_config.model or 'gemini-3-flash-preview'
+            model=agent_config.model or 'gemini-3-flash-preview',
+            sandbox=sandbox,
+            approval_mode=approval_mode,
+            allowed_tools=allowed_tools or []
         )
 
     elif backend_type == 'claude':
@@ -878,6 +883,25 @@ def main():
         '--no-tools',
         action='store_true',
         help='Disable tool execution'
+    )
+    parser.add_argument(
+        '--sandbox',
+        action='store_true',
+        help='Run in sandbox mode (gemini: requires docker/podman)'
+    )
+    parser.add_argument(
+        '--approval-mode',
+        choices=['default', 'auto_edit', 'yolo', 'plan'],
+        default='yolo',
+        help='Tool approval mode (default: yolo). '
+             'default=prompt, auto_edit=auto-approve edits, '
+             'yolo=auto-approve all, plan=read-only'
+    )
+    parser.add_argument(
+        '--allowed-tools',
+        nargs='*',
+        default=[],
+        help='Specific tools allowed without confirmation'
     )
     parser.add_argument(
         '--system-prompt',
@@ -1050,7 +1074,12 @@ def main():
 
     # Create backend
     try:
-        backend = create_backend_from_config(agent_config, config.config_dir)
+        backend = create_backend_from_config(
+            agent_config, config.config_dir,
+            sandbox=args.sandbox,
+            approval_mode=args.approval_mode,
+            allowed_tools=args.allowed_tools
+        )
     except ImportError as e:
         print(f"Backend requires additional package: {e}", file=sys.stderr)
         sys.exit(1)

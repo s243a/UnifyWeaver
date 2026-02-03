@@ -8,27 +8,31 @@ class GeminiBackend(AgentBackend):
     """Gemini CLI backend using positional prompt."""
 
     def __init__(self, command: str = "gemini", model: str = "gemini-3-flash-preview",
-                 sandbox: bool = False, yolo: bool = True):
+                 sandbox: bool = False, approval_mode: str = "yolo",
+                 allowed_tools: list[str] | None = None):
         self.command = command
         self.model = model
         self.sandbox = sandbox  # Run in container (requires docker/podman)
-        self.yolo = yolo        # Auto-approve tools (default: yes for non-interactive)
+        self.approval_mode = approval_mode  # default, auto_edit, yolo, plan
+        self.allowed_tools = allowed_tools or []  # Tools allowed without confirmation
 
     def send_message(self, message: str, context: list[dict]) -> AgentResponse:
         """Send message to Gemini CLI and get response."""
         # Format the prompt with context
         prompt = self._format_prompt(message, context)
 
-        # Build command: gemini -m <model> -o text [-s] [-y] -p "<prompt>"
+        # Build command: gemini -m <model> -o text [options] -p "<prompt>"
         cmd = [
             self.command,
             "-m", self.model,
             "-o", "text",
         ]
         if self.sandbox:
-            cmd.append("-s")  # Sandbox mode - no tools
-        if self.yolo and not self.sandbox:
-            cmd.append("-y")  # Auto-approve tools
+            cmd.append("-s")
+        if self.approval_mode:
+            cmd.extend(["--approval-mode", self.approval_mode])
+        for tool in self.allowed_tools:
+            cmd.extend(["--allowed-tools", tool])
         cmd.extend(["-p", prompt])
 
         try:
