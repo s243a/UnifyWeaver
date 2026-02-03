@@ -615,6 +615,7 @@ Status:
 
         # Show that we're calling the backend
         use_spinner = self.display_mode == 'ncurses' and DisplayMode.supports_ncurses()
+        spinner = None
 
         if use_spinner:
             spinner = Spinner("Calling backend...")
@@ -623,22 +624,30 @@ Status:
             print("\n[Calling backend...]")
 
         # Get response from backend (with streaming if enabled)
-        if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
-            if use_spinner:
+        try:
+            if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
+                if spinner:
+                    spinner.stop()
+                    spinner = None
+                print("\nAssistant: ", end="", flush=True)
+                response = self.backend.send_message_streaming(
+                    user_input,
+                    self.context.get_context(),
+                    on_token=lambda t: print(t, end="", flush=True)
+                )
+                print()  # Newline after streaming
+            else:
+                response = self.backend.send_message(
+                    user_input,
+                    self.context.get_context()
+                )
+        except KeyboardInterrupt:
+            if spinner:
                 spinner.stop()
-            print("\nAssistant: ", end="", flush=True)
-            response = self.backend.send_message_streaming(
-                user_input,
-                self.context.get_context(),
-                on_token=lambda t: print(t, end="", flush=True)
-            )
-            print()  # Newline after streaming
-        else:
-            response = self.backend.send_message(
-                user_input,
-                self.context.get_context()
-            )
-            if use_spinner:
+            print("\n[Interrupted]")
+            return
+        finally:
+            if spinner:
                 spinner.stop()
 
         # Handle tool calls if present
@@ -933,6 +942,13 @@ def main():
         help='Enable ncurses display mode with spinner (uses tput)'
     )
 
+    # Interactive with initial prompt
+    parser.add_argument(
+        '-I', '--prompt-interactive',
+        metavar='PROMPT',
+        help='Start interactive mode with an initial prompt'
+    )
+
     # Prompt
     parser.add_argument(
         'prompt',
@@ -1090,10 +1106,33 @@ def main():
         display_mode='ncurses' if args.fancy else 'append'
     )
 
-    # Single prompt mode
+    # Single prompt mode (run once and exit)
     if args.prompt:
         print(f"You: {args.prompt}")
         loop._process_message(args.prompt)
+        return
+
+    # Interactive mode with initial prompt (-i)
+    if args.prompt_interactive:
+        loop._print_header()
+        print(f"\nYou: {args.prompt_interactive}")
+        loop._process_message(args.prompt_interactive)
+        # Continue in interactive mode
+        while loop.running:
+            try:
+                user_input = loop._get_input()
+                if user_input is None:
+                    break
+                if not user_input.strip():
+                    continue
+                if loop._handle_command(user_input):
+                    continue
+                loop._process_message(user_input)
+            except KeyboardInterrupt:
+                print("\n\nInterrupted. Type 'exit' to quit.")
+            except Exception as e:
+                print(f"\n[Error: {e}]\n")
+        print("\nGoodbye!")
         return
 
     # Interactive mode
