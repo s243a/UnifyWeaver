@@ -6320,11 +6320,146 @@ namespace UnifyWeaver.QueryRuntime
 
             if (hasSource && hasTarget)
             {
-                var rows = ExecuteSeededGroupedTransitiveClosureBySource(closure, inputPositions, parameters, parentContext);
-                return FilterByParameters(rows, inputPositions, parameters);
+                return ExecuteSeededGroupedTransitiveClosurePairs(closure, inputPositions, parameters, parentContext);
             }
 
             return FilterByParameters(ExecuteGroupedTransitiveClosure(closure, parentContext), inputPositions, parameters);
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairs(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            var groupCount = closure.GroupIndices.Count;
+            if (groupCount == 0)
+            {
+                return ExecuteSeededTransitiveClosurePairs(new TransitiveClosureNode(closure.EdgeRelation, closure.Predicate), parameters, parentContext);
+            }
+
+            for (var i = 0; i < groupCount; i++)
+            {
+                if (!inputPositions.Contains(closure.GroupIndices[i]))
+                {
+                    var rows = ExecuteSeededGroupedTransitiveClosureBySource(closure, inputPositions, parameters, parentContext);
+                    return FilterByParameters(rows, inputPositions, parameters);
+                }
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+
+                var targetsBySource = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+                var sourcesByTarget = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+
+                foreach (var paramTuple in parameters)
+                {
+                    if (paramTuple is null || paramTuple.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetParameterValue(paramTuple, inputPositions, 0, out var source))
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetParameterValue(paramTuple, inputPositions, 1, out var target))
+                    {
+                        target = null;
+                    }
+
+                    var groupValues = new object[groupCount];
+                    for (var i = 0; i < groupCount; i++)
+                    {
+                        var groupIndex = closure.GroupIndices[i];
+                        if (!TryGetParameterValue(paramTuple, inputPositions, groupIndex, out var groupValue))
+                        {
+                            throw new InvalidOperationException($"Missing parameter value for group index {groupIndex}.");
+                        }
+
+                        groupValues[i] = groupValue!;
+                    }
+
+                    var sourceKey = new object[groupCount + 1];
+                    Array.Copy(groupValues, 0, sourceKey, 0, groupCount);
+                    sourceKey[groupCount] = source!;
+                    var sourceWrapper = new RowWrapper(sourceKey);
+
+                    if (!targetsBySource.TryGetValue(sourceWrapper, out var targetSet))
+                    {
+                        targetSet = new HashSet<object?>();
+                        targetsBySource.Add(sourceWrapper, targetSet);
+                    }
+
+                    targetSet.Add(target);
+
+                    var targetKey = new object[groupCount + 1];
+                    Array.Copy(groupValues, 0, targetKey, 0, groupCount);
+                    targetKey[groupCount] = target!;
+                    var targetWrapper = new RowWrapper(targetKey);
+
+                    if (!sourcesByTarget.TryGetValue(targetWrapper, out var sourceSet))
+                    {
+                        sourceSet = new HashSet<object?>();
+                        sourcesByTarget.Add(targetWrapper, sourceSet);
+                    }
+
+                    sourceSet.Add(source);
+                }
+
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairs");
+
+                const int MaxMemoizedGroupedPairSeeds = 32;
+                var canMemoizePairs =
+                    _cacheContext is not null &&
+                    targetsBySource.Count <= MaxMemoizedGroupedPairSeeds &&
+                    sourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds;
+
+                if (canMemoizePairs && targetsBySource.Count <= sourcesByTarget.Count)
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedForward");
+                    return ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        inputPositions,
+                        targetsBySource,
+                        context);
+                }
+
+                if (canMemoizePairs)
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedBackward");
+                    return ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        inputPositions,
+                        sourcesByTarget,
+                        context);
+                }
+
+                if (targetsBySource.Count <= sourcesByTarget.Count)
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsForward");
+                    return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context);
+                }
+
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBackward");
+                return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context);
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
         }
 
         private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosureBySource(
@@ -6813,6 +6948,476 @@ namespace UnifyWeaver.QueryRuntime
             finally
             {
                 context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            EvaluationContext context)
+        {
+            var totalRows = new List<object[]>();
+            var groupCount = closure.GroupIndices.Count;
+
+            foreach (var entry in targetsBySource)
+            {
+                var seedKey = entry.Key.Row;
+                if (seedKey.Length != groupCount + 1)
+                {
+                    continue;
+                }
+
+                var source = seedKey[groupCount];
+                var targets = entry.Value;
+                if (targets.Count == 0)
+                {
+                    continue;
+                }
+
+                var seedParams = new List<object[]>(1)
+                {
+                    BuildGroupedPairSeedTuple(
+                        closure,
+                        inputPositions,
+                        seedKey,
+                        seedPosition: 0,
+                        other: targets.FirstOrDefault())
+                };
+                var reachableRows = ExecuteSeededGroupedTransitiveClosureBySource(closure, inputPositions, seedParams, context);
+
+                if (targets.Contains(null))
+                {
+                    foreach (var row in reachableRows)
+                    {
+                        totalRows.Add(row);
+                    }
+
+                    continue;
+                }
+
+                foreach (var row in reachableRows)
+                {
+                    if (row is null || row.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    if (Equals(row[0], source) && targets.Contains(row[1]))
+                    {
+                        totalRows.Add(row);
+                    }
+                }
+            }
+
+            return totalRows;
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> sourcesByTarget,
+            EvaluationContext context)
+        {
+            var totalRows = new List<object[]>();
+            var groupCount = closure.GroupIndices.Count;
+
+            foreach (var entry in sourcesByTarget)
+            {
+                var seedKey = entry.Key.Row;
+                if (seedKey.Length != groupCount + 1)
+                {
+                    continue;
+                }
+
+                var target = seedKey[groupCount];
+                var sources = entry.Value;
+                if (sources.Count == 0)
+                {
+                    continue;
+                }
+
+                var seedParams = new List<object[]>(1)
+                {
+                    BuildGroupedPairSeedTuple(
+                        closure,
+                        inputPositions,
+                        seedKey,
+                        seedPosition: 1,
+                        other: sources.FirstOrDefault())
+                };
+                var reachableRows = ExecuteSeededGroupedTransitiveClosureByTarget(closure, inputPositions, seedParams, context);
+
+                if (sources.Contains(null))
+                {
+                    foreach (var row in reachableRows)
+                    {
+                        totalRows.Add(row);
+                    }
+
+                    continue;
+                }
+
+                foreach (var row in reachableRows)
+                {
+                    if (row is null || row.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    if (Equals(row[1], target) && sources.Contains(row[0]))
+                    {
+                        totalRows.Add(row);
+                    }
+                }
+            }
+
+            return totalRows;
+        }
+
+        private static object[] BuildGroupedPairSeedTuple(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            object[] key,
+            int seedPosition,
+            object? other)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (key is null) throw new ArgumentNullException(nameof(key));
+
+            var groupCount = closure.GroupIndices.Count;
+            if (key.Length != groupCount + 1)
+            {
+                throw new ArgumentException($"Expected grouped key width {groupCount + 1} but found {key.Length}.", nameof(key));
+            }
+
+            if (seedPosition != 0 && seedPosition != 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seedPosition), "Seed position must be 0 or 1.");
+            }
+
+            var tuple = new object[inputPositions.Count];
+            for (var i = 0; i < inputPositions.Count; i++)
+            {
+                var position = inputPositions[i];
+                if (position == seedPosition)
+                {
+                    tuple[i] = key[groupCount];
+                    continue;
+                }
+
+                if (position == (seedPosition == 0 ? 1 : 0))
+                {
+                    tuple[i] = other!;
+                    continue;
+                }
+
+                var groupSlot = -1;
+                for (var j = 0; j < groupCount; j++)
+                {
+                    if (closure.GroupIndices[j] == position)
+                    {
+                        groupSlot = j;
+                        break;
+                    }
+                }
+
+                tuple[i] = groupSlot >= 0 ? key[groupSlot] : null!;
+            }
+
+            return tuple;
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsForward(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            EvaluationContext context)
+        {
+            var width = closure.Predicate.Arity;
+            var groupCount = closure.GroupIndices.Count;
+            var maxRequiredIndex = ValidateGroupedClosureIndices(closure.GroupIndices, width);
+            var trace = context.Trace;
+            var predicate = closure.Predicate;
+            var edges = GetFactsList(closure.EdgeRelation, context);
+
+            var edgeKeyIndices = new int[groupCount + 1];
+            for (var i = 0; i < groupCount; i++)
+            {
+                edgeKeyIndices[i] = closure.GroupIndices[i];
+            }
+
+            edgeKeyIndices[groupCount] = 0;
+            var succIndex = GetJoinIndex(closure.EdgeRelation, edgeKeyIndices, edges, context);
+
+            var totalRows = new List<object[]>();
+
+            foreach (var entry in targetsBySource)
+            {
+                var seedKey = entry.Key.Row;
+                if (seedKey.Length != groupCount + 1 || entry.Value.Count == 0)
+                {
+                    continue;
+                }
+
+                var seed = seedKey[groupCount];
+                var targets = entry.Value;
+
+                if (targets.Contains(null))
+                {
+                    var seedParams = new List<object[]>(1) { seedKey };
+                    var rows = ExecuteSeededGroupedTransitiveClosureBySource(closure, closure.GroupIndices.Append(0).ToArray(), seedParams, context);
+                    foreach (var row in rows)
+                    {
+                        totalRows.Add(row);
+                    }
+
+                    continue;
+                }
+
+                var remaining = new HashSet<object?>(targets);
+                var visitedNodes = new HashSet<object?>();
+                var queue = new Queue<object?>();
+
+                SeedForwardSearch(seedKey, seed, remaining, succIndex, maxRequiredIndex, visitedNodes, queue, totalRows, width, groupCount, closure.GroupIndices);
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, queue.Count, visitedNodes.Count);
+
+                while (queue.Count > 0 && remaining.Count > 0)
+                {
+                    iteration++;
+                    var breadth = queue.Count;
+                    for (var i = 0; i < breadth; i++)
+                    {
+                        var node = queue.Dequeue();
+                        ExpandForwardSearch(seedKey, seed, node, remaining, succIndex, maxRequiredIndex, visitedNodes, queue, totalRows, width, groupCount, closure.GroupIndices);
+                        if (remaining.Count == 0)
+                        {
+                            break;
+                        }
+                    }
+
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, queue.Count, visitedNodes.Count);
+                }
+            }
+
+            return totalRows;
+
+            void SeedForwardSearch(
+                object[] key,
+                object? seed,
+                HashSet<object?> remaining,
+                Dictionary<RowWrapper, List<object[]>> index,
+                int requiredEdgeWidth,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output,
+                int rowWidth,
+                int groupWidth,
+                IReadOnlyList<int> groupIndices)
+            {
+                visited.Add(seed);
+                ExpandForwardSearch(key, seed, seed, remaining, index, requiredEdgeWidth, visited, frontier, output, rowWidth, groupWidth, groupIndices);
+            }
+
+            void ExpandForwardSearch(
+                object[] key,
+                object? seed,
+                object? current,
+                HashSet<object?> remaining,
+                Dictionary<RowWrapper, List<object[]>> index,
+                int requiredEdgeWidth,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output,
+                int rowWidth,
+                int groupWidth,
+                IReadOnlyList<int> groupIndices)
+            {
+                var lookup = new object[groupWidth + 1];
+                Array.Copy(key, 0, lookup, 0, groupWidth);
+                lookup[groupWidth] = current!;
+
+                if (!index.TryGetValue(new RowWrapper(lookup), out var bucket))
+                {
+                    return;
+                }
+
+                foreach (var edge in bucket)
+                {
+                    if (edge is null || edge.Length <= requiredEdgeWidth)
+                    {
+                        continue;
+                    }
+
+                    var next = edge[1];
+                    if (remaining.Remove(next))
+                    {
+                        var rowKey = new object[groupWidth + 2];
+                        Array.Copy(key, 0, rowKey, 0, groupWidth);
+                        rowKey[groupWidth] = seed!;
+                        rowKey[groupWidth + 1] = next;
+                        output.Add(BuildGroupedClosureRow(rowWidth, groupWidth, groupIndices, rowKey));
+                        if (remaining.Count == 0)
+                        {
+                            return;
+                        }
+                    }
+
+                    if (!visited.Add(next))
+                    {
+                        continue;
+                    }
+
+                    frontier.Enqueue(next);
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsBackward(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> sourcesByTarget,
+            EvaluationContext context)
+        {
+            var width = closure.Predicate.Arity;
+            var groupCount = closure.GroupIndices.Count;
+            var maxRequiredIndex = ValidateGroupedClosureIndices(closure.GroupIndices, width);
+            var trace = context.Trace;
+            var predicate = closure.Predicate;
+            var edges = GetFactsList(closure.EdgeRelation, context);
+
+            var edgeKeyIndices = new int[groupCount + 1];
+            for (var i = 0; i < groupCount; i++)
+            {
+                edgeKeyIndices[i] = closure.GroupIndices[i];
+            }
+
+            edgeKeyIndices[groupCount] = 1;
+            var predIndex = GetJoinIndex(closure.EdgeRelation, edgeKeyIndices, edges, context);
+
+            var totalRows = new List<object[]>();
+
+            foreach (var entry in sourcesByTarget)
+            {
+                var seedKey = entry.Key.Row;
+                if (seedKey.Length != groupCount + 1 || entry.Value.Count == 0)
+                {
+                    continue;
+                }
+
+                var target = seedKey[groupCount];
+                var sources = entry.Value;
+
+                if (sources.Contains(null))
+                {
+                    var seedParams = new List<object[]>(1) { seedKey };
+                    var rows = ExecuteSeededGroupedTransitiveClosureByTarget(closure, closure.GroupIndices.Append(1).ToArray(), seedParams, context);
+                    foreach (var row in rows)
+                    {
+                        totalRows.Add(row);
+                    }
+
+                    continue;
+                }
+
+                var remaining = new HashSet<object?>(sources);
+                var visitedNodes = new HashSet<object?>();
+                var queue = new Queue<object?>();
+
+                SeedBackwardSearch(seedKey, target, remaining, predIndex, maxRequiredIndex, visitedNodes, queue, totalRows, width, groupCount, closure.GroupIndices);
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, queue.Count, visitedNodes.Count);
+
+                while (queue.Count > 0 && remaining.Count > 0)
+                {
+                    iteration++;
+                    var breadth = queue.Count;
+                    for (var i = 0; i < breadth; i++)
+                    {
+                        var node = queue.Dequeue();
+                        ExpandBackwardSearch(seedKey, target, node, remaining, predIndex, maxRequiredIndex, visitedNodes, queue, totalRows, width, groupCount, closure.GroupIndices);
+                        if (remaining.Count == 0)
+                        {
+                            break;
+                        }
+                    }
+
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, queue.Count, visitedNodes.Count);
+                }
+            }
+
+            return totalRows;
+
+            void SeedBackwardSearch(
+                object[] key,
+                object? seed,
+                HashSet<object?> remaining,
+                Dictionary<RowWrapper, List<object[]>> index,
+                int requiredEdgeWidth,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output,
+                int rowWidth,
+                int groupWidth,
+                IReadOnlyList<int> groupIndices)
+            {
+                visited.Add(seed);
+                ExpandBackwardSearch(key, seed, seed, remaining, index, requiredEdgeWidth, visited, frontier, output, rowWidth, groupWidth, groupIndices);
+            }
+
+            void ExpandBackwardSearch(
+                object[] key,
+                object? seed,
+                object? current,
+                HashSet<object?> remaining,
+                Dictionary<RowWrapper, List<object[]>> index,
+                int requiredEdgeWidth,
+                HashSet<object?> visited,
+                Queue<object?> frontier,
+                List<object[]> output,
+                int rowWidth,
+                int groupWidth,
+                IReadOnlyList<int> groupIndices)
+            {
+                var lookup = new object[groupWidth + 1];
+                Array.Copy(key, 0, lookup, 0, groupWidth);
+                lookup[groupWidth] = current!;
+
+                if (!index.TryGetValue(new RowWrapper(lookup), out var bucket))
+                {
+                    return;
+                }
+
+                foreach (var edge in bucket)
+                {
+                    if (edge is null || edge.Length <= requiredEdgeWidth)
+                    {
+                        continue;
+                    }
+
+                    var prev = edge[0];
+                    if (remaining.Remove(prev))
+                    {
+                        var rowKey = new object[groupWidth + 2];
+                        Array.Copy(key, 0, rowKey, 0, groupWidth);
+                        rowKey[groupWidth] = prev!;
+                        rowKey[groupWidth + 1] = seed!;
+                        output.Add(BuildGroupedClosureRow(rowWidth, groupWidth, groupIndices, rowKey));
+                        if (remaining.Count == 0)
+                        {
+                            return;
+                        }
+                    }
+
+                    if (!visited.Add(prev))
+                    {
+                        continue;
+                    }
+
+                    frontier.Enqueue(prev);
+                }
             }
         }
 
