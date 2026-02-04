@@ -8,6 +8,19 @@ backends use to communicate with the frontend.
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Any
 import json
+import numpy as np
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 @dataclass
@@ -65,6 +78,7 @@ class ProjectionInfo:
     """SVD projection metadata."""
     variance_explained: List[float]  # [pc1_var, pc2_var]
     singular_values: List[float]
+    mode: str = "embedding"  # "embedding" or "weights"
 
 
 @dataclass
@@ -93,7 +107,7 @@ class DensityManifoldData:
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
-        return json.dumps(asdict(self), indent=2)
+        return json.dumps(asdict(self), indent=2, cls=NumpyEncoder)
 
     @classmethod
     def from_json(cls, json_str: str) -> 'DensityManifoldData':
@@ -176,7 +190,8 @@ JSON_SCHEMA = {
             "required": ["variance_explained", "singular_values"],
             "properties": {
                 "variance_explained": {"type": "array", "items": {"type": "number"}},
-                "singular_values": {"type": "array", "items": {"type": "number"}}
+                "singular_values": {"type": "array", "items": {"type": "number"}},
+                "mode": {"type": "string", "enum": ["embedding", "weights"]}
             }
         },
         "n_points": {"type": "integer"}

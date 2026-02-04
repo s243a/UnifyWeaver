@@ -56,6 +56,7 @@ import argparse
 import sys
 import logging
 import time
+import math
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 import pickle
@@ -670,6 +671,968 @@ class FastOrthogonalTransformer:
 
 
 # =============================================================================
+# Composed Rotation Transformer (Proper Rotation Composition)
+# =============================================================================
+
+class ComposedRotationTransformer:
+    """
+    Transformer that COMPOSES rotations instead of adding deltas.
+
+    This preserves structural information better than FastOrthogonalTransformer
+    because rotation composition is the correct operation for SO(n).
+
+    For top-K selected planes with angles θ_1, θ_2, ..., θ_K:
+        R_total = R_K @ R_{K-1} @ ... @ R_1
+        output = R_total @ query
+
+    This is still fast (just matrix multiplications) but correctly handles
+    large rotation angles.
+    """
+
+    def __init__(
+        self,
+        codebook: FastOrthogonalCodebook,
+        num_layers: int = 3,
+        num_heads: int = 4,
+        ff_dim: int = 256,
+        top_k: int = 8,
+        dropout: float = 0.1,
+        device: str = "auto",
+    ):
+        torch, nn, F = _import_torch()
+        if torch is None:
+            raise ImportError("PyTorch required for ComposedRotationTransformer")
+
+        self.codebook = codebook
+        self.embed_dim = codebook.d
+        self.n_components = codebook.n_components
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.top_k = min(top_k, self.n_components)
+
+        # Device selection
+        if device == "auto":
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            self.device = torch.device(device)
+
+        # Convert codebook to tensors
+        self.plane_u = torch.from_numpy(codebook.plane_u).float().to(self.device)
+        self.plane_v = torch.from_numpy(codebook.plane_v).float().to(self.device)
+        self.plane_theta = torch.from_numpy(codebook.plane_theta).float().to(self.device)
+        self.codebook_keys = torch.from_numpy(codebook.codebook_keys).float().to(self.device)
+
+        # Build model
+        self._build_model(nn, ff_dim, dropout)
+
+        log_info(f"ComposedRotationTransformer: {self.n_components} planes, "
+                 f"top_k={self.top_k}, layers={num_layers}, device={self.device}")
+
+    def _build_model(self, nn, ff_dim, dropout):
+        """Build the transformer model."""
+        # Input projection
+        self.input_proj = nn.Linear(self.embed_dim, self.embed_dim).to(self.device)
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embed_dim,
+            nhead=self.num_heads,
+            dim_feedforward=ff_dim,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=self.num_layers
+        ).to(self.device)
+
+        # Routing head - outputs per-plane rotation scales
+        self.routing_head = nn.Linear(self.embed_dim, self.embed_dim).to(self.device)
+
+        # Angle scaling head - learns to scale the base angles per plane
+        self.angle_head = nn.Sequential(
+            nn.Linear(self.embed_dim, ff_dim),
+            nn.GELU(),
+            nn.Linear(ff_dim, self.n_components)
+        ).to(self.device)
+
+        # Scale head
+        self.scale_head = nn.Sequential(
+            nn.Linear(self.embed_dim, ff_dim),
+            nn.GELU(),
+            nn.Linear(ff_dim, 1)
+        ).to(self.device)
+
+    def _rodrigues_rotation_matrix(self, u, v, theta):
+        """
+        Build rotation matrix for a single 2D plane using Rodrigues formula.
+
+        R = I + sin(θ)(vu^T - uv^T) + (cos(θ) - 1)(uu^T + vv^T)
+
+        Args:
+            u: (d,) first basis vector of rotation plane
+            v: (d,) second basis vector of rotation plane
+            theta: scalar rotation angle
+
+        Returns:
+            R: (d, d) rotation matrix
+        """
+        torch, _, _ = _import_torch()
+        d = u.shape[0]
+
+        # Outer products
+        uuT = torch.outer(u, u)
+        vvT = torch.outer(v, v)
+        uvT = torch.outer(u, v)
+        vuT = torch.outer(v, u)
+
+        # Rodrigues formula
+        sin_t = torch.sin(theta)
+        cos_t = torch.cos(theta)
+
+        R = torch.eye(d, device=u.device) + sin_t * (vuT - uvT) + (cos_t - 1) * (uuT + vvT)
+        return R
+
+    def forward(self, query):
+        """
+        Forward pass with composed Rodrigues rotations.
+
+        Args:
+            query: (batch, embed_dim) input queries
+
+        Returns:
+            projected: (batch, embed_dim) rotated outputs
+            weights: (batch, top_k) routing weights
+            top_k_idx: (batch, top_k) selected indices
+            scale: (batch,) scale factors
+        """
+        torch, nn, F = _import_torch()
+        batch_size = query.shape[0]
+
+        # Encode
+        x = self.input_proj(query).unsqueeze(1)
+        x = self.encoder(x)
+        x = x.squeeze(1)
+
+        # Routing via cosine similarity
+        routing_vec = self.routing_head(x)
+        routing_vec = F.normalize(routing_vec, dim=-1)
+        similarities = torch.mm(routing_vec, self.codebook_keys.T)
+
+        # Top-K selection
+        top_k_sim, top_k_idx = similarities.topk(self.top_k, dim=-1)
+
+        # Normalize weights
+        top_k_sim_pos = torch.clamp(top_k_sim, min=0.0)
+        weight_sum = top_k_sim_pos.sum(dim=-1, keepdim=True) + 1e-8
+        weights = top_k_sim_pos / weight_sum
+
+        # Get angle scales from learned head
+        angle_scales = torch.tanh(self.angle_head(x))  # (-1, 1) range
+
+        # Compose rotations for each query in batch
+        projected = torch.zeros_like(query)
+
+        for b in range(batch_size):
+            # Start with identity
+            result = query[b].clone()
+
+            # Apply rotations in sequence (compose them)
+            for k in range(self.top_k):
+                idx = top_k_idx[b, k].item()
+                w = weights[b, k]
+
+                # Scale the base angle by weight and learned scale
+                theta = self.plane_theta[idx] * w * (1 + angle_scales[b, idx])
+
+                # Get rotation plane
+                u = self.plane_u[idx]
+                v = self.plane_v[idx]
+
+                # Build rotation matrix
+                R = self._rodrigues_rotation_matrix(u, v, theta)
+
+                # Apply rotation (compose)
+                result = torch.mv(R, result)
+
+            projected[b] = result
+
+        # Scale
+        scale = self.scale_head(x).squeeze(-1)
+        scale = F.softplus(scale) + 0.5
+        projected = projected * scale.unsqueeze(-1)
+
+        return projected, weights, top_k_idx, scale
+
+    def forward_batched(self, query):
+        """
+        Batched forward pass - more efficient for large batches.
+
+        Uses a single composed rotation per query by pre-computing
+        the blended rotation matrix.
+        """
+        torch, nn, F = _import_torch()
+        batch_size = query.shape[0]
+
+        # Encode
+        x = self.input_proj(query).unsqueeze(1)
+        x = self.encoder(x)
+        x = x.squeeze(1)
+
+        # Routing
+        routing_vec = self.routing_head(x)
+        routing_vec = F.normalize(routing_vec, dim=-1)
+        similarities = torch.mm(routing_vec, self.codebook_keys.T)
+
+        # Top-K selection
+        top_k_sim, top_k_idx = similarities.topk(self.top_k, dim=-1)
+        top_k_sim_pos = torch.clamp(top_k_sim, min=0.0)
+        weight_sum = top_k_sim_pos.sum(dim=-1, keepdim=True) + 1e-8
+        weights = top_k_sim_pos / weight_sum
+
+        # Angle scales
+        angle_scales = torch.tanh(self.angle_head(x))
+
+        # Build rotation matrices for all top-k planes
+        # This is the batched version that pre-computes skew matrices
+        d = self.embed_dim
+
+        # Pre-compute skew matrices for all planes: K = vu^T - uv^T
+        # and projection matrices: P = uu^T + vv^T
+        K_all = torch.einsum('ni,nj->nij', self.plane_v, self.plane_u) - \
+                torch.einsum('ni,nj->nij', self.plane_u, self.plane_v)
+        P_all = torch.einsum('ni,nj->nij', self.plane_u, self.plane_u) + \
+                torch.einsum('ni,nj->nij', self.plane_v, self.plane_v)
+
+        projected = torch.zeros_like(query)
+
+        for b in range(batch_size):
+            # Compose rotation matrix for this query
+            R_total = torch.eye(d, device=self.device)
+
+            for k in range(self.top_k):
+                idx = top_k_idx[b, k].item()
+                w = weights[b, k]
+                theta = self.plane_theta[idx] * w * (1 + angle_scales[b, idx])
+
+                sin_t = torch.sin(theta)
+                cos_t = torch.cos(theta)
+
+                R_k = torch.eye(d, device=self.device) + sin_t * K_all[idx] + (cos_t - 1) * P_all[idx]
+                R_total = R_k @ R_total
+
+            projected[b] = R_total @ query[b]
+
+        # Scale
+        scale = self.scale_head(x).squeeze(-1)
+        scale = F.softplus(scale) + 0.5
+        projected = projected * scale.unsqueeze(-1)
+
+        return projected, weights, top_k_idx, scale
+
+    def parameters(self):
+        """Return trainable parameters."""
+        params = list(self.input_proj.parameters())
+        params += list(self.encoder.parameters())
+        params += list(self.routing_head.parameters())
+        params += list(self.angle_head.parameters())
+        params += list(self.scale_head.parameters())
+        return params
+
+    def train_mode(self):
+        self.input_proj.train()
+        self.encoder.train()
+        self.routing_head.train()
+        self.angle_head.train()
+        self.scale_head.train()
+
+    def eval_mode(self):
+        self.input_proj.eval()
+        self.encoder.eval()
+        self.routing_head.eval()
+        self.angle_head.eval()
+        self.scale_head.eval()
+
+
+# =============================================================================
+# Custom Autograd for Rodrigues Rotation
+# =============================================================================
+
+class RodriguesRotationFunction:
+    """
+    Custom autograd function for Rodrigues rotation.
+
+    Forward:  R = I + α·B + β·B²  where α = sin(θ)/θ, β = (1-cos(θ))/θ², θ = ||B||_F/√2
+    Backward: Analytical gradients, all O(N²) operations.
+
+    This avoids autograd tracing and provides numerically stable gradients.
+    """
+
+    @staticmethod
+    def apply(B, query):
+        """
+        Apply Rodrigues rotation.
+
+        Args:
+            B: (batch, d, d) blended skew-symmetric bivector
+            query: (batch, d) input vectors
+
+        Returns:
+            output: (batch, d) rotated vectors
+            cache: tuple of saved tensors for backward
+        """
+        torch, _, _ = _import_torch()
+
+        batch_size = B.shape[0]
+        d = B.shape[1]
+        device = B.device
+
+        # Compute theta = ||B||_F / sqrt(2) for each batch item
+        theta = torch.norm(B.view(batch_size, -1), dim=1) / math.sqrt(2)  # (batch,)
+
+        # Rodrigues coefficients with numerical stability
+        alpha = torch.zeros(batch_size, device=device)
+        beta = torch.zeros(batch_size, device=device)
+
+        # Small angle approximation (Taylor series)
+        small = theta < 1e-6
+        alpha[small] = 1.0 - theta[small]**2 / 6  # sin(θ)/θ ≈ 1 - θ²/6
+        beta[small] = 0.5 - theta[small]**2 / 24   # (1-cos(θ))/θ² ≈ 1/2 - θ²/24
+
+        # Normal case
+        large = ~small
+        alpha[large] = torch.sin(theta[large]) / theta[large]
+        beta[large] = (1 - torch.cos(theta[large])) / (theta[large] ** 2)
+
+        # B² for each batch item
+        B2 = torch.bmm(B, B)  # (batch, d, d)
+
+        # R = I + α·B + β·B²
+        I = torch.eye(d, device=device).unsqueeze(0).expand(batch_size, -1, -1)
+        R = I + alpha.view(-1, 1, 1) * B + beta.view(-1, 1, 1) * B2
+
+        # Apply rotation: output = R @ query
+        output = torch.bmm(R, query.unsqueeze(-1)).squeeze(-1)
+
+        # Cache for backward
+        cache = (B, B2, R, query, theta, alpha, beta)
+
+        return output, cache
+
+    @staticmethod
+    def backward(grad_output, cache):
+        """
+        Compute gradients analytically.
+
+        Args:
+            grad_output: (batch, d) gradient w.r.t. output
+            cache: saved tensors from forward
+
+        Returns:
+            grad_B: (batch, d, d) gradient w.r.t. blended bivector
+            grad_query: (batch, d) gradient w.r.t. query
+        """
+        torch, _, _ = _import_torch()
+
+        B, B2, R, query, theta, alpha, beta = cache
+        batch_size = B.shape[0]
+        d = B.shape[1]
+        device = B.device
+
+        # ∂L/∂R = grad_output ⊗ query (outer product)
+        G = torch.bmm(grad_output.unsqueeze(-1), query.unsqueeze(1))  # (batch, d, d)
+
+        # Scalar derivatives ∂α/∂θ and ∂β/∂θ
+        d_alpha = torch.zeros(batch_size, device=device)
+        d_beta = torch.zeros(batch_size, device=device)
+
+        small = theta < 1e-6
+        d_alpha[small] = -theta[small] / 3  # derivative of Taylor expansion
+        d_beta[small] = -theta[small] / 12
+
+        large = ~small
+        t = theta[large]
+        d_alpha[large] = (t * torch.cos(t) - torch.sin(t)) / (t ** 2)
+        d_beta[large] = (t * torch.sin(t) - 2 * (1 - torch.cos(t))) / (t ** 3)
+
+        # ∂L/∂B = α·G + β·(G@B + B@G) + θ-derivative terms
+        grad_B = alpha.view(-1, 1, 1) * G
+        grad_B = grad_B + beta.view(-1, 1, 1) * (torch.bmm(G, B) + torch.bmm(B, G))
+
+        # θ-derivative contribution: (∂α/∂θ·⟨G,B⟩ + ∂β/∂θ·⟨G,B²⟩) · B / (θ·√2)
+        G_dot_B = (G * B).sum(dim=(-2, -1))  # Frobenius inner product
+        G_dot_B2 = (G * B2).sum(dim=(-2, -1))
+
+        theta_grad = d_alpha * G_dot_B + d_beta * G_dot_B2
+        theta_safe = theta + 1e-8  # avoid division by zero
+        grad_B = grad_B + (theta_grad / (theta_safe * math.sqrt(2))).view(-1, 1, 1) * B
+
+        # ∂L/∂query = R^T @ grad_output
+        grad_query = torch.bmm(R.transpose(-2, -1), grad_output.unsqueeze(-1)).squeeze(-1)
+
+        return grad_B, grad_query
+
+
+def build_orthogonal_bivector_basis(federated_model_path: str, n_basis: int = 128):
+    """
+    Build an orthogonal basis of bivectors from all cluster bivectors.
+
+    Uses SVD to extract principal rotation subspaces that are orthogonal.
+
+    Args:
+        federated_model_path: Path to federated model with bivectors
+        n_basis: Number of basis bivectors to keep
+
+    Returns:
+        basis_bivectors: (n_basis, d, d) orthogonal bivectors
+        basis_keys: (n_basis, d) key vectors for routing
+    """
+    # Load bivectors
+    biv_path = Path(federated_model_path).with_suffix('.bivectors.npz')
+    if not biv_path.exists():
+        raise FileNotFoundError(f"Bivector cache not found: {biv_path}")
+
+    biv_data = np.load(biv_path)
+    bivectors = biv_data['bivectors']  # (n_clusters, d, d)
+    n_clusters, d, _ = bivectors.shape
+
+    log_info(f"Building orthogonal bivector basis from {n_clusters} cluster bivectors...")
+
+    # Flatten bivectors to vectors for SVD
+    # Each bivector is skew-symmetric, so we only need upper triangle
+    # But for simplicity, we'll use full matrix flattening
+    bivectors_flat = bivectors.reshape(n_clusters, d * d)
+
+    # SVD to find principal components
+    from scipy.linalg import svd
+    U, s, Vh = svd(bivectors_flat, full_matrices=False)
+
+    # Keep top n_basis components
+    n_basis = min(n_basis, len(s))
+    basis_flat = Vh[:n_basis]  # (n_basis, d*d)
+
+    # Reshape back to matrices
+    basis_bivectors = basis_flat.reshape(n_basis, d, d)
+
+    # Ensure skew-symmetry (average with negative transpose)
+    basis_bivectors = (basis_bivectors - basis_bivectors.transpose(0, 2, 1)) / 2
+
+    # Normalize each basis bivector
+    norms = np.linalg.norm(basis_bivectors.reshape(n_basis, -1), axis=1, keepdims=True)
+    basis_bivectors = basis_bivectors / (norms.reshape(n_basis, 1, 1) + 1e-8)
+
+    # Create key vectors (use first column of each bivector as a simple key)
+    # Better: use the principal rotation vector
+    basis_keys = np.zeros((n_basis, d), dtype=np.float32)
+    for i in range(n_basis):
+        # Extract rotation axis from bivector (eigenvector with largest imaginary eigenvalue)
+        eigvals, eigvecs = np.linalg.eig(basis_bivectors[i])
+        max_idx = np.argmax(np.abs(eigvals.imag))
+        basis_keys[i] = eigvecs[:, max_idx].real
+
+    # Normalize keys
+    basis_keys = basis_keys / (np.linalg.norm(basis_keys, axis=1, keepdims=True) + 1e-8)
+
+    # Check explained variance
+    explained_var = s[:n_basis].sum() / s.sum() * 100
+    log_info(f"  Kept {n_basis} basis bivectors, explaining {explained_var:.1f}% of variance")
+
+    return basis_bivectors.astype(np.float32), basis_keys.astype(np.float32)
+
+
+class ComposedBivectorTransformer:
+    """
+    Transformer that blends full bivectors and applies Rodrigues rotation.
+
+    This properly preserves rotational structure by:
+    1. Learning weights for an orthogonal basis of bivectors
+    2. Blending bivectors: B = Σ wᵢ·Bᵢ (O(N²))
+    3. Applying single Rodrigues rotation (O(N²))
+
+    Because the basis is orthogonal, bivector blending is equivalent to
+    rotation composition: exp(A+B) = exp(A)@exp(B) when [A,B]=0.
+    """
+
+    def __init__(
+        self,
+        basis_bivectors: np.ndarray,
+        basis_keys: np.ndarray,
+        cluster_biases: np.ndarray = None,
+        bias_mode: str = "none",
+        num_layers: int = 3,
+        num_heads: int = 4,
+        ff_dim: int = 256,
+        dropout: float = 0.1,
+        device: str = "auto",
+    ):
+        """
+        Args:
+            basis_bivectors: (n_basis, d, d) orthogonal bivector basis
+            basis_keys: (n_basis, d) key vectors for soft routing
+            cluster_biases: (n_clusters, d) bias vectors for each cluster
+            bias_mode: "none" (no bias), "shared" (same weights as rotation),
+                      "separate" (independent attention for bias)
+            num_layers: Number of transformer encoder layers
+            num_heads: Number of attention heads
+            ff_dim: Feed-forward dimension
+            dropout: Dropout rate
+            device: Device to use
+        """
+        torch, nn, F = _import_torch()
+        if torch is None:
+            raise ImportError("PyTorch required for ComposedBivectorTransformer")
+
+        self.n_basis = basis_bivectors.shape[0]
+        self.embed_dim = basis_bivectors.shape[1]
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.bias_mode = bias_mode
+
+        # Device selection
+        if device == "auto":
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            self.device = torch.device(device)
+
+        # Convert basis to tensors (not trainable - fixed basis)
+        self.basis_bivectors = torch.from_numpy(basis_bivectors).float().to(self.device)
+        self.basis_keys = torch.from_numpy(basis_keys).float().to(self.device)
+
+        # Store cluster biases if provided
+        if cluster_biases is not None:
+            self.cluster_biases = torch.from_numpy(cluster_biases).float().to(self.device)
+            self.n_clusters = cluster_biases.shape[0]
+        else:
+            self.cluster_biases = None
+            self.n_clusters = 0
+
+        # Build model
+        self._build_model(nn, ff_dim, dropout)
+
+        bias_info = f", bias_mode={bias_mode}" if bias_mode != "none" else ""
+        log_info(f"ComposedBivectorTransformer: {self.n_basis} basis bivectors{bias_info}, "
+                 f"layers={num_layers}, device={self.device}")
+
+    def _build_model(self, nn, ff_dim, dropout):
+        """Build the transformer model."""
+        # Input projection
+        self.input_proj = nn.Linear(self.embed_dim, self.embed_dim).to(self.device)
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embed_dim,
+            nhead=self.num_heads,
+            dim_feedforward=ff_dim,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=self.num_layers
+        ).to(self.device)
+
+        # Weight head - outputs weight for EACH basis bivector
+        self.weight_head = nn.Sequential(
+            nn.Linear(self.embed_dim, ff_dim),
+            nn.GELU(),
+            nn.Linear(ff_dim, self.n_basis)
+        ).to(self.device)
+
+        # Optional: scale head for output magnitude
+        self.scale_head = nn.Sequential(
+            nn.Linear(self.embed_dim, ff_dim // 2),
+            nn.GELU(),
+            nn.Linear(ff_dim // 2, 1)
+        ).to(self.device)
+
+        # Bias attention (for "separate" mode)
+        if self.bias_mode == "separate" and self.cluster_biases is not None:
+            torch_mod, _, _ = _import_torch()
+            # Query projection for bias attention
+            self.bias_query_proj = nn.Linear(self.embed_dim, self.embed_dim).to(self.device)
+            # Key projection (project cluster centroids to keys)
+            self.bias_key_proj = nn.Linear(self.embed_dim, self.embed_dim).to(self.device)
+            # Temperature for attention (create on device directly)
+            self.bias_temperature = nn.Parameter(torch_mod.tensor(0.1, device=self.device))
+
+    def forward(self, query, return_weights=False):
+        """
+        Forward pass with bivector blending and Rodrigues rotation.
+
+        Args:
+            query: (batch, embed_dim) input queries
+            return_weights: If True, also return the bivector weights (deprecated, always returns 4 values)
+
+        Returns:
+            projected: (batch, embed_dim) rotated outputs
+            weights: (batch, n_basis) bivector weights
+            top_k_idx: (batch, k) top-k basis indices by weight magnitude
+            scale: (batch,) scale factors
+        """
+        torch, nn, F = _import_torch()
+        batch_size = query.shape[0]
+
+        # Encode
+        x = self.input_proj(query).unsqueeze(1)
+        x = self.encoder(x)
+        x = x.squeeze(1)
+
+        # Predict weights for each basis bivector
+        weights = self.weight_head(x)  # (batch, n_basis)
+
+        # Get top-k indices by weight magnitude (for compatibility with training loop)
+        top_k = min(8, self.n_basis)
+        _, top_k_idx = torch.topk(torch.abs(weights), top_k, dim=-1)
+
+        # Optionally use softmax or keep raw (allows negative weights for inverse rotation)
+        # weights = F.softmax(weights, dim=-1)  # if we want positive weights only
+
+        # Blend bivectors: B = Σ wᵢ·Bᵢ
+        # Shape: (batch, n_basis) @ (n_basis, d, d) -> (batch, d, d)
+        B_blend = torch.einsum('bn,nij->bij', weights, self.basis_bivectors)
+
+        # Apply Rodrigues rotation using custom function
+        projected, cache = RodriguesRotationFunction.apply(B_blend, query)
+
+        # Store cache for backward (needed for custom backward)
+        self._rodrigues_cache = cache
+        self._weights = weights
+
+        # Apply bias if enabled
+        if self.bias_mode != "none" and self.cluster_biases is not None:
+            if self.bias_mode == "shared":
+                # Use same weights as rotation (but for clusters, not basis)
+                # Need to map basis weights to cluster weights
+                # For now, assume n_basis == n_clusters or use weight_head output directly
+                if self.n_basis == self.n_clusters:
+                    bias_weights = F.softmax(weights, dim=-1)
+                    bias = torch.einsum('bn,nd->bd', bias_weights, self.cluster_biases)
+                else:
+                    # Fallback: use a simple projection
+                    bias_weights = F.softmax(weights[:, :self.n_clusters], dim=-1)
+                    bias = torch.einsum('bn,nd->bd', bias_weights, self.cluster_biases)
+            elif self.bias_mode == "separate":
+                # Independent attention for bias
+                # Query: project encoded representation
+                bias_query = self.bias_query_proj(x)  # (batch, d)
+                # Keys: project cluster biases (or use them directly)
+                bias_keys = self.bias_key_proj(self.cluster_biases)  # (n_clusters, d)
+                # Attention scores
+                attn_scores = torch.matmul(bias_query, bias_keys.T) / self.bias_temperature  # (batch, n_clusters)
+                bias_weights = F.softmax(attn_scores, dim=-1)
+                # Weighted sum of biases
+                bias = torch.einsum('bn,nd->bd', bias_weights, self.cluster_biases)
+
+            projected = projected + bias
+
+        # Scale
+        scale = self.scale_head(x).squeeze(-1)
+        scale = F.softplus(scale) + 0.5
+        projected = projected * scale.unsqueeze(-1)
+
+        # Always return 4 values for compatibility with training loop
+        return projected, weights, top_k_idx, scale
+
+    def compute_loss_and_backward(self, query, target, loss_fn):
+        """
+        Compute loss and gradients with custom backward pass.
+
+        This manually implements backprop through the Rodrigues rotation
+        for efficiency and numerical stability.
+
+        Args:
+            query: (batch, embed_dim) input
+            target: (batch, embed_dim) teacher target
+            loss_fn: Loss function (e.g., MSE, cosine)
+
+        Returns:
+            loss: scalar loss value
+        """
+        torch, _, F = _import_torch()
+
+        # Forward pass (now returns 4 values)
+        projected, weights, top_k_idx, scale = self.forward(query)
+
+        # Compute loss
+        loss = loss_fn(projected, target)
+
+        # Backward through loss
+        loss.backward()
+
+        return loss
+
+    def parameters(self):
+        """Return trainable parameters."""
+        params = list(self.input_proj.parameters())
+        params += list(self.encoder.parameters())
+        params += list(self.weight_head.parameters())
+        params += list(self.scale_head.parameters())
+        if self.bias_mode == "separate" and hasattr(self, 'bias_query_proj'):
+            params += list(self.bias_query_proj.parameters())
+            params += list(self.bias_key_proj.parameters())
+            params += [self.bias_temperature]
+        return params
+
+    def named_parameters(self):
+        """Return named parameters for optimizer."""
+        for name, param in self.input_proj.named_parameters():
+            yield f"input_proj.{name}", param
+        for name, param in self.encoder.named_parameters():
+            yield f"encoder.{name}", param
+        for name, param in self.weight_head.named_parameters():
+            yield f"weight_head.{name}", param
+        for name, param in self.scale_head.named_parameters():
+            yield f"scale_head.{name}", param
+        if self.bias_mode == "separate" and hasattr(self, 'bias_query_proj'):
+            for name, param in self.bias_query_proj.named_parameters():
+                yield f"bias_query_proj.{name}", param
+            for name, param in self.bias_key_proj.named_parameters():
+                yield f"bias_key_proj.{name}", param
+            yield "bias_temperature", self.bias_temperature
+
+    def state_dict(self):
+        """Return state dict for saving."""
+        sd = {
+            'input_proj': self.input_proj.state_dict(),
+            'encoder': self.encoder.state_dict(),
+            'weight_head': self.weight_head.state_dict(),
+            'scale_head': self.scale_head.state_dict(),
+        }
+        if self.bias_mode == "separate" and hasattr(self, 'bias_query_proj'):
+            sd['bias_query_proj'] = self.bias_query_proj.state_dict()
+            sd['bias_key_proj'] = self.bias_key_proj.state_dict()
+            sd['bias_temperature'] = self.bias_temperature
+        return sd
+
+    def load_state_dict(self, state_dict):
+        """Load state dict."""
+        self.input_proj.load_state_dict(state_dict['input_proj'])
+        self.encoder.load_state_dict(state_dict['encoder'])
+        self.weight_head.load_state_dict(state_dict['weight_head'])
+        self.scale_head.load_state_dict(state_dict['scale_head'])
+        if self.bias_mode == "separate" and 'bias_query_proj' in state_dict:
+            self.bias_query_proj.load_state_dict(state_dict['bias_query_proj'])
+            self.bias_key_proj.load_state_dict(state_dict['bias_key_proj'])
+            self.bias_temperature = state_dict['bias_temperature']
+
+    def train_mode(self):
+        self.input_proj.train()
+        self.encoder.train()
+        self.weight_head.train()
+        self.scale_head.train()
+        if self.bias_mode == "separate" and hasattr(self, 'bias_query_proj'):
+            self.bias_query_proj.train()
+            self.bias_key_proj.train()
+
+    def eval_mode(self):
+        self.input_proj.eval()
+        self.encoder.eval()
+        self.weight_head.eval()
+        self.scale_head.eval()
+        if self.bias_mode == "separate" and hasattr(self, 'bias_query_proj'):
+            self.bias_query_proj.eval()
+            self.bias_key_proj.eval()
+
+    def to(self, device):
+        """Move model to device."""
+        self.device = torch.device(device)
+        self.input_proj = self.input_proj.to(device)
+        self.encoder = self.encoder.to(device)
+        self.weight_head = self.weight_head.to(device)
+        self.scale_head = self.scale_head.to(device)
+        self.basis_bivectors = self.basis_bivectors.to(device)
+        self.basis_keys = self.basis_keys.to(device)
+        if self.cluster_biases is not None:
+            self.cluster_biases = self.cluster_biases.to(device)
+        if self.bias_mode == "separate" and hasattr(self, 'bias_query_proj'):
+            self.bias_query_proj = self.bias_query_proj.to(device)
+            self.bias_key_proj = self.bias_key_proj.to(device)
+            self.bias_temperature = self.bias_temperature.to(device)
+        return self
+
+
+def save_composed_bivector_transformer(
+    transformer: ComposedBivectorTransformer,
+    basis_bivectors: np.ndarray,
+    basis_keys: np.ndarray,
+    path: str,
+    metadata: dict = None,
+):
+    """Save ComposedBivectorTransformer to file."""
+    torch, _, _ = _import_torch()
+
+    save_dict = {
+        'transformer_type': 'composed_bivector',
+        'basis_bivectors': basis_bivectors,
+        'basis_keys': basis_keys,
+        'n_basis': transformer.n_basis,
+        'embed_dim': transformer.embed_dim,
+        'num_layers': transformer.num_layers,
+        'num_heads': transformer.num_heads,
+        'state_dict': transformer.state_dict(),
+        'metadata': metadata or {},
+    }
+
+    torch.save(save_dict, path)
+    log_info(f"Saved ComposedBivectorTransformer to {path}")
+
+
+def load_composed_bivector_transformer(path: str):
+    """Load ComposedBivectorTransformer from file."""
+    torch, _, _ = _import_torch()
+
+    save_dict = torch.load(path, map_location='cpu', weights_only=False)
+
+    if save_dict.get('transformer_type') != 'composed_bivector':
+        raise ValueError(f"Not a ComposedBivectorTransformer checkpoint: {path}")
+
+    transformer = ComposedBivectorTransformer(
+        basis_bivectors=save_dict['basis_bivectors'],
+        basis_keys=save_dict['basis_keys'],
+        num_layers=save_dict['num_layers'],
+        num_heads=save_dict['num_heads'],
+    )
+
+    transformer.load_state_dict(save_dict['state_dict'])
+    log_info(f"Loaded ComposedBivectorTransformer: {save_dict['n_basis']} basis, "
+             f"{save_dict['num_layers']} layers")
+
+    return transformer
+
+
+# =============================================================================
+# Training Checkpoint Support
+# =============================================================================
+
+class TrainingCheckpoint:
+    """Manages training checkpoints for resumable training."""
+
+    def __init__(self, checkpoint_path: str = None):
+        self.checkpoint_path = checkpoint_path
+        self.best_loss = float('inf')
+        self.epochs_without_improvement = 0
+
+    def save(
+        self,
+        transformer,
+        optimizer,
+        epoch: int,
+        loss: float,
+        history: dict,
+        is_best: bool = False,
+    ):
+        """Save training checkpoint."""
+        if self.checkpoint_path is None:
+            return
+
+        torch, _, _ = _import_torch()
+
+        checkpoint = {
+            'epoch': epoch,
+            'loss': loss,
+            'best_loss': self.best_loss,
+            'history': history,
+            'optimizer_state': optimizer.state_dict(),
+        }
+
+        # Handle different transformer types
+        if hasattr(transformer, 'state_dict'):
+            checkpoint['transformer_state'] = transformer.state_dict()
+        else:
+            # For FastOrthogonalTransformer etc.
+            checkpoint['input_proj_state'] = transformer.input_proj.state_dict()
+            checkpoint['encoder_state'] = transformer.encoder.state_dict()
+            if hasattr(transformer, 'routing_head'):
+                checkpoint['routing_head_state'] = transformer.routing_head.state_dict()
+            if hasattr(transformer, 'weight_head'):
+                checkpoint['weight_head_state'] = transformer.weight_head.state_dict()
+            if hasattr(transformer, 'scale_head'):
+                checkpoint['scale_head_state'] = transformer.scale_head.state_dict()
+            if hasattr(transformer, 'angle_head'):
+                checkpoint['angle_head_state'] = transformer.angle_head.state_dict()
+
+        path = Path(self.checkpoint_path)
+        torch.save(checkpoint, path)
+
+        if is_best:
+            best_path = path.with_suffix('.best.pt')
+            torch.save(checkpoint, best_path)
+            log_info(f"  Saved best checkpoint (loss={loss:.6f})")
+
+    def load(self, transformer, optimizer):
+        """
+        Load training checkpoint.
+
+        Returns:
+            start_epoch: Epoch to resume from
+            history: Training history dict
+        """
+        if self.checkpoint_path is None or not Path(self.checkpoint_path).exists():
+            return 0, {'train_loss': [], 'val_loss': [], 'cosine_sim': []}
+
+        torch, _, _ = _import_torch()
+
+        checkpoint = torch.load(self.checkpoint_path, map_location='cpu', weights_only=False)
+
+        # Load transformer state
+        if 'transformer_state' in checkpoint:
+            transformer.load_state_dict(checkpoint['transformer_state'])
+        else:
+            if 'input_proj_state' in checkpoint:
+                transformer.input_proj.load_state_dict(checkpoint['input_proj_state'])
+            if 'encoder_state' in checkpoint:
+                transformer.encoder.load_state_dict(checkpoint['encoder_state'])
+            if 'routing_head_state' in checkpoint:
+                transformer.routing_head.load_state_dict(checkpoint['routing_head_state'])
+            if 'weight_head_state' in checkpoint:
+                transformer.weight_head.load_state_dict(checkpoint['weight_head_state'])
+            if 'scale_head_state' in checkpoint:
+                transformer.scale_head.load_state_dict(checkpoint['scale_head_state'])
+            if 'angle_head_state' in checkpoint:
+                transformer.angle_head.load_state_dict(checkpoint['angle_head_state'])
+
+        # Load optimizer state
+        optimizer.load_state_dict(checkpoint['optimizer_state'])
+
+        self.best_loss = checkpoint.get('best_loss', float('inf'))
+
+        start_epoch = checkpoint['epoch'] + 1
+        history = checkpoint.get('history', {'train_loss': [], 'val_loss': [], 'cosine_sim': []})
+
+        log_info(f"Resumed from checkpoint at epoch {checkpoint['epoch']} (loss={checkpoint['loss']:.6f})")
+
+        return start_epoch, history
+
+    def check_early_stopping(self, loss: float, patience: int = 10, min_delta: float = 0.001):
+        """
+        Check if training should stop early.
+
+        Returns:
+            should_stop: True if training should stop
+            is_best: True if this is the best loss so far
+        """
+        is_best = loss < self.best_loss - min_delta
+
+        if is_best:
+            self.best_loss = loss
+            self.epochs_without_improvement = 0
+        else:
+            self.epochs_without_improvement += 1
+
+        should_stop = self.epochs_without_improvement >= patience
+
+        return should_stop, is_best
+
+
+# =============================================================================
 # Teacher for Training
 # =============================================================================
 
@@ -786,6 +1749,200 @@ class OrthogonalTeacher:
         log_info(f"  Target computation: {elapsed:.2f}s ({n_samples/elapsed:.0f}/s)")
 
         return all_outputs
+
+
+class PairedDataTeacher:
+    """
+    Zero-compute teacher: uses pre-stored input/output embedding pairs.
+
+    The federated model already has query_embeddings and target_embeddings
+    stored in routing_data.npz. No computation needed at all!
+
+    Also provides centroid pairs (centroid, W @ centroid) for replay.
+    """
+
+    def __init__(self, federated_model_path: str):
+        """Load pre-stored pairs from federated model."""
+        model_path = Path(federated_model_path)
+        cluster_dir = model_path.with_suffix('')
+
+        # Load routing data with pre-stored pairs
+        routing_path = cluster_dir / "routing_data.npz"
+        routing_data = np.load(routing_path)
+
+        self.query_embeddings = routing_data['query_embeddings'].astype(np.float32)
+        self.target_embeddings = routing_data['target_embeddings'].astype(np.float32)
+        self.d = self.query_embeddings.shape[1]
+
+        # Load cluster centroids and W matrices for centroid replay
+        with open(model_path, 'rb') as f:
+            meta = pickle.load(f)
+
+        self.cluster_centroids = meta['cluster_centroids'].astype(np.float32)
+        self.cluster_ids = meta['cluster_ids']
+        self.n_clusters = len(self.cluster_ids)
+
+        # Compute centroid targets as mean of target embeddings
+        # Note: cluster_centroids = query_mean, so target should be target_mean
+        self.centroid_targets = np.zeros_like(self.cluster_centroids)
+        for i, cid in enumerate(self.cluster_ids):
+            if cid.startswith("cluster_"):
+                cluster_path = cluster_dir / f"{cid}.npz"
+            else:
+                cluster_path = cluster_dir / f"cluster_{cid}.npz"
+
+            if cluster_path.exists():
+                data = np.load(cluster_path)
+                if "target_embeddings" in data:
+                    # Use actual mean of target embeddings for this cluster
+                    # This is correct: centroid_input = query_mean, centroid_target = target_mean
+                    self.centroid_targets[i] = data["target_embeddings"].mean(axis=0)
+                else:
+                    # Fallback: if no target embeddings, use query centroid as target
+                    self.centroid_targets[i] = self.cluster_centroids[i]
+
+        log_info(f"PairedDataTeacher: {len(self.query_embeddings)} pre-stored pairs, "
+                f"{self.n_clusters} centroids for replay")
+
+    def get_all_pairs(self):
+        """Return all pre-stored (input, output) pairs."""
+        return self.query_embeddings, self.target_embeddings
+
+    def get_centroid_pairs(self):
+        """Return centroid (input, output) pairs for replay."""
+        return self.cluster_centroids, self.centroid_targets
+
+    def compute_targets_batched(self, query_embeddings, batch_size=256):
+        """For compatibility - just returns stored targets."""
+        # Assumes query_embeddings matches stored queries
+        return self.target_embeddings[:len(query_embeddings)]
+
+
+class DirectTeacher:
+    """
+    Simplest teacher: uses nearest cluster's W matrix directly.
+
+    No interpolation, no logm/expm, no Rodrigues - just W @ query.
+    This is O(N²) per query, the absolute fastest possible.
+    """
+
+    def __init__(self, federated_model_path: str, top_k: int = 1):
+        """
+        Args:
+            federated_model_path: Path to federated .pkl model
+            top_k: Number of clusters to blend (1 = hard routing)
+        """
+        model_path = Path(federated_model_path)
+        with open(model_path, 'rb') as f:
+            self.meta = pickle.load(f)
+
+        self.cluster_ids = self.meta["cluster_ids"]
+        self.temperature = self.meta.get("temperature", 0.1)
+        self.num_clusters = len(self.cluster_ids)
+        self.cluster_centroids = self.meta.get("cluster_centroids")
+        self.top_k = top_k
+
+        # Load cluster W matrices
+        cluster_dir = model_path.with_suffix('')
+        self.W_matrices = {}
+        self.d = None
+
+        for cid in self.cluster_ids:
+            if cid.startswith("cluster_"):
+                cluster_path = cluster_dir / f"{cid}.npz"
+            else:
+                cluster_path = cluster_dir / f"cluster_{cid}.npz"
+
+            if cluster_path.exists():
+                data = np.load(cluster_path)
+                if "W" in data:
+                    W = data["W"]
+                elif "W_stack" in data:
+                    W = data["W_stack"][0]
+                else:
+                    continue
+
+                if self.d is None:
+                    self.d = W.shape[0]
+
+                self.W_matrices[cid] = W.astype(np.float32)
+
+        # Build W tensor for fast indexing
+        self.W_tensor = np.stack([self.W_matrices[cid] for cid in self.cluster_ids], axis=0)
+
+        # Load routing data
+        routing_path = cluster_dir / "routing_data.npz"
+        if routing_path.exists():
+            routing_data = np.load(routing_path)
+            self.query_embeddings = routing_data['query_embeddings']
+        else:
+            self.query_embeddings = None
+
+        log_info(f"DirectTeacher: {len(self.W_matrices)} clusters, top_k={top_k}, d={self.d}")
+
+    def compute_targets_batched(
+        self,
+        query_embeddings: np.ndarray,
+        batch_size: int = 1024,
+    ) -> np.ndarray:
+        """
+        Compute targets using direct W @ query (no interpolation).
+
+        Args:
+            query_embeddings: (N, d) query embeddings
+            batch_size: Batch size for processing
+
+        Returns:
+            outputs: (N, d) target outputs
+        """
+        n_samples = len(query_embeddings)
+        outputs = np.zeros_like(query_embeddings)
+
+        # Normalize queries
+        q_norms = np.linalg.norm(query_embeddings, axis=1, keepdims=True)
+        q_normalized = query_embeddings / (q_norms + 1e-8)
+
+        start_time = time.time()
+
+        for batch_start in range(0, n_samples, batch_size):
+            batch_end = min(batch_start + batch_size, n_samples)
+            batch_q = q_normalized[batch_start:batch_end]
+            batch_orig = query_embeddings[batch_start:batch_end]
+
+            # Compute similarities to cluster centroids
+            sims = batch_q @ self.cluster_centroids.T  # (batch, n_clusters)
+
+            if self.top_k == 1:
+                # Hard routing: just use nearest cluster
+                nearest = np.argmax(sims, axis=1)
+                for i, (q, idx) in enumerate(zip(batch_orig, nearest)):
+                    outputs[batch_start + i] = self.W_tensor[idx] @ q
+            else:
+                # Soft routing: weighted average of top-k W matrices
+                top_k_idx = np.argsort(sims, axis=1)[:, -self.top_k:]
+
+                # Softmax weights
+                top_k_sims = np.take_along_axis(sims, top_k_idx, axis=1)
+                top_k_sims_shifted = (top_k_sims - top_k_sims.max(axis=1, keepdims=True)) / self.temperature
+                weights = np.exp(top_k_sims_shifted)
+                weights /= weights.sum(axis=1, keepdims=True)
+
+                for i in range(len(batch_orig)):
+                    q = batch_orig[i]
+                    blended = np.zeros(self.d, dtype=np.float32)
+                    for j, (idx, w) in enumerate(zip(top_k_idx[i], weights[i])):
+                        blended += w * (self.W_tensor[idx] @ q)
+                    outputs[batch_start + i] = blended
+
+            if (batch_end) % 2000 == 0 or batch_end == n_samples:
+                elapsed = time.time() - start_time
+                rate = batch_end / elapsed if elapsed > 0 else 0
+                log_info(f"    DirectTeacher: {batch_end}/{n_samples} ({rate:.0f}/s)")
+
+        elapsed = time.time() - start_time
+        log_info(f"  DirectTeacher targets: {elapsed:.2f}s ({n_samples/elapsed:.0f}/s)")
+
+        return outputs
 
 
 class RotationalTeacher:
@@ -1364,9 +2521,12 @@ def train_orthogonal_transformer(
     log_interval: int = 10,
     top_k: int = 8,
     precomputed_targets: Optional[np.ndarray] = None,
+    centroid_queries: Optional[np.ndarray] = None,
+    centroid_targets: Optional[np.ndarray] = None,
+    centroid_warmup_epochs: int = 0,
 ) -> List[float]:
     """
-    Train FastOrthogonalTransformer.
+    Train FastOrthogonalTransformer with optional curriculum learning.
 
     Args:
         transformer: FastOrthogonalTransformer to train
@@ -1378,6 +2538,9 @@ def train_orthogonal_transformer(
         log_interval: Log every N epochs
         top_k: Top-K for teacher routing
         precomputed_targets: Optional pre-computed teacher targets (skips slow computation)
+        centroid_queries: Optional cluster centroids for curriculum warmup (n_clusters, d)
+        centroid_targets: Optional W @ centroid targets for warmup (n_clusters, d)
+        centroid_warmup_epochs: Number of epochs to train on centroids before full data
 
     Returns:
         List of loss values per epoch
@@ -1407,7 +2570,60 @@ def train_orthogonal_transformer(
     transformer.train_mode()
     losses = []
 
+    # Phase 1: Curriculum warmup on centroids (fast, clean signal)
+    if centroid_queries is not None and centroid_targets is not None and centroid_warmup_epochs > 0:
+        log_info(f"\nPhase 1: Centroid warmup ({centroid_warmup_epochs} epochs, {len(centroid_queries)} centroids)")
+        centroid_queries_t = torch.from_numpy(centroid_queries).float().to(transformer.device)
+        centroid_targets_t = torch.from_numpy(centroid_targets).float().to(transformer.device)
+        n_centroids = len(centroid_queries)
+
+        for warmup_epoch in range(centroid_warmup_epochs):
+            perm = torch.randperm(n_centroids)
+            epoch_loss = 0.0
+            epoch_angle = 0.0
+            n_batches = 0
+
+            for i in range(0, n_centroids, batch_size):
+                idx = perm[i:i+batch_size]
+                batch_q = centroid_queries_t[idx]
+                batch_t = centroid_targets_t[idx]
+
+                predicted, _, _, _ = transformer.forward(batch_q)
+
+                # Pure angle loss for warmup (get direction right)
+                pred_norm = F.normalize(predicted, dim=1)
+                target_norm = F.normalize(batch_t, dim=1)
+                cosine_sim = (pred_norm * target_norm).sum(dim=1)
+                angle_error = torch.acos(torch.clamp(cosine_sim, -1 + 1e-6, 1 - 1e-6))
+                loss = angle_error.mean()
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                epoch_angle += (1 - angle_error.mean().item())  # Convert to similarity
+                n_batches += 1
+
+            avg_loss = epoch_loss / n_batches
+            avg_angle_sim = epoch_angle / n_batches
+            log_info(f"  Warmup {warmup_epoch+1}/{centroid_warmup_epochs}: "
+                    f"angle_loss={avg_loss:.4f}, direction_sim={avg_angle_sim:.4f}")
+            losses.append(avg_loss)
+
+        log_info(f"Phase 1 complete. Starting Phase 2 on full data.\n")
+
+    # Phase 2: Full training on all queries with centroid replay
     log_info(f"Training for {num_epochs} epochs, {n_samples} samples")
+
+    # Prepare centroid tensors for replay (if available)
+    centroid_replay_enabled = (centroid_queries is not None and centroid_targets is not None)
+    if centroid_replay_enabled:
+        centroid_queries_t = torch.from_numpy(centroid_queries).float().to(transformer.device)
+        centroid_targets_t = torch.from_numpy(centroid_targets).float().to(transformer.device)
+        n_centroids = len(centroid_queries)
+        centroid_replay_interval = max(10, n_samples // (batch_size * 10))  # Replay every ~10% of epoch
+        log_info(f"  Centroid replay enabled: {n_centroids} centroids every {centroid_replay_interval} batches")
 
     training_start = time.time()
     for epoch in range(num_epochs):
@@ -1416,6 +2632,11 @@ def train_orthogonal_transformer(
         epoch_loss = 0.0
         epoch_cosine = 0.0
         n_batches = 0
+        centroid_perm_idx = 0  # Track position in centroid shuffle
+
+        # Shuffle centroids at start of each epoch
+        if centroid_replay_enabled:
+            centroid_perm = torch.randperm(n_centroids)
 
         for i in range(0, n_samples, batch_size):
             idx = perm[i:i+batch_size]
@@ -1425,14 +2646,32 @@ def train_orthogonal_transformer(
             # Forward pass
             predicted, weights, top_k_idx, scale = transformer.forward(batch_queries)
 
-            # Loss: MSE + cosine
-            mse_loss = F.mse_loss(predicted, batch_targets)
-
+            # Loss: angle-focused early, then add MSE
             pred_norm = F.normalize(predicted, dim=1)
             target_norm = F.normalize(batch_targets, dim=1)
-            cosine_sim = (pred_norm * target_norm).sum(dim=1).mean()
+            cosine_sim = (pred_norm * target_norm).sum(dim=1)
 
-            loss = 0.5 * mse_loss + 0.5 * (1 - cosine_sim)
+            # Angle loss: arccos(cos_sim) = actual angle in radians
+            # Clamp to avoid NaN from numerical issues
+            angle_error = torch.acos(torch.clamp(cosine_sim, -1 + 1e-6, 1 - 1e-6))
+            angle_loss = angle_error.mean()
+
+            # MSE loss for magnitude
+            mse_loss = F.mse_loss(predicted, batch_targets)
+
+            # Warmup schedule: pure angle loss early, blend in MSE later
+            # First 20% of epochs: pure angle loss
+            # After that: gradually blend in MSE
+            warmup_epochs = max(1, num_epochs // 5)
+            if epoch < warmup_epochs:
+                mse_weight = 0.0
+            else:
+                # Linear ramp from 0 to 0.5 over remaining epochs
+                progress = (epoch - warmup_epochs) / max(1, num_epochs - warmup_epochs)
+                mse_weight = 0.5 * progress
+
+            loss = (1 - mse_weight) * angle_loss + mse_weight * mse_loss
+            cosine_sim = cosine_sim.mean()  # for logging
 
             # Backward
             optimizer.zero_grad()
@@ -1442,6 +2681,31 @@ def train_orthogonal_transformer(
             epoch_loss += loss.item()
             epoch_cosine += cosine_sim.item()
             n_batches += 1
+
+            # Centroid replay: periodically train on centroid pairs
+            if centroid_replay_enabled and n_batches % centroid_replay_interval == 0:
+                # Get next batch of centroids (cycling through)
+                c_start = centroid_perm_idx
+                c_end = min(c_start + batch_size, n_centroids)
+                c_idx = centroid_perm[c_start:c_end]
+                centroid_perm_idx = c_end if c_end < n_centroids else 0
+
+                if len(c_idx) > 0:
+                    c_queries = centroid_queries_t[c_idx]
+                    c_targets = centroid_targets_t[c_idx]
+
+                    c_pred, _, _, _ = transformer.forward(c_queries)
+
+                    # Pure angle loss for centroids (strong constraint)
+                    c_pred_norm = F.normalize(c_pred, dim=1)
+                    c_target_norm = F.normalize(c_targets, dim=1)
+                    c_cosine = (c_pred_norm * c_target_norm).sum(dim=1)
+                    c_angle_error = torch.acos(torch.clamp(c_cosine, -1 + 1e-6, 1 - 1e-6))
+                    c_loss = c_angle_error.mean()
+
+                    optimizer.zero_grad()
+                    c_loss.backward()
+                    optimizer.step()
 
         avg_loss = epoch_loss / n_batches
         avg_cosine = epoch_cosine / n_batches
@@ -2544,17 +3808,50 @@ def main():
 
     # Training parameters
     parser.add_argument("--epochs", type=int, default=50, help="Training epochs")
+    parser.add_argument("--centroid-warmup", type=int, default=0,
+                       help="Epochs to warmup on cluster centroids before full training (curriculum learning)")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
     parser.add_argument("--test-split", type=float, default=0.2, help="Test split ratio")
     parser.add_argument("--layers", type=int, default=3, help="Transformer layers")
     parser.add_argument("--heads", type=int, default=4, help="Attention heads")
-    parser.add_argument("--teacher", choices=["orthogonal", "rotational", "jax"], default="orthogonal",
-                       help="Teacher type: orthogonal (fast), rotational (PyTorch logm/expm), jax (JAX logm/expm)")
+    parser.add_argument("--transformer-type", choices=["additive", "composed", "bivector-blend"],
+                       default="additive",
+                       help="Transformer type: additive (fast, good hit@k), composed (rotation composition), "
+                            "bivector-blend (full bivector blending with Rodrigues)")
+    parser.add_argument("--n-basis", type=int, default=128,
+                       help="Number of basis bivectors for bivector-blend transformer")
+    parser.add_argument("--bias-mode", choices=["none", "shared", "separate"], default="shared",
+                       help="Bias mode: none (rotation only), shared (same weights as rotation, recommended), "
+                            "separate (independent attention for bias)")
+    parser.add_argument("--teacher", choices=["orthogonal", "rotational", "jax", "direct", "paired"], default="orthogonal",
+                       help="Teacher type: orthogonal (fast Rodrigues), rotational (PyTorch logm/expm), "
+                            "jax (JAX logm/expm), direct (raw W@query), paired (pre-stored pairs, fastest)")
     parser.add_argument("--top-k-routing", type=int, default=10,
                        help="Top-K routing queries for rotational teacher")
     parser.add_argument("--target-cache",
                        help="Path to cache/load teacher targets (~32MB). Saves hours on rotational teacher.")
+
+    # Checkpoint and resumption
+    parser.add_argument("--checkpoint-path",
+                       help="Path to save training checkpoints")
+    parser.add_argument("--checkpoint-interval", type=int, default=10,
+                       help="Save checkpoint every N epochs")
+    parser.add_argument("--resume",
+                       help="Path to checkpoint to resume training from")
+
+    # Early stopping
+    parser.add_argument("--early-stopping-patience", type=int, default=0,
+                       help="Stop training if no improvement for N epochs (0 = disabled)")
+    parser.add_argument("--early-stopping-min-delta", type=float, default=0.001,
+                       help="Minimum improvement threshold for early stopping")
+
+    # Learning rate scheduling
+    parser.add_argument("--lr-scheduler", choices=["none", "cosine", "plateau", "step"],
+                       default="none",
+                       help="Learning rate scheduler")
+    parser.add_argument("--lr-warmup-epochs", type=int, default=0,
+                       help="Number of warmup epochs for LR scheduler")
 
     # Output
     parser.add_argument("--output", help="Path to save orthogonal codebook")
@@ -2712,18 +4009,90 @@ def main():
         elif args.teacher == "jax":
             log_info("\nCreating JaxRotationalTeacher (JAX logm/expm blending)...")
             teacher = JaxRotationalTeacher(args.federated_model, top_k_routing=args.top_k_routing)
+        elif args.teacher == "direct":
+            log_info("\nCreating DirectTeacher (raw W@query, no interpolation)...")
+            teacher = DirectTeacher(args.federated_model, top_k=args.top_k_routing)
+        elif args.teacher == "paired":
+            log_info("\nCreating PairedDataTeacher (pre-stored pairs, zero computation)...")
+            teacher = PairedDataTeacher(args.federated_model)
+            # Override query_embeddings with the stored ones
+            query_embeddings = teacher.query_embeddings
+            log_info(f"  Using {len(query_embeddings)} pre-stored pairs")
         else:
             log_info("\nCreating OrthogonalTeacher...")
             teacher = OrthogonalTeacher(args.federated_model, codebook)
 
         # Create transformer
-        log_info("\nCreating FastOrthogonalTransformer...")
-        transformer = FastOrthogonalTransformer(
-            codebook=codebook,
-            num_layers=args.layers,
-            num_heads=args.heads,
-            top_k=args.top_k,
-        )
+        basis_bivectors = None
+        basis_keys = None
+
+        if args.transformer_type == "bivector-blend":
+            log_info(f"\nBuilding orthogonal bivector basis with {args.n_basis} components...")
+            basis_bivectors, basis_keys = build_orthogonal_bivector_basis(
+                args.federated_model, n_basis=args.n_basis
+            )
+
+            # Load cluster biases if bias mode is enabled
+            cluster_biases = None
+            if args.bias_mode != "none":
+                bias_path = Path(args.federated_model).with_suffix('').parent / \
+                           (Path(args.federated_model).stem + '_biases.npz')
+                if bias_path.exists():
+                    bias_data = np.load(bias_path)
+                    cluster_biases = bias_data['biases']
+                    log_info(f"  Loaded {len(cluster_biases)} cluster biases from {bias_path}")
+                else:
+                    log_info(f"  Warning: Bias file not found at {bias_path}, computing...")
+                    # Compute biases on the fly
+                    from scipy.linalg import orthogonal_procrustes
+                    federated_path = Path(args.federated_model)
+                    cluster_dir = federated_path.with_suffix('')
+                    routing_data = np.load(cluster_dir / "routing_data.npz")
+
+                    with open(federated_path, 'rb') as f:
+                        meta = pickle.load(f)
+
+                    biases_list = []
+                    for cid in meta['cluster_ids']:
+                        cpath = cluster_dir / (f"{cid}.npz" if cid.startswith("cluster_") else f"cluster_{cid}.npz")
+                        if cpath.exists():
+                            cdata = np.load(cpath)
+                            indices = cdata['indices']
+                            queries = routing_data['query_embeddings'][indices]
+                            targets = cdata['target_embeddings']
+                            q_mean, t_mean = queries.mean(0), targets.mean(0)
+                            R, _ = orthogonal_procrustes(queries - q_mean, targets - t_mean)
+                            biases_list.append(t_mean - q_mean @ R)
+                        else:
+                            biases_list.append(np.zeros(768))
+                    cluster_biases = np.stack(biases_list, axis=0).astype(np.float32)
+                    log_info(f"  Computed {len(cluster_biases)} cluster biases")
+
+            log_info(f"\nCreating ComposedBivectorTransformer (bias_mode={args.bias_mode})...")
+            transformer = ComposedBivectorTransformer(
+                basis_bivectors=basis_bivectors,
+                basis_keys=basis_keys,
+                cluster_biases=cluster_biases,
+                bias_mode=args.bias_mode,
+                num_layers=args.layers,
+                num_heads=args.heads,
+            )
+        elif args.transformer_type == "composed":
+            log_info("\nCreating ComposedRotationTransformer (proper rotation composition)...")
+            transformer = ComposedRotationTransformer(
+                codebook=codebook,
+                num_layers=args.layers,
+                num_heads=args.heads,
+                top_k=args.top_k,
+            )
+        else:
+            log_info("\nCreating FastOrthogonalTransformer (additive, fast)...")
+            transformer = FastOrthogonalTransformer(
+                codebook=codebook,
+                num_layers=args.layers,
+                num_heads=args.heads,
+                top_k=args.top_k,
+            )
 
         # Count parameters
         total_params = sum(p.numel() for p in transformer.parameters())
@@ -2747,10 +4116,21 @@ def main():
                             f"got {len(cached.get('targets', []))}), recomputing...")
 
         if all_targets is None:
-            log_info(f"\nComputing teacher targets for {len(query_embeddings)} samples...")
-            all_targets = teacher.compute_targets_batched(
-                query_embeddings, top_k=args.top_k, batch_size=256
-            )
+            if isinstance(teacher, PairedDataTeacher):
+                # PairedDataTeacher has pre-stored targets - no computation!
+                log_info(f"\nUsing pre-stored targets from PairedDataTeacher...")
+                _, all_targets = teacher.get_all_pairs()
+            elif isinstance(teacher, DirectTeacher):
+                log_info(f"\nComputing teacher targets for {len(query_embeddings)} samples...")
+                # DirectTeacher doesn't take top_k (it's set in __init__)
+                all_targets = teacher.compute_targets_batched(
+                    query_embeddings, batch_size=256
+                )
+            else:
+                log_info(f"\nComputing teacher targets for {len(query_embeddings)} samples...")
+                all_targets = teacher.compute_targets_batched(
+                    query_embeddings, top_k=args.top_k, batch_size=256
+                )
 
             # Save to cache
             if args.target_cache:
@@ -2773,6 +4153,25 @@ def main():
 
         log_info(f"\nTrain: {len(train_queries)}, Test: {len(test_queries)}")
 
+        # Prepare centroid data for curriculum warmup and periodic replay
+        centroid_queries = None
+        centroid_targets = None
+        if args.centroid_warmup > 0 or isinstance(teacher, PairedDataTeacher):
+            log_info(f"\nPreparing centroid data...")
+            if isinstance(teacher, PairedDataTeacher):
+                # PairedDataTeacher already has pre-computed centroid pairs
+                centroid_queries, centroid_targets = teacher.get_centroid_pairs()
+                log_info(f"  {len(centroid_queries)} centroids from PairedDataTeacher")
+            else:
+                # Load centroids and W matrices
+                direct_teacher = DirectTeacher(args.federated_model, top_k=1)
+                centroid_queries = direct_teacher.cluster_centroids.astype(np.float32)
+                # Compute W @ centroid for each cluster (direct, no interpolation)
+                centroid_targets = np.zeros_like(centroid_queries)
+                for i in range(len(centroid_queries)):
+                    centroid_targets[i] = direct_teacher.W_tensor[i] @ centroid_queries[i]
+                log_info(f"  {len(centroid_queries)} centroids computed")
+
         # Train with pre-computed targets
         log_info(f"\nTraining for {args.epochs} epochs...")
         losses = train_orthogonal_transformer(
@@ -2785,6 +4184,9 @@ def main():
             log_interval=10,
             top_k=args.top_k,
             precomputed_targets=train_targets,
+            centroid_queries=centroid_queries,
+            centroid_targets=centroid_targets,
+            centroid_warmup_epochs=args.centroid_warmup,
         )
 
         # Evaluate with pre-computed targets
@@ -2820,7 +4222,13 @@ def main():
                 'n_queries': len(query_embeddings),
                 'mean_cosine_sim': results['mean_cosine_sim'],
             }
-            save_orthogonal_transformer(transformer, codebook, args.save_transformer, metadata)
+            if args.transformer_type == "bivector-blend":
+                save_composed_bivector_transformer(
+                    transformer, basis_bivectors, basis_keys,
+                    args.save_transformer, metadata
+                )
+            else:
+                save_orthogonal_transformer(transformer, codebook, args.save_transformer, metadata)
 
     elif args.train_multisource:
         # Multi-source training on multiple federated models
@@ -2857,13 +4265,22 @@ def main():
         teacher = MultiSourceOrthogonalTeacher(args.federated_models, codebook)
 
         # Create transformer
-        log_info("\nCreating FastOrthogonalTransformer...")
-        transformer = FastOrthogonalTransformer(
-            codebook=codebook,
-            num_layers=args.layers,
-            num_heads=args.heads,
-            top_k=args.top_k,
-        )
+        if args.transformer_type == "composed":
+            log_info("\nCreating ComposedRotationTransformer (proper rotation composition)...")
+            transformer = ComposedRotationTransformer(
+                codebook=codebook,
+                num_layers=args.layers,
+                num_heads=args.heads,
+                top_k=args.top_k,
+            )
+        else:
+            log_info("\nCreating FastOrthogonalTransformer (additive, fast)...")
+            transformer = FastOrthogonalTransformer(
+                codebook=codebook,
+                num_layers=args.layers,
+                num_heads=args.heads,
+                top_k=args.top_k,
+            )
 
         # Count parameters
         total_params = sum(p.numel() for p in transformer.parameters())

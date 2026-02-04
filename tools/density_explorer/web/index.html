@@ -457,6 +457,10 @@
                         <label for="maxDepth">Max Depth: <span class="value" id="maxDepthValue">10</span></label>
                         <input type="range" id="maxDepth" min="1" max="20" value="10">
                     </div>
+                    <div class="control-group">
+                        <label for="maxBranching">Max Branching: <span class="value" id="maxBranchingValue">∞</span></label>
+                        <input type="range" id="maxBranching" min="2" max="20" value="20">
+                    </div>
 
                     <div class="control-group" id="rootNodeGroup">
                         <label>Root Node</label>
@@ -501,6 +505,7 @@
                         <select id="datasetSelect">
                             <option value="data/physics.json">Physics (pre-computed)</option>
                             <option value="demo">Demo clusters (Pyodide)</option>
+                            <option value="flask-api">Flask API (server)</option>
                             <option value="custom">Custom URL...</option>
                         </select>
                     </div>
@@ -508,6 +513,60 @@
                         <label for="customUrl">JSON URL</label>
                         <input type="text" id="customUrl" placeholder="https://..." style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
                         <button class="secondary" id="loadCustomBtn" style="margin-top:5px;">Load</button>
+                    </div>
+
+                    <!-- Flask API Configuration -->
+                    <div id="flaskApiGroup" style="display: none;">
+                        <div class="control-group">
+                            <label for="flaskApiUrl">API URL</label>
+                            <input type="text" id="flaskApiUrl" value="http://127.0.0.1:5000" style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
+                        </div>
+                        <div class="control-group">
+                            <label for="flaskDataset">Dataset</label>
+                            <select id="flaskDataset" style="width:100%;">
+                                <option value="wikipedia_physics_nomic">Wikipedia Physics (Nomic)</option>
+                                <option value="pearltrees_nomic_routing">Pearltrees Routing</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="flaskModel">Projection Model</label>
+                            <select id="flaskModel" style="width:100%;">
+                                <option value="">None (raw embeddings)</option>
+                                <option value="bivector_paired" selected>Bivector Paired</option>
+                                <option value="bivector_bias_shared">Bivector + Shared Bias</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="flaskProjectionMode">2D Projection Mode</label>
+                            <select id="flaskProjectionMode" style="width:100%;">
+                                <option value="embedding">Embedding Space (semantic similarity)</option>
+                                <option value="weights">Weight Space (transformation recipes)</option>
+                                <option value="learned">Learned Metric (organizational structure)</option>
+                                <option value="wikipedia_physics">Wikipedia Physics (trained hierarchy)</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="flaskTreeMetric">Tree Distance Metric</label>
+                            <select id="flaskTreeMetric" style="width:100%;">
+                                <option value="embedding">Embedding (semantic links)</option>
+                                <option value="weights">Weights (hierarchical links)</option>
+                                <option value="learned">Learned (organizational proximity)</option>
+                                <option value="wikipedia_physics">Wikipedia Physics (trained hierarchy)</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="flaskTreeType">Tree Algorithm</label>
+                            <select id="flaskTreeType" style="width:100%;">
+                                <option value="mst">MST (global minimum spanning)</option>
+                                <option value="j-guided">J-Guided (local neighbors)</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="flaskTopK">Max Points</label>
+                            <input type="number" id="flaskTopK" value="200" min="10" max="10000" style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
+                        </div>
+                        <button class="secondary" id="loadFlaskBtn" style="margin-top:5px;">Load from API</button>
+                        <div id="flaskApiStatus" style="font-size: 0.8rem; color: #94a3b8; margin-top: 5px;"></div>
                     </div>
 
                     <h2>Projection</h2>
@@ -740,6 +799,7 @@
             showArrows: document.getElementById('showArrows'),
             arrowMode: document.getElementById('arrowMode'),
             maxDepth: document.getElementById('maxDepth'),
+            maxBranching: document.getElementById('maxBranching'),
             showPoints: document.getElementById('showPoints'),
             showPeaks: document.getElementById('showPeaks'),
             showContours: document.getElementById('showContours'),
@@ -789,6 +849,7 @@
             bandwidth: document.getElementById('bandwidthValue'),
             gridSize: document.getElementById('gridSizeValue'),
             maxDepth: document.getElementById('maxDepthValue'),
+            maxBranching: document.getElementById('maxBranchingValue'),
         };
 
         // ============================================================
@@ -1220,10 +1281,23 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
             }
 
             // Display toggles (instant, no recomputation)
-            ['showTree', 'showPoints', 'showPeaks', 'showContours', 'maxDepth'].forEach(key => {
+            ['showTree', 'showPoints', 'showPeaks', 'showContours'].forEach(key => {
                 controls[key].addEventListener('change', () => {
                     if (currentData) renderPlot();
                 });
+            });
+
+            // Max depth slider needs 'input' event for immediate feedback
+            controls.maxDepth.addEventListener('input', () => {
+                valueDisplays.maxDepth.textContent = controls.maxDepth.value;
+                if (currentData) renderPlot();
+            });
+
+            // Max branching slider
+            controls.maxBranching.addEventListener('input', () => {
+                const val = parseInt(controls.maxBranching.value);
+                valueDisplays.maxBranching.textContent = val >= 20 ? '∞' : val;
+                if (currentData) renderPlot();
             });
 
             // Arrow controls with mode visibility toggle
@@ -1242,6 +1316,12 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
             // Dataset selector
             datasetSelect.addEventListener('change', handleDatasetChange);
             loadCustomBtn.addEventListener('click', loadCustomUrl);
+
+            // Flask API button
+            const loadFlaskBtn = document.getElementById('loadFlaskBtn');
+            if (loadFlaskBtn) {
+                loadFlaskBtn.addEventListener('click', loadFromFlaskApi);
+            }
 
             // Projection mode
             projectionModeSelect.addEventListener('change', handleProjectionModeChange);
@@ -1774,55 +1854,84 @@ _real_titles = None
         }
 
         function rerootTree(tree, newRootId) {
-            // Build adjacency list from edges (undirected)
-            const adj = {};
-            for (const edge of tree.edges) {
-                if (!adj[edge.source_id]) adj[edge.source_id] = [];
-                if (!adj[edge.target_id]) adj[edge.target_id] = [];
-                adj[edge.source_id].push({ id: edge.target_id, weight: edge.weight });
-                adj[edge.target_id].push({ id: edge.source_id, weight: edge.weight });
+            // Rebuild tree as a hub tree with new root having many children
+            // Uses 2D distances to find k nearest neighbors at each level (BFS)
+            const k = 8;  // Number of direct children for the root (hub)
+
+            const nodes = tree.nodes;
+            const n = nodes.length;
+
+            // Build node lookup
+            const nodeById = {};
+            for (const node of nodes) {
+                nodeById[node.id] = node;
             }
 
-            // BFS from new root to reassign parents and depths
+            // Get root node
+            const rootNode = nodeById[newRootId];
+            if (!rootNode) return;
+
+            // Helper: compute 2D distance between two nodes
+            const dist2d = (a, b) => {
+                const dx = a.x - b.x;
+                const dy = a.y - b.y;
+                return Math.sqrt(dx * dx + dy * dy);
+            };
+
+            // BFS: at each level, each node in the frontier connects to its k nearest unvisited
             const newParent = { [newRootId]: null };
             const newDepth = { [newRootId]: 0 };
             const visited = new Set([newRootId]);
-            const queue = [newRootId];
+            let frontier = [newRootId];
 
-            while (queue.length > 0) {
-                const nodeId = queue.shift();
-                for (const neighbor of (adj[nodeId] || [])) {
-                    if (!visited.has(neighbor.id)) {
-                        visited.add(neighbor.id);
-                        newParent[neighbor.id] = nodeId;
-                        newDepth[neighbor.id] = newDepth[nodeId] + 1;
-                        queue.push(neighbor.id);
+            while (visited.size < n && frontier.length > 0) {
+                const nextFrontier = [];
+
+                for (const parentId of frontier) {
+                    const parentNode = nodeById[parentId];
+                    const parentDepth = newDepth[parentId];
+
+                    // Find k nearest unvisited nodes to this parent
+                    const unvisited = nodes
+                        .filter(node => !visited.has(node.id))
+                        .map(node => ({ id: node.id, dist: dist2d(parentNode, node) }))
+                        .sort((a, b) => a.dist - b.dist)
+                        .slice(0, k);
+
+                    for (const child of unvisited) {
+                        if (!visited.has(child.id)) {
+                            newParent[child.id] = parentId;
+                            newDepth[child.id] = parentDepth + 1;
+                            visited.add(child.id);
+                            nextFrontier.push(child.id);
+                        }
                     }
                 }
+
+                frontier = nextFrontier;
             }
 
             // Update nodes
-            for (const node of tree.nodes) {
+            for (const node of nodes) {
                 node.parent_id = newParent[node.id] !== undefined ? newParent[node.id] : null;
                 node.depth = newDepth[node.id] !== undefined ? newDepth[node.id] : 0;
             }
 
-            // Rebuild edges with new parent relationships
+            // Rebuild edges
             tree.edges = [];
-            for (const node of tree.nodes) {
+            for (const node of nodes) {
                 if (node.parent_id !== null) {
-                    // Find weight from adjacency
-                    const neighbors = adj[node.id] || [];
-                    const parentNeighbor = neighbors.find(n => n.id === node.parent_id);
+                    const parentNode = nodeById[node.parent_id];
                     tree.edges.push({
                         source_id: node.parent_id,
                         target_id: node.id,
-                        weight: parentNeighbor ? parentNeighbor.weight : 0
+                        weight: dist2d(node, parentNode)
                     });
                 }
             }
 
             tree.root_id = newRootId;
+            tree.tree_type = tree.tree_type + '-hub';
         }
 
         function resetTreeRoot() {
@@ -2025,19 +2134,108 @@ json.dumps(data)
         function handleDatasetChange() {
             const value = datasetSelect.value;
 
+            // Hide all conditional groups first
+            customUrlGroup.style.display = 'none';
+            const flaskApiGroup = document.getElementById('flaskApiGroup');
+            if (flaskApiGroup) flaskApiGroup.style.display = 'none';
+
             if (value === 'custom') {
                 customUrlGroup.style.display = 'block';
-            } else {
-                customUrlGroup.style.display = 'none';
-                if (value === 'demo') {
-                    if (pyodideReady) {
-                        recompute();
-                    } else {
-                        setStatus('Pyodide not ready yet', 'error');
-                    }
+            } else if (value === 'flask-api') {
+                if (flaskApiGroup) flaskApiGroup.style.display = 'block';
+            } else if (value === 'demo') {
+                if (pyodideReady) {
+                    recompute();
                 } else {
-                    loadDatasetUrl(value);
+                    setStatus('Pyodide not ready yet', 'error');
                 }
+            } else {
+                loadDatasetUrl(value);
+            }
+        }
+
+        // Flask API integration
+        async function loadFromFlaskApi() {
+            const apiUrl = document.getElementById('flaskApiUrl').value;
+            const dataset = document.getElementById('flaskDataset').value;
+            const model = document.getElementById('flaskModel').value;
+            const projectionMode = document.getElementById('flaskProjectionMode').value;
+            const treeMetric = document.getElementById('flaskTreeMetric').value;
+            const treeType = document.getElementById('flaskTreeType').value;
+            const topK = parseInt(document.getElementById('flaskTopK').value) || 200;
+            const statusEl = document.getElementById('flaskApiStatus');
+
+            statusEl.textContent = 'Loading...';
+            statusEl.style.color = '#f39c12';
+            setStatus('Fetching from Flask API...', 'loading');
+
+            try {
+                const requestBody = {
+                    dataset: dataset,
+                    top_k: topK,
+                    include_tree: true,
+                    include_peaks: true,
+                    tree_type: treeType
+                };
+
+                if (model) {
+                    requestBody.model = model;
+                    requestBody.projection_mode = projectionMode;
+                    requestBody.tree_distance_metric = treeMetric;
+                }
+
+                const response = await fetch(`${apiUrl}/api/compute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || `HTTP ${response.status}`);
+                }
+
+                currentData = await response.json();
+                currentDatasetUrl = `flask-api:${dataset}`;
+                originalData = null;
+                clearAxisSelection();
+
+                // Set tree type
+                if (currentData.tree) {
+                    currentData.trees = { [currentData.tree.tree_type]: currentData.tree };
+                    activeTreeType = currentData.tree.tree_type;
+                }
+
+                // Preserve selected root across reloads
+                if (selectedNode) {
+                    const newNode = currentData.points.find(p => p.title === selectedNode.title);
+                    if (newNode && currentData.trees) {
+                        // Re-root tree at the previously selected node
+                        for (const tree of Object.values(currentData.trees)) {
+                            rerootTree(tree, newNode.id);
+                        }
+                        selectedNode = newNode;
+                        setStatus(`Loaded and re-rooted at "${selectedNode.title}"`);
+                    }
+                }
+
+                renderPlot();
+                updateInfo();
+                updateTreeToggle();
+
+                const modeLabels = { 'embedding': 'Embedding', 'weights': 'Weight', 'learned': 'Learned Metric' };
+                const treeLabels = { 'embedding': 'semantic', 'weights': 'hierarchical', 'learned': 'organizational' };
+                const modeLabel = modeLabels[projectionMode] || projectionMode;
+                const treeLabel = treeLabels[treeMetric] || treeMetric;
+                statusEl.textContent = `Loaded ${currentData.n_points} pts (${modeLabel}, ${treeLabel})`;
+                statusEl.style.color = '#27ae60';
+                setStatus(`Loaded from API: ${currentData.n_points} points, ${modeLabel} space, ${treeLabel} tree`);
+
+            } catch (error) {
+                statusEl.textContent = `Error: ${error.message}`;
+                statusEl.style.color = '#e74c3c';
+                setStatus(`Flask API error: ${error.message}`, 'error');
+                console.error('Flask API error:', error);
             }
         }
 
@@ -2604,18 +2802,31 @@ json.dumps(data)
             const tree = currentData.trees ? currentData.trees[activeTreeType] : currentData.tree;
             if (controls.showTree.checked && tree) {
                 const maxDepth = parseInt(controls.maxDepth.value);
+                const maxBranching = parseInt(controls.maxBranching.value);
                 const nodeMap = {};
                 tree.nodes.forEach(n => nodeMap[n.id] = n);
+
+                // Track children count per parent for branching limit
+                const childCount = {};
+
+                // Sort edges by weight (shortest first) so we keep the closest children
+                const sortedEdges = [...tree.edges].sort((a, b) => a.weight - b.weight);
 
                 // Collect arrow positions and angles
                 const arrowX = [];
                 const arrowY = [];
                 const arrowAngles = [];
 
-                for (const edge of tree.edges) {
+                for (const edge of sortedEdges) {
                     const source = nodeMap[edge.source_id];
                     const target = nodeMap[edge.target_id];
+
+                    // Check branching limit (skip if parent has too many children)
+                    const parentChildren = childCount[edge.source_id] || 0;
+                    if (parentChildren >= maxBranching) continue;
+
                     if (target.depth <= maxDepth) {
+                        childCount[edge.source_id] = parentChildren + 1;
                         traces.push({
                             type: 'scatter', x: [source.x, target.x], y: [source.y, target.y],
                             mode: 'lines', line: { color: 'cyan', width: 1 },
