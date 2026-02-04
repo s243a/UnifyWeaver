@@ -40,7 +40,7 @@ class GeminiBackend(AgentBackend):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120,  # 2 minute timeout
+                timeout=300,  # 5 minute timeout (agentic tasks need longer)
                 stdin=subprocess.DEVNULL  # Don't wait for stdin
             )
             output = result.stdout
@@ -49,7 +49,7 @@ class GeminiBackend(AgentBackend):
 
         except subprocess.TimeoutExpired:
             return AgentResponse(
-                content="[Error: Command timed out after 2 minutes]",
+                content="[Error: Command timed out after 5 minutes]",
                 tokens={}
             )
         except FileNotFoundError:
