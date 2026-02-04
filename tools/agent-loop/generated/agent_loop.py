@@ -623,6 +623,13 @@ Status:
         else:
             print("\n[Calling backend...]")
 
+        # Status callback to update spinner with tool call info
+        def on_status(status: str):
+            if spinner:
+                spinner.update(status)
+            else:
+                print(f"  {status}")
+
         # Get response from backend (with streaming if enabled)
         try:
             if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
@@ -637,10 +644,19 @@ Status:
                 )
                 print()  # Newline after streaming
             else:
-                response = self.backend.send_message(
-                    user_input,
-                    self.context.get_context()
-                )
+                # Pass on_status for backends that support it (e.g. gemini)
+                try:
+                    response = self.backend.send_message(
+                        user_input,
+                        self.context.get_context(),
+                        on_status=on_status
+                    )
+                except TypeError:
+                    # Backend doesn't accept on_status
+                    response = self.backend.send_message(
+                        user_input,
+                        self.context.get_context()
+                    )
         except KeyboardInterrupt:
             if spinner:
                 spinner.stop()
