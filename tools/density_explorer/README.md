@@ -30,12 +30,44 @@ python3 -m http.server 8080
 # Open http://localhost:8080/generated/index.html
 ```
 
+## Flask API
+
+The Flask backend provides a REST API for computing density manifolds:
+
+```bash
+cd tools/density_explorer
+python flask_api.py
+# Open http://localhost:5000
+```
+
+### Projection Modes
+
+| Mode | Description |
+|------|-------------|
+| `embedding` | Raw Nomic 768D → SVD 2D (default) |
+| `weights` | Learned transformation weights → SVD 2D |
+| `learned` | Trained model hidden layer → SVD 2D |
+| `wikipedia_physics` | Wikipedia Physics distance model (768→256→64) → SVD 2D |
+
+### Tree Distance Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `embedding` | Cosine distance on raw embeddings (default) |
+| `wikipedia_physics` | Trained hierarchical distance model |
+
+### Tree Controls
+
+- **Tree type**: MST or J-guided
+- **Max depth**: Filter tree to show only nodes within N levels of root
+- **Max branching**: Limit children per node (2–20 or unlimited), sorted by edge weight
+
 ## Features
 
 ### Both Versions
 - Density heatmap visualization with Plotly.js
 - Display toggles: Points, Peaks, Contours, Tree
-- Tree overlay with max depth control
+- Tree overlay with max depth and max branching controls
 - Search nodes
 - Export mindmap (JSON)
 - Mobile-responsive layout
@@ -48,11 +80,24 @@ python3 -m http.server 8080
 
 ### Hand-crafted Version Additional Features
 - Pyodide integration for in-browser Python
+- Flask API backend with multiple projection modes
+- Wikipedia Physics trained distance model integration
 - Multiple dataset sources
 - Custom projection axes
 - Multiple export formats (VUE, FreeMind, Mermaid, OPML, GraphML)
 - ML embedding models
 - More tree types (MST, J-guided)
+
+## Examples
+
+```bash
+# Generate organizational depth scatter (interactive HTML + PNG)
+python examples/plot_organizational_depth.py
+```
+
+## See Also
+
+- [Semantic Geometry book](../../education/other-books/book-semantic-geometry/) — Theory and implementation guide
 
 ## Architecture
 

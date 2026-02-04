@@ -188,8 +188,10 @@ def parse_insert_values(line: str) -> List[Tuple]:
         if len(parts) >= 7:
             try:
                 cl_from = int(parts[0])
-                cl_to = parts[1]  # Category name
-                cl_type = parts[6] if len(parts) > 6 else 'page'
+                # Format: (page_id, sortkey, timestamp, category_name, type, ...)
+                # parts[1] is sortkey (binary), parts[3] is the actual category name
+                cl_to = parts[3]  # Category name
+                cl_type = parts[4] if len(parts) > 4 else 'page'
                 results.append((cl_from, cl_to, cl_type))
             except (ValueError, IndexError):
                 continue

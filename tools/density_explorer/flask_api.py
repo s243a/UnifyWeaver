@@ -20,7 +20,7 @@ import hashlib
 from pathlib import Path
 
 # Add project paths
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "tools/density_explorer"))
 
@@ -370,8 +370,8 @@ def compute_manifold():
 
         # Extract projection mode
         projection_mode = data.get('projection_mode', 'embedding')
-        if projection_mode not in ('embedding', 'weights', 'learned'):
-            return jsonify({'error': f'Invalid projection_mode: {projection_mode}. Use "embedding", "weights", or "learned"'}), 400
+        if projection_mode not in ('embedding', 'weights', 'learned', 'wikipedia_physics'):
+            return jsonify({'error': f'Invalid projection_mode: {projection_mode}. Use "embedding", "weights", "learned", or "wikipedia_physics"'}), 400
 
         # Check for projection model
         model = data.get('model')
@@ -462,7 +462,7 @@ def compute_manifold():
 
                 return result.to_json(), 200, {'Content-Type': 'application/json'}
 
-        # No model specified - standard embedding mode only
+        # No model specified - check valid modes
         if projection_mode in ('weights', 'learned'):
             return jsonify({'error': f'projection_mode="{projection_mode}" requires a model'}), 400
 
@@ -472,10 +472,11 @@ def compute_manifold():
         grid_size = data.get('grid_size', 100)
         include_tree = data.get('include_tree', True)
         tree_type = data.get('tree_type', 'mst')
+        tree_distance_metric = data.get('tree_distance_metric', 'embedding')
         include_peaks = data.get('include_peaks', True)
         n_peaks = data.get('n_peaks', 5)
 
-        # Compute manifold
+        # Compute manifold (wikipedia_physics uses its own internal model)
         result = load_and_compute(
             str(dataset_path),
             top_k=top_k,
@@ -483,9 +484,10 @@ def compute_manifold():
             grid_size=grid_size,
             include_tree=include_tree,
             tree_type=tree_type,
+            tree_distance_metric=tree_distance_metric,
             include_peaks=include_peaks,
             n_peaks=n_peaks,
-            projection_mode='embedding'
+            projection_mode=projection_mode  # Pass actual mode (embedding or wikipedia_physics)
         )
 
         # Return as JSON
