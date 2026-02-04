@@ -22,6 +22,7 @@ from aliases import AliasManager
 from templates import TemplateManager
 from history import HistoryManager
 from multiline import get_input_smart
+from display import DisplayMode, Spinner
 
 
 class AgentLoop:
@@ -39,7 +40,8 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         session_id: str | None = None,
         track_costs: bool = True,
-        streaming: bool = False
+        streaming: bool = False,
+        display_mode: str = 'append'
     ):
         self.backend = backend
         self.context = context or ContextManager()
@@ -52,6 +54,7 @@ class AgentLoop:
         self.session_id = session_id  # Current session ID if loaded/saved
         self.cost_tracker = CostTracker() if track_costs else None
         self.streaming = streaming
+        self.display_mode = display_mode  # 'append' or 'ncurses'
         self.alias_manager = AliasManager()
         self.template_manager = TemplateManager()
         self.history_manager = HistoryManager(self.context)
@@ -611,22 +614,57 @@ Status:
         self.context.add_message('user', user_input)
 
         # Show that we're calling the backend
-        print("\n[Calling backend...]")
+        use_spinner = self.display_mode == 'ncurses' and DisplayMode.supports_ncurses()
+        spinner = None
+
+        if use_spinner:
+            spinner = Spinner("Calling backend...")
+            spinner.start()
+        else:
+            print("\n[Calling backend...]")
+
+        # Status callback to update spinner with tool call info
+        def on_status(status: str):
+            if spinner:
+                spinner.update(status)
+            else:
+                print(f"  {status}")
 
         # Get response from backend (with streaming if enabled)
-        if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
-            print("\nAssistant: ", end="", flush=True)
-            response = self.backend.send_message_streaming(
-                user_input,
-                self.context.get_context(),
-                on_token=lambda t: print(t, end="", flush=True)
-            )
-            print()  # Newline after streaming
-        else:
-            response = self.backend.send_message(
-                user_input,
-                self.context.get_context()
-            )
+        try:
+            if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
+                if spinner:
+                    spinner.stop()
+                    spinner = None
+                print("\nAssistant: ", end="", flush=True)
+                response = self.backend.send_message_streaming(
+                    user_input,
+                    self.context.get_context(),
+                    on_token=lambda t: print(t, end="", flush=True)
+                )
+                print()  # Newline after streaming
+            else:
+                # Pass on_status for backends that support it (e.g. gemini)
+                try:
+                    response = self.backend.send_message(
+                        user_input,
+                        self.context.get_context(),
+                        on_status=on_status
+                    )
+                except TypeError:
+                    # Backend doesn't accept on_status
+                    response = self.backend.send_message(
+                        user_input,
+                        self.context.get_context()
+                    )
+        except KeyboardInterrupt:
+            if spinner:
+                spinner.stop()
+            print("\n[Interrupted]")
+            return
+        finally:
+            if spinner:
+                spinner.stop()
 
         # Handle tool calls if present
         iteration_count = 0
@@ -711,7 +749,9 @@ def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str 
     ) or agent_config.system_prompt
 
 
-def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "") -> AgentBackend:
+def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
+                               sandbox: bool = False, approval_mode: str = "yolo",
+                               allowed_tools: list[str] | None = None) -> AgentBackend:
     """Create a backend from an AgentConfig."""
     backend_type = agent_config.backend
 
@@ -732,7 +772,10 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "") 
         from backends import GeminiBackend
         return GeminiBackend(
             command=agent_config.command or 'gemini',
-            model=agent_config.model or 'gemini-3-flash-preview'
+            model=agent_config.model or 'gemini-3-flash-preview',
+            sandbox=sandbox,
+            approval_mode=approval_mode,
+            allowed_tools=allowed_tools or []
         )
 
     elif backend_type == 'claude':
@@ -858,6 +901,25 @@ def main():
         help='Disable tool execution'
     )
     parser.add_argument(
+        '--sandbox',
+        action='store_true',
+        help='Run in sandbox mode (gemini: requires docker/podman)'
+    )
+    parser.add_argument(
+        '--approval-mode',
+        choices=['default', 'auto_edit', 'yolo', 'plan'],
+        default='yolo',
+        help='Tool approval mode (default: yolo). '
+             'default=prompt, auto_edit=auto-approve edits, '
+             'yolo=auto-approve all, plan=read-only'
+    )
+    parser.add_argument(
+        '--allowed-tools',
+        nargs='*',
+        default=[],
+        help='Specific tools allowed without confirmation'
+    )
+    parser.add_argument(
         '--system-prompt',
         default=None,
         help='System prompt to use'
@@ -911,6 +973,20 @@ def main():
         '--search',
         metavar='QUERY',
         help='Search across saved sessions and exit'
+    )
+
+    # Display mode
+    parser.add_argument(
+        '--fancy',
+        action='store_true',
+        help='Enable ncurses display mode with spinner (uses tput)'
+    )
+
+    # Interactive with initial prompt
+    parser.add_argument(
+        '-I', '--prompt-interactive',
+        metavar='PROMPT',
+        help='Start interactive mode with an initial prompt'
     )
 
     # Prompt
@@ -1014,7 +1090,12 @@ def main():
 
     # Create backend
     try:
-        backend = create_backend_from_config(agent_config, config.config_dir)
+        backend = create_backend_from_config(
+            agent_config, config.config_dir,
+            sandbox=args.sandbox,
+            approval_mode=args.approval_mode,
+            allowed_tools=args.allowed_tools
+        )
     except ImportError as e:
         print(f"Backend requires additional package: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1066,13 +1147,37 @@ def main():
         session_manager=session_manager,
         session_id=session_id,
         track_costs=not args.no_cost_tracking,
-        streaming=args.stream
+        streaming=args.stream,
+        display_mode='ncurses' if args.fancy else 'append'
     )
 
-    # Single prompt mode
+    # Single prompt mode (run once and exit)
     if args.prompt:
         print(f"You: {args.prompt}")
         loop._process_message(args.prompt)
+        return
+
+    # Interactive mode with initial prompt (-i)
+    if args.prompt_interactive:
+        loop._print_header()
+        print(f"\nYou: {args.prompt_interactive}")
+        loop._process_message(args.prompt_interactive)
+        # Continue in interactive mode
+        while loop.running:
+            try:
+                user_input = loop._get_input()
+                if user_input is None:
+                    break
+                if not user_input.strip():
+                    continue
+                if loop._handle_command(user_input):
+                    continue
+                loop._process_message(user_input)
+            except KeyboardInterrupt:
+                print("\n\nInterrupted. Type 'exit' to quit.")
+            except Exception as e:
+                print(f"\n[Error: {e}]\n")
+        print("\nGoodbye!")
         return
 
     # Interactive mode
