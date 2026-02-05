@@ -24,7 +24,7 @@ class OllamaAPIBackend(AgentBackend):
         self.timeout = timeout
         self.base_url = f"http://{host}:{port}"
 
-    def send_message(self, message: str, context: list[dict]) -> AgentResponse:
+    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to Ollama API and get response."""
         # Build messages array
         messages = []

@@ -17,7 +17,7 @@ class CoroBackend(AgentBackend):
             re.IGNORECASE
         )
 
-    def send_message(self, message: str, context: list[dict]) -> AgentResponse:
+    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to coro CLI and get response."""
         # Format the prompt with context
         prompt = self._format_prompt(message, context)
