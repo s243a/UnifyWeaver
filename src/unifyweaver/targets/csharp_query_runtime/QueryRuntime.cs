@@ -2152,12 +2152,10 @@ namespace UnifyWeaver.QueryRuntime
                         if (boundColumns.Count == 1)
                         {
                             var boundColumn = boundColumns[0];
-                            if (context.FactIndices.TryGetValue((scan.Relation, boundColumn), out var index))
-                            {
-                                var keyValue = scan.Pattern[boundColumn];
-                                var lookupKey = keyValue ?? NullFactIndexKey;
-                                upperBound = index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
-                            }
+                            var index = GetFactIndex(scan.Relation, boundColumn, facts, context);
+                            var keyValue = scan.Pattern[boundColumn];
+                            var lookupKey = keyValue ?? NullFactIndexKey;
+                            upperBound = index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
 
                             return true;
                         }
@@ -2179,11 +2177,7 @@ namespace UnifyWeaver.QueryRuntime
                         int? bestUpperBound = null;
                         foreach (var boundColumn in boundColumns)
                         {
-                            if (!context.FactIndices.TryGetValue((scan.Relation, boundColumn), out var index))
-                            {
-                                continue;
-                            }
-
+                            var index = GetFactIndex(scan.Relation, boundColumn, facts, context);
                             var keyValue = scan.Pattern[boundColumn];
                             var lookupKey = keyValue ?? NullFactIndexKey;
                             var candidate = index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
