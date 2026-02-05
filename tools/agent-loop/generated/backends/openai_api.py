@@ -50,7 +50,7 @@ class OpenAIBackend(AgentBackend):
 
         self.client = openai.OpenAI(**client_kwargs)
 
-    def send_message(self, message: str, context: list[dict]) -> AgentResponse:
+    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to OpenAI API and get response."""
         # Build messages array
         messages = [
@@ -65,11 +65,7 @@ class OpenAIBackend(AgentBackend):
                     "content": msg['content']
                 })
 
-        # Add current message
-        messages.append({
-            "role": "user",
-            "content": message
-        })
+        # Note: current message is already in context (added by agent_loop)
 
         try:
             response = self.client.chat.completions.create(

@@ -19,11 +19,10 @@ class GeminiBackend(AgentBackend):
         self.allowed_tools = allowed_tools or []
         self._on_status = None  # Callback for status updates
 
-    def send_message(self, message: str, context: list[dict],
-                     on_status=None) -> AgentResponse:
+    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to Gemini CLI with live streaming output."""
         prompt = self._format_prompt(message, context)
-        self._on_status = on_status
+        self._on_status = kwargs.get('on_status')
 
         # Use stream-json for live progress
         cmd = [

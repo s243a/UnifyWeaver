@@ -43,7 +43,7 @@ class ClaudeAPIBackend(AgentBackend):
 
         self.client = anthropic.Anthropic(api_key=self.api_key)
 
-    def send_message(self, message: str, context: list[dict]) -> AgentResponse:
+    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to Claude API and get response."""
         # Build messages array
         messages = []
@@ -56,11 +56,7 @@ class ClaudeAPIBackend(AgentBackend):
                     "content": msg['content']
                 })
 
-        # Add current message
-        messages.append({
-            "role": "user",
-            "content": message
-        })
+        # Note: current message is already in context (added by agent_loop)
 
         try:
             response = self.client.messages.create(
@@ -140,7 +136,7 @@ class ClaudeAPIBackend(AgentBackend):
                     "role": msg['role'],
                     "content": msg['content']
                 })
-        messages.append({"role": "user", "content": message})
+        # Note: current message is already in context (added by agent_loop)
 
         try:
             content_parts = []

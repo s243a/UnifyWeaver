@@ -26,8 +26,12 @@ class AgentBackend(ABC):
     """Abstract interface for agent backends."""
 
     @abstractmethod
-    def send_message(self, message: str, context: list[dict]) -> AgentResponse:
-        """Send a message with context, get response."""
+    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
+        """Send a message with context, get response.
+
+        Optional kwargs:
+            on_status: Callback for status updates (e.g. tool call progress)
+        """
         raise NotImplementedError
 
     def parse_tool_calls(self, response: str) -> list[ToolCall]:

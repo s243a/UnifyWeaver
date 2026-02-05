@@ -604,7 +604,9 @@ Status:
   Max iterations: {iterations_str}
   Context format: {self.context.format.value}
   Messages: {self.context.message_count}
-  Context tokens: {self.context.token_count}
+  Context tokens: {self.context.token_count} (est.)
+  Context chars: {self.context.char_count}
+  Context words: {self.context.word_count}
   Cost: {cost_str}
 """)
 
@@ -644,19 +646,11 @@ Status:
                 )
                 print()  # Newline after streaming
             else:
-                # Pass on_status for backends that support it (e.g. gemini)
-                try:
-                    response = self.backend.send_message(
-                        user_input,
-                        self.context.get_context(),
-                        on_status=on_status
-                    )
-                except TypeError:
-                    # Backend doesn't accept on_status
-                    response = self.backend.send_message(
-                        user_input,
-                        self.context.get_context()
-                    )
+                response = self.backend.send_message(
+                    user_input,
+                    self.context.get_context(),
+                    on_status=on_status
+                )
         except KeyboardInterrupt:
             if spinner:
                 spinner.stop()
@@ -706,9 +700,11 @@ Status:
             self.context.add_message('user', f"Tool results:\n{tool_message}")
 
             print(f"\n[Iteration {iteration_count}: continuing with tool results...]")
+            # Context already includes the tool results message, just pass it
             response = self.backend.send_message(
                 f"Tool results:\n{tool_message}",
-                self.context.get_context()
+                self.context.get_context(),
+                on_status=on_status
             )
 
         # Display response (if not already streamed)
@@ -889,6 +885,24 @@ def main():
         choices=['continue', 'fresh', 'sliding'],
         default=None,
         help='Context behavior mode'
+    )
+    parser.add_argument(
+        '--max-chars',
+        type=int,
+        default=0,
+        help='Max characters in context (0 = unlimited)'
+    )
+    parser.add_argument(
+        '--max-words',
+        type=int,
+        default=0,
+        help='Max words in context (0 = unlimited)'
+    )
+    parser.add_argument(
+        '--max-tokens',
+        type=int,
+        default=None,
+        help='Max tokens in context (default: 100000, uses estimation)'
     )
     parser.add_argument(
         '--auto-tools',
@@ -1122,8 +1136,10 @@ def main():
         context_format = ContextFormat(args.context_format) if args.context_format else ContextFormat.PLAIN
         context = ContextManager(
             behavior=behavior,
-            max_tokens=agent_config.max_context_tokens,
+            max_tokens=args.max_tokens or agent_config.max_context_tokens,
             max_messages=agent_config.max_messages,
+            max_chars=args.max_chars,
+            max_words=args.max_words,
             format=context_format
         )
 
