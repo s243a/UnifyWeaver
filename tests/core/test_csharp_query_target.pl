@@ -130,6 +130,10 @@
 :- dynamic user:test_rowcount_big/2.
 :- dynamic user:test_rowcount_small/1.
 :- dynamic user:test_join_order_rowcount_prefers_small/1.
+:- dynamic user:test_join_connect_hub/2.
+:- dynamic user:test_join_connect_leaf_x/1.
+:- dynamic user:test_join_connect_leaf_y/1.
+:- dynamic user:test_join_order_rowcount_over_connectivity/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -147,6 +151,7 @@ test_csharp_query_target :-
         verify_join_ordering_constant_arg_plan,
         verify_join_ordering_selectivity_plan,
         verify_join_ordering_rowcount_over_constargs_plan,
+        verify_join_ordering_rowcount_over_connectivity_plan,
         verify_selection_plan,
         verify_ground_relation_arg_plan,
         verify_multi_constant_pattern_scan_plan,
@@ -292,6 +297,20 @@ setup_test_data :-
     assertz(user:(test_join_order_rowcount_prefers_small(X) :-
         test_rowcount_big(X, foo),
         test_rowcount_small(X)
+    )),
+    assertz(user:test_join_connect_leaf_x(a)),
+    assertz(user:test_join_connect_leaf_y(y1)),
+    assertz(user:test_join_connect_leaf_y(y2)),
+    assertz(user:test_join_connect_hub(a, y1)),
+    forall(between(1, 50, I),
+        (   format(atom(X), 'x~w', [I]),
+            format(atom(Y), 'y~w', [I]),
+            assertz(user:test_join_connect_hub(X, Y))
+        )),
+    assertz(user:(test_join_order_rowcount_over_connectivity(X) :-
+        test_join_connect_hub(X, Y),
+        test_join_connect_leaf_y(Y),
+        test_join_connect_leaf_x(X)
     )),
     assertz(user:(test_filtered(X) :- test_fact(X, _), X = alice)),
     assertz(user:test_val(item1, 5)),
@@ -730,6 +749,10 @@ cleanup_test_data :-
     retractall(user:test_rowcount_big(_, _)),
     retractall(user:test_rowcount_small(_)),
     retractall(user:test_join_order_rowcount_prefers_small(_)),
+    retractall(user:test_join_connect_hub(_, _)),
+    retractall(user:test_join_connect_leaf_x(_)),
+    retractall(user:test_join_connect_leaf_y(_)),
+    retractall(user:test_join_order_rowcount_over_connectivity(_)),
     retractall(user:test_filtered(_)),
     retractall(user:test_val(_, _)),
     retractall(user:test_increment(_, _)),
@@ -933,6 +956,31 @@ verify_join_ordering_rowcount_over_constargs_plan :-
     },
     RightPattern = [operand{kind:wildcard}, operand{kind:value, value:foo}],
     maybe_run_query_runtime(Plan, ['a', 'b']).
+
+verify_join_ordering_rowcount_over_connectivity_plan :-
+    csharp_query_target:build_query_plan(test_join_order_rowcount_over_connectivity/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:JoinNode, columns:_, width:1}),
+    JoinNode = join{
+        type:join,
+        left:LeftJoin,
+        right:relation_scan{predicate:predicate{name:test_join_connect_leaf_y, arity:1}, type:relation_scan, width:_},
+        left_keys:_,
+        right_keys:_,
+        left_width:_,
+        right_width:_,
+        width:_
+    },
+    LeftJoin = join{
+        type:join,
+        left:relation_scan{predicate:predicate{name:test_join_connect_leaf_x, arity:1}, type:relation_scan, width:_},
+        right:relation_scan{predicate:predicate{name:test_join_connect_hub, arity:2}, type:relation_scan, width:_},
+        left_keys:_,
+        right_keys:_,
+        left_width:_,
+        right_width:_,
+        width:_
+    },
+    maybe_run_query_runtime(Plan, ['a']).
 
 verify_selection_plan :-
     csharp_query_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
