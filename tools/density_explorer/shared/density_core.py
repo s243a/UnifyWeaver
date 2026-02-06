@@ -139,7 +139,13 @@ def load_wikipedia_physics_distance(model_path: str = None):
         import torch.nn as nn
 
         if model_path is None:
-            model_path = 'models/wikipedia_physics_distance.pt'
+            # Search multiple locations for the model file
+            import os
+            candidates = [
+                'models/wikipedia_physics_distance.pt',  # CWD
+                os.path.join(os.path.dirname(__file__), '..', '..', '..', 'models', 'wikipedia_physics_distance.pt'),  # Project root from shared/
+            ]
+            model_path = next((p for p in candidates if os.path.exists(p)), candidates[0])
 
         # Define model class matching the trained architecture
         class WikipediaPhysicsDistance(nn.Module):
@@ -319,11 +325,65 @@ def project_to_2d(
     V_2d = Vt[:2].T
     points_2d = centered @ V_2d
 
-    # Variance explained
+    # Variance explained (relative to total variance, not just top 2)
     var = S[:2] ** 2
-    var_explained = (var / var.sum() * 100).tolist()
+    var_total = (S ** 2).sum()
+    var_explained = (var / var_total * 100).tolist() if var_total > 0 else [50.0, 50.0]
 
     return points_2d, S[:2], var_explained
+
+
+def classical_mds_2d(
+    dist_matrix: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Classical MDS: project distance matrix to 2D so Euclidean distances
+    approximate the input distances.
+
+    Uses eigendecomposition of the double-centered squared distance matrix.
+
+    Args:
+        dist_matrix: (N, N) symmetric distance matrix with zero diagonal
+
+    Returns:
+        points_2d: (N, 2) coordinates
+        singular_values: top 2 eigenvalues (as proxy for singular values)
+        variance_explained: [var1, var2] as percentages of total positive eigenvalue sum
+    """
+    n = dist_matrix.shape[0]
+
+    # Squared distances
+    D2 = dist_matrix ** 2
+
+    # Double centering: B = -0.5 * H @ D2 @ H, where H = I - (1/n) * 11'
+    row_mean = D2.mean(axis=1, keepdims=True)
+    col_mean = D2.mean(axis=0, keepdims=True)
+    grand_mean = D2.mean()
+    B = -0.5 * (D2 - row_mean - col_mean + grand_mean)
+
+    # Eigendecompose (B is symmetric)
+    eigenvalues, eigenvectors = np.linalg.eigh(B)
+
+    # eigh returns ascending order; we want descending
+    idx = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+
+    # Take top 2 positive eigenvalues
+    top2_vals = np.maximum(eigenvalues[:2], 0)
+    top2_vecs = eigenvectors[:, :2]
+
+    # Coordinates = eigenvectors * sqrt(eigenvalues)
+    points_2d = top2_vecs * np.sqrt(top2_vals)
+
+    # Variance explained: fraction of total positive eigenvalue sum
+    positive_sum = eigenvalues[eigenvalues > 0].sum()
+    if positive_sum > 0:
+        var_explained = (top2_vals / positive_sum * 100).tolist()
+    else:
+        var_explained = [50.0, 50.0]
+
+    return points_2d, np.sqrt(top2_vals), var_explained
 
 
 def project_weights_to_2d(
@@ -425,7 +485,9 @@ def build_mst_tree(
     weights: Optional[np.ndarray] = None,
     distance_metric: str = "embedding",
     input_embeddings: Optional[np.ndarray] = None,
-    metric_model=None
+    metric_model=None,
+    max_branching: Optional[int] = None,
+    root_id: Optional[int] = None
 ) -> TreeStructure:
     """
     Build minimum spanning tree.
@@ -438,6 +500,7 @@ def build_mst_tree(
         distance_metric: "embedding", "weights", or "learned"
         input_embeddings: (N, D) input embeddings (for "learned" metric)
         metric_model: loaded OrganizationalMetric model (for "learned" metric)
+        max_branching: max children per node (None for unlimited)
 
     Returns:
         TreeStructure with MST edges
@@ -498,24 +561,54 @@ def build_mst_tree(
         adj.setdefault(i, []).append((j, w))
         adj.setdefault(j, []).append((i, w))
 
-    # Root at highest degree
-    degrees = [(len(adj.get(i, [])), i) for i in range(len(embeddings))]
-    _, root = max(degrees)
+    # Root selection: use explicit root_id if provided, else highest degree
+    if root_id is not None and 0 <= root_id < len(embeddings):
+        root = root_id
+    else:
+        degrees = [(len(adj.get(i, [])), i) for i in range(len(embeddings))]
+        _, root = max(degrees)
 
-    # BFS to build tree
+    # BFS to build tree with optional branching limits
+    n = len(embeddings)
     parent = {root: None}
     depth = {root: 0}
+    child_count = {}
     visited = {root}
     queue = [root]
 
     while queue:
         node = queue.pop(0)
-        for neighbor, _ in adj.get(node, []):
+        # Sort neighbors by weight (closest first) for branching limit
+        neighbors = sorted(adj.get(node, []), key=lambda x: x[1])
+        for neighbor, w in neighbors:
             if neighbor not in visited:
+                if max_branching is not None and child_count.get(node, 0) >= max_branching:
+                    break
                 visited.add(neighbor)
                 parent[neighbor] = node
                 depth[neighbor] = depth[node] + 1
+                child_count[node] = child_count.get(node, 0) + 1
                 queue.append(neighbor)
+
+    # Phase 2: Attach orphaned nodes (unreachable due to full parents)
+    # using distance matrix fallback
+    while len(visited) < n:
+        best_dist = np.inf
+        best_from, best_to = -1, -1
+        for v in visited:
+            if max_branching is not None and child_count.get(v, 0) >= max_branching:
+                continue
+            for u in range(n):
+                if u not in visited and dist_matrix[v, u] < best_dist:
+                    best_dist = dist_matrix[v, u]
+                    best_from, best_to = v, u
+        if best_to == -1:
+            break
+        visited.add(best_to)
+        parent[best_to] = best_from
+        depth[best_to] = depth[best_from] + 1
+        child_count[best_from] = child_count.get(best_from, 0) + 1
+        queue.append(best_to)
 
     # Build nodes and edges
     nodes = []
@@ -554,7 +647,9 @@ def build_jguided_tree(
     distance_metric: str = "embedding",
     input_embeddings: Optional[np.ndarray] = None,
     metric_model=None,
-    k_neighbors: int = 10
+    k_neighbors: int = 10,
+    max_branching: Optional[int] = None,
+    root_id: Optional[int] = None
 ) -> TreeStructure:
     """
     Build J-guided tree (local connections based on k-nearest neighbors).
@@ -571,6 +666,7 @@ def build_jguided_tree(
         input_embeddings: (N, D) input embeddings (for "learned" metric)
         metric_model: loaded OrganizationalMetric model
         k_neighbors: number of neighbors to consider for connections
+        max_branching: max children per node (None for unlimited)
 
     Returns:
         TreeStructure with J-guided edges
@@ -620,13 +716,22 @@ def build_jguided_tree(
     knn_indices = np.argsort(dist_matrix, axis=1)[:, :k_neighbors]
 
     # Build tree using greedy nearest-neighbor approach
-    # Start from the node with highest average similarity to others (most central)
-    centrality = similarity.sum(axis=1)
-    root = int(np.argmax(centrality))
+    # Start from explicit root_id if provided, else most central node
+    if root_id is not None and 0 <= root_id < n:
+        root = root_id
+    else:
+        if use_direct_distances:
+            # For direct distance matrices, centrality = inverse of total distance
+            finite_dists = np.where(dist_matrix == np.inf, 0, dist_matrix)
+            centrality = -finite_dists.sum(axis=1)  # Negate so argmax gives smallest total distance
+        else:
+            centrality = similarity.sum(axis=1)
+        root = int(np.argmax(centrality))
 
     visited = {root}
     parent = {root: None}
     depth = {root: 0}
+    child_count = {}  # Track children per node for branching limits
     queue = [root]
 
     while len(visited) < n and queue:
@@ -636,9 +741,13 @@ def build_jguided_tree(
         # Find unvisited neighbors, prioritized by distance
         for neighbor in knn_indices[current]:
             if neighbor not in visited:
+                # Check branching limit
+                if max_branching is not None and child_count.get(current, 0) >= max_branching:
+                    break
                 visited.add(neighbor)
                 parent[neighbor] = current
                 depth[neighbor] = depth[current] + 1
+                child_count[current] = child_count.get(current, 0) + 1
                 queue.append(neighbor)
 
         # If queue is empty but not all visited, find closest unvisited to any visited
@@ -646,6 +755,9 @@ def build_jguided_tree(
             best_dist = np.inf
             best_pair = None
             for v in visited:
+                # Skip nodes that have reached branching limit
+                if max_branching is not None and child_count.get(v, 0) >= max_branching:
+                    continue
                 for u in range(n):
                     if u not in visited and dist_matrix[v, u] < best_dist:
                         best_dist = dist_matrix[v, u]
@@ -656,6 +768,7 @@ def build_jguided_tree(
                 visited.add(u)
                 parent[u] = v
                 depth[u] = depth[v] + 1
+                child_count[v] = child_count.get(v, 0) + 1
                 queue.append(u)
 
     # Build nodes and edges
@@ -668,6 +781,166 @@ def build_jguided_tree(
             title=titles[i] if titles else f"Node {i}",
             parent_id=parent.get(i),
             depth=depth.get(i, 0),
+            x=float(points_2d[i, 0]),
+            y=float(points_2d[i, 1])
+        ))
+
+        if parent.get(i) is not None:
+            edges.append(TreeEdge(
+                source_id=parent[i],
+                target_id=i,
+                weight=float(dist_matrix[i, parent[i]] if dist_matrix[i, parent[i]] != np.inf else 1.0)
+            ))
+
+    return TreeStructure(
+        nodes=nodes,
+        edges=edges,
+        root_id=root,
+        tree_type=tree_type
+    )
+
+
+def build_density_greedy_tree(
+    embeddings: np.ndarray,
+    points_2d: np.ndarray,
+    titles: Optional[List[str]] = None,
+    weights: Optional[np.ndarray] = None,
+    distance_metric: str = "embedding",
+    input_embeddings: Optional[np.ndarray] = None,
+    metric_model=None,
+    k_neighbors: int = 10,
+    max_branching: Optional[int] = None,
+    root_id: Optional[int] = None
+) -> TreeStructure:
+    """
+    Build tree using density-ordered greedy insertion.
+
+    This algorithm produces better semantic hierarchies because dense nodes
+    (in high-probability regions / convex contours) naturally become hubs.
+
+    Algorithm:
+    1. Compute density for each node (inverse of k-th neighbor distance)
+    2. Sort nodes by density (densest first)
+    3. Place root first (user-selected or densest node)
+    4. For each remaining node (in density order), connect to nearest already-placed node
+
+    Args:
+        embeddings: (N, D) embedding vectors (output/projected)
+        points_2d: (N, 2) projected coordinates for visualization
+        titles: optional node labels
+        weights: (N, n_basis) blend weights
+        distance_metric: "embedding", "weights", "learned", or "wikipedia_physics"
+        input_embeddings: (N, D) input embeddings (for "learned" metric)
+        metric_model: loaded OrganizationalMetric model
+        k_neighbors: number of neighbors for density estimation
+        max_branching: max children per node (None for unlimited)
+        root_id: optional user-selected root (defaults to densest node)
+
+    Returns:
+        TreeStructure with density-greedy edges
+    """
+    # Choose distance space
+    use_direct_distances = False
+
+    if distance_metric == "wikipedia_physics":
+        try:
+            dist_matrix = compute_wikipedia_physics_distances(embeddings)
+            np.fill_diagonal(dist_matrix, np.inf)
+            use_direct_distances = True
+            tree_type = 'density-greedy-wikipedia-physics'
+        except Exception as e:
+            print(f"Warning: Wikipedia physics distance failed ({e}), falling back to embedding")
+            vectors = embeddings
+            tree_type = 'density-greedy'
+    elif distance_metric == "learned" and weights is not None and input_embeddings is not None:
+        try:
+            vectors = compute_metric_embeddings(
+                input_embeddings, embeddings, weights, metric_model
+            )
+            tree_type = 'density-greedy-learned'
+        except Exception as e:
+            print(f"Warning: Learned metric failed ({e}), falling back to weights")
+            vectors = weights
+            tree_type = 'density-greedy-weights'
+    elif distance_metric == "weights" and weights is not None:
+        vectors = weights
+        tree_type = 'density-greedy-weights'
+    else:
+        vectors = embeddings
+        tree_type = 'density-greedy'
+
+    n = len(embeddings)
+
+    # Compute distance matrix if not already done
+    if not use_direct_distances:
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        vec_norm = vectors / (norms + 1e-8)
+        similarity = vec_norm @ vec_norm.T
+        dist_matrix = 1 - similarity
+        np.fill_diagonal(dist_matrix, np.inf)
+
+    # Step 1: Compute k-NN density for each node
+    # density = 1 / (distance to k-th nearest neighbor)
+    k_actual = min(k_neighbors, n - 1)
+    density = np.zeros(n)
+    for i in range(n):
+        dists_sorted = np.sort(dist_matrix[i])
+        # k-th neighbor (index k_actual-1 since 0-indexed, and first is self=inf after fill_diagonal)
+        # Actually after fill_diagonal, self is inf, so sorted puts it last
+        # We want k-th smallest non-inf distance
+        finite_dists = dists_sorted[dists_sorted < np.inf]
+        if len(finite_dists) >= k_actual:
+            density[i] = 1.0 / (finite_dists[k_actual - 1] + 1e-8)
+        else:
+            density[i] = 1.0 / (finite_dists[-1] + 1e-8) if len(finite_dists) > 0 else 0
+
+    # Step 2: Sort nodes by density (descending)
+    order = np.argsort(-density)
+
+    # Step 3: Determine root - user-selected or densest
+    if root_id is None:
+        root = int(order[0])  # Densest node
+    else:
+        root = root_id
+
+    # Step 4: Place root first, then process remaining in density order
+    placed = {root}
+    parent = {root: None}
+    depth_map = {root: 0}
+    child_count = {}
+
+    # Remove root from order (it's already placed)
+    remaining = [int(idx) for idx in order if idx != root]
+
+    # Step 5: Greedy insertion - each node connects to nearest placed node
+    for idx in remaining:
+        min_dist = np.inf
+        best_parent = root
+
+        for placed_node in placed:
+            # Skip nodes that have reached branching limit
+            if max_branching is not None and child_count.get(placed_node, 0) >= max_branching:
+                continue
+            d = dist_matrix[idx, placed_node]
+            if d < min_dist:
+                min_dist = d
+                best_parent = placed_node
+
+        placed.add(idx)
+        parent[idx] = best_parent
+        depth_map[idx] = depth_map[best_parent] + 1
+        child_count[best_parent] = child_count.get(best_parent, 0) + 1
+
+    # Build nodes and edges
+    nodes = []
+    edges = []
+
+    for i in range(n):
+        nodes.append(TreeNode(
+            id=i,
+            title=titles[i] if titles else f"Node {i}",
+            parent_id=parent.get(i),
+            depth=depth_map.get(i, 0),
             x=float(points_2d[i, 0]),
             y=float(points_2d[i, 1])
         ))
@@ -799,7 +1072,10 @@ def compute_density_manifold(
     projection_mode: str = "embedding",
     weights: Optional[np.ndarray] = None,
     input_embeddings: Optional[np.ndarray] = None,
-    metric_model=None
+    metric_model=None,
+    max_branching: Optional[int] = None,
+    root_id: Optional[int] = None,
+    tree_embeddings: Optional[np.ndarray] = None
 ) -> DensityManifoldData:
     """
     Main function: compute complete density manifold data.
@@ -820,10 +1096,20 @@ def compute_density_manifold(
         weights: (N, n_basis) transformer blend weights
         input_embeddings: (N, D) input embeddings (for "learned" mode/metric)
         metric_model: loaded OrganizationalMetric model (auto-loaded if None)
+        max_branching: max children per node in tree (None for unlimited)
 
     Returns:
         DensityManifoldData ready for frontend
     """
+    # Resolve root_id if given as title string
+    if isinstance(root_id, str) and titles is not None:
+        for idx, t in enumerate(titles):
+            if t == root_id:
+                root_id = idx
+                break
+        else:
+            root_id = None  # Title not found
+
     # Project to 2D based on mode
     if projection_mode == "wikipedia_physics":
         # Use Wikipedia physics distance model's hidden layer (64-dim) for visualization
@@ -840,6 +1126,18 @@ def compute_density_manifold(
                 embeddings, mode="embedding"
             )
             projection_mode = "embedding"  # Update mode for metadata
+    elif projection_mode == "wikipedia_physics_mds":
+        # MDS on predicted distances: 2D layout where Euclidean distances ≈ predicted distances
+        inp_emb = input_embeddings if input_embeddings is not None else embeddings
+        try:
+            dist_matrix = compute_wikipedia_physics_distances(inp_emb)
+            points_2d, singular_values, var_explained = classical_mds_2d(dist_matrix)
+        except Exception as e:
+            print(f"Warning: Wikipedia physics MDS failed ({e}), falling back to embedding")
+            points_2d, singular_values, var_explained = project_to_2d(
+                embeddings, mode="embedding"
+            )
+            projection_mode = "embedding"
     elif projection_mode == "learned" and weights is not None:
         # Use learned organizational metric space for visualization
         # input_embeddings may be the same as output embeddings if not provided
@@ -868,22 +1166,40 @@ def compute_density_manifold(
         # For learned distance metric, we need input embeddings
         inp_emb = input_embeddings if input_embeddings is not None else embeddings
 
+        # Use separate tree_embeddings if provided (dual embedding mode)
+        # Otherwise use the same embeddings as for projection
+        tree_emb = tree_embeddings if tree_embeddings is not None else embeddings
+
         if tree_type in ('j-guided', 'jguided'):
             tree = build_jguided_tree(
-                embeddings, points_2d, titles,
+                tree_emb, points_2d, titles,
                 weights=weights,
                 distance_metric=tree_distance_metric,
                 input_embeddings=inp_emb,
-                metric_model=metric_model
+                metric_model=metric_model,
+                max_branching=max_branching,
+                root_id=root_id
+            )
+        elif tree_type in ('density-greedy', 'density_greedy'):
+            tree = build_density_greedy_tree(
+                tree_emb, points_2d, titles,
+                weights=weights,
+                distance_metric=tree_distance_metric,
+                input_embeddings=inp_emb,
+                metric_model=metric_model,
+                max_branching=max_branching,
+                root_id=root_id
             )
         else:
             # Default to MST
             tree = build_mst_tree(
-                embeddings, points_2d, titles,
+                tree_emb, points_2d, titles,
                 weights=weights,
                 distance_metric=tree_distance_metric,
                 input_embeddings=inp_emb,
-                metric_model=metric_model
+                metric_model=metric_model,
+                max_branching=max_branching,
+                root_id=root_id
             )
 
     # Find peaks if requested

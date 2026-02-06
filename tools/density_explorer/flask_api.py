@@ -143,10 +143,7 @@ def _project_embeddings(
 
     n_samples = len(embeddings)
     projected = np.zeros_like(embeddings)
-
-    # Get number of basis vectors for weights
-    n_basis = transformer.n_planes if hasattr(transformer, 'n_planes') else 64
-    all_weights = np.zeros((n_samples, n_basis)) if return_weights else None
+    all_weights = None  # Will be allocated on first batch when we know the weight dimension
 
     with torch.no_grad():
         for i in range(0, n_samples, batch_size):
@@ -156,6 +153,10 @@ def _project_embeddings(
             projected[i:i+batch_size] = proj_batch.cpu().numpy()
 
             if return_weights and weights is not None:
+                # Allocate on first batch when we know the actual weight dimension
+                if all_weights is None:
+                    n_basis = weights.shape[1]
+                    all_weights = np.zeros((n_samples, n_basis))
                 all_weights[i:i+batch_size] = weights.cpu().numpy()
 
     if return_weights:
@@ -370,8 +371,8 @@ def compute_manifold():
 
         # Extract projection mode
         projection_mode = data.get('projection_mode', 'embedding')
-        if projection_mode not in ('embedding', 'weights', 'learned', 'wikipedia_physics'):
-            return jsonify({'error': f'Invalid projection_mode: {projection_mode}. Use "embedding", "weights", "learned", or "wikipedia_physics"'}), 400
+        if projection_mode not in ('embedding', 'weights', 'learned', 'wikipedia_physics', 'wikipedia_physics_mds'):
+            return jsonify({'error': f'Invalid projection_mode: {projection_mode}. Use "embedding", "weights", "learned", "wikipedia_physics", or "wikipedia_physics_mds"'}), 400
 
         # Check for projection model
         model = data.get('model')
@@ -445,6 +446,16 @@ def compute_manifold():
                 if projection_mode in ('weights', 'learned') and 'tree_distance_metric' not in data:
                     tree_distance_metric = projection_mode
 
+                # Resolve root_id by title if provided as string
+                root_id = data.get('root_id')
+                if isinstance(root_id, str) and titles is not None:
+                    for idx, t in enumerate(titles):
+                        if t == root_id:
+                            root_id = idx
+                            break
+                    else:
+                        root_id = None  # Title not found
+
                 result = compute_density_manifold(
                     embeddings=embeddings,
                     titles=titles,
@@ -457,7 +468,9 @@ def compute_manifold():
                     n_peaks=data.get('n_peaks', 5),
                     projection_mode=projection_mode,
                     weights=blend_weights,
-                    input_embeddings=input_embeddings
+                    input_embeddings=input_embeddings,
+                    max_branching=data.get('max_branching'),
+                    root_id=root_id
                 )
 
                 return result.to_json(), 200, {'Content-Type': 'application/json'}
@@ -476,6 +489,9 @@ def compute_manifold():
         include_peaks = data.get('include_peaks', True)
         n_peaks = data.get('n_peaks', 5)
 
+        # Resolve root_id (can be int index or string title)
+        root_id = data.get('root_id')
+
         # Compute manifold (wikipedia_physics uses its own internal model)
         result = load_and_compute(
             str(dataset_path),
@@ -487,7 +503,9 @@ def compute_manifold():
             tree_distance_metric=tree_distance_metric,
             include_peaks=include_peaks,
             n_peaks=n_peaks,
-            projection_mode=projection_mode  # Pass actual mode (embedding or wikipedia_physics)
+            projection_mode=projection_mode,  # Pass actual mode (embedding or wikipedia_physics)
+            max_branching=data.get('max_branching'),
+            root_id=root_id
         )
 
         # Return as JSON
@@ -505,7 +523,8 @@ def compute_from_embeddings():
 
     Request JSON:
     {
-        "embeddings": [[0.1, 0.2, ...], ...],  // N x D array (output/projected embeddings)
+        "embeddings": [[0.1, 0.2, ...], ...],  // N x D array (for 2D projection / layout)
+        "tree_embeddings": [[...], ...],       // optional, separate embeddings for tree distances
         "titles": ["title1", "title2", ...],   // optional
         "weights": [[0.1, 0.05, ...], ...],    // optional, blend weights
         "input_embeddings": [[...], ...],      // optional, input embeddings for "learned" mode
@@ -518,6 +537,11 @@ def compute_from_embeddings():
         "n_peaks": 5,
         "projection_mode": "embedding"         // "embedding", "weights", or "learned"
     }
+
+    Dual embedding mode:
+        When "tree_embeddings" is provided, "embeddings" is used for 2D projection (layout)
+        and "tree_embeddings" is used for tree distance calculations. This allows using
+        different embedding models for different purposes (e.g., MiniLM for layout, Nomic for tree).
     """
     try:
         data = request.get_json()
@@ -526,6 +550,11 @@ def compute_from_embeddings():
         titles = data.get('titles')
         projection_mode = data.get('projection_mode', 'embedding')
         tree_distance_metric = data.get('tree_distance_metric', 'embedding')
+
+        # Support dual embeddings: separate layout vs tree embeddings
+        tree_embeddings = None
+        if 'tree_embeddings' in data:
+            tree_embeddings = np.array(data['tree_embeddings'])
 
         # Get weights if provided
         weights = None
@@ -555,7 +584,9 @@ def compute_from_embeddings():
             n_peaks=data.get('n_peaks', 5),
             projection_mode=projection_mode,
             weights=weights,
-            input_embeddings=input_embeddings
+            input_embeddings=input_embeddings,
+            max_branching=data.get('max_branching'),
+            tree_embeddings=tree_embeddings
         )
 
         return result.to_json(), 200, {'Content-Type': 'application/json'}

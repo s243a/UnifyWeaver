@@ -458,8 +458,8 @@
                         <input type="range" id="maxDepth" min="1" max="20" value="10">
                     </div>
                     <div class="control-group">
-                        <label for="maxBranching">Max Branching: <span class="value" id="maxBranchingValue">∞</span></label>
-                        <input type="range" id="maxBranching" min="2" max="20" value="20">
+                        <label for="maxBranching">Max Branching: <span class="value" id="maxBranchingValue">10</span></label>
+                        <input type="range" id="maxBranching" min="2" max="20" value="10">
                     </div>
 
                     <div class="control-group" id="rootNodeGroup">
@@ -504,7 +504,7 @@
                     <div class="control-group">
                         <select id="datasetSelect">
                             <option value="data/physics.json">Physics (pre-computed)</option>
-                            <option value="demo">Demo clusters (Pyodide)</option>
+                            <option value="demo">Recompute (Pyodide)</option>
                             <option value="flask-api">Flask API (server)</option>
                             <option value="custom">Custom URL...</option>
                         </select>
@@ -522,9 +522,11 @@
                             <input type="text" id="flaskApiUrl" value="http://127.0.0.1:5000" style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
                         </div>
                         <div class="control-group">
-                            <label for="flaskDataset">Dataset</label>
+                            <label for="flaskDataset">Data Subset</label>
                             <select id="flaskDataset" style="width:100%;">
-                                <option value="wikipedia_physics_nomic">Wikipedia Physics (Nomic)</option>
+                                <option value="wikipedia_physics_nomic">Wikipedia Physics (Nomic, 300)</option>
+                                <option value="wikipedia_physics_articles">Wikipedia Physics (Articles, 200)</option>
+                                <option value="wikipedia_physics">Wikipedia Physics (Categories, 2198)</option>
                                 <option value="pearltrees_nomic_routing">Pearltrees Routing</option>
                             </select>
                         </div>
@@ -543,6 +545,7 @@
                                 <option value="weights">Weight Space (transformation recipes)</option>
                                 <option value="learned">Learned Metric (organizational structure)</option>
                                 <option value="wikipedia_physics">Wikipedia Physics (trained hierarchy)</option>
+                                <option value="wikipedia_physics_mds">Wikipedia Physics (MDS - distance faithful)</option>
                             </select>
                         </div>
                         <div class="control-group">
@@ -558,12 +561,17 @@
                             <label for="flaskTreeType">Tree Algorithm</label>
                             <select id="flaskTreeType" style="width:100%;">
                                 <option value="mst">MST (global minimum spanning)</option>
-                                <option value="j-guided">J-Guided (local neighbors)</option>
+                                <option value="j-guided">J-Guided (BFS from central)</option>
+                                <option value="density-greedy">Density Greedy (hubs from dense regions)</option>
                             </select>
                         </div>
                         <div class="control-group">
                             <label for="flaskTopK">Max Points</label>
                             <input type="number" id="flaskTopK" value="200" min="10" max="10000" style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
+                        </div>
+                        <div class="control-group">
+                            <label for="flaskBandwidth">Kernel Width <span style="font-size:0.75rem; color:#94a3b8;">(blank = auto)</span></label>
+                            <input type="text" id="flaskBandwidth" value="" placeholder="auto (Scott's rule)" style="width:100%; padding:8px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:4px;">
                         </div>
                         <button class="secondary" id="loadFlaskBtn" style="margin-top:5px;">Load from API</button>
                         <div id="flaskApiStatus" style="font-size: 0.8rem; color: #94a3b8; margin-top: 5px;"></div>
@@ -591,18 +599,29 @@
                     </div>
 
                     <h2>Embeddings</h2>
-                    <div class="control-group">
-                        <label for="embeddingSelect">Model</label>
-                        <select id="embeddingSelect">
-                            <option value="current">Current (from dataset)</option>
-                        </select>
-                    </div>
-                    <div class="control-group" style="font-size: 0.8rem; color: #94a3b8;">
-                        <span id="embeddingModelLabel">MiniLM (384D)</span> ·
-                        <span id="embeddingsCountLabel">-</span> vectors
-                    </div>
-                    <div id="embeddingLoadingStatus" style="font-size: 0.8rem; color: #e94560; display: none;">
-                        Loading embeddings...
+                    <div id="embeddingsSection">
+                        <div class="control-group">
+                            <label for="layoutEmbeddingSelect">Layout (2D projection)</label>
+                            <select id="layoutEmbeddingSelect">
+                                <option value="current">Current (from dataset)</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="treeEmbeddingSelect">Tree (distance calc)</label>
+                            <select id="treeEmbeddingSelect">
+                                <option value="current">Current (from dataset)</option>
+                            </select>
+                        </div>
+                        <div class="control-group" style="font-size: 0.8rem; color: #94a3b8;">
+                            Layout: <span id="layoutEmbeddingLabel">MiniLM (384D)</span><br>
+                            Tree: <span id="treeEmbeddingLabel">MiniLM (384D)</span>
+                        </div>
+                        <div id="embeddingLoadingStatus" style="font-size: 0.8rem; color: #e94560; display: none;">
+                            Loading embeddings...
+                        </div>
+                        <div id="embeddingsFlaskNote" style="display: none; font-size: 0.8rem; color: #f39c12; margin-top: 5px;">
+                            ℹ️ Load static data first, then Flask API will use your selected embeddings.
+                        </div>
                     </div>
                 </div>
 
@@ -615,7 +634,7 @@
                     </div>
 
                     <div class="control-group">
-                        <label for="bandwidth">Bandwidth: <span class="value" id="bandwidthValue">0.10</span></label>
+                        <label for="bandwidth">Kernel Width: <span class="value" id="bandwidthValue">0.10</span></label>
                         <input type="range" id="bandwidth" min="0.01" max="1.0" value="0.1" step="0.01" disabled>
                     </div>
 
@@ -693,7 +712,7 @@
                     <span class="value" id="infoPoints">-</span>
                 </div>
                 <div class="info-item">
-                    <span class="label">Bandwidth</span>
+                    <span class="label">Kernel Width</span>
                     <span class="value" id="infoBandwidth">-</span>
                 </div>
                 <div class="info-item">
@@ -812,11 +831,15 @@
         const tabButtons = document.querySelectorAll('.tab-btn');
         const tabPanels = document.querySelectorAll('.tab-panel');
 
-        // Embeddings elements
-        const embeddingSelect = document.getElementById('embeddingSelect');
-        const embeddingModelLabel = document.getElementById('embeddingModelLabel');
-        const embeddingsCountLabel = document.getElementById('embeddingsCountLabel');
+        // Embeddings elements - dual selectors for layout and tree
+        const layoutEmbeddingSelect = document.getElementById('layoutEmbeddingSelect');
+        const treeEmbeddingSelect = document.getElementById('treeEmbeddingSelect');
+        const layoutEmbeddingLabel = document.getElementById('layoutEmbeddingLabel');
+        const treeEmbeddingLabel = document.getElementById('treeEmbeddingLabel');
         const embeddingLoadingStatus = document.getElementById('embeddingLoadingStatus');
+
+        // Legacy reference for compatibility
+        const embeddingSelect = layoutEmbeddingSelect;
 
         // Dataset configuration with available embeddings
         // Each dataset can have multiple embedding options
@@ -835,14 +858,21 @@
                         dim: 768
                     }
                 },
-                default: 'nomic'
+                defaultLayout: 'minilm',  // MiniLM better for 2D layout (hubs in dense regions)
+                defaultTree: 'nomic'      // Nomic better for semantic tree distances
             }
         };
 
-        // Track current embedding state
+        // Track current embedding state - separate for layout and tree
         let currentDatasetUrl = 'data/physics.json';
+        let layoutEmbeddingType = 'minilm';
+        let treeEmbeddingType = 'nomic';
+        let layoutEmbeddings = null;  // Embeddings for 2D projection
+        let treeEmbeddings = null;    // Embeddings for tree distance calculations
+
+        // Legacy references for compatibility
         let currentEmbeddingType = 'nomic';
-        let originalEmbeddings = null;  // Store original embeddings from dataset
+        let originalEmbeddings = null;
 
         const valueDisplays = {
             nPoints: document.getElementById('nPointsValue'),
@@ -875,7 +905,8 @@
         }
 
         async function loadPrecomputedData() {
-            const response = await fetch('data/physics.json');
+            // Add cache-busting to ensure fresh data
+            const response = await fetch('data/physics.json?v=' + Date.now());
             if (!response.ok) throw new Error('Data not found');
             currentData = await response.json();
             currentDatasetUrl = 'data/physics.json';
@@ -886,35 +917,58 @@
             updatePeaksList();
             updateEmbeddingSelector();
 
-            // Load default embeddings (Nomic) - better for projection model
-            const config = datasetEmbeddings[currentDatasetUrl];
-            const defaultEmb = config?.default || 'nomic';
-            const embConfig = config?.embeddings?.[defaultEmb];
+            // Sync bandwidth slider with pre-computed data (only on initial load)
+            if (currentData.density_grid?.bandwidth) {
+                const bw = currentData.density_grid.bandwidth;
+                if (bw >= 0.01 && bw <= 1.0) {
+                    controls.bandwidth.value = bw;
+                    valueDisplays.bandwidth.textContent = bw.toFixed(2);
+                }
+            }
 
-            if (embConfig?.url) {
+            // Initialize dual embeddings with optimal defaults:
+            // - Layout: MiniLM (better 2D layout, hubs in dense regions)
+            // - Tree: Nomic (richer semantic distances for tree edges)
+            const config = datasetEmbeddings[currentDatasetUrl];
+            const defaultLayout = config?.defaultLayout || 'minilm';
+            const defaultTree = config?.defaultTree || 'nomic';
+
+            // Layout embeddings (usually MiniLM - from baked-in data)
+            if (currentData.embeddings) {
+                layoutEmbeddings = currentData.embeddings;
+                layoutEmbeddingType = defaultLayout;
+                originalEmbeddings = currentData.embeddings;  // Legacy
+            }
+
+            // Tree embeddings (usually Nomic - load from separate file)
+            const treeEmbConfig = config?.embeddings?.[defaultTree];
+            if (treeEmbConfig?.url) {
                 try {
-                    const embResponse = await fetch(embConfig.url);
+                    const embResponse = await fetch(treeEmbConfig.url);
                     if (embResponse.ok) {
                         const embData = await embResponse.json();
                         if (embData.embeddings?.length === currentData.points.length) {
+                            treeEmbeddings = embData.embeddings;
+                            treeEmbeddingType = defaultTree;
+                            embeddingCache[treeEmbConfig.url] = embData.embeddings;
+                            // For Pyodide tree computation, use tree embeddings
                             currentData.embeddings = embData.embeddings;
-                            originalEmbeddings = embData.embeddings;
-                            currentEmbeddingType = defaultEmb;
                         }
                     }
                 } catch (e) {
-                    console.warn('Failed to load default embeddings:', e);
-                    // Fall back to baked-in embeddings if available
-                    if (currentData.embeddings) {
-                        originalEmbeddings = currentData.embeddings;
-                        currentEmbeddingType = 'minilm';
-                    }
+                    console.warn('Failed to load tree embeddings, using layout embeddings:', e);
+                    treeEmbeddings = layoutEmbeddings;
+                    treeEmbeddingType = layoutEmbeddingType;
                 }
-            } else if (currentData.embeddings) {
-                // Use baked-in embeddings
-                originalEmbeddings = currentData.embeddings;
-                currentEmbeddingType = 'minilm';
+            } else {
+                // Use same as layout
+                treeEmbeddings = layoutEmbeddings;
+                treeEmbeddingType = layoutEmbeddingType;
             }
+
+            // Set selector values to match
+            if (layoutEmbeddingSelect) layoutEmbeddingSelect.value = layoutEmbeddingType;
+            if (treeEmbeddingSelect) treeEmbeddingSelect.value = treeEmbeddingType;
 
             updateEmbeddingsInfo();
         }
@@ -1118,19 +1172,35 @@ def find_density_peaks(density_grid, points_2d, titles=None, n_peaks=5, min_dist
                       'nearest_node_id': nearest_idx, 'title': titles[nearest_idx] if titles else f"Node {nearest_idx}"})
     return peaks
 
-def compute_density_manifold(embeddings, titles=None, bandwidth=None, grid_size=100, n_peaks=5):
+def compute_density_manifold(embeddings, titles=None, bandwidth=None, grid_size=100, n_peaks=5, tree_embeddings=None):
+    """Compute density manifold with optional dual embeddings.
+
+    Args:
+        embeddings: Embeddings for 2D projection (layout)
+        tree_embeddings: Optional separate embeddings for tree distance calculation.
+                        If None, uses same as layout embeddings.
+    """
+    # Use layout embeddings for 2D projection
     points_2d, singular_values, var_explained = project_to_2d(embeddings)
     density_grid = compute_density_grid(points_2d, bandwidth, grid_size)
+
+    # Use tree embeddings for distance calculations (or fall back to layout)
+    tree_emb = tree_embeddings if tree_embeddings is not None else embeddings
     trees = {
-        'mst': build_mst_tree(embeddings, points_2d, titles),
-        'j-guided': build_j_guided_tree(embeddings, points_2d, titles)
+        'mst': build_mst_tree(tree_emb, points_2d, titles),
+        'j-guided': build_j_guided_tree(tree_emb, points_2d, titles)
     }
     peaks = find_density_peaks(density_grid, points_2d, titles, n_peaks)
     points = [{'id': i, 'title': titles[i] if titles else f"Node {i}",
                'x': float(points_2d[i, 0]), 'y': float(points_2d[i, 1])} for i in range(len(embeddings))]
+
+    # Include embedding info in result
+    layout_dim = embeddings.shape[1] if hasattr(embeddings, 'shape') else len(embeddings[0])
+    tree_dim = tree_emb.shape[1] if hasattr(tree_emb, 'shape') else len(tree_emb[0])
+
     return {'points': points, 'density_grid': density_grid, 'tree': trees['mst'], 'trees': trees,
             'peaks': peaks, 'projection': {'variance_explained': var_explained, 'singular_values': singular_values},
-            'n_points': int(len(embeddings))}
+            'n_points': int(len(embeddings)), 'layout_dim': layout_dim, 'tree_dim': tree_dim}
 
 def generate_demo_data(n_points=200, n_clusters=5, n_dims=64):
     np.random.seed(42)
@@ -1146,6 +1216,20 @@ def generate_demo_data(n_points=200, n_clusters=5, n_dims=64):
 # Storage for real embeddings loaded from JSON
 _real_embeddings = None
 _real_titles = None
+
+# Dual embedding support: separate embeddings for layout (2D) vs tree (distances)
+_layout_embeddings = None
+_tree_embeddings = None
+
+def set_dual_embeddings(layout_emb, tree_emb, titles):
+    """Set separate embeddings for layout (2D projection) and tree (distance calculation)."""
+    global _layout_embeddings, _tree_embeddings, _real_titles
+    _layout_embeddings = np.array(layout_emb) if layout_emb is not None else None
+    _tree_embeddings = np.array(tree_emb) if tree_emb is not None else None
+    _real_titles = list(titles) if titles else None
+    layout_dim = _layout_embeddings.shape[1] if _layout_embeddings is not None else 0
+    tree_dim = _tree_embeddings.shape[1] if _tree_embeddings is not None else 0
+    print(f"Loaded dual embeddings: layout={layout_dim}D, tree={tree_dim}D, n={len(titles)}")
 
 def set_real_embeddings(embeddings_list, titles_list):
     """Store real embeddings from JSON for recomputation."""
@@ -1200,6 +1284,49 @@ def has_real_embeddings():
     """Check if real embeddings are loaded."""
     return _real_embeddings is not None
 
+def has_dual_embeddings():
+    """Check if dual embeddings are loaded."""
+    return _layout_embeddings is not None and _tree_embeddings is not None
+
+def get_dual_embeddings(n_points, root_title=None):
+    """Get dual embeddings (layout + tree) with optional root-based selection."""
+    global _layout_embeddings, _tree_embeddings, _real_titles
+
+    if _layout_embeddings is None or _tree_embeddings is None:
+        # Fall back to single embeddings mode
+        emb, titles = get_embeddings(n_points, root_title)
+        return emb, emb, titles
+
+    if root_title is not None:
+        try:
+            root_idx = _real_titles.index(root_title)
+        except ValueError:
+            n = min(n_points, len(_real_titles))
+            return _layout_embeddings[:n], _tree_embeddings[:n], _real_titles[:n]
+
+        # Use tree embeddings for similarity (tree defines semantic relationships)
+        root_emb = _tree_embeddings[root_idx]
+        root_norm = np.linalg.norm(root_emb)
+
+        similarities = []
+        for i, emb in enumerate(_tree_embeddings):
+            sim = np.dot(root_emb, emb) / (root_norm * np.linalg.norm(emb) + 1e-8)
+            similarities.append((i, sim))
+
+        similarities.sort(key=lambda x: -x[1])
+        top_indices = [idx for idx, _ in similarities[:n_points]]
+
+        if root_idx not in top_indices:
+            top_indices[-1] = root_idx
+
+        layout_sel = _layout_embeddings[top_indices]
+        tree_sel = _tree_embeddings[top_indices]
+        titles_sel = [_real_titles[i] for i in top_indices]
+        return layout_sel, tree_sel, titles_sel
+    else:
+        n = min(n_points, len(_real_titles))
+        return _layout_embeddings[:n], _tree_embeddings[:n], _real_titles[:n]
+
 print("Density core loaded")
             `);
         }
@@ -1230,9 +1357,10 @@ print("Density core loaded")
             console.log('loadEmbeddingsIntoPyodide called');
             console.log('pyodideReady:', pyodideReady);
             console.log('currentData:', currentData ? 'exists' : 'null');
-            console.log('currentData.embeddings:', currentData?.embeddings ? currentData.embeddings.length : 'none');
+            console.log('layoutEmbeddings:', layoutEmbeddings ? layoutEmbeddings.length : 'none');
+            console.log('treeEmbeddings:', treeEmbeddings ? treeEmbeddings.length : 'none');
 
-            if (!pyodideReady || !currentData || !currentData.embeddings) {
+            if (!pyodideReady || !currentData?.points) {
                 console.log('Skipping - conditions not met');
                 return;
             }
@@ -1240,15 +1368,29 @@ print("Density core loaded")
             try {
                 const titles = currentData.points.map(p => p.title);
                 console.log('Titles sample:', titles.slice(0, 3));
-                console.log('Embeddings shape:', currentData.embeddings.length, 'x', currentData.embeddings[0]?.length);
 
-                pyodide.globals.set('_js_embeddings', currentData.embeddings);
-                pyodide.globals.set('_js_titles', titles);
-                await pyodide.runPythonAsync(`
+                // Use dual embeddings if both are available
+                if (layoutEmbeddings && treeEmbeddings) {
+                    console.log(`Setting dual embeddings: layout=${layoutEmbeddings[0]?.length}D, tree=${treeEmbeddings[0]?.length}D`);
+                    pyodide.globals.set('_js_layout_emb', layoutEmbeddings);
+                    pyodide.globals.set('_js_tree_emb', treeEmbeddings);
+                    pyodide.globals.set('_js_titles', titles);
+                    await pyodide.runPythonAsync(`
+set_dual_embeddings(_js_layout_emb.to_py(), _js_tree_emb.to_py(), list(_js_titles))
+                    `);
+                    console.log('Dual embeddings loaded into Pyodide successfully');
+                    setStatus('Ready (dual embeddings loaded)');
+                } else if (currentData.embeddings) {
+                    // Fallback to single embeddings
+                    console.log('Embeddings shape:', currentData.embeddings.length, 'x', currentData.embeddings[0]?.length);
+                    pyodide.globals.set('_js_embeddings', currentData.embeddings);
+                    pyodide.globals.set('_js_titles', titles);
+                    await pyodide.runPythonAsync(`
 set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
-                `);
-                console.log('Embeddings loaded into Pyodide successfully');
-                setStatus('Ready (real embeddings loaded)');
+                    `);
+                    console.log('Single embeddings loaded into Pyodide successfully');
+                    setStatus('Ready (real embeddings loaded)');
+                }
             } catch (error) {
                 console.error('Failed to load embeddings into Pyodide:', error);
                 setStatus('Failed to load embeddings: ' + error.message, 'error');
@@ -1276,8 +1418,27 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
                     input.addEventListener('input', () => {
                         valueDisplays[key].textContent =
                             key === 'bandwidth' ? parseFloat(input.value).toFixed(2) : input.value;
+                        // Sync bandwidth slider with Flask API text input
+                        if (key === 'bandwidth') {
+                            const flaskBwInput = document.getElementById('flaskBandwidth');
+                            if (flaskBwInput) {
+                                flaskBwInput.value = parseFloat(input.value).toFixed(2);
+                            }
+                        }
                     });
                 }
+            }
+
+            // Sync Flask API bandwidth input with Pyodide slider
+            const flaskBwInput = document.getElementById('flaskBandwidth');
+            if (flaskBwInput) {
+                flaskBwInput.addEventListener('input', () => {
+                    const val = parseFloat(flaskBwInput.value);
+                    if (!isNaN(val) && val >= 0.01 && val <= 1.0) {
+                        controls.bandwidth.value = val;
+                        valueDisplays.bandwidth.textContent = val.toFixed(2);
+                    }
+                });
             }
 
             // Display toggles (instant, no recomputation)
@@ -1328,8 +1489,9 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
             clearAxisBtn.addEventListener('click', clearAxisSelection);
             applyProjectionBtn.addEventListener('click', applyCustomProjection);
 
-            // Embedding selector
-            embeddingSelect.addEventListener('change', handleEmbeddingChange);
+            // Embedding selectors (dual: layout and tree)
+            layoutEmbeddingSelect.addEventListener('change', handleLayoutEmbeddingChange);
+            treeEmbeddingSelect.addEventListener('change', handleTreeEmbeddingChange);
 
             // Root node controls
             setRootBtn.addEventListener('click', setSelectedAsRoot);
@@ -1620,103 +1782,107 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
             });
         }
 
+        function getDimLabel(dim) {
+            if (dim === 384) return 'MiniLM (384D)';
+            if (dim === 768) return 'Nomic (768D)';
+            if (dim === 1024) return 'Large (1024D)';
+            return `Unknown (${dim}D)`;
+        }
+
         function updateEmbeddingsInfo() {
-            if (currentData && currentData.embeddings) {
+            // Update layout embedding label
+            if (layoutEmbeddings) {
+                const dim = layoutEmbeddings[0]?.length || 0;
+                layoutEmbeddingLabel.textContent = getDimLabel(dim);
+            } else if (currentData?.embeddings) {
                 const dim = currentData.embeddings[0]?.length || 0;
-                const count = currentData.embeddings.length;
-                embeddingsCountLabel.textContent = count;
-                // Infer model from dimension
-                if (dim === 384) {
-                    embeddingModelLabel.textContent = 'MiniLM (384D)';
-                } else if (dim === 768) {
-                    embeddingModelLabel.textContent = 'Nomic (768D)';
-                } else if (dim === 1024) {
-                    embeddingModelLabel.textContent = 'Large (1024D)';
-                } else {
-                    embeddingModelLabel.textContent = `Unknown (${dim}D)`;
-                }
+                layoutEmbeddingLabel.textContent = getDimLabel(dim);
             } else {
-                embeddingsCountLabel.textContent = '0';
-                embeddingModelLabel.textContent = 'None loaded';
+                layoutEmbeddingLabel.textContent = 'None';
+            }
+
+            // Update tree embedding label
+            if (treeEmbeddings) {
+                const dim = treeEmbeddings[0]?.length || 0;
+                treeEmbeddingLabel.textContent = getDimLabel(dim);
+            } else if (currentData?.embeddings) {
+                const dim = currentData.embeddings[0]?.length || 0;
+                treeEmbeddingLabel.textContent = getDimLabel(dim);
+            } else {
+                treeEmbeddingLabel.textContent = 'None';
             }
         }
 
         function updateEmbeddingSelector() {
-            // Clear existing options
-            embeddingSelect.innerHTML = '';
-
-            const config = datasetEmbeddings[currentDatasetUrl];
-            if (config) {
-                // Add options for this dataset
-                for (const [key, emb] of Object.entries(config.embeddings)) {
-                    const option = document.createElement('option');
-                    option.value = key;
-                    option.textContent = emb.label;
-                    if (key === currentEmbeddingType) {
-                        option.selected = true;
-                    }
-                    embeddingSelect.appendChild(option);
-                }
-            } else {
-                // Unknown dataset - just show current
-                const option = document.createElement('option');
-                option.value = 'current';
-                option.textContent = 'Current (from dataset)';
-                embeddingSelect.appendChild(option);
+            // Populate both selectors
+            // Try current dataset config, fall back to physics.json for Flask API mode
+            let config = datasetEmbeddings[currentDatasetUrl];
+            if (!config && currentDatasetUrl?.startsWith('flask-api:')) {
+                config = datasetEmbeddings['data/physics.json'];
             }
 
-            // Always add clear option
-            const clearOption = document.createElement('option');
-            clearOption.value = 'clear';
-            clearOption.textContent = '🗑️ Clear embeddings (save memory)';
-            embeddingSelect.appendChild(clearOption);
+            for (const [selector, currentType] of [
+                [layoutEmbeddingSelect, layoutEmbeddingType],
+                [treeEmbeddingSelect, treeEmbeddingType]
+            ]) {
+                selector.innerHTML = '';
+
+                if (config) {
+                    for (const [key, emb] of Object.entries(config.embeddings)) {
+                        const option = document.createElement('option');
+                        option.value = key;
+                        option.textContent = emb.label;
+                        if (key === currentType) {
+                            option.selected = true;
+                        }
+                        selector.appendChild(option);
+                    }
+                } else {
+                    const option = document.createElement('option');
+                    option.value = 'current';
+                    option.textContent = 'Current (from dataset)';
+                    selector.appendChild(option);
+                }
+            }
         }
 
-        async function handleEmbeddingChange() {
-            const selected = embeddingSelect.value;
+        // Cache for loaded embeddings by URL
+        const embeddingCache = {};
 
-            if (selected === 'clear') {
-                // Clear embeddings to save memory
-                currentData.embeddings = null;
-                originalEmbeddings = null;
-                currentEmbeddingType = 'none';
+        async function loadEmbeddingsForPurpose(purpose, selected) {
+            // purpose is 'layout' or 'tree'
+            const selector = purpose === 'layout' ? layoutEmbeddingSelect : treeEmbeddingSelect;
 
-                // Clear from Pyodide too
-                if (pyodideReady) {
-                    await pyodide.runPythonAsync(`
-_real_embeddings = None
-_real_titles = None
-                    `);
-                }
-
-                updateEmbeddingsInfo();
-                setStatus('Embeddings cleared (memory freed)');
-
-                // Reset selector to show cleared state
-                embeddingSelect.value = 'clear';
-                return;
+            // Try current dataset config, fall back to physics.json for Flask API mode
+            let config = datasetEmbeddings[currentDatasetUrl];
+            if (!config && currentDatasetUrl?.startsWith('flask-api:')) {
+                // Flask API uses same embeddings as physics.json
+                config = datasetEmbeddings['data/physics.json'];
             }
 
-            const config = datasetEmbeddings[currentDatasetUrl];
             if (!config || !config.embeddings[selected]) {
-                return;
+                return null;
             }
 
             const embConfig = config.embeddings[selected];
 
-            // If URL is null, use original embeddings from dataset
+            // If URL is null, use embeddings from main dataset (the original ones)
             if (embConfig.url === null) {
+                // Return the original embeddings (MiniLM baked into physics.json)
+                // Note: originalEmbeddings stores the original before we load alternates
                 if (originalEmbeddings) {
-                    currentData.embeddings = originalEmbeddings;
-                    currentEmbeddingType = selected;
-                    updateEmbeddingsInfo();
-
-                    if (pyodideReady) {
-                        await loadEmbeddingsIntoPyodide();
-                    }
-                    setStatus(`Restored ${embConfig.label}`);
+                    return originalEmbeddings;
                 }
-                return;
+                // Fallback to layoutEmbeddings if that's the original
+                if (layoutEmbeddings && layoutEmbeddingType === 'minilm') {
+                    return layoutEmbeddings;
+                }
+                return null;
+            }
+
+            // Check cache first
+            if (embeddingCache[embConfig.url]) {
+                return embeddingCache[embConfig.url];
             }
 
             // Fetch embeddings from URL
@@ -1730,29 +1896,162 @@ _real_titles = None
 
                 const embData = await response.json();
 
-                // Validate embedding count matches points
                 if (embData.embeddings && embData.embeddings.length === currentData.points.length) {
-                    currentData.embeddings = embData.embeddings;
-                    originalEmbeddings = embData.embeddings;  // Store for projection
-                    currentEmbeddingType = selected;
-
-                    if (pyodideReady) {
-                        await loadEmbeddingsIntoPyodide();
-                    }
-
-                    updateEmbeddingsInfo();
-                    setStatus(`Loaded ${embConfig.label}`);
+                    embeddingCache[embConfig.url] = embData.embeddings;
+                    return embData.embeddings;
                 } else {
                     throw new Error(`Embedding count mismatch: expected ${currentData.points.length}, got ${embData.embeddings?.length || 0}`);
                 }
             } catch (error) {
                 setStatus(`Failed to load embeddings: ${error.message}`, 'error');
                 console.error('Embedding fetch error:', error);
-                // Reset selector
-                embeddingSelect.value = currentEmbeddingType;
+                return null;
             } finally {
                 embeddingLoadingStatus.style.display = 'none';
             }
+        }
+
+        async function handleLayoutEmbeddingChange() {
+            const selected = layoutEmbeddingSelect.value;
+            const emb = await loadEmbeddingsForPurpose('layout', selected);
+            if (emb) {
+                layoutEmbeddings = emb;
+                layoutEmbeddingType = selected;
+                updateEmbeddingsInfo();
+
+                // Update Pyodide's dual embeddings for recompute
+                if (pyodideReady && currentData?.points) {
+                    const titles = currentData.points.map(p => p.title);
+                    const treeEmb = treeEmbeddings || emb;
+                    pyodide.globals.set('_js_layout_emb', emb);
+                    pyodide.globals.set('_js_tree_emb', treeEmb);
+                    pyodide.globals.set('_js_titles', titles);
+                    await pyodide.runPythonAsync(`
+set_dual_embeddings(_js_layout_emb.to_py(), _js_tree_emb.to_py(), list(_js_titles))
+                    `);
+                    console.log(`Updated dual embeddings: layout=${emb[0]?.length}D, tree=${treeEmb[0]?.length}D`);
+                }
+
+                // Check if Flask API mode with a model or special projection mode
+                // In that case, use the API for consistent projection
+                const isFlaskApiMode = currentDatasetUrl?.startsWith('flask-api:');
+                const flaskModel = document.getElementById('flaskModel')?.value;
+                const flaskProjectionMode = document.getElementById('flaskProjectionMode')?.value;
+                const needsApiProjection = isFlaskApiMode && (
+                    (flaskModel && flaskModel !== 'None' && flaskModel !== '') ||
+                    (flaskProjectionMode && flaskProjectionMode !== 'embedding')
+                );
+
+                if (needsApiProjection) {
+                    // Use Flask API to apply the model/projection mode consistently
+                    console.log('Using Flask API for projection (model or special mode selected)');
+                    await loadFromFlaskApi();
+                    return;
+                }
+
+                // Re-project the data using the new layout embeddings (SVD)
+                if (pyodideReady && currentData?.points) {
+                    setStatus('Re-projecting with new layout embeddings...', 'loading');
+                    try {
+                        // Send layout embeddings to Pyodide for projection and density recalculation
+                        // Use current data's bandwidth to preserve consistency, fall back to slider
+                        const bandwidth = currentData.density_grid?.bandwidth || parseFloat(controls.bandwidth.value);
+                        const gridSize = currentData.density_grid?.grid_size || parseInt(controls.gridSize.value);
+                        const titles = currentData.points.map(p => p.title);
+                        pyodide.globals.set('_js_layout_emb', emb);
+                        pyodide.globals.set('_js_titles', titles);
+                        const result = await pyodide.runPythonAsync(`
+import json
+_layout_arr = np.array(_js_layout_emb.to_py())
+_titles = list(_js_titles)
+_pts_2d, _sv, _var = project_to_2d(_layout_arr)
+# Recompute density grid with new 2D positions
+_density_grid = compute_density_grid(_pts_2d, bandwidth=${bandwidth}, grid_size=${gridSize})
+# Recompute peaks
+_peaks = find_density_peaks(_density_grid, _pts_2d, _titles, n_peaks=5)
+json.dumps({
+    'points_2d': _pts_2d.tolist(),
+    'singular_values': _sv,
+    'variance_explained': _var,
+    'density_grid': _density_grid,
+    'peaks': _peaks
+})
+                        `);
+                        const projection = JSON.parse(result);
+
+                        // Update point coordinates
+                        for (let i = 0; i < currentData.points.length; i++) {
+                            currentData.points[i].x = projection.points_2d[i][0];
+                            currentData.points[i].y = projection.points_2d[i][1];
+                        }
+
+                        // Update projection info
+                        currentData.projection = {
+                            variance_explained: projection.variance_explained,
+                            singular_values: projection.singular_values,
+                            mode: 'svd'
+                        };
+
+                        // Update density grid and peaks
+                        currentData.density_grid = projection.density_grid;
+                        currentData.peaks = projection.peaks;
+
+                        // Update tree node coordinates too
+                        for (const treeType of Object.keys(currentData.trees || {})) {
+                            const tree = currentData.trees[treeType];
+                            if (tree?.nodes) {
+                                for (const node of tree.nodes) {
+                                    const point = currentData.points.find(p => p.id === node.id);
+                                    if (point) {
+                                        node.x = point.x;
+                                        node.y = point.y;
+                                    }
+                                }
+                            }
+                        }
+
+                        renderPlot();
+                        updateInfo();
+                        updatePeaksList();
+                        setStatus(`Re-projected with ${datasetEmbeddings[currentDatasetUrl]?.embeddings[selected]?.label || selected}`);
+                    } catch (error) {
+                        console.error('Re-projection failed:', error);
+                        setStatus(`Re-projection failed: ${error.message}`, 'error');
+                    }
+                } else {
+                    setStatus(`Layout embeddings: ${datasetEmbeddings[currentDatasetUrl]?.embeddings[selected]?.label || selected}`);
+                }
+            }
+        }
+
+        async function handleTreeEmbeddingChange() {
+            const selected = treeEmbeddingSelect.value;
+            const emb = await loadEmbeddingsForPurpose('tree', selected);
+            if (emb) {
+                treeEmbeddings = emb;
+                treeEmbeddingType = selected;
+
+                // Update Pyodide with dual embeddings (layout + new tree)
+                if (pyodideReady && currentData?.points) {
+                    const titles = currentData.points.map(p => p.title);
+                    const layoutEmb = layoutEmbeddings || emb;
+                    pyodide.globals.set('_js_layout_emb', layoutEmb);
+                    pyodide.globals.set('_js_tree_emb', emb);
+                    pyodide.globals.set('_js_titles', titles);
+                    await pyodide.runPythonAsync(`
+set_dual_embeddings(_js_layout_emb.to_py(), _js_tree_emb.to_py(), list(_js_titles))
+                    `);
+                    console.log(`Updated dual embeddings: layout=${layoutEmb[0]?.length}D, tree=${emb[0]?.length}D`);
+                }
+
+                updateEmbeddingsInfo();
+                setStatus(`Tree embeddings: ${datasetEmbeddings[currentDatasetUrl]?.embeddings[selected]?.label || selected}`);
+            }
+        }
+
+        // Legacy handler for compatibility
+        async function handleEmbeddingChange() {
+            await handleLayoutEmbeddingChange();
         }
 
         function handleProjectionModeChange() {
@@ -1833,14 +2132,20 @@ _real_titles = None
         function setSelectedAsRoot() {
             if (!selectedNode || !currentData) return;
 
-            // Store original trees if not already stored
+            // If data came from Flask API, rebuild tree server-side with proper root
+            if (currentDatasetUrl && currentDatasetUrl.startsWith('flask-api:')) {
+                setStatus(`Rebuilding tree from "${selectedNode.title}"...`, 'loading');
+                loadFromFlaskApi(selectedNode.title);  // Pass title, not ID (IDs may change)
+                return;
+            }
+
+            // For non-API datasets, do client-side re-root (best effort)
             if (!originalTrees && currentData.trees) {
                 originalTrees = JSON.parse(JSON.stringify(currentData.trees));
             } else if (!originalTrees && currentData.tree) {
                 originalTrees = { [activeTreeType]: JSON.parse(JSON.stringify(currentData.tree)) };
             }
 
-            // Re-root each tree
             if (currentData.trees) {
                 for (const [treeType, tree] of Object.entries(currentData.trees)) {
                     rerootTree(tree, selectedNode.id);
@@ -1854,84 +2159,71 @@ _real_titles = None
         }
 
         function rerootTree(tree, newRootId) {
-            // Rebuild tree as a hub tree with new root having many children
-            // Uses 2D distances to find k nearest neighbors at each level (BFS)
-            const k = 8;  // Number of direct children for the root (hub)
+            // Re-root tree by traversing existing edges from new root via BFS.
+            // Preserves the tree's edge topology (built with proper distance metrics)
+            // while changing which node is considered the root.
 
             const nodes = tree.nodes;
-            const n = nodes.length;
-
-            // Build node lookup
             const nodeById = {};
             for (const node of nodes) {
                 nodeById[node.id] = node;
             }
 
-            // Get root node
-            const rootNode = nodeById[newRootId];
-            if (!rootNode) return;
+            if (!nodeById[newRootId]) return;
 
-            // Helper: compute 2D distance between two nodes
-            const dist2d = (a, b) => {
-                const dx = a.x - b.x;
-                const dy = a.y - b.y;
-                return Math.sqrt(dx * dx + dy * dy);
-            };
+            // Build undirected adjacency from existing edges (preserving weights)
+            const adj = {};
+            const edgeWeight = {};
+            for (const edge of tree.edges) {
+                const s = edge.source_id, t = edge.target_id;
+                if (!adj[s]) adj[s] = [];
+                if (!adj[t]) adj[t] = [];
+                adj[s].push(t);
+                adj[t].push(s);
+                // Store weight keyed by sorted pair
+                const key = Math.min(s, t) + ',' + Math.max(s, t);
+                edgeWeight[key] = edge.weight;
+            }
 
-            // BFS: at each level, each node in the frontier connects to its k nearest unvisited
+            // BFS from new root through undirected adjacency
             const newParent = { [newRootId]: null };
             const newDepth = { [newRootId]: 0 };
             const visited = new Set([newRootId]);
-            let frontier = [newRootId];
+            const queue = [newRootId];
 
-            while (visited.size < n && frontier.length > 0) {
-                const nextFrontier = [];
-
-                for (const parentId of frontier) {
-                    const parentNode = nodeById[parentId];
-                    const parentDepth = newDepth[parentId];
-
-                    // Find k nearest unvisited nodes to this parent
-                    const unvisited = nodes
-                        .filter(node => !visited.has(node.id))
-                        .map(node => ({ id: node.id, dist: dist2d(parentNode, node) }))
-                        .sort((a, b) => a.dist - b.dist)
-                        .slice(0, k);
-
-                    for (const child of unvisited) {
-                        if (!visited.has(child.id)) {
-                            newParent[child.id] = parentId;
-                            newDepth[child.id] = parentDepth + 1;
-                            visited.add(child.id);
-                            nextFrontier.push(child.id);
-                        }
+            while (queue.length > 0) {
+                const nodeId = queue.shift();
+                const neighbors = adj[nodeId] || [];
+                for (const nbId of neighbors) {
+                    if (!visited.has(nbId)) {
+                        visited.add(nbId);
+                        newParent[nbId] = nodeId;
+                        newDepth[nbId] = newDepth[nodeId] + 1;
+                        queue.push(nbId);
                     }
                 }
-
-                frontier = nextFrontier;
             }
 
-            // Update nodes
+            // Update nodes with new parent/depth
             for (const node of nodes) {
                 node.parent_id = newParent[node.id] !== undefined ? newParent[node.id] : null;
                 node.depth = newDepth[node.id] !== undefined ? newDepth[node.id] : 0;
             }
 
-            // Rebuild edges
+            // Rebuild directed edges from new parent relationships
             tree.edges = [];
             for (const node of nodes) {
                 if (node.parent_id !== null) {
-                    const parentNode = nodeById[node.parent_id];
+                    const key = Math.min(node.id, node.parent_id) + ',' + Math.max(node.id, node.parent_id);
                     tree.edges.push({
                         source_id: node.parent_id,
                         target_id: node.id,
-                        weight: dist2d(node, parentNode)
+                        weight: edgeWeight[key] || 0
                     });
                 }
             }
 
             tree.root_id = newRootId;
-            tree.tree_type = tree.tree_type + '-hub';
         }
 
         function resetTreeRoot() {
@@ -2139,6 +2431,15 @@ json.dumps(data)
             const flaskApiGroup = document.getElementById('flaskApiGroup');
             if (flaskApiGroup) flaskApiGroup.style.display = 'none';
 
+            // Handle embedding selector visibility for Flask API mode
+            const embeddingsFlaskNote = document.getElementById('embeddingsFlaskNote');
+            const isFlaskApi = value === 'flask-api';
+            if (embeddingsFlaskNote) {
+                embeddingsFlaskNote.style.display = isFlaskApi ? 'block' : 'none';
+            }
+            // Keep embedding selectors enabled - they affect Pyodide recompute
+            // Flask API uses its own Projection Mode / Tree Metric settings
+
             if (value === 'custom') {
                 customUrlGroup.style.display = 'block';
             } else if (value === 'flask-api') {
@@ -2155,7 +2456,24 @@ json.dumps(data)
         }
 
         // Flask API integration
-        async function loadFromFlaskApi() {
+        async function loadFromFlaskApi(rootId) {
+            // Filter out click Event objects (from addEventListener)
+            if (rootId instanceof Event) rootId = undefined;
+            // Use current tree root or selected node if no explicit rootId provided
+            // Pass title (string) since IDs may change between API calls
+            if (rootId === undefined) {
+                // First try the current tree's root (preserves user's root setting)
+                const currentTree = currentData?.tree || currentData?.trees?.[activeTreeType];
+                if (currentTree?.root_id != null && currentData?.points) {
+                    const rootNode = currentData.points.find(p => p.id === currentTree.root_id);
+                    if (rootNode) {
+                        rootId = rootNode.title;  // Pass title, not ID
+                    }
+                } else if (selectedNode) {
+                    // Fall back to selected node's title
+                    rootId = selectedNode.title;
+                }
+            }
             const apiUrl = document.getElementById('flaskApiUrl').value;
             const dataset = document.getElementById('flaskDataset').value;
             const model = document.getElementById('flaskModel').value;
@@ -2170,25 +2488,108 @@ json.dumps(data)
             setStatus('Fetching from Flask API...', 'loading');
 
             try {
-                const requestBody = {
-                    dataset: dataset,
-                    top_k: topK,
-                    include_tree: true,
-                    include_peaks: true,
-                    tree_type: treeType
-                };
+                // Read branching slider (value 20 = unlimited → don't send)
+                const branchingVal = parseInt(controls.maxBranching.value);
+                const maxBranching = branchingVal >= 20 ? null : branchingVal;
 
-                if (model) {
-                    requestBody.model = model;
-                    requestBody.projection_mode = projectionMode;
-                    requestBody.tree_distance_metric = treeMetric;
+                // Read bandwidth: Flask input > Pyodide slider > auto
+                const bwInput = document.getElementById('flaskBandwidth').value.trim();
+                let bandwidth = bwInput ? parseFloat(bwInput) : null;
+                // Fall back to Pyodide slider value if Flask input is empty
+                if (bandwidth === null && controls.bandwidth.value) {
+                    bandwidth = parseFloat(controls.bandwidth.value);
                 }
 
-                const response = await fetch(`${apiUrl}/api/compute`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
+                // Check if we have custom dual embeddings loaded
+                // Skip dual embedding path when a projection model is selected,
+                // because the model needs to transform the server-side dataset embeddings
+                const hasProjectionModel = model && model !== 'None' && model !== '';
+                const hasDualEmbeddings = !hasProjectionModel &&
+                    layoutEmbeddings && treeEmbeddings &&
+                    layoutEmbeddings !== treeEmbeddings &&
+                    currentData?.points?.length > 0;
+
+                console.log('Dual embedding check:', {
+                    hasLayout: !!layoutEmbeddings,
+                    hasTree: !!treeEmbeddings,
+                    areDifferent: layoutEmbeddings !== treeEmbeddings,
+                    hasPoints: currentData?.points?.length > 0,
+                    layoutDim: layoutEmbeddings?.[0]?.length,
+                    treeDim: treeEmbeddings?.[0]?.length,
+                    hasProjectionModel,
+                    hasDualEmbeddings
                 });
+
+                let response;
+
+                if (hasDualEmbeddings) {
+                    // Use /api/compute/from-embeddings with dual embeddings
+                    const titles = currentData.points.map(p => p.title);
+                    console.log('Using DUAL EMBEDDINGS path:', {
+                        layoutShape: [layoutEmbeddings.length, layoutEmbeddings[0]?.length],
+                        treeShape: [treeEmbeddings.length, treeEmbeddings[0]?.length],
+                        titlesCount: titles.length
+                    });
+
+                    const requestBody = {
+                        embeddings: layoutEmbeddings,
+                        tree_embeddings: treeEmbeddings,
+                        titles: titles,
+                        include_tree: true,
+                        include_peaks: true,
+                        tree_type: treeType,
+                        tree_distance_metric: treeMetric,
+                        projection_mode: projectionMode
+                    };
+
+                    if (bandwidth !== null && !isNaN(bandwidth) && bandwidth > 0) {
+                        requestBody.bandwidth = bandwidth;
+                    }
+                    if (maxBranching !== null) {
+                        requestBody.max_branching = maxBranching;
+                    }
+
+                    setStatus('Sending dual embeddings to Flask API...', 'loading');
+                    console.log('Calling /api/compute/from-embeddings');
+                    response = await fetch(`${apiUrl}/api/compute/from-embeddings`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(requestBody)
+                    });
+                } else {
+                    // Use standard /api/compute with dataset
+                    const requestBody = {
+                        dataset: dataset,
+                        top_k: topK,
+                        include_tree: true,
+                        include_peaks: true,
+                        tree_type: treeType,
+                        tree_distance_metric: treeMetric,
+                        projection_mode: projectionMode
+                    };
+
+                    if (bandwidth !== null && !isNaN(bandwidth) && bandwidth > 0) {
+                        requestBody.bandwidth = bandwidth;
+                    }
+
+                    if (maxBranching !== null) {
+                        requestBody.max_branching = maxBranching;
+                    }
+
+                    if (rootId != null) {
+                        requestBody.root_id = rootId;
+                    }
+
+                    if (model) {
+                        requestBody.model = model;
+                    }
+
+                    response = await fetch(`${apiUrl}/api/compute`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(requestBody)
+                    });
+                }
 
                 if (!response.ok) {
                     const error = await response.json();
@@ -2206,22 +2607,30 @@ json.dumps(data)
                     activeTreeType = currentData.tree.tree_type;
                 }
 
-                // Preserve selected root across reloads
+                // Preserve selected node across reloads
                 if (selectedNode) {
                     const newNode = currentData.points.find(p => p.title === selectedNode.title);
-                    if (newNode && currentData.trees) {
-                        // Re-root tree at the previously selected node
-                        for (const tree of Object.values(currentData.trees)) {
-                            rerootTree(tree, newNode.id);
-                        }
+                    if (newNode) {
                         selectedNode = newNode;
-                        setStatus(`Loaded and re-rooted at "${selectedNode.title}"`);
+                        if (rootId != null) {
+                            setStatus(`Loaded with root: "${selectedNode.title}"`);
+                        }
                     }
                 }
 
                 renderPlot();
                 updateInfo();
                 updateTreeToggle();
+                updateEmbeddingSelector();
+                updateEmbeddingsInfo();
+
+                // Show the actual bandwidth used as placeholder hint
+                if (currentData.density_grid && currentData.density_grid.bandwidth != null) {
+                    const bwEl = document.getElementById('flaskBandwidth');
+                    if (!bwEl.value) {
+                        bwEl.placeholder = `auto: ${currentData.density_grid.bandwidth.toFixed(4)}`;
+                    }
+                }
 
                 const modeLabels = { 'embedding': 'Embedding', 'weights': 'Weight', 'learned': 'Learned Metric' };
                 const treeLabels = { 'embedding': 'semantic', 'weights': 'hierarchical', 'learned': 'organizational' };
@@ -2330,12 +2739,52 @@ json.dumps(data)
 
             // Filter by max depth
             const maxDepth = parseInt(controls.maxDepth.value);
-            const filteredNodes = tree.nodes.filter(n => n.depth <= maxDepth);
-            const nodeIds = new Set(filteredNodes.map(n => n.id));
+            const branchingVal = parseInt(controls.maxBranching.value);
+            const maxBranching = branchingVal >= 20 ? Infinity : branchingVal;
 
-            // Filter edges to only include filtered nodes
-            const filteredEdges = tree.edges.filter(e =>
-                nodeIds.has(e.source_id) && nodeIds.has(e.target_id)
+            const depthFiltered = new Set(
+                tree.nodes.filter(n => n.depth <= maxDepth).map(n => n.id)
+            );
+
+            // Filter edges by depth, then apply branching limit per parent
+            const depthEdges = tree.edges.filter(e =>
+                depthFiltered.has(e.source_id) && depthFiltered.has(e.target_id)
+            );
+
+            // Group by parent, sort by weight, keep maxBranching closest
+            const edgesByParent = {};
+            for (const e of depthEdges) {
+                if (!edgesByParent[e.source_id]) edgesByParent[e.source_id] = [];
+                edgesByParent[e.source_id].push(e);
+            }
+            const keptEdges = [];
+            for (const children of Object.values(edgesByParent)) {
+                children.sort((a, b) => a.weight - b.weight);
+                keptEdges.push(...children.slice(0, maxBranching));
+            }
+
+            // Find reachable nodes from root through kept edges
+            const adjMap = {};
+            for (const e of keptEdges) {
+                if (!adjMap[e.source_id]) adjMap[e.source_id] = [];
+                adjMap[e.source_id].push(e.target_id);
+            }
+            const reachable = new Set([tree.root_id]);
+            const queue = [tree.root_id];
+            let qi = 0;
+            while (qi < queue.length) {
+                const node = queue[qi++];
+                for (const child of (adjMap[node] || [])) {
+                    if (!reachable.has(child)) {
+                        reachable.add(child);
+                        queue.push(child);
+                    }
+                }
+            }
+
+            const filteredNodes = tree.nodes.filter(n => reachable.has(n.id));
+            const filteredEdges = keptEdges.filter(e =>
+                reachable.has(e.source_id) && reachable.has(e.target_id)
             );
 
             // Get export format
@@ -2802,58 +3251,80 @@ json.dumps(data)
             const tree = currentData.trees ? currentData.trees[activeTreeType] : currentData.tree;
             if (controls.showTree.checked && tree) {
                 const maxDepth = parseInt(controls.maxDepth.value);
-                const maxBranching = parseInt(controls.maxBranching.value);
+                const maxBranchingRaw = parseInt(controls.maxBranching.value);
+                const maxBranching = maxBranchingRaw >= 20 ? Infinity : maxBranchingRaw;
                 const nodeMap = {};
                 tree.nodes.forEach(n => nodeMap[n.id] = n);
 
-                // Track children count per parent for branching limit
+                // Build reachable node set via BFS from root with depth+branching limits
+                // This prevents orphan subtrees from appearing when branching prunes parent edges
                 const childCount = {};
+                const reachable = new Set([tree.root_id]);
 
-                // Sort edges by weight (shortest first) so we keep the closest children
-                const sortedEdges = [...tree.edges].sort((a, b) => a.weight - b.weight);
+                // Group edges by source, sorted by weight (closest first)
+                const edgesBySource = {};
+                for (const edge of tree.edges) {
+                    if (!edgesBySource[edge.source_id]) edgesBySource[edge.source_id] = [];
+                    edgesBySource[edge.source_id].push(edge);
+                }
+                for (const sid in edgesBySource) {
+                    edgesBySource[sid].sort((a, b) => a.weight - b.weight);
+                }
+
+                // BFS: only follow edges where target depth ≤ maxDepth and parent has room
+                const bfsQueue = [tree.root_id];
+                const keptEdges = [];
+                while (bfsQueue.length > 0) {
+                    const nodeId = bfsQueue.shift();
+                    const edges = edgesBySource[nodeId] || [];
+                    for (const edge of edges) {
+                        const target = nodeMap[edge.target_id];
+                        if (!target || reachable.has(edge.target_id)) continue;
+                        if (target.depth > maxDepth) continue;
+                        const pc = childCount[nodeId] || 0;
+                        if (pc >= maxBranching) continue;
+                        childCount[nodeId] = pc + 1;
+                        reachable.add(edge.target_id);
+                        keptEdges.push(edge);
+                        bfsQueue.push(edge.target_id);
+                    }
+                }
 
                 // Collect arrow positions and angles
                 const arrowX = [];
                 const arrowY = [];
                 const arrowAngles = [];
 
-                for (const edge of sortedEdges) {
+                for (const edge of keptEdges) {
                     const source = nodeMap[edge.source_id];
                     const target = nodeMap[edge.target_id];
 
-                    // Check branching limit (skip if parent has too many children)
-                    const parentChildren = childCount[edge.source_id] || 0;
-                    if (parentChildren >= maxBranching) continue;
+                    traces.push({
+                        type: 'scatter', x: [source.x, target.x], y: [source.y, target.y],
+                        mode: 'lines', line: { color: 'cyan', width: 1 },
+                        opacity: 0.6, hoverinfo: 'skip', showlegend: false
+                    });
 
-                    if (target.depth <= maxDepth) {
-                        childCount[edge.source_id] = parentChildren + 1;
-                        traces.push({
-                            type: 'scatter', x: [source.x, target.x], y: [source.y, target.y],
-                            mode: 'lines', line: { color: 'cyan', width: 1 },
-                            opacity: 0.6, hoverinfo: 'skip', showlegend: false
-                        });
+                    // Calculate arrow position and angle based on mode
+                    if (controls.showArrows.checked) {
+                        const mode = controls.arrowMode.value;
+                        const t = 0.7;  // Position along edge
+                        const ax = source.x + t * (target.x - source.x);
+                        const ay = source.y + t * (target.y - source.y);
 
-                        // Calculate arrow position and angle based on mode
-                        if (controls.showArrows.checked) {
-                            const mode = controls.arrowMode.value;
-                            const t = 0.7;  // Position along edge
-                            const ax = source.x + t * (target.x - source.x);
-                            const ay = source.y + t * (target.y - source.y);
-
-                            let angle;
-                            if (mode === 'radial') {
-                                // Point away from root position
-                                const root = nodeMap[tree.root_id];
-                                angle = Math.atan2(ay - root.y, ax - root.x) * 180 / Math.PI;
-                            } else {
-                                // Hierarchical: point from parent to child (general → specific)
-                                angle = Math.atan2(target.y - source.y, target.x - source.x) * 180 / Math.PI;
-                            }
-
-                            arrowX.push(ax);
-                            arrowY.push(ay);
-                            arrowAngles.push(angle);
+                        let angle;
+                        if (mode === 'radial') {
+                            // Point away from root position
+                            const root = nodeMap[tree.root_id];
+                            angle = Math.atan2(ay - root.y, ax - root.x) * 180 / Math.PI;
+                        } else {
+                            // Hierarchical: point from parent to child (general → specific)
+                            angle = Math.atan2(target.y - source.y, target.x - source.x) * 180 / Math.PI;
                         }
+
+                        arrowX.push(ax);
+                        arrowY.push(ay);
+                        arrowAngles.push(angle);
                     }
                 }
 
@@ -2938,8 +3409,8 @@ json.dumps(data)
 
             const layout = {
                 title: `Density Manifold (${currentData.n_points} points)`,
-                xaxis: { title: `SVD 1 (${currentData.projection.variance_explained[0].toFixed(1)}%)`, scaleanchor: 'y' },
-                yaxis: { title: `SVD 2 (${currentData.projection.variance_explained[1].toFixed(1)}%)` },
+                xaxis: { title: `${currentData.projection.mode && currentData.projection.mode.includes('mds') ? 'MDS' : 'SVD'} 1 (${currentData.projection.variance_explained[0].toFixed(1)}%)`, scaleanchor: 'y' },
+                yaxis: { title: `${currentData.projection.mode && currentData.projection.mode.includes('mds') ? 'MDS' : 'SVD'} 2 (${currentData.projection.variance_explained[1].toFixed(1)}%)` },
                 showlegend: true, legend: { yanchor: 'top', y: 0.99, xanchor: 'right', x: 0.99 },
                 paper_bgcolor: '#1a1a2e', plot_bgcolor: '#1a1a2e', font: { color: '#eee' },
                 uirevision: 'preserve'  // Preserves zoom/pan across updates
@@ -3039,9 +3510,15 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
 
                 const result = await pyodide.runPythonAsync(`
 import json
-embeddings, titles = get_embeddings(${nPoints}, root_title=${rootArg})
-_used_real = has_real_embeddings()
-data = compute_density_manifold(embeddings, titles, bandwidth=${bandwidth}, grid_size=${gridSize}, n_peaks=5)
+# Check for dual embeddings (separate layout vs tree)
+if has_dual_embeddings():
+    layout_emb, tree_emb, titles = get_dual_embeddings(${nPoints}, root_title=${rootArg})
+    _used_real = True
+    data = compute_density_manifold(layout_emb, titles, bandwidth=${bandwidth}, grid_size=${gridSize}, n_peaks=5, tree_embeddings=tree_emb)
+else:
+    embeddings, titles = get_embeddings(${nPoints}, root_title=${rootArg})
+    _used_real = has_real_embeddings()
+    data = compute_density_manifold(embeddings, titles, bandwidth=${bandwidth}, grid_size=${gridSize}, n_peaks=5)
 json.dumps({'data': data, 'used_real': _used_real})
                 `);
 
