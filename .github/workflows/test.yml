@@ -17,38 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install SWI-Prolog
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends software-properties-common
-
-          added=0
-          set +e
-          sudo apt-add-repository ppa:swi-prolog/stable -y
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            added=1
-          else
-            echo "WARN: Could not add PPA; installing SWI-Prolog from Ubuntu repo." >&2
-          fi
-
-          set +e
-          sudo apt-get update -qq
-          update_status=$?
-          set -e
-          if [ "$update_status" -ne 0 ] && [ "$added" -eq 1 ]; then
-            echo "WARN: apt-get update failed after adding PPA; removing PPA and retrying..." >&2
-            set +e
-            sudo apt-add-repository --remove ppa:swi-prolog/stable -y
-            set -e
-            sudo apt-get update -qq
-          elif [ "$update_status" -ne 0 ]; then
-            echo "ERROR: apt-get update failed." >&2
-            exit "$update_status"
-          fi
-
-          sudo apt-get install -y swi-prolog
+        run: bash scripts/ci/install_swi_prolog.sh
 
       - name: Verify SWI-Prolog installation
         run: swipl --version
@@ -133,38 +102,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install SWI-Prolog
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends software-properties-common
-
-          added=0
-          set +e
-          sudo apt-add-repository ppa:swi-prolog/stable -y
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            added=1
-          else
-            echo "WARN: Could not add PPA; installing SWI-Prolog from Ubuntu repo." >&2
-          fi
-
-          set +e
-          sudo apt-get update -qq
-          update_status=$?
-          set -e
-          if [ "$update_status" -ne 0 ] && [ "$added" -eq 1 ]; then
-            echo "WARN: apt-get update failed after adding PPA; removing PPA and retrying..." >&2
-            set +e
-            sudo apt-add-repository --remove ppa:swi-prolog/stable -y
-            set -e
-            sudo apt-get update -qq
-          elif [ "$update_status" -ne 0 ]; then
-            echo "ERROR: apt-get update failed." >&2
-            exit "$update_status"
-          fi
-
-          sudo apt-get install -y swi-prolog
+        run: bash scripts/ci/install_swi_prolog.sh
 
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v4
