@@ -1952,14 +1952,20 @@ select_best_candidate_([Candidate|Rest], VarCounts, BoundVars, Best0, BestKey0, 
 candidate_key(cand(Index, Term, Role, Vars, Arity), VarCounts, BoundVars, Key) :-
     candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, Key).
 
-% Prefer candidates that share already-bound variables. Next, keep the join graph
-% connected when possible. Then prefer more selective candidates based on the
-% estimated row count (exact when facts are available at compile time, heuristic
-% otherwise). When tied, prefer literals with more constant arguments
-% (PatternScan-selective). Finally, prefer smaller arity, then original order.
-candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, NegEstimate, ConstArgs, NegArity, NegIndex]) :-
+% Prefer candidates that share already-bound variables. Next, prefer candidates
+% that connect to other goals (avoid pulling disconnected filters into the join
+% tree too early). Then prefer more selective candidates based on the estimated
+% row count (exact when facts are available at compile time, heuristic
+% otherwise). When tied, prefer candidates that keep the join graph connected.
+% Then prefer literals with more constant arguments (PatternScan-selective).
+% Finally, prefer smaller arity, then original order.
+candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, [Shared, ConnectedFlag, NegEstimate, Connected, ConstArgs, NegArity, NegIndex]) :-
     shared_bound_count(Vars, BoundVars, Shared),
     connectivity_score(Vars, VarCounts, Connected),
+    (   Connected > 0
+    ->  ConnectedFlag = 1
+    ;   ConnectedFlag = 0
+    ),
     constant_arg_count_in_term(Term, ConstArgs),
     estimate_goal_row_count(Role, Term, Arity, ConstArgs, Estimate),
     NegEstimate is -Estimate,
