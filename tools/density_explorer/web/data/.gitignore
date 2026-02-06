@@ -1,6 +1,6 @@
-# Large model files - generate locally or download
-*.onnx
+# Ignore everything in this folder (large generated/model files)
+*
 
-# Keep sample data
-!physics.json
-!physics_nomic_embeddings.json
+# Except this gitignore and the README
+!.gitignore
+!README.md
