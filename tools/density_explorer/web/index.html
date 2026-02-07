@@ -403,6 +403,7 @@
                 <div class="tab-buttons">
                     <button class="tab-btn active" data-tab="view">View</button>
                     <button class="tab-btn" data-tab="data">Data</button>
+                    <button class="tab-btn" data-tab="blend">Blend</button>
                     <button class="tab-btn" data-tab="compute">Compute</button>
                 </div>
 
@@ -533,7 +534,7 @@
                             </select>
                         </div>
                         <div class="control-group">
-                            <label for="flaskModel">Projection Model</label>
+                            <label for="flaskModel">Transformation Model</label>
                             <select id="flaskModel" style="width:100%;">
                                 <option value="">None (raw embeddings)</option>
                                 <option value="bivector_paired" selected>Bivector Paired</option>
@@ -685,7 +686,7 @@
                     <button id="loadMLBackendBtn" class="secondary">Load ML Backend</button>
                     <button id="testEmbedBtn" class="secondary" disabled style="margin-top: 5px;">Test Embedding</button>
 
-                    <h2>Projection Model</h2>
+                    <h2>Transformation Model</h2>
                     <div class="control-group">
                         <label for="projectionModelSource">Source</label>
                         <select id="projectionModelSource">
@@ -713,6 +714,54 @@
                     </div>
                     <button id="testProjectionBtn" class="secondary" disabled>Test Projection</button>
                 </div>
+
+                <!-- BLEND TAB -->
+                <div class="tab-panel" id="tab-blend">
+                    <h2>Embedding Blend</h2>
+
+                    <div id="blendModelWarning" style="padding: 10px; background: rgba(243, 156, 18, 0.15); border: 1px solid #f39c12; border-radius: 4px; margin-bottom: 15px; font-size: 0.85rem; color: #f39c12;">
+                        Select a Transformation Model in the Data tab to enable blending between input and output embedding spaces.
+                    </div>
+
+                    <div id="blendControls" style="display: none;">
+                        <div class="control-group">
+                            <label for="blendMode">Blend Mode</label>
+                            <select id="blendMode" style="width:100%;">
+                                <option value="none">None</option>
+                                <option value="visualization">Visualization (2D layout)</option>
+                                <option value="tree">Tree Distance</option>
+                                <option value="both">Both (independent)</option>
+                                <option value="custom" disabled title="Multi-space weighted blending — coming soon">Custom (coming soon)</option>
+                            </select>
+                        </div>
+
+                        <div id="blendVisualizationGroup" class="control-group" style="display: none;">
+                            <label>Layout Blend: <span class="value" id="blendLayoutAlphaValue">0.50</span></label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <span style="font-size: 0.75rem; color: #94a3b8; white-space: nowrap;">Output</span>
+                                <input type="range" id="blendLayoutAlpha" min="0" max="1" value="0.5" step="0.01" style="flex: 1;">
+                                <span style="font-size: 0.75rem; color: #94a3b8; white-space: nowrap;">Input</span>
+                            </div>
+                            <input type="number" id="blendLayoutAlphaInput" min="0" max="1" step="0.01" value="0.5"
+                                   style="width: 80px; padding: 4px 8px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; margin-top: 4px; font-size: 0.85rem;">
+                        </div>
+
+                        <div id="blendTreeGroup" class="control-group" style="display: none;">
+                            <label>Tree Blend: <span class="value" id="blendTreeAlphaValue">0.50</span></label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <span style="font-size: 0.75rem; color: #94a3b8; white-space: nowrap;">Output</span>
+                                <input type="range" id="blendTreeAlpha" min="0" max="1" value="0.5" step="0.01" style="flex: 1;">
+                                <span style="font-size: 0.75rem; color: #94a3b8; white-space: nowrap;">Input</span>
+                            </div>
+                            <input type="number" id="blendTreeAlphaInput" min="0" max="1" step="0.01" value="0.5"
+                                   style="width: 80px; padding: 4px 8px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; margin-top: 4px; font-size: 0.85rem;">
+                        </div>
+
+                        <div id="blendStatusText" style="font-size: 0.8rem; color: #94a3b8; margin-top: 10px;">Blending disabled.</div>
+
+                        <button id="applyBlendBtn" class="primary" style="margin-top: 10px;">Apply Blend</button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -738,6 +787,10 @@
                 <div class="info-item">
                     <span class="label">SVD Var 2</span>
                     <span class="value" id="infoVar2">-</span>
+                </div>
+                <div class="info-item" id="infoBlendItem" style="display: none;">
+                    <span class="label">Blend</span>
+                    <span class="value" id="infoBlend">-</span>
                 </div>
             </div>
             <div class="status" id="status">
@@ -849,6 +902,26 @@
         const layoutEmbeddingLabel = document.getElementById('layoutEmbeddingLabel');
         const treeEmbeddingLabel = document.getElementById('treeEmbeddingLabel');
         const embeddingLoadingStatus = document.getElementById('embeddingLoadingStatus');
+
+        // Blend tab elements
+        const blendModeSelect = document.getElementById('blendMode');
+        const blendModelWarning = document.getElementById('blendModelWarning');
+        const blendControls = document.getElementById('blendControls');
+        const blendLayoutAlphaSlider = document.getElementById('blendLayoutAlpha');
+        const blendLayoutAlphaValue = document.getElementById('blendLayoutAlphaValue');
+        const blendLayoutAlphaInput = document.getElementById('blendLayoutAlphaInput');
+        const blendTreeAlphaSlider = document.getElementById('blendTreeAlpha');
+        const blendTreeAlphaValue = document.getElementById('blendTreeAlphaValue');
+        const blendTreeAlphaInput = document.getElementById('blendTreeAlphaInput');
+        const blendVisualizationGroup = document.getElementById('blendVisualizationGroup');
+        const blendTreeGroup = document.getElementById('blendTreeGroup');
+        const blendStatusText = document.getElementById('blendStatusText');
+        const applyBlendBtn = document.getElementById('applyBlendBtn');
+
+        // Blend state
+        let blendMode = 'none';
+        let blendLayoutAlpha = 0.5;
+        let blendTreeAlpha = 0.5;
 
         // Legacy reference for compatibility
         const embeddingSelect = layoutEmbeddingSelect;
@@ -1505,6 +1578,7 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
             function updateLayoutDatasetVisibility() {
                 const model = document.getElementById('flaskModel')?.value;
                 const projMode = document.getElementById('flaskProjectionMode')?.value;
+                const projModeSelect = document.getElementById('flaskProjectionMode');
                 const group = document.getElementById('layoutDatasetGroup');
                 const embOption = document.getElementById('embeddingModeOption');
                 const hasModel = model && model !== 'None' && model !== '';
@@ -1518,10 +1592,45 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
                         ? 'Projected Embedding Space (model output for layout)'
                         : 'Embedding Space (semantic similarity)';
                 }
+                // Disable model-dependent projection modes when no model is selected
+                if (projModeSelect) {
+                    for (const opt of projModeSelect.options) {
+                        if (opt.value === 'weights' || opt.value === 'learned') {
+                            opt.disabled = !hasModel;
+                        }
+                    }
+                    // If current selection requires a model but none is selected, reset to embedding
+                    if (!hasModel && (projMode === 'weights' || projMode === 'learned')) {
+                        projModeSelect.value = 'embedding';
+                    }
+                }
             }
             document.getElementById('flaskModel')?.addEventListener('change', updateLayoutDatasetVisibility);
             document.getElementById('flaskProjectionMode')?.addEventListener('change', updateLayoutDatasetVisibility);
             updateLayoutDatasetVisibility();
+
+            // Blend controls
+            if (blendModeSelect) {
+                blendModeSelect.addEventListener('change', handleBlendModeChange);
+            }
+            if (blendLayoutAlphaSlider) {
+                blendLayoutAlphaSlider.addEventListener('input', () => syncBlendSlider('layout'));
+            }
+            if (blendLayoutAlphaInput) {
+                blendLayoutAlphaInput.addEventListener('change', () => syncBlendInput('layout'));
+            }
+            if (blendTreeAlphaSlider) {
+                blendTreeAlphaSlider.addEventListener('input', () => syncBlendSlider('tree'));
+            }
+            if (blendTreeAlphaInput) {
+                blendTreeAlphaInput.addEventListener('change', () => syncBlendInput('tree'));
+            }
+            if (applyBlendBtn) {
+                applyBlendBtn.addEventListener('click', applyBlend);
+            }
+            // Update blend availability when model changes
+            document.getElementById('flaskModel')?.addEventListener('change', updateBlendAvailability);
+            updateBlendAvailability();
 
             // Projection mode
             projectionModeSelect.addEventListener('change', handleProjectionModeChange);
@@ -1629,6 +1738,115 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
         }
 
         // ============================================================
+        // ============================================================
+        // Blend Functions
+        // ============================================================
+
+        function updateBlendAvailability() {
+            const model = document.getElementById('flaskModel')?.value;
+            const hasModel = model && model !== 'None' && model !== '';
+
+            if (blendModelWarning) {
+                blendModelWarning.style.display = hasModel ? 'none' : 'block';
+            }
+            if (blendControls) {
+                blendControls.style.display = hasModel ? 'block' : 'none';
+            }
+        }
+
+        function handleBlendModeChange() {
+            blendMode = blendModeSelect.value;
+
+            const showViz = (blendMode === 'visualization' || blendMode === 'both');
+            const showTree = (blendMode === 'tree' || blendMode === 'both');
+
+            blendVisualizationGroup.style.display = showViz ? 'block' : 'none';
+            blendTreeGroup.style.display = showTree ? 'block' : 'none';
+
+            updateBlendStatus();
+            updateBlendInfoBar();
+        }
+
+        function syncBlendSlider(type) {
+            if (type === 'layout') {
+                blendLayoutAlpha = parseFloat(blendLayoutAlphaSlider.value);
+                blendLayoutAlphaValue.textContent = blendLayoutAlpha.toFixed(2);
+                blendLayoutAlphaInput.value = blendLayoutAlpha.toFixed(2);
+            } else {
+                blendTreeAlpha = parseFloat(blendTreeAlphaSlider.value);
+                blendTreeAlphaValue.textContent = blendTreeAlpha.toFixed(2);
+                blendTreeAlphaInput.value = blendTreeAlpha.toFixed(2);
+            }
+            updateBlendStatus();
+            updateBlendInfoBar();
+        }
+
+        function syncBlendInput(type) {
+            if (type === 'layout') {
+                blendLayoutAlpha = Math.max(0, Math.min(1, parseFloat(blendLayoutAlphaInput.value) || 0));
+                blendLayoutAlphaSlider.value = blendLayoutAlpha;
+                blendLayoutAlphaValue.textContent = blendLayoutAlpha.toFixed(2);
+                blendLayoutAlphaInput.value = blendLayoutAlpha.toFixed(2);
+            } else {
+                blendTreeAlpha = Math.max(0, Math.min(1, parseFloat(blendTreeAlphaInput.value) || 0));
+                blendTreeAlphaSlider.value = blendTreeAlpha;
+                blendTreeAlphaValue.textContent = blendTreeAlpha.toFixed(2);
+                blendTreeAlphaInput.value = blendTreeAlpha.toFixed(2);
+            }
+            updateBlendStatus();
+            updateBlendInfoBar();
+        }
+
+        function updateBlendStatus() {
+            if (!blendStatusText) return;
+
+            if (blendMode === 'none') {
+                blendStatusText.textContent = 'Blending disabled.';
+            } else if (blendMode === 'visualization') {
+                blendStatusText.textContent = `Layout: ${(blendLayoutAlpha * 100).toFixed(0)}% input / ${((1 - blendLayoutAlpha) * 100).toFixed(0)}% output`;
+            } else if (blendMode === 'tree') {
+                blendStatusText.textContent = `Tree: ${(blendTreeAlpha * 100).toFixed(0)}% input / ${((1 - blendTreeAlpha) * 100).toFixed(0)}% output`;
+            } else if (blendMode === 'both') {
+                blendStatusText.textContent = `Layout: ${(blendLayoutAlpha * 100).toFixed(0)}%in/${((1 - blendLayoutAlpha) * 100).toFixed(0)}%out | Tree: ${(blendTreeAlpha * 100).toFixed(0)}%in/${((1 - blendTreeAlpha) * 100).toFixed(0)}%out`;
+            }
+        }
+
+        function updateBlendInfoBar() {
+            const blendItem = document.getElementById('infoBlendItem');
+            const blendInfo = document.getElementById('infoBlend');
+            if (!blendItem || !blendInfo) return;
+
+            if (blendMode !== 'none') {
+                blendItem.style.display = '';
+                if (blendMode === 'visualization') {
+                    blendInfo.textContent = `Viz: ${(blendLayoutAlpha * 100).toFixed(0)}%in`;
+                } else if (blendMode === 'tree') {
+                    blendInfo.textContent = `Tree: ${(blendTreeAlpha * 100).toFixed(0)}%in`;
+                } else if (blendMode === 'both') {
+                    blendInfo.textContent = `V:${(blendLayoutAlpha * 100).toFixed(0)}% T:${(blendTreeAlpha * 100).toFixed(0)}%`;
+                }
+            } else {
+                blendItem.style.display = 'none';
+            }
+        }
+
+        function getBlendParams() {
+            if (blendMode === 'none') return {};
+
+            const params = {};
+            if (blendMode === 'visualization' || blendMode === 'both') {
+                params.blend_layout_alpha = blendLayoutAlpha;
+            }
+            if (blendMode === 'tree' || blendMode === 'both') {
+                params.blend_tree_alpha = blendTreeAlpha;
+            }
+            return params;
+        }
+
+        async function applyBlend() {
+            await loadFromFlaskApi();
+        }
+
         // Projection Model Functions
         // ============================================================
         function handleProjectionSourceChange() {
@@ -2592,7 +2810,8 @@ json.dumps(data)
                         include_peaks: true,
                         tree_type: treeType,
                         tree_distance_metric: treeMetric,
-                        projection_mode: projectionMode
+                        projection_mode: projectionMode,
+                        ...getBlendParams()
                     };
 
                     if (bandwidth !== null && !isNaN(bandwidth) && bandwidth > 0) {
@@ -2641,6 +2860,10 @@ json.dumps(data)
                     if (layoutDataset && model && projectionMode === 'embedding') {
                         requestBody.layout_dataset = layoutDataset;
                     }
+
+                    // Blend parameters
+                    const blendParams = getBlendParams();
+                    Object.assign(requestBody, blendParams);
 
                     response = await fetch(`${apiUrl}/api/compute`, {
                         method: 'POST',
@@ -2696,7 +2919,16 @@ json.dumps(data)
                 const treeLabel = treeLabels[treeMetric] || treeMetric;
                 statusEl.textContent = `Loaded ${currentData.n_points} pts (${modeLabel}, ${treeLabel})`;
                 statusEl.style.color = '#27ae60';
-                setStatus(`Loaded from API: ${currentData.n_points} points, ${modeLabel} space, ${treeLabel} tree`);
+                let blendSuffix = '';
+                if (blendMode !== 'none') {
+                    const bp = getBlendParams();
+                    const parts = [];
+                    if (bp.blend_layout_alpha != null) parts.push(`viz=${bp.blend_layout_alpha.toFixed(2)}`);
+                    if (bp.blend_tree_alpha != null) parts.push(`tree=${bp.blend_tree_alpha.toFixed(2)}`);
+                    blendSuffix = `, blend: ${parts.join(', ')}`;
+                }
+                setStatus(`Loaded from API: ${currentData.n_points} points, ${modeLabel} space, ${treeLabel} tree${blendSuffix}`);
+                updateBlendInfoBar();
 
             } catch (error) {
                 statusEl.textContent = `Error: ${error.message}`;
