@@ -6673,6 +6673,34 @@ namespace UnifyWeaver.QueryRuntime
                     return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context);
                 }
 
+                if (_cacheContext is null &&
+                    TryBuildGroupedPairProbeDirectionBatches(
+                        closure,
+                        targetsBySource,
+                        context,
+                        out var forwardTargetsBySource,
+                        out var backwardSourcesByTarget))
+                {
+                    if (forwardTargetsBySource.Count > 0 && backwardSourcesByTarget.Count > 0)
+                    {
+                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeMixed");
+                        return ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
+                            closure,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+                    }
+
+                    if (forwardTargetsBySource.Count > 0)
+                    {
+                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeForward");
+                        return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context);
+                    }
+
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeBackward");
+                    return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, backwardSourcesByTarget, context);
+                }
+
                 const int MaxMemoizedGroupedPairSeeds = 32;
                 var canMemoizePairs =
                     _cacheContext is not null &&
@@ -6714,6 +6742,103 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> forwardTargetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
+            EvaluationContext context)
+        {
+            foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context))
+            {
+                yield return row;
+            }
+
+            foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, backwardSourcesByTarget, context))
+            {
+                yield return row;
+            }
+        }
+
+        private bool TryBuildGroupedPairProbeDirectionBatches(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            EvaluationContext context,
+            out Dictionary<RowWrapper, HashSet<object?>> forwardTargetsBySource,
+            out Dictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget)
+        {
+            var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+            forwardTargetsBySource = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+            backwardSourcesByTarget = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+
+            if (!IsMultiConcreteGroupedPairRequest(targetsBySource, closure.GroupIndices.Count))
+            {
+                return false;
+            }
+
+            var edges = GetFactsList(closure.EdgeRelation, context);
+            var groupKeyCount = closure.GroupIndices.Count;
+            var fromKeyIndices = new int[groupKeyCount + 1];
+            var toKeyIndices = new int[groupKeyCount + 1];
+            for (var i = 0; i < groupKeyCount; i++)
+            {
+                fromKeyIndices[i] = closure.GroupIndices[i];
+                toKeyIndices[i] = closure.GroupIndices[i];
+            }
+
+            fromKeyIndices[groupKeyCount] = 0;
+            toKeyIndices[groupKeyCount] = 1;
+
+            var succIndex = GetJoinIndex(closure.EdgeRelation, fromKeyIndices, edges, context);
+            var predIndex = GetJoinIndex(closure.EdgeRelation, toKeyIndices, edges, context);
+            var sourceCostCache = new Dictionary<RowWrapper, int>(wrapperComparer);
+            var targetCostCache = new Dictionary<RowWrapper, int>(wrapperComparer);
+
+            foreach (var sourceEntry in targetsBySource)
+            {
+                var sourceWrapper = sourceEntry.Key;
+                var sourceKey = sourceWrapper.Row;
+
+                if (!sourceCostCache.TryGetValue(sourceWrapper, out var forwardCost))
+                {
+                    forwardCost = CountEdgeBucket(succIndex, sourceKey);
+                    sourceCostCache.Add(sourceWrapper, forwardCost);
+                }
+
+                var source = sourceKey[groupKeyCount];
+                foreach (var target in sourceEntry.Value)
+                {
+                    if (!IsConcretePairTarget(target))
+                    {
+                        forwardTargetsBySource.Clear();
+                        backwardSourcesByTarget.Clear();
+                        return false;
+                    }
+
+                    var targetKey = new object[sourceKey.Length];
+                    Array.Copy(sourceKey, targetKey, sourceKey.Length - 1);
+                    targetKey[sourceKey.Length - 1] = target;
+                    var targetWrapper = new RowWrapper(targetKey);
+
+                    if (!targetCostCache.TryGetValue(targetWrapper, out var backwardCost))
+                    {
+                        backwardCost = CountEdgeBucket(predIndex, targetKey);
+                        targetCostCache.Add(targetWrapper, backwardCost);
+                    }
+
+                    if (forwardCost <= backwardCost)
+                    {
+                        AddGroupedPairRequest(forwardTargetsBySource, sourceWrapper, target);
+                    }
+                    else
+                    {
+                        AddGroupedPairRequest(backwardSourcesByTarget, targetWrapper, source);
+                    }
+                }
+            }
+
+            return forwardTargetsBySource.Count > 0 || backwardSourcesByTarget.Count > 0;
         }
 
         private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosureBySource(
@@ -8021,6 +8146,36 @@ namespace UnifyWeaver.QueryRuntime
             return sources.Contains(sourceEntry.Key);
         }
 
+        private static bool IsMultiConcretePairRequest(IReadOnlyDictionary<object?, HashSet<object?>> bySource)
+        {
+            if (bySource.Count <= 1)
+            {
+                return false;
+            }
+
+            var pairCount = 0;
+
+            foreach (var sourceEntry in bySource)
+            {
+                if (ReferenceEquals(sourceEntry.Key, Wildcard.Value))
+                {
+                    return false;
+                }
+
+                foreach (var target in sourceEntry.Value)
+                {
+                    if (!IsConcretePairTarget(target))
+                    {
+                        return false;
+                    }
+
+                    pairCount++;
+                }
+            }
+
+            return pairCount > 1;
+        }
+
         private static bool IsSingleConcreteGroupedPairRequest(
             IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
             IReadOnlyDictionary<RowWrapper, HashSet<object?>> sourcesByTarget)
@@ -8058,6 +8213,76 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return sources.Contains(sourceKey[sourceKey.Length - 1]);
+        }
+
+        private static bool IsMultiConcreteGroupedPairRequest(
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            int groupCount)
+        {
+            if (targetsBySource.Count <= 1)
+            {
+                return false;
+            }
+
+            var pairCount = 0;
+
+            foreach (var sourceEntry in targetsBySource)
+            {
+                var sourceKey = sourceEntry.Key.Row;
+                if (sourceKey.Length <= groupCount)
+                {
+                    return false;
+                }
+
+                if (HasWildcardSeedComponents(sourceKey, groupCount) ||
+                    ReferenceEquals(sourceKey[groupCount], Wildcard.Value))
+                {
+                    return false;
+                }
+
+                foreach (var target in sourceEntry.Value)
+                {
+                    if (!IsConcretePairTarget(target))
+                    {
+                        return false;
+                    }
+
+                    pairCount++;
+                }
+            }
+
+            return pairCount > 1;
+        }
+
+        private static bool IsConcretePairTarget(object? target) =>
+            target is not null && !ReferenceEquals(target, Wildcard.Value);
+
+        private static void AddPairRequest(
+            Dictionary<object?, HashSet<object?>> valuesByKey,
+            object? key,
+            object? value)
+        {
+            if (!valuesByKey.TryGetValue(key, out var values))
+            {
+                values = new HashSet<object?>();
+                valuesByKey.Add(key, values);
+            }
+
+            values.Add(value);
+        }
+
+        private static void AddGroupedPairRequest(
+            Dictionary<RowWrapper, HashSet<object?>> valuesByKey,
+            RowWrapper key,
+            object? value)
+        {
+            if (!valuesByKey.TryGetValue(key, out var values))
+            {
+                values = new HashSet<object?>();
+                valuesByKey.Add(key, values);
+            }
+
+            values.Add(value);
         }
 
         private static int CountEdgeBucket(Dictionary<object, List<object[]>> index, object? key)
@@ -8594,6 +8819,34 @@ namespace UnifyWeaver.QueryRuntime
                     return ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context);
                 }
 
+                if (_cacheContext is null &&
+                    TryBuildPairProbeDirectionBatches(
+                        closure,
+                        bySource,
+                        context,
+                        out var forwardBySource,
+                        out var backwardByTarget))
+                {
+                    if (forwardBySource.Count > 0 && backwardByTarget.Count > 0)
+                    {
+                        trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeMixed");
+                        return ExecuteSeededTransitiveClosurePairsMixedDirection(
+                            closure,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+                    }
+
+                    if (forwardBySource.Count > 0)
+                    {
+                        trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeForward");
+                        return ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context);
+                    }
+
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeBackward");
+                    return ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context);
+                }
+
                 const int MaxMemoizedPairSeeds = 32;
                 var canMemoizePairs =
                     _cacheContext is not null &&
@@ -8627,6 +8880,82 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsMixedDirection(
+            TransitiveClosureNode closure,
+            IReadOnlyDictionary<object?, HashSet<object?>> forwardBySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
+            EvaluationContext context)
+        {
+            foreach (var row in ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context))
+            {
+                yield return row;
+            }
+
+            foreach (var row in ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context))
+            {
+                yield return row;
+            }
+        }
+
+        private bool TryBuildPairProbeDirectionBatches(
+            TransitiveClosureNode closure,
+            IReadOnlyDictionary<object?, HashSet<object?>> bySource,
+            EvaluationContext context,
+            out Dictionary<object?, HashSet<object?>> forwardBySource,
+            out Dictionary<object?, HashSet<object?>> backwardByTarget)
+        {
+            forwardBySource = new Dictionary<object?, HashSet<object?>>();
+            backwardByTarget = new Dictionary<object?, HashSet<object?>>();
+
+            if (!IsMultiConcretePairRequest(bySource))
+            {
+                return false;
+            }
+
+            var edges = GetFactsList(closure.EdgeRelation, context);
+            var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+            var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
+            var sourceCostCache = new Dictionary<object?, int>();
+            var targetCostCache = new Dictionary<object?, int>();
+
+            foreach (var sourceEntry in bySource)
+            {
+                var source = sourceEntry.Key;
+                if (!sourceCostCache.TryGetValue(source, out var forwardCost))
+                {
+                    forwardCost = CountEdgeBucket(succIndex, source);
+                    sourceCostCache.Add(source, forwardCost);
+                }
+
+                foreach (var target in sourceEntry.Value)
+                {
+                    if (!IsConcretePairTarget(target))
+                    {
+                        forwardBySource.Clear();
+                        backwardByTarget.Clear();
+                        return false;
+                    }
+
+                    if (!targetCostCache.TryGetValue(target, out var backwardCost))
+                    {
+                        backwardCost = CountEdgeBucket(predIndex, target);
+                        targetCostCache.Add(target, backwardCost);
+                    }
+
+                    if (forwardCost <= backwardCost)
+                    {
+                        AddPairRequest(forwardBySource, source, target);
+                    }
+                    else
+                    {
+                        AddPairRequest(backwardByTarget, target, source);
+                    }
+                }
+            }
+
+            return forwardBySource.Count > 0 || backwardByTarget.Count > 0;
         }
 
         private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsMemoizedBySource(
