@@ -6637,6 +6637,12 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairs");
 
+                if (IsSingleConcreteGroupedPairRequest(targetsBySource, sourcesByTarget))
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbe");
+                    return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context);
+                }
+
                 const int MaxMemoizedGroupedPairSeeds = 32;
                 var canMemoizePairs =
                     _cacheContext is not null &&
@@ -7956,6 +7962,74 @@ namespace UnifyWeaver.QueryRuntime
             return false;
         }
 
+        private static bool IsSingleConcretePairRequest(
+            IReadOnlyDictionary<object?, HashSet<object?>> bySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> byTarget)
+        {
+            if (bySource.Count != 1 || byTarget.Count != 1)
+            {
+                return false;
+            }
+
+            var sourceEntry = bySource.First();
+            if (sourceEntry.Value.Count != 1)
+            {
+                return false;
+            }
+
+            var target = sourceEntry.Value.First();
+            if (target is null)
+            {
+                return false;
+            }
+
+            if (!byTarget.TryGetValue(target, out var sources) || sources.Count != 1)
+            {
+                return false;
+            }
+
+            return sources.Contains(sourceEntry.Key);
+        }
+
+        private static bool IsSingleConcreteGroupedPairRequest(
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> sourcesByTarget)
+        {
+            if (targetsBySource.Count != 1 || sourcesByTarget.Count != 1)
+            {
+                return false;
+            }
+
+            var sourceEntry = targetsBySource.First();
+            if (sourceEntry.Value.Count != 1)
+            {
+                return false;
+            }
+
+            var target = sourceEntry.Value.First();
+            if (target is null)
+            {
+                return false;
+            }
+
+            var sourceKey = sourceEntry.Key.Row;
+            if (sourceKey.Length == 0)
+            {
+                return false;
+            }
+
+            var expectedTargetKey = new object[sourceKey.Length];
+            Array.Copy(sourceKey, expectedTargetKey, sourceKey.Length - 1);
+            expectedTargetKey[sourceKey.Length - 1] = target;
+
+            if (!sourcesByTarget.TryGetValue(new RowWrapper(expectedTargetKey), out var sources) || sources.Count != 1)
+            {
+                return false;
+            }
+
+            return sources.Contains(sourceKey[sourceKey.Length - 1]);
+        }
+
         private static bool TryGetParameterValue(
             object[] tuple,
             IReadOnlyList<int> inputPositions,
@@ -8460,6 +8534,12 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 trace?.RecordStrategy(closure, "TransitiveClosurePairs");
+
+                if (IsSingleConcretePairRequest(bySource, byTarget))
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbe");
+                    return ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context);
+                }
 
                 const int MaxMemoizedPairSeeds = 32;
                 var canMemoizePairs =
