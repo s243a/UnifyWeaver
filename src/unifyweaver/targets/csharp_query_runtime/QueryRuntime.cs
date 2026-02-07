@@ -6639,8 +6639,38 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (IsSingleConcreteGroupedPairRequest(targetsBySource, sourcesByTarget))
                 {
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbe");
-                    return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context);
+                    var seedEntry = targetsBySource.First();
+                    var sourceKey = seedEntry.Key.Row;
+                    var target = seedEntry.Value.First();
+                    var targetKey = new object[sourceKey.Length];
+                    Array.Copy(sourceKey, targetKey, sourceKey.Length - 1);
+                    targetKey[sourceKey.Length - 1] = target;
+
+                    var edges = GetFactsList(closure.EdgeRelation, context);
+                    var groupKeyCount = closure.GroupIndices.Count;
+                    var fromKeyIndices = new int[groupKeyCount + 1];
+                    var toKeyIndices = new int[groupKeyCount + 1];
+                    for (var i = 0; i < groupKeyCount; i++)
+                    {
+                        fromKeyIndices[i] = closure.GroupIndices[i];
+                        toKeyIndices[i] = closure.GroupIndices[i];
+                    }
+                    fromKeyIndices[groupKeyCount] = 0;
+                    toKeyIndices[groupKeyCount] = 1;
+
+                    var succIndex = GetJoinIndex(closure.EdgeRelation, fromKeyIndices, edges, context);
+                    var predIndex = GetJoinIndex(closure.EdgeRelation, toKeyIndices, edges, context);
+                    var forwardCost = CountEdgeBucket(succIndex, sourceKey);
+                    var backwardCost = CountEdgeBucket(predIndex, targetKey);
+
+                    if (forwardCost <= backwardCost)
+                    {
+                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeForward");
+                        return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context);
+                    }
+
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeBackward");
+                    return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context);
                 }
 
                 const int MaxMemoizedGroupedPairSeeds = 32;
@@ -8030,6 +8060,15 @@ namespace UnifyWeaver.QueryRuntime
             return sources.Contains(sourceKey[sourceKey.Length - 1]);
         }
 
+        private static int CountEdgeBucket(Dictionary<object, List<object[]>> index, object? key)
+        {
+            var lookupKey = key ?? NullFactIndexKey;
+            return index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
+        }
+
+        private static int CountEdgeBucket(Dictionary<RowWrapper, List<object[]>> index, object[] key) =>
+            index.TryGetValue(new RowWrapper(key), out var bucket) ? bucket.Count : 0;
+
         private static bool TryGetParameterValue(
             object[] tuple,
             IReadOnlyList<int> inputPositions,
@@ -8537,8 +8576,22 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (IsSingleConcretePairRequest(bySource, byTarget))
                 {
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbe");
-                    return ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context);
+                    var source = bySource.First().Key;
+                    var target = bySource.First().Value.First();
+                    var edges = GetFactsList(closure.EdgeRelation, context);
+                    var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                    var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
+                    var forwardCost = CountEdgeBucket(succIndex, source);
+                    var backwardCost = CountEdgeBucket(predIndex, target);
+
+                    if (forwardCost <= backwardCost)
+                    {
+                        trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeForward");
+                        return ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context);
+                    }
+
+                    trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeBackward");
+                    return ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context);
                 }
 
                 const int MaxMemoizedPairSeeds = 32;

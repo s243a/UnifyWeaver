@@ -28,6 +28,10 @@
 :- dynamic user:test_label_cat_reach_param/4.
 :- dynamic user:test_label_cat_reach_param_end/4.
 :- dynamic user:test_label_cat_reach_param_both/4.
+:- dynamic user:test_group_probe_dir_forward_edge/4.
+:- dynamic user:test_group_probe_dir_forward_reach/4.
+:- dynamic user:test_group_probe_dir_backward_edge/4.
+:- dynamic user:test_group_probe_dir_backward_reach/4.
 :- dynamic user:test_cat/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_recursive_label_path_cat_selective/4.
@@ -92,6 +96,10 @@
 :- dynamic user:test_even_param_unbound/1.
 :- dynamic user:test_odd_param_unbound/1.
 :- dynamic user:test_parity_input/1.
+:- dynamic user:test_probe_dir_forward_edge/2.
+:- dynamic user:test_probe_dir_forward_reach/2.
+:- dynamic user:test_probe_dir_backward_edge/2.
+:- dynamic user:test_probe_dir_backward_reach/2.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
 :- dynamic user:test_order_summary/1.
@@ -239,13 +247,15 @@ test_csharp_query_target :-
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
-        verify_parameterized_grouped_transitive_closure_pairs_single_probe_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_forward_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_backward_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_single_seed_strategy_runtime,
         verify_parameterized_reachability_plan,
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
-        verify_parameterized_reachability_pairs_single_probe_strategy_runtime,
+        verify_parameterized_reachability_pairs_single_probe_forward_strategy_runtime,
+        verify_parameterized_reachability_pairs_single_probe_backward_strategy_runtime,
         verify_parameterized_reachability_single_seed_strategy_runtime,
         verify_parameterized_reachability_by_target_single_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
@@ -623,6 +633,30 @@ setup_test_data :-
         test_label_cat_edge(X, Y, L, Cat),
         test_label_cat_reach_param_both(Y, Z, L, Cat)
     )),
+    assertz(user:test_group_probe_dir_forward_edge(a, b, red, cat1)),
+    assertz(user:test_group_probe_dir_forward_edge(b, c, red, cat1)),
+    assertz(user:test_group_probe_dir_forward_edge(x, c, red, cat1)),
+    assertz(user:test_group_probe_dir_forward_edge(y, c, red, cat1)),
+    assertz(user:mode(test_group_probe_dir_forward_reach(+, +, +, +))),
+    assertz(user:(test_group_probe_dir_forward_reach(X, Y, L, Cat) :-
+        test_group_probe_dir_forward_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_group_probe_dir_forward_reach(X, Z, L, Cat) :-
+        test_group_probe_dir_forward_edge(X, Y, L, Cat),
+        test_group_probe_dir_forward_reach(Y, Z, L, Cat)
+    )),
+    assertz(user:test_group_probe_dir_backward_edge(a, b, red, cat1)),
+    assertz(user:test_group_probe_dir_backward_edge(a, d, red, cat1)),
+    assertz(user:test_group_probe_dir_backward_edge(a, e, red, cat1)),
+    assertz(user:test_group_probe_dir_backward_edge(b, c, red, cat1)),
+    assertz(user:mode(test_group_probe_dir_backward_reach(+, +, +, +))),
+    assertz(user:(test_group_probe_dir_backward_reach(X, Y, L, Cat) :-
+        test_group_probe_dir_backward_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_group_probe_dir_backward_reach(X, Z, L, Cat) :-
+        test_group_probe_dir_backward_edge(X, Y, L, Cat),
+        test_group_probe_dir_backward_reach(Y, Z, L, Cat)
+    )),
     assertz(user:test_cat(cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(b, c, red, cat1)),
@@ -743,6 +777,26 @@ setup_test_data :-
     assertz(user:mode(test_reachable_param_both(+, +))),
     assertz(user:(test_reachable_param_both(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable_param_both(X, Z) :- test_fact(X, Y), test_reachable_param_both(Y, Z))),
+    assertz(user:test_probe_dir_forward_edge(a, b)),
+    assertz(user:test_probe_dir_forward_edge(b, c)),
+    assertz(user:test_probe_dir_forward_edge(x, c)),
+    assertz(user:test_probe_dir_forward_edge(y, c)),
+    assertz(user:mode(test_probe_dir_forward_reach(+, +))),
+    assertz(user:(test_probe_dir_forward_reach(X, Y) :- test_probe_dir_forward_edge(X, Y))),
+    assertz(user:(test_probe_dir_forward_reach(X, Z) :-
+        test_probe_dir_forward_edge(X, Y),
+        test_probe_dir_forward_reach(Y, Z)
+    )),
+    assertz(user:test_probe_dir_backward_edge(a, b)),
+    assertz(user:test_probe_dir_backward_edge(a, d)),
+    assertz(user:test_probe_dir_backward_edge(a, e)),
+    assertz(user:test_probe_dir_backward_edge(b, c)),
+    assertz(user:mode(test_probe_dir_backward_reach(+, +))),
+    assertz(user:(test_probe_dir_backward_reach(X, Y) :- test_probe_dir_backward_edge(X, Y))),
+    assertz(user:(test_probe_dir_backward_reach(X, Z) :-
+        test_probe_dir_backward_edge(X, Y),
+        test_probe_dir_backward_reach(Y, Z)
+    )),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -851,6 +905,12 @@ cleanup_test_data :-
     retractall(user:mode(test_label_cat_reach_param_end(_, _, _, _))),
     retractall(user:test_label_cat_reach_param_both(_, _, _, _)),
     retractall(user:mode(test_label_cat_reach_param_both(_, _, _, _))),
+    retractall(user:test_group_probe_dir_forward_edge(_, _, _, _)),
+    retractall(user:test_group_probe_dir_forward_reach(_, _, _, _)),
+    retractall(user:mode(test_group_probe_dir_forward_reach(_, _, _, _))),
+    retractall(user:test_group_probe_dir_backward_edge(_, _, _, _)),
+    retractall(user:test_group_probe_dir_backward_reach(_, _, _, _)),
+    retractall(user:mode(test_group_probe_dir_backward_reach(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
     retractall(user:mode(test_sparse_input_filtered(_, _, _))),
@@ -880,6 +940,12 @@ cleanup_test_data :-
     retractall(user:mode(test_reachable_param_end(_, _))),
     retractall(user:test_reachable_param_both(_, _)),
     retractall(user:mode(test_reachable_param_both(_, _))),
+    retractall(user:test_probe_dir_forward_edge(_, _)),
+    retractall(user:test_probe_dir_forward_reach(_, _)),
+    retractall(user:mode(test_probe_dir_forward_reach(_, _))),
+    retractall(user:test_probe_dir_backward_edge(_, _)),
+    retractall(user:test_probe_dir_backward_reach(_, _)),
+    retractall(user:mode(test_probe_dir_backward_reach(_, _))),
     retractall(user:test_reachable(_, _)),
     retractall(user:test_cat(_)),
     retractall(user:test_recursive_label_path_cat_filtered(_, _, _, _)),
@@ -2702,14 +2768,25 @@ verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime :-
         Params,
         HarnessSource).
 
-verify_parameterized_grouped_transitive_closure_pairs_single_probe_strategy_runtime :-
-    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_forward_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_forward_reach/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     Params = [[a, c, red, cat1]],
-    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosurePairsSingleProbe', HarnessSource),
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosurePairsSingleProbeForward', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
         ['a,c,red,cat1',
-         'STRATEGY_USED:GroupedTransitiveClosurePairsSingleProbe=true'],
+         'STRATEGY_USED:GroupedTransitiveClosurePairsSingleProbeForward=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_backward_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_backward_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, c, red, cat1]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosurePairsSingleProbeBackward', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosurePairsSingleProbeBackward=true'],
         Params,
         HarnessSource).
 
@@ -2767,14 +2844,25 @@ verify_parameterized_reachability_both_inputs_plan :-
     \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
     maybe_run_query_runtime(Plan, ['alice,bob', 'alice,charlie'], [[alice, bob], [alice, charlie], [bob, alice]]).
 
-verify_parameterized_reachability_pairs_single_probe_strategy_runtime :-
-    csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
+verify_parameterized_reachability_pairs_single_probe_forward_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_forward_reach/2, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
-    Params = [[alice, charlie]],
-    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosurePairsSingleProbe', HarnessSource),
+    Params = [[a, c]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosurePairsSingleProbeForward', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
-        ['alice,charlie',
-         'STRATEGY_USED:TransitiveClosurePairsSingleProbe=true'],
+        ['a,c',
+         'STRATEGY_USED:TransitiveClosurePairsSingleProbeForward=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_single_probe_backward_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_backward_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, c]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosurePairsSingleProbeBackward', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c',
+         'STRATEGY_USED:TransitiveClosurePairsSingleProbeBackward=true'],
         Params,
         HarnessSource).
 
