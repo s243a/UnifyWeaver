@@ -239,6 +239,8 @@ test_csharp_query_target :-
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_by_target_single_seed_strategy_runtime,
         verify_parameterized_reachability_plan,
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
@@ -2773,6 +2775,30 @@ verify_parameterized_reachability_by_target_single_strategy_runtime :-
         ['alice,charlie',
          'bob,charlie',
          'STRATEGY_USED:TransitiveClosureSeededByTargetSingle=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, red, cat1]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosureSeededSingle', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosureSeededSingle=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_by_target_single_seed_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_end/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[c, red, cat1]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosureSeededByTargetSingle', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c,red,cat1',
+         'b,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosureSeededByTargetSingle=true'],
         Params,
         HarnessSource).
 
