@@ -242,6 +242,8 @@ test_csharp_query_target :-
         verify_parameterized_reachability_plan,
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
+        verify_parameterized_reachability_single_seed_strategy_runtime,
+        verify_parameterized_reachability_by_target_single_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insensitive_runtime,
@@ -2749,6 +2751,30 @@ verify_parameterized_reachability_both_inputs_plan :-
     \+ sub_string(Source, _, _, _, '$need'),
     \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
     maybe_run_query_runtime(Plan, ['alice,bob', 'alice,charlie'], [[alice, bob], [alice, charlie], [bob, alice]]).
+
+verify_parameterized_reachability_single_seed_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[alice]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosureSeededSingle', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,bob',
+         'alice,charlie',
+         'STRATEGY_USED:TransitiveClosureSeededSingle=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_reachability_by_target_single_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_end/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[charlie]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosureSeededByTargetSingle', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,charlie',
+         'bob,charlie',
+         'STRATEGY_USED:TransitiveClosureSeededByTargetSingle=true'],
+        Params,
+        HarnessSource).
 
 verify_parameterized_grouped_transitive_closure_cache_reuse_runtime :-
     csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),

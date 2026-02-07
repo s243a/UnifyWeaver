@@ -7814,10 +7814,6 @@ namespace UnifyWeaver.QueryRuntime
                 var edges = GetFactsList(closure.EdgeRelation, context);
                 var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
 
-                var visited = new HashSet<PairKey>();
-                var totalRows = new List<object[]>();
-                var delta = new List<PairKey>();
-
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
 
@@ -7848,6 +7844,84 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
+
+                if (seeds.Count == 1)
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosureSeededSingle");
+
+                    var seed = seeds[0];
+                    var visitedNodes = new HashSet<object?>();
+                    var singleRows = new List<object[]>();
+                    var deltaNodes = new List<object?>();
+
+                    var lookupKey = seed ?? NullFactIndexKey;
+                    if (succIndex.TryGetValue(lookupKey, out var bucket))
+                    {
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var to = edge[1];
+                            if (visitedNodes.Add(to))
+                            {
+                                singleRows.Add(new object[] { seed!, to });
+                                deltaNodes.Add(to);
+                            }
+                        }
+                    }
+
+                    var singleIteration = 0;
+                    trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+
+                    while (deltaNodes.Count > 0)
+                    {
+                        singleIteration++;
+                        var nextDeltaNodes = new List<object?>();
+
+                        foreach (var node in deltaNodes)
+                        {
+                            lookupKey = node ?? NullFactIndexKey;
+                            if (!succIndex.TryGetValue(lookupKey, out bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var edge in bucket)
+                            {
+                                if (edge is null || edge.Length < 2)
+                                {
+                                    continue;
+                                }
+
+                                var next = edge[1];
+                                if (visitedNodes.Add(next))
+                                {
+                                    singleRows.Add(new object[] { seed!, next });
+                                    nextDeltaNodes.Add(next);
+                                }
+                            }
+                        }
+
+                        deltaNodes = nextDeltaNodes;
+                        trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+                    }
+
+                    if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var singleStoreBySeed))
+                    {
+                        singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.TransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
+                    }
+
+                    singleStoreBySeed[new RowWrapper(seedsKey)] = singleRows;
+                    return singleRows;
+                }
+
+                var visited = new HashSet<PairKey>();
+                var totalRows = new List<object[]>();
+                var delta = new List<PairKey>();
 
                 foreach (var seed in seeds)
                 {
@@ -7945,10 +8019,6 @@ namespace UnifyWeaver.QueryRuntime
                 var edges = GetFactsList(closure.EdgeRelation, context);
                 var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
 
-                var visited = new HashSet<PairKey>();
-                var totalRows = new List<object[]>();
-                var delta = new List<PairKey>();
-
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
 
@@ -7988,6 +8058,84 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
+
+                if (seeds.Count == 1)
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosureSeededByTargetSingle");
+
+                    var seed = seeds[0];
+                    var visitedNodes = new HashSet<object?>();
+                    var singleRows = new List<object[]>();
+                    var deltaNodes = new List<object?>();
+
+                    var lookupKey = seed ?? NullFactIndexKey;
+                    if (predIndex.TryGetValue(lookupKey, out var bucket))
+                    {
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var from = edge[0];
+                            if (visitedNodes.Add(from))
+                            {
+                                singleRows.Add(new object[] { from!, seed! });
+                                deltaNodes.Add(from);
+                            }
+                        }
+                    }
+
+                    var singleIteration = 0;
+                    trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+
+                    while (deltaNodes.Count > 0)
+                    {
+                        singleIteration++;
+                        var nextDeltaNodes = new List<object?>();
+
+                        foreach (var node in deltaNodes)
+                        {
+                            lookupKey = node ?? NullFactIndexKey;
+                            if (!predIndex.TryGetValue(lookupKey, out bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var edge in bucket)
+                            {
+                                if (edge is null || edge.Length < 2)
+                                {
+                                    continue;
+                                }
+
+                                var prev = edge[0];
+                                if (visitedNodes.Add(prev))
+                                {
+                                    singleRows.Add(new object[] { prev!, seed! });
+                                    nextDeltaNodes.Add(prev);
+                                }
+                            }
+                        }
+
+                        deltaNodes = nextDeltaNodes;
+                        trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+                    }
+
+                    if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var singleStoreBySeed))
+                    {
+                        singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.TransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
+                    }
+
+                    singleStoreBySeed[new RowWrapper(seedsKey)] = singleRows;
+                    return singleRows;
+                }
+
+                var visited = new HashSet<PairKey>();
+                var totalRows = new List<object[]>();
+                var delta = new List<PairKey>();
 
                 foreach (var seed in seeds)
                 {
