@@ -239,11 +239,13 @@ test_csharp_query_target :-
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_single_seed_strategy_runtime,
         verify_parameterized_reachability_plan,
         verify_parameterized_reachability_by_target_plan,
         verify_parameterized_reachability_both_inputs_plan,
+        verify_parameterized_reachability_pairs_single_probe_strategy_runtime,
         verify_parameterized_reachability_single_seed_strategy_runtime,
         verify_parameterized_reachability_by_target_single_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
@@ -2700,6 +2702,17 @@ verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime :-
         Params,
         HarnessSource).
 
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, c, red, cat1]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'GroupedTransitiveClosurePairsSingleProbe', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c,red,cat1',
+         'STRATEGY_USED:GroupedTransitiveClosurePairsSingleProbe=true'],
+        Params,
+        HarnessSource).
+
 verify_parameterized_reachability_plan :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
@@ -2753,6 +2766,17 @@ verify_parameterized_reachability_both_inputs_plan :-
     \+ sub_string(Source, _, _, _, '$need'),
     \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
     maybe_run_query_runtime(Plan, ['alice,bob', 'alice,charlie'], [[alice, bob], [alice, charlie], [bob, alice]]).
+
+verify_parameterized_reachability_pairs_single_probe_strategy_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[alice, charlie]],
+    harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, 'TransitiveClosurePairsSingleProbe', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,charlie',
+         'STRATEGY_USED:TransitiveClosurePairsSingleProbe=true'],
+        Params,
+        HarnessSource).
 
 verify_parameterized_reachability_single_seed_strategy_runtime :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
