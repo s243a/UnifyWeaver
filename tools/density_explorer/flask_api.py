@@ -446,6 +446,24 @@ def compute_manifold():
                 if projection_mode in ('weights', 'learned') and 'tree_distance_metric' not in data:
                     tree_distance_metric = projection_mode
 
+                # Support layout_dataset: use a different dataset's raw embeddings for 2D SVD layout
+                # while the model-projected embeddings are used for tree distances
+                layout_dataset = data.get('layout_dataset')
+                layout_embeddings = None
+                tree_embeddings_override = None
+                if layout_dataset and projection_mode == 'embedding':
+                    if not layout_dataset.endswith('.npz'):
+                        layout_path = DATASETS_DIR / f"{layout_dataset}.npz"
+                    else:
+                        layout_path = Path(layout_dataset)
+                    if layout_path.exists():
+                        layout_raw, _ = load_embeddings(str(layout_path))
+                        if top_k:
+                            layout_raw = layout_raw[:top_k]
+                        # Swap: layout_raw for 2D projection, model-projected for tree
+                        layout_embeddings = layout_raw
+                        tree_embeddings_override = embeddings  # model-projected
+
                 # Resolve root_id by title if provided as string
                 root_id = data.get('root_id')
                 if isinstance(root_id, str) and titles is not None:
@@ -457,7 +475,7 @@ def compute_manifold():
                         root_id = None  # Title not found
 
                 result = compute_density_manifold(
-                    embeddings=embeddings,
+                    embeddings=layout_embeddings if layout_embeddings is not None else embeddings,
                     titles=titles,
                     bandwidth=data.get('bandwidth'),
                     grid_size=data.get('grid_size', 100),
@@ -470,7 +488,8 @@ def compute_manifold():
                     weights=blend_weights,
                     input_embeddings=input_embeddings,
                     max_branching=data.get('max_branching'),
-                    root_id=root_id
+                    root_id=root_id,
+                    tree_embeddings=tree_embeddings_override
                 )
 
                 return result.to_json(), 200, {'Content-Type': 'application/json'}

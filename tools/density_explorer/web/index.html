@@ -525,6 +525,8 @@
                             <label for="flaskDataset">Data Subset</label>
                             <select id="flaskDataset" style="width:100%;">
                                 <option value="wikipedia_physics_nomic">Wikipedia Physics (Nomic, 300)</option>
+                                <option value="wikipedia_physics_nomic_titles">Wikipedia Physics (Titles v1.5, 300)</option>
+                                <option value="wikipedia_physics_nomic_text">Wikipedia Physics (Text v1.5, 300)</option>
                                 <option value="wikipedia_physics_articles">Wikipedia Physics (Articles, 200)</option>
                                 <option value="wikipedia_physics">Wikipedia Physics (Categories, 2198)</option>
                                 <option value="pearltrees_nomic_routing">Pearltrees Routing</option>
@@ -541,11 +543,21 @@
                         <div class="control-group">
                             <label for="flaskProjectionMode">2D Projection Mode</label>
                             <select id="flaskProjectionMode" style="width:100%;">
-                                <option value="embedding">Embedding Space (semantic similarity)</option>
+                                <option value="embedding" id="embeddingModeOption">Embedding Space (semantic similarity)</option>
                                 <option value="weights">Weight Space (transformation recipes)</option>
                                 <option value="learned">Learned Metric (organizational structure)</option>
                                 <option value="wikipedia_physics">Wikipedia Physics (trained hierarchy)</option>
                                 <option value="wikipedia_physics_mds">Wikipedia Physics (MDS - distance faithful)</option>
+                            </select>
+                        </div>
+                        <div class="control-group" id="layoutDatasetGroup" style="display:none;">
+                            <label for="flaskLayoutDataset">2D Layout Dataset <span style="font-size:0.75rem; color:#94a3b8;">(override for SVD layout)</span></label>
+                            <select id="flaskLayoutDataset" style="width:100%;">
+                                <option value="">(Same as Data Subset)</option>
+                                <option value="wikipedia_physics_nomic">Nomic 300 (unknown provenance)</option>
+                                <option value="wikipedia_physics_nomic_titles">Titles v1.5 (300)</option>
+                                <option value="wikipedia_physics_nomic_text">Text v1.5 (300)</option>
+                                <option value="wikipedia_physics_articles">Articles 200</option>
                             </select>
                         </div>
                         <div class="control-group">
@@ -847,25 +859,30 @@
             'data/physics.json': {
                 name: 'Physics (Wikipedia)',
                 embeddings: {
-                    'minilm': {
-                        label: 'MiniLM (384D) - Fast',
-                        url: null,  // null = included in main JSON
-                        dim: 384
-                    },
                     'nomic': {
-                        label: 'Nomic (768D) - Better clustering',
+                        label: 'Nomic (768D) - Unknown provenance',
+                        url: null,  // null = included in main JSON (physics.json has 768D Nomic)
+                        dim: 768
+                    },
+                    'nomic_titles': {
+                        label: 'Nomic v1.5 (768D) - Titles',
                         url: 'data/physics_nomic_embeddings.json',
                         dim: 768
+                    },
+                    'minilm': {
+                        label: 'MiniLM (384D) - Titles',
+                        url: 'data/physics_minilm_embeddings.json',
+                        dim: 384
                     }
                 },
-                defaultLayout: 'minilm',  // MiniLM better for 2D layout (hubs in dense regions)
-                defaultTree: 'nomic'      // Nomic better for semantic tree distances
+                defaultLayout: 'nomic',
+                defaultTree: 'nomic'
             }
         };
 
         // Track current embedding state - separate for layout and tree
         let currentDatasetUrl = 'data/physics.json';
-        let layoutEmbeddingType = 'minilm';
+        let layoutEmbeddingType = 'nomic';
         let treeEmbeddingType = 'nomic';
         let layoutEmbeddings = null;  // Embeddings for 2D projection
         let treeEmbeddings = null;    // Embeddings for tree distance calculations
@@ -1484,6 +1501,28 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
                 loadFlaskBtn.addEventListener('click', loadFromFlaskApi);
             }
 
+            // Show/hide layout dataset override based on model + projection mode
+            function updateLayoutDatasetVisibility() {
+                const model = document.getElementById('flaskModel')?.value;
+                const projMode = document.getElementById('flaskProjectionMode')?.value;
+                const group = document.getElementById('layoutDatasetGroup');
+                const embOption = document.getElementById('embeddingModeOption');
+                const hasModel = model && model !== 'None' && model !== '';
+                if (group) {
+                    // Show when a projection model is selected AND projection mode is embedding
+                    group.style.display = (hasModel && projMode === 'embedding') ? 'block' : 'none';
+                }
+                // Clarify what "Embedding Space" means based on whether a model is active
+                if (embOption) {
+                    embOption.textContent = hasModel
+                        ? 'Projected Embedding Space (model output for layout)'
+                        : 'Embedding Space (semantic similarity)';
+                }
+            }
+            document.getElementById('flaskModel')?.addEventListener('change', updateLayoutDatasetVisibility);
+            document.getElementById('flaskProjectionMode')?.addEventListener('change', updateLayoutDatasetVisibility);
+            updateLayoutDatasetVisibility();
+
             // Projection mode
             projectionModeSelect.addEventListener('change', handleProjectionModeChange);
             clearAxisBtn.addEventListener('click', clearAxisSelection);
@@ -1943,7 +1982,22 @@ set_dual_embeddings(_js_layout_emb.to_py(), _js_tree_emb.to_py(), list(_js_title
                 );
 
                 if (needsApiProjection) {
-                    // Use Flask API to apply the model/projection mode consistently
+                    // Flask API mode with a model: sync the layout embedding choice
+                    // to the 2D Layout Dataset selector and reload via API.
+                    // The Bivector model projects embeddings for tree distances,
+                    // but the 2D SVD layout can use raw embeddings from any dataset.
+                    const layoutDatasetSelect = document.getElementById('flaskLayoutDataset');
+                    if (layoutDatasetSelect) {
+                        // Map embedding type to a layout dataset
+                        const embeddingToDataset = {
+                            'minilm': '',  // MiniLM = same as data subset (original raw embeddings)
+                            'nomic': '',   // Nomic = same as data subset
+                        };
+                        const mapped = embeddingToDataset[selected];
+                        if (mapped !== undefined) {
+                            layoutDatasetSelect.value = mapped;
+                        }
+                    }
                     console.log('Using Flask API for projection (model or special mode selected)');
                     await loadFromFlaskApi();
                     return;
@@ -2437,8 +2491,6 @@ json.dumps(data)
             if (embeddingsFlaskNote) {
                 embeddingsFlaskNote.style.display = isFlaskApi ? 'block' : 'none';
             }
-            // Keep embedding selectors enabled - they affect Pyodide recompute
-            // Flask API uses its own Projection Mode / Tree Metric settings
 
             if (value === 'custom') {
                 customUrlGroup.style.display = 'block';
@@ -2478,6 +2530,7 @@ json.dumps(data)
             const dataset = document.getElementById('flaskDataset').value;
             const model = document.getElementById('flaskModel').value;
             const projectionMode = document.getElementById('flaskProjectionMode').value;
+            const layoutDataset = document.getElementById('flaskLayoutDataset')?.value || '';
             const treeMetric = document.getElementById('flaskTreeMetric').value;
             const treeType = document.getElementById('flaskTreeType').value;
             const topK = parseInt(document.getElementById('flaskTopK').value) || 200;
@@ -2582,6 +2635,11 @@ json.dumps(data)
 
                     if (model) {
                         requestBody.model = model;
+                    }
+
+                    // Layout dataset override: use different embeddings for 2D SVD layout
+                    if (layoutDataset && model && projectionMode === 'embedding') {
+                        requestBody.layout_dataset = layoutDataset;
                     }
 
                     response = await fetch(`${apiUrl}/api/compute`, {
