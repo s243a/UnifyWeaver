@@ -374,6 +374,10 @@ def compute_manifold():
         if projection_mode not in ('embedding', 'weights', 'learned', 'wikipedia_physics', 'wikipedia_physics_mds'):
             return jsonify({'error': f'Invalid projection_mode: {projection_mode}. Use "embedding", "weights", "learned", "wikipedia_physics", or "wikipedia_physics_mds"'}), 400
 
+        # Extract blend parameters
+        blend_layout_alpha = data.get('blend_layout_alpha')
+        blend_tree_alpha = data.get('blend_tree_alpha')
+
         # Check for projection model
         model = data.get('model')
         blend_weights = None
@@ -489,7 +493,9 @@ def compute_manifold():
                     input_embeddings=input_embeddings,
                     max_branching=data.get('max_branching'),
                     root_id=root_id,
-                    tree_embeddings=tree_embeddings_override
+                    tree_embeddings=tree_embeddings_override,
+                    blend_layout_alpha=blend_layout_alpha,
+                    blend_tree_alpha=blend_tree_alpha
                 )
 
                 return result.to_json(), 200, {'Content-Type': 'application/json'}
@@ -591,6 +597,10 @@ def compute_from_embeddings():
                 # Fall back to using output embeddings as input (less accurate but functional)
                 input_embeddings = embeddings
 
+        # Blend parameters
+        blend_layout_alpha = data.get('blend_layout_alpha')
+        blend_tree_alpha = data.get('blend_tree_alpha')
+
         result = compute_density_manifold(
             embeddings=embeddings,
             titles=titles,
@@ -605,7 +615,9 @@ def compute_from_embeddings():
             weights=weights,
             input_embeddings=input_embeddings,
             max_branching=data.get('max_branching'),
-            tree_embeddings=tree_embeddings
+            tree_embeddings=tree_embeddings,
+            blend_layout_alpha=blend_layout_alpha,
+            blend_tree_alpha=blend_tree_alpha
         )
 
         return result.to_json(), 200, {'Content-Type': 'application/json'}

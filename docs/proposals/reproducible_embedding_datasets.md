@@ -122,45 +122,42 @@ Rename for clarity:
 - `wikipedia_physics_articles.npz` → keep as-is (referenced in Flask API code)
 - Both marked as "unknown provenance" in documentation
 
-### Phase 3: Embedding Blending (future)
+### Phase 3: Embedding Blending (partially implemented)
 
 Different embedding views (titles, text, paths, projected) capture different
 aspects of the same articles. Rather than choosing one view, blending allows
-combining them with a tunable ratio:
+combining them with a tunable ratio.
 
-```
-blended = α * embedding_A + (1 - α) * embedding_B
-```
+#### Implemented: Input↔Output Space Blending
 
-Where `α ∈ [0, 1]` controls the mix. After blending, L2-normalize.
+A Blend tab in the density explorer supports blending between input (raw) and
+output (model-transformed) embedding spaces. Four modes are available:
 
-**Use cases:**
-- **Layout blending**: Blend title embeddings (categorical structure) with text
-  embeddings (content similarity) for a 2D layout that balances taxonomy and
-  topic — e.g., 70% title + 30% text keeps the hierarchical hub structure
-  while pulling content-related articles slightly closer.
-- **Tree blending**: Blend projected embeddings (organizational distance) with
-  raw embeddings (semantic distance) for tree construction — smoothly
-  transition between purely organizational and purely semantic trees.
+1. **None** — No blending, standard behavior.
+2. **Visualization** — Single slider (α ∈ [0,1]). SVD each space to 2D
+   independently, normalize to same scale, blend 2D coordinates:
+   `pos = α·pos_input + (1-α)·pos_output`. Tree distances unchanged.
+3. **Tree Distance** — Single slider. Compute cosine distance matrices in each
+   space, blend: `d = α·d_input + (1-α)·d_output`. 2D layout unchanged.
+4. **Both** — Two independent sliders for layout and tree.
 
-**Challenges:**
-- Blending requires embeddings to be in the same space and dimension. Title
-  and text embeddings from the same model (nomic-embed-text-v1.5, 768D) can
-  be blended directly. Projected embeddings (64D from Bivector model) cannot
-  be blended with raw 768D embeddings without projection.
-- The blend ratio is an additional parameter for every operation (layout + tree),
-  increasing UI complexity. A single slider per purpose (layout blend, tree
-  blend) is manageable, but the interaction between dataset choice, model
-  choice, and blend ratio creates many combinations.
-- Blending in the embedding space is not the same as blending in the distance
-  space. For tree construction, blending distances
-  (`d_blend = α * d_A + (1-α) * d_B`) may be more principled than blending
-  embeddings and computing distances on the blend.
+**Key finding:** With the Bivector Paired model (designed to preserve input
+geometry for good hit@k retrieval), tree blending has minimal visible effect —
+only 8/299 MST edges change between pure input and pure output. The model's
+information-preserving design means input and output distance orderings are
+nearly identical. Visualization blending is more effective because SVD captures
+principal variance directions, which shift even when relative distances don't.
 
-**Recommended approach:** Start with a single blend slider for layout (title ↔ text),
-keeping tree distances unblended. This covers the most useful case (tuning the
-2D visualization between categorical and semantic layouts) without combinatorial
-complexity. Add tree blending later if needed.
+This confirms a tension: models optimized for retrieval preservation produce
+similar distances (good for search, minimal tree impact), while models that
+reshape distances for hierarchy (like the learned metric) would produce more
+dramatic tree differences.
+
+#### Proposed: Custom Multi-Space Blending
+
+Cross-space blending (embedding × weights × learned metric × Wikipedia physics)
+involves different dimensionalities and distance semantics. This is addressed
+in a separate proposal: `docs/proposals/custom_distance_blending.md`.
 
 ## Open Questions
 

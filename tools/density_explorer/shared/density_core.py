@@ -386,6 +386,85 @@ def classical_mds_2d(
     return points_2d, np.sqrt(top2_vals), var_explained
 
 
+def blend_projections_2d(
+    emb_input: np.ndarray,
+    emb_output: np.ndarray,
+    alpha: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Blend two embedding spaces at the 2D projection level.
+
+    Projects each space to 2D independently via SVD, normalizes coordinates
+    to the same scale, then blends: pts = alpha * pts_input + (1-alpha) * pts_output.
+
+    Args:
+        emb_input: (N, D_in) raw/input embeddings
+        emb_output: (N, D_out) model-transformed embeddings
+        alpha: blend factor. 1.0 = pure input, 0.0 = pure output
+
+    Returns:
+        points_2d: (N, 2) blended coordinates
+        singular_values: weighted blend of singular values
+        variance_explained: weighted blend of variance explained
+    """
+    pts_input, sv_input, var_input = project_to_2d(emb_input)
+    pts_output, sv_output, var_output = project_to_2d(emb_output)
+
+    # Normalize both to same scale
+    scale_input = np.abs(pts_input).max() + 1e-8
+    scale_output = np.abs(pts_output).max() + 1e-8
+    pts_input_norm = pts_input / scale_input
+    pts_output_norm = pts_output / scale_output
+
+    # Blend 2D positions
+    pts_blend = alpha * pts_input_norm + (1 - alpha) * pts_output_norm
+
+    # Weighted singular values and variance
+    sv_blend = alpha * sv_input + (1 - alpha) * sv_output
+    var_blend = [
+        alpha * var_input[0] + (1 - alpha) * var_output[0],
+        alpha * var_input[1] + (1 - alpha) * var_output[1],
+    ]
+
+    return pts_blend, sv_blend, var_blend
+
+
+def blend_distance_matrices(
+    emb_input: np.ndarray,
+    emb_output: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    """
+    Blend distance matrices from two embedding spaces.
+
+    Computes cosine distance in each space, then blends:
+    d = alpha * d_input + (1-alpha) * d_output.
+
+    Args:
+        emb_input: (N, D_in) raw/input embeddings
+        emb_output: (N, D_out) model-transformed embeddings
+        alpha: blend factor. 1.0 = pure input, 0.0 = pure output
+
+    Returns:
+        dist_blend: (N, N) blended distance matrix
+    """
+    def cosine_dist(emb):
+        norms = np.linalg.norm(emb, axis=1, keepdims=True)
+        normed = emb / (norms + 1e-8)
+        sim = normed @ normed.T
+        dist = 1 - sim
+        np.fill_diagonal(dist, 0)
+        return dist
+
+    dist_input = cosine_dist(emb_input)
+    dist_output = cosine_dist(emb_output)
+
+    dist_blend = alpha * dist_input + (1 - alpha) * dist_output
+    np.fill_diagonal(dist_blend, 0)
+
+    return dist_blend
+
+
 def project_weights_to_2d(
     weights: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -487,7 +566,8 @@ def build_mst_tree(
     input_embeddings: Optional[np.ndarray] = None,
     metric_model=None,
     max_branching: Optional[int] = None,
-    root_id: Optional[int] = None
+    root_id: Optional[int] = None,
+    dist_matrix_override: Optional[np.ndarray] = None
 ) -> TreeStructure:
     """
     Build minimum spanning tree.
@@ -540,7 +620,10 @@ def build_mst_tree(
         tree_type = 'mst'
 
     # Compute distance matrix
-    if use_direct_distances:
+    if dist_matrix_override is not None:
+        dist_matrix = dist_matrix_override
+        tree_type = tree_type + '-blended' if 'blended' not in tree_type else tree_type
+    elif use_direct_distances:
         # Already have distance matrix from model
         pass
     else:
@@ -649,7 +732,8 @@ def build_jguided_tree(
     metric_model=None,
     k_neighbors: int = 10,
     max_branching: Optional[int] = None,
-    root_id: Optional[int] = None
+    root_id: Optional[int] = None,
+    dist_matrix_override: Optional[np.ndarray] = None
 ) -> TreeStructure:
     """
     Build J-guided tree (local connections based on k-nearest neighbors).
@@ -704,8 +788,12 @@ def build_jguided_tree(
 
     n = len(embeddings)
 
-    # Compute distance matrix if not already done
-    if not use_direct_distances:
+    # Compute distance matrix
+    if dist_matrix_override is not None:
+        dist_matrix = dist_matrix_override.copy()
+        np.fill_diagonal(dist_matrix, np.inf)
+        tree_type = tree_type + '-blended' if 'blended' not in tree_type else tree_type
+    elif not use_direct_distances:
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         vec_norm = vectors / (norms + 1e-8)
         similarity = vec_norm @ vec_norm.T
@@ -810,7 +898,8 @@ def build_density_greedy_tree(
     metric_model=None,
     k_neighbors: int = 10,
     max_branching: Optional[int] = None,
-    root_id: Optional[int] = None
+    root_id: Optional[int] = None,
+    dist_matrix_override: Optional[np.ndarray] = None
 ) -> TreeStructure:
     """
     Build tree using density-ordered greedy insertion.
@@ -871,8 +960,12 @@ def build_density_greedy_tree(
 
     n = len(embeddings)
 
-    # Compute distance matrix if not already done
-    if not use_direct_distances:
+    # Compute distance matrix
+    if dist_matrix_override is not None:
+        dist_matrix = dist_matrix_override.copy()
+        np.fill_diagonal(dist_matrix, np.inf)
+        tree_type = tree_type + '-blended' if 'blended' not in tree_type else tree_type
+    elif not use_direct_distances:
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         vec_norm = vectors / (norms + 1e-8)
         similarity = vec_norm @ vec_norm.T
@@ -1075,7 +1168,9 @@ def compute_density_manifold(
     metric_model=None,
     max_branching: Optional[int] = None,
     root_id: Optional[int] = None,
-    tree_embeddings: Optional[np.ndarray] = None
+    tree_embeddings: Optional[np.ndarray] = None,
+    blend_layout_alpha: Optional[float] = None,
+    blend_tree_alpha: Optional[float] = None
 ) -> DensityManifoldData:
     """
     Main function: compute complete density manifold data.
@@ -1153,9 +1248,16 @@ def compute_density_manifold(
             )
             projection_mode = "weights"  # Update mode for metadata
     else:
-        points_2d, singular_values, var_explained = project_to_2d(
-            embeddings, mode=projection_mode, weights=weights
-        )
+        # Check for layout blending (input↔output space)
+        if (blend_layout_alpha is not None and input_embeddings is not None
+                and projection_mode == "embedding"):
+            points_2d, singular_values, var_explained = blend_projections_2d(
+                input_embeddings, embeddings, blend_layout_alpha
+            )
+        else:
+            points_2d, singular_values, var_explained = project_to_2d(
+                embeddings, mode=projection_mode, weights=weights
+            )
 
     # Compute density
     density_grid = compute_density_grid(points_2d, bandwidth, grid_size)
@@ -1170,6 +1272,13 @@ def compute_density_manifold(
         # Otherwise use the same embeddings as for projection
         tree_emb = tree_embeddings if tree_embeddings is not None else embeddings
 
+        # Compute blended tree distance matrix if requested
+        dist_matrix_for_tree = None
+        if blend_tree_alpha is not None and input_embeddings is not None:
+            dist_matrix_for_tree = blend_distance_matrices(
+                input_embeddings, tree_emb, blend_tree_alpha
+            )
+
         if tree_type in ('j-guided', 'jguided'):
             tree = build_jguided_tree(
                 tree_emb, points_2d, titles,
@@ -1178,7 +1287,8 @@ def compute_density_manifold(
                 input_embeddings=inp_emb,
                 metric_model=metric_model,
                 max_branching=max_branching,
-                root_id=root_id
+                root_id=root_id,
+                dist_matrix_override=dist_matrix_for_tree
             )
         elif tree_type in ('density-greedy', 'density_greedy'):
             tree = build_density_greedy_tree(
@@ -1188,7 +1298,8 @@ def compute_density_manifold(
                 input_embeddings=inp_emb,
                 metric_model=metric_model,
                 max_branching=max_branching,
-                root_id=root_id
+                root_id=root_id,
+                dist_matrix_override=dist_matrix_for_tree
             )
         else:
             # Default to MST
@@ -1199,7 +1310,8 @@ def compute_density_manifold(
                 input_embeddings=inp_emb,
                 metric_model=metric_model,
                 max_branching=max_branching,
-                root_id=root_id
+                root_id=root_id,
+                dist_matrix_override=dist_matrix_for_tree
             )
 
     # Find peaks if requested
