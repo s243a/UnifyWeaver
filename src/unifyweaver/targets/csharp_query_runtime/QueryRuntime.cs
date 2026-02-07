@@ -6863,6 +6863,94 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: false, built: true);
 
+                if (orderedSeeds.Count == 1 && !HasWildcardSeedComponents(orderedSeeds[0], groupCount))
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededSingle");
+
+                    var seedKey = orderedSeeds[0];
+                    var visitedNodes = new HashSet<object?>();
+                    var singleRows = new List<object[]>();
+                    var deltaNodes = new List<object?>();
+
+                    var initialLookup = new object[groupCount + 1];
+                    Array.Copy(seedKey, initialLookup, initialLookup.Length);
+                    if (succIndex.TryGetValue(new RowWrapper(initialLookup), out var bucket))
+                    {
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length <= maxRequiredIndex)
+                            {
+                                continue;
+                            }
+
+                            var to = edge[1];
+                            if (!visitedNodes.Add(to))
+                            {
+                                continue;
+                            }
+
+                            var key = new object[groupCount + 2];
+                            Array.Copy(seedKey, key, seedKey.Length);
+                            key[groupCount + 1] = to;
+                            singleRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, key));
+                            deltaNodes.Add(to);
+                        }
+                    }
+
+                    var singleIteration = 0;
+                    trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+
+                    while (deltaNodes.Count > 0)
+                    {
+                        singleIteration++;
+                        var nextDeltaNodes = new List<object?>();
+
+                        foreach (var node in deltaNodes)
+                        {
+                            var lookup = new object[groupCount + 1];
+                            Array.Copy(seedKey, lookup, groupCount);
+                            lookup[groupCount] = node;
+
+                            if (!succIndex.TryGetValue(new RowWrapper(lookup), out bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var edge in bucket)
+                            {
+                                if (edge is null || edge.Length <= maxRequiredIndex)
+                                {
+                                    continue;
+                                }
+
+                                var next = edge[1];
+                                if (!visitedNodes.Add(next))
+                                {
+                                    continue;
+                                }
+
+                                var nextKey = new object[groupCount + 2];
+                                Array.Copy(seedKey, nextKey, seedKey.Length);
+                                nextKey[groupCount + 1] = next;
+                                singleRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, nextKey));
+                                nextDeltaNodes.Add(next);
+                            }
+                        }
+
+                        deltaNodes = nextDeltaNodes;
+                        trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+                    }
+
+                    if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var singleStoreBySeed))
+                    {
+                        singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.GroupedTransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
+                    }
+
+                    singleStoreBySeed[new RowWrapper(flatSeedKey)] = singleRows;
+                    return singleRows;
+                }
+
                 var iteration = 0;
                 trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
 
@@ -7107,6 +7195,97 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
+
+                if (orderedSeeds.Count == 1 && !HasWildcardSeedComponents(orderedSeeds[0], groupCount))
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededByTargetSingle");
+
+                    var seedKey = orderedSeeds[0];
+                    var target = seedKey[groupCount];
+                    var visitedNodes = new HashSet<object?>();
+                    var singleRows = new List<object[]>();
+                    var deltaNodes = new List<object?>();
+
+                    var initialLookup = new object[groupCount + 1];
+                    Array.Copy(seedKey, initialLookup, initialLookup.Length);
+                    if (predIndex.TryGetValue(new RowWrapper(initialLookup), out var bucket))
+                    {
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length <= maxRequiredIndex)
+                            {
+                                continue;
+                            }
+
+                            var from = edge[0];
+                            if (!visitedNodes.Add(from))
+                            {
+                                continue;
+                            }
+
+                            var key = new object[groupCount + 2];
+                            Array.Copy(seedKey, key, groupCount);
+                            key[groupCount] = from;
+                            key[groupCount + 1] = target;
+                            singleRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, key));
+                            deltaNodes.Add(from);
+                        }
+                    }
+
+                    var singleIteration = 0;
+                    trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+
+                    while (deltaNodes.Count > 0)
+                    {
+                        singleIteration++;
+                        var nextDeltaNodes = new List<object?>();
+
+                        foreach (var node in deltaNodes)
+                        {
+                            var lookup = new object[groupCount + 1];
+                            Array.Copy(seedKey, lookup, groupCount);
+                            lookup[groupCount] = node;
+
+                            if (!predIndex.TryGetValue(new RowWrapper(lookup), out bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var edge in bucket)
+                            {
+                                if (edge is null || edge.Length <= maxRequiredIndex)
+                                {
+                                    continue;
+                                }
+
+                                var prev = edge[0];
+                                if (!visitedNodes.Add(prev))
+                                {
+                                    continue;
+                                }
+
+                                var nextKey = new object[groupCount + 2];
+                                Array.Copy(seedKey, nextKey, groupCount);
+                                nextKey[groupCount] = prev;
+                                nextKey[groupCount + 1] = target;
+                                singleRows.Add(BuildGroupedClosureRow(width, groupCount, closure.GroupIndices, nextKey));
+                                nextDeltaNodes.Add(prev);
+                            }
+                        }
+
+                        deltaNodes = nextDeltaNodes;
+                        trace?.RecordFixpointIteration(closure, predicate, singleIteration, deltaNodes.Count, singleRows.Count);
+                    }
+
+                    if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var singleStoreBySeed))
+                    {
+                        singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
+                    }
+
+                    singleStoreBySeed[new RowWrapper(flatSeedKey)] = singleRows;
+                    return singleRows;
+                }
 
                 var iteration = 0;
                 trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
@@ -7762,6 +7941,19 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return true;
+        }
+
+        private static bool HasWildcardSeedComponents(object[] seedKey, int groupCount)
+        {
+            for (var i = 0; i < groupCount; i++)
+            {
+                if (ReferenceEquals(seedKey[i], Wildcard.Value))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static bool TryGetParameterValue(
