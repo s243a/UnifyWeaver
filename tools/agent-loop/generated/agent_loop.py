@@ -12,7 +12,9 @@ from pathlib import Path
 from backends import AgentBackend, CoroBackend
 from context import ContextManager, ContextBehavior, ContextFormat
 from tools import ToolHandler
-from config import load_config, load_config_from_dir, get_default_config, AgentConfig, Config, save_example_config
+from config import (load_config, load_config_from_dir, get_default_config,
+                     AgentConfig, Config, save_example_config,
+                     resolve_api_key, read_config_cascade)
 from sessions import SessionManager
 from skills import SkillsLoader
 from costs import CostTracker
@@ -845,16 +847,18 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
 
     elif backend_type == 'claude':
         from backends import ClaudeAPIBackend
+        api_key = resolve_api_key('claude', agent_config.api_key, no_fallback)
         return ClaudeAPIBackend(
-            api_key=agent_config.api_key,
+            api_key=api_key,
             model=agent_config.model or 'claude-sonnet-4-20250514',
             system_prompt=system_prompt
         )
 
     elif backend_type == 'openai':
         from backends import OpenAIBackend
+        api_key = resolve_api_key('openai', agent_config.api_key, no_fallback)
         return OpenAIBackend(
-            api_key=agent_config.api_key,
+            api_key=api_key,
             model=agent_config.model or 'gpt-4o',
             system_prompt=system_prompt,
             base_url=agent_config.extra.get('base_url')
@@ -863,13 +867,16 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
     elif backend_type == 'openrouter':
         from backends import OpenRouterBackend
         from backends.openrouter_api import DEFAULT_TOOL_SCHEMAS
+        # Resolve API key and config through unified cascade
+        api_key = resolve_api_key('openrouter', agent_config.api_key, no_fallback)
+        cascade = read_config_cascade(no_fallback)
         # Use tool schemas if tools are configured
         tool_schemas = DEFAULT_TOOL_SCHEMAS if agent_config.tools else None
         return OpenRouterBackend(
-            api_key=agent_config.api_key,
-            model=agent_config.model,  # None = auto-detect from coro.json
-            base_url=agent_config.extra.get('base_url',
-                                            'https://openrouter.ai/api/v1'),
+            api_key=api_key,
+            model=agent_config.model or cascade.get('model'),
+            base_url=(agent_config.extra.get('base_url')
+                      or cascade.get('base_url', 'https://openrouter.ai/api/v1')),
             system_prompt=system_prompt,
             tools=tool_schemas,
         )
@@ -956,7 +963,7 @@ def main():
     )
     parser.add_argument(
         '--api-key',
-        help='API key for Claude API backend'
+        help='API key (overrides env vars and config files)'
     )
 
     # Options
@@ -1026,7 +1033,7 @@ def main():
     parser.add_argument(
         '--no-fallback',
         action='store_true',
-        help='Fail if the backend command is not found (no fallback)'
+        help='Skip coro.json fallback for commands and config (uwsal.json still checked)'
     )
     parser.add_argument(
         '--max-iterations', '-i',

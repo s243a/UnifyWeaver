@@ -6,6 +6,90 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
+
+# ── Unified config file discovery ──────────────────────────────────────────
+
+def read_config_cascade(no_fallback: bool = False) -> dict:
+    """Read config from uwsal.json, falling back to coro.json.
+
+    Search order:
+      1. CWD/uwsal.json -> ~/uwsal.json
+      2. CWD/coro.json -> ~/coro.json  (skipped if no_fallback)
+
+    Returns dict with api_key, model, base_url, keys, etc.
+    """
+    candidates = [
+        'uwsal.json',
+        os.path.expanduser('~/uwsal.json'),
+    ]
+    if not no_fallback:
+        candidates += [
+            'coro.json',
+            os.path.expanduser('~/coro.json'),
+        ]
+    for path in candidates:
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return {}
+
+
+def resolve_api_key(backend_type: str, cli_key: str | None = None,
+                    no_fallback: bool = False) -> str | None:
+    """Resolve API key with full priority chain.
+
+    Priority:
+      1. cli_key (--api-key)
+      2. Backend-specific env var
+      3. uwsal.json keys.<backend> or top-level api_key
+      4. coro.json api_key (unless no_fallback)
+      5. Standard file locations
+    """
+    # 1. CLI argument
+    if cli_key:
+        return cli_key
+
+    # 2. Backend-specific env vars
+    env_vars = {
+        'openrouter': 'OPENROUTER_API_KEY',
+        'claude': 'ANTHROPIC_API_KEY',
+        'openai': 'OPENAI_API_KEY',
+        'gemini': 'GEMINI_API_KEY',
+    }
+    env_var = env_vars.get(backend_type)
+    if env_var:
+        val = os.environ.get(env_var)
+        if val:
+            return val
+
+    # 3-4. Config files (uwsal.json, then coro.json fallback)
+    config = read_config_cascade(no_fallback)
+    # Per-provider key first
+    provider_key = config.get('keys', {}).get(backend_type)
+    if provider_key:
+        return provider_key
+    # Top-level api_key
+    if config.get('api_key'):
+        return config['api_key']
+
+    # 5. Standard file locations
+    file_locations = {
+        'claude': '~/.anthropic/api_key',
+        'openai': '~/.openai/api_key',
+    }
+    loc = file_locations.get(backend_type)
+    if loc:
+        path = os.path.expanduser(loc)
+        try:
+            with open(path) as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            pass
+
+    return None
+
 # Try to import yaml, fall back to JSON only
 try:
     import yaml

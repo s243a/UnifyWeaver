@@ -106,14 +106,9 @@ class OpenRouterBackend(AgentBackend):
         system_prompt: str | None = None,
         tools: list[dict] | None = None,
     ):
-        # Auto-detect from coro.json if not provided
-        coro_config = self._read_coro_config()
-        self.api_key = (api_key
-                        or os.environ.get('OPENROUTER_API_KEY')
-                        or coro_config.get('api_key'))
-        self.model = model or coro_config.get('model', 'moonshotai/kimi-k2.5')
-        self.base_url = base_url or coro_config.get('base_url',
-                                                     'https://openrouter.ai/api/v1')
+        self.api_key = api_key
+        self.model = model or 'moonshotai/kimi-k2.5'
+        self.base_url = base_url or 'https://openrouter.ai/api/v1'
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.system_prompt = system_prompt or (
@@ -125,25 +120,9 @@ class OpenRouterBackend(AgentBackend):
 
         if not self.api_key:
             raise ValueError(
-                "OpenRouter API key required. Set OPENROUTER_API_KEY "
-                "or provide --api-key, or have ~/coro.json with api_key."
+                "OpenRouter API key required. Set OPENROUTER_API_KEY, "
+                "provide --api-key, or add api_key to uwsal.json / coro.json."
             )
-
-    @staticmethod
-    def _read_coro_config() -> dict:
-        """Read api_key/model/base_url from coro.json as fallback."""
-        for path in ['coro.json', os.path.expanduser('~/coro.json')]:
-            try:
-                with open(path) as f:
-                    data = json.load(f)
-                return {
-                    'api_key': data.get('api_key'),
-                    'model': data.get('model'),
-                    'base_url': data.get('base_url'),
-                }
-            except (FileNotFoundError, json.JSONDecodeError):
-                continue
-        return {}
 
     def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to OpenRouter API."""
