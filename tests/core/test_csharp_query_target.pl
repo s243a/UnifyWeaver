@@ -254,6 +254,7 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_forward_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_backward_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_strategy_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_single_seed_strategy_runtime,
         verify_parameterized_reachability_plan,
@@ -262,6 +263,7 @@ test_csharp_query_target :-
         verify_parameterized_reachability_pairs_single_probe_forward_strategy_runtime,
         verify_parameterized_reachability_pairs_single_probe_backward_strategy_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_strategy_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_reuse_runtime,
         verify_parameterized_reachability_single_seed_strategy_runtime,
         verify_parameterized_reachability_by_target_single_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
@@ -2840,6 +2842,25 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
         Params,
         HarnessSource).
 
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, z, red, cat1], [p, q, red, cat1]],
+    harness_source_with_cache_flag(ModuleClass, Params, 'GroupedTransitiveClosureSeeded', ForwardHarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'p,q,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeeded=true'],
+        Params,
+        ForwardHarnessSource),
+    harness_source_with_cache_flag(ModuleClass, Params, 'GroupedTransitiveClosureSeededByTarget', BackwardHarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'p,q,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true'],
+        Params,
+        BackwardHarnessSource).
+
 verify_parameterized_reachability_plan :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
@@ -2927,6 +2948,25 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_strategy_runt
          'STRATEGY_USED:TransitiveClosurePairsBatchedSingleProbeMixed=true'],
         Params,
         HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, z], [p, q]],
+    harness_source_with_cache_flag(ModuleClass, Params, 'TransitiveClosureSeeded', ForwardHarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'p,q',
+         'CACHE_HIT:TransitiveClosureSeeded=true'],
+        Params,
+        ForwardHarnessSource),
+    harness_source_with_cache_flag(ModuleClass, Params, 'TransitiveClosureSeededByTarget', BackwardHarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'p,q',
+         'CACHE_HIT:TransitiveClosureSeededByTarget=true'],
+        Params,
+        BackwardHarnessSource).
 
 verify_parameterized_reachability_single_seed_strategy_runtime :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
