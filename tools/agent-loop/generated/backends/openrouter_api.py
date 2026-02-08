@@ -263,6 +263,142 @@ class OpenRouterBackend(AgentBackend):
             raw=data
         )
 
+    def supports_streaming(self) -> bool:
+        return True
+
+    def send_message_streaming(self, message: str, context: list[dict],
+                               on_token=None, **kwargs) -> AgentResponse:
+        """Send message with SSE streaming. Tokens arrive via on_token callback."""
+        # Build messages array (same as non-streaming)
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for msg in context:
+            role = msg.get('role')
+            if role in ('user', 'assistant'):
+                messages.append({"role": role, "content": msg['content']})
+        if not context or context[-1].get('content') != message:
+            messages.append({"role": "user", "content": message})
+
+        # Build request body with stream=True
+        body = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "stream": True,
+        }
+        if self.tool_schemas:
+            body["tools"] = self.tool_schemas
+            body["tool_choice"] = "auto"
+
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        req = Request(
+            url,
+            data=json.dumps(body).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self.api_key}',
+                'HTTP-Referer': 'https://github.com/s243a/UnifyWeaver',
+                'X-Title': 'UnifyWeaver Agent Loop',
+            },
+            method='POST'
+        )
+
+        content = ""
+        tool_calls_acc = {}  # index -> {id, name, arguments}
+        tokens = {}
+
+        try:
+            with urlopen(req, timeout=300) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode('utf-8', errors='replace').rstrip('\n\r')
+                    if not line.startswith('data: '):
+                        continue
+                    payload = line[6:]
+                    if payload == '[DONE]':
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = chunk.get('choices', [])
+                    if not choices:
+                        # Usage-only chunk (some providers send this)
+                        if chunk.get('usage'):
+                            usage = chunk['usage']
+                            tokens = {
+                                'input': usage.get('prompt_tokens', 0),
+                                'output': usage.get('completion_tokens', 0),
+                                'total': usage.get('total_tokens', 0),
+                            }
+                        continue
+
+                    delta = choices[0].get('delta', {})
+
+                    # Text content
+                    text = delta.get('content')
+                    if text:
+                        content += text
+                        if on_token:
+                            on_token(text)
+
+                    # Tool call deltas — accumulate by index
+                    for tc_delta in delta.get('tool_calls', []):
+                        idx = tc_delta.get('index', 0)
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                'id': '', 'name': '', 'arguments': ''
+                            }
+                        acc = tool_calls_acc[idx]
+                        if tc_delta.get('id'):
+                            acc['id'] = tc_delta['id']
+                        func = tc_delta.get('function', {})
+                        if func.get('name'):
+                            acc['name'] = func['name']
+                        if func.get('arguments'):
+                            acc['arguments'] += func['arguments']
+
+                    # Usage in final chunk
+                    if chunk.get('usage'):
+                        usage = chunk['usage']
+                        tokens = {
+                            'input': usage.get('prompt_tokens', 0),
+                            'output': usage.get('completion_tokens', 0),
+                            'total': usage.get('total_tokens', 0),
+                        }
+
+        except HTTPError as e:
+            error_body = e.read().decode('utf-8', errors='replace')
+            try:
+                err_data = json.loads(error_body)
+                err_msg = err_data.get('error', {}).get('message', error_body[:200])
+            except json.JSONDecodeError:
+                err_msg = error_body[:200]
+            return AgentResponse(content=f"[API Error {e.code}: {err_msg}]", tokens={})
+        except URLError as e:
+            return AgentResponse(content=f"[Network Error: {e.reason}]", tokens={})
+        except Exception as e:
+            return AgentResponse(content=f"[Error: {e}]", tokens={})
+
+        # Convert accumulated tool call deltas to ToolCall objects
+        tool_calls = []
+        for acc in tool_calls_acc.values():
+            try:
+                arguments = json.loads(acc['arguments']) if acc['arguments'] else {}
+            except json.JSONDecodeError:
+                arguments = {"raw": acc['arguments']}
+            tool_calls.append(ToolCall(
+                name=acc['name'],
+                arguments=arguments,
+                id=acc['id']
+            ))
+
+        return AgentResponse(
+            content=content,
+            tool_calls=tool_calls,
+            tokens=tokens,
+        )
+
     def _describe_tool_call(self, tool_name: str, params: dict) -> str:
         """Create a short description of a tool call."""
         if tool_name == 'read':
