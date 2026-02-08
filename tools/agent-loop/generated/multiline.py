@@ -1,6 +1,28 @@
 """Multi-line input support for the agent loop."""
 
+import select
 import sys
+
+
+def _read_pasted_lines(first_line: str, timeout: float = 0.05) -> str:
+    """After reading first_line via input(), check for pasted continuation lines.
+
+    Uses select() with a short timeout to detect if more data arrived on stdin
+    in rapid succession (i.e. a paste, not typing).
+    """
+    lines = [first_line]
+    try:
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], timeout)
+            if not ready:
+                break
+            line = sys.stdin.readline()
+            if not line:
+                break
+            lines.append(line.rstrip('\n'))
+    except (OSError, ValueError):
+        pass
+    return '\n'.join(lines)
 
 
 def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str | None:
@@ -32,11 +54,9 @@ def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str |
 def get_input_smart(prompt: str = "You: ") -> str | None:
     """Smart input that detects when multi-line is needed.
 
-    Triggers multi-line mode when:
-    - Input starts with ``` (code block)
-    - Input starts with <<< (heredoc style)
-    - Input ends with \\ (line continuation)
-    - Input is just '{' or '[' (JSON/data structure)
+    Detection order:
+    1. Paste detection (if tty) — captures all pasted lines immediately
+    2. If single line, check triggers: ```, <<<, \\, {/[/(
 
     Returns None on EOF.
     """
@@ -48,9 +68,16 @@ def get_input_smart(prompt: str = "You: ") -> str | None:
     if not line:
         return ""
 
+    # Paste detection first — if multiple lines arrived, return them all
+    if sys.stdin.isatty():
+        pasted = _read_pasted_lines(line)
+        if '\n' in pasted:
+            return pasted
+        # Single line — fall through to trigger checks
+
     stripped = line.strip()
 
-    # Check for multi-line triggers
+    # Check for multi-line triggers (only for typed single lines)
     if stripped.startswith("```"):
         # Code block mode - read until closing ```
         lines = [line]
