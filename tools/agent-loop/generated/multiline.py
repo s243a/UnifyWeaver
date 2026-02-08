@@ -54,11 +54,9 @@ def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str |
 def get_input_smart(prompt: str = "You: ") -> str | None:
     """Smart input that detects when multi-line is needed.
 
-    Triggers multi-line mode when:
-    - Input starts with ``` (code block)
-    - Input starts with <<< (heredoc style)
-    - Input ends with \\ (line continuation)
-    - Input is just '{' or '[' (JSON/data structure)
+    Detection order:
+    1. Paste detection (if tty) — captures all pasted lines immediately
+    2. If single line, check triggers: ```, <<<, \\, {/[/(
 
     Returns None on EOF.
     """
@@ -70,9 +68,16 @@ def get_input_smart(prompt: str = "You: ") -> str | None:
     if not line:
         return ""
 
+    # Paste detection first — if multiple lines arrived, return them all
+    if sys.stdin.isatty():
+        pasted = _read_pasted_lines(line)
+        if '\n' in pasted:
+            return pasted
+        # Single line — fall through to trigger checks
+
     stripped = line.strip()
 
-    # Check for multi-line triggers
+    # Check for multi-line triggers (only for typed single lines)
     if stripped.startswith("```"):
         # Code block mode - read until closing ```
         lines = [line]
@@ -132,10 +137,6 @@ def get_input_smart(prompt: str = "You: ") -> str | None:
         except EOFError:
             pass
         return "\n".join(lines)
-
-    # Auto-detect pasted multi-line input on real terminals
-    if sys.stdin.isatty():
-        return _read_pasted_lines(line)
 
     return line
 
