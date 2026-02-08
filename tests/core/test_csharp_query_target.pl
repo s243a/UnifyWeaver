@@ -269,6 +269,8 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insensitive_runtime,
+        verify_parameterized_grouped_transitive_closure_seed_cache_overlap_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_by_target_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_cache_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_reuse_runtime,
         verify_parameterized_reachability_pairs_cache_reuse_runtime,
@@ -3055,6 +3057,34 @@ verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insens
          'b,c,red,cat1',
          'a,e,blue,cat1',
          'd,e,blue,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_seed_cache_overlap_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, red, cat1], [a, blue, cat1]],
+    ExecParams = [[a, red, cat1], [b, red, cat1]],
+    harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, 'GroupedTransitiveClosureSeeded', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'b,c,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeeded=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_by_target_cache_overlap_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_end/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[c, red, cat1], [e, blue, cat1]],
+    ExecParams = [[c, red, cat1], [b, red, cat1]],
+    harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, 'GroupedTransitiveClosureSeededByTarget', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,red,cat1',
+         'a,c,red,cat1',
+         'b,c,red,cat1',
          'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true'],
         ExecParams,
         HarnessSource).

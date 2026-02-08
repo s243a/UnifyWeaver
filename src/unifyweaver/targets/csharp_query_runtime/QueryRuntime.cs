@@ -7090,6 +7090,41 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: false, built: true);
 
+                const int MaxMemoizedGroupedSeedCount = 32;
+                var canMemoizeSeeds =
+                    _cacheContext is not null &&
+                    orderedSeeds.Count > 1 &&
+                    orderedSeeds.Count <= MaxMemoizedGroupedSeedCount &&
+                    orderedSeeds.TrueForAll(seedKey => !HasWildcardSeedComponents(seedKey, groupCount));
+
+                if (canMemoizeSeeds)
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededMemoizedMulti");
+                    var memoizedRows = new List<object[]>();
+
+                    foreach (var seedKey in orderedSeeds)
+                    {
+                        var seedParams = new List<object[]>(1)
+                        {
+                            BuildGroupedSeedTuple(closure, inputPositions, seedKey, seedPosition: 0)
+                        };
+
+                        foreach (var row in ExecuteSeededGroupedTransitiveClosureBySource(closure, inputPositions, seedParams, context))
+                        {
+                            memoizedRows.Add(row);
+                        }
+                    }
+
+                    if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
+                    {
+                        memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.GroupedTransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
+                    }
+
+                    memoizedStoreBySeed[new RowWrapper(flatSeedKey)] = memoizedRows;
+                    return memoizedRows;
+                }
+
                 if (orderedSeeds.Count == 1 && !HasWildcardSeedComponents(orderedSeeds[0], groupCount))
                 {
                     trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededSingle");
@@ -7423,6 +7458,41 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
 
+                const int MaxMemoizedGroupedTargetSeedCount = 32;
+                var canMemoizeSeeds =
+                    _cacheContext is not null &&
+                    orderedSeeds.Count > 1 &&
+                    orderedSeeds.Count <= MaxMemoizedGroupedTargetSeedCount &&
+                    orderedSeeds.TrueForAll(seedKey => !HasWildcardSeedComponents(seedKey, groupCount));
+
+                if (canMemoizeSeeds)
+                {
+                    trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededByTargetMemoizedMulti");
+                    var memoizedRows = new List<object[]>();
+
+                    foreach (var seedKey in orderedSeeds)
+                    {
+                        var seedParams = new List<object[]>(1)
+                        {
+                            BuildGroupedSeedTuple(closure, inputPositions, seedKey, seedPosition: 1)
+                        };
+
+                        foreach (var row in ExecuteSeededGroupedTransitiveClosureByTarget(closure, inputPositions, seedParams, context))
+                        {
+                            memoizedRows.Add(row);
+                        }
+                    }
+
+                    if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
+                    {
+                        memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
+                    }
+
+                    memoizedStoreBySeed[new RowWrapper(flatSeedKey)] = memoizedRows;
+                    return memoizedRows;
+                }
+
                 if (orderedSeeds.Count == 1 && !HasWildcardSeedComponents(orderedSeeds[0], groupCount))
                 {
                     trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededByTargetSingle");
@@ -7734,6 +7804,53 @@ namespace UnifyWeaver.QueryRuntime
                 if (position == (seedPosition == 0 ? 1 : 0))
                 {
                     tuple[i] = other!;
+                    continue;
+                }
+
+                var groupSlot = -1;
+                for (var j = 0; j < groupCount; j++)
+                {
+                    if (closure.GroupIndices[j] == position)
+                    {
+                        groupSlot = j;
+                        break;
+                    }
+                }
+
+                tuple[i] = groupSlot >= 0 ? key[groupSlot] : null!;
+            }
+
+            return tuple;
+        }
+
+        private static object[] BuildGroupedSeedTuple(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            object[] key,
+            int seedPosition)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (key is null) throw new ArgumentNullException(nameof(key));
+
+            var groupCount = closure.GroupIndices.Count;
+            if (key.Length != groupCount + 1)
+            {
+                throw new ArgumentException($"Expected grouped key width {groupCount + 1} but found {key.Length}.", nameof(key));
+            }
+
+            if (seedPosition != 0 && seedPosition != 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seedPosition), "Seed position must be 0 or 1.");
+            }
+
+            var tuple = new object[inputPositions.Count];
+            for (var i = 0; i < inputPositions.Count; i++)
+            {
+                var position = inputPositions[i];
+                if (position == seedPosition)
+                {
+                    tuple[i] = key[groupCount];
                     continue;
                 }
 
