@@ -78,7 +78,8 @@ class ProjectionInfo:
     """SVD projection metadata."""
     variance_explained: List[float]  # [pc1_var, pc2_var]
     singular_values: List[float]
-    mode: str = "embedding"  # "embedding" or "weights"
+    mode: str = "embedding"  # "embedding", "weights", "convexity_blend", etc.
+    extra: Optional[Dict[str, Any]] = None  # Additional info (e.g. convexity scores)
 
 
 @dataclass
@@ -123,7 +124,12 @@ class DensityManifoldData:
                 tree_type=data['tree']['tree_type']
             ) if data.get('tree') else None,
             peaks=[DensityPeak(**p) for p in data['peaks']] if data.get('peaks') else None,
-            projection=ProjectionInfo(**data['projection']),
+            projection=ProjectionInfo(
+                variance_explained=data['projection']['variance_explained'],
+                singular_values=data['projection']['singular_values'],
+                mode=data['projection'].get('mode', 'embedding'),
+                extra=data['projection'].get('extra'),
+            ),
             n_points=data['n_points']
         )
 
@@ -191,7 +197,8 @@ JSON_SCHEMA = {
             "properties": {
                 "variance_explained": {"type": "array", "items": {"type": "number"}},
                 "singular_values": {"type": "array", "items": {"type": "number"}},
-                "mode": {"type": "string", "enum": ["embedding", "weights"]}
+                "mode": {"type": "string"},
+                "extra": {"type": ["object", "null"]}
             }
         },
         "n_points": {"type": "integer"}

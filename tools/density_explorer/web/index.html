@@ -549,7 +549,36 @@
                                 <option value="learned">Learned Metric (organizational structure)</option>
                                 <option value="wikipedia_physics">Wikipedia Physics (trained hierarchy)</option>
                                 <option value="wikipedia_physics_mds">Wikipedia Physics (MDS - distance faithful)</option>
+                                <option value="convexity_blend">Convexity Blend (hierarchy visibility)</option>
                             </select>
+                        </div>
+                        <div class="control-group" id="convexityControlsGroup" style="display:none;">
+                            <div style="padding: 8px; background: rgba(15, 52, 96, 0.3); border: 1px solid #0f3460; border-radius: 4px;">
+                                <label>Variance <span style="font-size:0.75rem; color:#94a3b8;">|</span> Convexity:
+                                    <span class="value" id="convexityAlphaValue">0.50</span>
+                                </label>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <span style="font-size: 0.75rem; color: #94a3b8; white-space: nowrap;">Variance</span>
+                                    <input type="range" id="convexityAlpha" min="0" max="1" value="0.5" step="0.05" style="flex: 1;">
+                                    <span style="font-size: 0.75rem; color: #94a3b8; white-space: nowrap;">Convexity</span>
+                                </div>
+                                <div style="margin-top: 8px;">
+                                    <label for="convexityMetric" style="font-size: 0.8rem;">Convexity Metric</label>
+                                    <select id="convexityMetric" style="width:100%; padding: 4px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; font-size: 0.8rem;">
+                                        <option value="determinant">Determinant (both axes convex)</option>
+                                        <option value="min_eigenvalue">Min Eigenvalue (weakest axis)</option>
+                                        <option value="trace">Trace / Laplacian (total curvature)</option>
+                                        <option value="geometric_mean">Geometric Mean (balanced)</option>
+                                    </select>
+                                </div>
+                                <div style="margin-top: 8px;">
+                                    <label for="convexitySubspaceK" style="font-size: 0.8rem;">Subspace Dim (k)</label>
+                                    <input type="number" id="convexitySubspaceK" value="20" min="3" max="100"
+                                           style="width: 80px; padding: 4px 8px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; font-size: 0.85rem;">
+                                </div>
+                                <div id="convexityInfoDisplay" style="font-size: 0.75rem; color: #94a3b8; margin-top: 8px;">
+                                </div>
+                            </div>
                         </div>
                         <div class="control-group" id="layoutDatasetGroup" style="display:none;">
                             <label for="flaskLayoutDataset">2D Layout Dataset <span style="font-size:0.75rem; color:#94a3b8;">(override for SVD layout)</span></label>
@@ -844,6 +873,10 @@
                 <div class="info-item" id="infoBlendItem" style="display: none;">
                     <span class="label">Blend</span>
                     <span class="value" id="infoBlend">-</span>
+                </div>
+                <div class="info-item" id="infoConvexityItem" style="display: none;">
+                    <span class="label">Convexity</span>
+                    <span class="value" id="infoConvexity">-</span>
                 </div>
             </div>
             <div class="status" id="status">
@@ -1675,10 +1708,24 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
                         projModeSelect.value = 'embedding';
                     }
                 }
+                // Show/hide convexity controls
+                const convexityGroup = document.getElementById('convexityControlsGroup');
+                if (convexityGroup) {
+                    convexityGroup.style.display = (projMode === 'convexity_blend') ? 'block' : 'none';
+                }
             }
             document.getElementById('flaskModel')?.addEventListener('change', updateLayoutDatasetVisibility);
             document.getElementById('flaskProjectionMode')?.addEventListener('change', updateLayoutDatasetVisibility);
             updateLayoutDatasetVisibility();
+
+            // Convexity alpha slider sync
+            const convexAlpha = document.getElementById('convexityAlpha');
+            if (convexAlpha) {
+                convexAlpha.addEventListener('input', () => {
+                    document.getElementById('convexityAlphaValue').textContent =
+                        parseFloat(convexAlpha.value).toFixed(2);
+                });
+            }
 
             // Blend controls
             if (blendModeSelect) {
@@ -3084,6 +3131,17 @@ json.dumps(data)
                         requestBody.max_branching = maxBranching;
                     }
 
+                    if (rootId != null) {
+                        requestBody.root_id = rootId;
+                    }
+
+                    // Convexity blend parameters
+                    if (projectionMode === 'convexity_blend') {
+                        requestBody.convexity_alpha = parseFloat(document.getElementById('convexityAlpha')?.value || 0.5);
+                        requestBody.convexity_metric = document.getElementById('convexityMetric')?.value || 'determinant';
+                        requestBody.convexity_subspace_k = parseInt(document.getElementById('convexitySubspaceK')?.value || 20);
+                    }
+
                     setStatus('Sending dual embeddings to Flask API...', 'loading');
                     console.log('Calling /api/compute/from-embeddings');
                     response = await fetch(`${apiUrl}/api/compute/from-embeddings`, {
@@ -3127,6 +3185,13 @@ json.dumps(data)
                     // Blend parameters
                     const blendParams = getBlendParams();
                     Object.assign(requestBody, blendParams);
+
+                    // Convexity blend parameters
+                    if (projectionMode === 'convexity_blend') {
+                        requestBody.convexity_alpha = parseFloat(document.getElementById('convexityAlpha')?.value || 0.5);
+                        requestBody.convexity_metric = document.getElementById('convexityMetric')?.value || 'determinant';
+                        requestBody.convexity_subspace_k = parseInt(document.getElementById('convexitySubspaceK')?.value || 20);
+                    }
 
                     response = await fetch(`${apiUrl}/api/compute`, {
                         method: 'POST',
@@ -3995,8 +4060,39 @@ json.dumps(data)
                 document.getElementById('infoVar1').textContent = 'Custom';
                 document.getElementById('infoVar2').textContent = 'Axis';
             } else {
+                const isConvexity = currentData.projection.mode === 'convexity_blend';
+                const prefix = isConvexity ? 'Conv' : 'SVD';
+                document.getElementById('infoVar1').parentElement.querySelector('.label').textContent = `${prefix} Var 1`;
+                document.getElementById('infoVar2').parentElement.querySelector('.label').textContent = `${prefix} Var 2`;
                 document.getElementById('infoVar1').textContent = currentData.projection.variance_explained[0].toFixed(1) + '%';
                 document.getElementById('infoVar2').textContent = currentData.projection.variance_explained[1].toFixed(1) + '%';
+            }
+
+            // Convexity info
+            const convItem = document.getElementById('infoConvexityItem');
+            if (convItem) {
+                if (currentData.projection.mode === 'convexity_blend' && currentData.projection.extra) {
+                    convItem.style.display = '';
+                    const extra = currentData.projection.extra;
+                    document.getElementById('infoConvexity').textContent =
+                        extra.convexity_score?.toExponential(2) || '-';
+
+                    // Populate sidebar detail panel
+                    const convInfoDisplay = document.getElementById('convexityInfoDisplay');
+                    if (convInfoDisplay) {
+                        convInfoDisplay.innerHTML = `
+                            <div>Variance captured: ${extra.variance_score?.toFixed(1) || '-'}%</div>
+                            <div>Convexity score: ${extra.convexity_score?.toExponential(3) || '-'}</div>
+                            <div>SVD variance: ${extra.svd_variance?.toFixed(1) || '-'}%</div>
+                            <div>SVD convexity: ${extra.svd_convexity?.toExponential(3) || '-'}</div>
+                            <div>Directions: [${extra.direction_indices?.join(', ') || '-'}]</div>
+                        `;
+                    }
+                } else {
+                    convItem.style.display = 'none';
+                    const convInfoDisplay = document.getElementById('convexityInfoDisplay');
+                    if (convInfoDisplay) convInfoDisplay.innerHTML = '';
+                }
             }
         }
 

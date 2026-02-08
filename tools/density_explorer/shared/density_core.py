@@ -631,6 +631,188 @@ def project_weights_to_2d(
     return points_2d, S[:2], var_explained
 
 
+def kde_gradient_hessian(
+    x: np.ndarray,
+    data: np.ndarray,
+    bandwidth: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute gradient and Hessian of Gaussian KDE at point x.
+
+    For Gaussian kernel K(u) = exp(-||u||^2/2):
+      grad_f(x) = -(1/(n*h^(d+2))) * sum_i (x-x_i)/h * K((x-x_i)/h)
+      H_f(x)    =  (1/(n*h^(d+2))) * sum_i [(x-x_i)(x-x_i)^T/h^2 - I] * K((x-x_i)/h)
+
+    Args:
+        x: (d,) point at which to evaluate
+        data: (N, d) data points
+        bandwidth: KDE bandwidth (scalar)
+
+    Returns:
+        gradient: (d,) gradient vector
+        hessian: (d, d) Hessian matrix
+    """
+    n, d = data.shape
+    h = bandwidth
+
+    # Scaled differences: (N, d)
+    diff = (x[None, :] - data) / h
+
+    # Kernel values: (N,)
+    sq_dist = np.sum(diff ** 2, axis=1)
+    kernel_vals = np.exp(-0.5 * sq_dist)
+
+    # Normalization constant
+    norm = n * h ** (d + 2)
+
+    # Gradient: -(1/norm) * sum_i diff_i * k_i
+    gradient = -np.sum(diff * kernel_vals[:, None], axis=0) / norm
+
+    # Hessian: (1/norm) * sum_i [(diff_i @ diff_i^T - I) * k_i]
+    # Vectorized: (diff * k)^T @ diff gives sum of outer products weighted by kernel
+    weighted_diff = diff * kernel_vals[:, None]  # (N, d)
+    hessian = (weighted_diff.T @ diff - np.sum(kernel_vals) * np.eye(d)) / norm
+
+    return gradient, hessian
+
+
+def convexity_project_2d(
+    embeddings: np.ndarray,
+    root_idx: int = 0,
+    alpha: float = 0.5,
+    convexity_metric: str = "determinant",
+    subspace_k: int = 20,
+    bandwidth: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    """
+    Find optimal 2D projection plane blending variance and convexity.
+
+    Works in a reduced SVD subspace for tractability. Uses greedy selection:
+    pick direction 1 maximizing blended score, then pick best orthogonal
+    direction 2.
+
+    Args:
+        embeddings: (N, D) embedding matrix
+        root_idx: index of root node for convexity evaluation
+        alpha: blend factor. 0.0 = pure SVD (max variance), 1.0 = pure max convexity
+        convexity_metric: "determinant", "min_eigenvalue", "trace", "geometric_mean"
+        subspace_k: dimensionality of SVD subspace (default 20)
+        bandwidth: KDE bandwidth (None for Scott's rule in k-dim)
+
+    Returns:
+        points_2d: (N, 2) projected coordinates
+        singular_values: top 2 singular values from SVD (for reference)
+        variance_explained: [var1, var2] as percentages
+        convexity_info: dict with convexity_score, variance_score, svd comparison, etc.
+    """
+    n_pts, dim = embeddings.shape
+
+    # Clamp root index
+    root_idx = max(0, min(root_idx, n_pts - 1))
+
+    # Center and SVD
+    mean = embeddings.mean(axis=0)
+    centered = embeddings - mean
+    U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+
+    # Reduce to top-k subspace
+    k = min(subspace_k, len(S), n_pts, dim)
+    X_k = centered @ Vt[:k].T  # (N, k)
+    x_root_k = X_k[root_idx]   # (k,)
+
+    # Bandwidth: Scott's rule in k-dim if not provided
+    if bandwidth is None:
+        bandwidth = n_pts ** (-1.0 / (k + 4))
+
+    # Compute gradient and Hessian at root in k-dim subspace
+    grad_k, H_k = kde_gradient_hessian(x_root_k, X_k, bandwidth)
+
+    # Per-direction scores
+    variances = S[:k] ** 2
+    var_total = (S ** 2).sum()
+
+    # Convexity: absolute diagonal of Hessian (curvature along each SVD direction)
+    hessian_diag = np.abs(np.diag(H_k))
+    hessian_trace = np.sum(hessian_diag)
+
+    # Normalized scores [0, 1]
+    norm_var = variances / var_total if var_total > 0 else np.ones(k) / k
+    norm_conv = hessian_diag / hessian_trace if hessian_trace > 1e-10 else np.zeros(k)
+
+    # Fall back to pure SVD if Hessian is flat
+    if hessian_trace < 1e-10:
+        j1, j2 = 0, 1
+    else:
+        # Blended score
+        w_var = 1.0 - alpha
+        w_conv = alpha
+        scores = w_var * norm_var + w_conv * norm_conv
+
+        # Greedy pick direction 1
+        j1 = int(np.argmax(scores))
+
+        # Greedy pick direction 2 (orthogonal — SVD directions are already orthogonal)
+        scores_remaining = scores.copy()
+        scores_remaining[j1] = -np.inf
+        j2 = int(np.argmax(scores_remaining))
+
+    # Ensure j1 < j2 for consistent ordering
+    if j1 > j2:
+        j1, j2 = j2, j1
+
+    # Project all points onto chosen 2D plane
+    points_2d = X_k[:, [j1, j2]]
+
+    # Singular values for chosen directions
+    sv_chosen = S[[j1, j2]]
+
+    # Variance explained
+    var_explained = [
+        float(S[j1] ** 2 / var_total * 100) if var_total > 0 else 50.0,
+        float(S[j2] ** 2 / var_total * 100) if var_total > 0 else 50.0,
+    ]
+
+    # Compute convexity metric for chosen plane
+    H_2x2 = np.array([[H_k[j1, j1], H_k[j1, j2]],
+                       [H_k[j2, j1], H_k[j2, j2]]])
+    eigvals_2x2 = np.linalg.eigvalsh(H_2x2)
+
+    conv_score = _compute_convexity_score(eigvals_2x2, convexity_metric)
+
+    # Reference: SVD plane (directions 0, 1) convexity for comparison
+    H_svd = np.array([[H_k[0, 0], H_k[0, 1]],
+                       [H_k[1, 0], H_k[1, 1]]])
+    svd_eigvals = np.linalg.eigvalsh(H_svd)
+    svd_conv = _compute_convexity_score(svd_eigvals, convexity_metric)
+    svd_var = float((S[0] ** 2 + S[1] ** 2) / var_total * 100) if var_total > 0 else 100.0
+
+    convexity_info = {
+        "convexity_score": float(conv_score),
+        "variance_score": float(var_explained[0] + var_explained[1]),
+        "svd_convexity": float(svd_conv),
+        "svd_variance": svd_var,
+        "direction_indices": [int(j1), int(j2)],
+        "hessian_eigenvalues": [float(v) for v in np.sort(np.linalg.eigvalsh(H_k))[::-1][:6]],
+    }
+
+    return points_2d, sv_chosen, var_explained, convexity_info
+
+
+def _compute_convexity_score(eigvals: np.ndarray, metric: str) -> float:
+    """Compute convexity score from 2x2 projected Hessian eigenvalues."""
+    e0, e1 = abs(eigvals[0]), abs(eigvals[1])
+    if metric == "determinant":
+        return e0 * e1
+    elif metric == "min_eigenvalue":
+        return min(e0, e1)
+    elif metric == "trace":
+        return e0 + e1
+    elif metric == "geometric_mean":
+        return float(np.sqrt(e0 * e1))
+    else:
+        return e0 * e1  # default to determinant
+
+
 def compute_density_grid(
     points_2d: np.ndarray,
     bandwidth: Optional[float] = None,
@@ -1304,6 +1486,9 @@ def compute_density_manifold(
     custom_viz_power_n: float = 1.0,
     custom_tree_space_weights: Optional[Dict[str, float]] = None,
     custom_tree_power_n: float = 1.0,
+    convexity_alpha: float = 0.5,
+    convexity_metric: str = "determinant",
+    convexity_subspace_k: int = 20,
 ) -> DensityManifoldData:
     """
     Main function: compute complete density manifold data.
@@ -1338,6 +1523,9 @@ def compute_density_manifold(
         else:
             root_id = None  # Title not found
 
+    # Convexity info (populated only for convexity_blend mode)
+    convexity_info = None
+
     # Project to 2D based on mode
     if projection_mode == "wikipedia_physics":
         # Use Wikipedia physics distance model's hidden layer (64-dim) for visualization
@@ -1366,6 +1554,17 @@ def compute_density_manifold(
                 embeddings, mode="embedding"
             )
             projection_mode = "embedding"
+    elif projection_mode == "convexity_blend":
+        # Convexity-blended projection: find 2D plane balancing variance and convexity at root
+        effective_root = root_id if isinstance(root_id, int) else 0
+        points_2d, singular_values, var_explained, convexity_info = convexity_project_2d(
+            embeddings,
+            root_idx=effective_root,
+            alpha=convexity_alpha,
+            convexity_metric=convexity_metric,
+            subspace_k=convexity_subspace_k,
+            bandwidth=bandwidth,
+        )
     elif projection_mode == "learned" and weights is not None:
         # Use learned organizational metric space for visualization
         # input_embeddings may be the same as output embeddings if not provided
@@ -1494,7 +1693,8 @@ def compute_density_manifold(
         projection=ProjectionInfo(
             variance_explained=var_explained,
             singular_values=singular_values.tolist(),
-            mode=projection_mode
+            mode=projection_mode,
+            extra=convexity_info,
         ),
         n_points=len(embeddings)
     )

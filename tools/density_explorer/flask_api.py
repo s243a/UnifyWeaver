@@ -371,8 +371,8 @@ def compute_manifold():
 
         # Extract projection mode
         projection_mode = data.get('projection_mode', 'embedding')
-        if projection_mode not in ('embedding', 'weights', 'learned', 'wikipedia_physics', 'wikipedia_physics_mds'):
-            return jsonify({'error': f'Invalid projection_mode: {projection_mode}. Use "embedding", "weights", "learned", "wikipedia_physics", or "wikipedia_physics_mds"'}), 400
+        if projection_mode not in ('embedding', 'weights', 'learned', 'wikipedia_physics', 'wikipedia_physics_mds', 'convexity_blend'):
+            return jsonify({'error': f'Invalid projection_mode: {projection_mode}. Use "embedding", "weights", "learned", "wikipedia_physics", "wikipedia_physics_mds", or "convexity_blend"'}), 400
 
         # Extract blend parameters
         blend_layout_alpha = data.get('blend_layout_alpha')
@@ -383,6 +383,11 @@ def compute_manifold():
         custom_viz_power_n = float(data.get('custom_viz_power_n', 1.0))
         custom_tree_space_weights = data.get('custom_tree_space_weights')
         custom_tree_power_n = float(data.get('custom_tree_power_n', 1.0))
+
+        # Extract convexity blend parameters
+        convexity_alpha = float(data.get('convexity_alpha', 0.5))
+        convexity_metric = data.get('convexity_metric', 'determinant')
+        convexity_subspace_k = int(data.get('convexity_subspace_k', 20))
 
         # Check for projection model
         model = data.get('model')
@@ -506,6 +511,9 @@ def compute_manifold():
                     custom_viz_power_n=custom_viz_power_n,
                     custom_tree_space_weights=custom_tree_space_weights,
                     custom_tree_power_n=custom_tree_power_n,
+                    convexity_alpha=convexity_alpha,
+                    convexity_metric=convexity_metric,
+                    convexity_subspace_k=convexity_subspace_k,
                 )
 
                 return result.to_json(), 200, {'Content-Type': 'application/json'}
@@ -547,6 +555,9 @@ def compute_manifold():
             custom_viz_power_n=custom_viz_power_n,
             custom_tree_space_weights=custom_tree_space_weights,
             custom_tree_power_n=custom_tree_power_n,
+            convexity_alpha=convexity_alpha,
+            convexity_metric=convexity_metric,
+            convexity_subspace_k=convexity_subspace_k,
         )
 
         # Return as JSON
@@ -623,6 +634,11 @@ def compute_from_embeddings():
         custom_tree_space_weights = data.get('custom_tree_space_weights')
         custom_tree_power_n = float(data.get('custom_tree_power_n', 1.0))
 
+        # Convexity blend parameters
+        convexity_alpha = float(data.get('convexity_alpha', 0.5))
+        convexity_metric = data.get('convexity_metric', 'determinant')
+        convexity_subspace_k = int(data.get('convexity_subspace_k', 20))
+
         result = compute_density_manifold(
             embeddings=embeddings,
             titles=titles,
@@ -637,6 +653,7 @@ def compute_from_embeddings():
             weights=weights,
             input_embeddings=input_embeddings,
             max_branching=data.get('max_branching'),
+            root_id=data.get('root_id'),
             tree_embeddings=tree_embeddings,
             blend_layout_alpha=blend_layout_alpha,
             blend_tree_alpha=blend_tree_alpha,
@@ -644,6 +661,9 @@ def compute_from_embeddings():
             custom_viz_power_n=custom_viz_power_n,
             custom_tree_space_weights=custom_tree_space_weights,
             custom_tree_power_n=custom_tree_power_n,
+            convexity_alpha=convexity_alpha,
+            convexity_metric=convexity_metric,
+            convexity_subspace_k=convexity_subspace_k,
         )
 
         return result.to_json(), 200, {'Content-Type': 'application/json'}
