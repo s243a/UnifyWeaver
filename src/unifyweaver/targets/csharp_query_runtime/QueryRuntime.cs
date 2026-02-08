@@ -6673,8 +6673,8 @@ namespace UnifyWeaver.QueryRuntime
                     return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context);
                 }
 
-                if (_cacheContext is null &&
-                    TryBuildGroupedPairProbeDirectionBatches(
+                const int MaxMemoizedGroupedPairSeeds = 32;
+                if (TryBuildGroupedPairProbeDirectionBatches(
                         closure,
                         targetsBySource,
                         context,
@@ -6686,6 +6686,7 @@ namespace UnifyWeaver.QueryRuntime
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeMixed");
                         return ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
                             closure,
+                            inputPositions,
                             forwardTargetsBySource,
                             backwardSourcesByTarget,
                             context);
@@ -6694,14 +6695,41 @@ namespace UnifyWeaver.QueryRuntime
                     if (forwardTargetsBySource.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeForward");
-                        return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context);
+                        if (_cacheContext is not null && forwardTargetsBySource.Count <= MaxMemoizedGroupedPairSeeds)
+                        {
+                            trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
+                            trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedForward");
+                            return ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+                                closure,
+                                inputPositions,
+                                forwardTargetsBySource,
+                                context);
+                        }
+
+                        return ExecuteSeededGroupedTransitiveClosurePairsForward(
+                            closure,
+                            forwardTargetsBySource,
+                            context);
                     }
 
                     trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeBackward");
-                    return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, backwardSourcesByTarget, context);
+                    if (_cacheContext is not null && backwardSourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds)
+                    {
+                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
+                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedBackward");
+                        return ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+                            closure,
+                            inputPositions,
+                            backwardSourcesByTarget,
+                            context);
+                    }
+
+                    return ExecuteSeededGroupedTransitiveClosurePairsBackward(
+                        closure,
+                        backwardSourcesByTarget,
+                        context);
                 }
 
-                const int MaxMemoizedGroupedPairSeeds = 32;
                 var canMemoizePairs =
                     _cacheContext is not null &&
                     targetsBySource.Count <= MaxMemoizedGroupedPairSeeds &&
@@ -6746,16 +6774,54 @@ namespace UnifyWeaver.QueryRuntime
 
         private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
             GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
             IReadOnlyDictionary<RowWrapper, HashSet<object?>> forwardTargetsBySource,
             IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
             EvaluationContext context)
         {
-            foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context))
+            const int MaxMemoizedGroupedPairSeeds = 32;
+            var canMemoizeForwardPairs =
+                _cacheContext is not null &&
+                forwardTargetsBySource.Count <= MaxMemoizedGroupedPairSeeds;
+            var canMemoizeBackwardPairs =
+                _cacheContext is not null &&
+                backwardSourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds;
+
+            var trace = context.Trace;
+            var forwardRows = canMemoizeForwardPairs
+                ? ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+                    closure,
+                    inputPositions,
+                    forwardTargetsBySource,
+                    context)
+                : ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context);
+
+            if (canMemoizeForwardPairs)
+            {
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedForward");
+            }
+
+            foreach (var row in forwardRows)
             {
                 yield return row;
             }
 
-            foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, backwardSourcesByTarget, context))
+            var backwardRows = canMemoizeBackwardPairs
+                ? ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+                    closure,
+                    inputPositions,
+                    backwardSourcesByTarget,
+                    context)
+                : ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, backwardSourcesByTarget, context);
+
+            if (canMemoizeBackwardPairs)
+            {
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
+                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedBackward");
+            }
+
+            foreach (var row in backwardRows)
             {
                 yield return row;
             }
@@ -8819,8 +8885,8 @@ namespace UnifyWeaver.QueryRuntime
                     return ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context);
                 }
 
-                if (_cacheContext is null &&
-                    TryBuildPairProbeDirectionBatches(
+                const int MaxMemoizedPairSeeds = 32;
+                if (TryBuildPairProbeDirectionBatches(
                         closure,
                         bySource,
                         context,
@@ -8840,14 +8906,27 @@ namespace UnifyWeaver.QueryRuntime
                     if (forwardBySource.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeForward");
+                        if (_cacheContext is not null && forwardBySource.Count <= MaxMemoizedPairSeeds)
+                        {
+                            trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
+                            trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedForward");
+                            return ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, forwardBySource, context);
+                        }
+
                         return ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context);
                     }
 
                     trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeBackward");
+                    if (_cacheContext is not null && backwardByTarget.Count <= MaxMemoizedPairSeeds)
+                    {
+                        trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
+                        trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedBackward");
+                        return ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, backwardByTarget, context);
+                    }
+
                     return ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context);
                 }
 
-                const int MaxMemoizedPairSeeds = 32;
                 var canMemoizePairs =
                     _cacheContext is not null &&
                     bySource.Count <= MaxMemoizedPairSeeds &&
@@ -8888,12 +8967,41 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
             EvaluationContext context)
         {
-            foreach (var row in ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context))
+            const int MaxMemoizedPairSeeds = 32;
+            var canMemoizeForwardPairs =
+                _cacheContext is not null &&
+                forwardBySource.Count <= MaxMemoizedPairSeeds;
+            var canMemoizeBackwardPairs =
+                _cacheContext is not null &&
+                backwardByTarget.Count <= MaxMemoizedPairSeeds;
+
+            var trace = context.Trace;
+            var forwardRows = canMemoizeForwardPairs
+                ? ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, forwardBySource, context)
+                : ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context);
+
+            if (canMemoizeForwardPairs)
+            {
+                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
+                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedForward");
+            }
+
+            foreach (var row in forwardRows)
             {
                 yield return row;
             }
 
-            foreach (var row in ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context))
+            var backwardRows = canMemoizeBackwardPairs
+                ? ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, backwardByTarget, context)
+                : ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context);
+
+            if (canMemoizeBackwardPairs)
+            {
+                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
+                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedBackward");
+            }
+
+            foreach (var row in backwardRows)
             {
                 yield return row;
             }
