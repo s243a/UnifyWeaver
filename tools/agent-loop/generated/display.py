@@ -128,17 +128,34 @@ class Spinner:
         self._thread: Optional[threading.Thread] = None
         self._frame = 0
         self._tc = TerminalControl()
+        self._cols = self._tc.cols()
+        self._lock = threading.Lock()
+        self._start_time = 0.0
+
+    def _truncate(self, text: str, width: int) -> str:
+        """Truncate text to fit terminal width."""
+        # 2 chars for spinner + space prefix
+        max_len = width - 2
+        if len(text) > max_len:
+            return text[:max_len - 3] + '...'
+        return text
 
     def _animate(self) -> None:
         """Animation loop."""
         self._tc.hide_cursor()
         try:
             while self._running:
-                frame = self.FRAMES[self._frame % len(self.FRAMES)]
-                self._tc.clear_line()
-                sys.stdout.write(f"{frame} {self.message}")
-                sys.stdout.flush()
-                self._frame += 1
+                with self._lock:
+                    elapsed = time.time() - self._start_time
+                    elapsed_str = f" ({elapsed:.0f}s)" if elapsed >= 2 else ""
+                    frame = self.FRAMES[self._frame % len(self.FRAMES)]
+                    display = self._truncate(
+                        self.message + elapsed_str, self._cols
+                    )
+                    self._tc.clear_line()
+                    sys.stdout.write(f"{frame} {display}")
+                    sys.stdout.flush()
+                    self._frame += 1
                 time.sleep(self.INTERVAL)
         finally:
             self._tc.show_cursor()
@@ -147,6 +164,7 @@ class Spinner:
         """Start the spinner."""
         if self._running:
             return
+        self._start_time = time.time()
         self._running = True
         self._thread = threading.Thread(target=self._animate, daemon=True)
         self._thread.start()
@@ -158,14 +176,23 @@ class Spinner:
             self._thread.join(timeout=0.5)
             self._thread = None
 
-        self._tc.clear_line()
-        if final_message:
-            sys.stdout.write(final_message + '\n')
-        sys.stdout.flush()
+        # Commit the last spinner message as a permanent line
+        with self._lock:
+            self._tc.clear_line()
+            sys.stdout.write(f"  {self.message}\n")
+            if final_message:
+                sys.stdout.write(final_message + '\n')
+            sys.stdout.flush()
 
     def update(self, message: str) -> None:
-        """Update spinner message while running."""
-        self.message = message
+        """Update spinner message, committing the old one as a permanent line."""
+        with self._lock:
+            if message != self.message:
+                # Commit current message as a permanent line
+                self._tc.clear_line()
+                sys.stdout.write(f"  {self.message}\n")
+                sys.stdout.flush()
+                self.message = message
 
     def __enter__(self) -> 'Spinner':
         self.start()

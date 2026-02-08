@@ -1,49 +1,114 @@
-"""Claude Code CLI backend using print mode."""
+"""Claude Code CLI backend using stream-json for live progress."""
 
+import json
+import os
 import subprocess
-import re
 from .base import AgentBackend, AgentResponse, ToolCall
 
 
 class ClaudeCodeBackend(AgentBackend):
-    """Claude Code CLI backend using -p (print) mode."""
+    """Claude Code CLI backend with streaming JSON output."""
 
     def __init__(self, command: str = "claude", model: str = "sonnet"):
         self.command = command
         self.model = model
-        # Pattern for token counts if present
-        self.token_pattern = re.compile(
-            r'(?:Input|Output|Total):\s*([\d,]+)\s*tokens?',
-            re.IGNORECASE
-        )
+        self._on_status = None
 
     def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
-        """Send message to Claude Code CLI and get response."""
-        # Format the prompt with context
+        """Send message to Claude Code CLI with live streaming output."""
         prompt = self._format_prompt(message, context)
+        self._on_status = kwargs.get('on_status')
 
-        # Build command: claude -p --model <model> <prompt>
         cmd = [
             self.command,
-            "-p",  # Print mode (non-interactive)
+            "-p",
+            "--verbose",
+            "--output-format", "stream-json",
             "--model", self.model,
             prompt
         ]
 
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=300  # 5 minute timeout
+                stdin=subprocess.DEVNULL
             )
-            output = result.stdout
-            if result.returncode != 0 and result.stderr:
-                output = f"[Error: {result.stderr.strip()}]"
+
+            content_parts = []
+            tokens = {}
+            tool_count = 0
+            last_tool_desc = None
+
+            for line in proc.stdout:
+                line = line.strip()
+                if not line or not line.startswith('{'):
+                    continue
+
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                etype = event.get('type', '')
+
+                if etype == 'assistant':
+                    # Assistant messages contain content blocks
+                    message_data = event.get('message', {})
+                    content_blocks = message_data.get('content', [])
+
+                    for block in content_blocks:
+                        btype = block.get('type', '')
+
+                        if btype == 'text':
+                            content_parts.append(block.get('text', ''))
+
+                        elif btype == 'tool_use':
+                            tool_count += 1
+                            tool_name = block.get('name', '?')
+                            tool_input = block.get('input', {})
+                            last_tool_desc = self._describe_tool_call(tool_name, tool_input)
+                            if self._on_status:
+                                self._on_status(f"[{tool_count}] {last_tool_desc}")
+
+                elif etype == 'user':
+                    # Tool result — include tool description so it's visible
+                    if self._on_status and tool_count > 0:
+                        self._on_status(f"[{tool_count}] {last_tool_desc} done")
+
+                elif etype == 'result':
+                    # Final result with usage stats
+                    usage = event.get('usage', {})
+                    tokens = {
+                        'input': usage.get('input_tokens', 0),
+                        'output': usage.get('output_tokens', 0),
+                    }
+                    cache_read = usage.get('cache_read_input_tokens', 0)
+                    cache_create = usage.get('cache_creation_input_tokens', 0)
+                    if cache_read:
+                        tokens['cache_read'] = cache_read
+                    if cache_create:
+                        tokens['cache_create'] = cache_create
+
+                    # Use result text if we didn't collect content from events
+                    if not content_parts:
+                        result_text = event.get('result', '')
+                        if result_text:
+                            content_parts.append(result_text)
+
+            proc.wait(timeout=10)
+            content = ''.join(content_parts).strip()
+
+            if not content and proc.returncode != 0:
+                stderr = proc.stderr.read()
+                content = f"[Error: {stderr.strip()}]"
 
         except subprocess.TimeoutExpired:
+            proc.kill()
             return AgentResponse(
-                content="[Error: Command timed out after 5 minutes]",
+                content="[Error: Command timed out]",
                 tokens={}
             )
         except FileNotFoundError:
@@ -57,28 +122,47 @@ class ClaudeCodeBackend(AgentBackend):
                 tokens={}
             )
 
-        # Parse the output
-        content = self._clean_output(output)
-        tokens = self._parse_tokens(output)
-
         return AgentResponse(
             content=content,
             tool_calls=[],
             tokens=tokens,
-            raw=output
         )
+
+    def _describe_tool_call(self, tool_name: str, params: dict) -> str:
+        """Create a short description of a tool call."""
+        if tool_name == 'Read':
+            return f"reading {os.path.basename(params.get('file_path', '?'))}"
+        elif tool_name == 'Glob':
+            return f"searching {params.get('pattern', '?')}"
+        elif tool_name == 'Grep':
+            return f"grep {params.get('pattern', '?')}"
+        elif tool_name == 'Bash':
+            cmd = params.get('command', '?')
+            if len(cmd) > 72:
+                cmd = cmd[:69] + '...'
+            return f"$ {cmd}"
+        elif tool_name == 'Write':
+            return f"writing {os.path.basename(params.get('file_path', '?'))}"
+        elif tool_name == 'Edit':
+            return f"editing {os.path.basename(params.get('file_path', '?'))}"
+        elif tool_name == 'Task':
+            return f"agent: {params.get('description', '?')}"
+        elif tool_name == 'WebFetch':
+            return f"fetching {params.get('url', '?')}"
+        elif tool_name == 'WebSearch':
+            return f"searching: {params.get('query', '?')}"
+        else:
+            return tool_name
 
     def _format_prompt(self, message: str, context: list[dict]) -> str:
         """Format message with conversation context."""
         if not context:
             return message
 
-        # Format last few messages as context
         history_lines = []
-        for msg in context[-6:]:  # Last 6 messages (3 exchanges)
+        for msg in context[-6:]:
             role = "User" if msg.get('role') == 'user' else "Assistant"
             content = msg.get('content', '')
-            # Truncate very long messages in context
             if len(content) > 500:
                 content = content[:500] + "..."
             history_lines.append(f"{role}: {content}")
@@ -89,41 +173,6 @@ class ClaudeCodeBackend(AgentBackend):
 {history}
 
 Current request: {message}"""
-
-    def _clean_output(self, output: str) -> str:
-        """Clean up output, removing noise."""
-        lines = output.split('\n')
-        cleaned = []
-
-        for line in lines:
-            # Skip token report lines
-            if self.token_pattern.search(line):
-                continue
-            cleaned.append(line)
-
-        result = '\n'.join(cleaned).strip()
-
-        # Remove common assistant prefixes
-        for prefix in ['A:', 'Assistant:', 'Claude:']:
-            if result.startswith(prefix):
-                result = result[len(prefix):].strip()
-                break
-
-        return result
-
-    def _parse_tokens(self, output: str) -> dict[str, int]:
-        """Extract token counts from output if present."""
-        tokens = {}
-        for match in self.token_pattern.finditer(output):
-            line = output[max(0, match.start()-20):match.end()]
-            count = int(match.group(1).replace(',', ''))
-
-            if 'input' in line.lower():
-                tokens['input'] = count
-            elif 'output' in line.lower():
-                tokens['output'] = count
-
-        return tokens
 
     @property
     def name(self) -> str:

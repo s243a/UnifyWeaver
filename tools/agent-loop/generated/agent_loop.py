@@ -44,7 +44,7 @@ class AgentLoop:
         display_mode: str = 'append'
     ):
         self.backend = backend
-        self.context = context or ContextManager()
+        self.context = context if context is not None else ContextManager()
         self.tools = tools or ToolHandler()
         self.show_tokens = show_tokens
         self.auto_execute_tools = auto_execute_tools
@@ -721,6 +721,7 @@ Status:
         # Track costs
         if self.cost_tracker and response.tokens:
             model = getattr(self.backend, 'model', 'unknown')
+            self.cost_tracker.ensure_pricing(model)
             self.cost_tracker.record_usage(model, input_tokens, output_tokens)
 
         # Show token summary if enabled
@@ -745,9 +746,67 @@ def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str 
     ) or agent_config.system_prompt
 
 
+def _resolve_command(backend_type: str, configured: str | None,
+                     default: str, fallbacks: list[str] | None = None,
+                     no_fallback: bool = False) -> str:
+    """Resolve which command to use for a CLI backend.
+
+    Checks if the configured/default command exists. If not, tries
+    fallbacks (unless --no-fallback). Always prints what's being used.
+    """
+    import shutil
+
+    # Explicit --command overrides everything, no fallback
+    if configured:
+        if shutil.which(configured):
+            return configured
+        raise ValueError(
+            f"Command '{configured}' not found for {backend_type} backend"
+        )
+
+    # Try the default command
+    if shutil.which(default):
+        return default
+
+    # Default not found — try fallbacks
+    if not no_fallback and fallbacks:
+        for fb in fallbacks:
+            if shutil.which(fb):
+                print(f"  Note: '{default}' not found, "
+                      f"falling back to '{fb}' for {backend_type} backend",
+                      file=sys.stderr)
+                return fb
+
+    # Nothing found
+    if fallbacks and not no_fallback:
+        tried = ', '.join([default] + fallbacks)
+        raise ValueError(
+            f"No command found for {backend_type} backend (tried: {tried}). "
+            f"Install one or use --command to specify."
+        )
+    else:
+        raise ValueError(
+            f"Command '{default}' not found for {backend_type} backend. "
+            f"Install it or use --command to specify."
+        )
+
+
+# Fallback chains: primary command → alternatives
+# Note: coro has no fallback — claude-code uses different CLI args
+# (coro uses positional prompt, claude-code uses -p flag).
+# Use -b claude-code explicitly if coro is not installed.
+_CLI_FALLBACKS = {
+    'coro': [],               # no fallback (different CLI interface)
+    'claude-code': [],        # no fallback
+    'gemini': [],             # no fallback
+    'ollama-cli': [],         # no fallback
+}
+
+
 def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
                                sandbox: bool = False, approval_mode: str = "yolo",
-                               allowed_tools: list[str] | None = None) -> AgentBackend:
+                               allowed_tools: list[str] | None = None,
+                               no_fallback: bool = False) -> AgentBackend:
     """Create a backend from an AgentConfig."""
     backend_type = agent_config.backend
 
@@ -755,19 +814,29 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
     system_prompt = build_system_prompt(agent_config, config_dir)
 
     if backend_type == 'coro':
-        return CoroBackend(command=agent_config.command or 'claude')
+        cmd = _resolve_command('coro', agent_config.command, 'coro',
+                               _CLI_FALLBACKS['coro'], no_fallback)
+        return CoroBackend(
+            command=cmd, no_fallback=no_fallback,
+            max_context_tokens=agent_config.max_context_tokens
+            if agent_config.max_context_tokens != 100000 else 0
+        )
 
     elif backend_type == 'claude-code':
         from backends import ClaudeCodeBackend
+        cmd = _resolve_command('claude-code', agent_config.command, 'claude',
+                               _CLI_FALLBACKS['claude-code'], no_fallback)
         return ClaudeCodeBackend(
-            command=agent_config.command or 'claude',
+            command=cmd,
             model=agent_config.model or 'sonnet'
         )
 
     elif backend_type == 'gemini':
         from backends import GeminiBackend
+        cmd = _resolve_command('gemini', agent_config.command, 'gemini',
+                               _CLI_FALLBACKS['gemini'], no_fallback)
         return GeminiBackend(
-            command=agent_config.command or 'gemini',
+            command=cmd,
             model=agent_config.model or 'gemini-3-flash-preview',
             sandbox=sandbox,
             approval_mode=approval_mode,
@@ -791,6 +860,20 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
             base_url=agent_config.extra.get('base_url')
         )
 
+    elif backend_type == 'openrouter':
+        from backends import OpenRouterBackend
+        from backends.openrouter_api import DEFAULT_TOOL_SCHEMAS
+        # Use tool schemas if tools are configured
+        tool_schemas = DEFAULT_TOOL_SCHEMAS if agent_config.tools else None
+        return OpenRouterBackend(
+            api_key=agent_config.api_key,
+            model=agent_config.model,  # None = auto-detect from coro.json
+            base_url=agent_config.extra.get('base_url',
+                                            'https://openrouter.ai/api/v1'),
+            system_prompt=system_prompt,
+            tools=tool_schemas,
+        )
+
     elif backend_type == 'ollama-api':
         from backends import OllamaAPIBackend
         return OllamaAPIBackend(
@@ -803,8 +886,10 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
 
     elif backend_type == 'ollama-cli':
         from backends import OllamaCLIBackend
+        cmd = _resolve_command('ollama-cli', agent_config.command, 'ollama',
+                               _CLI_FALLBACKS['ollama-cli'], no_fallback)
         return OllamaCLIBackend(
-            command=agent_config.command or 'ollama',
+            command=cmd,
             model=agent_config.model or 'llama3',
             timeout=agent_config.timeout
         )
@@ -844,7 +929,7 @@ def main():
     # Direct backend selection (overrides config)
     parser.add_argument(
         '--backend', '-b',
-        choices=['coro', 'claude', 'claude-code', 'gemini', 'openai', 'ollama-api', 'ollama-cli'],
+        choices=['coro', 'claude', 'claude-code', 'gemini', 'openai', 'openrouter', 'ollama-api', 'ollama-cli'],
         default=None,
         help='Backend to use (overrides --agent config)'
     )
@@ -937,6 +1022,11 @@ def main():
         '--system-prompt',
         default=None,
         help='System prompt to use'
+    )
+    parser.add_argument(
+        '--no-fallback',
+        action='store_true',
+        help='Fail if the backend command is not found (no fallback)'
     )
     parser.add_argument(
         '--max-iterations', '-i',
@@ -1101,6 +1191,8 @@ def main():
         agent_config.system_prompt = args.system_prompt
     if args.max_iterations is not None:
         agent_config.max_iterations = args.max_iterations
+    if args.max_tokens is not None:
+        agent_config.max_context_tokens = args.max_tokens
 
     # Create backend
     try:
@@ -1108,7 +1200,8 @@ def main():
             agent_config, config.config_dir,
             sandbox=args.sandbox,
             approval_mode=args.approval_mode,
-            allowed_tools=args.allowed_tools
+            allowed_tools=args.allowed_tools,
+            no_fallback=args.no_fallback
         )
     except ImportError as e:
         print(f"Backend requires additional package: {e}", file=sys.stderr)
