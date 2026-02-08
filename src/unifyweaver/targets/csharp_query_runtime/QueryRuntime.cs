@@ -2249,6 +2249,27 @@ namespace UnifyWeaver.QueryRuntime
                 _ => false
             };
 
+            static int EstimateFilteredRecursiveRowCount(
+                IReadOnlyList<object[]> rows,
+                Func<object[], bool>? filter)
+            {
+                if (filter is null)
+                {
+                    return rows.Count;
+                }
+
+                var count = 0;
+                foreach (var row in rows)
+                {
+                    if (row is not null && filter(row))
+                    {
+                        count++;
+                    }
+                }
+
+                return count;
+            }
+
             if (context is not null)
             {
                 var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern, out var leftScanFilter);
@@ -3873,17 +3894,34 @@ namespace UnifyWeaver.QueryRuntime
             {
                 if (leftIsRecursive && rightIsRecursive)
                 {
-                    if (leftKind == RecursiveRefKind.Delta && rightKind != RecursiveRefKind.Delta)
+                    var usedFilteredSelectivity = false;
+                    if (joinKeyCount > 1 && (leftRecursiveFilter is not null || rightRecursiveFilter is not null))
                     {
-                        buildLeft = false;
+                        var leftFilteredRowCount = EstimateFilteredRecursiveRowCount(leftRecursiveRows, leftRecursiveFilter);
+                        var rightFilteredRowCount = EstimateFilteredRecursiveRowCount(rightRecursiveRows, rightRecursiveFilter);
+
+                        if (leftFilteredRowCount != rightFilteredRowCount)
+                        {
+                            buildLeft = leftFilteredRowCount <= rightFilteredRowCount;
+                            trace?.RecordStrategy(join, buildLeft ? "KeyJoinRecursiveBuildFilteredLeft" : "KeyJoinRecursiveBuildFilteredRight");
+                            usedFilteredSelectivity = true;
+                        }
                     }
-                    else if (rightKind == RecursiveRefKind.Delta && leftKind != RecursiveRefKind.Delta)
+
+                    if (!usedFilteredSelectivity)
                     {
-                        buildLeft = true;
-                    }
-                    else
-                    {
-                        buildLeft = leftRecursiveRows.Count <= rightRecursiveRows.Count;
+                        if (leftKind == RecursiveRefKind.Delta && rightKind != RecursiveRefKind.Delta)
+                        {
+                            buildLeft = false;
+                        }
+                        else if (rightKind == RecursiveRefKind.Delta && leftKind != RecursiveRefKind.Delta)
+                        {
+                            buildLeft = true;
+                        }
+                        else
+                        {
+                            buildLeft = leftRecursiveRows.Count <= rightRecursiveRows.Count;
+                        }
                     }
                 }
                 else if (leftIsRecursive && leftKind == RecursiveRefKind.Delta)
