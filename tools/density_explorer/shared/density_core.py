@@ -448,21 +448,150 @@ def blend_distance_matrices(
     Returns:
         dist_blend: (N, N) blended distance matrix
     """
-    def cosine_dist(emb):
-        norms = np.linalg.norm(emb, axis=1, keepdims=True)
-        normed = emb / (norms + 1e-8)
-        sim = normed @ normed.T
-        dist = 1 - sim
-        np.fill_diagonal(dist, 0)
-        return dist
-
-    dist_input = cosine_dist(emb_input)
-    dist_output = cosine_dist(emb_output)
+    dist_input = cosine_distance_matrix(emb_input)
+    dist_output = cosine_distance_matrix(emb_output)
 
     dist_blend = alpha * dist_input + (1 - alpha) * dist_output
     np.fill_diagonal(dist_blend, 0)
 
     return dist_blend
+
+
+def cosine_distance_matrix(embeddings: np.ndarray) -> np.ndarray:
+    """
+    Compute pairwise cosine distance matrix.
+
+    Args:
+        embeddings: (N, D) embedding matrix
+
+    Returns:
+        dist: (N, N) cosine distance matrix with zero diagonal
+    """
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    normed = embeddings / (norms + 1e-8)
+    sim = normed @ normed.T
+    dist = 1 - sim
+    np.fill_diagonal(dist, 0)
+    return dist
+
+
+def euclidean_distance_matrix(embeddings: np.ndarray) -> np.ndarray:
+    """
+    Compute pairwise Euclidean distance matrix.
+
+    Args:
+        embeddings: (N, D) embedding matrix
+
+    Returns:
+        dist: (N, N) Euclidean distance matrix with zero diagonal
+    """
+    sq_norms = np.sum(embeddings ** 2, axis=1)
+    dist_sq = sq_norms[:, None] + sq_norms[None, :] - 2 * embeddings @ embeddings.T
+    dist_sq = np.maximum(dist_sq, 0)  # numerical safety
+    dist = np.sqrt(dist_sq)
+    np.fill_diagonal(dist, 0)
+    return dist
+
+
+def compute_custom_distance_matrix(
+    embeddings: np.ndarray,
+    input_embeddings: Optional[np.ndarray],
+    weights: Optional[np.ndarray],
+    metric_model=None,
+    space_weights: Dict[str, float] = None,
+    embedding_alpha: Optional[float] = None,
+    power_n: float = 1.0,
+) -> np.ndarray:
+    """
+    Compute L^n power mean of distance matrices from multiple spaces.
+
+    Normalizes each distance matrix to [0,1], raises to power n,
+    computes weighted sum, then takes the (1/n)-th root.
+
+    Args:
+        embeddings: (N, D) output/projected embeddings
+        input_embeddings: (N, D) input embeddings (for blending and learned metric)
+        weights: (N, n_basis) transformer blend weights
+        metric_model: loaded OrganizationalMetric model
+        space_weights: dict mapping space name to raw weight,
+            e.g. {"embedding": 3, "weights": 2, "learned": 2, "wiki": 0}
+        embedding_alpha: blend alpha for input/output embedding mix
+        power_n: exponent for L^n power mean (default 1.0 = linear)
+
+    Returns:
+        result: (N, N) custom distance matrix with zero diagonal
+    """
+    if space_weights is None:
+        return cosine_distance_matrix(embeddings)
+
+    dist_matrices = {}
+
+    # 1. Compute each requested distance matrix
+    if space_weights.get('embedding', 0) > 0:
+        if embedding_alpha is not None and input_embeddings is not None:
+            dist_matrices['embedding'] = blend_distance_matrices(
+                input_embeddings, embeddings, embedding_alpha
+            )
+        else:
+            dist_matrices['embedding'] = cosine_distance_matrix(embeddings)
+
+    if space_weights.get('weights', 0) > 0 and weights is not None:
+        dist_matrices['weights'] = cosine_distance_matrix(weights)
+
+    if space_weights.get('learned', 0) > 0 and weights is not None:
+        inp = input_embeddings if input_embeddings is not None else embeddings
+        metric_emb = compute_metric_embeddings(
+            inp, embeddings, weights, metric_model
+        )
+        dist_matrices['learned'] = euclidean_distance_matrix(metric_emb)
+
+    if space_weights.get('wiki', 0) > 0:
+        inp = input_embeddings if input_embeddings is not None else embeddings
+        try:
+            dist_matrices['wiki'] = compute_wikipedia_physics_distances(inp)
+        except Exception as e:
+            print(f"Warning: Wikipedia physics distances failed ({e}), skipping")
+
+    if not dist_matrices:
+        return cosine_distance_matrix(embeddings)
+
+    # 2. Normalize each to [0, 1] (max normalization)
+    for key in dist_matrices:
+        d = dist_matrices[key]
+        d_max = d.max()
+        if d_max > 0:
+            dist_matrices[key] = d / d_max
+
+    # 3. Normalize weights to sum to 1 (only active spaces)
+    active_weights = {k: space_weights[k] for k in dist_matrices}
+    total = sum(active_weights.values())
+    if total > 0:
+        active_weights = {k: v / total for k, v in active_weights.items()}
+    else:
+        n_spaces = len(active_weights)
+        active_weights = {k: 1.0 / n_spaces for k in active_weights}
+
+    # 4. Compute L^n power mean
+    n = power_n
+    first_matrix = next(iter(dist_matrices.values()))
+
+    if abs(n) < 1e-10:
+        # Geometric mean: exp(sum(w_i * log(d_i)))
+        log_sum = np.zeros_like(first_matrix)
+        for key, d in dist_matrices.items():
+            w = active_weights[key]
+            log_sum += w * np.log(d + 1e-10)
+        result = np.exp(log_sum)
+    else:
+        # General case: (sum(w_i * d_i^n))^(1/n)
+        powered_sum = np.zeros_like(first_matrix)
+        for key, d in dist_matrices.items():
+            w = active_weights[key]
+            powered_sum += w * np.power(d + 1e-10, n)
+        result = np.power(powered_sum, 1.0 / n)
+
+    np.fill_diagonal(result, 0)
+    return result
 
 
 def project_weights_to_2d(
@@ -1170,7 +1299,11 @@ def compute_density_manifold(
     root_id: Optional[int] = None,
     tree_embeddings: Optional[np.ndarray] = None,
     blend_layout_alpha: Optional[float] = None,
-    blend_tree_alpha: Optional[float] = None
+    blend_tree_alpha: Optional[float] = None,
+    custom_viz_space_weights: Optional[Dict[str, float]] = None,
+    custom_viz_power_n: float = 1.0,
+    custom_tree_space_weights: Optional[Dict[str, float]] = None,
+    custom_tree_power_n: float = 1.0,
 ) -> DensityManifoldData:
     """
     Main function: compute complete density manifold data.
@@ -1248,8 +1381,21 @@ def compute_density_manifold(
             )
             projection_mode = "weights"  # Update mode for metadata
     else:
+        # Check for visualization customization (L^n multi-space)
+        if (custom_viz_space_weights is not None
+                and projection_mode == "embedding"):
+            custom_viz_dist = compute_custom_distance_matrix(
+                embeddings=embeddings,
+                input_embeddings=input_embeddings,
+                weights=weights,
+                metric_model=metric_model,
+                space_weights=custom_viz_space_weights,
+                embedding_alpha=blend_layout_alpha,
+                power_n=custom_viz_power_n,
+            )
+            points_2d, singular_values, var_explained = classical_mds_2d(custom_viz_dist)
         # Check for layout blending (input↔output space)
-        if (blend_layout_alpha is not None and input_embeddings is not None
+        elif (blend_layout_alpha is not None and input_embeddings is not None
                 and projection_mode == "embedding"):
             points_2d, singular_values, var_explained = blend_projections_2d(
                 input_embeddings, embeddings, blend_layout_alpha
@@ -1272,9 +1418,20 @@ def compute_density_manifold(
         # Otherwise use the same embeddings as for projection
         tree_emb = tree_embeddings if tree_embeddings is not None else embeddings
 
-        # Compute blended tree distance matrix if requested
+        # Compute tree distance matrix override
         dist_matrix_for_tree = None
-        if blend_tree_alpha is not None and input_embeddings is not None:
+        if custom_tree_space_weights is not None:
+            # L^n multi-space tree distance
+            dist_matrix_for_tree = compute_custom_distance_matrix(
+                embeddings=tree_emb,
+                input_embeddings=input_embeddings,
+                weights=weights,
+                metric_model=metric_model,
+                space_weights=custom_tree_space_weights,
+                embedding_alpha=blend_tree_alpha,
+                power_n=custom_tree_power_n,
+            )
+        elif blend_tree_alpha is not None and input_embeddings is not None:
             dist_matrix_for_tree = blend_distance_matrices(
                 input_embeddings, tree_emb, blend_tree_alpha
             )
