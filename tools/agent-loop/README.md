@@ -63,6 +63,7 @@ pip install rich
 | `claude-code` | `claude` | claude-code CLI installed |
 | `openai` | OpenAI API | `OPENAI_API_KEY` env var |
 | `gemini` | `gemini` | gemini CLI installed |
+| `openrouter` | OpenRouter API | `OPENROUTER_API_KEY` or `~/coro.json` |
 | `ollama-api` | Ollama REST | Ollama server running |
 | `ollama-cli` | `ollama run` | ollama CLI installed |
 
@@ -228,6 +229,29 @@ Create shortcuts for common operations:
 /alias add yolo "backend coro; auto-tools"
 ```
 
+## Command Resolution
+
+CLI backends (`coro`, `claude-code`, `gemini`, `ollama-cli`) automatically resolve which command to use:
+
+1. If `--command` is specified, use that exactly (fail if not found)
+2. Try the default command for the backend
+3. Try fallback commands (e.g., `coro` falls back to `claude`)
+4. Print a warning when using a fallback
+
+```bash
+# Disable fallback behavior
+python3 agent_loop.py -b coro --no-fallback "prompt"
+
+# Specify exact command
+python3 agent_loop.py -b coro --command /usr/local/bin/coro "prompt"
+```
+
+The coro backend also searches for its config file (`coro.json`) in:
+1. Current working directory
+2. Home directory (`~/coro.json`) as fallback
+
+Use `--no-fallback` to disable the home directory config search as well.
+
 ## Context Modes
 
 | Mode | Description |
@@ -296,6 +320,7 @@ python3 agent_loop.py --context-mode sliding "prompt"
 | `templates.py` | Prompt templates |
 | `history.py` | History management |
 | `multiline.py` | Multi-line input handling |
+| `display.py` | Spinner, progress bar, terminal control (tput) |
 | `skills.py` | Skills and agent.md loading |
 
 ## Examples
@@ -347,9 +372,30 @@ python3 agent_loop.py -s <session-id>
 | Config generation (`--init-config`) | - | Working |
 | Session listing (`--list-sessions`) | - | Working |
 | Agent variants (`-a`) | claude-code | Working |
-| Context modes | claude-code, coro | Working |
+| Context modes (continue, fresh, sliding) | claude-code, coro | Working |
 | Help output | - | Working |
 | Gemini CLI backend (`-b gemini`) | gemini | Working |
+| Fancy mode (`--fancy`) spinner | coro, claude-code, gemini | Working |
+| Stream-json live tool progress | claude-code, gemini | Working |
+| Context limits (`--max-chars`, `--max-words`, `--max-tokens`) | openrouter, coro | Working |
+| Token estimation (chars/4 heuristic) | all | Working |
+| Sliding window uses `max_messages` | coro | Verified |
+| Duplicate message fix (API backends) | claude-api, openai-api | Verified |
+| `on_status` via `**kwargs` (no try/except) | all | Verified |
+| Command resolution with fallbacks | coro, claude-code, gemini | Working |
+| `--no-fallback` flag | coro | Working |
+| Coro debug mode + token parsing | coro | Working |
+| Coro `--max-steps` default (5) | coro | Working |
+| Coro config discovery (`~/coro.json`) | coro | Working |
+| ANSI escape stripping in coro output | coro | Working |
+| Spinner elapsed time display | all (fancy) | Working |
+| OpenRouter API backend | openrouter | Working |
+| OpenRouter auto-config from coro.json | openrouter | Working |
+| OpenRouter pricing auto-fetch | openrouter, coro | Working |
+| Context limits with OpenRouter | openrouter | Verified |
+| Context limits with Coro | coro | Verified |
+| Coro `max_token` passthrough (`--max-tokens`) | coro | Working |
+| Fix: `context or ContextManager()` truthiness bug | all | Fixed |
 
 ### Untested Features
 
@@ -370,10 +416,25 @@ python3 agent_loop.py -s <session-id>
 | Multi-line input | Not tested in this session |
 | Shell completions | Not tested in this session |
 
+### Stream-JSON Support
+
+Live tool call progress (shown in `--fancy` spinner) is supported by backends that output streaming JSON:
+
+| Backend | Stream-JSON | Notes |
+|---------|------------|-------|
+| claude-code | Yes | `--output-format stream-json --verbose` |
+| gemini | Yes | `-o stream-json` |
+| coro | No | No structured JSON output available |
+| claude (API) | N/A | API backends don't use CLI streaming |
+| openrouter (API) | N/A | Direct API calls, full context control |
+| openai (API) | N/A | API backends don't use CLI streaming |
+| ollama-api | N/A | REST API, not CLI |
+| ollama-cli | No | No structured JSON output available |
+
 ### Tool Handling Note
 
 The CLI backends (coro, claude-code, gemini) manage their own tool execution internally. Our tool parsing (`tools.py`) is designed for:
-- API backends that return structured tool calls
+- API backends that return structured tool calls (claude, openai, openrouter)
 - Future CLI backends that output tool calls without executing them
 
 For CLI backends, the agent loop provides value through:

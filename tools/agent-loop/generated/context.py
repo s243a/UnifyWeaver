@@ -81,18 +81,18 @@ class ContextManager:
         while len(self.messages) > self.max_messages:
             self._remove_oldest()
 
-        # Trim by token count (keep at least 2 messages)
-        while self._token_count > self.max_tokens and len(self.messages) > 2:
+        # Trim by token count (keep at least 1 message)
+        while self._token_count > self.max_tokens and len(self.messages) > 1:
             self._remove_oldest()
 
         # Trim by character count
         if self.max_chars > 0:
-            while self._char_count > self.max_chars and len(self.messages) > 2:
+            while self._char_count > self.max_chars and len(self.messages) > 1:
                 self._remove_oldest()
 
         # Trim by word count
         if self.max_words > 0:
-            while self._word_count > self.max_words and len(self.messages) > 2:
+            while self._word_count > self.max_words and len(self.messages) > 1:
                 self._remove_oldest()
 
     def _remove_oldest(self) -> None:
@@ -103,7 +103,11 @@ class ContextManager:
         self._word_count -= _count_words(removed.content)
 
     def get_context(self) -> list[dict]:
-        """Get context formatted for the backend."""
+        """Get context formatted for the backend.
+
+        Applies char/word limits at retrieval time by building from
+        newest to oldest, only including messages that fit.
+        """
         if self.behavior == ContextBehavior.FRESH:
             return []
 
@@ -112,10 +116,33 @@ class ContextManager:
             # Keep only recent messages (use configured max_messages)
             messages = self.messages[-self.max_messages:]
 
-        return [
-            {"role": msg.role, "content": msg.content}
-            for msg in messages
-        ]
+        # If no char/word limit, return all messages
+        if self.max_chars <= 0 and self.max_words <= 0:
+            return [
+                {"role": msg.role, "content": msg.content}
+                for msg in messages
+            ]
+
+        # Build from newest to oldest, respecting limits
+        result = []
+        total_chars = 0
+        total_words = 0
+        for msg in reversed(messages):
+            msg_chars = len(msg.content)
+            msg_words = _count_words(msg.content)
+
+            # Check if adding this message would exceed limits
+            if self.max_chars > 0 and total_chars + msg_chars > self.max_chars and result:
+                break
+            if self.max_words > 0 and total_words + msg_words > self.max_words and result:
+                break
+
+            result.append({"role": msg.role, "content": msg.content})
+            total_chars += msg_chars
+            total_words += msg_words
+
+        result.reverse()
+        return result
 
     def get_formatted_context(self) -> str:
         """Get context as a formatted string."""

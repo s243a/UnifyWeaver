@@ -5,11 +5,12 @@ from .claude_code import ClaudeCodeBackend
 from .gemini import GeminiBackend
 from .ollama_api import OllamaAPIBackend
 from .ollama_cli import OllamaCLIBackend
+from .openrouter_api import OpenRouterBackend
 
 __all__ = [
     'AgentBackend', 'AgentResponse', 'ToolCall',
     'CoroBackend', 'ClaudeCodeBackend', 'GeminiBackend',
-    'OllamaAPIBackend', 'OllamaCLIBackend'
+    'OllamaAPIBackend', 'OllamaCLIBackend', 'OpenRouterBackend'
 ]
 
 # Claude API backend (optional - requires anthropic package)

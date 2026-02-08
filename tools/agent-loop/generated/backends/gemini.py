@@ -1,6 +1,7 @@
 """Gemini CLI backend using stream-json for live progress."""
 
 import json
+import os
 import subprocess
 import sys
 from .base import AgentBackend, AgentResponse, ToolCall
@@ -50,6 +51,7 @@ class GeminiBackend(AgentBackend):
             content_parts = []
             tokens = {}
             tool_count = 0
+            last_tool_desc = None
 
             for line in proc.stdout:
                 line = line.strip()
@@ -71,15 +73,14 @@ class GeminiBackend(AgentBackend):
                     tool_count += 1
                     tool_name = event.get('tool_name', '?')
                     params = event.get('parameters', {})
-                    # Show what tool is being called
-                    desc = self._describe_tool_call(tool_name, params)
+                    last_tool_desc = self._describe_tool_call(tool_name, params)
                     if self._on_status:
-                        self._on_status(f"[{tool_count}] {desc}")
+                        self._on_status(f"[{tool_count}] {last_tool_desc}")
 
                 elif etype == 'tool_result':
                     status = event.get('status', '')
                     if self._on_status:
-                        self._on_status(f"[{tool_count}] done ({status})")
+                        self._on_status(f"[{tool_count}] {last_tool_desc} done ({status})")
 
                 elif etype == 'result':
                     stats = event.get('stats', {})
@@ -121,20 +122,20 @@ class GeminiBackend(AgentBackend):
     def _describe_tool_call(self, tool_name: str, params: dict) -> str:
         """Create a short description of a tool call."""
         if tool_name == 'read_file':
-            return f"reading {params.get('file_path', '?')}"
+            return f"reading {os.path.basename(params.get('file_path', '?'))}"
         elif tool_name == 'glob':
             return f"searching {params.get('pattern', '?')}"
         elif tool_name == 'grep':
             return f"grep {params.get('pattern', '?')}"
         elif tool_name == 'run_shell_command':
             cmd = params.get('command', '?')
-            if len(cmd) > 40:
-                cmd = cmd[:37] + '...'
+            if len(cmd) > 72:
+                cmd = cmd[:69] + '...'
             return f"$ {cmd}"
         elif tool_name == 'write_file':
-            return f"writing {params.get('file_path', '?')}"
+            return f"writing {os.path.basename(params.get('file_path', '?'))}"
         elif tool_name == 'edit':
-            return f"editing {params.get('file_path', '?')}"
+            return f"editing {os.path.basename(params.get('file_path', '?'))}"
         elif tool_name == 'list_directory':
             return f"ls {params.get('path', '?')}"
         else:
