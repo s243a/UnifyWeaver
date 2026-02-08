@@ -731,7 +731,6 @@
                                 <option value="visualization">Visualization (2D layout)</option>
                                 <option value="tree">Tree Distance</option>
                                 <option value="both">Both (independent)</option>
-                                <option value="custom" disabled title="Multi-space weighted blending — coming soon">Custom (coming soon)</option>
                             </select>
                         </div>
 
@@ -744,6 +743,33 @@
                             </div>
                             <input type="number" id="blendLayoutAlphaInput" min="0" max="1" step="0.01" value="0.5"
                                    style="width: 80px; padding: 4px 8px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; margin-top: 4px; font-size: 0.85rem;">
+                            <div style="margin-top: 8px;">
+                                <label for="vizCustomizeMethod" style="font-size: 0.8rem;">Customize Distance</label>
+                                <select id="vizCustomizeMethod" style="width:100%; padding: 6px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; font-size: 0.8rem;">
+                                    <option value="none">None</option>
+                                    <option value="ln">L^n Power Mean</option>
+                                    <option value="formula" disabled>Formulaic (coming soon)</option>
+                                </select>
+                            </div>
+                            <div id="vizCustomizeControls" style="display: none; margin-top: 8px; padding: 8px; background: rgba(15, 52, 96, 0.3); border: 1px solid #0f3460; border-radius: 4px;">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                    <label style="font-size: 0.75rem; white-space: nowrap;">n:</label>
+                                    <input type="number" id="vizPowerN" value="1.0" step="0.5" min="-10" max="10"
+                                           style="width: 60px; padding: 4px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; font-size: 0.8rem;">
+                                    <button type="button" class="secondary" id="vizPresetLinear" style="width:auto; padding: 3px 8px; margin: 0; font-size: 0.7rem;">Linear</button>
+                                    <button type="button" class="secondary" id="vizPresetEuclidean" style="width:auto; padding: 3px 8px; margin: 0; font-size: 0.7rem;">Euclid</button>
+                                    <button type="button" class="secondary" id="vizPresetHarmonic" style="width:auto; padding: 3px 8px; margin: 0; font-size: 0.7rem;">Harmonic</button>
+                                </div>
+                                <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px;">
+                                    <div style="display: grid; grid-template-columns: 1fr 50px 60px; gap: 4px; align-items: center;">
+                                        <span style="font-weight: bold;">Space</span>
+                                        <span style="font-weight: bold;">Weight</span>
+                                        <span style="font-weight: bold;">Eff.</span>
+                                    </div>
+                                    <div id="vizSpaceWeightsContainer"></div>
+                                </div>
+                                <button type="button" class="secondary" id="vizNormalizeBtn" style="font-size: 0.75rem; padding: 4px 8px;">Normalize</button>
+                            </div>
                         </div>
 
                         <div id="blendTreeGroup" class="control-group" style="display: none;">
@@ -755,6 +781,33 @@
                             </div>
                             <input type="number" id="blendTreeAlphaInput" min="0" max="1" step="0.01" value="0.5"
                                    style="width: 80px; padding: 4px 8px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; margin-top: 4px; font-size: 0.85rem;">
+                            <div style="margin-top: 8px;">
+                                <label for="treeCustomizeMethod" style="font-size: 0.8rem;">Customize Distance</label>
+                                <select id="treeCustomizeMethod" style="width:100%; padding: 6px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; font-size: 0.8rem;">
+                                    <option value="none">None</option>
+                                    <option value="ln">L^n Power Mean</option>
+                                    <option value="formula" disabled>Formulaic (coming soon)</option>
+                                </select>
+                            </div>
+                            <div id="treeCustomizeControls" style="display: none; margin-top: 8px; padding: 8px; background: rgba(15, 52, 96, 0.3); border: 1px solid #0f3460; border-radius: 4px;">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                    <label style="font-size: 0.75rem; white-space: nowrap;">n:</label>
+                                    <input type="number" id="treePowerN" value="1.0" step="0.5" min="-10" max="10"
+                                           style="width: 60px; padding: 4px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 4px; font-size: 0.8rem;">
+                                    <button type="button" class="secondary" id="treePresetLinear" style="width:auto; padding: 3px 8px; margin: 0; font-size: 0.7rem;">Linear</button>
+                                    <button type="button" class="secondary" id="treePresetEuclidean" style="width:auto; padding: 3px 8px; margin: 0; font-size: 0.7rem;">Euclid</button>
+                                    <button type="button" class="secondary" id="treePresetHarmonic" style="width:auto; padding: 3px 8px; margin: 0; font-size: 0.7rem;">Harmonic</button>
+                                </div>
+                                <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px;">
+                                    <div style="display: grid; grid-template-columns: 1fr 50px 60px; gap: 4px; align-items: center;">
+                                        <span style="font-weight: bold;">Space</span>
+                                        <span style="font-weight: bold;">Weight</span>
+                                        <span style="font-weight: bold;">Eff.</span>
+                                    </div>
+                                    <div id="treeSpaceWeightsContainer"></div>
+                                </div>
+                                <button type="button" class="secondary" id="treeNormalizeBtn" style="font-size: 0.75rem; padding: 4px 8px;">Normalize</button>
+                            </div>
                         </div>
 
                         <div id="blendStatusText" style="font-size: 0.8rem; color: #94a3b8; margin-top: 10px;">Blending disabled.</div>
@@ -917,11 +970,29 @@
         const blendTreeGroup = document.getElementById('blendTreeGroup');
         const blendStatusText = document.getElementById('blendStatusText');
         const applyBlendBtn = document.getElementById('applyBlendBtn');
+        // Customization elements
+        const vizCustomizeMethod = document.getElementById('vizCustomizeMethod');
+        const vizCustomizeControls = document.getElementById('vizCustomizeControls');
+        const vizPowerN = document.getElementById('vizPowerN');
+        const vizSpaceWeightsContainer = document.getElementById('vizSpaceWeightsContainer');
+        const vizNormalizeBtn = document.getElementById('vizNormalizeBtn');
+        const treeCustomizeMethod = document.getElementById('treeCustomizeMethod');
+        const treeCustomizeControls = document.getElementById('treeCustomizeControls');
+        const treePowerN = document.getElementById('treePowerN');
+        const treeSpaceWeightsContainer = document.getElementById('treeSpaceWeightsContainer');
+        const treeNormalizeBtn = document.getElementById('treeNormalizeBtn');
 
         // Blend state
         let blendMode = 'none';
         let blendLayoutAlpha = 0.5;
         let blendTreeAlpha = 0.5;
+        // Customization state
+        let vizCustomize = 'none';
+        let treeCustomize = 'none';
+        let vizSpaceWeights = { embedding: 1, weights: 0, learned: 0, wiki: 0 };
+        let treeSpaceWeights = { embedding: 1, weights: 0, learned: 0, wiki: 0 };
+        let vizPowerNValue = 1.0;
+        let treePowerNValue = 1.0;
 
         // Legacy reference for compatibility
         const embeddingSelect = layoutEmbeddingSelect;
@@ -1632,6 +1703,38 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
             document.getElementById('flaskModel')?.addEventListener('change', updateBlendAvailability);
             updateBlendAvailability();
 
+            // Customization event listeners
+            if (vizCustomizeMethod) {
+                vizCustomizeMethod.addEventListener('change', () => handleCustomizeMethodChange('viz'));
+            }
+            if (treeCustomizeMethod) {
+                treeCustomizeMethod.addEventListener('change', () => handleCustomizeMethodChange('tree'));
+            }
+            if (vizPowerN) {
+                vizPowerN.addEventListener('change', () => { vizPowerNValue = parseFloat(vizPowerN.value) || 1.0; });
+            }
+            if (treePowerN) {
+                treePowerN.addEventListener('change', () => { treePowerNValue = parseFloat(treePowerN.value) || 1.0; });
+            }
+            if (vizNormalizeBtn) {
+                vizNormalizeBtn.addEventListener('click', () => normalizeWeights('viz'));
+            }
+            if (treeNormalizeBtn) {
+                treeNormalizeBtn.addEventListener('click', () => normalizeWeights('tree'));
+            }
+            // Preset buttons
+            document.getElementById('vizPresetLinear')?.addEventListener('click', () => setPresetN('viz', 1.0));
+            document.getElementById('vizPresetEuclidean')?.addEventListener('click', () => setPresetN('viz', 2.0));
+            document.getElementById('vizPresetHarmonic')?.addEventListener('click', () => setPresetN('viz', -1.0));
+            document.getElementById('treePresetLinear')?.addEventListener('click', () => setPresetN('tree', 1.0));
+            document.getElementById('treePresetEuclidean')?.addEventListener('click', () => setPresetN('tree', 2.0));
+            document.getElementById('treePresetHarmonic')?.addEventListener('click', () => setPresetN('tree', -1.0));
+            // Refresh customization UI when model changes
+            document.getElementById('flaskModel')?.addEventListener('change', () => {
+                if (vizCustomize === 'ln') buildSpaceWeightsUI('viz', vizSpaceWeightsContainer, vizSpaceWeights);
+                if (treeCustomize === 'ln') buildSpaceWeightsUI('tree', treeSpaceWeightsContainer, treeSpaceWeights);
+            });
+
             // Projection mode
             projectionModeSelect.addEventListener('change', handleProjectionModeChange);
             clearAxisBtn.addEventListener('click', clearAxisSelection);
@@ -1800,14 +1903,17 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
         function updateBlendStatus() {
             if (!blendStatusText) return;
 
+            const vizSuffix = vizCustomize === 'ln' ? ' + L^n' : '';
+            const treeSuffix = treeCustomize === 'ln' ? ' + L^n' : '';
+
             if (blendMode === 'none') {
                 blendStatusText.textContent = 'Blending disabled.';
             } else if (blendMode === 'visualization') {
-                blendStatusText.textContent = `Layout: ${(blendLayoutAlpha * 100).toFixed(0)}% input / ${((1 - blendLayoutAlpha) * 100).toFixed(0)}% output`;
+                blendStatusText.textContent = `Layout: ${(blendLayoutAlpha * 100).toFixed(0)}% input / ${((1 - blendLayoutAlpha) * 100).toFixed(0)}% output${vizSuffix}`;
             } else if (blendMode === 'tree') {
-                blendStatusText.textContent = `Tree: ${(blendTreeAlpha * 100).toFixed(0)}% input / ${((1 - blendTreeAlpha) * 100).toFixed(0)}% output`;
+                blendStatusText.textContent = `Tree: ${(blendTreeAlpha * 100).toFixed(0)}% input / ${((1 - blendTreeAlpha) * 100).toFixed(0)}% output${treeSuffix}`;
             } else if (blendMode === 'both') {
-                blendStatusText.textContent = `Layout: ${(blendLayoutAlpha * 100).toFixed(0)}%in/${((1 - blendLayoutAlpha) * 100).toFixed(0)}%out | Tree: ${(blendTreeAlpha * 100).toFixed(0)}%in/${((1 - blendTreeAlpha) * 100).toFixed(0)}%out`;
+                blendStatusText.textContent = `Layout: ${(blendLayoutAlpha * 100).toFixed(0)}%in/${((1 - blendLayoutAlpha) * 100).toFixed(0)}%out${vizSuffix} | Tree: ${(blendTreeAlpha * 100).toFixed(0)}%in/${((1 - blendTreeAlpha) * 100).toFixed(0)}%out${treeSuffix}`;
             }
         }
 
@@ -1818,12 +1924,14 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
 
             if (blendMode !== 'none') {
                 blendItem.style.display = '';
+                const vizSuffix = vizCustomize === 'ln' ? '+L^n' : '';
+                const treeSuffix = treeCustomize === 'ln' ? '+L^n' : '';
                 if (blendMode === 'visualization') {
-                    blendInfo.textContent = `Viz: ${(blendLayoutAlpha * 100).toFixed(0)}%in`;
+                    blendInfo.textContent = `Viz: ${(blendLayoutAlpha * 100).toFixed(0)}%in${vizSuffix}`;
                 } else if (blendMode === 'tree') {
-                    blendInfo.textContent = `Tree: ${(blendTreeAlpha * 100).toFixed(0)}%in`;
+                    blendInfo.textContent = `Tree: ${(blendTreeAlpha * 100).toFixed(0)}%in${treeSuffix}`;
                 } else if (blendMode === 'both') {
-                    blendInfo.textContent = `V:${(blendLayoutAlpha * 100).toFixed(0)}% T:${(blendTreeAlpha * 100).toFixed(0)}%`;
+                    blendInfo.textContent = `V:${(blendLayoutAlpha * 100).toFixed(0)}%${vizSuffix} T:${(blendTreeAlpha * 100).toFixed(0)}%${treeSuffix}`;
                 }
             } else {
                 blendItem.style.display = 'none';
@@ -1836,15 +1944,170 @@ set_real_embeddings(_js_embeddings.to_py(), list(_js_titles))
             const params = {};
             if (blendMode === 'visualization' || blendMode === 'both') {
                 params.blend_layout_alpha = blendLayoutAlpha;
+                if (vizCustomize === 'ln') {
+                    params.custom_viz_space_weights = { ...vizSpaceWeights };
+                    params.custom_viz_power_n = vizPowerNValue;
+                }
             }
             if (blendMode === 'tree' || blendMode === 'both') {
                 params.blend_tree_alpha = blendTreeAlpha;
+                if (treeCustomize === 'ln') {
+                    params.custom_tree_space_weights = { ...treeSpaceWeights };
+                    params.custom_tree_power_n = treePowerNValue;
+                }
             }
             return params;
         }
 
         async function applyBlend() {
             await loadFromFlaskApi();
+        }
+
+        // ============================================================
+        // Customization Functions (L^n Power Mean)
+        // ============================================================
+
+        const SPACE_DEFINITIONS = [
+            { key: 'embedding', label: 'Embedding (blended)', requiresModel: false, requiresWiki: false },
+            { key: 'weights', label: 'Weight Space', requiresModel: true, requiresWiki: false },
+            { key: 'learned', label: 'Learned Metric', requiresModel: true, requiresWiki: false },
+            { key: 'wiki', label: 'Wikipedia Physics', requiresModel: false, requiresWiki: true },
+        ];
+
+        function hasTransformationModel() {
+            const model = document.getElementById('flaskModel')?.value;
+            return model && model !== 'None' && model !== '';
+        }
+
+        function hasWikiModel() {
+            const dataset = document.getElementById('flaskDataset')?.value || '';
+            return dataset.includes('physics');
+        }
+
+        function isSpaceAvailable(spaceDef) {
+            if (spaceDef.requiresModel && !hasTransformationModel()) return false;
+            if (spaceDef.requiresWiki && !hasWikiModel()) return false;
+            return true;
+        }
+
+        function buildSpaceWeightsUI(prefix, container, currentWeights) {
+            container.innerHTML = '';
+            SPACE_DEFINITIONS.forEach(spaceDef => {
+                const available = isSpaceAvailable(spaceDef);
+                const weight = currentWeights[spaceDef.key] || 0;
+
+                const row = document.createElement('div');
+                row.style.cssText = 'display: grid; grid-template-columns: 1fr 50px 60px; gap: 4px; align-items: center; margin-top: 3px;';
+
+                const label = document.createElement('span');
+                label.textContent = spaceDef.label;
+                label.style.cssText = available ? '' : 'opacity: 0.4;';
+                if (!available) {
+                    label.title = spaceDef.requiresModel ? 'Requires Transformation Model' : 'Requires Wikipedia Physics dataset';
+                }
+
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.min = '0';
+                input.step = '1';
+                input.value = weight;
+                input.disabled = !available;
+                input.dataset.spaceKey = spaceDef.key;
+                input.dataset.prefix = prefix;
+                input.style.cssText = 'width: 50px; padding: 2px 4px; background: #1a1a2e; border: 1px solid #0f3460; color: #eee; border-radius: 3px; font-size: 0.75rem;';
+                input.addEventListener('change', () => handleSpaceWeightChange(prefix, spaceDef.key, input));
+                input.addEventListener('input', () => handleSpaceWeightChange(prefix, spaceDef.key, input));
+
+                const effective = document.createElement('span');
+                effective.id = `${prefix}EffWeight_${spaceDef.key}`;
+                effective.style.cssText = 'font-size: 0.7rem; color: #e94560;';
+
+                row.appendChild(label);
+                row.appendChild(input);
+                row.appendChild(effective);
+                container.appendChild(row);
+            });
+            updateEffectiveWeights(prefix);
+        }
+
+        function handleSpaceWeightChange(prefix, key, input) {
+            const val = Math.max(0, parseFloat(input.value) || 0);
+            input.value = val;
+            if (prefix === 'viz') {
+                vizSpaceWeights[key] = val;
+            } else {
+                treeSpaceWeights[key] = val;
+            }
+            updateEffectiveWeights(prefix);
+        }
+
+        function updateEffectiveWeights(prefix) {
+            const weights = prefix === 'viz' ? vizSpaceWeights : treeSpaceWeights;
+            let total = 0;
+            SPACE_DEFINITIONS.forEach(sd => {
+                if (isSpaceAvailable(sd)) {
+                    total += (weights[sd.key] || 0);
+                }
+            });
+            SPACE_DEFINITIONS.forEach(sd => {
+                const el = document.getElementById(`${prefix}EffWeight_${sd.key}`);
+                if (el) {
+                    const w = weights[sd.key] || 0;
+                    const eff = total > 0 ? (w / total) : 0;
+                    el.textContent = `= ${eff.toFixed(2)}`;
+                }
+            });
+        }
+
+        function normalizeWeights(prefix) {
+            const weights = prefix === 'viz' ? vizSpaceWeights : treeSpaceWeights;
+            let total = 0;
+            SPACE_DEFINITIONS.forEach(sd => {
+                if (isSpaceAvailable(sd)) {
+                    total += (weights[sd.key] || 0);
+                }
+            });
+            if (total > 0) {
+                SPACE_DEFINITIONS.forEach(sd => {
+                    if (isSpaceAvailable(sd)) {
+                        weights[sd.key] = parseFloat((weights[sd.key] / total).toFixed(3));
+                    }
+                });
+            }
+            const container = prefix === 'viz' ? vizSpaceWeightsContainer : treeSpaceWeightsContainer;
+            buildSpaceWeightsUI(prefix, container, weights);
+        }
+
+        function handleCustomizeMethodChange(prefix) {
+            const select = prefix === 'viz' ? vizCustomizeMethod : treeCustomizeMethod;
+            const controls = prefix === 'viz' ? vizCustomizeControls : treeCustomizeControls;
+            const method = select.value;
+
+            if (prefix === 'viz') {
+                vizCustomize = method;
+            } else {
+                treeCustomize = method;
+            }
+
+            controls.style.display = method === 'ln' ? 'block' : 'none';
+
+            if (method === 'ln') {
+                const container = prefix === 'viz' ? vizSpaceWeightsContainer : treeSpaceWeightsContainer;
+                const weights = prefix === 'viz' ? vizSpaceWeights : treeSpaceWeights;
+                buildSpaceWeightsUI(prefix, container, weights);
+            }
+
+            updateBlendStatus();
+        }
+
+        function setPresetN(prefix, value) {
+            const input = prefix === 'viz' ? vizPowerN : treePowerN;
+            input.value = value;
+            if (prefix === 'viz') {
+                vizPowerNValue = value;
+            } else {
+                treePowerNValue = value;
+            }
         }
 
         // Projection Model Functions

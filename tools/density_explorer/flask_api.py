@@ -378,6 +378,12 @@ def compute_manifold():
         blend_layout_alpha = data.get('blend_layout_alpha')
         blend_tree_alpha = data.get('blend_tree_alpha')
 
+        # Extract L^n customization parameters
+        custom_viz_space_weights = data.get('custom_viz_space_weights')
+        custom_viz_power_n = float(data.get('custom_viz_power_n', 1.0))
+        custom_tree_space_weights = data.get('custom_tree_space_weights')
+        custom_tree_power_n = float(data.get('custom_tree_power_n', 1.0))
+
         # Check for projection model
         model = data.get('model')
         blend_weights = None
@@ -495,7 +501,11 @@ def compute_manifold():
                     root_id=root_id,
                     tree_embeddings=tree_embeddings_override,
                     blend_layout_alpha=blend_layout_alpha,
-                    blend_tree_alpha=blend_tree_alpha
+                    blend_tree_alpha=blend_tree_alpha,
+                    custom_viz_space_weights=custom_viz_space_weights,
+                    custom_viz_power_n=custom_viz_power_n,
+                    custom_tree_space_weights=custom_tree_space_weights,
+                    custom_tree_power_n=custom_tree_power_n,
                 )
 
                 return result.to_json(), 200, {'Content-Type': 'application/json'}
@@ -530,7 +540,13 @@ def compute_manifold():
             n_peaks=n_peaks,
             projection_mode=projection_mode,  # Pass actual mode (embedding or wikipedia_physics)
             max_branching=data.get('max_branching'),
-            root_id=root_id
+            root_id=root_id,
+            blend_layout_alpha=blend_layout_alpha,
+            blend_tree_alpha=blend_tree_alpha,
+            custom_viz_space_weights=custom_viz_space_weights,
+            custom_viz_power_n=custom_viz_power_n,
+            custom_tree_space_weights=custom_tree_space_weights,
+            custom_tree_power_n=custom_tree_power_n,
         )
 
         # Return as JSON
@@ -601,6 +617,12 @@ def compute_from_embeddings():
         blend_layout_alpha = data.get('blend_layout_alpha')
         blend_tree_alpha = data.get('blend_tree_alpha')
 
+        # L^n customization parameters
+        custom_viz_space_weights = data.get('custom_viz_space_weights')
+        custom_viz_power_n = float(data.get('custom_viz_power_n', 1.0))
+        custom_tree_space_weights = data.get('custom_tree_space_weights')
+        custom_tree_power_n = float(data.get('custom_tree_power_n', 1.0))
+
         result = compute_density_manifold(
             embeddings=embeddings,
             titles=titles,
@@ -617,7 +639,11 @@ def compute_from_embeddings():
             max_branching=data.get('max_branching'),
             tree_embeddings=tree_embeddings,
             blend_layout_alpha=blend_layout_alpha,
-            blend_tree_alpha=blend_tree_alpha
+            blend_tree_alpha=blend_tree_alpha,
+            custom_viz_space_weights=custom_viz_space_weights,
+            custom_viz_power_n=custom_viz_power_n,
+            custom_tree_space_weights=custom_tree_space_weights,
+            custom_tree_power_n=custom_tree_power_n,
         )
 
         return result.to_json(), 200, {'Content-Type': 'application/json'}
