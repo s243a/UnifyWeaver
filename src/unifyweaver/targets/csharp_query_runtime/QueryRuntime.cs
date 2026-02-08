@@ -8441,6 +8441,36 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
 
+                const int MaxMemoizedSeedCount = 32;
+                var canMemoizeSeeds =
+                    _cacheContext is not null &&
+                    seeds.Count > 1 &&
+                    seeds.Count <= MaxMemoizedSeedCount;
+
+                if (canMemoizeSeeds)
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosureSeededMemoizedMulti");
+                    var memoizedRows = new List<object[]>();
+
+                    foreach (var seed in seeds)
+                    {
+                        var seedParams = new List<object[]>(1) { new object[] { seed! } };
+                        foreach (var row in ExecuteSeededTransitiveClosure(closure, seedParams, context))
+                        {
+                            memoizedRows.Add(row);
+                        }
+                    }
+
+                    if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
+                    {
+                        memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.TransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
+                    }
+
+                    memoizedStoreBySeed[new RowWrapper(seedsKey)] = memoizedRows;
+                    return memoizedRows;
+                }
+
                 if (seeds.Count == 1)
                 {
                     trace?.RecordStrategy(closure, "TransitiveClosureSeededSingle");
@@ -8654,6 +8684,36 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
+
+                const int MaxMemoizedTargetSeedCount = 32;
+                var canMemoizeSeeds =
+                    _cacheContext is not null &&
+                    seeds.Count > 1 &&
+                    seeds.Count <= MaxMemoizedTargetSeedCount;
+
+                if (canMemoizeSeeds)
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosureSeededByTargetMemoizedMulti");
+                    var memoizedRows = new List<object[]>();
+
+                    foreach (var seed in seeds)
+                    {
+                        var seedParams = new List<object[]>(1) { new object[] { seed! } };
+                        foreach (var row in ExecuteSeededTransitiveClosureByTarget(closure, seedParams, context))
+                        {
+                            memoizedRows.Add(row);
+                        }
+                    }
+
+                    if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
+                    {
+                        memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        context.TransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
+                    }
+
+                    memoizedStoreBySeed[new RowWrapper(seedsKey)] = memoizedRows;
+                    return memoizedRows;
+                }
 
                 if (seeds.Count == 1)
                 {
