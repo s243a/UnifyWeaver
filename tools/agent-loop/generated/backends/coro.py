@@ -42,25 +42,38 @@ class CoroBackend(AgentBackend):
         self._ansi_pattern = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
     def _find_config(self, no_fallback: bool = False) -> str | None:
-        """Find coro config, checking CWD then home directory."""
-        # Check current directory first
-        if os.path.isfile('coro.json'):
-            return None  # coro will find it itself
+        """Find coro config, checking CWD then home directory.
+
+        Checks uwsal.json first (primary config), then coro.json.
+        Returns a path only when the config is outside CWD (coro
+        auto-discovers CWD configs, so we return None for those).
+        """
+        # CWD configs — coro will find these itself
+        for name in ['uwsal.json', 'coro.json']:
+            if os.path.isfile(name):
+                return None
         if no_fallback:
             return None
-        # Check home directory as fallback
-        home_config = os.path.expanduser('~/coro.json')
-        if os.path.isfile(home_config):
-            return home_config
+        # Home directory fallback
+        for name in ['uwsal.json', 'coro.json']:
+            path = os.path.expanduser(f'~/{name}')
+            if os.path.isfile(path):
+                return path
         return None
 
     def _read_coro_config(self) -> dict:
-        """Read the full coro config from the best available path."""
-        for path in filter(None, [
-            self.config,
-            'coro.json' if os.path.isfile('coro.json') else None,
-            os.path.expanduser('~/coro.json'),
-        ]):
+        """Read the full coro config from the best available path.
+
+        Checks uwsal.json first, then coro.json (CWD, then home).
+        """
+        candidates = [self.config] if self.config else []
+        for name in ['uwsal.json', 'coro.json']:
+            if os.path.isfile(name):
+                candidates.append(name)
+            home = os.path.expanduser(f'~/{name}')
+            if os.path.isfile(home):
+                candidates.append(home)
+        for path in candidates:
             try:
                 with open(path) as f:
                     return _json.load(f)
