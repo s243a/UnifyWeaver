@@ -1,6 +1,28 @@
 """Multi-line input support for the agent loop."""
 
+import select
 import sys
+
+
+def _read_pasted_lines(first_line: str, timeout: float = 0.05) -> str:
+    """After reading first_line via input(), check for pasted continuation lines.
+
+    Uses select() with a short timeout to detect if more data arrived on stdin
+    in rapid succession (i.e. a paste, not typing).
+    """
+    lines = [first_line]
+    try:
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], timeout)
+            if not ready:
+                break
+            line = sys.stdin.readline()
+            if not line:
+                break
+            lines.append(line.rstrip('\n'))
+    except (OSError, ValueError):
+        pass
+    return '\n'.join(lines)
 
 
 def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str | None:
@@ -110,6 +132,10 @@ def get_input_smart(prompt: str = "You: ") -> str | None:
         except EOFError:
             pass
         return "\n".join(lines)
+
+    # Auto-detect pasted multi-line input on real terminals
+    if sys.stdin.isatty():
+        return _read_pasted_lines(line)
 
     return line
 
