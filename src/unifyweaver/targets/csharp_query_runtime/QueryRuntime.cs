@@ -3876,6 +3876,25 @@ namespace UnifyWeaver.QueryRuntime
                 return true;
             }
 
+            static bool HasCachedRecursiveFactIndex(
+                EvaluationContext context,
+                PredicateId predicate,
+                RecursiveRefKind kind,
+                IReadOnlyList<int> keyIndices,
+                IReadOnlyList<object[]> rows)
+            {
+                foreach (var keyIndex in keyIndices)
+                {
+                    if (context.RecursiveFactIndices.TryGetValue((predicate, kind, keyIndex), out var cache) &&
+                        ReferenceEquals(cache.Rows, rows))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
             PredicateId leftPredicate = default;
             RecursiveRefKind leftKind = default;
             IReadOnlyList<object[]> leftRecursiveRows = Array.Empty<object[]>();
@@ -4002,6 +4021,50 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (!probeTooLarge)
                     {
+                        const int TinyProbeHashBuildUpperBound = 16;
+                        if (probeRows.Count > 0 &&
+                            probeRows.Count <= TinyProbeHashBuildUpperBound &&
+                            leftRecursiveFilter is null &&
+                            rightRecursiveFilter is not null &&
+                            !HasCachedRecursiveFactIndex(context, leftPredicate, leftKind, join.LeftKeys, leftRecursiveRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinRecursiveTinyProbeHashBuildRight");
+
+                            var tinyProbeIndex = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+                            foreach (var probeRow in probeRows)
+                            {
+                                var key = BuildKeyFromTuple(probeRow.Tuple, join.RightKeys);
+                                var wrapper = new RowWrapper(key);
+                                if (!tinyProbeIndex.TryGetValue(wrapper, out var bucket))
+                                {
+                                    bucket = new List<object[]>();
+                                    tinyProbeIndex[wrapper] = bucket;
+                                }
+
+                                bucket.Add(probeRow.Tuple);
+                            }
+
+                            foreach (var leftTuple in leftRecursiveRows)
+                            {
+                                if (leftTuple is null) continue;
+                                if (leftRecursiveFilter is not null && !leftRecursiveFilter(leftTuple)) continue;
+
+                                var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                                var wrapper = new RowWrapper(key);
+                                if (!tinyProbeIndex.TryGetValue(wrapper, out var bucket))
+                                {
+                                    continue;
+                                }
+
+                                foreach (var rightTuple in bucket)
+                                {
+                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                }
+                            }
+
+                            yield break;
+                        }
+
                         trace?.RecordStrategy(join, "KeyJoinRecursiveIndexPartial");
                         if (probeRows.Count == 0)
                         {
@@ -4233,6 +4296,50 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (!probeTooLarge)
                     {
+                        const int TinyProbeHashBuildUpperBound = 16;
+                        if (probeRows.Count > 0 &&
+                            probeRows.Count <= TinyProbeHashBuildUpperBound &&
+                            rightRecursiveFilter is null &&
+                            leftRecursiveFilter is not null &&
+                            !HasCachedRecursiveFactIndex(context, rightPredicate, rightKind, join.RightKeys, rightRecursiveRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinRecursiveTinyProbeHashBuildLeft");
+
+                            var tinyProbeIndex = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+                            foreach (var probeRow in probeRows)
+                            {
+                                var key = BuildKeyFromTuple(probeRow.Tuple, join.LeftKeys);
+                                var wrapper = new RowWrapper(key);
+                                if (!tinyProbeIndex.TryGetValue(wrapper, out var bucket))
+                                {
+                                    bucket = new List<object[]>();
+                                    tinyProbeIndex[wrapper] = bucket;
+                                }
+
+                                bucket.Add(probeRow.Tuple);
+                            }
+
+                            foreach (var rightTuple in rightRecursiveRows)
+                            {
+                                if (rightTuple is null) continue;
+                                if (rightRecursiveFilter is not null && !rightRecursiveFilter(rightTuple)) continue;
+
+                                var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                                var wrapper = new RowWrapper(key);
+                                if (!tinyProbeIndex.TryGetValue(wrapper, out var bucket))
+                                {
+                                    continue;
+                                }
+
+                                foreach (var leftTuple in bucket)
+                                {
+                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                }
+                            }
+
+                            yield break;
+                        }
+
                         trace?.RecordStrategy(join, "KeyJoinRecursiveIndexPartial");
                         if (probeRows.Count == 0)
                         {

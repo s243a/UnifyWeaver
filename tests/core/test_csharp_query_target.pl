@@ -239,6 +239,7 @@ test_csharp_query_target :-
         verify_recursive_multi_key_recursive_selection_join_uses_partial_index,
         verify_recursive_multi_key_recursive_selection_join_selective_probe_uses_partial_index,
         verify_recursive_multi_key_recursive_selection_join_prefers_filtered_build_side,
+        verify_recursive_multi_key_recursive_selection_join_tiny_probe_prefers_hash_build,
         verify_parameterized_sparse_input_positions_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
@@ -2437,6 +2438,30 @@ verify_recursive_multi_key_recursive_selection_join_prefers_filtered_build_side 
     ;   harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveBuildFilteredRight', HarnessSourceRight),
         maybe_run_query_runtime_with_harness(Plan,
             ['STRATEGY_USED:KeyJoinRecursiveBuildFilteredRight=true'],
+            [],
+            HarnessSourceRight)
+    ).
+
+verify_recursive_multi_key_recursive_selection_join_tiny_probe_prefers_hash_build :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_asym/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_asym, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_asym, arity:4}, role:_, width:_}, Left),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_asym, arity:4}, role:_, width:_}, Right),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    (   harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveTinyProbeHashBuildLeft', HarnessSourceLeft),
+        maybe_run_query_runtime_with_harness(Plan,
+            ['STRATEGY_USED:KeyJoinRecursiveTinyProbeHashBuildLeft=true'],
+            [],
+            HarnessSourceLeft)
+    ;   harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveTinyProbeHashBuildRight', HarnessSourceRight),
+        maybe_run_query_runtime_with_harness(Plan,
+            ['STRATEGY_USED:KeyJoinRecursiveTinyProbeHashBuildRight=true'],
             [],
             HarnessSourceRight)
     ).
