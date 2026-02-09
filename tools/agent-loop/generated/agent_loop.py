@@ -11,7 +11,7 @@ import argparse
 from pathlib import Path
 from backends import AgentBackend, CoroBackend
 from context import ContextManager, ContextBehavior, ContextFormat
-from tools import ToolHandler
+from tools import ToolHandler, SecurityConfig
 from config import (load_config, load_config_from_dir, get_default_config,
                      AgentConfig, Config, save_example_config,
                      resolve_api_key, read_config_cascade)
@@ -1042,6 +1042,21 @@ def main():
         help='Max tool iterations before pausing (0 = unlimited)'
     )
 
+    # Security
+    parser.add_argument(
+        '--security-profile',
+        choices=['open', 'cautious', 'sandboxed', 'paranoid'],
+        default=None,
+        help='Security profile (default: cautious). '
+             'open=no checks, cautious=path+command validation, '
+             'sandboxed=proot isolation, paranoid=all checks+audit'
+    )
+    parser.add_argument(
+        '--no-security',
+        action='store_true',
+        help='Disable all security checks (alias for --security-profile open)'
+    )
+
     # Session management
     parser.add_argument(
         '--session', '-s',
@@ -1243,12 +1258,36 @@ def main():
             format=context_format
         )
 
+    # Create security config
+    security_profile = 'cautious'  # default
+    if args.no_security:
+        security_profile = 'open'
+    elif args.security_profile:
+        security_profile = args.security_profile
+
+    # Load security overrides from uwsal.json if present
+    security_cfg = read_config_cascade(args.no_fallback).get('security', {})
+    if not args.security_profile and not args.no_security:
+        security_profile = security_cfg.get('profile', security_profile)
+
+    security = SecurityConfig.from_profile(security_profile)
+    # Apply config file overrides (extend blocklists/allowlists)
+    for path in security_cfg.get('blocked_paths', []):
+        security.blocked_paths.append(path)
+    for path in security_cfg.get('allowed_paths', []):
+        security.allowed_paths.append(path)
+    for cmd in security_cfg.get('blocked_commands', []):
+        security.blocked_commands.append(cmd)
+    for cmd in security_cfg.get('allowed_commands', []):
+        security.allowed_commands.append(cmd)
+
     # Create tool handler
     tools = None
     if agent_config.tools:
         tools = ToolHandler(
             allowed_tools=agent_config.tools,
-            confirm_destructive=not agent_config.auto_tools
+            confirm_destructive=not agent_config.auto_tools,
+            security=security
         )
 
     # Create and run loop
