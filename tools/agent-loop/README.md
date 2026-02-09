@@ -63,7 +63,7 @@ pip install rich
 | `claude-code` | `claude` | claude-code CLI installed |
 | `openai` | OpenAI API | `OPENAI_API_KEY` env var |
 | `gemini` | `gemini` | gemini CLI installed |
-| `openrouter` | OpenRouter API | `OPENROUTER_API_KEY` or `~/coro.json` |
+| `openrouter` | OpenRouter API | `OPENROUTER_API_KEY` or `uwsal.json` / `coro.json` |
 | `ollama-api` | Ollama REST | Ollama server running |
 | `ollama-cli` | `ollama run` | ollama CLI installed |
 
@@ -143,6 +143,43 @@ The agent loop parses and executes tool calls from AI responses:
 - **Edit** - Edit files using search/replace
 
 Use `--auto-tools` to skip confirmations, or `--no-tools` to disable execution.
+
+#### Security
+
+Tool execution includes path validation and a command blocklist by default:
+
+```bash
+# Default: cautious (path validation + command blocklist)
+python3 agent_loop.py -b openrouter --auto-tools "Read /etc/shadow"
+# → [Security] Blocked: /etc/shadow is a sensitive system file
+
+# Disable all security checks
+python3 agent_loop.py --no-security "prompt"
+
+# Use a specific profile
+python3 agent_loop.py --security-profile paranoid "prompt"
+```
+
+| Profile | Path validation | Command blocklist |
+|---------|----------------|-------------------|
+| `open` | Off | Off |
+| `cautious` | On | On (default) |
+| `sandboxed` | On | On + proot (future) |
+| `paranoid` | On | On + audit log (future) |
+
+Blocklists are customizable via `uwsal.json`:
+
+```json
+{
+  "security": {
+    "profile": "cautious",
+    "blocked_paths": ["/data/production/"],
+    "allowed_paths": ["/etc/hosts"],
+    "blocked_commands": ["\\bdrop\\s+database\\b"],
+    "allowed_commands": ["rm -rf ./build"]
+  }
+}
+```
 
 ### Session Management
 
@@ -246,11 +283,21 @@ python3 agent_loop.py -b coro --no-fallback "prompt"
 python3 agent_loop.py -b coro --command /usr/local/bin/coro "prompt"
 ```
 
-The coro backend also searches for its config file (`coro.json`) in:
-1. Current working directory
-2. Home directory (`~/coro.json`) as fallback
+### API Key and Config Resolution
 
-Use `--no-fallback` to disable the home directory config search as well.
+API backends resolve credentials through a priority chain:
+
+```
+1. --api-key CLI argument
+2. Backend-specific env var (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, etc.)
+3. uwsal.json (keys.<backend> or top-level api_key)
+4. coro.json fallback
+5. Standard file locations (~/.anthropic/api_key, etc.)
+```
+
+Config files are searched in order: `CWD/uwsal.json` → `~/uwsal.json` → `CWD/coro.json` → `~/coro.json`.
+
+Use `--no-fallback` to skip `coro.json` (uwsal.json is always checked).
 
 ## Context Modes
 
@@ -270,6 +317,8 @@ python3 agent_loop.py --context-mode sliding "prompt"
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | API key for Claude backend |
 | `OPENAI_API_KEY` | API key for OpenAI backend |
+| `OPENROUTER_API_KEY` | API key for OpenRouter backend |
+| `GEMINI_API_KEY` | API key for Gemini backend |
 | `AGENT_LOOP_CONFIG` | Default config file path |
 | `AGENT_LOOP_SESSIONS` | Sessions directory |
 
@@ -390,12 +439,19 @@ python3 agent_loop.py -s <session-id>
 | ANSI escape stripping in coro output | coro | Working |
 | Spinner elapsed time display | all (fancy) | Working |
 | OpenRouter API backend | openrouter | Working |
-| OpenRouter auto-config from coro.json | openrouter | Working |
+| OpenRouter auto-config from uwsal.json/coro.json | openrouter | Working |
 | OpenRouter pricing auto-fetch | openrouter, coro | Working |
 | Context limits with OpenRouter | openrouter | Verified |
 | Context limits with Coro | coro | Verified |
 | Coro `max_token` passthrough (`--max-tokens`) | coro | Working |
 | Fix: `context or ContextManager()` truthiness bug | all | Fixed |
+| OpenRouter SSE streaming | openrouter | Working |
+| Paste detection (timing-based) | all | Working |
+| Unified config (uwsal.json + coro.json cascade) | openrouter, coro | Working |
+| Per-provider API keys (`keys` object in uwsal.json) | openrouter | Working |
+| `--no-fallback` skips coro.json for config | openrouter, coro | Working |
+| Security: path validation + command blocklist | openrouter | Working |
+| `--no-security` / `--security-profile` flags | all | Working |
 
 ### Untested Features
 
@@ -405,7 +461,7 @@ python3 agent_loop.py -s <session-id>
 | OpenAI API backend (`-b openai`) | Requires `pip install openai` |
 | Ollama API backend (`-b ollama-api`) | Requires Ollama server running |
 | Ollama CLI backend (`-b ollama-cli`) | Requires Ollama installed |
-| Streaming (`--stream`) | Requires API backend |
+| Streaming (`--stream`) | Tested with OpenRouter |
 | Cost tracking (`/cost`) | Requires API backend |
 | Session save/load | Not tested in this session |
 | Export (`/export`) | Not tested in this session |
@@ -413,7 +469,7 @@ python3 agent_loop.py -s <session-id>
 | Skills loading | Not tested in this session |
 | Prompt templates | Not tested in this session |
 | Command aliases | Not tested in this session |
-| Multi-line input | Not tested in this session |
+| Multi-line input | Tested (paste detection + triggers) |
 | Shell completions | Not tested in this session |
 
 ### Stream-JSON Support
