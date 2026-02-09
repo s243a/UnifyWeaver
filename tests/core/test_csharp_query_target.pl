@@ -37,6 +37,7 @@
 :- dynamic user:test_cat/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_recursive_label_path_cat_selective/4.
+:- dynamic user:test_recursive_label_path_cat_asym/4.
 :- dynamic user:test_sparse_input_fact/3.
 :- dynamic user:test_sparse_input_filtered/3.
 :- dynamic user:test_post_agg_param/2.
@@ -237,6 +238,7 @@ test_csharp_query_target :-
         verify_recursive_multi_key_recursive_join_uses_partial_index,
         verify_recursive_multi_key_recursive_selection_join_uses_partial_index,
         verify_recursive_multi_key_recursive_selection_join_selective_probe_uses_partial_index,
+        verify_recursive_multi_key_recursive_selection_join_prefers_filtered_build_side,
         verify_parameterized_sparse_input_positions_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
@@ -704,6 +706,18 @@ setup_test_data :-
         test_recursive_label_path_cat_selective(X, Y, L, cat1),
         test_recursive_label_path_cat_selective(Y, Z, L, cat1)
     )),
+    assertz(user:test_recursive_label_path_cat_asym(a, b, red, cat1)),
+    assertz(user:test_recursive_label_path_cat_asym(b, c, red, cat1)),
+    forall(between(1, 80, I),
+        (   format(atom(NodeA), 'ar~w', [I]),
+            I2 is I + 2000,
+            format(atom(NodeB), 'ar~w', [I2]),
+            assertz(user:test_recursive_label_path_cat_asym(NodeA, NodeB, blue, cat2))
+        )),
+    assertz(user:(test_recursive_label_path_cat_asym(X, Z, L, Cat) :-
+        test_recursive_label_path_cat_asym(X, Y, L, Cat),
+        test_recursive_label_path_cat_asym(Y, Z, L, cat1)
+    )),
     assertz(user:mode(test_sparse_input_filtered(+, -, +))),
     assertz(user:test_sparse_input_fact(a, 1, red)),
     assertz(user:test_sparse_input_fact(a, 2, red)),
@@ -953,6 +967,7 @@ cleanup_test_data :-
     retractall(user:test_group_probe_dir_mixed_reach(_, _, _, _)),
     retractall(user:mode(test_group_probe_dir_mixed_reach(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
+    retractall(user:test_recursive_label_path_cat_asym(_, _, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
     retractall(user:mode(test_sparse_input_filtered(_, _, _))),
     retractall(user:test_post_agg_param(_, _)),
@@ -2401,6 +2416,30 @@ verify_recursive_multi_key_recursive_selection_join_selective_probe_uses_partial
         ['STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
         [],
         HarnessSource).
+
+verify_recursive_multi_key_recursive_selection_join_prefers_filtered_build_side :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_asym/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_asym, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_asym, arity:4}, role:_, width:_}, Left),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_asym, arity:4}, role:_, width:_}, Right),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    (   harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveBuildFilteredLeft', HarnessSourceLeft),
+        maybe_run_query_runtime_with_harness(Plan,
+            ['STRATEGY_USED:KeyJoinRecursiveBuildFilteredLeft=true'],
+            [],
+            HarnessSourceLeft)
+    ;   harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveBuildFilteredRight', HarnessSourceRight),
+        maybe_run_query_runtime_with_harness(Plan,
+            ['STRATEGY_USED:KeyJoinRecursiveBuildFilteredRight=true'],
+            [],
+            HarnessSourceRight)
+    ).
 
 verify_parameterized_sparse_input_positions_runtime :-
     csharp_query_target:build_query_plan(test_sparse_input_filtered/3, [target(csharp_query)], Plan),
