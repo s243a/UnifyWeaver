@@ -3956,36 +3956,54 @@ namespace UnifyWeaver.QueryRuntime
             {
                 if (leftIsRecursive && rightIsRecursive)
                 {
-                    var usedFilteredSelectivity = false;
-                    if (joinKeyCount > 1 && (leftRecursiveFilter is not null || rightRecursiveFilter is not null))
+                    var usedRecursiveBuildSelectivity = false;
+                    if (joinKeyCount > 1)
                     {
-                        var leftFilteredRowCount = EstimateFilteredRecursiveRowCount(leftRecursiveRows, leftRecursiveFilter);
-                        var rightFilteredRowCount = EstimateFilteredRecursiveRowCount(rightRecursiveRows, rightRecursiveFilter);
+                        if (leftRecursiveFilter is not null || rightRecursiveFilter is not null)
+                        {
+                            var leftFilteredRowCount = EstimateFilteredRecursiveRowCount(leftRecursiveRows, leftRecursiveFilter);
+                            var rightFilteredRowCount = EstimateFilteredRecursiveRowCount(rightRecursiveRows, rightRecursiveFilter);
 
-                        if (leftFilteredRowCount != rightFilteredRowCount)
-                        {
-                            buildLeft = leftFilteredRowCount <= rightFilteredRowCount;
-                            trace?.RecordStrategy(join, buildLeft ? "KeyJoinRecursiveBuildFilteredLeft" : "KeyJoinRecursiveBuildFilteredRight");
-                            usedFilteredSelectivity = true;
+                            if (leftFilteredRowCount != rightFilteredRowCount)
+                            {
+                                buildLeft = leftFilteredRowCount <= rightFilteredRowCount;
+                                trace?.RecordStrategy(join, buildLeft ? "KeyJoinRecursiveBuildFilteredLeft" : "KeyJoinRecursiveBuildFilteredRight");
+                                usedRecursiveBuildSelectivity = true;
+                            }
+                            else if (leftFilteredRowCount > 0)
+                            {
+                                var leftDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(leftRecursiveRows, leftRecursiveFilter, join.LeftKeys);
+                                var rightDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(rightRecursiveRows, rightRecursiveFilter, join.RightKeys);
+
+                                if (leftDistinctKeyCount != rightDistinctKeyCount)
+                                {
+                                    buildLeft = leftDistinctKeyCount >= rightDistinctKeyCount;
+                                    trace?.RecordStrategy(join, "KeyJoinRecursiveBuildFilteredDistinct");
+                                    trace?.RecordStrategy(join, buildLeft
+                                        ? "KeyJoinRecursiveBuildFilteredDistinctLeft"
+                                        : "KeyJoinRecursiveBuildFilteredDistinctRight");
+                                    usedRecursiveBuildSelectivity = true;
+                                }
+                            }
                         }
-                        else if (leftFilteredRowCount > 0)
+                        else
                         {
-                            var leftDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(leftRecursiveRows, leftRecursiveFilter, join.LeftKeys);
-                            var rightDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(rightRecursiveRows, rightRecursiveFilter, join.RightKeys);
+                            var leftDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(leftRecursiveRows, null, join.LeftKeys);
+                            var rightDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(rightRecursiveRows, null, join.RightKeys);
 
                             if (leftDistinctKeyCount != rightDistinctKeyCount)
                             {
                                 buildLeft = leftDistinctKeyCount >= rightDistinctKeyCount;
-                                trace?.RecordStrategy(join, "KeyJoinRecursiveBuildFilteredDistinct");
+                                trace?.RecordStrategy(join, "KeyJoinRecursiveBuildDistinct");
                                 trace?.RecordStrategy(join, buildLeft
-                                    ? "KeyJoinRecursiveBuildFilteredDistinctLeft"
-                                    : "KeyJoinRecursiveBuildFilteredDistinctRight");
-                                usedFilteredSelectivity = true;
+                                    ? "KeyJoinRecursiveBuildDistinctLeft"
+                                    : "KeyJoinRecursiveBuildDistinctRight");
+                                usedRecursiveBuildSelectivity = true;
                             }
                         }
                     }
 
-                    if (!usedFilteredSelectivity)
+                    if (!usedRecursiveBuildSelectivity)
                     {
                         if (leftKind == RecursiveRefKind.Delta && rightKind != RecursiveRefKind.Delta)
                         {
