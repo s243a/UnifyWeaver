@@ -3604,6 +3604,9 @@ json.dumps(data)
 
         function exportFreeMind(nodes, edges, rootId, name, timestamp) {
             // FreeMind/Freeplane format - hierarchical XML
+            function titleToWikiUrl(title) {
+                return 'https://en.wikipedia.org/wiki/' + encodeURIComponent(title.replace(/ /g, '_'));
+            }
             const nodeMap = {};
             nodes.forEach(n => { nodeMap[n.id] = n; });
 
@@ -3628,7 +3631,8 @@ json.dumps(data)
                 if (indent === 1) {
                     position = isFirst ? ' POSITION="right"' : ' POSITION="left"';
                 }
-                xml += `${spaces}<node TEXT="${escapeXml(node.title)}"${position}>\n`;
+                const wikiUrl = titleToWikiUrl(node.title);
+                xml += `${spaces}<node TEXT="${escapeXml(node.title)}" LINK="${escapeXml(wikiUrl)}"${position}>\n`;
 
                 const nodeChildren = children[node.id] || [];
                 nodeChildren.forEach((child, i) => {

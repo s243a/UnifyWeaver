@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Physics Mindmap Builder</title>
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div class="header">
+    <h1>Physics Mindmap Builder</h1>
+</div>
+
+<div class="tabs">
+    <div class="tab active" data-tab="tree">Mindmap</div>
+    <div class="tab" data-tab="viz">Visualization</div>
+    <div class="tab" data-tab="settings">Settings</div>
+</div>
+
+<!-- Shared Controls (visible on both tabs, hidden until data loads) -->
+<div id="controls-bar" class="controls-bar hidden">
+    <div class="controls-header" id="controlsHeader">
+        <span class="controls-title">Controls</span>
+        <span class="controls-toggle" id="controlsToggle"></span>
+    </div>
+    <div class="controls-body" id="controlsBody">
+        <div class="controls">
+            <div class="control-row">
+                <label for="rootSelect">Root</label>
+                <select id="rootSelect"></select>
+            </div>
+            <div class="control-row">
+                <label for="treeType">Tree</label>
+                <select id="treeType">
+                    <option value="jguided">J-guided (local)</option>
+                    <option value="mst">MST (global)</option>
+                </select>
+            </div>
+            <div class="control-row">
+                <label for="maxDepth">Depth</label>
+                <input type="range" id="maxDepth" min="1" max="10" value="2">
+                <span class="range-value" id="maxDepthValue">2</span>
+            </div>
+            <div class="control-row">
+                <label for="maxBranching">Branching</label>
+                <input type="range" id="maxBranching" min="2" max="20" value="7">
+                <span class="range-value" id="maxBranchingValue">7</span>
+            </div>
+            <div class="control-row">
+                <label for="upwardPenalty" title="Penalize connections to broad parent topics (higher entropy). Cascades through parents.">↑ Penalty</label>
+                <input type="range" id="upwardPenalty" min="1.0" max="5.0" step="0.5" value="2.0">
+                <span class="range-value" id="upwardPenaltyValue">2.0</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Tree Screen -->
+<div id="screen-tree" class="screen active">
+    <div class="loading"><div class="spinner"></div>Loading physics data...</div>
+</div>
+
+<!-- Tree Screen Template (injected after data loads) -->
+<template id="tree-template">
+    <div class="actions">
+        <select id="exportFormat">
+            <option value="freemind">FreeMind (.mm)</option>
+            <option value="simplemind">SimpleMind (.smmx)</option>
+            <option value="opml">OPML (.opml)</option>
+            <option value="vue">VUE (.vue)</option>
+            <option value="mermaid">Mermaid (.md)</option>
+            <option value="json">JSON (.json)</option>
+        </select>
+        <button class="btn btn-primary" id="exportBtn">Export</button>
+    </div>
+
+    <div class="tree-container">
+        <div class="tree-stats" id="treeStats"></div>
+        <div class="tree-list" id="treeList"></div>
+    </div>
+</template>
+
+<!-- Visualization Screen -->
+<div id="screen-viz" class="screen">
+    <div id="viz-container"></div>
+</div>
+
+<!-- Settings Screen -->
+<div id="screen-settings" class="screen">
+    <div class="settings-container">
+        <h2>Distance Metric</h2>
+        <p class="settings-desc">How similarity between articles is measured.</p>
+        <div class="control-row">
+            <label for="distanceMetric">Metric</label>
+            <select id="distanceMetric">
+                <option value="cosine" selected>Cosine (1 - cos θ)</option>
+                <option value="chord">Chord (2 sin θ/2)</option>
+                <option value="angular">Angular (θ in radians)</option>
+            </select>
+        </div>
+        <p class="settings-note">
+            <strong>Cosine:</strong> Standard for embeddings. Range [0, 2].<br>
+            <strong>Chord:</strong> L2 distance on unit sphere. Range [0, 2]. Compresses large angles.<br>
+            <strong>Angular:</strong> Arc length on unit sphere. Range [0, π]. Linear with angle.
+        </p>
+    </div>
+</div>
+
+<!-- Scripts (cache-bust during development) -->
+<script src="js/tree.js?v=2"></script>
+<script src="js/export.js?v=2"></script>
+<script src="js/visualization.js?v=2"></script>
+<script src="js/app.js?v=2"></script>
+
+</body>
+</html>
