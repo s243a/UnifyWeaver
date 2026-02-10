@@ -35,9 +35,11 @@
 :- dynamic user:test_group_probe_dir_mixed_edge/4.
 :- dynamic user:test_group_probe_dir_mixed_reach/4.
 :- dynamic user:test_cat/1.
+:- dynamic user:test_catmix/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_recursive_label_path_cat_selective/4.
 :- dynamic user:test_recursive_label_path_cat_asym/4.
+:- dynamic user:test_recursive_label_path_cat_tie/4.
 :- dynamic user:test_sparse_input_fact/3.
 :- dynamic user:test_sparse_input_filtered/3.
 :- dynamic user:test_post_agg_param/2.
@@ -239,6 +241,7 @@ test_csharp_query_target :-
         verify_recursive_multi_key_recursive_selection_join_uses_partial_index,
         verify_recursive_multi_key_recursive_selection_join_selective_probe_uses_partial_index,
         verify_recursive_multi_key_recursive_selection_join_prefers_filtered_build_side,
+        verify_recursive_multi_key_recursive_selection_join_prefers_distinct_tie_break,
         verify_recursive_multi_key_recursive_selection_join_tiny_probe_prefers_hash_build,
         verify_parameterized_sparse_input_positions_runtime,
         verify_parameterized_fib_plan,
@@ -687,6 +690,7 @@ setup_test_data :-
         test_group_probe_dir_mixed_reach(Y, Z, L, Cat)
     )),
     assertz(user:test_cat(cat1)),
+    assertz(user:test_catmix(catmix)),
     assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
     assertz(user:test_recursive_label_path_cat_filtered(b, c, red, cat1)),
     assertz(user:(test_recursive_label_path_cat_filtered(X, Z, L, Cat) :-
@@ -718,6 +722,19 @@ setup_test_data :-
     assertz(user:(test_recursive_label_path_cat_asym(X, Z, L, Cat) :-
         test_recursive_label_path_cat_asym(X, Y, L, Cat),
         test_recursive_label_path_cat_asym(Y, Z, L, cat1)
+    )),
+    assertz(user:test_recursive_label_path_cat_tie(a, k1, red, cat1)),
+    assertz(user:test_recursive_label_path_cat_tie(b, k1, red, cat1)),
+    assertz(user:test_recursive_label_path_cat_tie(c, k2, red, cat1)),
+    assertz(user:test_recursive_label_path_cat_tie(d, k2, red, cat1)),
+    assertz(user:test_recursive_label_path_cat_tie(k1, t1, red, cat2)),
+    assertz(user:test_recursive_label_path_cat_tie(k2, t2, red, cat2)),
+    assertz(user:test_recursive_label_path_cat_tie(k3, t3, red, cat2)),
+    assertz(user:test_recursive_label_path_cat_tie(k4, t4, red, cat2)),
+    assertz(user:(test_recursive_label_path_cat_tie(X, Z, L, Cat) :-
+        test_recursive_label_path_cat_tie(X, Y, L, cat1),
+        test_recursive_label_path_cat_tie(Y, Z, L, cat2),
+        test_catmix(Cat)
     )),
     assertz(user:mode(test_sparse_input_filtered(+, -, +))),
     assertz(user:test_sparse_input_fact(a, 1, red)),
@@ -969,6 +986,7 @@ cleanup_test_data :-
     retractall(user:mode(test_group_probe_dir_mixed_reach(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_recursive_label_path_cat_asym(_, _, _, _)),
+    retractall(user:test_recursive_label_path_cat_tie(_, _, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
     retractall(user:mode(test_sparse_input_filtered(_, _, _))),
     retractall(user:test_post_agg_param(_, _)),
@@ -1008,6 +1026,7 @@ cleanup_test_data :-
     retractall(user:mode(test_probe_dir_mixed_reach(_, _))),
     retractall(user:test_reachable(_, _)),
     retractall(user:test_cat(_)),
+    retractall(user:test_catmix(_)),
     retractall(user:test_recursive_label_path_cat_filtered(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_selective(_, _, _, _)),
     cleanup_csv_dynamic_source.
@@ -2441,6 +2460,27 @@ verify_recursive_multi_key_recursive_selection_join_prefers_filtered_build_side 
             [],
             HarnessSourceRight)
     ).
+
+verify_recursive_multi_key_recursive_selection_join_prefers_distinct_tie_break :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_tie/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_tie, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    (   Left = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_tie, arity:4}, role:_, width:_}, predicate:_, width:_},
+        Right = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_tie, arity:4}, role:_, width:_}, predicate:_, width:_}
+    ;   Right = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_tie, arity:4}, role:_, width:_}, predicate:_, width:_},
+        Left = selection{type:selection, input:recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_tie, arity:4}, role:_, width:_}, predicate:_, width:_}
+    ),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveBuildFilteredDistinct', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinRecursiveBuildFilteredDistinct=true'],
+        [],
+        HarnessSource).
 
 verify_recursive_multi_key_recursive_selection_join_tiny_probe_prefers_hash_build :-
     csharp_query_target:build_query_plan(test_recursive_label_path_cat_asym/4, [target(csharp_query)], Plan),
