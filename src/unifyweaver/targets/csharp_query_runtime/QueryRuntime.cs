@@ -2270,6 +2270,49 @@ namespace UnifyWeaver.QueryRuntime
                 return count;
             }
 
+            static int EstimateDistinctRecursiveJoinKeyCount(
+                IReadOnlyList<object[]> rows,
+                Func<object[], bool>? filter,
+                IReadOnlyList<int> keyIndices)
+            {
+                if (rows.Count == 0 || keyIndices.Count == 0)
+                {
+                    return 0;
+                }
+
+                const int MaxSampleRows = 128;
+                var seenKeys = new HashSet<RowWrapper>(StructuralRowWrapperComparer);
+                var sampledRows = 0;
+
+                foreach (var row in rows)
+                {
+                    if (row is null)
+                    {
+                        continue;
+                    }
+
+                    if (filter is not null && !filter(row))
+                    {
+                        continue;
+                    }
+
+                    var key = new object[keyIndices.Count];
+                    for (var i = 0; i < keyIndices.Count; i++)
+                    {
+                        key[i] = GetLookupKey(row, keyIndices[i], NullFactIndexKey);
+                    }
+
+                    seenKeys.Add(new RowWrapper(key));
+                    sampledRows++;
+                    if (sampledRows >= MaxSampleRows)
+                    {
+                        break;
+                    }
+                }
+
+                return seenKeys.Count;
+            }
+
             if (context is not null)
             {
                 var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern, out var leftScanFilter);
@@ -3924,6 +3967,21 @@ namespace UnifyWeaver.QueryRuntime
                             buildLeft = leftFilteredRowCount <= rightFilteredRowCount;
                             trace?.RecordStrategy(join, buildLeft ? "KeyJoinRecursiveBuildFilteredLeft" : "KeyJoinRecursiveBuildFilteredRight");
                             usedFilteredSelectivity = true;
+                        }
+                        else if (leftFilteredRowCount > 0)
+                        {
+                            var leftDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(leftRecursiveRows, leftRecursiveFilter, join.LeftKeys);
+                            var rightDistinctKeyCount = EstimateDistinctRecursiveJoinKeyCount(rightRecursiveRows, rightRecursiveFilter, join.RightKeys);
+
+                            if (leftDistinctKeyCount != rightDistinctKeyCount)
+                            {
+                                buildLeft = leftDistinctKeyCount >= rightDistinctKeyCount;
+                                trace?.RecordStrategy(join, "KeyJoinRecursiveBuildFilteredDistinct");
+                                trace?.RecordStrategy(join, buildLeft
+                                    ? "KeyJoinRecursiveBuildFilteredDistinctLeft"
+                                    : "KeyJoinRecursiveBuildFilteredDistinctRight");
+                                usedFilteredSelectivity = true;
+                            }
                         }
                     }
 
