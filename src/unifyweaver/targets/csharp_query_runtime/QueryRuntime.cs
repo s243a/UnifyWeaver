@@ -3824,7 +3824,43 @@ namespace UnifyWeaver.QueryRuntime
                 _ => 25,
             };
 
+            static int EstimateDistinctJoinKeyCount(IEnumerable<object[]> source, IReadOnlyList<int> keyIndices)
+            {
+                if (keyIndices.Count == 0)
+                {
+                    return 0;
+                }
+
+                const int MaxSampleRows = 128;
+                var seenKeys = new HashSet<RowWrapper>(StructuralRowWrapperComparer);
+                var sampledRows = 0;
+
+                foreach (var tuple in source)
+                {
+                    if (tuple is null)
+                    {
+                        continue;
+                    }
+
+                    var key = new object[keyIndices.Count];
+                    for (var i = 0; i < keyIndices.Count; i++)
+                    {
+                        key[i] = GetLookupKey(tuple, keyIndices[i], NullFactIndexKey);
+                    }
+
+                    seenKeys.Add(new RowWrapper(key));
+                    sampledRows++;
+                    if (sampledRows >= MaxSampleRows)
+                    {
+                        break;
+                    }
+                }
+
+                return seenKeys.Count;
+            }
+
             var buildLeft = EstimateBuildCost(join.Left) < EstimateBuildCost(join.Right);
+            var hasRowUpperBoundTie = false;
             if (forceBuildLeft is not null)
             {
                 buildLeft = forceBuildLeft.Value;
@@ -3845,6 +3881,10 @@ namespace UnifyWeaver.QueryRuntime
                     else if (rightUpperBound < leftUpperBound)
                     {
                         buildLeft = false;
+                    }
+                    else
+                    {
+                        hasRowUpperBoundTie = true;
                     }
                 }
                 else if (leftHasEstimate && !rightHasEstimate)
@@ -3951,6 +3991,24 @@ namespace UnifyWeaver.QueryRuntime
             Func<object[], bool>? rightRecursiveFilter = null;
             var rightIsRecursive = context is not null &&
                                    TryGetRecursiveRows(join.Right, context, out rightPredicate, out rightKind, out rightRecursiveRows, out rightRecursiveFilter);
+
+            if (context is not null &&
+                joinKeyCount > 1 &&
+                hasRowUpperBoundTie &&
+                !leftIsRecursive &&
+                !rightIsRecursive)
+            {
+                var leftDistinctKeyCount = EstimateDistinctJoinKeyCount(Evaluate(join.Left, context), join.LeftKeys);
+                var rightDistinctKeyCount = EstimateDistinctJoinKeyCount(Evaluate(join.Right, context), join.RightKeys);
+                if (leftDistinctKeyCount != rightDistinctKeyCount)
+                {
+                    buildLeft = leftDistinctKeyCount >= rightDistinctKeyCount;
+                    trace?.RecordStrategy(join, "KeyJoinBuildDistinctTieBreak");
+                    trace?.RecordStrategy(join, buildLeft
+                        ? "KeyJoinBuildDistinctTieBreakLeft"
+                        : "KeyJoinBuildDistinctTieBreakRight");
+                }
+            }
 
             if (context is not null && (leftIsRecursive || rightIsRecursive))
             {
