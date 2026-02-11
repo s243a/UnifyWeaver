@@ -229,6 +229,7 @@ test_csharp_query_target :-
         verify_hash_build_prefers_smaller_non_scan_side,
         verify_hash_build_prefers_selective_pattern_scan_wrapped,
         verify_hash_build_rowcount_tie_uses_cost_tie_breaker,
+        verify_hash_build_multikey_rowcount_tie_prefers_distinct_tie_break,
         verify_hash_build_prefers_smaller_materialize_input_rowcount,
         verify_both_scan_join_prefers_cached_fact_index,
         verify_multi_constant_pattern_scan_prefers_fact_index,
@@ -2077,6 +2078,56 @@ verify_hash_build_rowcount_tie_uses_cost_tie_breaker :-
         ['k1',
          'k2',
          'STRATEGY_USED:KeyJoinHashBuildRight=true'],
+        [],
+        HarnessSource).
+
+verify_hash_build_multikey_rowcount_tie_prefers_distinct_tie_break :-
+    Plan = plan{
+        head:predicate{name:test_hash_build_multikey_tie_break, arity:1},
+        root:projection{
+            type:projection,
+            input:join{
+                type:join,
+                left:projection{
+                    type:projection,
+                    input:relation_scan{
+                        type:relation_scan,
+                        predicate:predicate{name:test_hashbuild_multikey_left, arity:3},
+                        width:3
+                    },
+                    columns:[0, 1, 2],
+                    width:3
+                },
+                right:projection{
+                    type:projection,
+                    input:relation_scan{
+                        type:relation_scan,
+                        predicate:predicate{name:test_hashbuild_multikey_right, arity:3},
+                        width:3
+                    },
+                    columns:[0, 1, 2],
+                    width:3
+                },
+                left_keys:[0, 1],
+                right_keys:[0, 1],
+                left_width:3,
+                right_width:3,
+                width:6
+            },
+            columns:[2],
+            width:1
+        },
+        is_recursive:false,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_hashbuild_multikey_left, arity:3}, facts:[[k1, s1, l1], [k2, s2, l2], [k3, s3, l3], [k4, s4, l4]]},
+            relation{predicate:predicate{name:test_hashbuild_multikey_right, arity:3}, facts:[[k1, s1, r1], [k1, s1, r2], [k1, s1, r3], [k1, s1, r4]]}
+        ]
+    },
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinBuildDistinctTieBreakLeft', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinBuildDistinctTieBreakLeft=true'],
         [],
         HarnessSource).
 
