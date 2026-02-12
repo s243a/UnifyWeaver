@@ -15,6 +15,7 @@ from tools import ToolHandler, SecurityConfig
 from config import (load_config, load_config_from_dir, get_default_config,
                      AgentConfig, Config, save_example_config,
                      resolve_api_key, read_config_cascade)
+from security.audit import AuditLogger
 from sessions import SessionManager
 from skills import SkillsLoader
 from costs import CostTracker
@@ -1281,14 +1282,34 @@ def main():
     for cmd in security_cfg.get('allowed_commands', []):
         security.allowed_commands.append(cmd)
 
+    # Create audit logger based on security profile
+    audit_levels = {
+        'open': 'disabled',
+        'cautious': 'basic',
+        'sandboxed': 'detailed',
+        'paranoid': 'forensic',
+    }
+    audit_level = audit_levels.get(security_profile, 'basic')
+    audit_log_dir = security_cfg.get('audit_log_dir')
+    audit_logger = AuditLogger(log_dir=audit_log_dir, level=audit_level)
+
     # Create tool handler
     tools = None
     if agent_config.tools:
         tools = ToolHandler(
             allowed_tools=agent_config.tools,
             confirm_destructive=not agent_config.auto_tools,
-            security=security
+            security=security,
+            audit=audit_logger
         )
+
+    # Start audit session
+    import uuid as _uuid
+    audit_session_id = session_id or str(_uuid.uuid4())[:8]
+    audit_logger.start_session(
+        audit_session_id,
+        security_profile=security_profile
+    )
 
     # Create and run loop
     loop = AgentLoop(
@@ -1306,37 +1327,40 @@ def main():
         display_mode='ncurses' if args.fancy else 'append'
     )
 
-    # Single prompt mode (run once and exit)
-    if args.prompt:
-        print(f"You: {args.prompt}")
-        loop._process_message(args.prompt)
-        return
+    try:
+        # Single prompt mode (run once and exit)
+        if args.prompt:
+            print(f"You: {args.prompt}")
+            loop._process_message(args.prompt)
+            return
 
-    # Interactive mode with initial prompt (-i)
-    if args.prompt_interactive:
-        loop._print_header()
-        print(f"\nYou: {args.prompt_interactive}")
-        loop._process_message(args.prompt_interactive)
-        # Continue in interactive mode
-        while loop.running:
-            try:
-                user_input = loop._get_input()
-                if user_input is None:
-                    break
-                if not user_input.strip():
-                    continue
-                if loop._handle_command(user_input):
-                    continue
-                loop._process_message(user_input)
-            except KeyboardInterrupt:
-                print("\n\nInterrupted. Type 'exit' to quit.")
-            except Exception as e:
-                print(f"\n[Error: {e}]\n")
-        print("\nGoodbye!")
-        return
+        # Interactive mode with initial prompt (-i)
+        if args.prompt_interactive:
+            loop._print_header()
+            print(f"\nYou: {args.prompt_interactive}")
+            loop._process_message(args.prompt_interactive)
+            # Continue in interactive mode
+            while loop.running:
+                try:
+                    user_input = loop._get_input()
+                    if user_input is None:
+                        break
+                    if not user_input.strip():
+                        continue
+                    if loop._handle_command(user_input):
+                        continue
+                    loop._process_message(user_input)
+                except KeyboardInterrupt:
+                    print("\n\nInterrupted. Type 'exit' to quit.")
+                except Exception as e:
+                    print(f"\n[Error: {e}]\n")
+            print("\nGoodbye!")
+            return
 
-    # Interactive mode
-    loop.run()
+        # Interactive mode
+        loop.run()
+    finally:
+        audit_logger.end_session()
 
 
 if __name__ == '__main__':

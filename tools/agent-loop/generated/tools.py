@@ -6,6 +6,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from backends.base import ToolCall
+from security.audit import AuditLogger
+from security.profiles import SecurityProfile, get_profile
+from security.proxy import CommandProxyManager
 
 
 @dataclass
@@ -136,17 +139,30 @@ class SecurityConfig:
     allowed_paths: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
 
+    # Enhanced profile settings (Phase 2)
+    allowed_commands_only: bool = False   # paranoid: allowlist mode
+    safe_commands: list[str] = field(default_factory=list)  # skip confirmation
+    command_proxying: str = 'disabled'    # disabled, optional, enabled, strict
+    max_file_read_size: int | None = None
+    max_file_write_size: int | None = None
+
     @classmethod
     def from_profile(cls, profile: str) -> 'SecurityConfig':
-        """Create config from a named profile."""
-        if profile == 'open':
-            return cls(path_validation=False, command_blocklist=False)
-        elif profile == 'cautious':
-            return cls(path_validation=True, command_blocklist=True)
-        elif profile in ('sandboxed', 'paranoid'):
-            return cls(path_validation=True, command_blocklist=True)
-        # Default to cautious
-        return cls(path_validation=True, command_blocklist=True)
+        """Create config from a named security profile."""
+        sp = get_profile(profile)
+        return cls(
+            path_validation=sp.path_validation,
+            command_blocklist=sp.command_blocklist,
+            blocked_paths=list(sp.blocked_paths),
+            blocked_commands=list(sp.blocked_commands),
+            allowed_paths=list(sp.allowed_paths),
+            allowed_commands=list(sp.allowed_commands),
+            allowed_commands_only=sp.allowed_commands_only,
+            safe_commands=list(sp.safe_commands),
+            command_proxying=sp.command_proxying,
+            max_file_read_size=sp.max_file_read_size,
+            max_file_write_size=sp.max_file_write_size,
+        )
 
 
 class ToolHandler:
@@ -157,12 +173,19 @@ class ToolHandler:
         allowed_tools: list[str] | None = None,
         confirm_destructive: bool = True,
         working_dir: str | None = None,
-        security: SecurityConfig | None = None
+        security: SecurityConfig | None = None,
+        audit: AuditLogger | None = None
     ):
         self.allowed_tools = allowed_tools or ['bash', 'read', 'write', 'edit']
         self.confirm_destructive = confirm_destructive
         self.working_dir = working_dir or os.getcwd()
         self.security = security or SecurityConfig()
+        self.audit = audit or AuditLogger(level='disabled')
+
+        # Command proxy (active when command_proxying != 'disabled')
+        self.proxy: CommandProxyManager | None = None
+        if self.security.command_proxying != 'disabled':
+            self.proxy = CommandProxyManager()
 
         # Tool implementations
         self.tools = {
@@ -191,18 +214,36 @@ class ToolHandler:
                 tool_name=tool_call.name
             )
 
-        # Check for confirmation if destructive
-        if self.confirm_destructive and tool_call.name in self.destructive_tools:
-            if not self._confirm_execution(tool_call):
-                return ToolResult(
-                    success=False,
-                    output="User declined to execute tool",
-                    tool_name=tool_call.name
+        # Run security pre-checks BEFORE asking for confirmation.
+        # No point prompting the user if the command will be blocked.
+        if tool_call.name == 'bash':
+            blocked = self._pre_check_bash(tool_call.arguments)
+            if blocked:
+                self.audit.log_tool_call(
+                    tool_call.name, False,
+                    args_summary=str(tool_call.arguments)[:256]
                 )
+                return blocked
+
+        # Check for confirmation if destructive — but skip for safe commands
+        if self.confirm_destructive and tool_call.name in self.destructive_tools:
+            if not self._is_safe_command(tool_call):
+                if not self._confirm_execution(tool_call):
+                    return ToolResult(
+                        success=False,
+                        output="User declined to execute tool",
+                        tool_name=tool_call.name
+                    )
 
         try:
-            return self.tools[tool_call.name](tool_call.arguments)
+            result = self.tools[tool_call.name](tool_call.arguments)
+            self.audit.log_tool_call(
+                tool_call.name, result.success,
+                args_summary=str(tool_call.arguments)[:256]
+            )
+            return result
         except Exception as e:
+            self.audit.log_tool_call(tool_call.name, False, args_summary=str(e))
             return ToolResult(
                 success=False,
                 output=f"Error executing {tool_call.name}: {e}",
@@ -231,6 +272,83 @@ class ToolHandler:
         except (EOFError, KeyboardInterrupt):
             return False
 
+    def _is_safe_command(self, tool_call: ToolCall) -> bool:
+        """Check if a tool call is safe enough to skip confirmation.
+
+        Only applies to bash commands that match the safe_commands patterns
+        (read-only commands like ls, cat, grep, git status, etc.).
+        """
+        if tool_call.name != 'bash':
+            return False
+        if not self.security.safe_commands:
+            return False
+
+        command = tool_call.arguments.get('command', '')
+        return any(
+            re.search(pat, command, re.IGNORECASE)
+            for pat in self.security.safe_commands
+        )
+
+    def _pre_check_bash(self, args: dict) -> ToolResult | None:
+        """Run security checks on a bash command BEFORE confirmation.
+
+        Returns a ToolResult if the command is blocked, or None if it
+        passes all security checks.  Called from execute() so the user
+        is never prompted to approve a command that will be rejected.
+        """
+        command = args.get('command', '')
+        if not command:
+            return ToolResult(
+                success=False,
+                output="No command provided",
+                tool_name='bash'
+            )
+
+        # Allowlist-only mode (paranoid): reject unless explicitly allowed
+        if self.security.allowed_commands_only:
+            matched = any(
+                re.search(pat, command, re.IGNORECASE)
+                for pat in self.security.allowed_commands
+            )
+            if not matched:
+                reason = "Command not in allowlist"
+                self.audit.log_command(command, allowed=False, reason=reason)
+                return ToolResult(
+                    success=False,
+                    output=f"[Security] {reason}",
+                    tool_name='bash'
+                )
+
+        # Command blocklist check
+        if self.security.command_blocklist:
+            reason = is_command_blocked(
+                command,
+                extra_blocked=self.security.blocked_commands,
+                extra_allowed=self.security.allowed_commands if not self.security.allowed_commands_only else None,
+            )
+            if reason:
+                self.audit.log_command(command, allowed=False, reason=reason)
+                return ToolResult(
+                    success=False,
+                    output=f"[Security] {reason}",
+                    tool_name='bash'
+                )
+
+        # Command proxy check (Layer 3)
+        if self.proxy:
+            proxy_mode = self.security.command_proxying
+            allowed, reason = self.proxy.check(command, proxy_mode)
+            if not allowed:
+                self.audit.log_command(command, allowed=False, reason=reason)
+                self.audit.log_proxy_action(command, '', 'block', reason or '')
+                return ToolResult(
+                    success=False,
+                    output=f"[Security/Proxy] {reason}",
+                    tool_name='bash'
+                )
+
+        return None  # All checks passed
+
     def _execute_bash(self, args: dict) -> ToolResult:
         """Execute a bash command."""
         command = args.get('command', '')
@@ -241,19 +359,8 @@ class ToolHandler:
                 tool_name='bash'
             )
 
-        # Command blocklist check
-        if self.security.command_blocklist:
-            reason = is_command_blocked(
-                command,
-                extra_blocked=self.security.blocked_commands,
-                extra_allowed=self.security.allowed_commands,
-            )
-            if reason:
-                return ToolResult(
-                    success=False,
-                    output=f"[Security] {reason}",
-                    tool_name='bash'
-                )
+        # Security checks already ran in _pre_check_bash() before
+        # the confirmation prompt, so skip them here.
 
         try:
             result = subprocess.run(
@@ -269,6 +376,11 @@ class ToolHandler:
             if result.stderr:
                 output += "\n" + result.stderr
 
+            self.audit.log_command(
+                command, allowed=True,
+                output=output.strip() if output else None
+            )
+
             return ToolResult(
                 success=result.returncode == 0,
                 output=output.strip() or "(no output)",
@@ -276,12 +388,14 @@ class ToolHandler:
             )
 
         except subprocess.TimeoutExpired:
+            self.audit.log_command(command, allowed=True, reason='timeout')
             return ToolResult(
                 success=False,
                 output="Command timed out after 120 seconds",
                 tool_name='bash'
             )
         except Exception as e:
+            self.audit.log_command(command, allowed=True, reason=str(e))
             return ToolResult(
                 success=False,
                 output=f"Error: {e}",
@@ -300,6 +414,7 @@ class ToolHandler:
                 extra_allowed=self.security.allowed_paths,
             )
             if error:
+                self.audit.log_file_access(raw_path, tool_name, allowed=False, reason=error)
                 return Path(resolved), ToolResult(False, f"[Security] {error}", tool_name)
             return Path(resolved), None
 
@@ -316,7 +431,22 @@ class ToolHandler:
             return error
 
         try:
+            # Check file size limit before reading
+            if self.security.max_file_read_size is not None:
+                try:
+                    file_size = file_path.stat().st_size
+                    if file_size > self.security.max_file_read_size:
+                        reason = (f"File too large: {file_size} bytes "
+                                  f"(limit: {self.security.max_file_read_size})")
+                        self.audit.log_file_access(path, 'read', allowed=False, reason=reason)
+                        return ToolResult(False, f"[Security] {reason}", 'read')
+                except OSError:
+                    pass  # Let the read_text() below handle missing files
+
             content = file_path.read_text()
+            self.audit.log_file_access(
+                path, 'read', allowed=True, bytes_count=len(content)
+            )
             return ToolResult(
                 success=True,
                 output=content,
@@ -344,10 +474,21 @@ class ToolHandler:
         if error:
             return error
 
+        # Check write size limit
+        if self.security.max_file_write_size is not None:
+            if len(content) > self.security.max_file_write_size:
+                reason = (f"Content too large: {len(content)} bytes "
+                          f"(limit: {self.security.max_file_write_size})")
+                self.audit.log_file_access(path, 'write', allowed=False, reason=reason)
+                return ToolResult(False, f"[Security] {reason}", 'write')
+
         try:
             # Create parent directories if needed
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
+            self.audit.log_file_access(
+                path, 'write', allowed=True, bytes_count=len(content)
+            )
             return ToolResult(
                 success=True,
                 output=f"Wrote {len(content)} bytes to {path}",
@@ -399,6 +540,10 @@ class ToolHandler:
             # Perform replacement
             new_content = content.replace(old_string, new_string, 1)
             file_path.write_text(new_content)
+            self.audit.log_file_access(
+                path, 'edit', allowed=True,
+                bytes_count=len(new_content)
+            )
 
             return ToolResult(
                 success=True,
