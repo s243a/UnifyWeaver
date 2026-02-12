@@ -20,7 +20,7 @@ This proposal covers practical hardening that works in Termux without containers
 | Sensitive path blocking | **Implemented** | Blocks system files, credential stores, cloud configs |
 | Command proxying | **Implemented** | In-process proxy for rm, curl, wget, python, git, ssh, scp, nc |
 | Audit logging | **Implemented** | JSONL audit trail with basic/detailed/forensic levels |
-| Security profiles | **Implemented** | open/cautious/sandboxed/paranoid with distinct behaviors |
+| Security profiles | **Implemented** | open/cautious/guarded/paranoid with distinct behaviors |
 | Sandbox integration | **Missing** | proot isolation designed but not yet implemented |
 | Declarative rules | **Not connected** | Prolog specs exist but aren't enforced |
 
@@ -258,7 +258,7 @@ Tie layers 1-5 together with named profiles in `uwsal.json`. Every layer is inde
         "sandbox": "none",
         "confirm_tools": true
       },
-      "sandboxed": {
+      "guarded": {
         "path_validation": true,
         "command_blocklist": true,
         "sandbox": "proot",
@@ -324,7 +324,7 @@ Or add project-specific blocks without touching the defaults:
 #### CLI Flags
 
 ```
---security-profile PROFILE   Set security profile (open/cautious/sandboxed/paranoid)
+--security-profile PROFILE   Set security profile (open/cautious/guarded/paranoid)
 --no-security                Alias for --security-profile open
 --security-blocked-path P    Add path to blocklist (repeatable)
 --security-allowed-path P    Add path to allowlist (repeatable)

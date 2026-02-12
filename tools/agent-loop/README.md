@@ -164,17 +164,17 @@ python3 agent_loop.py --security-profile paranoid "prompt"
 |---------|----------------|-------------------|---------------|-------|--------------|
 | `open` | Off | Off | Off | Off | Normal |
 | `cautious` | On | On (default) | Off | Basic | Normal |
-| `sandboxed` | On | On + extra blocks | Enabled | Detailed | Normal |
+| `guarded` | On | On + extra blocks | Enabled | Detailed | Normal |
 | `paranoid` | On | Allowlist-only | Strict | Forensic | Safe commands skip; others prompt |
 
 **Profile details:**
 
 - **`open`** — No restrictions. For trusted manual use.
 - **`cautious`** — Default. Blocks dangerous paths (e.g. `~/.ssh/`, `/etc/shadow`) and commands (e.g. `rm -rf /`, `curl | bash`). Basic audit logging.
-- **`sandboxed`** — Extra command blocks (`sudo`, `eval`, `nohup`, backgrounding, inline `os.system`/`subprocess`). Command proxy validates rm, curl, wget, python, git, ssh before execution. Network restricted to localhost. Detailed audit logging.
+- **`guarded`** — Extra command blocks (`sudo`, `eval`, `nohup`, backgrounding, inline `os.system`/`subprocess`). Command proxy validates rm, curl, wget, python, git, ssh before execution. Network restricted to localhost. Detailed audit logging.
 - **`paranoid`** — Allowlist-only mode: only explicitly permitted commands can run (ls, cat, grep, git status, find, python3 *.py, node *.js, etc.). Safe read-only commands (ls, cat, grep, etc.) run without confirmation. Potentially dangerous commands (find, python3, node) still prompt. Strict proxy blocks force push, hard reset, pipe-to-shell, etc. Forensic audit logging. File size limits (1 MB read, 10 MB write).
 
-**Command proxy** (sandboxed/paranoid): validates commands in-process before `subprocess.run()`:
+**Command proxy** (guarded/paranoid): validates commands in-process before `subprocess.run()`:
 
 | Command | Rules |
 |---------|-------|
@@ -476,7 +476,7 @@ python3 agent_loop.py -s <session-id>
 | Per-provider API keys (`keys` object in uwsal.json) | openrouter | Working |
 | `--no-fallback` skips coro.json for config | openrouter, coro | Working |
 | Security: path validation + command blocklist | openrouter | Working |
-| Security: command proxy (sandboxed/paranoid) | openrouter | Working |
+| Security: command proxy (guarded/paranoid) | openrouter | Working |
 | Security: allowlist-only mode (paranoid) | openrouter | Working |
 | Security: safe commands skip confirmation | openrouter | Working |
 | Security: audit logging (JSONL) | openrouter | Working |

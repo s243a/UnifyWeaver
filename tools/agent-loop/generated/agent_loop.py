@@ -1046,11 +1046,11 @@ def main():
     # Security
     parser.add_argument(
         '--security-profile',
-        choices=['open', 'cautious', 'sandboxed', 'paranoid'],
+        choices=['open', 'cautious', 'guarded', 'paranoid'],
         default=None,
         help='Security profile (default: cautious). '
              'open=no checks, cautious=path+command validation, '
-             'sandboxed=proot isolation, paranoid=all checks+audit'
+             'guarded=proxy+audit+extra blocks, paranoid=allowlist-only'
     )
     parser.add_argument(
         '--no-security',
@@ -1286,7 +1286,7 @@ def main():
     audit_levels = {
         'open': 'disabled',
         'cautious': 'basic',
-        'sandboxed': 'detailed',
+        'guarded': 'detailed',
         'paranoid': 'forensic',
     }
     audit_level = audit_levels.get(security_profile, 'basic')

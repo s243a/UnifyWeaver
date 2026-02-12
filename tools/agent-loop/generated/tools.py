@@ -283,7 +283,7 @@ class ToolHandler:
         if not self.security.safe_commands:
             return False
 
-        command = tool_call.arguments.get('command', '')
+        command = tool_call.arguments.get('command', '').strip()
         return any(
             re.search(pat, command, re.IGNORECASE)
             for pat in self.security.safe_commands
@@ -296,7 +296,7 @@ class ToolHandler:
         passes all security checks.  Called from execute() so the user
         is never prompted to approve a command that will be rejected.
         """
-        command = args.get('command', '')
+        command = args.get('command', '').strip()
         if not command:
             return ToolResult(
                 success=False,

@@ -50,7 +50,7 @@ class SecurityProfile:
 
 # ── Built-in profiles ─────────────────────────────────────────────────────
 
-_SANDBOXED_EXTRA_BLOCKS = [
+_GUARDED_EXTRA_BLOCKS = [
     r'^sudo\s',
     r'\bbase64\b.*\|\s*(bash|sh)',
     r'\beval\s',
@@ -110,12 +110,12 @@ def get_builtin_profiles() -> dict[str, SecurityProfile]:
             command_proxying='disabled',
             audit_logging='basic',
         ),
-        'sandboxed': SecurityProfile(
-            name='sandboxed',
-            description='Contained environment for semi-autonomous agents',
+        'guarded': SecurityProfile(
+            name='guarded',
+            description='Actively protected and monitored for semi-autonomous agents',
             path_validation=True,
             command_blocklist=True,
-            blocked_commands=list(_SANDBOXED_EXTRA_BLOCKS),
+            blocked_commands=list(_GUARDED_EXTRA_BLOCKS),
             command_proxying='enabled',
             audit_logging='detailed',
             network_isolation='localhost_only',
