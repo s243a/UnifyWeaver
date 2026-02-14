@@ -1,0 +1,3 @@
+[submodule "examples/sci-repl/prototype"]
+	path = examples/sci-repl/prototype
+	url = https://github.com/s243a/SciREPL.git

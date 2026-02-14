@@ -5,7 +5,23 @@ A mobile-first scientific Python REPL powered by Pyodide.
 ## Versions
 
 - **[prototype/](prototype/)** — Hand-crafted reference implementation (current version)
+  - Standalone repo: [s243a/SciREPL](https://github.com/s243a/SciREPL)
+  - Maintained here as git submodule
 - **[generated/](generated/)** — UnifyWeaver-generated version (coming soon)
+
+## Download
+
+**Latest APK:** https://github.com/s243a/SciREPL/releases
+
+## For Developers
+
+```bash
+# Clone with submodules
+git clone --recursive https://github.com/s243a/UnifyWeaver.git
+
+# Or if already cloned
+git submodule update --init --recursive
+```
 
 ## Quick Start
 
