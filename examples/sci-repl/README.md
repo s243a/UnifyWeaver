@@ -32,7 +32,8 @@ python3 -m http.server 8080 -d www
 
 Open http://localhost:8080
 
-See [prototype/README.md](prototype/README.md) for full documentation.
+See [s243a/SciREPL](https://github.com/s243a/SciREPL#readme) for full documentation.
+
 
 ## Vision
 
