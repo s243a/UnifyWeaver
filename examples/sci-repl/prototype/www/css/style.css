@@ -1,0 +1,519 @@
+/* ===== Sci REPL — Dark Mobile-First Theme ===== */
+
+:root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-card: #1c2128;
+    --bg-input: #0d1117;
+    --border: #30363d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #484f58;
+    --accent: #58a6ff;
+    --accent-glow: rgba(88, 166, 255, 0.15);
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --font-mono: 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'SF Mono', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+    --radius: 10px;
+    --card-gap: 12px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    overflow: hidden;
+}
+
+/* ===== Loading Overlay ===== */
+
+#loading-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-primary);
+    gap: 16px;
+    transition: opacity 0.4s ease;
+}
+
+#loading-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.spinner {
+    width: 48px;
+    height: 48px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+#loading-overlay p {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.loading-sub {
+    font-size: 12px !important;
+    color: var(--text-muted) !important;
+}
+
+/* ===== Header ===== */
+
+#app-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px);
+}
+
+#app-header h1 {
+    font-size: 18px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), #a371f7);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+#status-badge {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    transition: all 0.3s ease;
+}
+
+#status-badge.ready {
+    color: var(--green);
+    border-color: var(--green);
+    background: rgba(63, 185, 80, 0.1);
+}
+
+#status-badge.running {
+    color: var(--orange);
+    border-color: var(--orange);
+    background: rgba(210, 153, 34, 0.1);
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+#status-badge.error {
+    color: var(--red);
+    border-color: var(--red);
+    background: rgba(248, 81, 73, 0.1);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* ===== REPL Output Stream ===== */
+
+#repl {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 12px 12px;
+    height: calc(100vh - 52px - 100px);
+    scroll-behavior: smooth;
+}
+
+/* ===== Cards ===== */
+
+.card {
+    margin-bottom: var(--card-gap);
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    animation: fadeIn 0.25s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Input card */
+.card-input {
+    background: var(--bg-secondary);
+}
+
+.card-input .card-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    border-bottom: 1px solid var(--border);
+}
+
+.card-input .card-label .prompt-icon {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.card-input pre {
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Output card */
+.card-output {
+    background: var(--bg-card);
+}
+
+.card-output .card-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    border-bottom: 1px solid var(--border);
+}
+
+.card-output .card-body {
+    padding: 10px 12px;
+}
+
+/* Text output */
+.card-output .text-result {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--green);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Error output */
+.card-output.card-error {
+    border-color: rgba(248, 81, 73, 0.4);
+}
+
+.card-output .error-result {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--red);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* LaTeX output */
+.card-output .latex-result {
+    padding: 8px 0;
+    overflow-x: auto;
+    font-size: 18px;
+    text-align: center;
+}
+
+/* Plot output */
+.card-output .plot-container {
+    width: 100%;
+    min-height: 250px;
+}
+
+.card-output .plot-container .js-plotly-plot {
+    border-radius: 6px;
+}
+
+/* Table output */
+.card-output table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+
+.card-output table th,
+.card-output table td {
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    text-align: right;
+}
+
+.card-output table th {
+    background: var(--bg-secondary);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.card-output table td {
+    color: var(--text-primary);
+}
+
+/* ===== Input Bar ===== */
+
+#input-bar {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    align-items: flex-end;
+}
+
+#code-input {
+    flex: 1;
+    resize: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    padding: 10px 12px;
+    line-height: 1.4;
+    outline: none;
+    transition: border-color 0.2s;
+    min-height: 44px;
+    max-height: 200px;
+}
+
+#code-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+#code-input::placeholder {
+    color: var(--text-muted);
+}
+
+#run-btn {
+    flex-shrink: 0;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), #a371f7);
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    min-height: 44px;
+}
+
+#run-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(88, 166, 255, 0.3);
+}
+
+#run-btn:active:not(:disabled) {
+    transform: scale(0.97);
+}
+
+#run-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ===== Responsive ===== */
+
+@media (min-width: 768px) {
+    #repl {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 20px;
+    }
+
+    #input-bar {
+        max-width: 720px;
+        margin: 0 auto;
+    }
+}
+
+/* ===== Help Button ===== */
+
+.icon-btn {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-card);
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.icon-btn:hover {
+    background: var(--accent);
+    color: #fff;
+    transform: scale(1.1);
+}
+
+/* ===== Modal ===== */
+
+.modal {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    padding: 20px;
+    opacity: 1;
+    transition: opacity 0.3s ease;
+}
+
+.modal.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.modal-content {
+    position: relative;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    max-width: 600px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 24px;
+    animation: modalSlideIn 0.3s ease;
+}
+
+@keyframes modalSlideIn {
+    from { transform: translateY(-20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 24px;
+    line-height: 1;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.modal-close:hover {
+    background: var(--border);
+    color: var(--text-primary);
+}
+
+.modal-content h2 {
+    font-size: 22px;
+    margin-bottom: 20px;
+    color: var(--accent);
+}
+
+.modal-content h3 {
+    font-size: 16px;
+    margin: 20px 0 10px;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.modal-content p {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 8px 0;
+}
+
+.modal-content pre {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-primary);
+}
+
+.modal-content code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--bg-card);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+}
+
+.modal-content ul {
+    list-style: none;
+    padding: 0;
+}
+
+.modal-content li {
+    padding: 6px 0;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.modal-content kbd {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+}
+
+.modal-content a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.modal-content a:hover {
+    text-decoration: underline;
+}
+

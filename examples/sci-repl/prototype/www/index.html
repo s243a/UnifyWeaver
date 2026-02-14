@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Sci REPL</title>
+    <meta name="description" content="Mobile scientific Python REPL with interactive plotting">
+
+    <!-- KaTeX for LaTeX rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+
+    <!-- Plotly.js for interactive plotting -->
+    <script src="https://cdn.jsdelivr.net/npm/plotly.js-basic-dist-min@2.35.2/plotly-basic.min.js"></script>
+
+    <!-- App styles -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <!-- Loading overlay -->
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <p>Loading Python environment…</p>
+        <p class="loading-sub">Initializing Pyodide + NumPy + SymPy</p>
+    </div>
+
+    <!-- App header -->
+    <header id="app-header">
+        <h1>Sci REPL</h1>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <button id="help-btn" class="icon-btn" title="Help">?</button>
+            <span id="status-badge">loading…</span>
+        </div>
+    </header>
+
+    <!-- REPL output stream -->
+    <main id="repl"></main>
+
+    <!-- Help Modal -->
+    <div id="help-modal" class="modal hidden">
+        <div class="modal-content">
+            <button class="modal-close">&times;</button>
+            <h2>SciREPL Help</h2>
+
+            <h3>Quick Start</h3>
+            <pre><code># Basic math
+2 + 2
+
+# NumPy
+import numpy as np
+np.linspace(0, 10, 5)
+
+# Plotting
+x = np.linspace(0, 2*np.pi, 50)
+plot(x, np.sin(x))
+
+# SymPy (LaTeX rendering)
+from sympy import symbols, diff, sin
+x = symbols('x')
+diff(sin(x), x)
+
+# Suppress output with ;
+big_array = np.arange(1000);</code></pre>
+
+            <h3>Keyboard Shortcuts</h3>
+            <ul>
+                <li><kbd>Shift+Enter</kbd> or <kbd>Ctrl+Enter</kbd> — Run code</li>
+                <li><kbd>Tab</kbd> — Insert 4 spaces</li>
+                <li><kbd>;</kbd> at end of line — Suppress output</li>
+            </ul>
+
+            <h3>Documentation</h3>
+            <p>Full documentation: <a
+                    href="https://github.com/[your-org]/UnifyWeaver/tree/main/examples/sci-repl/prototype"
+                    target="_blank">GitHub README</a></p>
+
+            <h3>Version</h3>
+            <p><strong>This is the free open-source version.</strong></p>
+            <p>Premium features (coming soon): Edit past cells, import <code>.ipynb</code> files, save/load sessions,
+                Math Mode</p>
+        </div>
+    </div>
+
+    <!-- Sticky input bar -->
+    <footer id="input-bar">
+        <textarea id="code-input" rows="3" placeholder="Type Python here…" spellcheck="false" autocapitalize="off"
+            autocomplete="off"></textarea>
+        <button id="run-btn" disabled>▶ Run</button>
+    </footer>
+
+    <!-- Pyodide -->
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.27.4/full/pyodide.js"></script>
+
+    <!-- App scripts -->
+    <script src="js/bridge.js"></script>
+    <script src="js/app.js"></script>
+</body>
+
+</html>
