@@ -164,7 +164,7 @@ python3 agent_loop.py --security-profile paranoid "prompt"
 |---------|----------------|-------------------|---------------|-------|--------------|
 | `open` | Off | Off | Off | Off | Normal |
 | `cautious` | On | On (default) | Off | Basic | Normal |
-| `guarded` | On | On + extra blocks | Enabled | Detailed | Normal |
+| `guarded` | On | On + extra blocks | Enabled | Detailed | Safe commands skip |
 | `paranoid` | On | Allowlist-only | Strict | Forensic | Safe commands skip; others prompt |
 
 **Profile details:**

@@ -133,11 +133,23 @@ class OpenRouterBackend(AgentBackend):
 
         for msg in context:
             role = msg.get('role')
-            if role in ('user', 'assistant'):
+            if role == 'tool':
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get('tool_call_id', ''),
+                    "content": msg['content'],
+                })
+            elif role == 'assistant' and msg.get('tool_calls'):
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.get('content') or '',
+                    "tool_calls": msg['tool_calls'],
+                })
+            elif role in ('user', 'assistant'):
                 messages.append({"role": role, "content": msg['content']})
 
-        # Add current message (only if not already the last context message)
-        if not context or context[-1].get('content') != message:
+        # Add current message (only if non-empty and not already in context)
+        if message and (not context or context[-1].get('content') != message):
             messages.append({"role": "user", "content": message})
 
         # Build request body
@@ -252,9 +264,21 @@ class OpenRouterBackend(AgentBackend):
         messages = [{"role": "system", "content": self.system_prompt}]
         for msg in context:
             role = msg.get('role')
-            if role in ('user', 'assistant'):
+            if role == 'tool':
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get('tool_call_id', ''),
+                    "content": msg['content'],
+                })
+            elif role == 'assistant' and msg.get('tool_calls'):
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.get('content') or '',
+                    "tool_calls": msg['tool_calls'],
+                })
+            elif role in ('user', 'assistant'):
                 messages.append({"role": role, "content": msg['content']})
-        if not context or context[-1].get('content') != message:
+        if message and (not context or context[-1].get('content') != message):
             messages.append({"role": "user", "content": message})
 
         # Build request body with stream=True

@@ -6,6 +6,7 @@ A simple agent loop that works in any terminal environment.
 Uses pure text output with no cursor control or escape codes.
 """
 
+import json
 import sys
 import argparse
 from pathlib import Path
@@ -684,7 +685,21 @@ Status:
                 except EOFError:
                     return
 
-            tool_results = []
+            # Record assistant message with its tool calls in context
+            raw_tool_calls = []
+            for tc in response.tool_calls:
+                raw_tool_calls.append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments),
+                    }
+                })
+            self.context.add_message(
+                'assistant', response.content or '',
+                tool_calls=raw_tool_calls
+            )
 
             for tool_call in response.tool_calls:
                 # Execute the tool (with confirmation unless auto_execute)
@@ -693,19 +708,22 @@ Status:
                     self.tools.confirm_destructive = False
 
                 result = self.tools.execute(tool_call)
-                tool_results.append(self.tools.format_result_for_agent(result))
 
                 # Show result to user
                 print(f"  {result.output[:200]}{'...' if len(result.output) > 200 else ''}")
 
-            # Send tool results back to agent for continuation
-            tool_message = "\n".join(tool_results)
-            self.context.add_message('user', f"Tool results:\n{tool_message}")
+                # Record tool result with proper role
+                self.context.add_message(
+                    'tool',
+                    self.tools.format_result_for_agent(result),
+                    tool_call_id=tool_call.id
+                )
 
             print(f"\n[Iteration {iteration_count}: continuing with tool results...]")
-            # Context already includes the tool results message, just pass it
+            # Context now has assistant (with tool_calls) + tool results;
+            # send empty message so backend just reads context
             response = self.backend.send_message(
-                f"Tool results:\n{tool_message}",
+                "",
                 self.context.get_context(),
                 on_status=on_status
             )

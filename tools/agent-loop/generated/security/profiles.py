@@ -116,6 +116,7 @@ def get_builtin_profiles() -> dict[str, SecurityProfile]:
             path_validation=True,
             command_blocklist=True,
             blocked_commands=list(_GUARDED_EXTRA_BLOCKS),
+            safe_commands=list(_PARANOID_SAFE),
             command_proxying='enabled',
             audit_logging='detailed',
             network_isolation='localhost_only',
