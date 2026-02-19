@@ -666,8 +666,19 @@ Status:
 
         # Handle tool calls if present
         iteration_count = 0
+        prev_tool_sig = None  # Track previous tool calls to detect loops
         while response.tool_calls:
             iteration_count += 1
+
+            # Detect duplicate tool calls (model stuck in a loop)
+            current_sig = [
+                (tc.name, json.dumps(tc.arguments, sort_keys=True))
+                for tc in response.tool_calls
+            ]
+            if current_sig == prev_tool_sig:
+                print("\n[Stopped: model repeated the same tool call]")
+                break
+            prev_tool_sig = current_sig
 
             # Check iteration limit
             if self.max_iterations > 0 and iteration_count > self.max_iterations:
