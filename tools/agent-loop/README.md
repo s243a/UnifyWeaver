@@ -459,7 +459,7 @@ python3 agent_loop.py -s <session-id>
 | Command resolution with fallbacks | coro, claude-code, gemini | Working |
 | `--no-fallback` flag | coro | Working |
 | Coro debug mode + token parsing | coro | Working |
-| Coro `--max-steps` default (5) | coro | Working |
+| Coro `--max-steps` default (0 = disabled) | coro | Working |
 | Coro config discovery (`~/coro.json`) | coro | Working |
 | ANSI escape stripping in coro output | coro | Working |
 | Spinner elapsed time display | all (fancy) | Working |
@@ -481,6 +481,9 @@ python3 agent_loop.py -s <session-id>
 | Security: safe commands skip confirmation | openrouter | Working |
 | Security: audit logging (JSONL) | openrouter | Working |
 | `--no-security` / `--security-profile` flags | all | Working |
+| Duplicate tool call detection (breaks model loops) | openrouter | Working |
+| Proper tool result format (`role: tool` + `tool_call_id`) | openrouter | Working |
+| Coro config: only passes `coro.json` (not `uwsal.json`) | coro | Working |
 
 ### Untested Features
 
