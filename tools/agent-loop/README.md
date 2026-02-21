@@ -178,12 +178,40 @@ python3 agent_loop.py --security-profile paranoid "prompt"
 
 | Command | Rules |
 |---------|-------|
-| `rm` | Blocks `rm -rf /`, `/home`, `~`, `/etc`, `/usr` |
+| `rm` | Blocks `rm -rf /`, `/home`, `~`, `$HOME` (expanded), `/etc`, `/usr`, Termux prefix |
 | `curl`/`wget` | Blocks pipe-to-shell, writes to `/etc/` |
 | `python`/`python3` | Blocks `-c` with `os.system`, `subprocess`, `eval`, `exec` |
 | `git` | Blocks `reset --hard`, `clean -f`, `push --force`; warns on push/pull/merge |
 | `ssh` | Blocks `ProxyCommand`; fully blocked in strict mode |
 | `scp`/`nc`/`netcat` | Fully blocked in strict mode |
+
+**PATH-based proxy** (optional, `--path-proxy`): auto-generates wrapper scripts in `~/.agent-loop/bin/` that shadow dangerous commands. When prepended to PATH, each command in a pipeline is individually intercepted at exec time — catching things the in-process proxy misses (e.g. `cat file | rm -rf /` where the in-process proxy only sees `cat`).
+
+**proot sandbox** (optional, `--proot`): wraps command execution inside proot for filesystem isolation. Requires `pkg install proot`. Binds the working directory, Termux prefix, `/proc`, `/dev`, and `/system`. When `redirect_home` is configured, proot binds a temporary directory over `$HOME` so destructive commands (e.g. `rm -rf ~/`) hit the fake home, not the real one. Additional directories can be bound with `--proot-allow-dir`. On systems without proot, the proxy layer provides the primary defense and destructive test suites fall back to dry-run mode.
+
+```bash
+# Enable PATH-based proxy
+python3 agent_loop.py -b openrouter --path-proxy --security-profile guarded "prompt"
+
+# Enable proot sandbox
+python3 agent_loop.py -b openrouter --proot --security-profile guarded "prompt"
+
+# Both together with extra bind mount
+python3 agent_loop.py -b openrouter --path-proxy --proot --proot-allow-dir /sdcard "prompt"
+```
+
+**Security layers (defense-in-depth):**
+
+```
+command → Layer 1: Path validation
+        → Layer 2: Command blocklist/allowlist
+        → Layer 3: In-process command proxy
+        → Layer 3.5: PATH-based wrapper scripts (--path-proxy)
+        → Layer 4: proot filesystem isolation (--proot)
+        → subprocess.run()
+```
+
+Layers 3.5 and 4 are independent — either can be used alone or together. When neither is enabled, execution is identical to the default flow.
 
 **Audit logging** writes JSONL to `~/.agent-loop/audit/` (configurable via `uwsal.json`). Levels: `basic` (commands + tools), `detailed` (+ file access, API calls), `forensic` (+ output, timing).
 
@@ -197,7 +225,10 @@ Blocklists are customizable via `uwsal.json`:
     "allowed_paths": ["/etc/hosts"],
     "blocked_commands": ["\\bdrop\\s+database\\b"],
     "allowed_commands": ["rm -rf ./build"],
-    "audit_log_dir": "~/.agent-loop/audit/"
+    "audit_log_dir": "~/.agent-loop/audit/",
+    "path_proxying": true,
+    "proot_sandbox": true,
+    "proot_allowed_dirs": ["/sdcard"]
   }
 }
 ```
@@ -381,10 +412,12 @@ python3 agent_loop.py --context-mode sliding "prompt"
 | `config.py` | Configuration and agent variants |
 | `context.py` | Conversation context management |
 | `tools.py` | Tool call parsing and execution |
-| `security/` | Security subsystem (audit, profiles, proxy) |
+| `security/` | Security subsystem (audit, profiles, proxy, sandbox) |
 | `security/audit.py` | JSONL audit logging |
 | `security/profiles.py` | Security profile definitions |
 | `security/proxy.py` | In-process command proxy |
+| `security/path_proxy.py` | PATH-based wrapper script proxy |
+| `security/proot_sandbox.py` | proot filesystem isolation |
 | `sessions.py` | Session save/load |
 | `export.py` | Export to various formats |
 | `costs.py` | API cost tracking |
@@ -484,6 +517,13 @@ python3 agent_loop.py -s <session-id>
 | Duplicate tool call detection (breaks model loops) | openrouter | Working |
 | Proper tool result format (`role: tool` + `tool_call_id`) | openrouter | Working |
 | Coro config: only passes `coro.json` (not `uwsal.json`) | coro | Working |
+| PATH proxy: wrapper generation (11 commands) | all | Working |
+| PATH proxy: blocks `rm -rf /`, `curl -o /etc/`, `git reset --hard` | all | Verified |
+| PATH proxy: allows safe commands (`rm --help`, `curl --version`) | all | Verified |
+| PATH proxy: strict mode blocks ssh/scp/nc | all | Verified |
+| proot sandbox: command wrapping + execution | all | Working |
+| proot sandbox: graceful fallback if proot missing | all | Working |
+| `--path-proxy` / `--proot` / `--proot-allow-dir` flags | all | Working |
 
 ### Untested Features
 
