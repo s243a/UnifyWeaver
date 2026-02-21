@@ -677,6 +677,17 @@ Status:
             ]
             if current_sig == prev_tool_sig:
                 print("\n[Stopped: model repeated the same tool call]")
+                # Ask the model to respond with text instead of retrying
+                self.context.add_message(
+                    'user',
+                    "The tool has already been executed and the result "
+                    "was returned above. Please respond with your answer."
+                )
+                response = self.backend.send_message(
+                    "",
+                    self.context.get_context(),
+                    on_status=on_status
+                )
                 break
             prev_tool_sig = current_sig
 
