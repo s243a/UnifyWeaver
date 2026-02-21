@@ -146,6 +146,11 @@ class SecurityConfig:
     max_file_read_size: int | None = None
     max_file_write_size: int | None = None
 
+    # Optional execution layers (opt-in via CLI or config)
+    path_proxying: bool = False                                 # Layer 3.5
+    proot_sandbox: bool = False                                 # Layer 4
+    proot_allowed_dirs: list[str] = field(default_factory=list)
+
     @classmethod
     def from_profile(cls, profile: str) -> 'SecurityConfig':
         """Create config from a named security profile."""
@@ -162,6 +167,9 @@ class SecurityConfig:
             command_proxying=sp.command_proxying,
             max_file_read_size=sp.max_file_read_size,
             max_file_write_size=sp.max_file_write_size,
+            path_proxying=sp.path_proxying,
+            proot_sandbox=sp.proot_isolation,
+            proot_allowed_dirs=list(sp.proot_allowed_dirs),
         )
 
 
@@ -186,6 +194,33 @@ class ToolHandler:
         self.proxy: CommandProxyManager | None = None
         if self.security.command_proxying != 'disabled':
             self.proxy = CommandProxyManager()
+
+        # PATH-based proxy (optional — prepends wrapper scripts to PATH)
+        self.path_proxy = None
+        if self.security.path_proxying:
+            from security.path_proxy import PathProxyManager
+            self.path_proxy = PathProxyManager()
+            if self.proxy:
+                generated = self.path_proxy.generate_wrappers(self.proxy)
+                if generated:
+                    self.audit.log_proxy_action(
+                        '', 'path_proxy', 'init',
+                        f'Generated wrappers: {", ".join(generated)}')
+
+        # proot sandbox (optional — wraps commands in proot)
+        self.proot = None
+        if self.security.proot_sandbox:
+            from security.proot_sandbox import ProotSandbox, ProotConfig
+            proot_cfg = ProotConfig(
+                allowed_dirs=self.security.proot_allowed_dirs)
+            sandbox = ProotSandbox(self.working_dir, proot_cfg)
+            if sandbox.is_available():
+                self.proot = sandbox
+            else:
+                import sys
+                print("[Warning] proot sandbox requested but proot not "
+                      "found. Install with: pkg install proot",
+                      file=sys.stderr)
 
         # Tool implementations
         self.tools = {
@@ -362,14 +397,37 @@ class ToolHandler:
         # Security checks already ran in _pre_check_bash() before
         # the confirmation prompt, so skip them here.
 
+        # Build execution environment and command — when neither layer
+        # is enabled, exec_env stays None and exec_cmd stays unchanged,
+        # so subprocess.run() behaves identically to before.
+        exec_env = None
+        exec_cmd = command
+
+        # Layer 3.5: PATH proxy — prepend wrapper dir to PATH
+        if self.path_proxy:
+            log_file = self.audit._log_file if self.audit._log_file else None
+            exec_env = self.path_proxy.build_env(
+                proxy_mode=self.security.command_proxying,
+                audit_log=str(log_file) if log_file else None,
+            )
+
+        # Layer 4: proot — wrap command in proot invocation
+        if self.proot:
+            exec_cmd = self.proot.wrap_command(command)
+            proot_env = self.proot.build_env_overrides()
+            if exec_env is None:
+                exec_env = dict(os.environ)
+            exec_env.update(proot_env)
+
         try:
             result = subprocess.run(
-                command,
+                exec_cmd,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=120,
-                cwd=self.working_dir
+                cwd=self.working_dir,
+                env=exec_env,
             )
 
             output = result.stdout

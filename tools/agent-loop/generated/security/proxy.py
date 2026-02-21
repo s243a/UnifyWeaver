@@ -11,6 +11,7 @@ Usage:
         raise PermissionError(reason)
 """
 
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -91,6 +92,18 @@ class CommandProxyManager:
 
     def _setup_defaults(self) -> None:
         # rm — block catastrophic deletes
+        # Include the expanded $HOME path so tilde expansion doesn't
+        # bypass the literal ~ rule.  Also block the Termux prefix
+        # since on Android the real /usr, /etc are read-only but the
+        # Termux prefix (/data/data/com.termux/files/usr) is writable.
+        home = os.path.expanduser('~')
+        home_escaped = re.escape(home)
+        # Detect Termux prefix (parent of $HOME, typically
+        # /data/data/com.termux/files)
+        termux_prefix = os.environ.get(
+            'PREFIX', '/data/data/com.termux/files/usr')
+        termux_base = os.path.dirname(termux_prefix)  # .../files
+        termux_base_escaped = re.escape(termux_base)
         self.proxies['rm'] = CommandProxy('rm', rules=[
             ProxyRule(
                 r'-[rf]*\s+/$',
@@ -101,6 +114,12 @@ class CommandProxyManager:
             ProxyRule(
                 r'-[rf]*\s+~/?$',
                 'block', "Cannot rm home directory"),
+            ProxyRule(
+                rf'-[rf]*\s+{home_escaped}/?$',
+                'block', "Cannot rm home directory (expanded path)"),
+            ProxyRule(
+                rf'-[rf]*\s+{termux_base_escaped}/(usr|home)\b',
+                'block', "Cannot rm Termux system directories"),
             ProxyRule(
                 r'-[rf]*\s+/etc\b',
                 'block', "Cannot rm /etc"),

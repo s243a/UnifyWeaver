@@ -27,8 +27,12 @@ class SecurityProfile:
     # Layer 3: Command proxying
     command_proxying: str = 'disabled'  # disabled, optional, enabled, strict
 
+    # Layer 3.5: PATH-based wrapper scripts
+    path_proxying: bool = False
+
     # Layer 4: Filesystem isolation
     proot_isolation: bool = False
+    proot_allowed_dirs: list[str] = field(default_factory=list)
 
     # Layer 5: Audit logging
     audit_logging: str = 'disabled'  # disabled, basic, detailed, forensic

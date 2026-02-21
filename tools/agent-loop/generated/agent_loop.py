@@ -1097,6 +1097,22 @@ def main():
         action='store_true',
         help='Disable all security checks (alias for --security-profile open)'
     )
+    parser.add_argument(
+        '--path-proxy',
+        action='store_true',
+        help='Enable PATH-based command proxying (wrapper scripts in ~/.agent-loop/bin/)'
+    )
+    parser.add_argument(
+        '--proot',
+        action='store_true',
+        help='Enable proot filesystem sandboxing (requires: pkg install proot)'
+    )
+    parser.add_argument(
+        '--proot-allow-dir',
+        action='append',
+        default=[],
+        help='Additional directory to bind into proot sandbox (repeatable)'
+    )
 
     # Session management
     parser.add_argument(
@@ -1321,6 +1337,16 @@ def main():
         security.blocked_commands.append(cmd)
     for cmd in security_cfg.get('allowed_commands', []):
         security.allowed_commands.append(cmd)
+
+    # Apply optional execution layer flags (CLI + config)
+    if args.path_proxy or security_cfg.get('path_proxying'):
+        security.path_proxying = True
+    if args.proot or security_cfg.get('proot_sandbox'):
+        security.proot_sandbox = True
+    for d in getattr(args, 'proot_allow_dir', []):
+        security.proot_allowed_dirs.append(d)
+    for d in security_cfg.get('proot_allowed_dirs', []):
+        security.proot_allowed_dirs.append(d)
 
     # Create audit logger based on security profile
     audit_levels = {

@@ -19,9 +19,10 @@ This proposal covers practical hardening that works in Termux without containers
 | Command sanitization | **Implemented** | Blocklist + allowlist-only mode (paranoid) |
 | Sensitive path blocking | **Implemented** | Blocks system files, credential stores, cloud configs |
 | Command proxying | **Implemented** | In-process proxy for rm, curl, wget, python, git, ssh, scp, nc |
+| PATH-based proxy | **Implemented** | Auto-generated wrappers in `~/.agent-loop/bin/` (opt-in via `--path-proxy`) |
 | Audit logging | **Implemented** | JSONL audit trail with basic/detailed/forensic levels |
 | Security profiles | **Implemented** | open/cautious/guarded/paranoid with distinct behaviors |
-| Sandbox integration | **Missing** | proot isolation designed but not yet implemented |
+| Sandbox integration | **Implemented** | proot filesystem isolation (opt-in via `--proot`) |
 | Declarative rules | **Not connected** | Prolog specs exist but aren't enforced |
 
 ## Proposal: Layered Security
@@ -351,7 +352,8 @@ Example: `cautious` profile enables path validation, but `--no-security` disable
 | **P1** | Audit logging | Small | Enables post-hoc review | **Done** |
 | **P1** | In-process command proxy | Medium | Defense-in-depth for bash | **Done** |
 | **P2** | Security profiles | Medium | Unified configuration | **Done** |
-| **P2** | PRoot sandbox | Medium | Filesystem isolation | Planned |
+| **P2** | PATH-based proxy | Medium | Catches commands in pipelines/scripts | **Done** |
+| **P2** | PRoot sandbox | Medium | Filesystem isolation | **Done** |
 | **P3** | Network restrictions | Large | Requires proot or root access | Planned |
 | **P3** | Declarative rule bridge | Large | Connect Prolog specs to Python | Planned |
 
@@ -366,6 +368,8 @@ Example: `cautious` profile enables path validation, but `--no-security` disable
 | `security/audit.py` | JSONL audit logger (basic/detailed/forensic) | **Done** |
 | `security/profiles.py` | SecurityProfile dataclass, built-in profiles, safe/confirm command lists | **Done** |
 | `security/proxy.py` | CommandProxyManager with per-command rules (rm, curl, git, ssh, etc.) | **Done** |
+| `security/path_proxy.py` | PATH-based wrapper script proxy (auto-generated from proxy rules) | **Done** |
+| `security/proot_sandbox.py` | proot filesystem isolation (Termux-compatible) | **Done** |
 
 ## Termux-Specific Notes
 
