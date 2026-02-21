@@ -12,7 +12,7 @@ class CoroBackend(AgentBackend):
     """Coro-code CLI backend using single-task mode."""
 
     def __init__(self, command: str = "coro", verbose: bool = True,
-                 debug: bool = True, max_steps: int = 5,
+                 debug: bool = True, max_steps: int = 0,
                  config: str | None = None, no_fallback: bool = False,
                  max_context_tokens: int = 0):
         self.command = command
