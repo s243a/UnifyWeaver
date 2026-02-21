@@ -179,6 +179,8 @@ function bindControls() {
 
     // Export
     document.getElementById('exportBtn').addEventListener('click', doExport);
+    document.getElementById('exportFormat').addEventListener('change', updateLayoutSelectState);
+    updateLayoutSelectState();
 
     // Settings: distance metric
     document.getElementById('distanceMetric').addEventListener('change', (e) => {
@@ -347,9 +349,30 @@ function renderNode(container, nodeId, depth, childMap) {
 
 // --- Export ---
 
+function updateLayoutSelectState() {
+    const format = document.getElementById('exportFormat').value;
+    const layoutSelect = document.getElementById('layoutSelect');
+    if (layoutSelect) {
+        layoutSelect.disabled = !SPATIAL_FORMATS.has(format);
+    }
+}
+
 function doExport() {
     const format = document.getElementById('exportFormat').value;
-    exportMindmap(format, currentTree, bundle.titles, bundle.coordinates_2d);
+    const layout = document.getElementById('layoutSelect').value;
+
+    let positionMap = null;
+    if (SPATIAL_FORMATS.has(format)) {
+        if (layout === 'radial') {
+            positionMap = computeRadialLayout(currentTree, bundle.titles);
+        } else if (layout === 'topdown') {
+            positionMap = computeTopDownLayout(currentTree, bundle.titles);
+        } else {
+            positionMap = computeSemanticLayout(currentTree, bundle.coordinates_2d);
+        }
+    }
+
+    exportMindmap(format, currentTree, bundle.titles, positionMap);
 }
 
 // --- Visualization (lazy-loaded) ---
