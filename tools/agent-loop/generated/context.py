@@ -24,9 +24,11 @@ class ContextFormat(Enum):
 @dataclass
 class Message:
     """A single message in the conversation."""
-    role: Literal["user", "assistant", "system"]
+    role: Literal["user", "assistant", "system", "tool"]
     content: str
     tokens: int = 0
+    tool_call_id: str = ""      # For role=tool: which tool call this responds to
+    tool_calls: list = field(default_factory=list)  # For role=assistant: raw tool call data
 
 
 def _count_words(text: str) -> int:
@@ -62,13 +64,16 @@ class ContextManager:
         self._char_count = 0
         self._word_count = 0
 
-    def add_message(self, role: str, content: str, tokens: int = 0) -> None:
+    def add_message(self, role: str, content: str, tokens: int = 0,
+                    tool_call_id: str = "", tool_calls: list | None = None) -> None:
         """Add a message to the context."""
         # Estimate tokens if not provided
         if tokens == 0:
             tokens = _estimate_tokens(content)
 
-        msg = Message(role=role, content=content, tokens=tokens)
+        msg = Message(role=role, content=content, tokens=tokens,
+                      tool_call_id=tool_call_id,
+                      tool_calls=tool_calls or [])
         self.messages.append(msg)
         self._token_count += tokens
         self._char_count += len(content)
@@ -102,6 +107,16 @@ class ContextManager:
         self._char_count -= len(removed.content)
         self._word_count -= _count_words(removed.content)
 
+    @staticmethod
+    def _msg_to_dict(msg: 'Message') -> dict:
+        """Convert a Message to a dict, including tool fields when present."""
+        d = {"role": msg.role, "content": msg.content}
+        if msg.role == 'tool' and msg.tool_call_id:
+            d["tool_call_id"] = msg.tool_call_id
+        if msg.role == 'assistant' and msg.tool_calls:
+            d["tool_calls"] = msg.tool_calls
+        return d
+
     def get_context(self) -> list[dict]:
         """Get context formatted for the backend.
 
@@ -118,10 +133,7 @@ class ContextManager:
 
         # If no char/word limit, return all messages
         if self.max_chars <= 0 and self.max_words <= 0:
-            return [
-                {"role": msg.role, "content": msg.content}
-                for msg in messages
-            ]
+            return [self._msg_to_dict(msg) for msg in messages]
 
         # Build from newest to oldest, respecting limits
         result = []
@@ -137,7 +149,7 @@ class ContextManager:
             if self.max_words > 0 and total_words + msg_words > self.max_words and result:
                 break
 
-            result.append({"role": msg.role, "content": msg.content})
+            result.append(self._msg_to_dict(msg))
             total_chars += msg_chars
             total_words += msg_words
 

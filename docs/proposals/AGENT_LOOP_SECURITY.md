@@ -13,12 +13,15 @@ This proposal covers practical hardening that works in Termux without containers
 | Layer | Status | Notes |
 |-------|--------|-------|
 | Tool whitelisting | Working | `allowed_tools` list in ToolHandler |
-| Confirmation prompts | Working | `confirm_destructive` flag |
+| Confirmation prompts | Working | `confirm_destructive` flag; safe commands skip prompt in paranoid |
 | Approval modes | Working | default/auto_edit/yolo/plan |
-| Path validation | **Missing** | No `..` resolution, no symlink checks |
-| Command sanitization | **Missing** | Raw `shell=True` execution |
-| Sensitive path blocking | **Missing** | Can read/write `/etc/shadow`, `~/.ssh/*` |
-| Sandbox integration | **Missing** | Only gemini passes `-s` to its CLI |
+| Path validation | **Implemented** | `realpath()` resolves symlinks/`..`; blocks `/etc/shadow`, `~/.ssh/`, etc. |
+| Command sanitization | **Implemented** | Blocklist + allowlist-only mode (paranoid) |
+| Sensitive path blocking | **Implemented** | Blocks system files, credential stores, cloud configs |
+| Command proxying | **Implemented** | In-process proxy for rm, curl, wget, python, git, ssh, scp, nc |
+| Audit logging | **Implemented** | JSONL audit trail with basic/detailed/forensic levels |
+| Security profiles | **Implemented** | open/cautious/guarded/paranoid with distinct behaviors |
+| Sandbox integration | **Missing** | proot isolation designed but not yet implemented |
 | Declarative rules | **Not connected** | Prolog specs exist but aren't enforced |
 
 ## Proposal: Layered Security
@@ -255,7 +258,7 @@ Tie layers 1-5 together with named profiles in `uwsal.json`. Every layer is inde
         "sandbox": "none",
         "confirm_tools": true
       },
-      "sandboxed": {
+      "guarded": {
         "path_validation": true,
         "command_blocklist": true,
         "sandbox": "proot",
@@ -321,7 +324,7 @@ Or add project-specific blocks without touching the defaults:
 #### CLI Flags
 
 ```
---security-profile PROFILE   Set security profile (open/cautious/sandboxed/paranoid)
+--security-profile PROFILE   Set security profile (open/cautious/guarded/paranoid)
 --no-security                Alias for --security-profile open
 --security-blocked-path P    Add path to blocklist (repeatable)
 --security-allowed-path P    Add path to allowlist (repeatable)
@@ -341,24 +344,28 @@ Example: `cautious` profile enables path validation, but `--no-security` disable
 
 ## Implementation Priority
 
-| Priority | Layer | Effort | Impact |
-|----------|-------|--------|--------|
-| **P0** | Path validation | Small | Blocks path traversal and credential theft |
-| **P0** | Command blocklist | Small | Blocks obvious destructive commands |
-| **P1** | Audit logging | Small | Enables post-hoc review |
-| **P1** | PATH-based proxies | Medium | Defense-in-depth for bash |
-| **P2** | Security profiles | Medium | Unified configuration |
-| **P2** | PRoot sandbox | Medium | Filesystem isolation |
-| **P3** | Network restrictions | Large | Requires proot or root access |
-| **P3** | Declarative rule bridge | Large | Connect Prolog specs to Python |
+| Priority | Layer | Effort | Impact | Status |
+|----------|-------|--------|--------|--------|
+| **P0** | Path validation | Small | Blocks path traversal and credential theft | **Done** |
+| **P0** | Command blocklist | Small | Blocks obvious destructive commands | **Done** |
+| **P1** | Audit logging | Small | Enables post-hoc review | **Done** |
+| **P1** | In-process command proxy | Medium | Defense-in-depth for bash | **Done** |
+| **P2** | Security profiles | Medium | Unified configuration | **Done** |
+| **P2** | PRoot sandbox | Medium | Filesystem isolation | Planned |
+| **P3** | Network restrictions | Large | Requires proot or root access | Planned |
+| **P3** | Declarative rule bridge | Large | Connect Prolog specs to Python | Planned |
 
-## Files to modify
+## Files modified
 
-| File | Change |
-|------|--------|
-| `tools.py` | Add `validate_path()`, command blocklist, PATH proxy support, audit log |
-| `agent_loop.py` | Add `--security-profile` flag, pass to ToolHandler |
-| `config.py` | Parse `security` section from uwsal.json |
+| File | Change | Status |
+|------|--------|--------|
+| `tools.py` | Path validation, command blocklist, proxy integration, audit hooks, safe command flow | **Done** |
+| `agent_loop.py` | `--security-profile` flag, AuditLogger init, session lifecycle | **Done** |
+| `config.py` | Parse `security` section from uwsal.json | **Done** |
+| `security/__init__.py` | Security subpackage exports | **Done** |
+| `security/audit.py` | JSONL audit logger (basic/detailed/forensic) | **Done** |
+| `security/profiles.py` | SecurityProfile dataclass, built-in profiles, safe/confirm command lists | **Done** |
+| `security/proxy.py` | CommandProxyManager with per-command rules (rm, curl, git, ssh, etc.) | **Done** |
 
 ## Termux-Specific Notes
 

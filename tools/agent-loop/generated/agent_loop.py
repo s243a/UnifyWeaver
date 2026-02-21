@@ -6,6 +6,7 @@ A simple agent loop that works in any terminal environment.
 Uses pure text output with no cursor control or escape codes.
 """
 
+import json
 import sys
 import argparse
 from pathlib import Path
@@ -15,6 +16,7 @@ from tools import ToolHandler, SecurityConfig
 from config import (load_config, load_config_from_dir, get_default_config,
                      AgentConfig, Config, save_example_config,
                      resolve_api_key, read_config_cascade)
+from security.audit import AuditLogger
 from sessions import SessionManager
 from skills import SkillsLoader
 from costs import CostTracker
@@ -664,8 +666,30 @@ Status:
 
         # Handle tool calls if present
         iteration_count = 0
+        prev_tool_sig = None  # Track previous tool calls to detect loops
         while response.tool_calls:
             iteration_count += 1
+
+            # Detect duplicate tool calls (model stuck in a loop)
+            current_sig = [
+                (tc.name, json.dumps(tc.arguments, sort_keys=True))
+                for tc in response.tool_calls
+            ]
+            if current_sig == prev_tool_sig:
+                print("\n[Stopped: model repeated the same tool call]")
+                # Ask the model to respond with text instead of retrying
+                self.context.add_message(
+                    'user',
+                    "The tool has already been executed and the result "
+                    "was returned above. Please respond with your answer."
+                )
+                response = self.backend.send_message(
+                    "",
+                    self.context.get_context(),
+                    on_status=on_status
+                )
+                break
+            prev_tool_sig = current_sig
 
             # Check iteration limit
             if self.max_iterations > 0 and iteration_count > self.max_iterations:
@@ -683,7 +707,21 @@ Status:
                 except EOFError:
                     return
 
-            tool_results = []
+            # Record assistant message with its tool calls in context
+            raw_tool_calls = []
+            for tc in response.tool_calls:
+                raw_tool_calls.append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments),
+                    }
+                })
+            self.context.add_message(
+                'assistant', response.content or '',
+                tool_calls=raw_tool_calls
+            )
 
             for tool_call in response.tool_calls:
                 # Execute the tool (with confirmation unless auto_execute)
@@ -692,19 +730,22 @@ Status:
                     self.tools.confirm_destructive = False
 
                 result = self.tools.execute(tool_call)
-                tool_results.append(self.tools.format_result_for_agent(result))
 
                 # Show result to user
                 print(f"  {result.output[:200]}{'...' if len(result.output) > 200 else ''}")
 
-            # Send tool results back to agent for continuation
-            tool_message = "\n".join(tool_results)
-            self.context.add_message('user', f"Tool results:\n{tool_message}")
+                # Record tool result with proper role
+                self.context.add_message(
+                    'tool',
+                    self.tools.format_result_for_agent(result),
+                    tool_call_id=tool_call.id
+                )
 
             print(f"\n[Iteration {iteration_count}: continuing with tool results...]")
-            # Context already includes the tool results message, just pass it
+            # Context now has assistant (with tool_calls) + tool results;
+            # send empty message so backend just reads context
             response = self.backend.send_message(
-                f"Tool results:\n{tool_message}",
+                "",
                 self.context.get_context(),
                 on_status=on_status
             )
@@ -1045,11 +1086,11 @@ def main():
     # Security
     parser.add_argument(
         '--security-profile',
-        choices=['open', 'cautious', 'sandboxed', 'paranoid'],
+        choices=['open', 'cautious', 'guarded', 'paranoid'],
         default=None,
         help='Security profile (default: cautious). '
              'open=no checks, cautious=path+command validation, '
-             'sandboxed=proot isolation, paranoid=all checks+audit'
+             'guarded=proxy+audit+extra blocks, paranoid=allowlist-only'
     )
     parser.add_argument(
         '--no-security',
@@ -1281,14 +1322,34 @@ def main():
     for cmd in security_cfg.get('allowed_commands', []):
         security.allowed_commands.append(cmd)
 
+    # Create audit logger based on security profile
+    audit_levels = {
+        'open': 'disabled',
+        'cautious': 'basic',
+        'guarded': 'detailed',
+        'paranoid': 'forensic',
+    }
+    audit_level = audit_levels.get(security_profile, 'basic')
+    audit_log_dir = security_cfg.get('audit_log_dir')
+    audit_logger = AuditLogger(log_dir=audit_log_dir, level=audit_level)
+
     # Create tool handler
     tools = None
     if agent_config.tools:
         tools = ToolHandler(
             allowed_tools=agent_config.tools,
             confirm_destructive=not agent_config.auto_tools,
-            security=security
+            security=security,
+            audit=audit_logger
         )
+
+    # Start audit session
+    import uuid as _uuid
+    audit_session_id = session_id or str(_uuid.uuid4())[:8]
+    audit_logger.start_session(
+        audit_session_id,
+        security_profile=security_profile
+    )
 
     # Create and run loop
     loop = AgentLoop(
@@ -1306,37 +1367,40 @@ def main():
         display_mode='ncurses' if args.fancy else 'append'
     )
 
-    # Single prompt mode (run once and exit)
-    if args.prompt:
-        print(f"You: {args.prompt}")
-        loop._process_message(args.prompt)
-        return
+    try:
+        # Single prompt mode (run once and exit)
+        if args.prompt:
+            print(f"You: {args.prompt}")
+            loop._process_message(args.prompt)
+            return
 
-    # Interactive mode with initial prompt (-i)
-    if args.prompt_interactive:
-        loop._print_header()
-        print(f"\nYou: {args.prompt_interactive}")
-        loop._process_message(args.prompt_interactive)
-        # Continue in interactive mode
-        while loop.running:
-            try:
-                user_input = loop._get_input()
-                if user_input is None:
-                    break
-                if not user_input.strip():
-                    continue
-                if loop._handle_command(user_input):
-                    continue
-                loop._process_message(user_input)
-            except KeyboardInterrupt:
-                print("\n\nInterrupted. Type 'exit' to quit.")
-            except Exception as e:
-                print(f"\n[Error: {e}]\n")
-        print("\nGoodbye!")
-        return
+        # Interactive mode with initial prompt (-i)
+        if args.prompt_interactive:
+            loop._print_header()
+            print(f"\nYou: {args.prompt_interactive}")
+            loop._process_message(args.prompt_interactive)
+            # Continue in interactive mode
+            while loop.running:
+                try:
+                    user_input = loop._get_input()
+                    if user_input is None:
+                        break
+                    if not user_input.strip():
+                        continue
+                    if loop._handle_command(user_input):
+                        continue
+                    loop._process_message(user_input)
+                except KeyboardInterrupt:
+                    print("\n\nInterrupted. Type 'exit' to quit.")
+                except Exception as e:
+                    print(f"\n[Error: {e}]\n")
+            print("\nGoodbye!")
+            return
 
-    # Interactive mode
-    loop.run()
+        # Interactive mode
+        loop.run()
+    finally:
+        audit_logger.end_session()
 
 
 if __name__ == '__main__':

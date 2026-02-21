@@ -146,7 +146,7 @@ Use `--auto-tools` to skip confirmations, or `--no-tools` to disable execution.
 
 #### Security
 
-Tool execution includes path validation and a command blocklist by default:
+Tool execution uses a layered security model: path validation, command blocklist, command proxying, and audit logging. The security posture is controlled via profiles.
 
 ```bash
 # Default: cautious (path validation + command blocklist)
@@ -160,12 +160,32 @@ python3 agent_loop.py --no-security "prompt"
 python3 agent_loop.py --security-profile paranoid "prompt"
 ```
 
-| Profile | Path validation | Command blocklist |
-|---------|----------------|-------------------|
-| `open` | Off | Off |
-| `cautious` | On | On (default) |
-| `sandboxed` | On | On + proot (future) |
-| `paranoid` | On | On + audit log (future) |
+| Profile | Path validation | Command blocklist | Command proxy | Audit | Confirmation |
+|---------|----------------|-------------------|---------------|-------|--------------|
+| `open` | Off | Off | Off | Off | Normal |
+| `cautious` | On | On (default) | Off | Basic | Normal |
+| `guarded` | On | On + extra blocks | Enabled | Detailed | Safe commands skip |
+| `paranoid` | On | Allowlist-only | Strict | Forensic | Safe commands skip; others prompt |
+
+**Profile details:**
+
+- **`open`** — No restrictions. For trusted manual use.
+- **`cautious`** — Default. Blocks dangerous paths (e.g. `~/.ssh/`, `/etc/shadow`) and commands (e.g. `rm -rf /`, `curl | bash`). Basic audit logging.
+- **`guarded`** — Extra command blocks (`sudo`, `eval`, `nohup`, backgrounding, inline `os.system`/`subprocess`). Command proxy validates rm, curl, wget, python, git, ssh before execution. Network restricted to localhost. Detailed audit logging.
+- **`paranoid`** — Allowlist-only mode: only explicitly permitted commands can run (ls, cat, grep, git status, find, python3 *.py, node *.js, etc.). Safe read-only commands (ls, cat, grep, etc.) run without confirmation. Potentially dangerous commands (find, python3, node) still prompt. Strict proxy blocks force push, hard reset, pipe-to-shell, etc. Forensic audit logging. File size limits (1 MB read, 10 MB write).
+
+**Command proxy** (guarded/paranoid): validates commands in-process before `subprocess.run()`:
+
+| Command | Rules |
+|---------|-------|
+| `rm` | Blocks `rm -rf /`, `/home`, `~`, `/etc`, `/usr` |
+| `curl`/`wget` | Blocks pipe-to-shell, writes to `/etc/` |
+| `python`/`python3` | Blocks `-c` with `os.system`, `subprocess`, `eval`, `exec` |
+| `git` | Blocks `reset --hard`, `clean -f`, `push --force`; warns on push/pull/merge |
+| `ssh` | Blocks `ProxyCommand`; fully blocked in strict mode |
+| `scp`/`nc`/`netcat` | Fully blocked in strict mode |
+
+**Audit logging** writes JSONL to `~/.agent-loop/audit/` (configurable via `uwsal.json`). Levels: `basic` (commands + tools), `detailed` (+ file access, API calls), `forensic` (+ output, timing).
 
 Blocklists are customizable via `uwsal.json`:
 
@@ -176,7 +196,8 @@ Blocklists are customizable via `uwsal.json`:
     "blocked_paths": ["/data/production/"],
     "allowed_paths": ["/etc/hosts"],
     "blocked_commands": ["\\bdrop\\s+database\\b"],
-    "allowed_commands": ["rm -rf ./build"]
+    "allowed_commands": ["rm -rf ./build"],
+    "audit_log_dir": "~/.agent-loop/audit/"
   }
 }
 ```
@@ -360,6 +381,10 @@ python3 agent_loop.py --context-mode sliding "prompt"
 | `config.py` | Configuration and agent variants |
 | `context.py` | Conversation context management |
 | `tools.py` | Tool call parsing and execution |
+| `security/` | Security subsystem (audit, profiles, proxy) |
+| `security/audit.py` | JSONL audit logging |
+| `security/profiles.py` | Security profile definitions |
+| `security/proxy.py` | In-process command proxy |
 | `sessions.py` | Session save/load |
 | `export.py` | Export to various formats |
 | `costs.py` | API cost tracking |
@@ -434,7 +459,7 @@ python3 agent_loop.py -s <session-id>
 | Command resolution with fallbacks | coro, claude-code, gemini | Working |
 | `--no-fallback` flag | coro | Working |
 | Coro debug mode + token parsing | coro | Working |
-| Coro `--max-steps` default (5) | coro | Working |
+| Coro `--max-steps` default (0 = disabled) | coro | Working |
 | Coro config discovery (`~/coro.json`) | coro | Working |
 | ANSI escape stripping in coro output | coro | Working |
 | Spinner elapsed time display | all (fancy) | Working |
@@ -451,7 +476,14 @@ python3 agent_loop.py -s <session-id>
 | Per-provider API keys (`keys` object in uwsal.json) | openrouter | Working |
 | `--no-fallback` skips coro.json for config | openrouter, coro | Working |
 | Security: path validation + command blocklist | openrouter | Working |
+| Security: command proxy (guarded/paranoid) | openrouter | Working |
+| Security: allowlist-only mode (paranoid) | openrouter | Working |
+| Security: safe commands skip confirmation | openrouter | Working |
+| Security: audit logging (JSONL) | openrouter | Working |
 | `--no-security` / `--security-profile` flags | all | Working |
+| Duplicate tool call detection (breaks model loops) | openrouter | Working |
+| Proper tool result format (`role: tool` + `tool_call_id`) | openrouter | Working |
+| Coro config: only passes `coro.json` (not `uwsal.json`) | coro | Working |
 
 ### Untested Features
 

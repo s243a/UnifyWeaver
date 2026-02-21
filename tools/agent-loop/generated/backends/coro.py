@@ -12,7 +12,7 @@ class CoroBackend(AgentBackend):
     """Coro-code CLI backend using single-task mode."""
 
     def __init__(self, command: str = "coro", verbose: bool = True,
-                 debug: bool = True, max_steps: int = 5,
+                 debug: bool = True, max_steps: int = 0,
                  config: str | None = None, no_fallback: bool = False,
                  max_context_tokens: int = 0):
         self.command = command
@@ -42,23 +42,22 @@ class CoroBackend(AgentBackend):
         self._ansi_pattern = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
     def _find_config(self, no_fallback: bool = False) -> str | None:
-        """Find coro config, checking CWD then home directory.
+        """Find coro-native config (coro.json only).
 
-        Checks uwsal.json first (primary config), then coro.json.
-        Returns a path only when the config is outside CWD (coro
-        auto-discovers CWD configs, so we return None for those).
+        Only passes coro.json to the coro CLI via -c. uwsal.json is the
+        agent loop's config format and is NOT compatible with coro's
+        expected config (which requires 'protocol', 'model', etc.).
+        The agent loop reads uwsal.json itself for API keys and settings.
         """
-        # CWD configs — coro will find these itself
-        for name in ['uwsal.json', 'coro.json']:
-            if os.path.isfile(name):
-                return None
+        # CWD coro.json — coro will find this itself
+        if os.path.isfile('coro.json'):
+            return None
         if no_fallback:
             return None
-        # Home directory fallback
-        for name in ['uwsal.json', 'coro.json']:
-            path = os.path.expanduser(f'~/{name}')
-            if os.path.isfile(path):
-                return path
+        # Home directory fallback (coro.json only)
+        path = os.path.expanduser('~/coro.json')
+        if os.path.isfile(path):
+            return path
         return None
 
     def _read_coro_config(self) -> dict:
