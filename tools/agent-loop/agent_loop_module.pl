@@ -456,6 +456,58 @@ blocked_command_pattern(":\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;", "fork bomb")
 blocked_command_pattern("\\b>\\s*/etc/", "overwrite system config").
 
 %% =============================================================================
+%% Tool Description Mappings (for _describe_tool_call generation)
+%% =============================================================================
+
+%% tool_description(Backend, ToolName, Verb, ParamKey, DisplayMode)
+%% DisplayMode: basename    — os.path.basename(params.get(ParamKey, '?'))
+%%              raw         — params.get(ParamKey, '?')
+%%              truncate(N) — truncate param to N chars with '...'
+
+%% Gemini CLI tool names
+tool_description(gemini, read_file,        'reading', file_path, basename).
+tool_description(gemini, glob,             'searching', pattern, raw).
+tool_description(gemini, grep,             'grep', pattern, raw).
+tool_description(gemini, run_shell_command, '$', command, truncate(72)).
+tool_description(gemini, write_file,       'writing', file_path, basename).
+tool_description(gemini, edit,             'editing', file_path, basename).
+tool_description(gemini, list_directory,   'ls', path, raw).
+
+%% Claude Code CLI tool names (PascalCase)
+tool_description(claude_code, 'Read',      'reading', file_path, basename).
+tool_description(claude_code, 'Glob',      'searching', pattern, raw).
+tool_description(claude_code, 'Grep',      'grep', pattern, raw).
+tool_description(claude_code, 'Bash',      '$', command, truncate(72)).
+tool_description(claude_code, 'Write',     'writing', file_path, basename).
+tool_description(claude_code, 'Edit',      'editing', file_path, basename).
+tool_description(claude_code, 'Task',      'agent:', description, raw).
+tool_description(claude_code, 'WebFetch',  'fetching', url, raw).
+tool_description(claude_code, 'WebSearch', 'searching:', query, raw).
+
+%% OpenRouter API tool names (lowercase)
+tool_description(openrouter_api, read,  'reading', path, basename).
+tool_description(openrouter_api, write, 'writing', path, basename).
+tool_description(openrouter_api, edit,  'editing', path, basename).
+tool_description(openrouter_api, bash,  '$', command, truncate(72)).
+
+%% =============================================================================
+%% Tool Handler Dispatch
+%% =============================================================================
+
+%% tool_handler(ToolName, MethodName)
+%% Maps tool names to handler methods in ToolHandler class.
+tool_handler(bash,  '_execute_bash').
+tool_handler(read,  '_read_file').
+tool_handler(write, '_write_file').
+tool_handler(edit,  '_edit_file').
+
+%% destructive_tool(ToolName)
+%% Tools that require confirmation before execution.
+destructive_tool(bash).
+destructive_tool(write).
+destructive_tool(edit).
+
+%% =============================================================================
 %% Command Aliases Data
 %% =============================================================================
 
@@ -1567,8 +1619,10 @@ generate_tools_module :-
     %% SecurityConfig (imperative — has from_profile method)
     write_py(S, tools_security_config),
     write(S, '\n\n'),
-    %% ToolHandler class (imperative)
-    write_py(S, tools_handler_class),
+    %% ToolHandler class (header + generated dispatch + body)
+    write_py(S, tools_handler_class_header),
+    generate_tool_dispatch(S),
+    write_py(S, tools_handler_class_body),
     write(S, '\n'),
     close(S),
     format('  Generated tools.py~n', []).
@@ -2465,73 +2519,7 @@ py_fragment(extract_tool_calls_anthropic, '    def _extract_tool_calls(self, res
         return tool_calls
 ').
 
-%% --- Fragment: _describe_tool_call variants ---
-
-py_fragment(describe_tool_call_gemini, '    def _describe_tool_call(self, tool_name: str, params: dict) -> str:
-        """Create a short description of a tool call."""
-        if tool_name == \'read_file\':
-            return f"reading {os.path.basename(params.get(\'file_path\', \'?\'))}"
-        elif tool_name == \'glob\':
-            return f"searching {params.get(\'pattern\', \'?\')}"
-        elif tool_name == \'grep\':
-            return f"grep {params.get(\'pattern\', \'?\')}"
-        elif tool_name == \'run_shell_command\':
-            cmd = params.get(\'command\', \'?\')
-            if len(cmd) > 72:
-                cmd = cmd[:69] + \'...\'
-            return f"$ {cmd}"
-        elif tool_name == \'write_file\':
-            return f"writing {os.path.basename(params.get(\'file_path\', \'?\'))}"
-        elif tool_name == \'edit\':
-            return f"editing {os.path.basename(params.get(\'file_path\', \'?\'))}"
-        elif tool_name == \'list_directory\':
-            return f"ls {params.get(\'path\', \'?\')}"
-        else:
-            return tool_name
-').
-
-py_fragment(describe_tool_call_claude_code, '    def _describe_tool_call(self, tool_name: str, params: dict) -> str:
-        """Create a short description of a tool call."""
-        if tool_name == \'Read\':
-            return f"reading {os.path.basename(params.get(\'file_path\', \'?\'))}"
-        elif tool_name == \'Glob\':
-            return f"searching {params.get(\'pattern\', \'?\')}"
-        elif tool_name == \'Grep\':
-            return f"grep {params.get(\'pattern\', \'?\')}"
-        elif tool_name == \'Bash\':
-            cmd = params.get(\'command\', \'?\')
-            if len(cmd) > 72:
-                cmd = cmd[:69] + \'...\'
-            return f"$ {cmd}"
-        elif tool_name == \'Write\':
-            return f"writing {os.path.basename(params.get(\'file_path\', \'?\'))}"
-        elif tool_name == \'Edit\':
-            return f"editing {os.path.basename(params.get(\'file_path\', \'?\'))}"
-        elif tool_name == \'Task\':
-            return f"agent: {params.get(\'description\', \'?\')}"
-        elif tool_name == \'WebFetch\':
-            return f"fetching {params.get(\'url\', \'?\')}"
-        elif tool_name == \'WebSearch\':
-            return f"searching: {params.get(\'query\', \'?\')}"
-        else:
-            return tool_name
-').
-
-py_fragment(describe_tool_call_openrouter, '    def _describe_tool_call(self, tool_name: str, params: dict) -> str:
-        """Create a short description of a tool call."""
-        if tool_name == \'read\':
-            return f"reading {os.path.basename(params.get(\'path\', \'?\'))}"
-        elif tool_name == \'write\':
-            return f"writing {os.path.basename(params.get(\'path\', \'?\'))}"
-        elif tool_name == \'edit\':
-            return f"editing {os.path.basename(params.get(\'path\', \'?\'))}"
-        elif tool_name == \'bash\':
-            cmd = params.get(\'command\', \'?\')
-            if len(cmd) > 72:
-                cmd = cmd[:69] + \'...\'
-            return f"$ {cmd}"
-        return tool_name
-').
+%% --- Fragments describe_tool_call_* deleted: now generated from tool_description/5 facts ---
 
 %% --- Fragment: _clean_output (simple, for ollama_cli) ---
 
@@ -3801,7 +3789,7 @@ class SecurityConfig:
         )
 ').
 
-py_fragment(tools_handler_class, 'class ToolHandler:
+py_fragment(tools_handler_class_header, 'class ToolHandler:
     """Handles execution of tool calls from agent responses."""
 
     def __init__(
@@ -3846,16 +3834,9 @@ py_fragment(tools_handler_class, 'class ToolHandler:
                 print("[Warning] proot sandbox requested but proot not "
                       "found. Install with: pkg install proot",
                       file=sys.stderr)
+').
 
-        self.tools = {
-            \'bash\': self._execute_bash,
-            \'read\': self._read_file,
-            \'write\': self._write_file,
-            \'edit\': self._edit_file,
-        }
-
-        self.destructive_tools = {\'bash\', \'write\', \'edit\'}
-
+py_fragment(tools_handler_class_body, '
     def execute(self, tool_call: ToolCall) -> ToolResult:
         """Execute a tool call and return the result."""
         if tool_call.name not in self.allowed_tools:
@@ -7683,9 +7664,89 @@ generate_send_message_sig(S) :-
 generate_backend_helpers(S, BackendName) :-
     agent_backend(BackendName, Props),
     member(helper_fragments(Frags), Props),
-    forall(member(F, Frags), (write_py(S, F), write(S, '\n'))),
+    forall(member(F, Frags), emit_helper_fragment(S, BackendName, F)),
     member(display_name(DN), Props),
     write_py(S, name_property, [display_name=DN]).
+
+%% Route describe_tool_call_* fragments to the data-driven generator;
+%% all other fragments emit directly via write_py.
+emit_helper_fragment(S, Backend, F) :-
+    (atom_concat(describe_tool_call_, _, F) ->
+        generate_describe_tool_call(S, Backend),
+        write(S, '\n')
+    ;
+        write_py(S, F),
+        write(S, '\n')
+    ).
+
+%% --- generate_describe_tool_call/2: emit _describe_tool_call from tool_description/5 facts ---
+
+generate_describe_tool_call(S, Backend) :-
+    findall(td(TN, V, PK, DM), tool_description(Backend, TN, V, PK, DM), Entries),
+    write(S, '    def _describe_tool_call(self, tool_name: str, params: dict) -> str:\n'),
+    write(S, '        """Create a short description of a tool call."""\n'),
+    generate_describe_entries(S, Backend, Entries, first).
+
+generate_describe_entries(S, Backend, [td(TN, V, PK, DM)], _Pos) :-
+    !,
+    %% Last entry — emit elif then fallback
+    generate_one_describe(S, elif, TN, V, PK, DM),
+    generate_describe_fallback(S, Backend).
+generate_describe_entries(S, Backend, [td(TN, V, PK, DM)|Rest], first) :-
+    !,
+    generate_one_describe(S, 'if', TN, V, PK, DM),
+    generate_describe_entries(S, Backend, Rest, subsequent).
+generate_describe_entries(S, Backend, [td(TN, V, PK, DM)|Rest], subsequent) :-
+    generate_one_describe(S, elif, TN, V, PK, DM),
+    generate_describe_entries(S, Backend, Rest, subsequent).
+
+%% basename: f"verb {os.path.basename(params.get('key', '?'))}"
+generate_one_describe(S, IfOrElif, TN, Verb, PK, basename) :-
+    format(S, '        ~w tool_name == \'~w\':~n', [IfOrElif, TN]),
+    format(S, '            return f"~w {os.path.basename(params.get(\'~w\', \'?\'))}"~n', [Verb, PK]).
+
+%% raw: f"verb {params.get('key', '?')}"
+generate_one_describe(S, IfOrElif, TN, Verb, PK, raw) :-
+    format(S, '        ~w tool_name == \'~w\':~n', [IfOrElif, TN]),
+    format(S, '            return f"~w {params.get(\'~w\', \'?\')}"~n', [Verb, PK]).
+
+%% truncate(N): multi-line with cmd[:N-3] + '...'
+generate_one_describe(S, IfOrElif, TN, Verb, PK, truncate(MaxLen)) :-
+    TruncLen is MaxLen - 3,
+    format(S, '        ~w tool_name == \'~w\':~n', [IfOrElif, TN]),
+    format(S, '            cmd = params.get(\'~w\', \'?\')~n', [PK]),
+    format(S, '            if len(cmd) > ~w:~n', [MaxLen]),
+    format(S, '                cmd = cmd[:~w] + \'...\'~n', [TruncLen]),
+    format(S, '            return f"~w {cmd}"~n', [Verb]).
+
+%% Fallback: openrouter uses bare return, others use else block
+generate_describe_fallback(S, openrouter_api) :-
+    !,
+    write(S, '        return tool_name\n').
+generate_describe_fallback(S, _) :-
+    write(S, '        else:\n'),
+    write(S, '            return tool_name\n').
+
+%% --- generate_tool_dispatch/1: emit self.tools dict + self.destructive_tools set ---
+
+generate_tool_dispatch(S) :-
+    write(S, '\n        self.tools = {\n'),
+    forall(tool_handler(TN, MN), (
+        format(S, '            \'~w\': self.~w,~n', [TN, MN])
+    )),
+    write(S, '        }\n'),
+    write(S, '\n        self.destructive_tools = {'),
+    findall(DT, destructive_tool(DT), DTs),
+    write_set_elements(S, DTs),
+    write(S, '}\n').
+
+write_set_elements(_, []).
+write_set_elements(S, [DT]) :-
+    format(S, '\'~w\'', [DT]).
+write_set_elements(S, [DT|Rest]) :-
+    Rest \= [],
+    format(S, '\'~w\', ', [DT]),
+    write_set_elements(S, Rest).
 
 %% --- ollama_cli (uses: format_prompt, clean_output_simple, list_models_cli, name_property) ---
 
@@ -8225,7 +8286,7 @@ generate_backend_full(S, openrouter_api, _) :-
     write(S, '\n'),
     write_py(S, sse_streaming_openrouter),
     write(S, '\n'),
-    write_py(S, describe_tool_call_openrouter),
+    generate_describe_tool_call(S, openrouter_api),
     write(S, '\n'),
     write_py(S, name_property, [display_name='OpenRouter ({self.model})']).
 
