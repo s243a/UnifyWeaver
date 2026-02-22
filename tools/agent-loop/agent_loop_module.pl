@@ -29,33 +29,51 @@
 
 agent_backend(coro, [
     type(cli),
+    class_name('CoroBackend'),
     command("claude"),
     args(["--verbose"]),
     description("Coro-code CLI backend using single-task mode"),
     context_format(conversation_history),
     output_parser(coro_parser),
-    supports_streaming(false)
+    supports_streaming(false),
+    %% Generation metadata
+    module_imports(['json as _json', os, subprocess, re, tempfile]),
+    class_docstring('Coro-code CLI backend using single-task mode.'),
+    display_name('Coro ({self.command})'),
+    helper_fragments([])
 ]).
 
 agent_backend(claude_code, [
     type(cli),
+    class_name('ClaudeCodeBackend'),
     command("claude"),
     args(["-p", "--model"]),
     description("Claude Code CLI backend using print mode"),
     default_model("sonnet"),
     models(["sonnet", "opus", "haiku"]),
     context_format(conversation_history),
-    supports_streaming(false)
+    supports_streaming(false),
+    %% Generation metadata
+    module_imports([json, os, subprocess]),
+    class_docstring('Claude Code CLI backend with streaming JSON output.'),
+    display_name('Claude Code ({self.model})'),
+    helper_fragments([stream_json_return, describe_tool_call_claude_code, format_prompt])
 ]).
 
 agent_backend(gemini, [
     type(cli),
+    class_name('GeminiBackend'),
     command("gemini"),
     args(["-p", "-m", "--output-format", "text"]),
     description("Gemini CLI backend"),
     default_model("gemini-2.5-flash"),
     context_format(conversation_history),
-    supports_streaming(false)
+    supports_streaming(false),
+    %% Generation metadata
+    module_imports([json, os, subprocess, sys]),
+    class_docstring('Gemini CLI backend with streaming JSON output.'),
+    display_name('Gemini ({self.model})'),
+    helper_fragments([stream_json_return, describe_tool_call_gemini, format_prompt])
 ]).
 
 agent_backend(claude_api, [
@@ -69,7 +87,13 @@ agent_backend(claude_api, [
     context_format(messages_array),
     supports_tools(true),
     supports_streaming(true),
-    optional_import(true)
+    optional_import(true),
+    %% Generation metadata
+    module_imports([os]),
+    sdk_guard(anthropic),
+    class_docstring('Anthropic Claude API backend.'),
+    display_name('Claude API ({self.model})'),
+    helper_fragments([extract_tool_calls_anthropic])
 ]).
 
 agent_backend(openai_api, [
@@ -85,7 +109,13 @@ agent_backend(openai_api, [
     context_format(messages_array),
     supports_tools(true),
     supports_streaming(true),
-    optional_import(true)
+    optional_import(true),
+    %% Generation metadata
+    module_imports([os]),
+    sdk_guard(openai),
+    class_docstring('OpenAI API backend (GPT-4, GPT-3.5, etc.).'),
+    display_name('OpenAI ({self.model})'),
+    helper_fragments([extract_tool_calls_openai])
 ]).
 
 agent_backend(ollama_api, [
@@ -98,7 +128,12 @@ agent_backend(ollama_api, [
     default_port(11434),
     context_format(messages_array),
     auth_required(false),
-    supports_streaming(true)
+    supports_streaming(true),
+    %% Generation metadata
+    module_imports([json, 'urllib.request', 'urllib.error']),
+    class_docstring('Ollama REST API backend for local models.'),
+    display_name('Ollama API ({self.model}@{self.host}:{self.port})'),
+    helper_fragments([list_models_api])
 ]).
 
 agent_backend(ollama_cli, [
@@ -109,7 +144,12 @@ agent_backend(ollama_cli, [
     description("Ollama CLI backend using 'ollama run' command"),
     default_model("llama3"),
     context_format(conversation_history),
-    supports_streaming(false)
+    supports_streaming(false),
+    %% Generation metadata
+    module_imports([subprocess]),
+    class_docstring('Ollama CLI backend using \'ollama run\' command.'),
+    display_name('Ollama CLI ({self.model})'),
+    helper_fragments([format_prompt, clean_output_simple, list_models_cli])
 ]).
 
 agent_backend(openrouter_api, [
@@ -123,7 +163,12 @@ agent_backend(openrouter_api, [
     description("OpenRouter API backend with model routing"),
     context_format(messages_array),
     supports_tools(true),
-    supports_streaming(true)
+    supports_streaming(true),
+    %% Generation metadata
+    module_imports([json, os, sys, 'urllib.request', 'urllib.error']),
+    class_docstring('OpenRouter API backend (OpenAI-compatible, no pip deps).'),
+    display_name('OpenRouter ({self.model})'),
+    helper_fragments([supports_streaming_true, sse_streaming_openrouter, describe_tool_call_openrouter])
 ]).
 
 %% =============================================================================
@@ -7601,15 +7646,52 @@ generate_backend(Name) :-
     close(S),
     format('  Generated backends/~w.py~n', [FileName]).
 
+%% --- Backend scaffold predicates (shared across all 8 backends) ---
+
+%% Emit module header: docstring + imports + base import
+%% For SDK backends (sdk_guard present), base import has \n\n separator and
+%% sdk_import_guard fragment follows; otherwise triple-newline separator.
+generate_backend_header(S, BackendName) :-
+    agent_backend(BackendName, Props),
+    member(description(Desc), Props),
+    member(module_imports(Imports), Props),
+    format(S, '"""~w"""~n~n', [Desc]),
+    forall(member(Imp, Imports), format(S, 'import ~w~n', [Imp])),
+    (member(sdk_guard(SDK), Props) ->
+        %% SDK backends: base import + sdk_import_guard fragment
+        write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n'),
+        upcase_atom(SDK, SDKUpper),
+        write_py(S, sdk_import_guard, [sdk=SDK, 'SDK_UPPER'=SDKUpper])
+    ;
+        %% Standard backends: base import with triple newline
+        write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n\n')
+    ).
+
+%% Emit class declaration + class docstring
+generate_backend_class_decl(S, BackendName) :-
+    agent_backend(BackendName, Props),
+    member(class_name(ClassName), Props),
+    member(class_docstring(ClassDoc), Props),
+    format(S, 'class ~w(AgentBackend):~n', [ClassName]),
+    format(S, '    """~w"""~n~n', [ClassDoc]).
+
+%% Emit send_message signature (identical for all backends)
+generate_send_message_sig(S) :-
+    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n').
+
+%% Emit trailing helper fragments + name property
+generate_backend_helpers(S, BackendName) :-
+    agent_backend(BackendName, Props),
+    member(helper_fragments(Frags), Props),
+    forall(member(F, Frags), (write_py(S, F), write(S, '\n'))),
+    member(display_name(DN), Props),
+    write_py(S, name_property, [display_name=DN]).
+
 %% --- ollama_cli (uses: format_prompt, clean_output_simple, list_models_cli, name_property) ---
 
-generate_backend_full(S, ollama_cli, Props) :-
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import subprocess\n'),
-    write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n\n'),
-    write(S, 'class OllamaCLIBackend(AgentBackend):\n'),
-    write(S, '    """Ollama CLI backend using \'ollama run\' command."""\n\n'),
+generate_backend_full(S, ollama_cli, _) :-
+    generate_backend_header(S, ollama_cli),
+    generate_backend_class_decl(S, ollama_cli),
     write(S, '    def __init__(\n'),
     write(S, '        self,\n'),
     write(S, '        command: str = "ollama",\n'),
@@ -7619,7 +7701,7 @@ generate_backend_full(S, ollama_cli, Props) :-
     write(S, '        self.command = command\n'),
     write(S, '        self.model = model\n'),
     write(S, '        self.timeout = timeout\n\n'),
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to Ollama CLI and get response."""\n'),
     write(S, '        prompt = self._format_prompt(message, context)\n\n'),
     write(S, '        cmd = [self.command, "run", self.model]\n\n'),
@@ -7656,20 +7738,13 @@ generate_backend_full(S, ollama_cli, Props) :-
     write(S, '            tokens={},\n'),
     write(S, '            raw=output\n'),
     write(S, '        )\n\n'),
-    write_py(S, format_prompt), write(S, '\n'),
-    write_py(S, clean_output_simple), write(S, '\n'),
-    write_py(S, list_models_cli), write(S, '\n'),
-    write_py(S, name_property, [display_name='Ollama CLI ({self.model})']).
+    generate_backend_helpers(S, ollama_cli).
 
 %% --- ollama_api (uses: messages_builder_ollama, list_models_api, name_property) ---
 
-generate_backend_full(S, ollama_api, Props) :-
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import json\nimport urllib.request\nimport urllib.error\n'),
-    write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n\n'),
-    write(S, 'class OllamaAPIBackend(AgentBackend):\n'),
-    write(S, '    """Ollama REST API backend for local models."""\n\n'),
+generate_backend_full(S, ollama_api, _) :-
+    generate_backend_header(S, ollama_api),
+    generate_backend_class_decl(S, ollama_api),
     write(S, '    def __init__(\n        self,\n        host: str = "localhost",\n'),
     write(S, '        port: int = 11434,\n        model: str = "llama3",\n'),
     write(S, '        system_prompt: str | None = None,\n        timeout: int = 300\n    ):\n'),
@@ -7677,7 +7752,7 @@ generate_backend_full(S, ollama_api, Props) :-
     write(S, '        self.system_prompt = system_prompt or "You are a helpful assistant."\n'),
     write(S, '        self.timeout = timeout\n'),
     write(S, '        self.base_url = f"http://{host}:{port}"\n\n'),
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to Ollama API and get response."""\n'),
     write_py(S, messages_builder_ollama),
     write(S, '\n        # Build request\n'),
@@ -7705,18 +7780,13 @@ generate_backend_full(S, ollama_api, Props) :-
     write(S, '                tokens={}\n            )\n'),
     write(S, '        except Exception as e:\n            return AgentResponse(\n'),
     write(S, '                content=f"[Error: {e}]",\n                tokens={}\n            )\n\n'),
-    write_py(S, list_models_api), write(S, '\n'),
-    write_py(S, name_property, [display_name='Ollama API ({self.model}@{self.host}:{self.port})']).
+    generate_backend_helpers(S, ollama_api).
 
 %% --- gemini (uses: popen_setup, stream_json_parser_gemini, describe_tool_call_gemini, format_prompt) ---
 
-generate_backend_full(S, gemini, Props) :-
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import json\nimport os\nimport subprocess\nimport sys\n'),
-    write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n\n'),
-    write(S, 'class GeminiBackend(AgentBackend):\n'),
-    write(S, '    """Gemini CLI backend with streaming JSON output."""\n\n'),
+generate_backend_full(S, gemini, _) :-
+    generate_backend_header(S, gemini),
+    generate_backend_class_decl(S, gemini),
     write(S, '    def __init__(self, command: str = "gemini", model: str = "gemini-3-flash-preview",\n'),
     write(S, '                 sandbox: bool = False, approval_mode: str = "yolo",\n'),
     write(S, '                 allowed_tools: list[str] | None = None):\n'),
@@ -7724,7 +7794,7 @@ generate_backend_full(S, gemini, Props) :-
     write(S, '        self.sandbox = sandbox\n        self.approval_mode = approval_mode\n'),
     write(S, '        self.allowed_tools = allowed_tools or []\n'),
     write(S, '        self._on_status = None\n\n'),
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to Gemini CLI with live streaming output."""\n'),
     write(S, '        prompt = self._format_prompt(message, context)\n'),
     write(S, '        self._on_status = kwargs.get(\'on_status\')\n\n'),
@@ -7745,24 +7815,17 @@ generate_backend_full(S, gemini, Props) :-
     write(S, '                tokens={})\n'),
     write(S, '        except Exception as e:\n'),
     write(S, '            return AgentResponse(content=f"[Error: {e}]", tokens={})\n\n'),
-    write_py(S, stream_json_return), write(S, '\n'),
-    write_py(S, describe_tool_call_gemini), write(S, '\n'),
-    write_py(S, format_prompt), write(S, '\n'),
-    write_py(S, name_property, [display_name='Gemini ({self.model})']).
+    generate_backend_helpers(S, gemini).
 
 %% --- claude_code (uses: popen_setup, stream_json_parser_claude_code, describe_tool_call_claude_code, format_prompt) ---
 
-generate_backend_full(S, claude_code, Props) :-
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import json\nimport os\nimport subprocess\n'),
-    write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n\n'),
-    write(S, 'class ClaudeCodeBackend(AgentBackend):\n'),
-    write(S, '    """Claude Code CLI backend with streaming JSON output."""\n\n'),
+generate_backend_full(S, claude_code, _) :-
+    generate_backend_header(S, claude_code),
+    generate_backend_class_decl(S, claude_code),
     write(S, '    def __init__(self, command: str = "claude", model: str = "sonnet"):\n'),
     write(S, '        self.command = command\n        self.model = model\n'),
     write(S, '        self._on_status = None\n\n'),
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to Claude Code CLI with live streaming output."""\n'),
     write(S, '        prompt = self._format_prompt(message, context)\n'),
     write(S, '        self._on_status = kwargs.get(\'on_status\')\n\n'),
@@ -7780,20 +7843,14 @@ generate_backend_full(S, claude_code, Props) :-
     write(S, '                tokens={})\n'),
     write(S, '        except Exception as e:\n'),
     write(S, '            return AgentResponse(content=f"[Error: {e}]", tokens={})\n\n'),
-    write_py(S, stream_json_return), write(S, '\n'),
-    write_py(S, describe_tool_call_claude_code), write(S, '\n'),
-    write_py(S, format_prompt), write(S, '\n'),
-    write_py(S, name_property, [display_name='Claude Code ({self.model})']).
+    generate_backend_helpers(S, claude_code).
 
 %% --- claude_api (uses: sdk_import_guard, api_key_from_env, messages_builder_anthropic, extract_tool_calls_anthropic) ---
 
-generate_backend_full(S, claude_api, Props) :-
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import os\nfrom .base import AgentBackend, AgentResponse, ToolCall\n\n'),
-    write_py(S, sdk_import_guard, [sdk=anthropic, 'SDK_UPPER'='ANTHROPIC']),
-    write(S, '\nclass ClaudeAPIBackend(AgentBackend):\n'),
-    write(S, '    """Anthropic Claude API backend."""\n\n'),
+generate_backend_full(S, claude_api, _) :-
+    generate_backend_header(S, claude_api),
+    write(S, '\n'),
+    generate_backend_class_decl(S, claude_api),
     write(S, '    def __init__(\n        self,\n        api_key: str | None = None,\n'),
     write(S, '        model: str = "claude-sonnet-4-20250514",\n        max_tokens: int = 4096,\n'),
     write(S, '        system_prompt: str | None = None\n    ):\n'),
@@ -7803,7 +7860,7 @@ generate_backend_full(S, claude_api, Props) :-
     write(S, '        self.system_prompt = system_prompt or (\n'),
     write(S, '            "You are a helpful AI assistant. Be concise and direct."\n        )\n\n'),
     write(S, '        self.client = anthropic.Anthropic(api_key=self.api_key)\n\n'),
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to Claude API and get response."""\n'),
     write_py(S, messages_builder_anthropic),
     write(S, '\n        try:\n'),
@@ -7859,13 +7916,10 @@ generate_backend_full(S, claude_api, Props) :-
 
 %% --- openai_api (uses: sdk_import_guard, api_key_from_env, messages_builder_system, extract_tool_calls_openai) ---
 
-generate_backend_full(S, openai_api, Props) :-
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import os\nfrom .base import AgentBackend, AgentResponse, ToolCall\n\n'),
-    write_py(S, sdk_import_guard, [sdk=openai, 'SDK_UPPER'='OPENAI']),
-    write(S, '\nclass OpenAIBackend(AgentBackend):\n'),
-    write(S, '    """OpenAI API backend (GPT-4, GPT-3.5, etc.)."""\n\n'),
+generate_backend_full(S, openai_api, _) :-
+    generate_backend_header(S, openai_api),
+    write(S, '\n'),
+    generate_backend_class_decl(S, openai_api),
     write(S, '    def __init__(\n        self,\n        api_key: str | None = None,\n'),
     write(S, '        model: str = "gpt-4o",\n        max_tokens: int = 4096,\n'),
     write(S, '        system_prompt: str | None = None,\n        base_url: str | None = None\n    ):\n'),
@@ -7878,7 +7932,7 @@ generate_backend_full(S, openai_api, Props) :-
     write(S, '        client_kwargs = {"api_key": self.api_key}\n'),
     write(S, '        if self.base_url:\n            client_kwargs["base_url"] = self.base_url\n\n'),
     write(S, '        self.client = openai.OpenAI(**client_kwargs)\n\n'),
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to OpenAI API and get response."""\n'),
     write_py(S, messages_builder_system),
     write(S, '\n        # Note: current message is already in context (added by agent_loop)\n\n'),
@@ -7943,13 +7997,9 @@ generate_backend_full(S, openai_api, Props) :-
 
 %% --- coro (uses: format_prompt, name_property — mostly unique imperative logic) ---
 
-generate_backend_full(S, coro, Props) :-
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import json as _json\nimport os\nimport subprocess\nimport re\nimport tempfile\n'),
-    write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n\n'),
-    write(S, 'class CoroBackend(AgentBackend):\n'),
-    write(S, '    """Coro-code CLI backend using single-task mode."""\n\n'),
+generate_backend_full(S, coro, _) :-
+    generate_backend_header(S, coro),
+    generate_backend_class_decl(S, coro),
     write(S, '    def __init__(self, command: str = "coro", verbose: bool = True,\n'),
     write(S, '                 debug: bool = True, max_steps: int = 0,\n'),
     write(S, '                 config: str | None = None, no_fallback: bool = False,\n'),
@@ -8002,7 +8052,7 @@ generate_backend_full(S, coro, Props) :-
     write(S, '            _json.dump(base, tf, indent=2)\n            tf.close()\n'),
     write(S, '            return tf.name\n        except Exception:\n            return None\n\n'),
     %% send_message
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to coro CLI and get response."""\n'),
     write(S, '        prompt = self._format_prompt(message, context)\n\n'),
     write(S, '        cmd = [self.command]\n'),
@@ -8086,11 +8136,12 @@ generate_backend_full(S, coro, Props) :-
     write(S, '    def parse_tool_calls(self, response: str) -> list[ToolCall]:\n'),
     write(S, '        """Extract tool calls from coro output."""\n'),
     write(S, '        return []\n\n'),
-    write_py(S, name_property, [display_name='Coro ({self.command})']).
+    generate_backend_helpers(S, coro).
 
 %% --- openrouter_api (uses: messages_builder_openrouter, describe_tool_call_openrouter, sse_streaming_openrouter) ---
 
-generate_backend_full(S, openrouter_api, Props) :-
+generate_backend_full(S, openrouter_api, _) :-
+    agent_backend(openrouter_api, Props),
     member(description(Desc), Props),
     format(S, '"""~w"""~n~n', [Desc]),
     write(S, 'import json\nimport os\nimport sys\n'),
@@ -8104,8 +8155,7 @@ generate_backend_full(S, openrouter_api, Props) :-
         generate_tool_schema_py(S, ToolName, ToolProps)
     )),
     write(S, ']\n\n\n'),
-    write(S, 'class OpenRouterBackend(AgentBackend):\n'),
-    write(S, '    """OpenRouter API backend (OpenAI-compatible, no pip deps)."""\n\n'),
+    generate_backend_class_decl(S, openrouter_api),
     write(S, '    def __init__(\n        self,\n        api_key: str | None = None,\n'),
     write(S, '        model: str | None = None,\n'),
     write(S, '        base_url: str = "https://openrouter.ai/api/v1",\n'),
@@ -8124,7 +8174,7 @@ generate_backend_full(S, openrouter_api, Props) :-
     write(S, '        if not self.api_key:\n            raise ValueError(\n'),
     write(S, '                "OpenRouter API key required. Set OPENROUTER_API_KEY, "\n'),
     write(S, '                "provide --api-key, or add api_key to uwsal.json / coro.json."\n            )\n\n'),
-    write(S, '    def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:\n'),
+    generate_send_message_sig(S),
     write(S, '        """Send message to OpenRouter API."""\n'),
     write(S, '        on_status = kwargs.get(\'on_status\')\n\n'),
     write_py(S, messages_builder_openrouter),
