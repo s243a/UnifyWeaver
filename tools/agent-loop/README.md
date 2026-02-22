@@ -403,6 +403,57 @@ python3 agent_loop.py --context-mode sliding "prompt"
 └─────────┴─────────┴─────────┴─────────┴─────────┴───────────┘
 ```
 
+## Code Generation
+
+All Python source files in `generated/` are produced by a single Prolog program: `agent_loop_module.pl`. The generator uses two complementary strategies:
+
+1. **`py_fragment` atoms** - Imperative Python code stored verbatim as Prolog atoms, emitted with `write_py/2`
+2. **Data-driven generators** - Prolog facts describing tabular data (CLI arguments, commands, aliases, etc.) that are rendered into Python by generator predicates
+
+### Data predicates
+
+| Predicate | Clauses | Drives |
+|-----------|---------|--------|
+| `cli_argument/2` | 28 | `parser.add_argument()` calls |
+| `cli_argument_group/2` | 11 | Argument grouping/comments |
+| `slash_command/4` | 20 | `_handle_command` dispatch + `/help` text |
+| `slash_command_group/2` | 6 | Help text category layout |
+| `command_alias/2` | 30 | `DEFAULT_ALIASES` dict |
+| `alias_category/2` | 6 | Alias display categories |
+| `cli_fallbacks/2` | 4 | `_CLI_FALLBACKS` dict |
+| `tool_spec/2` | 4 | Tool definitions |
+| `backend_spec/2` | 8 | Backend metadata |
+| `security_profile/2` | 4 | Security profile definitions |
+
+### Regenerating
+
+```bash
+cd tools/agent-loop
+swipl -g "generate_all, halt" agent_loop_module.pl
+```
+
+This produces all 33 Python files in `generated/`. The output should match `prototype/` (the reference implementation).
+
+### Hybrid generation example
+
+The main file `agent_loop.py` is assembled from 7 fragments interleaved with 5 generated sections:
+
+```
+agent_loop_imports           (fragment)
+agent_loop_class_init        (fragment)
+_handle_command dispatch     (generated from slash_command/4)
+agent_loop_command_handlers  (fragment)
+_print_help body             (generated from slash_command_group/2)
+agent_loop_status_and_process(fragment)
+agent_loop_helpers           (fragment)
+_CLI_FALLBACKS dict          (generated from cli_fallbacks/2)
+agent_loop_backend_factory   (fragment)
+def main() + argparse block  (generated from cli_argument/2)
+agent_loop_main_body         (fragment)
+```
+
+This approach keeps imperative logic in readable fragments while making repetitive, tabular data queryable and reusable across future language targets.
+
 ## Module Reference
 
 | Module | Description |
