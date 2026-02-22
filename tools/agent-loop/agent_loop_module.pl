@@ -442,6 +442,7 @@ generate_all :-
     generate_module(security_proxy),
     generate_module(security_path_proxy),
     generate_module(security_proot_sandbox),
+    generate_module(agent_loop_main),
     generate_module(readme),
     write('Done.'), nl.
 
@@ -469,6 +470,7 @@ generate_module(security_audit)     :- generate_simple_module('security/audit.py
 generate_module(security_proxy)     :- generate_simple_module('security/proxy.py', security_proxy_module).
 generate_module(security_path_proxy):- generate_simple_module('security/path_proxy.py', security_path_proxy_module).
 generate_module(security_proot_sandbox) :- generate_simple_module('security/proot_sandbox.py', security_proot_sandbox_module).
+generate_module(agent_loop_main)     :- generate_simple_module('agent_loop.py', agent_loop_module_main).
 generate_module(readme)             :- generate_readme.
 
 %% Simple module generator: write a single py_fragment to a file
@@ -5762,6 +5764,1441 @@ class ProotSandbox:
             escaped_inner = inner.replace("\'", "\'\\\\\'\'")
             return f"{quoted_prefix} \'{escaped_inner}\'"
         return \' \'.join(shlex.quote(p) for p in parts)').
+
+py_fragment(agent_loop_module_main, '#!/usr/bin/env python3
+"""
+UnifyWeaver Agent Loop - Append-Only Mode
+
+A simple agent loop that works in any terminal environment.
+Uses pure text output with no cursor control or escape codes.
+"""
+
+import json
+import sys
+import argparse
+from pathlib import Path
+from backends import AgentBackend, CoroBackend
+from context import ContextManager, ContextBehavior, ContextFormat
+from tools import ToolHandler, SecurityConfig
+from config import (load_config, load_config_from_dir, get_default_config,
+                     AgentConfig, Config, save_example_config,
+                     resolve_api_key, read_config_cascade)
+from security.audit import AuditLogger
+from sessions import SessionManager
+from skills import SkillsLoader
+from costs import CostTracker
+from export import ConversationExporter
+from search import SessionSearcher
+from aliases import AliasManager
+from templates import TemplateManager
+from history import HistoryManager
+from multiline import get_input_smart
+from display import DisplayMode, Spinner
+
+
+class AgentLoop:
+    """Main agent loop orchestrating all components."""
+
+    def __init__(
+        self,
+        backend: AgentBackend,
+        context: ContextManager | None = None,
+        tools: ToolHandler | None = None,
+        show_tokens: bool = True,
+        auto_execute_tools: bool = False,
+        max_iterations: int = 0,
+        config: Config | None = None,
+        session_manager: SessionManager | None = None,
+        session_id: str | None = None,
+        track_costs: bool = True,
+        streaming: bool = False,
+        display_mode: str = \'append\'
+    ):
+        self.backend = backend
+        self.context = context if context is not None else ContextManager()
+        self.tools = tools or ToolHandler()
+        self.show_tokens = show_tokens
+        self.auto_execute_tools = auto_execute_tools
+        self.max_iterations = max_iterations  # 0 = unlimited
+        self.config = config  # For backend switching
+        self.session_manager = session_manager or SessionManager()
+        self.session_id = session_id  # Current session ID if loaded/saved
+        self.cost_tracker = CostTracker() if track_costs else None
+        self.streaming = streaming
+        self.display_mode = display_mode  # \'append\' or \'ncurses\'
+        self.alias_manager = AliasManager()
+        self.template_manager = TemplateManager()
+        self.history_manager = HistoryManager(self.context)
+        self.running = True
+
+    def run(self) -> None:
+        """Main loop - read input, get response, display output."""
+        self._print_header()
+
+        while self.running:
+            try:
+                # Get user input
+                user_input = self._get_input()
+
+                if user_input is None:
+                    # EOF
+                    break
+
+                if not user_input.strip():
+                    continue
+
+                # Handle commands
+                if self._handle_command(user_input):
+                    continue
+
+                # Handle template invocation (@template_name ...)
+                if user_input.strip().startswith(\'@\'):
+                    name, kwargs = self.template_manager.parse_template_invocation(user_input.strip())
+                    if name:
+                        template = self.template_manager.get(name)
+                        missing = template.missing_variables(**kwargs)
+                        if missing:
+                            print(f"[Template @{name} requires: {\', \'.join(missing)}]\\n")
+                            continue
+                        user_input = template.render(**kwargs)
+                        print(f"[Using template @{name}]")
+
+                # Process the message
+                self._process_message(user_input)
+
+            except KeyboardInterrupt:
+                print("\\n\\nInterrupted. Type \'exit\' to quit.")
+            except Exception as e:
+                print(f"\\n[Error: {e}]\\n")
+
+        print("\\nGoodbye!")
+
+    def _print_header(self) -> None:
+        """Print the startup header."""
+        print("UnifyWeaver Agent Loop")
+        print(f"Backend: {self.backend.name}")
+        iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
+        print(f"Max iterations: {iterations_str}")
+        print("Type \'exit\' to quit, \'/help\' for commands")
+        print()
+
+    def _get_input(self) -> str | None:
+        """Get input from user with multi-line support."""
+        return get_input_smart("You: ")
+
+    def _handle_command(self, user_input: str) -> bool:
+        """Handle special commands. Returns True if command was handled."""
+        # Apply alias resolution first
+        resolved = self.alias_manager.resolve(user_input)
+        if resolved != user_input:
+            user_input = resolved
+
+        text = user_input.strip()
+        cmd = text.lower()
+
+        # Handle both with and without slash prefix
+        if cmd.startswith(\'/\'):
+            cmd = cmd[1:]
+            text = text[1:]
+
+        if cmd == \'exit\' or cmd == \'quit\':
+            self.running = False
+            return True
+
+        if cmd == \'clear\':
+            self.context.clear()
+            self.history_manager = HistoryManager(self.context)
+            print("[Context cleared]\\n")
+            return True
+
+        if cmd == \'help\':
+            self._print_help()
+            return True
+
+        if cmd == \'status\':
+            self._print_status()
+            return True
+
+        # /iterations N - set max iterations
+        if cmd.startswith(\'iterations\'):
+            return self._handle_iterations_command(text)
+
+        # /backend <name> - switch backend
+        if cmd.startswith(\'backend\'):
+            return self._handle_backend_command(text)
+
+        # Session commands
+        if cmd.startswith(\'save\'):
+            return self._handle_save_command(text)
+
+        if cmd.startswith(\'load\'):
+            return self._handle_load_command(text)
+
+        if cmd == \'sessions\':
+            return self._handle_sessions_command()
+
+        # /format [type] - set context format
+        if cmd.startswith(\'format\'):
+            return self._handle_format_command(text)
+
+        # /export <path> - export conversation
+        if cmd.startswith(\'export\'):
+            return self._handle_export_command(text)
+
+        # /cost - show cost tracking
+        if cmd == \'cost\' or cmd == \'costs\':
+            return self._handle_cost_command()
+
+        # /search <query> - search sessions
+        if cmd.startswith(\'search\'):
+            return self._handle_search_command(text)
+
+        # /stream - toggle streaming mode
+        if cmd == \'stream\' or cmd == \'streaming\':
+            return self._handle_stream_command()
+
+        # Aliases
+        if cmd == \'aliases\':
+            return self._handle_aliases_command()
+
+        # Templates
+        if cmd == \'templates\':
+            return self._handle_templates_command()
+
+        # History
+        if cmd == \'history\' or cmd.startswith(\'history \'):
+            return self._handle_history_command(text)
+
+        # Undo
+        if cmd == \'undo\':
+            return self._handle_undo_command()
+
+        # Delete message(s)
+        if cmd.startswith(\'delete \') or cmd.startswith(\'del \'):
+            return self._handle_delete_command(text)
+
+        # Edit message
+        if cmd.startswith(\'edit \'):
+            return self._handle_edit_command(text)
+
+        # Replay from message
+        if cmd.startswith(\'replay \'):
+            return self._handle_replay_command(text)
+
+        return False
+
+    def _handle_iterations_command(self, text: str) -> bool:
+        """Handle /iterations N command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
+            print(f"[Current max iterations: {iterations_str}]")
+            print("[Usage: /iterations N (0 = unlimited)]\\n")
+            return True
+
+        try:
+            n = int(parts[1])
+            if n < 0:
+                raise ValueError("Must be >= 0")
+            self.max_iterations = n
+            iterations_str = "unlimited" if n == 0 else str(n)
+            print(f"[Max iterations set to: {iterations_str}]\\n")
+        except ValueError as e:
+            print(f"[Error: Invalid number - {e}]\\n")
+        return True
+
+    def _handle_backend_command(self, text: str) -> bool:
+        """Handle /backend <name> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print(f"[Current backend: {self.backend.name}]")
+            if self.config:
+                print(f"[Available: {\', \'.join(self.config.agents.keys())}]")
+            print("[Usage: /backend <agent-name>]\\n")
+            return True
+
+        agent_name = parts[1].strip()
+
+        if not self.config:
+            print("[Error: No config loaded, cannot switch backends]\\n")
+            return True
+
+        if agent_name not in self.config.agents:
+            print(f"[Error: Unknown agent \'{agent_name}\']")
+            print(f"[Available: {\', \'.join(self.config.agents.keys())}]\\n")
+            return True
+
+        try:
+            agent_config = self.config.agents[agent_name]
+            self.backend = create_backend_from_config(agent_config)
+            print(f"[Switched to backend: {self.backend.name}]\\n")
+        except Exception as e:
+            print(f"[Error switching backend: {e}]\\n")
+        return True
+
+    def _handle_save_command(self, text: str) -> bool:
+        """Handle /save [name] command."""
+        parts = text.split(None, 1)
+        name = parts[1].strip() if len(parts) > 1 else None
+
+        try:
+            self.session_id = self.session_manager.save_session(
+                context=self.context,
+                session_id=self.session_id,
+                name=name,
+                backend_name=self.backend.name
+            )
+            print(f"[Session saved: {self.session_id}]\\n")
+        except Exception as e:
+            print(f"[Error saving session: {e}]\\n")
+        return True
+
+    def _handle_load_command(self, text: str) -> bool:
+        """Handle /load <session_id> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /load <session_id>]")
+            print("[Use /sessions to list available sessions]\\n")
+            return True
+
+        session_id = parts[1].strip()
+
+        try:
+            context, metadata, extra = self.session_manager.load_session(session_id)
+            self.context = context
+            self.session_id = session_id
+            print(f"[Session loaded: {metadata.get(\'name\', session_id)}]")
+            print(f"[Messages: {context.message_count}, Tokens: {context.token_count}]\\n")
+        except FileNotFoundError:
+            print(f"[Session not found: {session_id}]\\n")
+        except Exception as e:
+            print(f"[Error loading session: {e}]\\n")
+        return True
+
+    def _handle_sessions_command(self) -> bool:
+        """Handle /sessions command."""
+        sessions = self.session_manager.list_sessions()
+        if not sessions:
+            print("[No saved sessions]\\n")
+            return True
+
+        print("Saved sessions:")
+        for s in sessions[:10]:  # Show last 10
+            print(f"  {s.id}: {s.name} ({s.message_count} msgs, {s.backend})")
+        if len(sessions) > 10:
+            print(f"  ... and {len(sessions) - 10} more")
+        print()
+        return True
+
+    def _handle_format_command(self, text: str) -> bool:
+        """Handle /format [type] command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print(f"[Current format: {self.context.format.value}]")
+            print("[Available: plain, markdown, json, xml]\\n")
+            return True
+
+        format_name = parts[1].strip().lower()
+        try:
+            self.context.format = ContextFormat(format_name)
+            print(f"[Context format set to: {format_name}]\\n")
+        except ValueError:
+            print(f"[Unknown format: {format_name}]")
+            print("[Available: plain, markdown, json, xml]\\n")
+        return True
+
+    def _handle_export_command(self, text: str) -> bool:
+        """Handle /export <path> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /export <path>]")
+            print("[Formats: .md, .html, .json, .txt (auto-detected from extension)]\\n")
+            return True
+
+        path = parts[1].strip()
+        try:
+            exporter = ConversationExporter(self.context)
+            exporter.save(path, title=self.session_id or "Conversation")
+            print(f"[Exported to: {path}]\\n")
+        except Exception as e:
+            print(f"[Error exporting: {e}]\\n")
+        return True
+
+    def _handle_cost_command(self) -> bool:
+        """Handle /cost command."""
+        if not self.cost_tracker:
+            print("[Cost tracking disabled]\\n")
+            return True
+
+        summary = self.cost_tracker.get_summary()
+        print(f"""
+Cost Summary:
+  Requests: {summary[\'total_requests\']}
+  Input tokens: {summary[\'total_input_tokens\']:,}
+  Output tokens: {summary[\'total_output_tokens\']:,}
+  Total tokens: {summary[\'total_tokens\']:,}
+  Estimated cost: {summary[\'cost_formatted\']}
+""")
+        return True
+
+    def _handle_search_command(self, text: str) -> bool:
+        """Handle /search <query> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /search <query>]\\n")
+            return True
+
+        query = parts[1].strip()
+        try:
+            searcher = SessionSearcher(self.session_manager.sessions_dir)
+            results = searcher.search(query, limit=10)
+
+            if not results:
+                print(f"[No results for: {query}]\\n")
+                return True
+
+            print(f"Search results for \'{query}\':")
+            for r in results:
+                role = "You" if r.role == "user" else "Asst"
+                snippet = r.content[r.match_start:r.match_end]
+                context = r.context_before[-20:] + "**" + snippet + "**" + r.context_after[:20]
+                print(f"  [{r.session_id}] {role}: ...{context}...")
+            print()
+        except Exception as e:
+            print(f"[Search error: {e}]\\n")
+        return True
+
+    def _handle_stream_command(self) -> bool:
+        """Handle /stream command to toggle streaming mode."""
+        if not self.backend.supports_streaming():
+            print(f"[Backend {self.backend.name} does not support streaming]\\n")
+            return True
+
+        self.streaming = not self.streaming
+        status = "enabled" if self.streaming else "disabled"
+        print(f"[Streaming {status}]\\n")
+        return True
+
+    def _handle_aliases_command(self) -> bool:
+        """Handle /aliases command."""
+        print(self.alias_manager.format_list())
+        print()
+        return True
+
+    def _handle_templates_command(self) -> bool:
+        """Handle /templates command."""
+        print(self.template_manager.format_list())
+        print()
+        return True
+
+    def _handle_history_command(self, text: str) -> bool:
+        """Handle /history [n] command."""
+        parts = text.split()
+        limit = 10
+        if len(parts) > 1:
+            try:
+                limit = int(parts[1])
+            except ValueError:
+                pass
+        print(self.history_manager.format_history(limit))
+        print()
+        return True
+
+    def _handle_undo_command(self) -> bool:
+        """Handle /undo command."""
+        if self.history_manager.undo():
+            print("[Undo successful]\\n")
+        else:
+            print("[Nothing to undo]\\n")
+        return True
+
+    def _handle_delete_command(self, text: str) -> bool:
+        """Handle /delete <n> or /delete <start>-<end> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /delete <index> or /delete <start>-<end> or /delete last [n]]\\n")
+            return True
+
+        arg = parts[1].strip()
+
+        # Handle \'last [n]\'
+        if arg.startswith(\'last\'):
+            n = 1
+            sub_parts = arg.split()
+            if len(sub_parts) > 1:
+                try:
+                    n = int(sub_parts[1])
+                except ValueError:
+                    pass
+            count = self.history_manager.delete_last(n)
+            print(f"[Deleted {count} message(s)]\\n")
+            return True
+
+        # Handle range \'start-end\'
+        if \'-\' in arg:
+            try:
+                start, end = arg.split(\'-\', 1)
+                start = int(start)
+                end = int(end)
+                count = self.history_manager.delete_range(start, end)
+                print(f"[Deleted {count} message(s)]\\n")
+            except ValueError:
+                print("[Invalid range format]\\n")
+            return True
+
+        # Handle single index
+        try:
+            index = int(arg)
+            if self.history_manager.delete_message(index):
+                print(f"[Deleted message {index}]\\n")
+            else:
+                print(f"[Invalid index: {index}]\\n")
+        except ValueError:
+            print("[Invalid index]\\n")
+        return True
+
+    def _handle_edit_command(self, text: str) -> bool:
+        """Handle /edit <index> command."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /edit <index>]\\n")
+            return True
+
+        try:
+            index = int(parts[1].strip())
+        except ValueError:
+            print("[Invalid index]\\n")
+            return True
+
+        # Get current content
+        content = self.history_manager.get_full_content(index)
+        if content is None:
+            print(f"[Invalid index: {index}]\\n")
+            return True
+
+        print(f"Current content of message {index}:")
+        print(content[:200] + "..." if len(content) > 200 else content)
+        print("\\nEnter new content (or empty to cancel):")
+
+        try:
+            new_content = get_input_smart("New: ")
+            if new_content and new_content.strip():
+                if self.history_manager.edit_message(index, new_content):
+                    print(f"[Message {index} updated]\\n")
+                else:
+                    print("[Edit failed]\\n")
+            else:
+                print("[Edit cancelled]\\n")
+        except EOFError:
+            print("[Edit cancelled]\\n")
+        return True
+
+    def _handle_replay_command(self, text: str) -> bool:
+        """Handle /replay <index> command to re-send a message."""
+        parts = text.split(None, 1)
+        if len(parts) < 2:
+            print("[Usage: /replay <index>]\\n")
+            return True
+
+        try:
+            index = int(parts[1].strip())
+        except ValueError:
+            print("[Invalid index]\\n")
+            return True
+
+        content = self.history_manager.replay_from(index)
+        if content is None:
+            print(f"[Cannot replay: message {index} not found or not a user message]\\n")
+            return True
+
+        print(f"[Replaying message {index}]")
+        self._process_message(content)
+        return True
+
+    def _print_help(self) -> None:
+        """Print help message."""
+        print("""
+Commands (with or without / prefix):
+  /exit, /quit       - Exit the agent loop
+  /clear             - Clear conversation context
+  /status            - Show context status
+  /help              - Show this help message
+
+Loop Control:
+  /iterations [N]    - Show or set max iterations (0 = unlimited)
+  /backend [name]    - Show or switch backend/agent
+  /format [type]     - Set context format (plain/markdown/json/xml)
+  /stream            - Toggle streaming mode for API backends
+
+Sessions:
+  /save [name]       - Save current conversation
+  /load <id>         - Load a saved conversation
+  /sessions          - List saved sessions
+  /search <query>    - Search across saved sessions
+
+Export & Costs:
+  /export <path>     - Export conversation (.md, .html, .json, .txt)
+  /cost              - Show API cost tracking summary
+
+History:
+  /history [n]       - Show last n messages (default 10)
+  /delete <idx>      - Delete message at index
+  /delete <s>-<e>    - Delete messages from s to e
+  /delete last [n]   - Delete last n messages
+  /edit <idx>        - Edit message at index
+  /replay <idx>      - Re-send message at index
+  /undo              - Undo last history change
+
+Shortcuts:
+  /aliases           - List command aliases (e.g., /q -> /quit)
+  /templates         - List prompt templates
+
+Multi-line Input:
+  Start with ``` for code blocks
+  Start with <<< for heredoc mode
+  End lines with \\\\ for continuation
+
+Just type your message to chat with the agent.
+""")
+
+    def _print_status(self) -> None:
+        """Print context status."""
+        iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
+        session_str = self.session_id or "(unsaved)"
+        streaming_str = "on" if self.streaming else "off"
+        cost_str = self.cost_tracker.format_status() if self.cost_tracker else "disabled"
+        print(f"""
+Status:
+  Backend: {self.backend.name}
+  Session: {session_str}
+  Streaming: {streaming_str}
+  Max iterations: {iterations_str}
+  Context format: {self.context.format.value}
+  Messages: {self.context.message_count}
+  Context tokens: {self.context.token_count} (est.)
+  Context chars: {self.context.char_count}
+  Context words: {self.context.word_count}
+  Cost: {cost_str}
+""")
+
+    def _process_message(self, user_input: str) -> None:
+        """Process a user message and get response."""
+        # Add to context
+        self.context.add_message(\'user\', user_input)
+
+        # Show that we\'re calling the backend
+        use_spinner = self.display_mode == \'ncurses\' and DisplayMode.supports_ncurses()
+        spinner = None
+
+        if use_spinner:
+            spinner = Spinner("Calling backend...")
+            spinner.start()
+        else:
+            print("\\n[Calling backend...]")
+
+        # Status callback to update spinner with tool call info
+        def on_status(status: str):
+            if spinner:
+                spinner.update(status)
+            else:
+                print(f"  {status}")
+
+        # Get response from backend (with streaming if enabled)
+        try:
+            if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, \'send_message_streaming\'):
+                if spinner:
+                    spinner.stop()
+                    spinner = None
+                print("\\nAssistant: ", end="", flush=True)
+                response = self.backend.send_message_streaming(
+                    user_input,
+                    self.context.get_context(),
+                    on_token=lambda t: print(t, end="", flush=True)
+                )
+                print()  # Newline after streaming
+            else:
+                response = self.backend.send_message(
+                    user_input,
+                    self.context.get_context(),
+                    on_status=on_status
+                )
+        except KeyboardInterrupt:
+            if spinner:
+                spinner.stop()
+            print("\\n[Interrupted]")
+            return
+        finally:
+            if spinner:
+                spinner.stop()
+
+        # Handle tool calls if present
+        iteration_count = 0
+        prev_tool_sig = None  # Track previous tool calls to detect loops
+        while response.tool_calls:
+            iteration_count += 1
+
+            # Detect duplicate tool calls (model stuck in a loop)
+            current_sig = [
+                (tc.name, json.dumps(tc.arguments, sort_keys=True))
+                for tc in response.tool_calls
+            ]
+            if current_sig == prev_tool_sig:
+                print("\\n[Stopped: model repeated the same tool call]")
+                # Ask the model to respond with text instead of retrying
+                self.context.add_message(
+                    \'user\',
+                    "The tool has already been executed and the result "
+                    "was returned above. Please respond with your answer."
+                )
+                response = self.backend.send_message(
+                    "",
+                    self.context.get_context(),
+                    on_status=on_status
+                )
+                break
+            prev_tool_sig = current_sig
+
+            # Check iteration limit
+            if self.max_iterations > 0 and iteration_count > self.max_iterations:
+                print(f"\\n[Paused after {self.max_iterations} iteration(s)]")
+                print("[Press Enter to continue, or type a message]")
+                try:
+                    cont = input("You: ")
+                    if cont.strip():
+                        # User provided new input - process it instead
+                        self.context.add_message(\'assistant\', response.content, 0)
+                        self._process_message(cont)
+                        return
+                    # Reset counter and continue
+                    iteration_count = 1
+                except EOFError:
+                    return
+
+            # Record assistant message with its tool calls in context
+            raw_tool_calls = []
+            for tc in response.tool_calls:
+                raw_tool_calls.append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments),
+                    }
+                })
+            self.context.add_message(
+                \'assistant\', response.content or \'\',
+                tool_calls=raw_tool_calls
+            )
+
+            for tool_call in response.tool_calls:
+                # Execute the tool (with confirmation unless auto_execute)
+                if self.auto_execute_tools:
+                    # Skip confirmation
+                    self.tools.confirm_destructive = False
+
+                result = self.tools.execute(tool_call)
+
+                # Show result to user
+                print(f"  {result.output[:200]}{\'...\' if len(result.output) > 200 else \'\'}")
+
+                # Record tool result with proper role
+                self.context.add_message(
+                    \'tool\',
+                    self.tools.format_result_for_agent(result),
+                    tool_call_id=tool_call.id
+                )
+
+            print(f"\\n[Iteration {iteration_count}: continuing with tool results...]")
+            # Context now has assistant (with tool_calls) + tool results;
+            # send empty message so backend just reads context
+            response = self.backend.send_message(
+                "",
+                self.context.get_context(),
+                on_status=on_status
+            )
+
+        # Display response (if not already streamed)
+        if not (self.streaming and self.backend.supports_streaming() and hasattr(self.backend, \'send_message_streaming\')):
+            print(f"\\nAssistant: {response.content}\\n")
+        else:
+            print()  # Just add spacing after streamed output
+
+        # Add response to context
+        output_tokens = response.tokens.get(\'output\', 0)
+        input_tokens = response.tokens.get(\'input\', 0)
+        self.context.add_message(\'assistant\', response.content, output_tokens)
+
+        # Track costs
+        if self.cost_tracker and response.tokens:
+            model = getattr(self.backend, \'model\', \'unknown\')
+            self.cost_tracker.ensure_pricing(model)
+            self.cost_tracker.record_usage(model, input_tokens, output_tokens)
+
+        # Show token summary if enabled
+        if self.show_tokens and response.tokens:
+            token_info = ", ".join(
+                f"{k}: {v}" for k, v in response.tokens.items()
+            )
+            cost_info = ""
+            if self.cost_tracker:
+                cost_info = f" | Est. cost: {self.cost_tracker.get_summary()[\'cost_formatted\']}"
+            print(f"  [Tokens: {token_info}{cost_info}]\\n")
+
+
+def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str | None:
+    """Build system prompt from config, agent.md, and skills."""
+    loader = SkillsLoader(base_dir=config_dir or Path.cwd())
+
+    return loader.build_system_prompt(
+        base_prompt=agent_config.system_prompt,
+        agent_md=agent_config.agent_md,
+        skills=agent_config.skills if agent_config.skills else None
+    ) or agent_config.system_prompt
+
+
+def _resolve_command(backend_type: str, configured: str | None,
+                     default: str, fallbacks: list[str] | None = None,
+                     no_fallback: bool = False) -> str:
+    """Resolve which command to use for a CLI backend.
+
+    Checks if the configured/default command exists. If not, tries
+    fallbacks (unless --no-fallback). Always prints what\'s being used.
+    """
+    import shutil
+
+    # Explicit --command overrides everything, no fallback
+    if configured:
+        if shutil.which(configured):
+            return configured
+        raise ValueError(
+            f"Command \'{configured}\' not found for {backend_type} backend"
+        )
+
+    # Try the default command
+    if shutil.which(default):
+        return default
+
+    # Default not found — try fallbacks
+    if not no_fallback and fallbacks:
+        for fb in fallbacks:
+            if shutil.which(fb):
+                print(f"  Note: \'{default}\' not found, "
+                      f"falling back to \'{fb}\' for {backend_type} backend",
+                      file=sys.stderr)
+                return fb
+
+    # Nothing found
+    if fallbacks and not no_fallback:
+        tried = \', \'.join([default] + fallbacks)
+        raise ValueError(
+            f"No command found for {backend_type} backend (tried: {tried}). "
+            f"Install one or use --command to specify."
+        )
+    else:
+        raise ValueError(
+            f"Command \'{default}\' not found for {backend_type} backend. "
+            f"Install it or use --command to specify."
+        )
+
+
+# Fallback chains: primary command → alternatives
+# Note: coro has no fallback — claude-code uses different CLI args
+# (coro uses positional prompt, claude-code uses -p flag).
+# Use -b claude-code explicitly if coro is not installed.
+_CLI_FALLBACKS = {
+    \'coro\': [],               # no fallback (different CLI interface)
+    \'claude-code\': [],        # no fallback
+    \'gemini\': [],             # no fallback
+    \'ollama-cli\': [],         # no fallback
+}
+
+
+def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
+                               sandbox: bool = False, approval_mode: str = "yolo",
+                               allowed_tools: list[str] | None = None,
+                               no_fallback: bool = False) -> AgentBackend:
+    """Create a backend from an AgentConfig."""
+    backend_type = agent_config.backend
+
+    # Build system prompt with skills/agent.md
+    system_prompt = build_system_prompt(agent_config, config_dir)
+
+    if backend_type == \'coro\':
+        cmd = _resolve_command(\'coro\', agent_config.command, \'coro\',
+                               _CLI_FALLBACKS[\'coro\'], no_fallback)
+        return CoroBackend(
+            command=cmd, no_fallback=no_fallback,
+            max_context_tokens=agent_config.max_context_tokens
+            if agent_config.max_context_tokens != 100000 else 0
+        )
+
+    elif backend_type == \'claude-code\':
+        from backends import ClaudeCodeBackend
+        cmd = _resolve_command(\'claude-code\', agent_config.command, \'claude\',
+                               _CLI_FALLBACKS[\'claude-code\'], no_fallback)
+        return ClaudeCodeBackend(
+            command=cmd,
+            model=agent_config.model or \'sonnet\'
+        )
+
+    elif backend_type == \'gemini\':
+        from backends import GeminiBackend
+        cmd = _resolve_command(\'gemini\', agent_config.command, \'gemini\',
+                               _CLI_FALLBACKS[\'gemini\'], no_fallback)
+        return GeminiBackend(
+            command=cmd,
+            model=agent_config.model or \'gemini-3-flash-preview\',
+            sandbox=sandbox,
+            approval_mode=approval_mode,
+            allowed_tools=allowed_tools or []
+        )
+
+    elif backend_type == \'claude\':
+        from backends import ClaudeAPIBackend
+        api_key = resolve_api_key(\'claude\', agent_config.api_key, no_fallback)
+        return ClaudeAPIBackend(
+            api_key=api_key,
+            model=agent_config.model or \'claude-sonnet-4-20250514\',
+            system_prompt=system_prompt
+        )
+
+    elif backend_type == \'openai\':
+        from backends import OpenAIBackend
+        api_key = resolve_api_key(\'openai\', agent_config.api_key, no_fallback)
+        return OpenAIBackend(
+            api_key=api_key,
+            model=agent_config.model or \'gpt-4o\',
+            system_prompt=system_prompt,
+            base_url=agent_config.extra.get(\'base_url\')
+        )
+
+    elif backend_type == \'openrouter\':
+        from backends import OpenRouterBackend
+        from backends.openrouter_api import DEFAULT_TOOL_SCHEMAS
+        # Resolve API key and config through unified cascade
+        api_key = resolve_api_key(\'openrouter\', agent_config.api_key, no_fallback)
+        cascade = read_config_cascade(no_fallback)
+        # Use tool schemas if tools are configured
+        tool_schemas = DEFAULT_TOOL_SCHEMAS if agent_config.tools else None
+        return OpenRouterBackend(
+            api_key=api_key,
+            model=agent_config.model or cascade.get(\'model\'),
+            base_url=(agent_config.extra.get(\'base_url\')
+                      or cascade.get(\'base_url\', \'https://openrouter.ai/api/v1\')),
+            system_prompt=system_prompt,
+            tools=tool_schemas,
+        )
+
+    elif backend_type == \'ollama-api\':
+        from backends import OllamaAPIBackend
+        return OllamaAPIBackend(
+            host=agent_config.host or \'localhost\',
+            port=agent_config.port or 11434,
+            model=agent_config.model or \'llama3\',
+            system_prompt=system_prompt,
+            timeout=agent_config.timeout
+        )
+
+    elif backend_type == \'ollama-cli\':
+        from backends import OllamaCLIBackend
+        cmd = _resolve_command(\'ollama-cli\', agent_config.command, \'ollama\',
+                               _CLI_FALLBACKS[\'ollama-cli\'], no_fallback)
+        return OllamaCLIBackend(
+            command=cmd,
+            model=agent_config.model or \'llama3\',
+            timeout=agent_config.timeout
+        )
+
+    else:
+        raise ValueError(f"Unknown backend type: {backend_type}")
+
+
+def main():
+    """Entry point."""
+    parser = argparse.ArgumentParser(
+        description="UnifyWeaver Agent Loop - Terminal-friendly AI assistant"
+    )
+
+    # Agent selection (from config)
+    parser.add_argument(
+        \'--agent\', \'-a\',
+        default=None,
+        help=\'Agent variant from config file (e.g., yolo, claude-opus, ollama)\'
+    )
+    parser.add_argument(
+        \'--config\', \'-C\',
+        default=None,
+        help=\'Path to config file (agents.yaml or agents.json)\'
+    )
+    parser.add_argument(
+        \'--list-agents\',
+        action=\'store_true\',
+        help=\'List available agent variants from config\'
+    )
+    parser.add_argument(
+        \'--init-config\',
+        metavar=\'PATH\',
+        help=\'Create example config file at PATH\'
+    )
+
+    # Direct backend selection (overrides config)
+    parser.add_argument(
+        \'--backend\', \'-b\',
+        choices=[\'coro\', \'claude\', \'claude-code\', \'gemini\', \'openai\', \'openrouter\', \'ollama-api\', \'ollama-cli\'],
+        default=None,
+        help=\'Backend to use (overrides --agent config)\'
+    )
+    parser.add_argument(
+        \'--command\', \'-c\',
+        default=None,
+        help=\'Command for CLI backends\'
+    )
+    parser.add_argument(
+        \'--model\', \'-m\',
+        default=None,
+        help=\'Model to use\'
+    )
+    parser.add_argument(
+        \'--host\',
+        default=None,
+        help=\'Host for network backends (ollama-api)\'
+    )
+    parser.add_argument(
+        \'--port\',
+        type=int,
+        default=None,
+        help=\'Port for network backends (ollama-api)\'
+    )
+    parser.add_argument(
+        \'--api-key\',
+        help=\'API key (overrides env vars and config files)\'
+    )
+
+    # Options
+    parser.add_argument(
+        \'--no-tokens\',
+        action=\'store_true\',
+        help=\'Hide token usage information\'
+    )
+    parser.add_argument(
+        \'--context-mode\',
+        choices=[\'continue\', \'fresh\', \'sliding\'],
+        default=None,
+        help=\'Context behavior mode\'
+    )
+    parser.add_argument(
+        \'--max-chars\',
+        type=int,
+        default=0,
+        help=\'Max characters in context (0 = unlimited)\'
+    )
+    parser.add_argument(
+        \'--max-words\',
+        type=int,
+        default=0,
+        help=\'Max words in context (0 = unlimited)\'
+    )
+    parser.add_argument(
+        \'--max-tokens\',
+        type=int,
+        default=None,
+        help=\'Max tokens in context (default: 100000, uses estimation)\'
+    )
+    parser.add_argument(
+        \'--auto-tools\',
+        action=\'store_true\',
+        help=\'Auto-execute tools without confirmation\'
+    )
+    parser.add_argument(
+        \'--no-tools\',
+        action=\'store_true\',
+        help=\'Disable tool execution\'
+    )
+    parser.add_argument(
+        \'--sandbox\',
+        action=\'store_true\',
+        help=\'Run in sandbox mode (gemini: requires docker/podman)\'
+    )
+    parser.add_argument(
+        \'--approval-mode\',
+        choices=[\'default\', \'auto_edit\', \'yolo\', \'plan\'],
+        default=\'yolo\',
+        help=\'Tool approval mode (default: yolo). \'
+             \'default=prompt, auto_edit=auto-approve edits, \'
+             \'yolo=auto-approve all, plan=read-only\'
+    )
+    parser.add_argument(
+        \'--allowed-tools\',
+        nargs=\'*\',
+        default=[],
+        help=\'Specific tools allowed without confirmation\'
+    )
+    parser.add_argument(
+        \'--system-prompt\',
+        default=None,
+        help=\'System prompt to use\'
+    )
+    parser.add_argument(
+        \'--no-fallback\',
+        action=\'store_true\',
+        help=\'Skip coro.json fallback for commands and config (uwsal.json still checked)\'
+    )
+    parser.add_argument(
+        \'--max-iterations\', \'-i\',
+        type=int,
+        default=None,
+        help=\'Max tool iterations before pausing (0 = unlimited)\'
+    )
+
+    # Security
+    parser.add_argument(
+        \'--security-profile\',
+        choices=[\'open\', \'cautious\', \'guarded\', \'paranoid\'],
+        default=None,
+        help=\'Security profile (default: cautious). \'
+             \'open=no checks, cautious=path+command validation, \'
+             \'guarded=proxy+audit+extra blocks, paranoid=allowlist-only\'
+    )
+    parser.add_argument(
+        \'--no-security\',
+        action=\'store_true\',
+        help=\'Disable all security checks (alias for --security-profile open)\'
+    )
+    parser.add_argument(
+        \'--path-proxy\',
+        action=\'store_true\',
+        help=\'Enable PATH-based command proxying (wrapper scripts in ~/.agent-loop/bin/)\'
+    )
+    parser.add_argument(
+        \'--proot\',
+        action=\'store_true\',
+        help=\'Enable proot filesystem sandboxing (requires: pkg install proot)\'
+    )
+    parser.add_argument(
+        \'--proot-allow-dir\',
+        action=\'append\',
+        default=[],
+        help=\'Additional directory to bind into proot sandbox (repeatable)\'
+    )
+
+    # Session management
+    parser.add_argument(
+        \'--session\', \'-s\',
+        default=None,
+        help=\'Load a saved session by ID\'
+    )
+    parser.add_argument(
+        \'--list-sessions\',
+        action=\'store_true\',
+        help=\'List saved sessions\'
+    )
+    parser.add_argument(
+        \'--sessions-dir\',
+        default=None,
+        help=\'Directory for session files (default: ~/.agent-loop/sessions)\'
+    )
+
+    # Context format
+    parser.add_argument(
+        \'--context-format\',
+        choices=[\'plain\', \'markdown\', \'json\', \'xml\'],
+        default=None,
+        help=\'Format for context when sent to backend\'
+    )
+
+    # Streaming and cost tracking
+    parser.add_argument(
+        \'--stream\',
+        action=\'store_true\',
+        help=\'Enable streaming output for API backends\'
+    )
+    parser.add_argument(
+        \'--no-cost-tracking\',
+        action=\'store_true\',
+        help=\'Disable cost tracking\'
+    )
+
+    # Search
+    parser.add_argument(
+        \'--search\',
+        metavar=\'QUERY\',
+        help=\'Search across saved sessions and exit\'
+    )
+
+    # Display mode
+    parser.add_argument(
+        \'--fancy\',
+        action=\'store_true\',
+        help=\'Enable ncurses display mode with spinner (uses tput)\'
+    )
+
+    # Interactive with initial prompt
+    parser.add_argument(
+        \'-I\', \'--prompt-interactive\',
+        metavar=\'PROMPT\',
+        help=\'Start interactive mode with an initial prompt\'
+    )
+
+    # Prompt
+    parser.add_argument(
+        \'prompt\',
+        nargs=\'?\',
+        help=\'Single prompt to run (non-interactive mode)\'
+    )
+
+    args = parser.parse_args()
+
+    # Handle --init-config
+    if args.init_config:
+        path = Path(args.init_config)
+        save_example_config(path)
+        print(f"Created example config at: {path}")
+        return
+
+    # Load configuration
+    config = None
+    if args.config:
+        config = load_config(args.config)
+    else:
+        config = load_config_from_dir()
+
+    if config is None:
+        config = get_default_config()
+
+    # Create session manager
+    session_manager = SessionManager(args.sessions_dir)
+
+    # Handle --list-sessions
+    if args.list_sessions:
+        sessions = session_manager.list_sessions()
+        if not sessions:
+            print("No saved sessions")
+            return
+        print("Saved sessions:")
+        for s in sessions:
+            print(f"  {s.id}: {s.name} ({s.message_count} msgs, {s.backend})")
+        return
+
+    # Handle --search
+    if args.search:
+        searcher = SessionSearcher(session_manager.sessions_dir)
+        results = searcher.search(args.search, limit=20)
+        if not results:
+            print(f"No results for: {args.search}")
+            return
+        print(f"Search results for \'{args.search}\':")
+        for r in results:
+            role = "You" if r.role == "user" else "Asst"
+            snippet = r.content[r.match_start:r.match_end]
+            context = r.context_before[-20:] + "**" + snippet + "**" + r.context_after[:20]
+            print(f"  [{r.session_id}] {role}: ...{context}...")
+        return
+
+    # Handle --list-agents
+    if args.list_agents:
+        print("Available agents:")
+        for name, agent in config.agents.items():
+            default_marker = " (default)" if name == config.default else ""
+            print(f"  {name}: {agent.backend} ({agent.model or \'default\'}){default_marker}")
+        return
+
+    # Get agent config
+    agent_name = args.agent or config.default
+    if agent_name not in config.agents:
+        print(f"Unknown agent: {agent_name}", file=sys.stderr)
+        print(f"Available: {\', \'.join(config.agents.keys())}", file=sys.stderr)
+        sys.exit(1)
+
+    agent_config = config.agents[agent_name]
+
+    # Override with command line args
+    if args.backend:
+        agent_config.backend = args.backend
+        # Clear command so backend uses its own default
+        if not args.command:
+            agent_config.command = None
+    if args.command:
+        agent_config.command = args.command
+    if args.model:
+        agent_config.model = args.model
+    if args.host:
+        agent_config.host = args.host
+    if args.port:
+        agent_config.port = args.port
+    if args.api_key:
+        agent_config.api_key = args.api_key
+    if args.context_mode:
+        agent_config.context_mode = args.context_mode
+    if args.auto_tools:
+        agent_config.auto_tools = True
+    if args.no_tools:
+        agent_config.tools = []
+    if args.system_prompt:
+        agent_config.system_prompt = args.system_prompt
+    if args.max_iterations is not None:
+        agent_config.max_iterations = args.max_iterations
+    if args.max_tokens is not None:
+        agent_config.max_context_tokens = args.max_tokens
+
+    # Create backend
+    try:
+        backend = create_backend_from_config(
+            agent_config, config.config_dir,
+            sandbox=args.sandbox,
+            approval_mode=args.approval_mode,
+            allowed_tools=args.allowed_tools,
+            no_fallback=args.no_fallback
+        )
+    except ImportError as e:
+        print(f"Backend requires additional package: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Load session if specified
+    session_id = None
+    context = None
+
+    if args.session:
+        try:
+            context, metadata, extra = session_manager.load_session(args.session)
+            session_id = args.session
+            print(f"Loaded session: {metadata.get(\'name\', session_id)}")
+        except FileNotFoundError:
+            print(f"Session not found: {args.session}", file=sys.stderr)
+            sys.exit(1)
+
+    # Create context manager if not loaded from session
+    if context is None:
+        behavior = ContextBehavior(agent_config.context_mode)
+        context_format = ContextFormat(args.context_format) if args.context_format else ContextFormat.PLAIN
+        context = ContextManager(
+            behavior=behavior,
+            max_tokens=args.max_tokens or agent_config.max_context_tokens,
+            max_messages=agent_config.max_messages,
+            max_chars=args.max_chars,
+            max_words=args.max_words,
+            format=context_format
+        )
+
+    # Create security config
+    security_profile = \'cautious\'  # default
+    if args.no_security:
+        security_profile = \'open\'
+    elif args.security_profile:
+        security_profile = args.security_profile
+
+    # Load security overrides from uwsal.json if present
+    security_cfg = read_config_cascade(args.no_fallback).get(\'security\', {})
+    if not args.security_profile and not args.no_security:
+        security_profile = security_cfg.get(\'profile\', security_profile)
+
+    security = SecurityConfig.from_profile(security_profile)
+    # Apply config file overrides (extend blocklists/allowlists)
+    for path in security_cfg.get(\'blocked_paths\', []):
+        security.blocked_paths.append(path)
+    for path in security_cfg.get(\'allowed_paths\', []):
+        security.allowed_paths.append(path)
+    for cmd in security_cfg.get(\'blocked_commands\', []):
+        security.blocked_commands.append(cmd)
+    for cmd in security_cfg.get(\'allowed_commands\', []):
+        security.allowed_commands.append(cmd)
+
+    # Apply optional execution layer flags (CLI + config)
+    if args.path_proxy or security_cfg.get(\'path_proxying\'):
+        security.path_proxying = True
+    if args.proot or security_cfg.get(\'proot_sandbox\'):
+        security.proot_sandbox = True
+    for d in getattr(args, \'proot_allow_dir\', []):
+        security.proot_allowed_dirs.append(d)
+    for d in security_cfg.get(\'proot_allowed_dirs\', []):
+        security.proot_allowed_dirs.append(d)
+
+    # Create audit logger based on security profile
+    audit_levels = {
+        \'open\': \'disabled\',
+        \'cautious\': \'basic\',
+        \'guarded\': \'detailed\',
+        \'paranoid\': \'forensic\',
+    }
+    audit_level = audit_levels.get(security_profile, \'basic\')
+    audit_log_dir = security_cfg.get(\'audit_log_dir\')
+    audit_logger = AuditLogger(log_dir=audit_log_dir, level=audit_level)
+
+    # Create tool handler
+    tools = None
+    if agent_config.tools:
+        tools = ToolHandler(
+            allowed_tools=agent_config.tools,
+            confirm_destructive=not agent_config.auto_tools,
+            security=security,
+            audit=audit_logger
+        )
+
+    # Start audit session
+    import uuid as _uuid
+    audit_session_id = session_id or str(_uuid.uuid4())[:8]
+    audit_logger.start_session(
+        audit_session_id,
+        security_profile=security_profile
+    )
+
+    # Create and run loop
+    loop = AgentLoop(
+        backend=backend,
+        context=context,
+        tools=tools,
+        show_tokens=agent_config.show_tokens and not args.no_tokens,
+        auto_execute_tools=agent_config.auto_tools,
+        max_iterations=agent_config.max_iterations,
+        config=config,
+        session_manager=session_manager,
+        session_id=session_id,
+        track_costs=not args.no_cost_tracking,
+        streaming=args.stream,
+        display_mode=\'ncurses\' if args.fancy else \'append\'
+    )
+
+    try:
+        # Single prompt mode (run once and exit)
+        if args.prompt:
+            print(f"You: {args.prompt}")
+            loop._process_message(args.prompt)
+            return
+
+        # Interactive mode with initial prompt (-i)
+        if args.prompt_interactive:
+            loop._print_header()
+            print(f"\\nYou: {args.prompt_interactive}")
+            loop._process_message(args.prompt_interactive)
+            # Continue in interactive mode
+            while loop.running:
+                try:
+                    user_input = loop._get_input()
+                    if user_input is None:
+                        break
+                    if not user_input.strip():
+                        continue
+                    if loop._handle_command(user_input):
+                        continue
+                    loop._process_message(user_input)
+                except KeyboardInterrupt:
+                    print("\\n\\nInterrupted. Type \'exit\' to quit.")
+                except Exception as e:
+                    print(f"\\n[Error: {e}]\\n")
+            print("\\nGoodbye!")
+            return
+
+        # Interactive mode
+        loop.run()
+    finally:
+        audit_logger.end_session()
+
+
+if __name__ == \'__main__\':
+    main()
+').
 
 %% Generator: Individual backends (full implementations)
 %% =============================================================================
