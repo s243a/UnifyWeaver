@@ -1,17 +1,17 @@
-"""Anthropic Claude API backend"""
+"""OpenAI API backend"""
 
 import os
 import requests
 from .base import AgentBackend, AgentResponse
 
-class ClaudeAPIBackend(AgentBackend):
-    """API backend for https://api.anthropic.com/v1/messages"""
+class OpenAIBackend(AgentBackend):
+    """API backend for https://api.openai.com/v1/chat/completions"""
 
-    ENDPOINT = "https://api.anthropic.com/v1/messages"
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    ENDPOINT = "https://api.openai.com/v1/chat/completions"
+    DEFAULT_MODEL = "gpt-4o"
 
     def __init__(self, api_key: str = None, model: str = None):
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.model = model or self.DEFAULT_MODEL
 
     def send_message(self, message: str, context: list[dict]) -> AgentResponse:

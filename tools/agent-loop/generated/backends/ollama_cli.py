@@ -3,12 +3,11 @@
 import subprocess
 from .base import AgentBackend, AgentResponse
 
-class OllamaCliBackend(AgentBackend):
+class OllamaCLIBackend(AgentBackend):
     """CLI backend using ollama command."""
 
     def __init__(self, command: str = "ollama"):
         self.command = command
 
     def send_message(self, message: str, context: list[dict]) -> AgentResponse:
-        # Implementation in coro.py
-        raise NotImplementedError("See coro.py for full implementation")
+        raise NotImplementedError("See prototype for full implementation")

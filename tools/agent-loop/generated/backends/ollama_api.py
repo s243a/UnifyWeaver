@@ -4,7 +4,7 @@ import os
 import requests
 from .base import AgentBackend, AgentResponse
 
-class OllamaApiBackend(AgentBackend):
+class OllamaAPIBackend(AgentBackend):
     """API backend for http://localhost:11434/api/chat"""
 
     ENDPOINT = "http://localhost:11434/api/chat"
@@ -15,5 +15,4 @@ class OllamaApiBackend(AgentBackend):
         self.model = model or self.DEFAULT_MODEL
 
     def send_message(self, message: str, context: list[dict]) -> AgentResponse:
-        # Implementation varies by API
-        raise NotImplementedError("Implement for specific API")
+        raise NotImplementedError("See prototype for full implementation")

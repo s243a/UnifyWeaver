@@ -3,9 +3,30 @@ from .base import AgentBackend, AgentResponse, ToolCall
 from .coro import CoroBackend
 from .claude_code import ClaudeCodeBackend
 from .gemini import GeminiBackend
-from .claude_api import ClaudeApiBackend
-from .openai import OpenaiBackend
-from .ollama_api import OllamaApiBackend
-from .ollama_cli import OllamaCliBackend
+from .ollama_api import OllamaAPIBackend
+from .ollama_cli import OllamaCLIBackend
+from .openrouter_api import OpenRouterBackend
 
-__all__ = ['AgentBackend', 'AgentResponse', 'ToolCall', 'CoroBackend', 'ClaudeCodeBackend', 'GeminiBackend', 'ClaudeApiBackend', 'OpenaiBackend', 'OllamaApiBackend', 'OllamaCliBackend']
+__all__ = [
+    'AgentBackend', 'AgentResponse', 'ToolCall',
+    'CoroBackend',
+    'ClaudeCodeBackend',
+    'GeminiBackend',
+    'OllamaAPIBackend',
+    'OllamaCLIBackend',
+    'OpenRouterBackend'
+]
+
+# Anthropic Claude API backend (optional - requires pip package)
+try:
+    from .claude_api import ClaudeAPIBackend
+    __all__.append('ClaudeAPIBackend')
+except ImportError:
+    pass
+
+# OpenAI API backend (optional - requires pip package)
+try:
+    from .openai_api import OpenAIBackend
+    __all__.append('OpenAIBackend')
+except ImportError:
+    pass
