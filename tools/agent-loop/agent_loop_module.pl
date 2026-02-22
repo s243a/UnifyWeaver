@@ -411,6 +411,269 @@ blocked_command_pattern(":\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;", "fork bomb")
 blocked_command_pattern("\\b>\\s*/etc/", "overwrite system config").
 
 %% =============================================================================
+%% Command Aliases Data
+%% =============================================================================
+
+%% command_alias(Alias, Expansion)
+%% Short forms
+command_alias("q", "quit").
+command_alias("x", "exit").
+command_alias("h", "help").
+command_alias("?", "help").
+command_alias("c", "clear").
+command_alias("s", "status").
+
+%% Save/load shortcuts
+command_alias("sv", "save").
+command_alias("ld", "load").
+command_alias("ls", "sessions").
+
+%% Export shortcuts
+command_alias("exp", "export").
+command_alias("md", "export conversation.md").
+command_alias("html", "export conversation.html").
+
+%% Backend shortcuts
+command_alias("be", "backend").
+command_alias("sw", "backend").
+
+%% Common backend switches
+command_alias("yolo", "backend yolo").
+command_alias("opus", "backend claude-opus").
+command_alias("sonnet", "backend claude-sonnet").
+command_alias("haiku", "backend claude-haiku").
+command_alias("gpt", "backend openai").
+command_alias("local", "backend ollama").
+
+%% Format shortcuts
+command_alias("fmt", "format").
+
+%% Iteration shortcuts
+command_alias("iter", "iterations").
+command_alias("i0", "iterations 0").
+command_alias("i1", "iterations 1").
+command_alias("i3", "iterations 3").
+command_alias("i5", "iterations 5").
+
+%% Stream toggle
+command_alias("str", "stream").
+
+%% Cost
+command_alias("$", "cost").
+
+%% Search
+command_alias("find", "search").
+command_alias("grep", "search").
+
+%% alias_category(CategoryName, AliasKeys)
+alias_category('Navigation', ["q", "x", "h", "?", "c", "s"]).
+alias_category('Sessions', ["sv", "ld", "ls"]).
+alias_category('Export', ["exp", "md", "html"]).
+alias_category('Backend', ["be", "sw", "yolo", "opus", "sonnet", "haiku", "gpt", "local"]).
+alias_category('Iterations', ["iter", "i0", "i1", "i3", "i5"]).
+alias_category('Other', ["fmt", "str", "$", "find", "grep"]).
+
+%% =============================================================================
+%% Slash Command Definitions
+%% =============================================================================
+
+%% slash_command(Name, MatchType, Properties, HelpText)
+%% MatchType:
+%%   exact          = cmd == 'name'
+%%   prefix         = cmd.startswith('name')
+%%   prefix_sp      = cmd.startswith('name ')
+%%   exact_or_prefix_sp = cmd == 'name' or cmd.startswith('name ')
+%% Properties: aliases(List), handler(MethodName), comment(Str)
+
+slash_command(exit, exact, [aliases([quit]),
+    help_display('/exit, /quit')],
+    'Exit the agent loop').
+slash_command(clear, exact, [],
+    'Clear conversation context').
+slash_command(help, exact, [],
+    'Show this help message').
+slash_command(status, exact, [],
+    'Show context status').
+slash_command(iterations, prefix, [handler('_handle_iterations_command'),
+    comment('/iterations N - set max iterations'),
+    help_display('/iterations [N]')],
+    'Show or set max iterations (0 = unlimited)').
+slash_command(backend, prefix, [handler('_handle_backend_command'),
+    comment('/backend <name> - switch backend'),
+    help_display('/backend [name]')],
+    'Show or switch backend/agent').
+slash_command(save, prefix, [handler('_handle_save_command'),
+    comment('Session commands'),
+    help_display('/save [name]')],
+    'Save current conversation').
+slash_command(load, prefix, [handler('_handle_load_command'),
+    help_display('/load <id>')],
+    'Load a saved conversation').
+slash_command(sessions, exact, [handler('_handle_sessions_command')],
+    'List saved sessions').
+slash_command(format, prefix, [handler('_handle_format_command'),
+    comment('/format [type] - set context format'),
+    help_display('/format [type]')],
+    'Set context format (plain/markdown/json/xml)').
+slash_command(export, prefix, [handler('_handle_export_command'),
+    comment('/export <path> - export conversation'),
+    help_display('/export <path>')],
+    'Export conversation (.md, .html, .json, .txt)').
+slash_command(cost, exact, [aliases([costs]), handler('_handle_cost_command'),
+    comment('/cost - show cost tracking')],
+    'Show API cost tracking summary').
+slash_command(search, prefix, [handler('_handle_search_command'),
+    comment('/search <query> - search sessions'),
+    help_display('/search <query>')],
+    'Search across saved sessions').
+slash_command(stream, exact, [aliases([streaming]), handler('_handle_stream_command'),
+    comment('/stream - toggle streaming mode')],
+    'Toggle streaming mode for API backends').
+slash_command(aliases, exact, [handler('_handle_aliases_command'),
+    comment('Aliases')],
+    'List command aliases (e.g., /q -> /quit)').
+slash_command(templates, exact, [handler('_handle_templates_command'),
+    comment('Templates')],
+    'List prompt templates').
+slash_command(history, exact_or_prefix_sp, [handler('_handle_history_command'),
+    comment('History'),
+    help_display('/history [n]')],
+    'Show last n messages (default 10)').
+slash_command(undo, exact, [handler('_handle_undo_command'),
+    comment('Undo')],
+    'Undo last history change').
+slash_command(delete, prefix_sp, [aliases([del]), handler('_handle_delete_command'),
+    comment('Delete message(s)'),
+    help_lines([
+        '/delete <idx>      - Delete message at index',
+        '/delete <s>-<e>    - Delete messages from s to e',
+        '/delete last [n]   - Delete last n messages'
+    ])],
+    'Delete message(s) at index or range').
+slash_command(edit, prefix_sp, [handler('_handle_edit_command'),
+    comment('Edit message'),
+    help_display('/edit <idx>')],
+    'Edit message at index').
+slash_command(replay, prefix_sp, [handler('_handle_replay_command'),
+    comment('Replay from message'),
+    help_display('/replay <idx>')],
+    'Re-send message at index').
+
+%% slash_command_group(GroupLabel, CommandNames)
+%% Used for help text layout
+slash_command_group('Commands (with or without / prefix)', [exit, clear, status, help]).
+slash_command_group('Loop Control', [iterations, backend, format, stream]).
+slash_command_group('Sessions', [save, load, sessions, search]).
+slash_command_group('Export & Costs', [export, cost]).
+slash_command_group('History', [history, delete, edit, replay, undo]).
+slash_command_group('Shortcuts', [aliases, templates]).
+
+%% slash_command_dispatch_order/1 — the exact order commands appear in _handle_command
+%% This matches the prototype's ordering which differs from help text groups
+slash_command_dispatch_order([
+    exit, clear, help, status,
+    iterations, backend,
+    save, load, sessions,
+    format, export, cost, search, stream,
+    aliases, templates,
+    history, undo,
+    delete, edit, replay
+]).
+
+%% =============================================================================
+%% CLI Argument Definitions
+%% =============================================================================
+
+%% cli_argument(Name, Properties)
+%% Properties: long(Str), short(Str), type(atom), default(term),
+%%   choices(List), action(atom), nargs(Str), metavar(Str),
+%%   positional(true), help(Str)
+
+%% Agent selection (from config)
+cli_argument(agent, [long('--agent'), short('-a'), default(none), help('Agent variant from config file (e.g., yolo, claude-opus, ollama)')]).
+cli_argument(config, [long('--config'), short('-C'), default(none), help('Path to config file (agents.yaml or agents.json)')]).
+cli_argument(list_agents, [long('--list-agents'), action(store_true), help('List available agent variants from config')]).
+cli_argument(init_config, [long('--init-config'), metavar('PATH'), help('Create example config file at PATH')]).
+
+%% Direct backend selection (overrides config)
+cli_argument(backend, [long('--backend'), short('-b'), default(none), choices([coro, claude, 'claude-code', gemini, openai, openrouter, 'ollama-api', 'ollama-cli']), help('Backend to use (overrides --agent config)')]).
+cli_argument(command, [long('--command'), short('-c'), default(none), help('Command for CLI backends')]).
+cli_argument(model, [long('--model'), short('-m'), default(none), help('Model to use')]).
+cli_argument(host, [long('--host'), default(none), help('Host for network backends (ollama-api)')]).
+cli_argument(port, [long('--port'), type(int), default(none), help('Port for network backends (ollama-api)')]).
+cli_argument(api_key, [long('--api-key'), help('API key (overrides env vars and config files)')]).
+
+%% Options
+cli_argument(no_tokens, [long('--no-tokens'), action(store_true), help('Hide token usage information')]).
+cli_argument(context_mode, [long('--context-mode'), default(none), choices([continue, fresh, sliding]), help('Context behavior mode')]).
+cli_argument(max_chars, [long('--max-chars'), type(int), default(0), help('Max characters in context (0 = unlimited)')]).
+cli_argument(max_words, [long('--max-words'), type(int), default(0), help('Max words in context (0 = unlimited)')]).
+cli_argument(max_tokens, [long('--max-tokens'), type(int), default(none), help('Max tokens in context (default: 100000, uses estimation)')]).
+cli_argument(auto_tools, [long('--auto-tools'), action(store_true), help('Auto-execute tools without confirmation')]).
+cli_argument(no_tools, [long('--no-tools'), action(store_true), help('Disable tool execution')]).
+cli_argument(sandbox, [long('--sandbox'), action(store_true), help('Run in sandbox mode (gemini: requires docker/podman)')]).
+cli_argument(approval_mode, [long('--approval-mode'), default(yolo), choices([default, auto_edit, yolo, plan]), help('Tool approval mode (default: yolo). default=prompt, auto_edit=auto-approve edits, yolo=auto-approve all, plan=read-only')]).
+cli_argument(allowed_tools, [long('--allowed-tools'), default([]), nargs('*'), help('Specific tools allowed without confirmation')]).
+cli_argument(system_prompt, [long('--system-prompt'), default(none), help('System prompt to use')]).
+cli_argument(no_fallback, [long('--no-fallback'), action(store_true), help('Skip coro.json fallback for commands and config (uwsal.json still checked)')]).
+cli_argument(max_iterations, [long('--max-iterations'), short('-i'), type(int), default(none), help('Max tool iterations before pausing (0 = unlimited)')]).
+
+%% Security
+cli_argument(security_profile, [long('--security-profile'), default(none), choices([open, cautious, guarded, paranoid]), help('Security profile (default: cautious). open=no checks, cautious=path+command validation, guarded=proxy+audit+extra blocks, paranoid=allowlist-only')]).
+cli_argument(no_security, [long('--no-security'), action(store_true), help('Disable all security checks (alias for --security-profile open)')]).
+cli_argument(path_proxy, [long('--path-proxy'), action(store_true), help('Enable PATH-based command proxying (wrapper scripts in ~/.agent-loop/bin/)')]).
+cli_argument(proot, [long('--proot'), action(store_true), help('Enable proot filesystem sandboxing (requires: pkg install proot)')]).
+cli_argument(proot_allow_dir, [long('--proot-allow-dir'), default([]), action(append), help('Additional directory to bind into proot sandbox (repeatable)')]).
+
+%% Session management
+cli_argument(session, [long('--session'), short('-s'), default(none), help('Load a saved session by ID')]).
+cli_argument(list_sessions, [long('--list-sessions'), action(store_true), help('List saved sessions')]).
+cli_argument(sessions_dir, [long('--sessions-dir'), default(none), help('Directory for session files (default: ~/.agent-loop/sessions)')]).
+
+%% Context format
+cli_argument(context_format, [long('--context-format'), default(none), choices([plain, markdown, json, xml]), help('Format for context when sent to backend')]).
+
+%% Streaming and cost tracking
+cli_argument(stream_arg, [long('--stream'), action(store_true), help('Enable streaming output for API backends')]).
+cli_argument(no_cost_tracking, [long('--no-cost-tracking'), action(store_true), help('Disable cost tracking')]).
+
+%% Search
+cli_argument(search_arg, [long('--search'), metavar('QUERY'), help('Search across saved sessions and exit')]).
+
+%% Display mode
+cli_argument(fancy, [long('--fancy'), action(store_true), help('Enable ncurses display mode with spinner (uses tput)')]).
+
+%% Interactive with initial prompt
+cli_argument(prompt_interactive, [short_first(true), short('-I'), long('--prompt-interactive'), metavar('PROMPT'), help('Start interactive mode with an initial prompt')]).
+
+%% Prompt (positional)
+cli_argument(prompt, [positional(true), long('prompt'), nargs('?'), help('Single prompt to run (non-interactive mode)')]).
+
+%% cli_argument_group(GroupComment, ArgumentNames)
+cli_argument_group('Agent selection (from config)', [agent, config, list_agents, init_config]).
+cli_argument_group('Direct backend selection (overrides config)', [backend, command, model, host, port, api_key]).
+cli_argument_group('Options', [no_tokens, context_mode, max_chars, max_words, max_tokens, auto_tools, no_tools, sandbox, approval_mode, allowed_tools, system_prompt, no_fallback, max_iterations]).
+cli_argument_group('Security', [security_profile, no_security, path_proxy, proot, proot_allow_dir]).
+cli_argument_group('Session management', [session, list_sessions, sessions_dir]).
+cli_argument_group('Context format', [context_format]).
+cli_argument_group('Streaming and cost tracking', [stream_arg, no_cost_tracking]).
+cli_argument_group('Search', [search_arg]).
+cli_argument_group('Display mode', [fancy]).
+cli_argument_group('Interactive with initial prompt', [prompt_interactive]).
+cli_argument_group('Prompt', [prompt]).
+
+%% =============================================================================
+%% CLI Fallback Chains
+%% =============================================================================
+
+%% cli_fallbacks(BackendType, FallbackList)
+%% Fallback chains for CLI backends — currently all empty
+cli_fallbacks(coro, []).
+cli_fallbacks('claude-code', []).
+cli_fallbacks(gemini, []).
+cli_fallbacks('ollama-cli', []).
+
+%% =============================================================================
 %% Code Generation — Master Entry
 %% =============================================================================
 
@@ -457,7 +720,7 @@ generate_module(context)            :- generate_context.
 generate_module(config)             :- generate_config.
 generate_module(display)            :- generate_display.
 generate_module(tools)              :- generate_tools_module.
-generate_module(aliases)            :- generate_simple_module('aliases.py', aliases_module).
+generate_module(aliases)            :- generate_aliases.
 generate_module(export)             :- generate_simple_module('export.py', export_module).
 generate_module(history)            :- generate_simple_module('history.py', history_module).
 generate_module(multiline)          :- generate_simple_module('multiline.py', multiline_module).
@@ -470,7 +733,7 @@ generate_module(security_audit)     :- generate_simple_module('security/audit.py
 generate_module(security_proxy)     :- generate_simple_module('security/proxy.py', security_proxy_module).
 generate_module(security_path_proxy):- generate_simple_module('security/path_proxy.py', security_path_proxy_module).
 generate_module(security_proot_sandbox) :- generate_simple_module('security/proot_sandbox.py', security_proot_sandbox_module).
-generate_module(agent_loop_main)     :- generate_simple_module('agent_loop.py', agent_loop_module_main).
+generate_module(agent_loop_main)     :- generate_agent_loop_main.
 generate_module(readme)             :- generate_readme.
 
 %% Simple module generator: write a single py_fragment to a file
@@ -1149,13 +1412,450 @@ generate_tools_module :-
     format('  Generated tools.py~n', []).
 
 %% =============================================================================
+%% Generator: aliases.py (hybrid — data from command_alias/2 + class from fragment)
+%% =============================================================================
+
+generate_aliases :-
+    open('generated/aliases.py', write, S),
+    write(S, '"""Command aliases for the agent loop."""\n\nimport json\nfrom pathlib import Path\nfrom typing import Callable\n\n\n'),
+    %% DEFAULT_ALIASES dict — generated from command_alias/2 facts
+    write(S, '# Default aliases\nDEFAULT_ALIASES = {\n'),
+    generate_aliases_dict_entries(S),
+    write(S, '}\n\n\n'),
+    %% AliasManager class — imperative fragment (includes format_list with categories)
+    write_py(S, aliases_class),
+    write(S, '\n\n'),
+    %% create_default_aliases_file — imperative fragment
+    write_py(S, aliases_create_default),
+    nl(S),
+    close(S),
+    format('  Generated aliases.py~n', []).
+
+%% Generate the DEFAULT_ALIASES dict entries grouped by category comments
+generate_aliases_dict_entries(S) :-
+    %% We need the aliases in a specific order with comments matching the prototype.
+    %% Walk through alias_category/2 in order, with comment headers.
+    alias_category_comment('Navigation', '    # Short forms'),
+    alias_category_comment('Sessions', '    # Save/load shortcuts'),
+    alias_category_comment('Export', '    # Export shortcuts'),
+    alias_category_comment('Backend', '    # Backend shortcuts'),
+    alias_category_comment('Iterations', '    # Iteration shortcuts'),
+    alias_category_comment('Other', '    # Other shortcuts'),
+    %% Now write them
+    generate_alias_group(S, 'Navigation', '    # Short forms\n'),
+    write(S, '\n'),
+    generate_alias_group(S, 'Sessions', '    # Save/load shortcuts\n'),
+    write(S, '\n'),
+    generate_alias_group(S, 'Export', '    # Export shortcuts\n'),
+    write(S, '\n'),
+    generate_alias_group_backend(S),
+    write(S, '\n'),
+    generate_alias_group(S, 'Iterations', '    # Iteration shortcuts\n'),
+    write(S, '\n'),
+    generate_alias_group_other(S).
+
+%% Simple category-to-comment mapping (for matching prototype output)
+alias_category_comment(_, _).
+
+%% Write aliases for a simple category
+generate_alias_group(S, Category, Comment) :-
+    write(S, Comment),
+    alias_category(Category, Keys),
+    forall(member(K, Keys), (
+        command_alias(K, V),
+        format(S, '    "~w": "~w",~n', [K, V])
+    )).
+
+%% Backend is special: has two sub-groups with separate comments
+generate_alias_group_backend(S) :-
+    write(S, '    # Backend shortcuts\n'),
+    command_alias("be", BeV), format(S, '    "be": "~w",~n', [BeV]),
+    command_alias("sw", SwV), format(S, '    "sw": "~w",  # switch~n', [SwV]),
+    write(S, '\n'),
+    write(S, '    # Common backend switches\n'),
+    forall(
+        member(K, ["yolo", "opus", "sonnet", "haiku", "gpt", "local"]),
+        (command_alias(K, V), format(S, '    "~w": "~w",~n', [K, V]))
+    ),
+    write(S, '\n'),
+    write(S, '    # Format shortcuts\n'),
+    command_alias("fmt", FmtV), format(S, '    "fmt": "~w",~n', [FmtV]).
+
+%% Other group: stream, cost, search with individual comments
+generate_alias_group_other(S) :-
+    write(S, '    # Stream toggle\n'),
+    command_alias("str", StrV), format(S, '    "str": "~w",~n', [StrV]),
+    write(S, '\n'),
+    write(S, '    # Cost\n'),
+    command_alias("$", CostV), format(S, '    "$": "~w",~n', [CostV]),
+    write(S, '\n'),
+    write(S, '    # Search\n'),
+    command_alias("find", FindV), format(S, '    "find": "~w",~n', [FindV]),
+    command_alias("grep", GrepV), format(S, '    "grep": "~w",~n', [GrepV]).
+
+%% =============================================================================
+%% Generator helpers: Slash command dispatch + help text
+%% =============================================================================
+%%
+%% These generators emit Python code fragments for use inside agent_loop.py.
+%% They will be wired into the hybrid generate_agent_loop_main in Step 5.
+%% For now they can be tested via: generate_command_dispatch(user_output).
+
+%% generate_command_dispatch(S) - emit the _handle_command if/elif chain
+generate_command_dispatch(S) :-
+    slash_command_dispatch_order(AllCmds),
+    generate_command_dispatch_chain(S, AllCmds).
+
+generate_command_dispatch_chain(_, []) :- !.
+generate_command_dispatch_chain(S, [Cmd|Rest]) :-
+    slash_command(Cmd, MatchType, Props, _),
+    generate_single_dispatch(S, Cmd, MatchType, Props),
+    write(S, '\n'),
+    generate_command_dispatch_chain(S, Rest).
+
+%% Generate a single command dispatch entry
+%% Special cases: exit, clear, help, status are inline (no handler property)
+generate_single_dispatch(S, exit, exact, Props) :-
+    !,
+    (member(aliases(Aliases), Props) -> true ; Aliases = []),
+    write(S, '        if cmd == \'exit\''),
+    forall(member(A, Aliases), format(S, ' or cmd == \'~w\'', [A])),
+    write(S, ':\n'),
+    write(S, '            self.running = False\n'),
+    write(S, '            return True\n').
+
+generate_single_dispatch(S, clear, exact, _) :-
+    !,
+    write(S, '        if cmd == \'clear\':\n'),
+    write(S, '            self.context.clear()\n'),
+    write(S, '            self.history_manager = HistoryManager(self.context)\n'),
+    write(S, '            print("[Context cleared]\\n")\n'),
+    write(S, '            return True\n').
+
+generate_single_dispatch(S, help, exact, _) :-
+    !,
+    write(S, '        if cmd == \'help\':\n'),
+    write(S, '            self._print_help()\n'),
+    write(S, '            return True\n').
+
+generate_single_dispatch(S, status, exact, _) :-
+    !,
+    write(S, '        if cmd == \'status\':\n'),
+    write(S, '            self._print_status()\n'),
+    write(S, '            return True\n').
+
+%% Generic exact-match command with handler
+generate_single_dispatch(S, Cmd, exact, Props) :-
+    member(handler(Handler), Props), !,
+    (member(aliases(Aliases), Props) -> true ; Aliases = []),
+    %% Emit optional comment
+    (member(comment(Comment), Props) ->
+        format(S, '        # ~w~n', [Comment])
+    ; true),
+    format(S, '        if cmd == \'~w\'', [Cmd]),
+    forall(member(A, Aliases), format(S, ' or cmd == \'~w\'', [A])),
+    write(S, ':\n'),
+    format(S, '            return self.~w()~n', [Handler]).
+
+%% prefix match: cmd.startswith('name')
+generate_single_dispatch(S, Cmd, prefix, Props) :-
+    member(handler(Handler), Props), !,
+    (member(comment(Comment), Props) ->
+        format(S, '        # ~w~n', [Comment])
+    ; true),
+    format(S, '        if cmd.startswith(\'~w\'):~n', [Cmd]),
+    format(S, '            return self.~w(text)~n', [Handler]).
+
+%% prefix_sp match: cmd.startswith('name ') — requires space after command
+generate_single_dispatch(S, Cmd, prefix_sp, Props) :-
+    member(handler(Handler), Props), !,
+    (member(aliases(Aliases), Props) -> true ; Aliases = []),
+    (member(comment(Comment), Props) ->
+        format(S, '        # ~w~n', [Comment])
+    ; true),
+    format(S, '        if cmd.startswith(\'~w \')', [Cmd]),
+    forall(member(A, Aliases), format(S, ' or cmd.startswith(\'~w \')', [A])),
+    write(S, ':\n'),
+    format(S, '            return self.~w(text)~n', [Handler]).
+
+%% exact_or_prefix_sp match: cmd == 'name' or cmd.startswith('name ')
+generate_single_dispatch(S, Cmd, exact_or_prefix_sp, Props) :-
+    member(handler(Handler), Props), !,
+    (member(comment(Comment), Props) ->
+        format(S, '        # ~w~n', [Comment])
+    ; true),
+    format(S, '        if cmd == \'~w\' or cmd.startswith(\'~w \'):~n', [Cmd, Cmd]),
+    format(S, '            return self.~w(text)~n', [Handler]).
+
+%% Fallback: command with no handler (shouldn't happen, but safe)
+generate_single_dispatch(_, _, _, _).
+
+%% generate_help_text(S) - emit the _print_help method body
+generate_help_text(S) :-
+    write(S, '    def _print_help(self) -> None:\n'),
+    write(S, '        """Print help message."""\n'),
+    write(S, '        print("""\n'),
+    %% Generate help text from slash_command_group/2 and slash_command/4
+    forall(slash_command_group(GroupLabel, CmdNames), (
+        format(S, '~w:~n', [GroupLabel]),
+        forall(member(CmdName, CmdNames),
+            format_help_line(S, CmdName)
+        ),
+        write(S, '\n')
+    )),
+    %% Multi-line input section (static, not data-driven)
+    write(S, 'Multi-line Input:\n'),
+    write(S, '  Start with ``` for code blocks\n'),
+    write(S, '  Start with <<< for heredoc mode\n'),
+    write(S, '  End lines with \\\\ for continuation\n'),
+    write(S, '\nJust type your message to chat with the agent.\n'),
+    write(S, '""")\n').
+
+%% Format help line(s) from slash_command/4
+%% If help_lines property exists, emit those verbatim (multi-line entries like /delete)
+format_help_line(S, CmdName) :-
+    slash_command(CmdName, _, Props, _),
+    member(help_lines(Lines), Props), !,
+    forall(member(Line, Lines), format(S, '  ~w~n', [Line])).
+
+%% Normal single-line help entry
+format_help_line(S, CmdName) :-
+    slash_command(CmdName, _, Props, HelpText),
+    %% Use help_display if provided, otherwise auto-build from name + aliases
+    (member(help_display(CmdDisplay), Props) ->
+        true
+    ;
+        atom_string(CmdName, CmdStr),
+        atom_concat('/', CmdStr, CmdDisplay)
+    ),
+    %% Format: "  /cmd            - Help text"  (column 19 = dash)
+    atom_length(CmdDisplay, Len),
+    PadLen is max(1, 19 - Len),
+    format(S, '  ~w', [CmdDisplay]),
+    forall(between(1, PadLen, _), write(S, ' ')),
+    format(S, '- ~w~n', [HelpText]).
+
+%% =============================================================================
+%% Generator helpers: Argparse block
+%% =============================================================================
+
+%% generate_argparse_block(S) - emit all parser.add_argument() calls grouped
+generate_argparse_block(S) :-
+    findall(GroupComment-ArgNames, cli_argument_group(GroupComment, ArgNames), Groups),
+    generate_argparse_groups(S, Groups, first).
+
+generate_argparse_groups(_, [], _) :- !.
+generate_argparse_groups(S, [GroupComment-ArgNames|Rest], first) :- !,
+    %% First group: no leading blank line
+    format(S, '    # ~w~n', [GroupComment]),
+    forall(member(ArgName, ArgNames), (
+        cli_argument(ArgName, Props),
+        generate_add_argument(S, Props)
+    )),
+    generate_argparse_groups(S, Rest, not_first).
+generate_argparse_groups(S, [GroupComment-ArgNames|Rest], not_first) :-
+    format(S, '~n    # ~w~n', [GroupComment]),
+    forall(member(ArgName, ArgNames), (
+        cli_argument(ArgName, Props),
+        generate_add_argument(S, Props)
+    )),
+    generate_argparse_groups(S, Rest, not_first).
+
+%% generate_add_argument(S, Props) - emit a single parser.add_argument(...)
+generate_add_argument(S, Props) :-
+    write(S, '    parser.add_argument(\n'),
+    %% First: positional name or flag names
+    (member(positional(true), Props) ->
+        %% Positional argument — emit name from long if present
+        (member(long(Long), Props) ->
+            format(S, '        \'~w\',~n', [Long])
+        ; true)
+    ; member(short_first(true), Props) ->
+        %% Short flag first (e.g., '-I', '--prompt-interactive')
+        member(short(Short), Props),
+        member(long(Long), Props),
+        format(S, '        \'~w\', \'~w\',~n', [Short, Long])
+    ;
+        %% Normal: long flag first, optional short
+        (member(short(Short), Props) ->
+            member(long(Long), Props),
+            format(S, '        \'~w\', \'~w\',~n', [Long, Short])
+        ;
+            member(long(Long), Props),
+            format(S, '        \'~w\',~n', [Long])
+        )
+    ),
+    %% Keyword args in prototype order: type, action, nargs, choices, default, metavar, help
+    (member(type(Type), Props) ->
+        format(S, '        type=~w,~n', [Type])
+    ; true),
+    (member(action(Act), Props) ->
+        format(S, '        action=\'~w\',~n', [Act])
+    ; true),
+    (member(nargs(Nargs), Props) ->
+        format(S, '        nargs=\'~w\',~n', [Nargs])
+    ; true),
+    (member(choices(Choices), Props) ->
+        write(S, '        choices=['),
+        format_choices_list(S, Choices),
+        write(S, '],\n')
+    ; true),
+    (member(default(Def), Props) ->
+        format_default(S, Def)
+    ; true),
+    (member(metavar(Meta), Props) ->
+        format(S, '        metavar=\'~w\',~n', [Meta])
+    ; true),
+    %% Help text (always last)
+    (member(help(Help), Props) ->
+        format(S, '        help=\'~w\'~n', [Help])
+    ; true),
+    write(S, '    )\n').
+
+%% Format default value for Python
+format_default(S, none) :- !,
+    write(S, '        default=None,\n').
+format_default(S, []) :- !,
+    write(S, '        default=[],\n').
+format_default(S, N) :- integer(N), !,
+    format(S, '        default=~w,~n', [N]).
+format_default(S, Val) :-
+    format(S, '        default=\'~w\',~n', [Val]).
+
+%% Format a choices list for Python
+format_choices_list(_, []) :- !.
+format_choices_list(S, [Last]) :- !,
+    format(S, '\'~w\'', [Last]).
+format_choices_list(S, [H|T]) :-
+    format(S, '\'~w\', ', [H]),
+    format_choices_list(S, T).
+
+%% =============================================================================
+%% Generator helpers: CLI fallbacks dict
+%% =============================================================================
+
+%% generate_cli_fallbacks_dict(S) - emit the _CLI_FALLBACKS dict
+generate_cli_fallbacks_dict(S) :-
+    write(S, '# Fallback chains: primary command → alternatives\n'),
+    write(S, '# Note: coro has no fallback — claude-code uses different CLI args\n'),
+    write(S, '# (coro uses positional prompt, claude-code uses -p flag).\n'),
+    write(S, '# Use -b claude-code explicitly if coro is not installed.\n'),
+    write(S, '_CLI_FALLBACKS = {\n'),
+    findall(BT, cli_fallbacks(BT, _), BTs),
+    generate_fallback_entries(S, BTs),
+    write(S, '}\n').
+
+generate_fallback_entries(_, []) :- !.
+generate_fallback_entries(S, [BT|Rest]) :-
+    cli_fallbacks(BT, Fallbacks),
+    %% Generate comment for empty lists
+    (Fallbacks == [] ->
+        format(S, '    \'~w\': [],', [BT]),
+        %% Add inline comment
+        fallback_comment(BT, Comment),
+        format(S, '~w~n', [Comment])
+    ;
+        format(S, '    \'~w\': ~w,~n', [BT, Fallbacks])
+    ),
+    generate_fallback_entries(S, Rest).
+
+%% Comments for each fallback entry
+fallback_comment(coro, '               # no fallback (different CLI interface)') :- !.
+fallback_comment('claude-code', '        # no fallback') :- !.
+fallback_comment(gemini, '             # no fallback') :- !.
+fallback_comment('ollama-cli', '         # no fallback') :- !.
+fallback_comment(_, '').
+
+%% =============================================================================
+%% Generator: agent_loop.py (hybrid — fragments + generated sections)
+%% =============================================================================
+
+%% generate_agent_loop_main - assemble agent_loop.py from 7 fragments + 5 generated sections
+generate_agent_loop_main :-
+    atom_concat('generated/', 'agent_loop.py', Path),
+    open(Path, write, S),
+    %% 1. Imports (lines 1-30)
+    write_py(S, agent_loop_imports),
+    %% Blank line separators (lines 30-31)
+    nl(S), nl(S),
+    %% 2. Class definition + __init__ + _get_input (lines 32-121)
+    write_py(S, agent_loop_class_init),
+    %% Blank line separator (line 121)
+    nl(S),
+    %% 3. _handle_command method: preamble + generated dispatch + return False
+    %% Lines 122-136: method header + alias resolution + slash stripping
+    write(S, '    def _handle_command(self, user_input: str) -> bool:\n'),
+    write(S, '        """Handle special commands. Returns True if command was handled."""\n'),
+    write(S, '        # Apply alias resolution first\n'),
+    write(S, '        resolved = self.alias_manager.resolve(user_input)\n'),
+    write(S, '        if resolved != user_input:\n'),
+    write(S, '            user_input = resolved\n'),
+    write(S, '\n'),
+    write(S, '        text = user_input.strip()\n'),
+    write(S, '        cmd = text.lower()\n'),
+    write(S, '\n'),
+    write(S, '        # Handle both with and without slash prefix\n'),
+    write(S, '        if cmd.startswith(\'/\'):\n'),
+    write(S, '            cmd = cmd[1:]\n'),
+    write(S, '            text = text[1:]\n'),
+    write(S, '\n'),
+    %% Lines 137-220: generated dispatch chain
+    generate_command_dispatch(S),
+    %% Line 221: return False
+    write(S, '        return False\n'),
+    %% Blank line separator (line 222)
+    nl(S),
+    %% 4. Command handler methods (lines 223-549)
+    write_py(S, agent_loop_command_handlers),
+    %% Blank line separators (lines 549-550)
+    nl(S), nl(S),
+    %% 5. Generated help text method (lines 551-595)
+    generate_help_text(S),
+    %% Blank line separator (line 596)
+    nl(S),
+    %% 6. _print_status + _process_message (lines 597-779)
+    write_py(S, agent_loop_status_and_process),
+    %% Two blank line separators (lines 779-780)
+    nl(S), nl(S),
+    %% 7. build_system_prompt + _resolve_command (lines 781-835)
+    write_py(S, agent_loop_helpers),
+    %% Two blank line separators (lines 835-836)
+    nl(S), nl(S),
+    %% 8. Generated CLI fallbacks dict (lines 837-846)
+    generate_cli_fallbacks_dict(S),
+    %% Two blank line separators (lines 847-848)
+    write(S, '\n\n'),
+    %% 9. Backend factory function (lines 849-947)
+    write_py(S, agent_loop_backend_factory),
+    %% Two blank line separators (lines 947-948)
+    nl(S), nl(S),
+    %% 10. def main() + parser creation (lines 949-954)
+    write(S, 'def main():\n'),
+    write(S, '    """Entry point."""\n'),
+    write(S, '    parser = argparse.ArgumentParser(\n'),
+    write(S, '        description="UnifyWeaver Agent Loop - Terminal-friendly AI assistant"\n'),
+    write(S, '    )\n'),
+    write(S, '\n'),
+    %% 11. Generated argparse block (lines 955-1180)
+    generate_argparse_block(S),
+    %% Blank line separator (line 1181)
+    nl(S),
+    %% 12. Main body: args parsing + run logic (lines 1182-1433)
+    write_py(S, agent_loop_main_body),
+    close(S),
+    format('  Generated agent_loop.py~n', []).
+
+%% =============================================================================
 %% Generator: README.md
 %% =============================================================================
 
 generate_readme :-
     open('generated/README.md', write, S),
     write(S, '# UnifyWeaver Agent Loop - Generated Code\n\n'),
-    write(S, 'This code was generated by `agent_loop_module.pl`.\n\n'),
+    write(S, 'This code was generated by `agent_loop_module.pl` using a hybrid approach:\n'),
+    write(S, 'Prolog facts for tabular data (CLI arguments, slash commands, aliases, fallbacks)\n'),
+    write(S, 'and `py_fragment` atoms for imperative logic.\n\n'),
+    write(S, 'Regenerate with: `swipl -g "generate_all, halt" ../agent_loop_module.pl`\n\n'),
     write(S, '## Backends\n\n'),
     forall(agent_backend(Name, Props), (
         member(description(Desc), Props),
@@ -3240,68 +3940,7 @@ py_fragment(tools_handler_class, 'class ToolHandler:
 ').
 
 %% =============================================================================
-py_fragment(aliases_module, '"""Command aliases for the agent loop."""
-
-import json
-from pathlib import Path
-from typing import Callable
-
-
-# Default aliases
-DEFAULT_ALIASES = {
-    # Short forms
-    "q": "quit",
-    "x": "exit",
-    "h": "help",
-    "?": "help",
-    "c": "clear",
-    "s": "status",
-
-    # Save/load shortcuts
-    "sv": "save",
-    "ld": "load",
-    "ls": "sessions",
-
-    # Export shortcuts
-    "exp": "export",
-    "md": "export conversation.md",
-    "html": "export conversation.html",
-
-    # Backend shortcuts
-    "be": "backend",
-    "sw": "backend",  # switch
-
-    # Common backend switches
-    "yolo": "backend yolo",
-    "opus": "backend claude-opus",
-    "sonnet": "backend claude-sonnet",
-    "haiku": "backend claude-haiku",
-    "gpt": "backend openai",
-    "local": "backend ollama",
-
-    # Format shortcuts
-    "fmt": "format",
-
-    # Iteration shortcuts
-    "iter": "iterations",
-    "i0": "iterations 0",
-    "i1": "iterations 1",
-    "i3": "iterations 3",
-    "i5": "iterations 5",
-
-    # Stream toggle
-    "str": "stream",
-
-    # Cost
-    "$": "cost",
-
-    # Search
-    "find": "search",
-    "grep": "search",
-}
-
-
-class AliasManager:
+py_fragment(aliases_class, 'class AliasManager:
     """Manages command aliases."""
 
     def __init__(self, config_path: str | Path | None = None):
@@ -3405,10 +4044,9 @@ class AliasManager:
             for alias, cmd in sorted(user_aliases):
                 lines.append(f"    /{alias} -> /{cmd}")
 
-        return "\\n".join(lines)
+        return "\\n".join(lines)').
 
-
-def create_default_aliases_file(path: str | Path | None = None) -> Path:
+py_fragment(aliases_create_default, 'def create_default_aliases_file(path: str | Path | None = None) -> Path:
     """Create a default aliases file for user customization."""
     path = Path(path) if path else Path.home() / ".agent-loop" / "aliases.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -5765,7 +6403,7 @@ class ProotSandbox:
             return f"{quoted_prefix} \'{escaped_inner}\'"
         return \' \'.join(shlex.quote(p) for p in parts)').
 
-py_fragment(agent_loop_module_main, '#!/usr/bin/env python3
+py_fragment(agent_loop_imports, '#!/usr/bin/env python3
 """
 UnifyWeaver Agent Loop - Append-Only Mode
 
@@ -5794,9 +6432,9 @@ from templates import TemplateManager
 from history import HistoryManager
 from multiline import get_input_smart
 from display import DisplayMode, Spinner
+').
 
-
-class AgentLoop:
+py_fragment(agent_loop_class_init, 'class AgentLoop:
     """Main agent loop orchestrating all components."""
 
     def __init__(
@@ -5885,109 +6523,9 @@ class AgentLoop:
     def _get_input(self) -> str | None:
         """Get input from user with multi-line support."""
         return get_input_smart("You: ")
+').
 
-    def _handle_command(self, user_input: str) -> bool:
-        """Handle special commands. Returns True if command was handled."""
-        # Apply alias resolution first
-        resolved = self.alias_manager.resolve(user_input)
-        if resolved != user_input:
-            user_input = resolved
-
-        text = user_input.strip()
-        cmd = text.lower()
-
-        # Handle both with and without slash prefix
-        if cmd.startswith(\'/\'):
-            cmd = cmd[1:]
-            text = text[1:]
-
-        if cmd == \'exit\' or cmd == \'quit\':
-            self.running = False
-            return True
-
-        if cmd == \'clear\':
-            self.context.clear()
-            self.history_manager = HistoryManager(self.context)
-            print("[Context cleared]\\n")
-            return True
-
-        if cmd == \'help\':
-            self._print_help()
-            return True
-
-        if cmd == \'status\':
-            self._print_status()
-            return True
-
-        # /iterations N - set max iterations
-        if cmd.startswith(\'iterations\'):
-            return self._handle_iterations_command(text)
-
-        # /backend <name> - switch backend
-        if cmd.startswith(\'backend\'):
-            return self._handle_backend_command(text)
-
-        # Session commands
-        if cmd.startswith(\'save\'):
-            return self._handle_save_command(text)
-
-        if cmd.startswith(\'load\'):
-            return self._handle_load_command(text)
-
-        if cmd == \'sessions\':
-            return self._handle_sessions_command()
-
-        # /format [type] - set context format
-        if cmd.startswith(\'format\'):
-            return self._handle_format_command(text)
-
-        # /export <path> - export conversation
-        if cmd.startswith(\'export\'):
-            return self._handle_export_command(text)
-
-        # /cost - show cost tracking
-        if cmd == \'cost\' or cmd == \'costs\':
-            return self._handle_cost_command()
-
-        # /search <query> - search sessions
-        if cmd.startswith(\'search\'):
-            return self._handle_search_command(text)
-
-        # /stream - toggle streaming mode
-        if cmd == \'stream\' or cmd == \'streaming\':
-            return self._handle_stream_command()
-
-        # Aliases
-        if cmd == \'aliases\':
-            return self._handle_aliases_command()
-
-        # Templates
-        if cmd == \'templates\':
-            return self._handle_templates_command()
-
-        # History
-        if cmd == \'history\' or cmd.startswith(\'history \'):
-            return self._handle_history_command(text)
-
-        # Undo
-        if cmd == \'undo\':
-            return self._handle_undo_command()
-
-        # Delete message(s)
-        if cmd.startswith(\'delete \') or cmd.startswith(\'del \'):
-            return self._handle_delete_command(text)
-
-        # Edit message
-        if cmd.startswith(\'edit \'):
-            return self._handle_edit_command(text)
-
-        # Replay from message
-        if cmd.startswith(\'replay \'):
-            return self._handle_replay_command(text)
-
-        return False
-
-    def _handle_iterations_command(self, text: str) -> bool:
+py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(self, text: str) -> bool:
         """Handle /iterations N command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -6313,55 +6851,9 @@ Cost Summary:
 
         print(f"[Replaying message {index}]")
         self._process_message(content)
-        return True
+        return True').
 
-    def _print_help(self) -> None:
-        """Print help message."""
-        print("""
-Commands (with or without / prefix):
-  /exit, /quit       - Exit the agent loop
-  /clear             - Clear conversation context
-  /status            - Show context status
-  /help              - Show this help message
-
-Loop Control:
-  /iterations [N]    - Show or set max iterations (0 = unlimited)
-  /backend [name]    - Show or switch backend/agent
-  /format [type]     - Set context format (plain/markdown/json/xml)
-  /stream            - Toggle streaming mode for API backends
-
-Sessions:
-  /save [name]       - Save current conversation
-  /load <id>         - Load a saved conversation
-  /sessions          - List saved sessions
-  /search <query>    - Search across saved sessions
-
-Export & Costs:
-  /export <path>     - Export conversation (.md, .html, .json, .txt)
-  /cost              - Show API cost tracking summary
-
-History:
-  /history [n]       - Show last n messages (default 10)
-  /delete <idx>      - Delete message at index
-  /delete <s>-<e>    - Delete messages from s to e
-  /delete last [n]   - Delete last n messages
-  /edit <idx>        - Edit message at index
-  /replay <idx>      - Re-send message at index
-  /undo              - Undo last history change
-
-Shortcuts:
-  /aliases           - List command aliases (e.g., /q -> /quit)
-  /templates         - List prompt templates
-
-Multi-line Input:
-  Start with ``` for code blocks
-  Start with <<< for heredoc mode
-  End lines with \\\\ for continuation
-
-Just type your message to chat with the agent.
-""")
-
-    def _print_status(self) -> None:
+py_fragment(agent_loop_status_and_process, '    def _print_status(self) -> None:
         """Print context status."""
         iterations_str = "unlimited" if self.max_iterations == 0 else str(self.max_iterations)
         session_str = self.session_id or "(unsaved)"
@@ -6543,9 +7035,9 @@ Status:
             if self.cost_tracker:
                 cost_info = f" | Est. cost: {self.cost_tracker.get_summary()[\'cost_formatted\']}"
             print(f"  [Tokens: {token_info}{cost_info}]\\n")
+').
 
-
-def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str | None:
+py_fragment(agent_loop_helpers, 'def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str | None:
     """Build system prompt from config, agent.md, and skills."""
     loader = SkillsLoader(base_dir=config_dir or Path.cwd())
 
@@ -6599,21 +7091,9 @@ def _resolve_command(backend_type: str, configured: str | None,
             f"Command \'{default}\' not found for {backend_type} backend. "
             f"Install it or use --command to specify."
         )
+').
 
-
-# Fallback chains: primary command → alternatives
-# Note: coro has no fallback — claude-code uses different CLI args
-# (coro uses positional prompt, claude-code uses -p flag).
-# Use -b claude-code explicitly if coro is not installed.
-_CLI_FALLBACKS = {
-    \'coro\': [],               # no fallback (different CLI interface)
-    \'claude-code\': [],        # no fallback
-    \'gemini\': [],             # no fallback
-    \'ollama-cli\': [],         # no fallback
-}
-
-
-def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
+py_fragment(agent_loop_backend_factory, 'def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
                                sandbox: bool = False, approval_mode: str = "yolo",
                                allowed_tools: list[str] | None = None,
                                no_fallback: bool = False) -> AgentBackend:
@@ -6711,242 +7191,9 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
 
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
+').
 
-
-def main():
-    """Entry point."""
-    parser = argparse.ArgumentParser(
-        description="UnifyWeaver Agent Loop - Terminal-friendly AI assistant"
-    )
-
-    # Agent selection (from config)
-    parser.add_argument(
-        \'--agent\', \'-a\',
-        default=None,
-        help=\'Agent variant from config file (e.g., yolo, claude-opus, ollama)\'
-    )
-    parser.add_argument(
-        \'--config\', \'-C\',
-        default=None,
-        help=\'Path to config file (agents.yaml or agents.json)\'
-    )
-    parser.add_argument(
-        \'--list-agents\',
-        action=\'store_true\',
-        help=\'List available agent variants from config\'
-    )
-    parser.add_argument(
-        \'--init-config\',
-        metavar=\'PATH\',
-        help=\'Create example config file at PATH\'
-    )
-
-    # Direct backend selection (overrides config)
-    parser.add_argument(
-        \'--backend\', \'-b\',
-        choices=[\'coro\', \'claude\', \'claude-code\', \'gemini\', \'openai\', \'openrouter\', \'ollama-api\', \'ollama-cli\'],
-        default=None,
-        help=\'Backend to use (overrides --agent config)\'
-    )
-    parser.add_argument(
-        \'--command\', \'-c\',
-        default=None,
-        help=\'Command for CLI backends\'
-    )
-    parser.add_argument(
-        \'--model\', \'-m\',
-        default=None,
-        help=\'Model to use\'
-    )
-    parser.add_argument(
-        \'--host\',
-        default=None,
-        help=\'Host for network backends (ollama-api)\'
-    )
-    parser.add_argument(
-        \'--port\',
-        type=int,
-        default=None,
-        help=\'Port for network backends (ollama-api)\'
-    )
-    parser.add_argument(
-        \'--api-key\',
-        help=\'API key (overrides env vars and config files)\'
-    )
-
-    # Options
-    parser.add_argument(
-        \'--no-tokens\',
-        action=\'store_true\',
-        help=\'Hide token usage information\'
-    )
-    parser.add_argument(
-        \'--context-mode\',
-        choices=[\'continue\', \'fresh\', \'sliding\'],
-        default=None,
-        help=\'Context behavior mode\'
-    )
-    parser.add_argument(
-        \'--max-chars\',
-        type=int,
-        default=0,
-        help=\'Max characters in context (0 = unlimited)\'
-    )
-    parser.add_argument(
-        \'--max-words\',
-        type=int,
-        default=0,
-        help=\'Max words in context (0 = unlimited)\'
-    )
-    parser.add_argument(
-        \'--max-tokens\',
-        type=int,
-        default=None,
-        help=\'Max tokens in context (default: 100000, uses estimation)\'
-    )
-    parser.add_argument(
-        \'--auto-tools\',
-        action=\'store_true\',
-        help=\'Auto-execute tools without confirmation\'
-    )
-    parser.add_argument(
-        \'--no-tools\',
-        action=\'store_true\',
-        help=\'Disable tool execution\'
-    )
-    parser.add_argument(
-        \'--sandbox\',
-        action=\'store_true\',
-        help=\'Run in sandbox mode (gemini: requires docker/podman)\'
-    )
-    parser.add_argument(
-        \'--approval-mode\',
-        choices=[\'default\', \'auto_edit\', \'yolo\', \'plan\'],
-        default=\'yolo\',
-        help=\'Tool approval mode (default: yolo). \'
-             \'default=prompt, auto_edit=auto-approve edits, \'
-             \'yolo=auto-approve all, plan=read-only\'
-    )
-    parser.add_argument(
-        \'--allowed-tools\',
-        nargs=\'*\',
-        default=[],
-        help=\'Specific tools allowed without confirmation\'
-    )
-    parser.add_argument(
-        \'--system-prompt\',
-        default=None,
-        help=\'System prompt to use\'
-    )
-    parser.add_argument(
-        \'--no-fallback\',
-        action=\'store_true\',
-        help=\'Skip coro.json fallback for commands and config (uwsal.json still checked)\'
-    )
-    parser.add_argument(
-        \'--max-iterations\', \'-i\',
-        type=int,
-        default=None,
-        help=\'Max tool iterations before pausing (0 = unlimited)\'
-    )
-
-    # Security
-    parser.add_argument(
-        \'--security-profile\',
-        choices=[\'open\', \'cautious\', \'guarded\', \'paranoid\'],
-        default=None,
-        help=\'Security profile (default: cautious). \'
-             \'open=no checks, cautious=path+command validation, \'
-             \'guarded=proxy+audit+extra blocks, paranoid=allowlist-only\'
-    )
-    parser.add_argument(
-        \'--no-security\',
-        action=\'store_true\',
-        help=\'Disable all security checks (alias for --security-profile open)\'
-    )
-    parser.add_argument(
-        \'--path-proxy\',
-        action=\'store_true\',
-        help=\'Enable PATH-based command proxying (wrapper scripts in ~/.agent-loop/bin/)\'
-    )
-    parser.add_argument(
-        \'--proot\',
-        action=\'store_true\',
-        help=\'Enable proot filesystem sandboxing (requires: pkg install proot)\'
-    )
-    parser.add_argument(
-        \'--proot-allow-dir\',
-        action=\'append\',
-        default=[],
-        help=\'Additional directory to bind into proot sandbox (repeatable)\'
-    )
-
-    # Session management
-    parser.add_argument(
-        \'--session\', \'-s\',
-        default=None,
-        help=\'Load a saved session by ID\'
-    )
-    parser.add_argument(
-        \'--list-sessions\',
-        action=\'store_true\',
-        help=\'List saved sessions\'
-    )
-    parser.add_argument(
-        \'--sessions-dir\',
-        default=None,
-        help=\'Directory for session files (default: ~/.agent-loop/sessions)\'
-    )
-
-    # Context format
-    parser.add_argument(
-        \'--context-format\',
-        choices=[\'plain\', \'markdown\', \'json\', \'xml\'],
-        default=None,
-        help=\'Format for context when sent to backend\'
-    )
-
-    # Streaming and cost tracking
-    parser.add_argument(
-        \'--stream\',
-        action=\'store_true\',
-        help=\'Enable streaming output for API backends\'
-    )
-    parser.add_argument(
-        \'--no-cost-tracking\',
-        action=\'store_true\',
-        help=\'Disable cost tracking\'
-    )
-
-    # Search
-    parser.add_argument(
-        \'--search\',
-        metavar=\'QUERY\',
-        help=\'Search across saved sessions and exit\'
-    )
-
-    # Display mode
-    parser.add_argument(
-        \'--fancy\',
-        action=\'store_true\',
-        help=\'Enable ncurses display mode with spinner (uses tput)\'
-    )
-
-    # Interactive with initial prompt
-    parser.add_argument(
-        \'-I\', \'--prompt-interactive\',
-        metavar=\'PROMPT\',
-        help=\'Start interactive mode with an initial prompt\'
-    )
-
-    # Prompt
-    parser.add_argument(
-        \'prompt\',
-        nargs=\'?\',
-        help=\'Single prompt to run (non-interactive mode)\'
-    )
-
-    args = parser.parse_args()
+py_fragment(agent_loop_main_body, '    args = parser.parse_args()
 
     # Handle --init-config
     if args.init_config:
@@ -7197,8 +7444,10 @@ def main():
 
 
 if __name__ == \'__main__\':
-    main()
-').
+    main()').
+
+
+
 
 %% Generator: Individual backends (full implementations)
 %% =============================================================================

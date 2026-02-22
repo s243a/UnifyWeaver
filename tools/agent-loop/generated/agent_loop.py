@@ -1056,9 +1056,7 @@ def main():
         '--approval-mode',
         choices=['default', 'auto_edit', 'yolo', 'plan'],
         default='yolo',
-        help='Tool approval mode (default: yolo). '
-             'default=prompt, auto_edit=auto-approve edits, '
-             'yolo=auto-approve all, plan=read-only'
+        help='Tool approval mode (default: yolo). default=prompt, auto_edit=auto-approve edits, yolo=auto-approve all, plan=read-only'
     )
     parser.add_argument(
         '--allowed-tools',
@@ -1088,9 +1086,7 @@ def main():
         '--security-profile',
         choices=['open', 'cautious', 'guarded', 'paranoid'],
         default=None,
-        help='Security profile (default: cautious). '
-             'open=no checks, cautious=path+command validation, '
-             'guarded=proxy+audit+extra blocks, paranoid=allowlist-only'
+        help='Security profile (default: cautious). open=no checks, cautious=path+command validation, guarded=proxy+audit+extra blocks, paranoid=allowlist-only'
     )
     parser.add_argument(
         '--no-security',
