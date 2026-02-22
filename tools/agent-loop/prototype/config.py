@@ -7,17 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-# ── Unified config file discovery ──────────────────────────────────────────
-
 def read_config_cascade(no_fallback: bool = False) -> dict:
-    """Read config from uwsal.json, falling back to coro.json.
-
-    Search order:
-      1. CWD/uwsal.json -> ~/uwsal.json
-      2. CWD/coro.json -> ~/coro.json  (skipped if no_fallback)
-
-    Returns dict with api_key, model, base_url, keys, etc.
-    """
+    """Read config from uwsal.json, falling back to coro.json."""
     candidates = [
         'uwsal.json',
         os.path.expanduser('~/uwsal.json'),
@@ -36,22 +27,13 @@ def read_config_cascade(no_fallback: bool = False) -> dict:
     return {}
 
 
+
 def resolve_api_key(backend_type: str, cli_key: str | None = None,
                     no_fallback: bool = False) -> str | None:
-    """Resolve API key with full priority chain.
-
-    Priority:
-      1. cli_key (--api-key)
-      2. Backend-specific env var
-      3. uwsal.json keys.<backend> or top-level api_key
-      4. coro.json api_key (unless no_fallback)
-      5. Standard file locations
-    """
-    # 1. CLI argument
+    """Resolve API key with full priority chain."""
     if cli_key:
         return cli_key
 
-    # 2. Backend-specific env vars
     env_vars = {
         'openrouter': 'OPENROUTER_API_KEY',
         'claude': 'ANTHROPIC_API_KEY',
@@ -64,17 +46,13 @@ def resolve_api_key(backend_type: str, cli_key: str | None = None,
         if val:
             return val
 
-    # 3-4. Config files (uwsal.json, then coro.json fallback)
     config = read_config_cascade(no_fallback)
-    # Per-provider key first
     provider_key = config.get('keys', {}).get(backend_type)
     if provider_key:
         return provider_key
-    # Top-level api_key
     if config.get('api_key'):
         return config['api_key']
 
-    # 5. Standard file locations
     file_locations = {
         'claude': '~/.anthropic/api_key',
         'openai': '~/.openai/api_key',
@@ -90,6 +68,7 @@ def resolve_api_key(backend_type: str, cli_key: str | None = None,
 
     return None
 
+
 # Try to import yaml, fall back to JSON only
 try:
     import yaml
@@ -104,33 +83,19 @@ class AgentConfig:
     name: str
     backend: str  # coro, claude-code, gemini, claude, ollama-api, ollama-cli
     model: str | None = None
-
-    # Connection settings
     host: str | None = None  # For network backends (ollama-api)
     port: int | None = None
     api_key: str | None = None  # Or env var name like $ANTHROPIC_API_KEY
     command: str | None = None  # For CLI backends
-
-    # Prompt settings
     system_prompt: str | None = None
     agent_md: str | None = None  # Path to agent.md file
-
-    # Tool settings
     tools: list[str] = field(default_factory=lambda: ['bash', 'read', 'write', 'edit'])
     auto_tools: bool = False  # Skip confirmation
-
-    # Context settings
     context_mode: str = "continue"  # continue, fresh, sliding
     max_context_tokens: int = 100000
     max_messages: int = 50
-
-    # Skills (paths to skill files)
-    skills: list[str] = field(default_factory=list)
-
-    # Loop control
+    skills: list[str] = field(default_factory=list)  # Paths to skill files
     max_iterations: int = 0  # 0 = unlimited, N = pause after N tool iterations
-
-    # Additional options
     timeout: int = 300
     show_tokens: bool = True
     extra: dict = field(default_factory=dict)
@@ -161,7 +126,6 @@ def _resolve_env_var(value: str) -> str:
 
 def _load_agent_config(name: str, data: dict) -> AgentConfig:
     """Load an agent config from a dictionary."""
-    # Resolve env vars in sensitive fields
     if 'api_key' in data:
         data['api_key'] = _resolve_env_var(data['api_key'])
 
@@ -197,7 +161,6 @@ def load_config(path: str | Path) -> Config:
 
     content = path.read_text()
 
-    # Parse based on extension
     if path.suffix in ('.yaml', '.yml'):
         if not HAS_YAML:
             raise ImportError("PyYAML not installed. Use JSON config or: pip install pyyaml")
@@ -205,18 +168,15 @@ def load_config(path: str | Path) -> Config:
     else:
         data = json.loads(content)
 
-    # Build config
     config = Config(
         default=data.get('default', 'default'),
         config_dir=str(path.parent),
         skills_dir=data.get('skills_dir', '')
     )
 
-    # Load agent configs
     for name, agent_data in data.get('agents', {}).items():
         config.agents[name] = _load_agent_config(name, agent_data)
 
-    # Create default if not present
     if 'default' not in config.agents:
         config.agents['default'] = AgentConfig(name='default', backend='coro')
 
@@ -230,7 +190,6 @@ def load_config_from_dir(dir_path: str | Path = None) -> Config | None:
     else:
         dir_path = Path(dir_path)
 
-    # Check standard config file names
     for name in ['agents.yaml', 'agents.yml', 'agents.json',
                  '.agents.yaml', '.agents.yml', '.agents.json']:
         config_path = dir_path / name
@@ -244,74 +203,68 @@ def get_default_config() -> Config:
     """Get a default configuration with common presets."""
     config = Config()
 
-    # Default coro backend
     config.agents['default'] = AgentConfig(
         name='default',
         backend='coro',
-        command='claude'
+        command='claude',
     )
 
-    # Claude Code with different models
     config.agents['claude-sonnet'] = AgentConfig(
         name='claude-sonnet',
         backend='claude-code',
-        model='sonnet'
+        model='sonnet',
     )
 
     config.agents['claude-opus'] = AgentConfig(
         name='claude-opus',
         backend='claude-code',
-        model='opus'
+        model='opus',
     )
 
     config.agents['claude-haiku'] = AgentConfig(
         name='claude-haiku',
         backend='claude-code',
-        model='haiku'
+        model='haiku',
     )
 
-    # Yolo mode - auto tools with haiku for speed
     config.agents['yolo'] = AgentConfig(
         name='yolo',
         backend='claude-code',
         model='haiku',
         auto_tools=True,
-        system_prompt="Be concise and take action. Execute tools without asking."
+        system_prompt='Be concise and take action. Execute tools without asking.',
     )
 
-    # Gemini
     config.agents['gemini'] = AgentConfig(
         name='gemini',
         backend='gemini',
-        model='gemini-3-flash-preview'
+        model='gemini-3-flash-preview',
     )
 
-    # Local Ollama
     config.agents['ollama'] = AgentConfig(
         name='ollama',
         backend='ollama-api',
         model='llama3',
         host='localhost',
-        port=11434
+        port=11434,
     )
 
     config.agents['ollama-cli'] = AgentConfig(
         name='ollama-cli',
         backend='ollama-cli',
-        model='llama3'
+        model='llama3',
     )
 
-    # OpenAI
     config.agents['openai'] = AgentConfig(
         name='openai',
         backend='openai',
-        model='gpt-4o'
+        model='gpt-4o',
     )
 
     config.agents['gpt-4o-mini'] = AgentConfig(
         name='gpt-4o-mini',
         backend='openai',
-        model='gpt-4o-mini'
+        model='gpt-4o-mini',
     )
 
     return config
@@ -392,3 +345,4 @@ def save_example_config(path: str | Path):
         content = json.dumps(example, indent=2)
 
     path.write_text(content)
+

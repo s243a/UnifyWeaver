@@ -1,4 +1,4 @@
-"""Ollama API backend for local LLM inference."""
+"""Ollama REST API backend for local models"""
 
 import json
 import urllib.request
@@ -70,10 +70,8 @@ class OllamaAPIBackend(AgentBackend):
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
                 result = json.loads(response.read().decode('utf-8'))
 
-            # Extract content
             content = result.get("message", {}).get("content", "")
 
-            # Extract token counts if available
             tokens = {}
             if "eval_count" in result:
                 tokens["output"] = result["eval_count"]

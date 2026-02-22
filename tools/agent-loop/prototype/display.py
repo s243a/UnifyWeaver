@@ -1,8 +1,4 @@
-"""Display module using tput for Termux-compatible terminal control.
-
-Uses terminfo via tput for cursor control, which works in Termux
-where raw ANSI escape sequences fail.
-"""
+"""Display module using tput for Termux-compatible terminal control."""
 
 import os
 import subprocess
@@ -26,16 +22,13 @@ def _get_tput_sequence(cap: str) -> str:
         return ''
 
 
-# Cache escape sequences at module load time
-# Note: tput cr outputs \r which may not work in all contexts,
-# so we use the escape sequences directly
 _SEQUENCES = {
-    'cr': '\r',                           # Carriage return (raw)
-    'el': _get_tput_sequence('el'),       # Clear to end of line
-    'civis': _get_tput_sequence('civis'), # Hide cursor
-    'cnorm': _get_tput_sequence('cnorm'), # Show cursor
-    'sc': _get_tput_sequence('sc'),       # Save cursor
-    'rc': _get_tput_sequence('rc'),       # Restore cursor
+    'cr': '\r',
+    'el': _get_tput_sequence('el'),
+    'civis': _get_tput_sequence('civis'),
+    'cnorm': _get_tput_sequence('cnorm'),
+    'sc': _get_tput_sequence('sc'),
+    'rc': _get_tput_sequence('rc'),
 }
 
 
@@ -51,55 +44,43 @@ class TerminalControl:
 
     @staticmethod
     def cr() -> None:
-        """Carriage return - move cursor to start of line."""
         tput_write('cr')
 
     @staticmethod
     def el() -> None:
-        """Clear to end of line."""
         tput_write('el')
 
     @staticmethod
     def clear_line() -> None:
-        """Move to start of line and clear it."""
         tput_write('cr')
         tput_write('el')
 
     @staticmethod
     def save_cursor() -> None:
-        """Save cursor position."""
         tput_write('sc')
 
     @staticmethod
     def restore_cursor() -> None:
-        """Restore cursor position."""
         tput_write('rc')
 
     @staticmethod
     def hide_cursor() -> None:
-        """Hide cursor."""
         tput_write('civis')
 
     @staticmethod
     def show_cursor() -> None:
-        """Show cursor."""
         tput_write('cnorm')
 
     @staticmethod
     def move_up(n: int = 1) -> None:
-        """Move cursor up n lines."""
-        # Use ANSI escape directly - tput cuu requires parameter
         os.write(sys.stdout.fileno(), f"\033[{n}A".encode())
 
     @staticmethod
     def move_down(n: int = 1) -> None:
-        """Move cursor down n lines."""
-        # Use ANSI escape directly - tput cud requires parameter
         os.write(sys.stdout.fileno(), f"\033[{n}B".encode())
 
     @staticmethod
     def cols() -> int:
-        """Get terminal width."""
         try:
             result = subprocess.run(['tput', 'cols'], capture_output=True, text=True, timeout=1)
             return int(result.stdout.strip() or '80')
@@ -108,7 +89,6 @@ class TerminalControl:
 
     @staticmethod
     def lines() -> int:
-        """Get terminal height."""
         try:
             result = subprocess.run(['tput', 'lines'], capture_output=True, text=True, timeout=1)
             return int(result.stdout.strip() or '24')
@@ -119,7 +99,7 @@ class TerminalControl:
 class Spinner:
     """Animated spinner that updates in place using tput."""
 
-    FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+    FRAMES = ['\u280b', '\u2819', '\u2839', '\u2838', '\u283c', '\u2834', '\u2826', '\u2827', '\u2807', '\u280f']
     INTERVAL = 0.1
 
     def __init__(self, message: str = "Working"):
@@ -133,15 +113,12 @@ class Spinner:
         self._start_time = 0.0
 
     def _truncate(self, text: str, width: int) -> str:
-        """Truncate text to fit terminal width."""
-        # 2 chars for spinner + space prefix
         max_len = width - 2
         if len(text) > max_len:
             return text[:max_len - 3] + '...'
         return text
 
     def _animate(self) -> None:
-        """Animation loop."""
         self._tc.hide_cursor()
         try:
             while self._running:
@@ -161,7 +138,6 @@ class Spinner:
             self._tc.show_cursor()
 
     def start(self) -> None:
-        """Start the spinner."""
         if self._running:
             return
         self._start_time = time.time()
@@ -170,13 +146,11 @@ class Spinner:
         self._thread.start()
 
     def stop(self, final_message: Optional[str] = None) -> None:
-        """Stop the spinner and optionally show final message."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=0.5)
             self._thread = None
 
-        # Commit the last spinner message as a permanent line
         with self._lock:
             self._tc.clear_line()
             sys.stdout.write(f"  {self.message}\n")
@@ -185,10 +159,8 @@ class Spinner:
             sys.stdout.flush()
 
     def update(self, message: str) -> None:
-        """Update spinner message, committing the old one as a permanent line."""
         with self._lock:
             if message != self.message:
-                # Commit current message as a permanent line
                 self._tc.clear_line()
                 sys.stdout.write(f"  {self.message}\n")
                 sys.stdout.flush()
@@ -216,7 +188,6 @@ class ProgressBar:
 
     def update(self, current: Optional[int] = None,
                increment: int = 0, suffix: str = None) -> None:
-        """Update progress bar."""
         if current is not None:
             self.current = current
         else:
@@ -228,21 +199,19 @@ class ProgressBar:
         self._render()
 
     def _render(self) -> None:
-        """Render the progress bar."""
         if self.total <= 0:
             pct = 0
         else:
             pct = min(100, int(100 * self.current / self.total))
 
         filled = int(self.width * pct / 100)
-        bar = '█' * filled + '░' * (self.width - filled)
+        bar = '\u2588' * filled + '\u2591' * (self.width - filled)
 
         self._tc.clear_line()
         sys.stdout.write(f"{self.prefix}[{bar}] {pct}% {self.suffix}")
         sys.stdout.flush()
 
     def finish(self, message: str = "") -> None:
-        """Complete the progress bar."""
         self.current = self.total
         self._render()
         sys.stdout.write('\n')
@@ -260,10 +229,8 @@ class StatusLine:
         self._status = ""
 
     def show(self, status: str) -> None:
-        """Display status at current position, clearing line first."""
         self._status = status
         self._tc.clear_line()
-        # Truncate to terminal width
         cols = self._tc.cols()
         if len(status) > cols - 1:
             status = status[:cols - 4] + '...'
@@ -271,13 +238,11 @@ class StatusLine:
         sys.stdout.flush()
 
     def clear(self) -> None:
-        """Clear the status line."""
         self._tc.clear_line()
         sys.stdout.flush()
         self._status = ""
 
     def update(self, status: str) -> None:
-        """Update status in place."""
         self.show(status)
 
 
@@ -291,21 +256,18 @@ class StreamDisplay:
         self._line_count = 0
 
     def start(self, label: str = "Streaming") -> None:
-        """Start streaming display."""
         sys.stdout.write(f"\n{label}:\n")
         sys.stdout.flush()
         self._char_count = 0
         self._line_count = 0
 
     def chunk(self, text: str) -> None:
-        """Display a chunk of streaming text."""
         sys.stdout.write(text)
         sys.stdout.flush()
         self._char_count += len(text)
         self._line_count += text.count('\n')
 
     def finish(self, tokens: Optional[dict] = None) -> None:
-        """Finish streaming and show summary."""
         sys.stdout.write('\n')
         if self.show_tokens and tokens:
             input_t = tokens.get('input', 0)
@@ -314,7 +276,6 @@ class StreamDisplay:
         sys.stdout.flush()
 
 
-# Display mode selection
 class DisplayMode:
     """Factory for display components based on mode."""
 
@@ -323,13 +284,10 @@ class DisplayMode:
 
     @classmethod
     def supports_ncurses(cls) -> bool:
-        """Check if terminal supports ncurses/tput control."""
-        # Test if tput el (clear to end of line) works
         return bool(_SEQUENCES.get('el'))
 
     @classmethod
     def get_spinner(cls, message: str, mode: str = None) -> 'Spinner':
-        """Get appropriate spinner for display mode."""
         if mode is None:
             mode = cls.NCURSES if cls.supports_ncurses() else cls.APPEND_ONLY
 
@@ -339,7 +297,6 @@ class DisplayMode:
 
     @classmethod
     def get_progress(cls, total: int, mode: str = None, **kwargs) -> 'ProgressBar':
-        """Get appropriate progress bar for display mode."""
         if mode is None:
             mode = cls.NCURSES if cls.supports_ncurses() else cls.APPEND_ONLY
 
@@ -357,7 +314,6 @@ class AppendOnlySpinner:
         self._thread: Optional[threading.Thread] = None
 
     def _animate(self) -> None:
-        """Show periodic dots."""
         count = 0
         while self._running:
             if count % 10 == 0:
@@ -367,7 +323,6 @@ class AppendOnlySpinner:
             time.sleep(0.1)
 
     def start(self) -> None:
-        """Start showing progress."""
         if self._running:
             return
         sys.stdout.write(f"[{self.message}]")
@@ -377,7 +332,6 @@ class AppendOnlySpinner:
         self._thread.start()
 
     def stop(self, final_message: Optional[str] = None) -> None:
-        """Stop and show final message."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=0.5)
@@ -390,7 +344,6 @@ class AppendOnlySpinner:
         sys.stdout.flush()
 
     def update(self, message: str) -> None:
-        """Update message (no-op in append mode)."""
         pass
 
     def __enter__(self) -> 'AppendOnlySpinner':
@@ -412,7 +365,6 @@ class AppendOnlyProgress:
 
     def update(self, current: Optional[int] = None,
                increment: int = 0, suffix: str = None) -> None:
-        """Show progress as percentage milestones."""
         if current is None:
             current = increment
 
@@ -420,7 +372,6 @@ class AppendOnlyProgress:
             return
 
         pct = min(100, int(100 * current / self.total))
-        # Only print at 25% intervals
         milestone = (pct // 25) * 25
         if milestone > self._last_pct:
             sys.stdout.write(f"[{milestone}%]")
@@ -428,7 +379,6 @@ class AppendOnlyProgress:
             self._last_pct = milestone
 
     def finish(self, message: str = "") -> None:
-        """Complete progress."""
         if self._last_pct < 100:
             sys.stdout.write("[100%]")
         sys.stdout.write(f" {message}\n" if message else "\n")

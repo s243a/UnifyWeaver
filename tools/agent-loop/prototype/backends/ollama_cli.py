@@ -1,4 +1,4 @@
-"""Ollama CLI backend using the ollama run command."""
+"""Ollama CLI backend using 'ollama run' command"""
 
 import subprocess
 from .base import AgentBackend, AgentResponse, ToolCall
@@ -19,11 +19,8 @@ class OllamaCLIBackend(AgentBackend):
 
     def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to Ollama CLI and get response."""
-        # Format the prompt with context
         prompt = self._format_prompt(message, context)
 
-        # Build command: ollama run <model> "<prompt>"
-        # Note: ollama run reads from stdin if no prompt given
         cmd = [self.command, "run", self.model]
 
         try:
@@ -55,13 +52,12 @@ class OllamaCLIBackend(AgentBackend):
                 tokens={}
             )
 
-        # Clean the output
         content = self._clean_output(output)
 
         return AgentResponse(
             content=content,
             tool_calls=[],
-            tokens={},  # CLI doesn't report tokens
+            tokens={},
             raw=output
         )
 
@@ -70,12 +66,10 @@ class OllamaCLIBackend(AgentBackend):
         if not context:
             return message
 
-        # Format last few messages as context
         history_lines = []
-        for msg in context[-6:]:  # Last 6 messages (3 exchanges)
+        for msg in context[-6:]:
             role = "User" if msg.get('role') == 'user' else "Assistant"
             content = msg.get('content', '')
-            # Truncate very long messages in context
             if len(content) > 500:
                 content = content[:500] + "..."
             history_lines.append(f"{role}: {content}")

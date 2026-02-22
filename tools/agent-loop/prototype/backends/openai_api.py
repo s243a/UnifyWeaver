@@ -1,4 +1,4 @@
-"""OpenAI API backend using the OpenAI SDK."""
+"""OpenAI API backend"""
 
 import os
 from .base import AgentBackend, AgentResponse, ToolCall
@@ -41,9 +41,8 @@ class OpenAIBackend(AgentBackend):
         self.system_prompt = system_prompt or (
             "You are a helpful AI assistant. Be concise and direct."
         )
-        self.base_url = base_url  # For OpenAI-compatible APIs
+        self.base_url = base_url
 
-        # Initialize client
         client_kwargs = {"api_key": self.api_key}
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
@@ -74,14 +73,12 @@ class OpenAIBackend(AgentBackend):
                 messages=messages
             )
 
-            # Extract content
             content = ""
             if response.choices and len(response.choices) > 0:
                 choice = response.choices[0]
                 if choice.message and choice.message.content:
                     content = choice.message.content
 
-            # Extract token usage
             tokens = {}
             if response.usage:
                 tokens = {
@@ -90,7 +87,6 @@ class OpenAIBackend(AgentBackend):
                     'total': response.usage.total_tokens
                 }
 
-            # Extract tool calls
             tool_calls = self._extract_tool_calls(response)
 
             return AgentResponse(
@@ -151,7 +147,6 @@ class OpenAIBackend(AgentBackend):
             context: Conversation context
             on_token: Callback called for each token chunk (str) -> None
         """
-        # Build messages array
         messages = [{"role": "system", "content": self.system_prompt}]
         for msg in context:
             if msg.get('role') in ('user', 'assistant'):
@@ -176,7 +171,6 @@ class OpenAIBackend(AgentBackend):
             output_tokens = 0
 
             for chunk in stream:
-                # Handle content chunks
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
                     if delta and delta.content:
@@ -184,7 +178,6 @@ class OpenAIBackend(AgentBackend):
                         if on_token:
                             on_token(delta.content)
 
-                # Handle usage (comes at the end)
                 if chunk.usage:
                     input_tokens = chunk.usage.prompt_tokens
                     output_tokens = chunk.usage.completion_tokens

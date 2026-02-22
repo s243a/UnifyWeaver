@@ -1,4 +1,4 @@
-"""Gemini CLI backend using stream-json for live progress."""
+"""Gemini CLI backend"""
 
 import json
 import os
@@ -18,14 +18,13 @@ class GeminiBackend(AgentBackend):
         self.sandbox = sandbox
         self.approval_mode = approval_mode
         self.allowed_tools = allowed_tools or []
-        self._on_status = None  # Callback for status updates
+        self._on_status = None
 
     def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
         """Send message to Gemini CLI with live streaming output."""
         prompt = self._format_prompt(message, context)
         self._on_status = kwargs.get('on_status')
 
-        # Use stream-json for live progress
         cmd = [
             self.command,
             "-m", self.model,
@@ -98,20 +97,13 @@ class GeminiBackend(AgentBackend):
 
         except subprocess.TimeoutExpired:
             proc.kill()
-            return AgentResponse(
-                content="[Error: Command timed out]",
-                tokens={}
-            )
+            return AgentResponse(content="[Error: Command timed out]", tokens={})
         except FileNotFoundError:
             return AgentResponse(
                 content=f"[Error: Command '{self.command}' not found. Install Gemini CLI.]",
-                tokens={}
-            )
+                tokens={})
         except Exception as e:
-            return AgentResponse(
-                content=f"[Error: {e}]",
-                tokens={}
-            )
+            return AgentResponse(content=f"[Error: {e}]", tokens={})
 
         return AgentResponse(
             content=content,

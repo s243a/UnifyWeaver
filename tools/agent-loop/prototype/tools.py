@@ -23,14 +23,23 @@ class ToolResult:
 
 # Sensitive paths that should never be accessed by agent tools
 _BLOCKED_PATHS = {
-    '/etc/shadow', '/etc/gshadow', '/etc/sudoers',
+    '/etc/shadow',
+    '/etc/gshadow',
+    '/etc/sudoers',
 }
 _BLOCKED_PREFIXES = (
-    '/proc/', '/sys/', '/dev/',
+    '/proc/',
+    '/sys/',
+    '/dev/',
 )
 _BLOCKED_HOME_PATTERNS = (
-    '.ssh/', '.gnupg/', '.aws/', '.config/gcloud/',
-    '.env', '.netrc', '.npmrc',
+    '.ssh/',
+    '.gnupg/',
+    '.aws/',
+    '.config/gcloud/',
+    '.env',
+    '.netrc',
+    '.npmrc',
 )
 
 
@@ -42,18 +51,14 @@ def validate_path(raw_path: str, working_dir: str,
     Returns (resolved_path, error_message).
     error_message is None if the path is safe.
     """
-    # Resolve relative paths and symlinks
     if raw_path.startswith('/'):
         resolved = os.path.realpath(raw_path)
     else:
         resolved = os.path.realpath(os.path.join(working_dir, raw_path))
 
-    # Check both raw (as typed) and resolved (after symlinks) paths,
-    # because on Termux /etc -> /system/etc and ~ -> /data/data/.../home
     raw_abs = os.path.abspath(os.path.join(working_dir, raw_path)) if not raw_path.startswith('/') else raw_path
     check_paths = {resolved, raw_abs}
 
-    # Check allowlist first — explicit allows override blocks
     if extra_allowed:
         for pattern in extra_allowed:
             expanded = os.path.realpath(os.path.expanduser(pattern))
@@ -61,7 +66,6 @@ def validate_path(raw_path: str, working_dir: str,
                 if p == expanded or p.startswith(expanded.rstrip('/') + '/'):
                     return resolved, None
 
-    # Check user-provided extra blocks
     if extra_blocked:
         for pattern in extra_blocked:
             expanded = os.path.realpath(os.path.expanduser(pattern))
@@ -69,7 +73,6 @@ def validate_path(raw_path: str, working_dir: str,
                 if p == expanded or p.startswith(expanded.rstrip('/') + '/'):
                     return resolved, f"Blocked by config: {raw_path}"
 
-    # Built-in blocks — check both raw and resolved
     for p in check_paths:
         if p in _BLOCKED_PATHS:
             return resolved, f"Blocked: {raw_path} is a sensitive system file"
@@ -77,7 +80,6 @@ def validate_path(raw_path: str, working_dir: str,
             if p.startswith(prefix):
                 return resolved, f"Blocked: {raw_path} is in a system directory"
 
-    # Sensitive home directory patterns — check against resolved path
     home = os.path.expanduser('~')
     for p in check_paths:
         if p.startswith(home + '/'):
@@ -108,19 +110,16 @@ def is_command_blocked(command: str,
                        extra_blocked: list[str] | None = None,
                        extra_allowed: list[str] | None = None) -> str | None:
     """Return reason if command is blocked, None if allowed."""
-    # Check allowlist first
     if extra_allowed:
         for pattern in extra_allowed:
             if re.search(pattern, command, re.IGNORECASE):
                 return None
 
-    # Check user-provided extra blocks
     if extra_blocked:
         for pattern in extra_blocked:
             if re.search(pattern, command, re.IGNORECASE):
                 return f"Blocked by config: matches '{pattern}'"
 
-    # Built-in blocks
     for pattern, description in _BLOCKED_COMMAND_PATTERNS:
         if re.search(pattern, command, re.IGNORECASE):
             return f"Blocked: {description}"
@@ -139,16 +138,14 @@ class SecurityConfig:
     allowed_paths: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
 
-    # Enhanced profile settings (Phase 2)
-    allowed_commands_only: bool = False   # paranoid: allowlist mode
-    safe_commands: list[str] = field(default_factory=list)  # skip confirmation
-    command_proxying: str = 'disabled'    # disabled, optional, enabled, strict
+    allowed_commands_only: bool = False
+    safe_commands: list[str] = field(default_factory=list)
+    command_proxying: str = 'disabled'
     max_file_read_size: int | None = None
     max_file_write_size: int | None = None
 
-    # Optional execution layers (opt-in via CLI or config)
-    path_proxying: bool = False                                 # Layer 3.5
-    proot_sandbox: bool = False                                 # Layer 4
+    path_proxying: bool = False
+    proot_sandbox: bool = False
     proot_allowed_dirs: list[str] = field(default_factory=list)
 
     @classmethod
@@ -190,12 +187,10 @@ class ToolHandler:
         self.security = security or SecurityConfig()
         self.audit = audit or AuditLogger(level='disabled')
 
-        # Command proxy (active when command_proxying != 'disabled')
         self.proxy: CommandProxyManager | None = None
         if self.security.command_proxying != 'disabled':
             self.proxy = CommandProxyManager()
 
-        # PATH-based proxy (optional — prepends wrapper scripts to PATH)
         self.path_proxy = None
         if self.security.path_proxying:
             from security.path_proxy import PathProxyManager
@@ -207,7 +202,6 @@ class ToolHandler:
                         '', 'path_proxy', 'init',
                         f'Generated wrappers: {", ".join(generated)}')
 
-        # proot sandbox (optional — wraps commands in proot)
         self.proot = None
         if self.security.proot_sandbox:
             from security.proot_sandbox import ProotSandbox, ProotConfig
@@ -222,7 +216,6 @@ class ToolHandler:
                       "found. Install with: pkg install proot",
                       file=sys.stderr)
 
-        # Tool implementations
         self.tools = {
             'bash': self._execute_bash,
             'read': self._read_file,
@@ -230,7 +223,6 @@ class ToolHandler:
             'edit': self._edit_file,
         }
 
-        # Tools that require confirmation
         self.destructive_tools = {'bash', 'write', 'edit'}
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
@@ -249,8 +241,6 @@ class ToolHandler:
                 tool_name=tool_call.name
             )
 
-        # Run security pre-checks BEFORE asking for confirmation.
-        # No point prompting the user if the command will be blocked.
         if tool_call.name == 'bash':
             blocked = self._pre_check_bash(tool_call.arguments)
             if blocked:
@@ -260,7 +250,6 @@ class ToolHandler:
                 )
                 return blocked
 
-        # Check for confirmation if destructive — but skip for safe commands
         if self.confirm_destructive and tool_call.name in self.destructive_tools:
             if not self._is_safe_command(tool_call):
                 if not self._confirm_execution(tool_call):
@@ -308,11 +297,7 @@ class ToolHandler:
             return False
 
     def _is_safe_command(self, tool_call: ToolCall) -> bool:
-        """Check if a tool call is safe enough to skip confirmation.
-
-        Only applies to bash commands that match the safe_commands patterns
-        (read-only commands like ls, cat, grep, git status, etc.).
-        """
+        """Check if a tool call is safe enough to skip confirmation."""
         if tool_call.name != 'bash':
             return False
         if not self.security.safe_commands:
@@ -325,12 +310,7 @@ class ToolHandler:
         )
 
     def _pre_check_bash(self, args: dict) -> ToolResult | None:
-        """Run security checks on a bash command BEFORE confirmation.
-
-        Returns a ToolResult if the command is blocked, or None if it
-        passes all security checks.  Called from execute() so the user
-        is never prompted to approve a command that will be rejected.
-        """
+        """Run security checks on a bash command BEFORE confirmation."""
         command = args.get('command', '').strip()
         if not command:
             return ToolResult(
@@ -339,7 +319,6 @@ class ToolHandler:
                 tool_name='bash'
             )
 
-        # Allowlist-only mode (paranoid): reject unless explicitly allowed
         if self.security.allowed_commands_only:
             matched = any(
                 re.search(pat, command, re.IGNORECASE)
@@ -354,7 +333,6 @@ class ToolHandler:
                     tool_name='bash'
                 )
 
-        # Command blocklist check
         if self.security.command_blocklist:
             reason = is_command_blocked(
                 command,
@@ -369,7 +347,6 @@ class ToolHandler:
                     tool_name='bash'
                 )
 
-        # Command proxy check (Layer 3)
         if self.proxy:
             proxy_mode = self.security.command_proxying
             allowed, reason = self.proxy.check(command, proxy_mode)
@@ -382,7 +359,7 @@ class ToolHandler:
                     tool_name='bash'
                 )
 
-        return None  # All checks passed
+        return None
 
     def _execute_bash(self, args: dict) -> ToolResult:
         """Execute a bash command."""
@@ -394,16 +371,9 @@ class ToolHandler:
                 tool_name='bash'
             )
 
-        # Security checks already ran in _pre_check_bash() before
-        # the confirmation prompt, so skip them here.
-
-        # Build execution environment and command — when neither layer
-        # is enabled, exec_env stays None and exec_cmd stays unchanged,
-        # so subprocess.run() behaves identically to before.
         exec_env = None
         exec_cmd = command
 
-        # Layer 3.5: PATH proxy — prepend wrapper dir to PATH
         if self.path_proxy:
             log_file = self.audit._log_file if self.audit._log_file else None
             exec_env = self.path_proxy.build_env(
@@ -411,7 +381,6 @@ class ToolHandler:
                 audit_log=str(log_file) if log_file else None,
             )
 
-        # Layer 4: proot — wrap command in proot invocation
         if self.proot:
             exec_cmd = self.proot.wrap_command(command)
             proot_env = self.proot.build_env_overrides()
@@ -461,7 +430,7 @@ class ToolHandler:
             )
 
     def _validate_file_path(self, raw_path: str, tool_name: str) -> tuple[Path, ToolResult | None]:
-        """Validate and resolve a file path. Returns (resolved, error_or_None)."""
+        """Validate and resolve a file path."""
         if not raw_path:
             return Path(), ToolResult(False, "No path provided", tool_name)
 
@@ -476,7 +445,6 @@ class ToolHandler:
                 return Path(resolved), ToolResult(False, f"[Security] {error}", tool_name)
             return Path(resolved), None
 
-        # No validation — resolve path the simple way
         if raw_path.startswith('/'):
             return Path(raw_path), None
         return Path(self.working_dir) / raw_path, None
@@ -489,7 +457,6 @@ class ToolHandler:
             return error
 
         try:
-            # Check file size limit before reading
             if self.security.max_file_read_size is not None:
                 try:
                     file_size = file_path.stat().st_size
@@ -499,7 +466,7 @@ class ToolHandler:
                         self.audit.log_file_access(path, 'read', allowed=False, reason=reason)
                         return ToolResult(False, f"[Security] {reason}", 'read')
                 except OSError:
-                    pass  # Let the read_text() below handle missing files
+                    pass
 
             content = file_path.read_text()
             self.audit.log_file_access(
@@ -532,7 +499,6 @@ class ToolHandler:
         if error:
             return error
 
-        # Check write size limit
         if self.security.max_file_write_size is not None:
             if len(content) > self.security.max_file_write_size:
                 reason = (f"Content too large: {len(content)} bytes "
@@ -541,7 +507,6 @@ class ToolHandler:
                 return ToolResult(False, f"[Security] {reason}", 'write')
 
         try:
-            # Create parent directories if needed
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
             self.audit.log_file_access(
@@ -586,7 +551,6 @@ class ToolHandler:
                     tool_name='edit'
                 )
 
-            # Count occurrences
             count = content.count(old_string)
             if count > 1:
                 return ToolResult(
@@ -595,7 +559,6 @@ class ToolHandler:
                     tool_name='edit'
                 )
 
-            # Perform replacement
             new_content = content.replace(old_string, new_string, 1)
             file_path.write_text(new_content)
             self.audit.log_file_access(
@@ -626,3 +589,4 @@ class ToolHandler:
         """Format a tool result for sending back to the agent."""
         status = "Success" if result.success else "Failed"
         return f"[Tool {result.tool_name} - {status}]\n{result.output}"
+

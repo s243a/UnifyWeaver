@@ -673,6 +673,123 @@ cli_fallbacks('claude-code', []).
 cli_fallbacks(gemini, []).
 cli_fallbacks('ollama-cli', []).
 
+%% -----------------------------------------------------------------------------
+%% Backend Factory Dispatch Data
+%% -----------------------------------------------------------------------------
+%% backend_factory(BackendType, Properties)
+%%   resolve_type: cli | api | api_local | openrouter
+%%   class_name: Python class to instantiate
+%%   import_from: module to import from (absent for coro — already imported)
+%%   default_command: default CLI command name (cli backends)
+%%   default_model: default model string
+%%   constructor_args: list of tagged arg specs for the return statement
+
+backend_factory(coro, [
+    resolve_type(cli),
+    class_name('CoroBackend'),
+    default_command(coro),
+    constructor_args([
+        arg(command, cmd),
+        arg(no_fallback, no_fallback),
+        arg_expr(max_context_tokens, 'agent_config.max_context_tokens\n            if agent_config.max_context_tokens != 100000 else 0')
+    ])
+]).
+
+backend_factory('claude-code', [
+    resolve_type(cli),
+    class_name('ClaudeCodeBackend'),
+    import_from(backends),
+    default_command(claude),
+    default_model(sonnet),
+    constructor_args([
+        arg(command, cmd),
+        arg_model
+    ])
+]).
+
+backend_factory(gemini, [
+    resolve_type(cli),
+    class_name('GeminiBackend'),
+    import_from(backends),
+    default_command(gemini),
+    default_model('gemini-3-flash-preview'),
+    constructor_args([
+        arg(command, cmd),
+        arg_model,
+        arg(sandbox, sandbox),
+        arg(approval_mode, approval_mode),
+        arg_expr(allowed_tools, 'allowed_tools or []')
+    ])
+]).
+
+backend_factory(claude, [
+    resolve_type(api),
+    class_name('ClaudeAPIBackend'),
+    import_from(backends),
+    default_model('claude-sonnet-4-20250514'),
+    constructor_args([
+        arg(api_key, api_key),
+        arg_model,
+        arg(system_prompt, system_prompt)
+    ])
+]).
+
+backend_factory(openai, [
+    resolve_type(api),
+    class_name('OpenAIBackend'),
+    import_from(backends),
+    default_model('gpt-4o'),
+    constructor_args([
+        arg(api_key, api_key),
+        arg_model,
+        arg(system_prompt, system_prompt),
+        arg_expr(base_url, 'agent_config.extra.get(\'base_url\')')
+    ])
+]).
+
+backend_factory(openrouter, [
+    resolve_type(openrouter),
+    class_name('OpenRouterBackend'),
+    import_from(backends),
+    constructor_args([
+        arg(api_key, api_key),
+        arg_expr(model, 'agent_config.model or cascade.get(\'model\')'),
+        arg_expr(base_url, '(agent_config.extra.get(\'base_url\')\n                      or cascade.get(\'base_url\', \'https://openrouter.ai/api/v1\'))'),
+        arg(system_prompt, system_prompt),
+        arg_trailing(tools, tool_schemas)
+    ])
+]).
+
+backend_factory('ollama-api', [
+    resolve_type(api_local),
+    class_name('OllamaAPIBackend'),
+    import_from(backends),
+    default_model(llama3),
+    constructor_args([
+        arg_expr(host, 'agent_config.host or \'localhost\''),
+        arg_expr(port, 'agent_config.port or 11434'),
+        arg_model,
+        arg(system_prompt, system_prompt),
+        arg(timeout, 'agent_config.timeout')
+    ])
+]).
+
+backend_factory('ollama-cli', [
+    resolve_type(cli),
+    class_name('OllamaCLIBackend'),
+    import_from(backends),
+    default_command(ollama),
+    default_model(llama3),
+    constructor_args([
+        arg(command, cmd),
+        arg_model,
+        arg(timeout, 'agent_config.timeout')
+    ])
+]).
+
+%% Backend factory dispatch order (matches prototype if/elif chain)
+backend_factory_order([coro, 'claude-code', gemini, claude, openai, openrouter, 'ollama-api', 'ollama-cli']).
+
 %% =============================================================================
 %% Code Generation — Master Entry
 %% =============================================================================
@@ -1767,6 +1884,127 @@ fallback_comment('ollama-cli', '         # no fallback') :- !.
 fallback_comment(_, '').
 
 %% =============================================================================
+%% Generator helpers: Backend factory function
+%% =============================================================================
+
+%% generate_backend_factory_fn(S) - emit the create_backend_from_config function
+generate_backend_factory_fn(S) :-
+    %% Function signature
+    write(S, 'def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",\n'),
+    write(S, '                               sandbox: bool = False, approval_mode: str = "yolo",\n'),
+    write(S, '                               allowed_tools: list[str] | None = None,\n'),
+    write(S, '                               no_fallback: bool = False) -> AgentBackend:\n'),
+    write(S, '    """Create a backend from an AgentConfig."""\n'),
+    write(S, '    backend_type = agent_config.backend\n'),
+    write(S, '\n'),
+    write(S, '    # Build system prompt with skills/agent.md\n'),
+    write(S, '    system_prompt = build_system_prompt(agent_config, config_dir)\n'),
+    %% Generate if/elif chain from backend_factory/2 facts
+    backend_factory_order(Order),
+    generate_factory_chain(S, Order, first),
+    %% else clause
+    write(S, '\n'),
+    write(S, '    else:\n'),
+    write(S, '        raise ValueError(f"Unknown backend type: {backend_type}")\n').
+
+%% generate_factory_chain(S, Backends, FirstFlag)
+generate_factory_chain(_, [], _) :- !.
+generate_factory_chain(S, [BT|Rest], FirstFlag) :-
+    backend_factory(BT, Props),
+    generate_factory_branch(S, BT, Props, FirstFlag),
+    generate_factory_chain(S, Rest, not_first).
+
+%% generate_factory_branch(S, BackendType, Props, FirstFlag)
+generate_factory_branch(S, BT, Props, FirstFlag) :-
+    member(resolve_type(RT), Props),
+    member(class_name(ClassName), Props),
+    member(constructor_args(Args), Props),
+    %% Blank line + if/elif
+    nl(S),
+    (FirstFlag == first ->
+        format(S, '    if backend_type == \'~w\':~n', [BT])
+    ;
+        format(S, '    elif backend_type == \'~w\':~n', [BT])
+    ),
+    %% Import statement (if needed)
+    (member(import_from(Mod), Props) ->
+        format(S, '        from ~w import ~w~n', [Mod, ClassName])
+    ; true),
+    %% Extra openrouter import
+    (RT == openrouter ->
+        write(S, '        from backends.openrouter_api import DEFAULT_TOOL_SCHEMAS\n')
+    ; true),
+    %% Resolution logic based on resolve_type
+    generate_resolve_logic(S, BT, RT, Props),
+    %% Constructor call
+    format(S, '        return ~w(~n', [ClassName]),
+    generate_constructor_args(S, Args, Props),
+    write(S, '        )\n').
+
+%% generate_resolve_logic(S, BackendType, ResolveType, Props)
+%% cli: resolve command
+generate_resolve_logic(S, BT, cli, Props) :-
+    (member(default_command(DefCmd), Props) -> true ; DefCmd = BT),
+    format(S, '        cmd = _resolve_command(\'~w\', agent_config.command, \'~w\',~n', [BT, DefCmd]),
+    format(S, '                               _CLI_FALLBACKS[\'~w\'], no_fallback)~n', [BT]).
+%% api: resolve key
+generate_resolve_logic(S, BT, api, _) :-
+    format(S, '        api_key = resolve_api_key(\'~w\', agent_config.api_key, no_fallback)~n', [BT]).
+%% api_local: no auth needed
+generate_resolve_logic(_, _, api_local, _) :- !.
+%% openrouter: special cascade
+generate_resolve_logic(S, _, openrouter, _) :-
+    write(S, '        # Resolve API key and config through unified cascade\n'),
+    write(S, '        api_key = resolve_api_key(\'openrouter\', agent_config.api_key, no_fallback)\n'),
+    write(S, '        cascade = read_config_cascade(no_fallback)\n'),
+    write(S, '        # Use tool schemas if tools are configured\n'),
+    write(S, '        tool_schemas = DEFAULT_TOOL_SCHEMAS if agent_config.tools else None\n').
+
+%% generate_constructor_args(S, ArgSpecs, Props) - emit kwarg lines
+generate_constructor_args(_, [], _) :- !.
+generate_constructor_args(S, [Arg], Props) :- !,
+    %% Last arg: no trailing comma
+    generate_single_arg(S, Arg, Props, last).
+generate_constructor_args(S, [Arg|Rest], Props) :-
+    generate_single_arg(S, Arg, Props, not_last),
+    generate_constructor_args(S, Rest, Props).
+
+%% generate_single_arg(S, ArgSpec, Props, LastFlag)
+%% arg(kwname, varname) — simple keyword=variable
+generate_single_arg(S, arg(KW, Var), _, LastFlag) :-
+    (LastFlag == last ->
+        format(S, '            ~w=~w~n', [KW, Var])
+    ;
+        format(S, '            ~w=~w,~n', [KW, Var])
+    ).
+%% arg_expr(kwname, Expr) — keyword=expression (verbatim)
+generate_single_arg(S, arg_expr(KW, Expr), _, LastFlag) :-
+    (LastFlag == last ->
+        format(S, '            ~w=~w~n', [KW, Expr])
+    ;
+        format(S, '            ~w=~w,~n', [KW, Expr])
+    ).
+%% arg_model — model=agent_config.model or 'default'
+generate_single_arg(S, arg_model, Props, LastFlag) :-
+    (member(default_model(DefModel), Props) ->
+        (LastFlag == last ->
+            format(S, '            model=agent_config.model or \'~w\'~n', [DefModel])
+        ;
+            format(S, '            model=agent_config.model or \'~w\',~n', [DefModel])
+        )
+    ;
+        %% No default model — just use agent_config.model
+        (LastFlag == last ->
+            write(S, '            model=agent_config.model\n')
+        ;
+            write(S, '            model=agent_config.model,\n')
+        )
+    ).
+%% arg_trailing(kwname, varname) — with trailing comma (openrouter style)
+generate_single_arg(S, arg_trailing(KW, Var), _, _) :-
+    format(S, '            ~w=~w,~n', [KW, Var]).
+
+%% =============================================================================
 %% Generator: agent_loop.py (hybrid — fragments + generated sections)
 %% =============================================================================
 
@@ -1825,8 +2063,8 @@ generate_agent_loop_main :-
     generate_cli_fallbacks_dict(S),
     %% Two blank line separators (lines 847-848)
     write(S, '\n\n'),
-    %% 9. Backend factory function (lines 849-947)
-    write_py(S, agent_loop_backend_factory),
+    %% 9. Generated backend factory function (lines 849-947)
+    generate_backend_factory_fn(S),
     %% Two blank line separators (lines 947-948)
     nl(S), nl(S),
     %% 10. def main() + parser creation (lines 949-954)
@@ -7093,105 +7331,6 @@ def _resolve_command(backend_type: str, configured: str | None,
         )
 ').
 
-py_fragment(agent_loop_backend_factory, 'def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
-                               sandbox: bool = False, approval_mode: str = "yolo",
-                               allowed_tools: list[str] | None = None,
-                               no_fallback: bool = False) -> AgentBackend:
-    """Create a backend from an AgentConfig."""
-    backend_type = agent_config.backend
-
-    # Build system prompt with skills/agent.md
-    system_prompt = build_system_prompt(agent_config, config_dir)
-
-    if backend_type == \'coro\':
-        cmd = _resolve_command(\'coro\', agent_config.command, \'coro\',
-                               _CLI_FALLBACKS[\'coro\'], no_fallback)
-        return CoroBackend(
-            command=cmd, no_fallback=no_fallback,
-            max_context_tokens=agent_config.max_context_tokens
-            if agent_config.max_context_tokens != 100000 else 0
-        )
-
-    elif backend_type == \'claude-code\':
-        from backends import ClaudeCodeBackend
-        cmd = _resolve_command(\'claude-code\', agent_config.command, \'claude\',
-                               _CLI_FALLBACKS[\'claude-code\'], no_fallback)
-        return ClaudeCodeBackend(
-            command=cmd,
-            model=agent_config.model or \'sonnet\'
-        )
-
-    elif backend_type == \'gemini\':
-        from backends import GeminiBackend
-        cmd = _resolve_command(\'gemini\', agent_config.command, \'gemini\',
-                               _CLI_FALLBACKS[\'gemini\'], no_fallback)
-        return GeminiBackend(
-            command=cmd,
-            model=agent_config.model or \'gemini-3-flash-preview\',
-            sandbox=sandbox,
-            approval_mode=approval_mode,
-            allowed_tools=allowed_tools or []
-        )
-
-    elif backend_type == \'claude\':
-        from backends import ClaudeAPIBackend
-        api_key = resolve_api_key(\'claude\', agent_config.api_key, no_fallback)
-        return ClaudeAPIBackend(
-            api_key=api_key,
-            model=agent_config.model or \'claude-sonnet-4-20250514\',
-            system_prompt=system_prompt
-        )
-
-    elif backend_type == \'openai\':
-        from backends import OpenAIBackend
-        api_key = resolve_api_key(\'openai\', agent_config.api_key, no_fallback)
-        return OpenAIBackend(
-            api_key=api_key,
-            model=agent_config.model or \'gpt-4o\',
-            system_prompt=system_prompt,
-            base_url=agent_config.extra.get(\'base_url\')
-        )
-
-    elif backend_type == \'openrouter\':
-        from backends import OpenRouterBackend
-        from backends.openrouter_api import DEFAULT_TOOL_SCHEMAS
-        # Resolve API key and config through unified cascade
-        api_key = resolve_api_key(\'openrouter\', agent_config.api_key, no_fallback)
-        cascade = read_config_cascade(no_fallback)
-        # Use tool schemas if tools are configured
-        tool_schemas = DEFAULT_TOOL_SCHEMAS if agent_config.tools else None
-        return OpenRouterBackend(
-            api_key=api_key,
-            model=agent_config.model or cascade.get(\'model\'),
-            base_url=(agent_config.extra.get(\'base_url\')
-                      or cascade.get(\'base_url\', \'https://openrouter.ai/api/v1\')),
-            system_prompt=system_prompt,
-            tools=tool_schemas,
-        )
-
-    elif backend_type == \'ollama-api\':
-        from backends import OllamaAPIBackend
-        return OllamaAPIBackend(
-            host=agent_config.host or \'localhost\',
-            port=agent_config.port or 11434,
-            model=agent_config.model or \'llama3\',
-            system_prompt=system_prompt,
-            timeout=agent_config.timeout
-        )
-
-    elif backend_type == \'ollama-cli\':
-        from backends import OllamaCLIBackend
-        cmd = _resolve_command(\'ollama-cli\', agent_config.command, \'ollama\',
-                               _CLI_FALLBACKS[\'ollama-cli\'], no_fallback)
-        return OllamaCLIBackend(
-            command=cmd,
-            model=agent_config.model or \'llama3\',
-            timeout=agent_config.timeout
-        )
-
-    else:
-        raise ValueError(f"Unknown backend type: {backend_type}")
-').
 
 py_fragment(agent_loop_main_body, '    args = parser.parse_args()
 
