@@ -1,4 +1,4 @@
-"""Claude API backend using the Anthropic SDK."""
+"""Anthropic Claude API backend"""
 
 import os
 from .base import AgentBackend, AgentResponse, ToolCall
@@ -66,13 +66,11 @@ class ClaudeAPIBackend(AgentBackend):
                 messages=messages
             )
 
-            # Extract content
             content = ""
             for block in response.content:
                 if hasattr(block, 'text'):
                     content += block.text
 
-            # Extract token usage
             tokens = {}
             if hasattr(response, 'usage'):
                 tokens = {
@@ -80,7 +78,6 @@ class ClaudeAPIBackend(AgentBackend):
                     'output': response.usage.output_tokens
                 }
 
-            # Extract tool use (for future)
             tool_calls = self._extract_tool_calls(response)
 
             return AgentResponse(
@@ -128,7 +125,6 @@ class ClaudeAPIBackend(AgentBackend):
             context: Conversation context
             on_token: Callback called for each token chunk (str) -> None
         """
-        # Build messages array
         messages = []
         for msg in context:
             if msg.get('role') in ('user', 'assistant'):
@@ -154,7 +150,6 @@ class ClaudeAPIBackend(AgentBackend):
                     if on_token:
                         on_token(text)
 
-                # Get final message for token counts
                 response = stream.get_final_message()
                 if hasattr(response, 'usage'):
                     input_tokens = response.usage.input_tokens

@@ -1,4 +1,4 @@
-"""Coro-code CLI backend using single-task mode."""
+"""Coro-code CLI backend using single-task mode"""
 
 import json as _json
 import os
@@ -20,51 +20,35 @@ class CoroBackend(AgentBackend):
         self.debug = debug
         self.max_steps = max_steps
         self.config = config or self._find_config(no_fallback=no_fallback)
-        self.max_context_tokens = max_context_tokens  # 0 = use coro's default
-        self._temp_config = None  # temp config file with max_token override
+        self.max_context_tokens = max_context_tokens
+        self._temp_config = None
         self.model = self._read_model_from_config()
 
-        # If max_context_tokens is set, create a temp config with max_token
         if self.max_context_tokens > 0:
             self._temp_config = self._create_limited_config()
-        # Patterns for parsing coro output
         self.token_pattern = re.compile(
             r'(?:Input|Output|Total):\s*([\d,]+)\s*tokens?',
             re.IGNORECASE
         )
-        # Coro debug format: "Tokens: 3639 input + 80 output = 3719 total"
         self._coro_token_pattern = re.compile(
             r'Tokens:\s*(\d+)\s*input\s*\+\s*(\d+)\s*output\s*=\s*(\d+)\s*total'
         )
-        # Duration: "Duration: 2.26s"
         self._duration_pattern = re.compile(r'Duration:\s*([\d.]+)s')
-        # Pattern for ANSI escape codes (colors, cursor movement, etc.)
         self._ansi_pattern = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 
     def _find_config(self, no_fallback: bool = False) -> str | None:
-        """Find coro-native config (coro.json only).
-
-        Only passes coro.json to the coro CLI via -c. uwsal.json is the
-        agent loop's config format and is NOT compatible with coro's
-        expected config (which requires 'protocol', 'model', etc.).
-        The agent loop reads uwsal.json itself for API keys and settings.
-        """
-        # CWD coro.json — coro will find this itself
+        """Find coro-native config (coro.json only)."""
         if os.path.isfile('coro.json'):
             return None
         if no_fallback:
             return None
-        # Home directory fallback (coro.json only)
         path = os.path.expanduser('~/coro.json')
         if os.path.isfile(path):
             return path
         return None
 
     def _read_coro_config(self) -> dict:
-        """Read the full coro config from the best available path.
-
-        Checks uwsal.json first, then coro.json (CWD, then home).
-        """
+        """Read the full coro config from the best available path."""
         candidates = [self.config] if self.config else []
         for name in ['uwsal.json', 'coro.json']:
             if os.path.isfile(name):
@@ -105,9 +89,7 @@ class CoroBackend(AgentBackend):
         """Send message to coro CLI and get response."""
         prompt = self._format_prompt(message, context)
 
-        # Build command
         cmd = [self.command]
-        # Use temp config (with max_token) if available, else original
         config_path = self._temp_config or self.config
         if config_path:
             cmd.extend(['-c', config_path])
@@ -119,35 +101,24 @@ class CoroBackend(AgentBackend):
             cmd.extend(['--max-steps', str(self.max_steps)])
         cmd.append(prompt)
 
-        # Run coro in single-task mode
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minute timeout
+                timeout=300
             )
             output = result.stdout
             if result.stderr:
                 output += "\n" + result.stderr
 
         except subprocess.TimeoutExpired:
-            return AgentResponse(
-                content="[Error: Command timed out after 5 minutes]",
-                tokens={}
-            )
+            return AgentResponse(content="[Error: Command timed out after 5 minutes]", tokens={})
         except FileNotFoundError:
-            return AgentResponse(
-                content=f"[Error: Command '{self.command}' not found]",
-                tokens={}
-            )
+            return AgentResponse(content=f"[Error: Command '{self.command}' not found]", tokens={})
         except Exception as e:
-            return AgentResponse(
-                content=f"[Error: {e}]",
-                tokens={}
-            )
+            return AgentResponse(content=f"[Error: {e}]", tokens={})
 
-        # Parse the output
         content = self._clean_output(output)
         tokens = self._parse_tokens(output)
         tool_calls = self.parse_tool_calls(output)
@@ -168,12 +139,10 @@ class CoroBackend(AgentBackend):
         if not context:
             return message
 
-        # Format last few messages as context
         history_lines = []
-        for msg in context[-6:]:  # Last 6 messages (3 exchanges)
+        for msg in context[-6:]:
             role = "User" if msg.get('role') == 'user' else "Assistant"
             content = msg.get('content', '')
-            # Truncate very long messages in context
             if len(content) > 500:
                 content = content[:500] + "..."
             history_lines.append(f"{role}: {content}")
@@ -193,18 +162,15 @@ Current request: {message}"""
 
         for line in lines:
             plain = self._strip_ansi(line)
-            # Skip token report lines
             if self.token_pattern.search(plain):
                 continue
             if self._coro_token_pattern.search(plain):
                 continue
             if self._duration_pattern.search(plain):
                 continue
-            # Skip verbose/debug log lines (timestamps like 2026-...)
             if re.match(r'^\s*\d{4}-\d{2}-\d{2}T', plain):
                 continue
             stripped = plain.strip()
-            # Skip residual cursor control fragments after ANSI stripping
             if stripped and all(c in '[0123456789ABCDJKHfm;' for c in stripped):
                 continue
             if stripped in ['Previous conversation:', 'Current request:'] or \
@@ -212,7 +178,6 @@ Current request: {message}"""
                stripped.startswith('User: ') or \
                stripped.startswith('Assistant: '):
                 continue
-            # Skip common noise patterns
             if stripped in ['', '...', '─' * 10]:
                 blank_count += 1
                 if blank_count <= 1:
@@ -222,12 +187,9 @@ Current request: {message}"""
             blank_count = 0
             cleaned.append(line)
 
-        # Remove leading/trailing blank lines
         result = '\n'.join(cleaned).strip()
-        # Strip any remaining ANSI codes
         result = self._strip_ansi(result)
 
-        # Remove common assistant prefixes from claude output
         for prefix in ['A:', 'Assistant:', 'Claude:']:
             if result.startswith(prefix):
                 result = result[len(prefix):].strip()
@@ -240,19 +202,16 @@ Current request: {message}"""
         plain = self._strip_ansi(output)
         tokens = {}
 
-        # Try coro debug format first: "Tokens: N input + N output = N total"
         match = self._coro_token_pattern.search(plain)
         if match:
             tokens['input'] = int(match.group(1))
             tokens['output'] = int(match.group(2))
             tokens['total'] = int(match.group(3))
-            # Also extract duration if available
             dur = self._duration_pattern.search(plain)
             if dur:
                 tokens['duration'] = float(dur.group(1))
             return tokens
 
-        # Fall back to generic pattern
         for match in self.token_pattern.finditer(plain):
             line = plain[max(0, match.start()-20):match.end()]
             count = int(match.group(1).replace(',', ''))
@@ -267,12 +226,7 @@ Current request: {message}"""
         return tokens
 
     def parse_tool_calls(self, response: str) -> list[ToolCall]:
-        """Extract tool calls from coro output.
-
-        Note: This is a placeholder - actual implementation depends
-        on how coro formats tool calls in single-task mode.
-        """
-        # TODO: Parse actual tool call format from coro
+        """Extract tool calls from coro output."""
         return []
 
     @property

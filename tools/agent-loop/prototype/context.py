@@ -8,17 +8,17 @@ from enum import Enum
 class ContextBehavior(Enum):
     """How to handle context across messages."""
     CONTINUE = "continue"    # Full context, continue conversation
-    FRESH = "fresh"          # No context, each query independent
-    SLIDING = "sliding"      # Keep only last N messages
-    SUMMARIZE = "summarize"  # Summarize old context (future)
+    FRESH = "fresh"    # No context, each query independent
+    SLIDING = "sliding"    # Keep only last N messages
+    SUMMARIZE = "summarize"    # Summarize old context (future)
 
 
 class ContextFormat(Enum):
     """How to format context for the backend."""
-    PLAIN = "plain"          # Simple text with role prefixes
+    PLAIN = "plain"    # Simple text with role prefixes
     MARKDOWN = "markdown"    # Markdown formatted
-    JSON = "json"            # JSON array of messages
-    XML = "xml"              # XML structure
+    JSON = "json"    # JSON array of messages
+    XML = "xml"    # XML structure
 
 
 @dataclass
@@ -27,8 +27,9 @@ class Message:
     role: Literal["user", "assistant", "system", "tool"]
     content: str
     tokens: int = 0
-    tool_call_id: str = ""      # For role=tool: which tool call this responds to
-    tool_calls: list = field(default_factory=list)  # For role=assistant: raw tool call data
+    tool_call_id: str = ""
+    tool_calls: list = field(default_factory=list)
+
 
 
 def _count_words(text: str) -> int:
@@ -48,8 +49,8 @@ class ContextManager:
         self,
         max_tokens: int = 100000,
         max_messages: int = 50,
-        max_chars: int = 0,      # 0 = unlimited
-        max_words: int = 0,      # 0 = unlimited
+        max_chars: int = 0,
+        max_words: int = 0,
         behavior: ContextBehavior = ContextBehavior.CONTINUE,
         format: ContextFormat = ContextFormat.PLAIN
     ):
@@ -67,7 +68,6 @@ class ContextManager:
     def add_message(self, role: str, content: str, tokens: int = 0,
                     tool_call_id: str = "", tool_calls: list | None = None) -> None:
         """Add a message to the context."""
-        # Estimate tokens if not provided
         if tokens == 0:
             tokens = _estimate_tokens(content)
 
@@ -82,20 +82,16 @@ class ContextManager:
 
     def _trim_if_needed(self) -> None:
         """Remove old messages if any context limit is exceeded."""
-        # Trim by message count
         while len(self.messages) > self.max_messages:
             self._remove_oldest()
 
-        # Trim by token count (keep at least 1 message)
         while self._token_count > self.max_tokens and len(self.messages) > 1:
             self._remove_oldest()
 
-        # Trim by character count
         if self.max_chars > 0:
             while self._char_count > self.max_chars and len(self.messages) > 1:
                 self._remove_oldest()
 
-        # Trim by word count
         if self.max_words > 0:
             while self._word_count > self.max_words and len(self.messages) > 1:
                 self._remove_oldest()
@@ -118,24 +114,17 @@ class ContextManager:
         return d
 
     def get_context(self) -> list[dict]:
-        """Get context formatted for the backend.
-
-        Applies char/word limits at retrieval time by building from
-        newest to oldest, only including messages that fit.
-        """
+        """Get context formatted for the backend."""
         if self.behavior == ContextBehavior.FRESH:
             return []
 
         messages = self.messages
         if self.behavior == ContextBehavior.SLIDING:
-            # Keep only recent messages (use configured max_messages)
             messages = self.messages[-self.max_messages:]
 
-        # If no char/word limit, return all messages
         if self.max_chars <= 0 and self.max_words <= 0:
             return [self._msg_to_dict(msg) for msg in messages]
 
-        # Build from newest to oldest, respecting limits
         result = []
         total_chars = 0
         total_words = 0
@@ -143,7 +132,6 @@ class ContextManager:
             msg_chars = len(msg.content)
             msg_words = _count_words(msg.content)
 
-            # Check if adding this message would exceed limits
             if self.max_chars > 0 and total_chars + msg_chars > self.max_chars and result:
                 break
             if self.max_words > 0 and total_words + msg_words > self.max_words and result:
@@ -196,7 +184,7 @@ class ContextManager:
         """Format context as XML."""
         lines = ["<conversation>"]
         for msg in context:
-            lines.append(f'  <message role="{msg["role"]}">')
+            lines.append(f'  <message role="{msg["role"]}">'  )
             lines.append(f"    {msg['content']}")
             lines.append("  </message>")
         lines.append("</conversation>")
@@ -211,7 +199,7 @@ class ContextManager:
 
     @property
     def token_count(self) -> int:
-        """Current total token count (estimated if not provided)."""
+        """Current total token count."""
         return self._token_count
 
     @property
@@ -231,3 +219,4 @@ class ContextManager:
 
     def __len__(self) -> int:
         return len(self.messages)
+

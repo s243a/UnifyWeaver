@@ -165,7 +165,6 @@ class AliasManager:
 
         return "\n".join(lines)
 
-
 def create_default_aliases_file(path: str | Path | None = None) -> Path:
     """Create a default aliases file for user customization."""
     path = Path(path) if path else Path.home() / ".agent-loop" / "aliases.json"

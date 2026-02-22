@@ -1,4 +1,4 @@
-"""Claude Code CLI backend using stream-json for live progress."""
+"""Claude Code CLI backend using print mode"""
 
 import json
 import os
@@ -107,20 +107,13 @@ class ClaudeCodeBackend(AgentBackend):
 
         except subprocess.TimeoutExpired:
             proc.kill()
-            return AgentResponse(
-                content="[Error: Command timed out]",
-                tokens={}
-            )
+            return AgentResponse(content="[Error: Command timed out]", tokens={})
         except FileNotFoundError:
             return AgentResponse(
                 content=f"[Error: Command '{self.command}' not found. Install with: npm install -g @anthropic-ai/claude-code]",
-                tokens={}
-            )
+                tokens={})
         except Exception as e:
-            return AgentResponse(
-                content=f"[Error: {e}]",
-                tokens={}
-            )
+            return AgentResponse(content=f"[Error: {e}]", tokens={})
 
         return AgentResponse(
             content=content,

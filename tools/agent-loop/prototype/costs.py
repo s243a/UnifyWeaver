@@ -12,27 +12,21 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError
 
 
-# Pricing per 1M tokens (as of early 2025, approximate)
-# Users should update these as prices change
+# Pricing per 1M tokens (auto-generated from Prolog facts)
 DEFAULT_PRICING = {
-    # Claude models
     "claude-opus-4-20250514": {"input": 15.0, "output": 75.0},
     "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
-    "claude-haiku-3-5-20241022": {"input": 0.80, "output": 4.0},
-    # Aliases
+    "claude-haiku-3-5-20241022": {"input": 0.8, "output": 4.0},
     "opus": {"input": 15.0, "output": 75.0},
     "sonnet": {"input": 3.0, "output": 15.0},
-    "haiku": {"input": 0.80, "output": 4.0},
-    # OpenAI models
-    "gpt-4o": {"input": 2.50, "output": 10.0},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "haiku": {"input": 0.8, "output": 4.0},
+    "gpt-4o": {"input": 2.5, "output": 10.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     "gpt-4-turbo": {"input": 10.0, "output": 30.0},
     "gpt-4": {"input": 30.0, "output": 60.0},
-    "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
-    # Gemini (free tier has limits, these are paid tier)
-    "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
+    "gpt-3.5-turbo": {"input": 0.5, "output": 1.5},
+    "gemini-2.5-flash": {"input": 0.075, "output": 0.3},
     "gemini-2.5-pro": {"input": 1.25, "output": 5.0},
-    # Local models (free)
     "llama3": {"input": 0.0, "output": 0.0},
     "codellama": {"input": 0.0, "output": 0.0},
     "mistral": {"input": 0.0, "output": 0.0},
@@ -63,15 +57,10 @@ class CostTracker:
 
     def record_usage(self, model: str, input_tokens: int, output_tokens: int) -> UsageRecord:
         """Record token usage and calculate cost."""
-        # Get pricing for model
         pricing = self.pricing.get(model, {"input": 0.0, "output": 0.0})
-
-        # Calculate costs (pricing is per 1M tokens)
         input_cost = (input_tokens / 1_000_000) * pricing["input"]
         output_cost = (output_tokens / 1_000_000) * pricing["output"]
         total_cost = input_cost + output_cost
-
-        # Create record
         record = UsageRecord(
             timestamp=datetime.now().isoformat(),
             model=model,
@@ -81,13 +70,10 @@ class CostTracker:
             output_cost=output_cost,
             total_cost=total_cost
         )
-
-        # Update totals
         self.records.append(record)
         self.total_input_tokens += input_tokens
         self.total_output_tokens += output_tokens
         self.total_cost += total_cost
-
         return record
 
     def get_summary(self) -> dict:
@@ -145,7 +131,6 @@ class CostTracker:
         """Load cost data from JSON file."""
         path = Path(path)
         data = json.loads(path.read_text())
-
         tracker = cls()
         for r in data.get("records", []):
             record = UsageRecord(
@@ -161,7 +146,6 @@ class CostTracker:
             tracker.total_input_tokens += record.input_tokens
             tracker.total_output_tokens += record.output_tokens
             tracker.total_cost += record.total_cost
-
         return tracker
 
     def set_pricing(self, model: str, input_price: float, output_price: float) -> None:
@@ -169,13 +153,9 @@ class CostTracker:
         self.pricing[model] = {"input": input_price, "output": output_price}
 
     def ensure_pricing(self, model: str) -> bool:
-        """Ensure pricing exists for a model. Fetch from OpenRouter if needed.
-
-        Returns True if pricing is available (even if zero).
-        """
+        """Ensure pricing exists for a model. Fetch from OpenRouter if needed."""
         if model in self.pricing:
             return True
-        # Try OpenRouter lookup
         pricing = fetch_openrouter_pricing(model)
         if pricing:
             self.pricing[model] = pricing
@@ -215,17 +195,10 @@ def _save_openrouter_cache(pricing: dict) -> None:
 
 
 def fetch_openrouter_pricing(model_id: str) -> dict | None:
-    """Fetch pricing for a model from OpenRouter's API.
-
-    Returns dict with 'input' and 'output' keys (per 1M tokens),
-    or None if not found.
-    """
-    # Check cache first
+    """Fetch pricing for a model from OpenRouter's API."""
     cache = _load_openrouter_cache()
     if cache and model_id in cache:
         return cache[model_id]
-
-    # Fetch from API
     try:
         req = Request(
             'https://openrouter.ai/api/v1/models',
@@ -236,20 +209,15 @@ def fetch_openrouter_pricing(model_id: str) -> dict | None:
     except (URLError, json.JSONDecodeError, OSError) as e:
         print(f"  [OpenRouter pricing fetch failed: {e}]", file=sys.stderr)
         return None
-
-    # Parse all models into cache format: {model_id: {input: X, output: Y}}
     pricing_cache = {}
     for m in data.get('data', []):
         mid = m.get('id', '')
         p = m.get('pricing', {})
         prompt_per_token = float(p.get('prompt', '0') or '0')
         completion_per_token = float(p.get('completion', '0') or '0')
-        # Convert per-token to per-1M-tokens
         pricing_cache[mid] = {
             'input': round(prompt_per_token * 1_000_000, 4),
             'output': round(completion_per_token * 1_000_000, 4),
         }
-
     _save_openrouter_cache(pricing_cache)
-
     return pricing_cache.get(model_id)

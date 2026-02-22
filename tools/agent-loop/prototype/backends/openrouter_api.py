@@ -1,4 +1,4 @@
-"""OpenRouter API backend using urllib (no pip dependencies)."""
+"""OpenRouter API backend with model routing"""
 
 import json
 import os
@@ -14,13 +14,13 @@ DEFAULT_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Execute a bash command and return its output.",
+            "description": "Execute a bash command",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The bash command to execute"
+                        "description": "The command to execute"
                     }
                 },
                 "required": ["command"]
@@ -31,13 +31,13 @@ DEFAULT_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read",
-            "description": "Read the contents of a file.",
+            "description": "Read a file",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or relative file path to read"
+                        "description": "Path to file"
                     }
                 },
                 "required": ["path"]
@@ -48,17 +48,17 @@ DEFAULT_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write",
-            "description": "Write content to a file (creates or overwrites).",
+            "description": "Write content to a file",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path to write to"
+                        "description": "Path to file"
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write to the file"
+                        "description": "Content to write"
                     }
                 },
                 "required": ["path", "content"]
@@ -69,21 +69,21 @@ DEFAULT_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "edit",
-            "description": "Edit a file by replacing a unique string with a new string.",
+            "description": "Edit a file with search/replace",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path to edit"
+                        "description": "Path to file"
                     },
                     "old_string": {
                         "type": "string",
-                        "description": "The exact string to find (must be unique in the file)"
+                        "description": "Text to find"
                     },
                     "new_string": {
                         "type": "string",
-                        "description": "The replacement string"
+                        "description": "Replacement text"
                     }
                 },
                 "required": ["path", "old_string", "new_string"]
@@ -116,7 +116,7 @@ class OpenRouterBackend(AgentBackend):
             "Answer questions directly and concisely. "
             "When asked to perform tasks, use the available tools."
         )
-        self.tool_schemas = tools  # None = no tools, [] = explicit empty
+        self.tool_schemas = tools
 
         if not self.api_key:
             raise ValueError(
@@ -152,7 +152,6 @@ class OpenRouterBackend(AgentBackend):
         if message and (not context or context[-1].get('content') != message):
             messages.append({"role": "user", "content": message})
 
-        # Build request body
         body = {
             "model": self.model,
             "messages": messages,
@@ -164,7 +163,6 @@ class OpenRouterBackend(AgentBackend):
             body["tools"] = self.tool_schemas
             body["tool_choice"] = "auto"
 
-        # Make API request
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         req_data = json.dumps(body).encode('utf-8')
 
@@ -208,7 +206,6 @@ class OpenRouterBackend(AgentBackend):
                 tokens={}
             )
 
-        # Parse response
         content = ""
         tool_calls = []
         tokens = {}
@@ -217,10 +214,8 @@ class OpenRouterBackend(AgentBackend):
             choice = data['choices'][0]
             msg = choice.get('message', {})
 
-            # Text content
             content = msg.get('content') or ''
 
-            # Tool calls
             for tc in msg.get('tool_calls', []):
                 if tc.get('type') == 'function':
                     func = tc.get('function', {})
@@ -238,7 +233,6 @@ class OpenRouterBackend(AgentBackend):
                             func.get('name', '?'), arguments)
                         on_status(f"[{len(tool_calls)}] {desc}")
 
-        # Token usage
         usage = data.get('usage', {})
         if usage:
             tokens = {
@@ -255,6 +249,7 @@ class OpenRouterBackend(AgentBackend):
         )
 
     def supports_streaming(self) -> bool:
+        """OpenRouter supports streaming."""
         return True
 
     def send_message_streaming(self, message: str, context: list[dict],

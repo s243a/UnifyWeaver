@@ -60,14 +60,13 @@ _GUARDED_EXTRA_BLOCKS = [
     r'\beval\s',
     r'\bnohup\s',
     r'\bdisown\s',
-    r'&\s*$',                              # backgrounding
+    r'&\s*$',
     r'\bpython[23]?\s+-c\s.*os\.system',
     r'\bpython[23]?\s+-c\s.*subprocess',
     r'\bpython[23]?\s+-c\s.*__import__',
     r'\bnode\s+-e\s.*child_process',
 ]
 
-# Commands that are inherently safe (read-only / harmless) — skip confirmation
 _PARANOID_SAFE = [
     r'^ls(\s|$)',
     r'^cat\s',
@@ -80,15 +79,13 @@ _PARANOID_SAFE = [
     r'^wc\s',
     r'^sort\s',
     r'^diff\s',
-    r'^git\s+(status|log|diff|show|branch)',  # read-only git
+    r'^git\s+(status|log|diff|show|branch)',
 ]
 
-# Commands that are allowed but potentially dangerous — still ask for confirmation
 _PARANOID_CONFIRM = [
-    # find: block -exec, -execdir, -delete, -ok; no chaining
     r'^find\s+(?!.*(-exec|-execdir|-delete|-ok)\b)[^;|&]*$',
-    r'^python3\s+[^-].*\.py$',             # run .py files, no -c
-    r'^node\s+[^-].*\.js$',                # run .js files, no -e
+    r'^python3\s+[^-].*\.py$',
+    r'^node\s+[^-].*\.js$',
 ]
 
 # Combined allowlist (safe + confirm)
@@ -137,8 +134,8 @@ def get_builtin_profiles() -> dict[str, SecurityProfile]:
             audit_logging='forensic',
             network_isolation='blocked',
             anomaly_detection=True,
-            max_file_read_size=1_048_576,     # 1 MB
-            max_file_write_size=10_485_760,   # 10 MB
+            max_file_read_size=1048576,
+            max_file_write_size=10485760,
         ),
     }
 

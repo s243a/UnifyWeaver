@@ -860,7 +860,8 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
         cmd = _resolve_command('coro', agent_config.command, 'coro',
                                _CLI_FALLBACKS['coro'], no_fallback)
         return CoroBackend(
-            command=cmd, no_fallback=no_fallback,
+            command=cmd,
+            no_fallback=no_fallback,
             max_context_tokens=agent_config.max_context_tokens
             if agent_config.max_context_tokens != 100000 else 0
         )

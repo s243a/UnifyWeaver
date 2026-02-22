@@ -860,7 +860,8 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
         cmd = _resolve_command('coro', agent_config.command, 'coro',
                                _CLI_FALLBACKS['coro'], no_fallback)
         return CoroBackend(
-            command=cmd, no_fallback=no_fallback,
+            command=cmd,
+            no_fallback=no_fallback,
             max_context_tokens=agent_config.max_context_tokens
             if agent_config.max_context_tokens != 100000 else 0
         )
@@ -1056,9 +1057,7 @@ def main():
         '--approval-mode',
         choices=['default', 'auto_edit', 'yolo', 'plan'],
         default='yolo',
-        help='Tool approval mode (default: yolo). '
-             'default=prompt, auto_edit=auto-approve edits, '
-             'yolo=auto-approve all, plan=read-only'
+        help='Tool approval mode (default: yolo). default=prompt, auto_edit=auto-approve edits, yolo=auto-approve all, plan=read-only'
     )
     parser.add_argument(
         '--allowed-tools',
@@ -1088,9 +1087,7 @@ def main():
         '--security-profile',
         choices=['open', 'cautious', 'guarded', 'paranoid'],
         default=None,
-        help='Security profile (default: cautious). '
-             'open=no checks, cautious=path+command validation, '
-             'guarded=proxy+audit+extra blocks, paranoid=allowlist-only'
+        help='Security profile (default: cautious). open=no checks, cautious=path+command validation, guarded=proxy+audit+extra blocks, paranoid=allowlist-only'
     )
     parser.add_argument(
         '--no-security',
