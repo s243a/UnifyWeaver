@@ -1,37 +1,38 @@
-"""Anthropic Claude API backend"""
+"""OpenAI API backend"""
 
 import os
 from .base import AgentBackend, AgentResponse, ToolCall
 
-# Try to import anthropic, but don't fail if not installed
+# Try to import openai, but don't fail if not installed
 try:
-    import anthropic
-    HAS_ANTHROPIC = True
+    import openai
+    HAS_OPENAI = True
 except ImportError:
-    HAS_ANTHROPIC = False
+    HAS_OPENAI = False
 
 
-class ClaudeAPIBackend(AgentBackend):
-    """Anthropic Claude API backend."""
+class OpenAIBackend(AgentBackend):
+    """OpenAI API backend (GPT-4, GPT-3.5, etc.)."""
 
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "gpt-4o",
         max_tokens: int = 4096,
-        system_prompt: str | None = None
+        system_prompt: str | None = None,
+        base_url: str | None = None
     ):
-        if not HAS_ANTHROPIC:
+        if not HAS_OPENAI:
             raise ImportError(
-                "anthropic package not installed. "
-                "Install with: pip install anthropic"
+                "openai package not installed. "
+                "Install with: pip install openai"
             )
 
         # Get API key from parameter or environment
-        self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
+        self.api_key = api_key or os.environ.get('OPENAI_API_KEY')
         if not self.api_key:
             raise ValueError(
-                "API key required. Set ANTHROPIC_API_KEY environment variable "
+                "API key required. Set OPENAI_API_KEY environment variable "
                 "or pass api_key parameter."
             )
 
@@ -40,13 +41,20 @@ class ClaudeAPIBackend(AgentBackend):
         self.system_prompt = system_prompt or (
             "You are a helpful AI assistant. Be concise and direct."
         )
+        self.base_url = base_url
 
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        client_kwargs = {"api_key": self.api_key}
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+
+        self.client = openai.OpenAI(**client_kwargs)
 
     def send_message(self, message: str, context: list[dict], **kwargs) -> AgentResponse:
-        """Send message to Claude API and get response."""
+        """Send message to OpenAI API and get response."""
         # Build messages array
-        messages = []
+        messages = [
+            {"role": "system", "content": self.system_prompt}
+        ]
 
         # Add context messages
         for msg in context:
@@ -59,23 +67,24 @@ class ClaudeAPIBackend(AgentBackend):
         # Note: current message is already in context (added by agent_loop)
 
         try:
-            response = self.client.messages.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                system=self.system_prompt,
                 messages=messages
             )
 
             content = ""
-            for block in response.content:
-                if hasattr(block, 'text'):
-                    content += block.text
+            if response.choices and len(response.choices) > 0:
+                choice = response.choices[0]
+                if choice.message and choice.message.content:
+                    content = choice.message.content
 
             tokens = {}
-            if hasattr(response, 'usage'):
+            if response.usage:
                 tokens = {
-                    'input': response.usage.input_tokens,
-                    'output': response.usage.output_tokens
+                    'input': response.usage.prompt_tokens,
+                    'output': response.usage.completion_tokens,
+                    'total': response.usage.total_tokens
                 }
 
             tool_calls = self._extract_tool_calls(response)
@@ -87,7 +96,7 @@ class ClaudeAPIBackend(AgentBackend):
                 raw=response
             )
 
-        except anthropic.APIError as e:
+        except openai.APIError as e:
             return AgentResponse(
                 content=f"[API Error: {e}]",
                 tokens={}
@@ -99,15 +108,28 @@ class ClaudeAPIBackend(AgentBackend):
             )
 
     def _extract_tool_calls(self, response) -> list[ToolCall]:
-        """Extract tool use blocks from response."""
+        """Extract tool calls from response."""
         tool_calls = []
 
-        for block in response.content:
-            if hasattr(block, 'type') and block.type == 'tool_use':
+        if not response.choices or len(response.choices) == 0:
+            return tool_calls
+
+        choice = response.choices[0]
+        if not choice.message or not choice.message.tool_calls:
+            return tool_calls
+
+        for tc in choice.message.tool_calls:
+            if tc.type == "function":
+                import json
+                try:
+                    arguments = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    arguments = {"raw": tc.function.arguments}
+
                 tool_calls.append(ToolCall(
-                    name=block.name,
-                    arguments=block.input,
-                    id=block.id
+                    name=tc.function.name,
+                    arguments=arguments,
+                    id=tc.id
                 ))
 
         return tool_calls
@@ -125,45 +147,50 @@ class ClaudeAPIBackend(AgentBackend):
             context: Conversation context
             on_token: Callback called for each token chunk (str) -> None
         """
-        messages = []
+        messages = [{"role": "system", "content": self.system_prompt}]
         for msg in context:
             if msg.get('role') in ('user', 'assistant'):
                 messages.append({
                     "role": msg['role'],
                     "content": msg['content']
                 })
-        # Note: current message is already in context (added by agent_loop)
+        messages.append({"role": "user", "content": message})
 
         try:
             content_parts = []
+
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=messages,
+                stream=True,
+                stream_options={"include_usage": True}
+            )
+
             input_tokens = 0
             output_tokens = 0
 
-            with self.client.messages.stream(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                system=self.system_prompt,
-                messages=messages
-            ) as stream:
-                for text in stream.text_stream:
-                    content_parts.append(text)
-                    if on_token:
-                        on_token(text)
+            for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        content_parts.append(delta.content)
+                        if on_token:
+                            on_token(delta.content)
 
-                response = stream.get_final_message()
-                if hasattr(response, 'usage'):
-                    input_tokens = response.usage.input_tokens
-                    output_tokens = response.usage.output_tokens
+                if chunk.usage:
+                    input_tokens = chunk.usage.prompt_tokens
+                    output_tokens = chunk.usage.completion_tokens
 
             content = "".join(content_parts)
             return AgentResponse(
                 content=content,
                 tool_calls=[],
                 tokens={'input': input_tokens, 'output': output_tokens},
-                raw=response
+                raw=None
             )
 
-        except anthropic.APIError as e:
+        except openai.APIError as e:
             return AgentResponse(
                 content=f"[API Error: {e}]",
                 tokens={}
@@ -175,9 +202,9 @@ class ClaudeAPIBackend(AgentBackend):
             )
 
     def supports_streaming(self) -> bool:
-        """Claude API supports streaming."""
+        """OpenAI API supports streaming."""
         return True
 
     @property
     def name(self) -> str:
-        return f"Claude API ({self.model})"
+        return f"OpenAI ({self.model})"
