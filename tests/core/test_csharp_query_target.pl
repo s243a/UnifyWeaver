@@ -41,6 +41,8 @@
 :- dynamic user:test_recursive_label_path_cat_asym/4.
 :- dynamic user:test_recursive_label_path_cat_medium_selective/4.
 :- dynamic user:test_recursive_label_path_cat_medium_dense/4.
+:- dynamic user:test_recursive_label_path_cat_dual_filter_selective/4.
+:- dynamic user:test_recursive_label_path_cat_dual_filter_dense/4.
 :- dynamic user:test_recursive_label_path_cat_tie/4.
 :- dynamic user:test_recursive_label_path_distinct_unfiltered/4.
 :- dynamic user:test_sparse_input_fact/3.
@@ -252,6 +254,8 @@ test_csharp_query_target :-
         verify_recursive_multi_key_recursive_selection_join_tiny_probe_prefers_hash_build,
         verify_recursive_multi_key_recursive_selection_join_medium_selective_prefers_build_filtered,
         verify_recursive_multi_key_recursive_selection_join_medium_dense_probe_avoids_tiny_hash_build,
+        verify_recursive_multi_key_recursive_selection_join_dual_filter_selective_prefers_tiny_probe,
+        verify_recursive_multi_key_recursive_selection_join_dual_filter_dense_avoids_tiny_probe,
         verify_parameterized_sparse_input_positions_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
@@ -755,6 +759,38 @@ setup_test_data :-
         test_recursive_label_path_cat_medium_dense(X, Y, L, Cat),
         test_recursive_label_path_cat_medium_dense(Y, Z, L, cat1)
     )),
+    forall(between(1, 8, I),
+        (   format(atom(Source), 'adfs~w', [I]),
+            format(atom(Key), 'adfk~w', [I]),
+            format(atom(Target), 'adft~w', [I]),
+            assertz(user:test_recursive_label_path_cat_dual_filter_selective(Source, Key, red, cat1)),
+            assertz(user:test_recursive_label_path_cat_dual_filter_selective(Key, Target, red, cat2))
+        )),
+    forall(between(9, 96, I),
+        (   format(atom(Key), 'adfk_extra~w', [I]),
+            format(atom(Target), 'adft_extra~w', [I]),
+            assertz(user:test_recursive_label_path_cat_dual_filter_selective(Key, Target, blue, cat2))
+        )),
+    assertz(user:(test_recursive_label_path_cat_dual_filter_selective(X, Z, L, Cat) :-
+        test_catmix(Cat),
+        test_recursive_label_path_cat_dual_filter_selective(X, Y, L, cat1),
+        test_recursive_label_path_cat_dual_filter_selective(Y, Z, L, cat2)
+    )),
+    forall(between(1, 48, I),
+        (   format(atom(Source), 'adfd_s~w', [I]),
+            format(atom(Key), 'adfd_k~w', [I]),
+            assertz(user:test_recursive_label_path_cat_dual_filter_dense(Source, Key, red, cat1))
+        )),
+    forall(between(1, 64, I),
+        (   format(atom(Key), 'adfd_k~w', [I]),
+            format(atom(Target), 'adfd_t~w', [I]),
+            assertz(user:test_recursive_label_path_cat_dual_filter_dense(Key, Target, red, cat2))
+        )),
+    assertz(user:(test_recursive_label_path_cat_dual_filter_dense(X, Z, L, Cat) :-
+        test_catmix(Cat),
+        test_recursive_label_path_cat_dual_filter_dense(X, Y, L, cat1),
+        test_recursive_label_path_cat_dual_filter_dense(Y, Z, L, cat2)
+    )),
     assertz(user:test_recursive_label_path_cat_tie(a, k1, red, cat1)),
     assertz(user:test_recursive_label_path_cat_tie(b, k1, red, cat1)),
     assertz(user:test_recursive_label_path_cat_tie(c, k2, red, cat1)),
@@ -1034,6 +1070,8 @@ cleanup_test_data :-
     retractall(user:test_recursive_label_path_cat_asym(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_medium_selective(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_medium_dense(_, _, _, _)),
+    retractall(user:test_recursive_label_path_cat_dual_filter_selective(_, _, _, _)),
+    retractall(user:test_recursive_label_path_cat_dual_filter_dense(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_tie(_, _, _, _)),
     retractall(user:test_recursive_label_path_distinct_unfiltered(_, _, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
@@ -2730,6 +2768,62 @@ verify_recursive_multi_key_recursive_selection_join_medium_dense_probe_avoids_ti
         ['STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
         [],
         HarnessSource).
+
+verify_recursive_multi_key_recursive_selection_join_dual_filter_selective_prefers_tiny_probe :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_dual_filter_selective/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_dual_filter_selective, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_dual_filter_selective, arity:4}, role:_, width:_}, Left),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_dual_filter_selective, arity:4}, role:_, width:_}, Right),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_any_strategy_flag_quiet_no_reuse(
+        ModuleClass,
+        [],
+        ['KeyJoinRecursiveTinyProbeHashBuildLeft', 'KeyJoinRecursiveTinyProbeHashBuildRight'],
+        'KeyJoinRecursiveTinyProbeHashBuild',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinRecursiveTinyProbeHashBuild=true'],
+        [],
+        HarnessSource).
+
+verify_recursive_multi_key_recursive_selection_join_dual_filter_dense_avoids_tiny_probe :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_dual_filter_dense/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_dual_filter_dense, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_dual_filter_dense, arity:4}, role:_, width:_}, Left),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_dual_filter_dense, arity:4}, role:_, width:_}, Right),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_any_strategy_flag_quiet_no_reuse(
+        ModuleClass,
+        [],
+        ['KeyJoinRecursiveTinyProbeHashBuildLeft', 'KeyJoinRecursiveTinyProbeHashBuildRight'],
+        'KeyJoinRecursiveTinyProbeHashBuild',
+        TinyProbeHarness),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinRecursiveTinyProbeHashBuild=false'],
+        [],
+        TinyProbeHarness),
+    harness_source_with_any_strategy_flag_quiet_no_reuse(
+        ModuleClass,
+        [],
+        ['KeyJoinRecursiveBuildFilteredLeft', 'KeyJoinRecursiveBuildFilteredRight'],
+        'KeyJoinRecursiveBuildFiltered',
+        BuildFilteredHarness),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinRecursiveBuildFiltered=true'],
+        [],
+        BuildFilteredHarness).
 
 expected_recursive_tiny_probe_strategy(Left, Right, 'KeyJoinRecursiveTinyProbeHashBuildLeft') :-
     filtered_recursive_node(Left),
@@ -4675,6 +4769,30 @@ var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
 Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
 ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
 
+harness_source_with_any_strategy_flag_quiet_no_reuse(ModuleClass, Params, Strategies, Label, Source) :-
+    csharp_string_array_literal(Strategies, StrategiesLiteral),
+    (   Params == []
+    ->  ParamDecl = 'var trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: false));
+var strategyNames = ~w;
+~wforeach (var _ in ~w)
+{
+}
+var used = trace.SnapshotStrategies().Any(s => strategyNames.Contains(s.Strategy));
+Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+', [ModuleClass, StrategiesLiteral, ParamDecl, ExecCall, Label]).
+
 harness_source_with_strategy_flag_no_reuse(ModuleClass, Params, Strategy, Source) :-
     (   Params == []
     ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\nvar trace = new QueryExecutionTrace();\n',
@@ -4926,6 +5044,14 @@ csharp_params_literal(Params, Literal) :-
     maplist(csharp_tuple_literal, Params, TupleLits),
     atomic_list_concat(TupleLits, ", ", TuplesStr),
     format(atom(Literal), 'new object[][]{ ~w }', [TuplesStr]).
+
+csharp_string_array_literal(Values, Literal) :-
+    maplist(csharp_string_literal, Values, QuotedValues),
+    atomic_list_concat(QuotedValues, ", ", ValuesStr),
+    format(atom(Literal), 'new[] { ~w }', [ValuesStr]).
+
+csharp_string_literal(Value, Literal) :-
+    format(atom(Literal), '\"~w\"', [Value]).
 
 csharp_tuple_literal(Tuple, Literal) :-
     maplist(csharp_value_literal, Tuple, Values),

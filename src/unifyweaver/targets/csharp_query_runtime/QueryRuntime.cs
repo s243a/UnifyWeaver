@@ -4126,9 +4126,31 @@ namespace UnifyWeaver.QueryRuntime
 
                             if (leftFilteredRowCount != rightFilteredRowCount)
                             {
-                                buildLeft = leftFilteredRowCount <= rightFilteredRowCount;
-                                trace?.RecordStrategy(join, buildLeft ? "KeyJoinRecursiveBuildFilteredLeft" : "KeyJoinRecursiveBuildFilteredRight");
-                                usedRecursiveBuildSelectivity = true;
+                                // When both recursive sides are filtered and highly skewed, prefer the larger side as
+                                // the index/build side so the smaller side can be treated as a tiny probe.
+                                var smallerFilteredRowCount = Math.Min(leftFilteredRowCount, rightFilteredRowCount);
+                                var largerFilteredRowCount = Math.Max(leftFilteredRowCount, rightFilteredRowCount);
+                                var dualFilteredTinyProbeCandidate =
+                                    leftRecursiveFilter is not null &&
+                                    rightRecursiveFilter is not null &&
+                                    smallerFilteredRowCount > 0 &&
+                                    smallerFilteredRowCount <= 32 &&
+                                    largerFilteredRowCount >= smallerFilteredRowCount * 2;
+
+                                if (dualFilteredTinyProbeCandidate)
+                                {
+                                    buildLeft = leftFilteredRowCount >= rightFilteredRowCount;
+                                    trace?.RecordStrategy(join, buildLeft
+                                        ? "KeyJoinRecursiveBuildFilteredTinyProbeCandidateRight"
+                                        : "KeyJoinRecursiveBuildFilteredTinyProbeCandidateLeft");
+                                    usedRecursiveBuildSelectivity = true;
+                                }
+                                else
+                                {
+                                    buildLeft = leftFilteredRowCount <= rightFilteredRowCount;
+                                    trace?.RecordStrategy(join, buildLeft ? "KeyJoinRecursiveBuildFilteredLeft" : "KeyJoinRecursiveBuildFilteredRight");
+                                    usedRecursiveBuildSelectivity = true;
+                                }
                             }
                             else if (leftFilteredRowCount > 0)
                             {
@@ -4272,10 +4294,13 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (!probeTooLarge)
                     {
+                        var dualFilteredTinyProbe =
+                            leftRecursiveFilter is not null &&
+                            rightRecursiveFilter is not null &&
+                            estimatedLeftBuildRows >= Math.Max(8, probeRows.Count * 2);
                         if (probeRows.Count > 0 &&
                             probeRows.Count <= tinyProbeHashBuildUpperBound &&
-                            leftRecursiveFilter is null &&
-                            rightRecursiveFilter is not null &&
+                            ((leftRecursiveFilter is null && rightRecursiveFilter is not null) || dualFilteredTinyProbe) &&
                             !HasCachedRecursiveFactIndex(context, leftPredicate, leftKind, join.LeftKeys, leftRecursiveRows))
                         {
                             trace?.RecordStrategy(join, "KeyJoinRecursiveTinyProbeHashBuildRight");
@@ -4561,10 +4586,13 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (!probeTooLarge)
                     {
+                        var dualFilteredTinyProbe =
+                            rightRecursiveFilter is not null &&
+                            leftRecursiveFilter is not null &&
+                            estimatedRightBuildRows >= Math.Max(8, probeRows.Count * 2);
                         if (probeRows.Count > 0 &&
                             probeRows.Count <= tinyProbeHashBuildUpperBound &&
-                            rightRecursiveFilter is null &&
-                            leftRecursiveFilter is not null &&
+                            ((rightRecursiveFilter is null && leftRecursiveFilter is not null) || dualFilteredTinyProbe) &&
                             !HasCachedRecursiveFactIndex(context, rightPredicate, rightKind, join.RightKeys, rightRecursiveRows))
                         {
                             trace?.RecordStrategy(join, "KeyJoinRecursiveTinyProbeHashBuildLeft");
