@@ -1,3 +1,6 @@
 [submodule "examples/sci-repl/prototype"]
 	path = examples/sci-repl/prototype
 	url = https://github.com/s243a/SciREPL.git
+[submodule "tools/agent-loop/prototype"]
+	path = tools/agent-loop/prototype
+	url = git@github.com:s243a/uwsal.git
