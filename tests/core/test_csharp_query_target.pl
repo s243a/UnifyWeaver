@@ -226,6 +226,8 @@ test_csharp_query_target :-
         verify_multi_key_both_scan_join_strategy_partial_index,
         verify_both_scan_join_selective_probe_uses_partial_index,
         verify_both_scan_join_filter_selective_probe_uses_partial_index,
+        verify_multi_key_both_scan_join_rowcount_tie_prefers_distinct_tie_break_left,
+        verify_multi_key_both_scan_join_rowcount_tie_prefers_distinct_tie_break_right,
         verify_hash_build_prefers_smaller_non_scan_side,
         verify_hash_build_prefers_selective_pattern_scan_wrapped,
         verify_hash_build_rowcount_tie_uses_cost_tie_breaker,
@@ -1903,6 +1905,86 @@ verify_both_scan_join_filter_selective_probe_uses_partial_index :-
         ['v1',
          'v2',
          'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [],
+        HarnessSource).
+
+verify_multi_key_both_scan_join_rowcount_tie_prefers_distinct_tie_break_left :-
+    Plan = plan{
+        head:predicate{name:test_scan_scan_multikey_tie_break_left, arity:1},
+        root:projection{
+            type:projection,
+            input:join{
+                type:join,
+                left:relation_scan{
+                    type:relation_scan,
+                    predicate:predicate{name:test_scan_scan_tie_left, arity:3},
+                    width:3
+                },
+                right:relation_scan{
+                    type:relation_scan,
+                    predicate:predicate{name:test_scan_scan_tie_right, arity:3},
+                    width:3
+                },
+                left_keys:[0, 1],
+                right_keys:[0, 1],
+                left_width:3,
+                right_width:3,
+                width:6
+            },
+            columns:[2],
+            width:1
+        },
+        is_recursive:false,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_scan_scan_tie_left, arity:3}, facts:[[k1, s1, l1], [k2, s2, l2], [k3, s3, l3], [k4, s4, l4]]},
+            relation{predicate:predicate{name:test_scan_scan_tie_right, arity:3}, facts:[[k1, s1, r1], [k1, s1, r2], [k1, s1, r3], [k1, s1, r4]]}
+        ]
+    },
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinScanBuildDistinctTieBreakLeft', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinScanBuildDistinctTieBreakLeft=true'],
+        [],
+        HarnessSource).
+
+verify_multi_key_both_scan_join_rowcount_tie_prefers_distinct_tie_break_right :-
+    Plan = plan{
+        head:predicate{name:test_scan_scan_multikey_tie_break_right, arity:1},
+        root:projection{
+            type:projection,
+            input:join{
+                type:join,
+                left:relation_scan{
+                    type:relation_scan,
+                    predicate:predicate{name:test_scan_scan_tie_left, arity:3},
+                    width:3
+                },
+                right:relation_scan{
+                    type:relation_scan,
+                    predicate:predicate{name:test_scan_scan_tie_right, arity:3},
+                    width:3
+                },
+                left_keys:[0, 1],
+                right_keys:[0, 1],
+                left_width:3,
+                right_width:3,
+                width:6
+            },
+            columns:[2],
+            width:1
+        },
+        is_recursive:false,
+        metadata:metadata{modes:[]},
+        relations:[
+            relation{predicate:predicate{name:test_scan_scan_tie_left, arity:3}, facts:[[k1, s1, l1], [k1, s1, l2], [k1, s1, l3], [k1, s1, l4]]},
+            relation{predicate:predicate{name:test_scan_scan_tie_right, arity:3}, facts:[[k1, s1, r1], [k2, s2, r2], [k3, s3, r3], [k4, s4, r4]]}
+        ]
+    },
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinScanBuildDistinctTieBreakRight', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinScanBuildDistinctTieBreakRight=true'],
         [],
         HarnessSource).
 

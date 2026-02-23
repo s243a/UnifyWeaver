@@ -2372,6 +2372,60 @@ namespace UnifyWeaver.QueryRuntime
                             return count;
                         }
 
+                        int EstimateDistinctScanJoinKeyCount(
+                            PredicateId predicate,
+                            IReadOnlyList<object[]> facts,
+                            object[]? pattern,
+                            Func<object[], bool>? filter,
+                            IReadOnlyList<int> keyIndices,
+                            EvaluationContext executionContext)
+                        {
+                            if (facts.Count == 0 || keyIndices.Count == 0)
+                            {
+                                return 0;
+                            }
+
+                            const int MaxSampleRows = 128;
+                            var seenKeys = new HashSet<RowWrapper>(StructuralRowWrapperComparer);
+                            var sampledRows = 0;
+                            var candidates = pattern is null
+                                ? facts
+                                : SelectFactsForPattern(predicate, facts, pattern, executionContext);
+
+                            foreach (var tuple in candidates)
+                            {
+                                if (tuple is null)
+                                {
+                                    continue;
+                                }
+
+                                if (pattern is not null && !TupleMatchesPattern(tuple, pattern))
+                                {
+                                    continue;
+                                }
+
+                                if (filter is not null && !filter(tuple))
+                                {
+                                    continue;
+                                }
+
+                                var key = new object[keyIndices.Count];
+                                for (var i = 0; i < keyIndices.Count; i++)
+                                {
+                                    key[i] = GetLookupKey(tuple, keyIndices[i], NullFactIndexKey);
+                                }
+
+                                seenKeys.Add(new RowWrapper(key));
+                                sampledRows++;
+                                if (sampledRows >= MaxSampleRows)
+                                {
+                                    break;
+                                }
+                            }
+
+                            return seenKeys.Count;
+                        }
+
                         var estimatedLeftProbe = leftScanPattern is null
                             ? leftFacts.Count
                             : CountMatchingPattern(
@@ -2384,7 +2438,10 @@ namespace UnifyWeaver.QueryRuntime
                                 SelectFactsForPattern(rightScanPredicate, rightFacts, rightScanPattern, context),
                                 rightScanPattern);
 
-                        var buildScanOnLeft = (long)leftFacts.Count + estimatedRightProbe <= (long)rightFacts.Count + estimatedLeftProbe;
+                        var leftScanBuildCost = (long)leftFacts.Count + estimatedRightProbe;
+                        var rightScanBuildCost = (long)rightFacts.Count + estimatedLeftProbe;
+                        var hasScanBuildCostTie = leftScanBuildCost == rightScanBuildCost;
+                        var buildScanOnLeft = leftScanBuildCost <= rightScanBuildCost;
 
                         var leftIndexCached = leftIndexKeys.Count == 1
                             ? context.FactIndices.ContainsKey((leftScanPredicate, leftIndexKeys[0]))
@@ -2397,6 +2454,32 @@ namespace UnifyWeaver.QueryRuntime
                         if (leftIndexCached != rightIndexCached)
                         {
                             buildScanOnLeft = leftIndexCached;
+                        }
+                        else if (hasScanBuildCostTie && keyCount > 1)
+                        {
+                            var leftDistinctKeyCount = EstimateDistinctScanJoinKeyCount(
+                                leftScanPredicate,
+                                leftFacts,
+                                leftScanPattern,
+                                leftScanFilter,
+                                join.LeftKeys,
+                                context);
+                            var rightDistinctKeyCount = EstimateDistinctScanJoinKeyCount(
+                                rightScanPredicate,
+                                rightFacts,
+                                rightScanPattern,
+                                rightScanFilter,
+                                join.RightKeys,
+                                context);
+
+                            if (leftDistinctKeyCount != rightDistinctKeyCount)
+                            {
+                                buildScanOnLeft = leftDistinctKeyCount >= rightDistinctKeyCount;
+                                trace?.RecordStrategy(join, "KeyJoinScanBuildDistinctTieBreak");
+                                trace?.RecordStrategy(join, buildScanOnLeft
+                                    ? "KeyJoinScanBuildDistinctTieBreakLeft"
+                                    : "KeyJoinScanBuildDistinctTieBreakRight");
+                            }
                         }
 
                         if (buildScanOnLeft)
