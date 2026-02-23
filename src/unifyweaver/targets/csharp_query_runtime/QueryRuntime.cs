@@ -2313,6 +2313,25 @@ namespace UnifyWeaver.QueryRuntime
                 return seenKeys.Count;
             }
 
+            static int ComputeAdaptiveTinyProbeUpperBound(
+                int defaultUpperBound,
+                int minUpperBound,
+                int maxUpperBound,
+                int estimatedBuildRows,
+                int? estimatedProbeUpperBound)
+            {
+                var fallback = Math.Clamp(defaultUpperBound, minUpperBound, maxUpperBound);
+                if (estimatedBuildRows <= 0 || estimatedProbeUpperBound is null || estimatedProbeUpperBound.Value <= 0)
+                {
+                    return fallback;
+                }
+
+                var ratio = (double)estimatedBuildRows / Math.Max(1, estimatedProbeUpperBound.Value);
+                var scale = Math.Sqrt(Math.Max(0.25, ratio));
+                var candidate = (int)Math.Round(defaultUpperBound * scale);
+                return Math.Clamp(candidate, minUpperBound, maxUpperBound);
+            }
+
             if (context is not null)
             {
                 var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern, out var leftScanFilter);
@@ -4202,7 +4221,22 @@ namespace UnifyWeaver.QueryRuntime
                     context.RecursiveJoinIndices.TryGetValue((leftPredicate, leftKind, signature), out var cachedJoinIndex) &&
                     ReferenceEquals(cachedJoinIndex.Rows, leftRecursiveRows);
 
-                const int TinyProbeUpperBound = 64;
+                var estimatedLeftBuildRows = EstimateFilteredRecursiveRowCount(leftRecursiveRows, leftRecursiveFilter);
+                int? estimatedRightProbeUpperBound = null;
+                if (TryEstimateRowUpperBound(join.Right, context, out var rightProbeUpperBoundEstimate) &&
+                    rightProbeUpperBoundEstimate != int.MaxValue)
+                {
+                    estimatedRightProbeUpperBound = rightProbeUpperBoundEstimate;
+                }
+
+                var tinyProbeUpperBound = ComputeAdaptiveTinyProbeUpperBound(
+                    defaultUpperBound: 64,
+                    minUpperBound: 16,
+                    maxUpperBound: 256,
+                    estimatedBuildRows: estimatedLeftBuildRows,
+                    estimatedProbeUpperBound: estimatedRightProbeUpperBound);
+                var tinyProbeHashBuildUpperBound = Math.Clamp(Math.Max(32, tinyProbeUpperBound / 2), 16, 128);
+
                 if (!joinIndexCached)
                 {
                     var probeSource = Evaluate(join.Right, context);
@@ -4229,7 +4263,7 @@ namespace UnifyWeaver.QueryRuntime
                         }
 
                         probeRows.Add((rightTuple, keyValues));
-                        if (probeRows.Count > TinyProbeUpperBound)
+                        if (probeRows.Count > tinyProbeUpperBound)
                         {
                             probeTooLarge = true;
                             break;
@@ -4238,9 +4272,8 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (!probeTooLarge)
                     {
-                        const int TinyProbeHashBuildUpperBound = 16;
                         if (probeRows.Count > 0 &&
-                            probeRows.Count <= TinyProbeHashBuildUpperBound &&
+                            probeRows.Count <= tinyProbeHashBuildUpperBound &&
                             leftRecursiveFilter is null &&
                             rightRecursiveFilter is not null &&
                             !HasCachedRecursiveFactIndex(context, leftPredicate, leftKind, join.LeftKeys, leftRecursiveRows))
@@ -4477,7 +4510,22 @@ namespace UnifyWeaver.QueryRuntime
                     context.RecursiveJoinIndices.TryGetValue((rightPredicate, rightKind, signature), out var cachedJoinIndex) &&
                     ReferenceEquals(cachedJoinIndex.Rows, rightRecursiveRows);
 
-                const int TinyProbeUpperBound = 64;
+                var estimatedRightBuildRows = EstimateFilteredRecursiveRowCount(rightRecursiveRows, rightRecursiveFilter);
+                int? estimatedLeftProbeUpperBound = null;
+                if (TryEstimateRowUpperBound(join.Left, context, out var leftProbeUpperBoundEstimate) &&
+                    leftProbeUpperBoundEstimate != int.MaxValue)
+                {
+                    estimatedLeftProbeUpperBound = leftProbeUpperBoundEstimate;
+                }
+
+                var tinyProbeUpperBound = ComputeAdaptiveTinyProbeUpperBound(
+                    defaultUpperBound: 64,
+                    minUpperBound: 16,
+                    maxUpperBound: 256,
+                    estimatedBuildRows: estimatedRightBuildRows,
+                    estimatedProbeUpperBound: estimatedLeftProbeUpperBound);
+                var tinyProbeHashBuildUpperBound = Math.Clamp(Math.Max(32, tinyProbeUpperBound / 2), 16, 128);
+
                 if (!joinIndexCached)
                 {
                     var probeSource = Evaluate(join.Left, context);
@@ -4504,7 +4552,7 @@ namespace UnifyWeaver.QueryRuntime
                         }
 
                         probeRows.Add((leftTuple, keyValues));
-                        if (probeRows.Count > TinyProbeUpperBound)
+                        if (probeRows.Count > tinyProbeUpperBound)
                         {
                             probeTooLarge = true;
                             break;
@@ -4513,9 +4561,8 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (!probeTooLarge)
                     {
-                        const int TinyProbeHashBuildUpperBound = 16;
                         if (probeRows.Count > 0 &&
-                            probeRows.Count <= TinyProbeHashBuildUpperBound &&
+                            probeRows.Count <= tinyProbeHashBuildUpperBound &&
                             rightRecursiveFilter is null &&
                             leftRecursiveFilter is not null &&
                             !HasCachedRecursiveFactIndex(context, rightPredicate, rightKind, join.RightKeys, rightRecursiveRows))
