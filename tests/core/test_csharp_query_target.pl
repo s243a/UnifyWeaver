@@ -39,6 +39,8 @@
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
 :- dynamic user:test_recursive_label_path_cat_selective/4.
 :- dynamic user:test_recursive_label_path_cat_asym/4.
+:- dynamic user:test_recursive_label_path_cat_medium_selective/4.
+:- dynamic user:test_recursive_label_path_cat_medium_dense/4.
 :- dynamic user:test_recursive_label_path_cat_tie/4.
 :- dynamic user:test_recursive_label_path_distinct_unfiltered/4.
 :- dynamic user:test_sparse_input_fact/3.
@@ -248,6 +250,8 @@ test_csharp_query_target :-
         verify_recursive_multi_key_recursive_selection_join_prefers_distinct_tie_break,
         verify_recursive_multi_key_recursive_join_prefers_unfiltered_distinct_tie_break,
         verify_recursive_multi_key_recursive_selection_join_tiny_probe_prefers_hash_build,
+        verify_recursive_multi_key_recursive_selection_join_medium_selective_prefers_build_filtered,
+        verify_recursive_multi_key_recursive_selection_join_medium_dense_probe_avoids_tiny_hash_build,
         verify_parameterized_sparse_input_positions_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
@@ -728,6 +732,29 @@ setup_test_data :-
         test_recursive_label_path_cat_asym(X, Y, L, Cat),
         test_recursive_label_path_cat_asym(Y, Z, L, cat1)
     )),
+    forall(between(1, 24, I),
+        (   format(atom(NodeA), 'ams~w', [I]),
+            format(atom(NodeB), 'bms~w', [I]),
+            assertz(user:test_recursive_label_path_cat_medium_selective(NodeA, NodeB, red, cat1))
+        )),
+    forall(between(1, 240, I),
+        (   format(atom(NodeA), 'cms~w', [I]),
+            format(atom(NodeB), 'dms~w', [I]),
+            assertz(user:test_recursive_label_path_cat_medium_selective(NodeA, NodeB, blue, cat2))
+        )),
+    assertz(user:(test_recursive_label_path_cat_medium_selective(X, Z, L, Cat) :-
+        test_recursive_label_path_cat_medium_selective(X, Y, L, Cat),
+        test_recursive_label_path_cat_medium_selective(Y, Z, L, cat1)
+    )),
+    forall(between(1, 48, I),
+        (   format(atom(NodeA), 'amd~w', [I]),
+            format(atom(NodeB), 'bmd~w', [I]),
+            assertz(user:test_recursive_label_path_cat_medium_dense(NodeA, NodeB, red, cat1))
+        )),
+    assertz(user:(test_recursive_label_path_cat_medium_dense(X, Z, L, Cat) :-
+        test_recursive_label_path_cat_medium_dense(X, Y, L, Cat),
+        test_recursive_label_path_cat_medium_dense(Y, Z, L, cat1)
+    )),
     assertz(user:test_recursive_label_path_cat_tie(a, k1, red, cat1)),
     assertz(user:test_recursive_label_path_cat_tie(b, k1, red, cat1)),
     assertz(user:test_recursive_label_path_cat_tie(c, k2, red, cat1)),
@@ -1005,6 +1032,8 @@ cleanup_test_data :-
     retractall(user:mode(test_group_probe_dir_mixed_reach(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_recursive_label_path_cat_asym(_, _, _, _)),
+    retractall(user:test_recursive_label_path_cat_medium_selective(_, _, _, _)),
+    retractall(user:test_recursive_label_path_cat_medium_dense(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_tie(_, _, _, _)),
     retractall(user:test_recursive_label_path_distinct_unfiltered(_, _, _, _)),
     retractall(user:test_sparse_input_filtered(_, _, _)),
@@ -2661,18 +2690,69 @@ verify_recursive_multi_key_recursive_selection_join_tiny_probe_prefers_hash_buil
     length(RightKeys, KeyCount),
     sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_asym, arity:4}, role:_, width:_}, Left),
     sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_asym, arity:4}, role:_, width:_}, Right),
+    expected_recursive_tiny_probe_strategy(Left, Right, Strategy),
+    format(atom(Expected), 'STRATEGY_USED:~w=true', [Strategy]),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
-    (   harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveTinyProbeHashBuildLeft', HarnessSourceLeft),
-        maybe_run_query_runtime_with_harness(Plan,
-            ['STRATEGY_USED:KeyJoinRecursiveTinyProbeHashBuildLeft=true'],
-            [],
-            HarnessSourceLeft)
-    ;   harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveTinyProbeHashBuildRight', HarnessSourceRight),
-        maybe_run_query_runtime_with_harness(Plan,
-            ['STRATEGY_USED:KeyJoinRecursiveTinyProbeHashBuildRight=true'],
-            [],
-            HarnessSourceRight)
-    ).
+    harness_source_with_strategy_flag_quiet_no_reuse(ModuleClass, [], Strategy, HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan, [Expected], [], HarnessSource).
+
+verify_recursive_multi_key_recursive_selection_join_medium_selective_prefers_build_filtered :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_medium_selective/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_medium_selective, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_medium_selective, arity:4}, role:_, width:_}, Left),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_medium_selective, arity:4}, role:_, width:_}, Right),
+    expected_recursive_build_filtered_strategy(Left, Right, Strategy),
+    format(atom(Expected), 'STRATEGY_USED:~w=true', [Strategy]),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_quiet_no_reuse(ModuleClass, [], Strategy, HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan, [Expected], [], HarnessSource).
+
+verify_recursive_multi_key_recursive_selection_join_medium_dense_probe_avoids_tiny_hash_build :-
+    csharp_query_target:build_query_plan(test_recursive_label_path_cat_medium_dense/4, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_recursive_label_path_cat_medium_dense, arity:4}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount > 1,
+    length(RightKeys, KeyCount),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_medium_dense, arity:4}, role:_, width:_}, Left),
+    sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_recursive_label_path_cat_medium_dense, arity:4}, role:_, width:_}, Right),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag_quiet(ModuleClass, [], 'KeyJoinRecursiveIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['STRATEGY_USED:KeyJoinRecursiveIndexPartial=true'],
+        [],
+        HarnessSource).
+
+expected_recursive_tiny_probe_strategy(Left, Right, 'KeyJoinRecursiveTinyProbeHashBuildLeft') :-
+    filtered_recursive_node(Left),
+    \+ filtered_recursive_node(Right),
+    !.
+expected_recursive_tiny_probe_strategy(Left, Right, 'KeyJoinRecursiveTinyProbeHashBuildRight') :-
+    filtered_recursive_node(Right),
+    \+ filtered_recursive_node(Left),
+    !.
+expected_recursive_tiny_probe_strategy(_Left, _Right, 'KeyJoinRecursiveTinyProbeHashBuildLeft').
+
+filtered_recursive_node(selection{type:selection, input:Input, predicate:_, width:_}) :-
+    sub_term(recursive_ref{type:recursive_ref, predicate:_, role:_, width:_}, Input).
+
+expected_recursive_build_filtered_strategy(Left, Right, 'KeyJoinRecursiveBuildFilteredLeft') :-
+    filtered_recursive_node(Left),
+    \+ filtered_recursive_node(Right),
+    !.
+expected_recursive_build_filtered_strategy(Left, Right, 'KeyJoinRecursiveBuildFilteredRight') :-
+    filtered_recursive_node(Right),
+    \+ filtered_recursive_node(Left),
+    !.
+expected_recursive_build_filtered_strategy(_Left, _Right, 'KeyJoinRecursiveBuildFilteredLeft').
 
 verify_parameterized_sparse_input_positions_runtime :-
     csharp_query_target:build_query_plan(test_sparse_input_filtered/3, [target(csharp_query)], Plan),
@@ -4566,6 +4646,28 @@ harness_source_with_strategy_flag_quiet(ModuleClass, Params, Strategy, Source) :
 
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+~wforeach (var _ in ~w)
+{
+}
+var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+harness_source_with_strategy_flag_quiet_no_reuse(ModuleClass, Params, Strategy, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: false));
 ~wforeach (var _ in ~w)
 {
 }
