@@ -180,6 +180,7 @@ function bindControls() {
     // Export
     document.getElementById('exportBtn').addEventListener('click', doExport);
     document.getElementById('exportFormat').addEventListener('change', updateLayoutSelectState);
+    document.getElementById('smLayout').addEventListener('change', updateLayoutSelectState);
     updateLayoutSelectState();
 
     // Settings: distance metric
@@ -352,14 +353,24 @@ function renderNode(container, nodeId, depth, childMap) {
 function updateLayoutSelectState() {
     const format = document.getElementById('exportFormat').value;
     const layoutSelect = document.getElementById('layoutSelect');
+    const smLayout = document.getElementById('smLayout');
+    const isSpatial = SPATIAL_FORMATS.has(format);
+    const isSM = format === 'simplemind';
+
+    if (smLayout) {
+        smLayout.style.display = isSM ? '' : 'none';
+    }
+
     if (layoutSelect) {
-        layoutSelect.disabled = !SPATIAL_FORMATS.has(format);
+        const smAuto = isSM && smLayout && smLayout.value !== 'algorithmic';
+        layoutSelect.disabled = !isSpatial || smAuto;
     }
 }
 
 function doExport() {
     const format = document.getElementById('exportFormat').value;
     const layout = document.getElementById('layoutSelect').value;
+    const smMode = document.getElementById('smLayout').value;
 
     let positionMap = null;
     if (SPATIAL_FORMATS.has(format)) {
@@ -372,7 +383,7 @@ function doExport() {
         }
     }
 
-    exportMindmap(format, currentTree, bundle.titles, positionMap);
+    exportMindmap(format, currentTree, bundle.titles, positionMap, smMode);
 }
 
 // --- Visualization (lazy-loaded) ---

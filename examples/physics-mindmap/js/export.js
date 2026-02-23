@@ -259,7 +259,7 @@ function exportVUE(tree, titles, positionMap) {
     downloadFile(xml, `${rootTitle}_mindmap.vue`, 'application/xml');
 }
 
-async function exportSMMX(tree, titles, positionMap) {
+async function exportSMMX(tree, titles, positionMap, layout) {
     // Load JSZip on demand
     if (typeof JSZip === 'undefined') {
         await new Promise((resolve, reject) => {
@@ -275,34 +275,45 @@ async function exportSMMX(tree, titles, positionMap) {
     const zip = new JSZip();
 
     const mapGuid = generateGuid();
+    const mapTitle = escapeXml(titles[tree.rootId]);
 
-    let mindmapXml = '<?xml version="1.0" encoding="utf-8"?>\n';
-    mindmapXml += '<simplemind-mindmaps doc-version="3" generator="PhysicsMindmapBuilder">\n';
+    let mindmapXml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    mindmapXml += '<!DOCTYPE simplemind-mindmaps>\n';
+    mindmapXml += '<simplemind-mindmaps generator="PhysicsMindmapBuilder" gen-version="1.0.0" doc-version="3">\n';
     mindmapXml += '<mindmap>\n';
-    mindmapXml += `<meta><guid>${mapGuid}</guid></meta>\n`;
+    mindmapXml += '<meta>\n';
+    mindmapXml += `<guid guid="${mapGuid}"/>\n`;
+    mindmapXml += `<title text="${mapTitle}"/>\n`;
+    mindmapXml += '<style key="system.soft-palette"/>\n';
+    mindmapXml += '<auto-numbering style="disabled"/>\n';
+    mindmapXml += '<scrollstate zoom="50" x="0" y="0"/>\n';
+    mindmapXml += '<main-centraltheme id="0"/>\n';
+    mindmapXml += '</meta>\n';
     mindmapXml += '<topics>\n';
 
     let topicId = 0;
-    const idMap = {};
 
     function writeTopic(node, parentTopicId) {
         const myId = topicId++;
-        idMap[node.id] = myId;
         const guid = generateGuid();
         const pos = positionMap[node.id];
         const x = pos[0].toFixed(1);
         const y = pos[1].toFixed(1);
+        const palette = (node.depth % 8) + 1;
         const wikiUrl = titleToWikipediaUrl(node.title);
 
-        mindmapXml += `<topic id="${myId}" guid="${guid}" text="${escapeXml(node.title)}" x="${x}" y="${y}"`;
-        if (parentTopicId !== null) {
-            mindmapXml += ` parent="${parentTopicId}"`;
-        }
+        mindmapXml += `<topic id="${myId}" parent="${parentTopicId !== null ? parentTopicId : -1}" guid="${guid}" `;
+        mindmapXml += `x="${x}" y="${y}" palette="${palette}" colorinfo="${palette}" `;
+        mindmapXml += `text="${escapeXml(node.title)}">\n`;
         if (node.depth === 0) {
-            mindmapXml += ' central-topic="true"';
+            if (layout === 'algorithmic') {
+                mindmapXml += '<layout mode="free" direction="manual" flow="default"/>\n';
+            } else {
+                mindmapXml += `<layout mode="${layout}" direction="auto" flow="default"/>\n`;
+            }
+            mindmapXml += '<style><font bold="True" scale="2.0"/></style>\n';
         }
-        mindmapXml += '>\n';
-        mindmapXml += `  <link urllink="${escapeXml(wikiUrl)}" />\n`;
+        mindmapXml += `<link urllink="${escapeXml(wikiUrl)}"/>\n`;
         mindmapXml += '</topic>\n';
 
         for (const child of node.children) {
@@ -312,7 +323,8 @@ async function exportSMMX(tree, titles, positionMap) {
 
     writeTopic(nested, null);
     mindmapXml += '</topics>\n';
-    mindmapXml += '</mindmap>\n</simplemind-mindmaps>';
+    mindmapXml += '<relations/>\n';
+    mindmapXml += '</mindmap>\n</simplemind-mindmaps>\n';
 
     zip.file('document/mindmap.xml', mindmapXml);
 
@@ -501,10 +513,10 @@ const SPATIAL_FORMATS = new Set(['vue', 'graphml', 'simplemind']);
 /**
  * Main export dispatcher.
  */
-async function exportMindmap(format, tree, titles, positionMap) {
+async function exportMindmap(format, tree, titles, positionMap, layout) {
     switch (format) {
         case 'freemind': return exportFreeMind(tree, titles);
-        case 'simplemind': return await exportSMMX(tree, titles, positionMap);
+        case 'simplemind': return await exportSMMX(tree, titles, positionMap, layout);
         case 'opml': return exportOPML(tree, titles);
         case 'mermaid': return exportMermaid(tree, titles);
         case 'vue': return exportVUE(tree, titles, positionMap);
