@@ -285,6 +285,8 @@ test_csharp_query_target :-
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_reuse_runtime,
         verify_parameterized_reachability_single_seed_strategy_runtime,
         verify_parameterized_reachability_by_target_single_strategy_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insensitive_runtime,
@@ -3439,6 +3441,28 @@ verify_parameterized_reachability_by_target_single_strategy_runtime :-
         ['alice,charlie',
          'bob,charlie',
          'STRATEGY_USED:TransitiveClosureSeededByTargetSingle=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_single_probe_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[alice, charlie]],
+    harness_source_with_cache_flag(ModuleClass, Params, 'TransitiveClosurePairsSingleProbe', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,charlie',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=true'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, c, red, cat1]],
+    harness_source_with_cache_flag(ModuleClass, Params, 'GroupedTransitiveClosurePairsSingleProbe', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=true'],
         Params,
         HarnessSource).
 

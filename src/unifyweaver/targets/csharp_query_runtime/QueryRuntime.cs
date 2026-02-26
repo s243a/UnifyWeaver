@@ -1102,9 +1102,11 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.TransitiveClosureResults.Clear();
             _cacheContext.TransitiveClosureSeededResults.Clear();
             _cacheContext.TransitiveClosureSeededByTargetResults.Clear();
+            _cacheContext.TransitiveClosurePairProbeResults.Clear();
             _cacheContext.GroupedTransitiveClosureResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededByTargetResults.Clear();
+            _cacheContext.GroupedTransitiveClosurePairProbeResults.Clear();
         }
 
         private IEnumerable<object[]> Evaluate(PlanNode node, EvaluationContext? context = null)
@@ -1784,6 +1786,13 @@ namespace UnifyWeaver.QueryRuntime
                 context.TransitiveClosureSeededByTargetResults.Remove(key);
             }
 
+            foreach (var key in context.TransitiveClosurePairProbeResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.TransitiveClosurePairProbeResults.Remove(key);
+            }
+
             foreach (var key in context.GroupedTransitiveClosureResults.Keys
                          .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
                          .ToList())
@@ -1803,6 +1812,13 @@ namespace UnifyWeaver.QueryRuntime
                          .ToList())
             {
                 context.GroupedTransitiveClosureSeededByTargetResults.Remove(key);
+            }
+
+            foreach (var key in context.GroupedTransitiveClosurePairProbeResults.Keys
+                         .Where(key => key.EdgeRelation.Equals(predicate) || key.Predicate.Equals(predicate))
+                         .ToList())
+            {
+                context.GroupedTransitiveClosurePairProbeResults.Remove(key);
             }
         }
 
@@ -7099,15 +7115,53 @@ namespace UnifyWeaver.QueryRuntime
                     var predIndex = GetJoinIndex(closure.EdgeRelation, toKeyIndices, edges, context);
                     var forwardCost = CountEdgeBucket(succIndex, sourceKey);
                     var backwardCost = CountEdgeBucket(predIndex, targetKey);
+                    var groupedCacheKey = (closure.EdgeRelation, closure.Predicate, string.Join(",", closure.GroupIndices));
+                    var groupedPairKey = new object[sourceKey.Length + 1];
+                    Array.Copy(sourceKey, groupedPairKey, sourceKey.Length);
+                    groupedPairKey[sourceKey.Length] = target;
+                    var sourceLabel = string.Join("|", sourceKey.Select(value => value is null ? "<null>" : FormatCacheSeedValue(value)));
+                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+                    var traceKey =
+                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups={string.Join(",", closure.GroupIndices)}:pair={sourceLabel}->{targetLabel}";
+
+                    if (context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var cachedByPair) &&
+                        cachedByPair.TryGetValue(new RowWrapper(groupedPairKey), out var pairReachable))
+                    {
+                        trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                        if (!pairReachable)
+                        {
+                            return Array.Empty<object[]>();
+                        }
+
+                        return new List<object[]>
+                        {
+                            BuildGroupedClosureRow(closure.Predicate.Arity, groupKeyCount, closure.GroupIndices, groupedPairKey)
+                        };
+                    }
+
+                    trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+
+                    var rows = forwardCost <= backwardCost
+                        ? ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context).ToList()
+                        : ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context).ToList();
 
                     if (forwardCost <= backwardCost)
                     {
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeForward");
-                        return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context);
+                    }
+                    else
+                    {
+                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeBackward");
                     }
 
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeBackward");
-                    return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context);
+                    if (!context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var pairStore))
+                    {
+                        pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                        context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
+                    }
+
+                    pairStore[new RowWrapper(groupedPairKey)] = rows.Count > 0;
+                    return rows;
                 }
 
                 const int MaxMemoizedGroupedPairSeeds = 32;
@@ -9488,15 +9542,48 @@ namespace UnifyWeaver.QueryRuntime
                     var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
                     var forwardCost = CountEdgeBucket(succIndex, source);
                     var backwardCost = CountEdgeBucket(predIndex, target);
+                    var pairCacheKey = (closure.EdgeRelation, closure.Predicate);
+                    var pairProbeKey = new object[] { source!, target! };
+                    var sourceLabel = source is null ? "<null>" : FormatCacheSeedValue(source);
+                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+                    var traceKey =
+                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:pair={sourceLabel}->{targetLabel}";
+
+                    if (context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var cachedByPair) &&
+                        cachedByPair.TryGetValue(new RowWrapper(pairProbeKey), out var pairReachable))
+                    {
+                        trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                        if (!pairReachable)
+                        {
+                            return Array.Empty<object[]>();
+                        }
+
+                        return new List<object[]> { new object[] { source!, target! } };
+                    }
+
+                    trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+
+                    var rows = forwardCost <= backwardCost
+                        ? ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context).ToList()
+                        : ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context).ToList();
 
                     if (forwardCost <= backwardCost)
                     {
                         trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeForward");
-                        return ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context);
+                    }
+                    else
+                    {
+                        trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeBackward");
                     }
 
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeBackward");
-                    return ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context);
+                    if (!context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var pairStore))
+                    {
+                        pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                        context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
+                    }
+
+                    pairStore[new RowWrapper(pairProbeKey)] = rows.Count > 0;
+                    return rows;
                 }
 
                 const int MaxMemoizedPairSeeds = 32;
@@ -10410,12 +10497,16 @@ namespace UnifyWeaver.QueryRuntime
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 TransitiveClosureSeededByTargetResults = parent?.TransitiveClosureSeededByTargetResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                TransitiveClosurePairProbeResults = parent?.TransitiveClosurePairProbeResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>>();
                 GroupedTransitiveClosureResults = parent?.GroupedTransitiveClosureResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), IReadOnlyList<object[]>>();
                 GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                GroupedTransitiveClosurePairProbeResults = parent?.GroupedTransitiveClosurePairProbeResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, bool>>();
             }
 
             public PredicateId Current { get; set; }
@@ -10461,11 +10552,15 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededByTargetResults { get; }
 
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>> TransitiveClosurePairProbeResults { get; }
+
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), IReadOnlyList<object[]>> GroupedTransitiveClosureResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededByTargetResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, bool>> GroupedTransitiveClosurePairProbeResults { get; }
         }
 
         private readonly record struct PairKey(object? From, object? To);
