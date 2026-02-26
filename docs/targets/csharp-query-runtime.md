@@ -70,6 +70,7 @@ The current implementation emits static C# builders that assemble the plan via n
 - The query runtime’s default output order is unspecified (hash-set semantics). For deterministic ordering, use `order_by/...` (and `distinct(strategy(ordered))` when relevant) before `limit/offset`.
 - Cache/index reuse (e.g. `new QueryExecutorOptions(ReuseCaches: true)`) assumes deterministic/pure relations. Disable caches (or clear them via `executor.ClearCaches()`) if underlying facts/providers can change or have side effects.
 - Seeded transitive-closure caches treat the seed list as a set (deduped + order-insensitive), so calls with the same seeds in different orders share a cache entry.
+- Single concrete transitive pair probes (`source,target` both bound) now cache exact probe results (`TransitiveClosurePairsSingleProbe` and `GroupedTransitiveClosurePairsSingleProbe`) to avoid repeating one-off BFS checks across repeated calls.
 
 ## Current Limitations
 - Tail-recursive optimisation and memoised aggregates still fall back to iterative evaluation without specialised nodes.
