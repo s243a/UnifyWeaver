@@ -299,6 +299,8 @@ test_csharp_query_target :-
         verify_parameterized_reachability_by_target_cache_key_order_insensitive_runtime,
         verify_parameterized_reachability_seed_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_overlap_reuse_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_eviction_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_eviction_runtime,
         verify_transitive_closure_cache_reuse_runtime,
         verify_grouped_transitive_closure_cache_reuse_runtime,
         verify_mutual_recursion_plan,
@@ -3466,6 +3468,46 @@ verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_reuse_r
         Params,
         HarnessSource).
 
+verify_parameterized_reachability_pairs_single_probe_cache_eviction_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[alice, charlie]],
+    WarmParams2 = [[alice, bob]],
+    ExecParams = [[alice, charlie]],
+    harness_source_with_cache_flag_two_warm_exec_pair_limit(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        ExecParams,
+        'TransitiveClosurePairsSingleProbe',
+        1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,charlie',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=false'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_eviction_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, c, red, cat1]],
+    WarmParams2 = [[a, b, red, cat1]],
+    ExecParams = [[a, c, red, cat1]],
+    harness_source_with_cache_flag_two_warm_exec_pair_limit(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        ExecParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,c,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=false'],
+        ExecParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime :-
     csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -4968,6 +5010,60 @@ var _planText = QueryPlanExplainer.Explain(result.Plan);
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
     ', [ModuleClass, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
+
+harness_source_with_cache_flag_two_warm_exec_pair_limit(ModuleClass, WarmParams1, WarmParams2, ExecParams, Cache, PairLimit, Source) :-
+    csharp_params_literal(WarmParams1, WarmLiteral1),
+    csharp_params_literal(WarmParams2, WarmLiteral2),
+    csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w));
+var _planText = QueryPlanExplainer.Explain(result.Plan);
+var warmParameters1 = ~w;
+var warmTrace1 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
+var warmParameters2 = ~w;
+var warmTrace2 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters2, warmTrace2).ToList();
+var parameters = ~w;
+var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+
+ var trace = new QueryExecutionTrace();
+ foreach (var row in executor.Execute(result.Plan, parameters, trace))
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(",", projected));
+   }
+ 
+   var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+   Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
+    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
     (   Params == []
