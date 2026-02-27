@@ -323,7 +323,9 @@ namespace UnifyWeaver.QueryRuntime
         IReadOnlyList<int>? InputPositions = null
     );
 
-    public sealed record QueryExecutorOptions(bool ReuseCaches = false);
+    public sealed record QueryExecutorOptions(
+        bool ReuseCaches = false,
+        int PairProbeCacheMaxEntries = 4096);
 
     public sealed record QueryNodeTrace(
         int Id,
@@ -972,12 +974,14 @@ namespace UnifyWeaver.QueryRuntime
         private static readonly object NullFactIndexKey = new();
         private static readonly RowWrapperComparer StructuralRowWrapperComparer = new(StructuralArrayComparer.Instance);
         private readonly EvaluationContext? _cacheContext;
+        private readonly int _pairProbeCacheMaxEntries;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
             _provider = provider ?? throw new ArgumentNullException(nameof(provider));
             options ??= new QueryExecutorOptions();
             _cacheContext = options.ReuseCaches ? new EvaluationContext() : null;
+            _pairProbeCacheMaxEntries = Math.Max(0, options.PairProbeCacheMaxEntries);
         }
 
         public IEnumerable<object[]> Execute(
@@ -7123,8 +7127,10 @@ namespace UnifyWeaver.QueryRuntime
                     var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
                     var traceKey =
                         $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups={string.Join(",", closure.GroupIndices)}:pair={sourceLabel}->{targetLabel}";
+                    var canReusePairProbeCache = _pairProbeCacheMaxEntries > 0;
 
-                    if (context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var cachedByPair) &&
+                    if (canReusePairProbeCache &&
+                        context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var cachedByPair) &&
                         cachedByPair.TryGetValue(new RowWrapper(groupedPairKey), out var pairReachable))
                     {
                         trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
@@ -7154,13 +7160,21 @@ namespace UnifyWeaver.QueryRuntime
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeBackward");
                     }
 
-                    if (!context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var pairStore))
+                    if (canReusePairProbeCache)
                     {
-                        pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
-                        context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
+                        if (!context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var pairStore))
+                        {
+                            pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                            context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
+                        }
+
+                        SetBoundedRowWrapperCacheEntry(
+                            pairStore,
+                            new RowWrapper(groupedPairKey),
+                            rows.Count > 0,
+                            _pairProbeCacheMaxEntries);
                     }
 
-                    pairStore[new RowWrapper(groupedPairKey)] = rows.Count > 0;
                     return rows;
                 }
 
@@ -8968,6 +8982,32 @@ namespace UnifyWeaver.QueryRuntime
         private static int CountEdgeBucket(Dictionary<RowWrapper, List<object[]>> index, object[] key) =>
             index.TryGetValue(new RowWrapper(key), out var bucket) ? bucket.Count : 0;
 
+        private static void SetBoundedRowWrapperCacheEntry<TValue>(
+            Dictionary<RowWrapper, TValue> store,
+            RowWrapper key,
+            TValue value,
+            int maxEntries)
+        {
+            if (maxEntries <= 0)
+            {
+                return;
+            }
+
+            if (store.ContainsKey(key))
+            {
+                store[key] = value;
+                return;
+            }
+
+            while (store.Count >= maxEntries)
+            {
+                var oldestKey = store.Keys.First();
+                store.Remove(oldestKey);
+            }
+
+            store.Add(key, value);
+        }
+
         private static bool TryGetParameterValue(
             object[] tuple,
             IReadOnlyList<int> inputPositions,
@@ -9548,8 +9588,10 @@ namespace UnifyWeaver.QueryRuntime
                     var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
                     var traceKey =
                         $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:pair={sourceLabel}->{targetLabel}";
+                    var canReusePairProbeCache = _pairProbeCacheMaxEntries > 0;
 
-                    if (context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var cachedByPair) &&
+                    if (canReusePairProbeCache &&
+                        context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var cachedByPair) &&
                         cachedByPair.TryGetValue(new RowWrapper(pairProbeKey), out var pairReachable))
                     {
                         trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
@@ -9576,13 +9618,21 @@ namespace UnifyWeaver.QueryRuntime
                         trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeBackward");
                     }
 
-                    if (!context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var pairStore))
+                    if (canReusePairProbeCache)
                     {
-                        pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
-                        context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
+                        if (!context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var pairStore))
+                        {
+                            pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                            context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
+                        }
+
+                        SetBoundedRowWrapperCacheEntry(
+                            pairStore,
+                            new RowWrapper(pairProbeKey),
+                            rows.Count > 0,
+                            _pairProbeCacheMaxEntries);
                     }
 
-                    pairStore[new RowWrapper(pairProbeKey)] = rows.Count > 0;
                     return rows;
                 }
 
