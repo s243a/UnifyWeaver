@@ -112,6 +112,8 @@
 :- dynamic user:test_probe_dir_backward_reach/2.
 :- dynamic user:test_probe_dir_mixed_edge/2.
 :- dynamic user:test_probe_dir_mixed_reach/2.
+:- dynamic user:test_admission_edge/2.
+:- dynamic user:test_admission_reach_pair/2.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
 :- dynamic user:test_order_summary/1.
@@ -307,6 +309,8 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_eviction_runtime,
         verify_parameterized_reachability_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime,
+        verify_parameterized_reachability_seed_cache_admission_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime,
         verify_transitive_closure_cache_reuse_runtime,
         verify_grouped_transitive_closure_cache_reuse_runtime,
         verify_mutual_recursion_plan,
@@ -959,6 +963,18 @@ setup_test_data :-
         test_probe_dir_mixed_edge(X, Y),
         test_probe_dir_mixed_reach(Y, Z)
     )),
+    assertz(user:test_admission_edge(a, b)),
+    assertz(user:test_admission_edge(a, c)),
+    assertz(user:test_admission_edge(a, d)),
+    assertz(user:test_admission_edge(b, e)),
+    assertz(user:test_admission_edge(c, e)),
+    assertz(user:test_admission_edge(d, e)),
+    assertz(user:mode(test_admission_reach_pair(+, +))),
+    assertz(user:(test_admission_reach_pair(X, Y) :- test_admission_edge(X, Y))),
+    assertz(user:(test_admission_reach_pair(X, Z) :-
+        test_admission_edge(X, Y),
+        test_admission_reach_pair(Y, Z)
+    )),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -1121,6 +1137,9 @@ cleanup_test_data :-
     retractall(user:test_probe_dir_mixed_edge(_, _)),
     retractall(user:test_probe_dir_mixed_reach(_, _)),
     retractall(user:mode(test_probe_dir_mixed_reach(_, _))),
+    retractall(user:test_admission_edge(_, _)),
+    retractall(user:test_admission_reach_pair(_, _)),
+    retractall(user:mode(test_admission_reach_pair(_, _))),
     retractall(user:test_reachable(_, _)),
     retractall(user:test_cat(_)),
     retractall(user:test_catmix(_)),
@@ -3767,6 +3786,56 @@ verify_parameterized_reachability_seed_cache_lru_recency_runtime :-
         HotParams,
         HarnessSource).
 
+verify_parameterized_reachability_seed_cache_admission_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[alice]],
+    WarmColdParams = [[bob]],
+    HotParams = [[alice]],
+    ColdParams = [[bob]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeeded',
+        1,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
+         'CACHE_ADMISSIONS:TransitiveClosureSeeded=1',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeeded=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime :-
+    csharp_query_target:build_query_plan(test_admission_reach_pair/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, e]],
+    WarmColdParams = [[b, e]],
+    HotParams = [[a, e]],
+    ColdParams = [[b, e]],
+    harness_source_with_pair_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosurePairsSingleProbe',
+        1,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
+         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
+         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=1',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_reachability_pairs_cache_reuse_runtime :-
     csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -5368,6 +5437,102 @@ Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
     ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+
+harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        SeedLimit,
+        MinRows,
+        Source) :-
+    csharp_params_literal(WarmHotParams, WarmHotLiteral),
+    csharp_params_literal(WarmColdParams, WarmColdLiteral),
+    csharp_params_literal(HotParams, HotLiteral),
+    csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: ~w, SeededCacheAdmissionMinRows: ~w));
+var warmHotParameters = ~w;
+var warmHotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmHotParameters, warmHotTrace).ToList();
+var warmColdParameters = ~w;
+var warmColdTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmColdParameters, warmColdTrace).ToList();
+var hotParameters = ~w;
+var hotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
+var coldParameters = ~w;
+var coldTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
+
+var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var admissions = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions)
+    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions);
+var admissionSkips = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips)
+    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips);
+Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
+Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
+Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
+Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
+    ', [ModuleClass, SeedLimit, MinRows, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+
+harness_source_with_pair_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        Source) :-
+    csharp_params_literal(WarmHotParams, WarmHotLiteral),
+    csharp_params_literal(WarmColdParams, WarmColdLiteral),
+    csharp_params_literal(HotParams, HotLiteral),
+    csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w));
+var warmHotParameters = ~w;
+var warmHotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmHotParameters, warmHotTrace).ToList();
+var warmColdParameters = ~w;
+var warmColdTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmColdParameters, warmColdTrace).ToList();
+var hotParameters = ~w;
+var hotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
+var coldParameters = ~w;
+var coldTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
+
+var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var admissions = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions)
+    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions);
+var admissionSkips = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips)
+    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips);
+Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
+Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
+Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
+Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
+    ', [ModuleClass, PairLimit, MinCost, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
     (   Params == []
