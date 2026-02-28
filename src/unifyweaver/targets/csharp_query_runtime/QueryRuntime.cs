@@ -9077,6 +9077,40 @@ namespace UnifyWeaver.QueryRuntime
         private static int CountEdgeBucket(Dictionary<RowWrapper, List<object[]>> index, object[] key) =>
             index.TryGetValue(new RowWrapper(key), out var bucket) ? bucket.Count : 0;
 
+        private sealed class LruAccessState
+        {
+            public long NextAccessId { get; set; }
+            public Dictionary<RowWrapper, long> LastAccessByKey { get; } = new(StructuralRowWrapperComparer);
+        }
+
+        private static readonly ConditionalWeakTable<object, LruAccessState> LruAccessByStore = new();
+
+        private static LruAccessState GetLruAccessState<TValue>(Dictionary<RowWrapper, TValue> store)
+        {
+            var state = LruAccessByStore.GetOrCreateValue(store);
+            if (store.Count == 0 && state.LastAccessByKey.Count > 0)
+            {
+                state.LastAccessByKey.Clear();
+            }
+
+            return state;
+        }
+
+        private static long TouchLruAccess<TValue>(Dictionary<RowWrapper, TValue> store, RowWrapper key)
+        {
+            var state = GetLruAccessState(store);
+            var nextAccessId = state.NextAccessId + 1;
+            state.NextAccessId = nextAccessId;
+            state.LastAccessByKey[key] = nextAccessId;
+            return nextAccessId;
+        }
+
+        private static void RemoveLruAccess<TValue>(Dictionary<RowWrapper, TValue> store, RowWrapper key)
+        {
+            var state = GetLruAccessState(store);
+            state.LastAccessByKey.Remove(key);
+        }
+
         private static bool TryGetLruRowWrapperCacheValue<TValue>(
             Dictionary<RowWrapper, TValue> store,
             RowWrapper key,
@@ -9088,9 +9122,8 @@ namespace UnifyWeaver.QueryRuntime
                 return false;
             }
 
-            // Refresh recency by moving the key to the end of insertion order.
-            store.Remove(key);
-            store.Add(key, value);
+            // Refresh recency using explicit access timestamps.
+            TouchLruAccess(store, key);
             return true;
         }
 
@@ -9111,15 +9144,36 @@ namespace UnifyWeaver.QueryRuntime
             if (store.ContainsKey(key))
             {
                 // Update value and refresh recency.
-                store.Remove(key);
-                store.Add(key, value);
+                store[key] = value;
+                TouchLruAccess(store, key);
                 return;
             }
 
             while (store.Count >= maxEntries)
             {
-                var oldestKey = store.Keys.First();
+                var state = GetLruAccessState(store);
+                RowWrapper oldestKey = default!;
+                var oldestAccess = long.MaxValue;
+                var foundOldestKey = false;
+
+                foreach (var existingKey in store.Keys)
+                {
+                    var access = state.LastAccessByKey.TryGetValue(existingKey, out var knownAccess) ? knownAccess : 0;
+                    if (!foundOldestKey || access < oldestAccess)
+                    {
+                        oldestKey = existingKey;
+                        oldestAccess = access;
+                        foundOldestKey = true;
+                    }
+                }
+
+                if (!foundOldestKey)
+                {
+                    break;
+                }
+
                 store.Remove(oldestKey);
+                RemoveLruAccess(store, oldestKey);
                 if (trace is not null && cacheName is not null && traceKey is not null)
                 {
                     trace.RecordCacheEviction(cacheName, traceKey);
@@ -9127,6 +9181,7 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             store.Add(key, value);
+            TouchLruAccess(store, key);
         }
 
         private static bool TryGetParameterValue(
