@@ -70,6 +70,7 @@ The current implementation emits static C# builders that assemble the plan via n
 - The query runtime’s default output order is unspecified (hash-set semantics). For deterministic ordering, use `order_by/...` (and `distinct(strategy(ordered))` when relevant) before `limit/offset`.
 - Cache/index reuse (e.g. `new QueryExecutorOptions(ReuseCaches: true)`) assumes deterministic/pure relations. Disable caches (or clear them via `executor.ClearCaches()`) if underlying facts/providers can change or have side effects.
 - Seeded transitive-closure caches treat the seed list as a set (deduped + order-insensitive), so calls with the same seeds in different orders share a cache entry.
+- Seeded transitive-closure caches are bounded via `QueryExecutorOptions(SeededCacheMaxEntries: ...)` (default `4096` per cache key); set `0` to disable seeded transitive cache reuse while keeping other caches enabled.
 - Single concrete transitive pair probes (`source,target` both bound) now cache exact probe results (`TransitiveClosurePairsSingleProbe` and `GroupedTransitiveClosurePairsSingleProbe`) to avoid repeating one-off BFS checks across repeated calls.
 - Pair-probe caches are bounded via `QueryExecutorOptions(PairProbeCacheMaxEntries: ...)` (default `4096` per cache key); set `0` to disable pair-probe caching while keeping other cache reuse enabled.
 
@@ -116,6 +117,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - `await foreach (var row in executor.ExecuteAsync(plan, parameters, trace, cts.Token)) { ... }`
 - Prepared-style cache reuse (useful for repeated parameterized calls):
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));`
+  - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: 1024));`
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: 1024));`
   - `executor.ClearCaches();` (if underlying facts change)
   - See “Ordering, Purity, and Effects” below for ordering/side-effect assumptions.
