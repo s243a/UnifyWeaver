@@ -305,6 +305,8 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_eviction_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_eviction_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_eviction_runtime,
+        verify_parameterized_reachability_seed_cache_lru_recency_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime,
         verify_transitive_closure_cache_reuse_runtime,
         verify_grouped_transitive_closure_cache_reuse_runtime,
         verify_mutual_recursion_plan,
@@ -3512,6 +3514,33 @@ verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_evictio
         ExecParams,
         HarnessSource).
 
+verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[alice, charlie]],
+    WarmParams2 = [[alice, bob]],
+    TouchParams = [[alice, charlie]],
+    InsertParams = [[bob, charlie]],
+    HotParams = [[alice, charlie]],
+    ColdParams = [[alice, bob]],
+    harness_source_with_pair_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosurePairsSingleProbe',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
+         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
+         'CACHE_EVICTIONS:TransitiveClosurePairsSingleProbe=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime :-
     csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -3709,6 +3738,33 @@ verify_parameterized_reachability_by_target_seed_cache_eviction_runtime :-
          'bob,charlie',
          'CACHE_HIT:TransitiveClosureSeededByTarget=false'],
         ExecParams,
+        HarnessSource).
+
+verify_parameterized_reachability_seed_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[alice]],
+    WarmParams2 = [[bob]],
+    TouchParams = [[alice]],
+    InsertParams = [[charlie]],
+    HotParams = [[alice]],
+    ColdParams = [[bob]],
+    harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeeded',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
+         'CACHE_EVICTIONS:TransitiveClosureSeeded=1'],
+        HotParams,
         HarnessSource).
 
 verify_parameterized_reachability_pairs_cache_reuse_runtime :-
@@ -5206,6 +5262,112 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
    var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
    Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
     ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+
+harness_source_with_pair_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        PairLimit,
+        Source) :-
+    csharp_params_literal(WarmParams1, WarmLiteral1),
+    csharp_params_literal(WarmParams2, WarmLiteral2),
+    csharp_params_literal(TouchParams, TouchLiteral),
+    csharp_params_literal(InsertParams, InsertLiteral),
+    csharp_params_literal(HotParams, HotLiteral),
+    csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w));
+var warmParameters1 = ~w;
+var warmTrace1 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
+var warmParameters2 = ~w;
+var warmTrace2 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters2, warmTrace2).ToList();
+var touchParameters = ~w;
+var touchTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, touchParameters, touchTrace).ToList();
+var insertParameters = ~w;
+var insertTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, insertParameters, insertTrace).ToList();
+var hotParameters = ~w;
+var hotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
+var coldParameters = ~w;
+var coldTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
+
+var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Evictions);
+Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
+Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
+Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
+    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+
+harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        SeedLimit,
+        Source) :-
+    csharp_params_literal(WarmParams1, WarmLiteral1),
+    csharp_params_literal(WarmParams2, WarmLiteral2),
+    csharp_params_literal(TouchParams, TouchLiteral),
+    csharp_params_literal(InsertParams, InsertLiteral),
+    csharp_params_literal(HotParams, HotLiteral),
+    csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: ~w));
+var warmParameters1 = ~w;
+var warmTrace1 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
+var warmParameters2 = ~w;
+var warmTrace2 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters2, warmTrace2).ToList();
+var touchParameters = ~w;
+var touchTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, touchParameters, touchTrace).ToList();
+var insertParameters = ~w;
+var insertTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, insertParameters, insertTrace).ToList();
+var hotParameters = ~w;
+var hotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
+var coldParameters = ~w;
+var coldTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
+
+var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Evictions);
+Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
+Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
+Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
+    ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
     (   Params == []

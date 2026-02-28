@@ -73,6 +73,7 @@ The current implementation emits static C# builders that assemble the plan via n
 - Seeded transitive-closure caches are bounded via `QueryExecutorOptions(SeededCacheMaxEntries: ...)` (default `4096` per cache key); set `0` to disable seeded transitive cache reuse while keeping other caches enabled.
 - Single concrete transitive pair probes (`source,target` both bound) now cache exact probe results (`TransitiveClosurePairsSingleProbe` and `GroupedTransitiveClosurePairsSingleProbe`) to avoid repeating one-off BFS checks across repeated calls.
 - Pair-probe caches are bounded via `QueryExecutorOptions(PairProbeCacheMaxEntries: ...)` (default `4096` per cache key); set `0` to disable pair-probe caching while keeping other cache reuse enabled.
+- Bounded seeded/pair probe caches use LRU eviction (recent cache hits refresh recency).
 
 ## Current Limitations
 - Tail-recursive optimisation and memoised aggregates still fall back to iterative evaluation without specialised nodes.
@@ -110,6 +111,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - `var trace = new QueryExecutionTrace();`
   - `foreach (var row in executor.Execute(plan, parameters, trace)) { ... }`
   - `Console.WriteLine(trace.ToString());`
+  - Cache traces include eviction counters (`evictions`) for bounded caches.
 - Cancellation (long-running queries/fixpoints):
   - `using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));`
   - `foreach (var row in executor.Execute(plan, parameters, trace, cts.Token)) { ... }`

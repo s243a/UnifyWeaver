@@ -342,7 +342,8 @@ namespace UnifyWeaver.QueryRuntime
         string Key,
         long Lookups,
         long Hits,
-        long Builds
+        long Builds,
+        long Evictions
     );
 
     public sealed record QueryStrategyTrace(
@@ -383,6 +384,8 @@ namespace UnifyWeaver.QueryRuntime
             public long Hits;
 
             public long Builds;
+
+            public long Evictions;
         }
 
         private sealed class PlanNodeStrategyComparer : IEqualityComparer<(PlanNode Node, string Strategy)>
@@ -454,6 +457,19 @@ namespace UnifyWeaver.QueryRuntime
             {
                 stats.Builds++;
             }
+        }
+
+        internal void RecordCacheEviction(string cache, string key, long count = 1)
+        {
+            if (cache is null) throw new ArgumentNullException(nameof(cache));
+            if (key is null) throw new ArgumentNullException(nameof(key));
+            if (count <= 0)
+            {
+                return;
+            }
+
+            var stats = GetOrAdd(cache, key);
+            stats.Evictions += count;
         }
 
         internal void RecordStrategy(PlanNode node, string strategy)
@@ -552,7 +568,8 @@ namespace UnifyWeaver.QueryRuntime
                         kvp.Key.Key,
                         stats.Lookups,
                         stats.Hits,
-                        stats.Builds);
+                        stats.Builds,
+                        stats.Evictions);
                 })
                 .OrderBy(s => s.Cache, StringComparer.Ordinal)
                 .ThenBy(s => s.Key, StringComparer.Ordinal)
@@ -653,6 +670,8 @@ namespace UnifyWeaver.QueryRuntime
                         .Append(cache.Hits)
                         .Append(" builds=")
                         .Append(cache.Builds)
+                        .Append(" evictions=")
+                        .Append(cache.Evictions)
                         .AppendLine();
                 }
             }
@@ -7134,7 +7153,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (canReusePairProbeCache &&
                         context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var cachedByPair) &&
-                        cachedByPair.TryGetValue(new RowWrapper(groupedPairKey), out var pairReachable))
+                        TryGetLruRowWrapperCacheValue(cachedByPair, new RowWrapper(groupedPairKey), out var pairReachable))
                     {
                         trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
                         if (!pairReachable)
@@ -7171,11 +7190,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             pairStore,
                             new RowWrapper(groupedPairKey),
                             rows.Count > 0,
-                            _pairProbeCacheMaxEntries);
+                            _pairProbeCacheMaxEntries,
+                            trace,
+                            "GroupedTransitiveClosurePairsSingleProbe",
+                            traceKey);
                     }
 
                     return rows;
@@ -7592,7 +7614,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    cachedBySeed.TryGetValue(new RowWrapper(flatSeedKey), out var cachedRows))
+                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(flatSeedKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: true, built: false);
                     return cachedRows;
@@ -7633,11 +7655,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             memoizedRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "GroupedTransitiveClosureSeeded",
+                            traceKey);
                     }
 
                     return memoizedRows;
@@ -7729,11 +7754,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             singleRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "GroupedTransitiveClosureSeeded",
+                            traceKey);
                     }
 
                     return singleRows;
@@ -7793,11 +7821,14 @@ namespace UnifyWeaver.QueryRuntime
                         context.GroupedTransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetBoundedRowWrapperCacheEntry(
+                    SetLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
                         totalRows,
-                        _seededCacheMaxEntries);
+                        _seededCacheMaxEntries,
+                        trace,
+                        "GroupedTransitiveClosureSeeded",
+                        traceKey);
                 }
 
                 return totalRows;
@@ -7986,7 +8017,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    cachedBySeed.TryGetValue(new RowWrapper(flatSeedKey), out var cachedRows))
+                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(flatSeedKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
                     return cachedRows;
@@ -8027,11 +8058,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             memoizedRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "GroupedTransitiveClosureSeededByTarget",
+                            traceKey);
                     }
 
                     return memoizedRows;
@@ -8126,11 +8160,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             singleRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "GroupedTransitiveClosureSeededByTarget",
+                            traceKey);
                     }
 
                     return singleRows;
@@ -8190,11 +8227,14 @@ namespace UnifyWeaver.QueryRuntime
                         context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetBoundedRowWrapperCacheEntry(
+                    SetLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
                         totalRows,
-                        _seededCacheMaxEntries);
+                        _seededCacheMaxEntries,
+                        trace,
+                        "GroupedTransitiveClosureSeededByTarget",
+                        traceKey);
                 }
 
                 return totalRows;
@@ -9037,11 +9077,64 @@ namespace UnifyWeaver.QueryRuntime
         private static int CountEdgeBucket(Dictionary<RowWrapper, List<object[]>> index, object[] key) =>
             index.TryGetValue(new RowWrapper(key), out var bucket) ? bucket.Count : 0;
 
-        private static void SetBoundedRowWrapperCacheEntry<TValue>(
+        private sealed class LruAccessState
+        {
+            public long NextAccessId { get; set; }
+            public Dictionary<RowWrapper, long> LastAccessByKey { get; } = new(StructuralRowWrapperComparer);
+        }
+
+        private static readonly ConditionalWeakTable<object, LruAccessState> LruAccessByStore = new();
+
+        private static LruAccessState GetLruAccessState<TValue>(Dictionary<RowWrapper, TValue> store)
+        {
+            var state = LruAccessByStore.GetOrCreateValue(store);
+            if (store.Count == 0 && state.LastAccessByKey.Count > 0)
+            {
+                state.LastAccessByKey.Clear();
+            }
+
+            return state;
+        }
+
+        private static long TouchLruAccess<TValue>(Dictionary<RowWrapper, TValue> store, RowWrapper key)
+        {
+            var state = GetLruAccessState(store);
+            var nextAccessId = state.NextAccessId + 1;
+            state.NextAccessId = nextAccessId;
+            state.LastAccessByKey[key] = nextAccessId;
+            return nextAccessId;
+        }
+
+        private static void RemoveLruAccess<TValue>(Dictionary<RowWrapper, TValue> store, RowWrapper key)
+        {
+            var state = GetLruAccessState(store);
+            state.LastAccessByKey.Remove(key);
+        }
+
+        private static bool TryGetLruRowWrapperCacheValue<TValue>(
+            Dictionary<RowWrapper, TValue> store,
+            RowWrapper key,
+            out TValue value)
+        {
+            if (!store.TryGetValue(key, out value))
+            {
+                value = default!;
+                return false;
+            }
+
+            // Refresh recency using explicit access timestamps.
+            TouchLruAccess(store, key);
+            return true;
+        }
+
+        private static void SetLruBoundedRowWrapperCacheEntry<TValue>(
             Dictionary<RowWrapper, TValue> store,
             RowWrapper key,
             TValue value,
-            int maxEntries)
+            int maxEntries,
+            QueryExecutionTrace? trace,
+            string? cacheName,
+            string? traceKey)
         {
             if (maxEntries <= 0)
             {
@@ -9050,17 +9143,45 @@ namespace UnifyWeaver.QueryRuntime
 
             if (store.ContainsKey(key))
             {
+                // Update value and refresh recency.
                 store[key] = value;
+                TouchLruAccess(store, key);
                 return;
             }
 
             while (store.Count >= maxEntries)
             {
-                var oldestKey = store.Keys.First();
+                var state = GetLruAccessState(store);
+                RowWrapper oldestKey = default!;
+                var oldestAccess = long.MaxValue;
+                var foundOldestKey = false;
+
+                foreach (var existingKey in store.Keys)
+                {
+                    var access = state.LastAccessByKey.TryGetValue(existingKey, out var knownAccess) ? knownAccess : 0;
+                    if (!foundOldestKey || access < oldestAccess)
+                    {
+                        oldestKey = existingKey;
+                        oldestAccess = access;
+                        foundOldestKey = true;
+                    }
+                }
+
+                if (!foundOldestKey)
+                {
+                    break;
+                }
+
                 store.Remove(oldestKey);
+                RemoveLruAccess(store, oldestKey);
+                if (trace is not null && cacheName is not null && traceKey is not null)
+                {
+                    trace.RecordCacheEviction(cacheName, traceKey);
+                }
             }
 
             store.Add(key, value);
+            TouchLruAccess(store, key);
         }
 
         private static bool TryGetParameterValue(
@@ -9138,7 +9259,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    cachedBySeed.TryGetValue(new RowWrapper(seedsKey), out var cachedRows))
+                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: true, built: false);
                     return cachedRows;
@@ -9174,11 +9295,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
                             memoizedRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "TransitiveClosureSeeded",
+                            traceKey);
                     }
 
                     return memoizedRows;
@@ -9256,11 +9380,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
                             singleRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "TransitiveClosureSeeded",
+                            traceKey);
                     }
 
                     return singleRows;
@@ -9340,11 +9467,14 @@ namespace UnifyWeaver.QueryRuntime
                         context.TransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetBoundedRowWrapperCacheEntry(
+                    SetLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
                         totalRows,
-                        _seededCacheMaxEntries);
+                        _seededCacheMaxEntries,
+                        trace,
+                        "TransitiveClosureSeeded",
+                        traceKey);
                 }
 
                 return totalRows;
@@ -9408,7 +9538,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    cachedBySeed.TryGetValue(new RowWrapper(seedsKey), out var cachedRows))
+                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
                     return cachedRows;
@@ -9444,11 +9574,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
                             memoizedRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "TransitiveClosureSeededByTarget",
+                            traceKey);
                     }
 
                     return memoizedRows;
@@ -9526,11 +9659,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
                             singleRows,
-                            _seededCacheMaxEntries);
+                            _seededCacheMaxEntries,
+                            trace,
+                            "TransitiveClosureSeededByTarget",
+                            traceKey);
                     }
 
                     return singleRows;
@@ -9610,11 +9746,14 @@ namespace UnifyWeaver.QueryRuntime
                         context.TransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetBoundedRowWrapperCacheEntry(
+                    SetLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
                         totalRows,
-                        _seededCacheMaxEntries);
+                        _seededCacheMaxEntries,
+                        trace,
+                        "TransitiveClosureSeededByTarget",
+                        traceKey);
                 }
 
                 return totalRows;
@@ -9699,7 +9838,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (canReusePairProbeCache &&
                         context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var cachedByPair) &&
-                        cachedByPair.TryGetValue(new RowWrapper(pairProbeKey), out var pairReachable))
+                        TryGetLruRowWrapperCacheValue(cachedByPair, new RowWrapper(pairProbeKey), out var pairReachable))
                     {
                         trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
                         if (!pairReachable)
@@ -9733,11 +9872,14 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
                         }
 
-                        SetBoundedRowWrapperCacheEntry(
+                        SetLruBoundedRowWrapperCacheEntry(
                             pairStore,
                             new RowWrapper(pairProbeKey),
                             rows.Count > 0,
-                            _pairProbeCacheMaxEntries);
+                            _pairProbeCacheMaxEntries,
+                            trace,
+                            "TransitiveClosurePairsSingleProbe",
+                            traceKey);
                     }
 
                     return rows;
