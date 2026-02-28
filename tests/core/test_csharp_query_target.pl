@@ -5484,7 +5484,7 @@ Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
 Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, SeedLimit, MinRows, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, SeedLimit, MinRows, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_pair_cache_admission_flag(
         ModuleClass,
@@ -5532,7 +5532,7 @@ Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
 Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, PairLimit, MinCost, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, PairLimit, MinCost, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
     (   Params == []
