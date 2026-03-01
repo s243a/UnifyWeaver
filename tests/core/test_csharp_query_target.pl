@@ -116,6 +116,7 @@
 :- dynamic user:test_admission_reach_pair/2.
 :- dynamic user:test_admission_group_edge/4.
 :- dynamic user:test_admission_group_reach_param/4.
+:- dynamic user:test_admission_group_reach_param_end/4.
 :- dynamic user:test_admission_group_reach_pair/4.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
@@ -313,8 +314,11 @@ test_csharp_query_target :-
         verify_parameterized_reachability_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime,
         verify_parameterized_reachability_seed_cache_admission_runtime,
+        verify_parameterized_reachability_by_target_seed_cache_admission_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_admission_runtime,
+        verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_runtime,
         verify_transitive_closure_cache_reuse_runtime,
         verify_grouped_transitive_closure_cache_reuse_runtime,
@@ -993,6 +997,14 @@ setup_test_data :-
         test_admission_group_edge(X, Y, L, Cat),
         test_admission_group_reach_param(Y, Z, L, Cat)
     )),
+    assertz(user:mode(test_admission_group_reach_param_end(-, +, +, +))),
+    assertz(user:(test_admission_group_reach_param_end(X, Y, L, Cat) :-
+        test_admission_group_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_admission_group_reach_param_end(X, Z, L, Cat) :-
+        test_admission_group_edge(X, Y, L, Cat),
+        test_admission_group_reach_param_end(Y, Z, L, Cat)
+    )),
     assertz(user:mode(test_admission_group_reach_pair(+, +, +, +))),
     assertz(user:(test_admission_group_reach_pair(X, Y, L, Cat) :-
         test_admission_group_edge(X, Y, L, Cat)
@@ -1169,6 +1181,8 @@ cleanup_test_data :-
     retractall(user:test_admission_group_edge(_, _, _, _)),
     retractall(user:test_admission_group_reach_param(_, _, _, _)),
     retractall(user:mode(test_admission_group_reach_param(_, _, _, _))),
+    retractall(user:test_admission_group_reach_param_end(_, _, _, _)),
+    retractall(user:mode(test_admission_group_reach_param_end(_, _, _, _))),
     retractall(user:test_admission_group_reach_pair(_, _, _, _)),
     retractall(user:mode(test_admission_group_reach_pair(_, _, _, _))),
     retractall(user:test_reachable(_, _)),
@@ -3842,6 +3856,31 @@ verify_parameterized_reachability_seed_cache_admission_runtime :-
         HotParams,
         HarnessSource).
 
+verify_parameterized_reachability_by_target_seed_cache_admission_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_end/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[charlie]],
+    WarmColdParams = [[bob]],
+    HotParams = [[charlie]],
+    ColdParams = [[bob]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeededByTarget',
+        1,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
+         'CACHE_ADMISSIONS:TransitiveClosureSeededByTarget=1',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeededByTarget=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime :-
     csharp_query_target:build_query_plan(test_admission_reach_pair/2, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -3867,6 +3906,31 @@ verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime :-
         HotParams,
         HarnessSource).
 
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, z], [p, q]],
+    WarmColdParams = [[x, z], [p, q]],
+    HotParams = [[a, z], [p, q]],
+    ColdParams = [[x, z], [p, q]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeeded',
+        8,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
+         'CACHE_ADMISSIONS:TransitiveClosureSeeded=1',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeeded=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_seed_cache_admission_runtime :-
     csharp_query_target:build_query_plan(test_admission_group_reach_param/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -3889,6 +3953,31 @@ verify_parameterized_grouped_transitive_closure_seed_cache_admission_runtime :-
          'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
          'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
          'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_reach_param_end/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[e, adm, cata]],
+    WarmColdParams = [[b, adm, cata]],
+    HotParams = [[e, adm, cata]],
+    ColdParams = [[b, adm, cata]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosureSeededByTarget',
+        1,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
+         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
+         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
         HotParams,
         HarnessSource).
 
