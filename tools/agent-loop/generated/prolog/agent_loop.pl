@@ -16,7 +16,9 @@
 :- use_module(costs).
 
 :- dynamic conversation/1.
+:- dynamic max_iterations/1.
 conversation([]).
+max_iterations(0).
 
 %% Entry point with default options
 agent_loop :- agent_loop([]).
@@ -48,10 +50,18 @@ repl_loop(Backend) :-
 
 %% Process user input: slash command or LLM request
 process_input(Input, Backend) :-
-    (atom_concat('/', _, Input) ->
-        %% Slash command
-        atom_string(InputAtom, Input),
-        handle_slash_command(InputAtom, "", Action),
+    (sub_string(Input, 0, 1, _, "/") ->
+        %% Slash command — split into command and args
+        (sub_string(Input, SpaceIdx, 1, _, " ") ->
+            sub_string(Input, 0, SpaceIdx, _, CmdPart),
+            AfterSpace is SpaceIdx + 1,
+            sub_string(Input, AfterSpace, _, 0, ArgsPart)
+        ;
+            CmdPart = Input, ArgsPart = ""
+        ),
+        atom_string(CmdAtom, CmdPart),
+        atom_string(ArgsAtom, ArgsPart),
+        handle_slash_command(CmdAtom, ArgsAtom, Action),
         handle_action(Action, Backend)
     ;
         %% LLM request
@@ -83,15 +93,33 @@ handle_response(Backend, Response, Messages) :-
     ).
 
 %% Execute tool calls and continue conversation
-handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse) :-
-    AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},
-    append(Messages, [AsstMsg], Msgs1),
-    execute_tool_calls(Backend, ToolCalls, ToolResults),
-    append(Msgs1, ToolResults, Msgs2),
-    findall(TS, (tool_spec(TN, TP), member(description(TD), TP),
-        TS = _{name: TN, description: TD}), TSList),
-    send_request(Backend, Msgs2, TSList, NextResponse),
-    handle_response(Backend, NextResponse, Msgs2).
+handle_tool_calls(Backend, ToolCalls, Messages, _) :-
+    handle_tool_calls(Backend, ToolCalls, Messages, _, 1).
+
+handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-
+    %% Check iteration limit
+    max_iterations(MaxIter),
+    (MaxIter > 0, Iteration > MaxIter ->
+        format("~n[Paused after ~w iterations. Send a message to continue.]~n", [MaxIter]),
+        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},
+        append(Messages, [AsstMsg], NewMsgs),
+        retractall(conversation(_)),
+        assert(conversation(NewMsgs))
+    ;
+        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},
+        append(Messages, [AsstMsg], Msgs1),
+        execute_tool_calls(Backend, ToolCalls, ToolResults),
+        append(Msgs1, ToolResults, Msgs2),
+        findall(TS, (tool_spec(TN, TP), member(description(TD), TP),
+            TS = _{name: TN, description: TD}), TSList),
+        send_request(Backend, Msgs2, TSList, NextResponse),
+        (get_dict(tool_calls, NextResponse, NextTCs), NextTCs \= [] ->
+            NextIter is Iteration + 1,
+            handle_tool_calls(Backend, NextTCs, Msgs2, NextResponse, NextIter)
+        ;
+            handle_response(Backend, NextResponse, Msgs2)
+        )
+    ).
 
 %% Execute a list of tool calls, collecting results
 execute_tool_calls(_Backend, [], []).
@@ -119,16 +147,75 @@ handle_action(clear, _) :-
     write("Context cleared."), nl.
 handle_action(help, _) :-
     write("Available commands:"), nl,
-    forall(slash_command(Name, _Match, _Opts, Help), (
-        format("  /~w — ~w~n", [Name, Help])
+    forall(slash_command_group(Group, Cmds), (
+        format("~n  ~w:~n", [Group]),
+        forall(member(CmdName, Cmds), (
+            slash_command(CmdName, _, Opts, Help),
+            (member(help_display(Disp), Opts) -> true ; format(atom(Disp), "/~w", [CmdName])),
+            format("    ~w~t~30| ~w~n", [Disp, Help])
+        ))
     )).
 handle_action(status, Backend) :-
     get_dict(name, Backend, BName),
     conversation(Msgs),
     length(Msgs, MsgCount),
     cost_tracker_format(main, CostStr),
-    format("Backend: ~w~nMessages: ~w~nTokens: ~w~n", [BName, MsgCount, CostStr]).
+    format("Backend: ~w~nMessages: ~w~nCosts: ~w~n", [BName, MsgCount, CostStr]).
+handle_action(call_handler('_handle_cost_command', _), _) :-
+    cost_tracker_format(main, CostStr),
+    write(CostStr), nl.
+handle_action(call_handler('_handle_backend_command', Args), Backend) :-
+    (Args = "" ->
+        get_dict(name, Backend, BName),
+        format("Current backend: ~w~n", [BName]),
+        write("Available backends:"), nl,
+        forall(backend_factory(N, _), format("  ~w~n", [N]))
+    ;
+        format("Backend switching not yet supported in Prolog target.~n", [])
+    ).
+handle_action(call_handler('_handle_iterations_command', Args), _) :-
+    (Args = "" ->
+        max_iterations(N),
+        (N =:= 0 -> write("Max iterations: unlimited")
+        ; format("Max iterations: ~w", [N])), nl
+    ;
+        atom_number(Args, N),
+        retractall(max_iterations(_)),
+        assert(max_iterations(N)),
+        (N =:= 0 -> write("Max iterations: unlimited")
+        ; format("Max iterations set to ~w", [N])), nl
+    ).
+handle_action(call_handler('_handle_stream_command', _), _) :-
+    write("Streaming not yet supported in Prolog target."), nl.
+handle_action(call_handler('_handle_aliases_command', _), _) :-
+    write("Command aliases:"), nl,
+    forall(command_alias(Alias, Target), (
+        format("  /~w -> /~w~n", [Alias, Target])
+    )).
+handle_action(call_handler('_handle_history_command', Args), _) :-
+    (Args = "" -> N = 10 ; atom_number(Args, N)),
+    conversation(Msgs),
+    length(Msgs, Len),
+    Start is max(0, Len - N),
+    format("~nLast ~w messages (~w total):~n", [N, Len]),
+    show_messages(Msgs, Start, 0).
 handle_action(not_a_command, _) :- write("Unknown command."), nl.
 handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).
 handle_action(call_handler(Handler, _Args), _) :-
     format("Handler ~w not yet implemented in Prolog target.~n", [Handler]).
+
+%% Show conversation messages from index Start
+show_messages([], _, _).
+show_messages([Msg|Rest], Start, Idx) :-
+    (Idx >= Start ->
+        get_dict(role, Msg, Role),
+        get_dict(content, Msg, Content),
+        (atom_length(Content, CLen), CLen > 80 ->
+            sub_atom(Content, 0, 80, _, Preview),
+            format("  [~w] ~w: ~w...~n", [Idx, Role, Preview])
+        ;
+            format("  [~w] ~w: ~w~n", [Idx, Role, Content])
+        )
+    ; true),
+    NextIdx is Idx + 1,
+    show_messages(Rest, Start, NextIdx).

@@ -10,12 +10,14 @@
     api_key_env_var/2,
     api_key_file/2,
     parse_cli_args/2,
+    example_agent_config/3,
+    config_search_path/2,
     load_config/2,
     resolve_api_key/3
 ]).
 
 :- use_module(library(optparse)).
-:- use_module(library(http/json)).
+:- use_module(library(json)).
 
 %% cli_argument(+Name, +Options)
 cli_argument(agent, [long('--agent'), short('-a'), default(none), help('Agent variant from config file (e.g., yolo, claude-opus, ollama)')]).
@@ -99,6 +101,24 @@ api_key_env_var(gemini, 'GEMINI_API_KEY').
 %% api_key_file(+Backend, +FilePath)
 api_key_file(claude, '~/.anthropic/api_key').
 api_key_file(openai, '~/.openai/api_key').
+
+%% example_agent_config(+Name, +Backend, +Properties)
+example_agent_config('claude-sonnet', 'claude-code', [=(model,sonnet), =(tools,["bash","read","write","edit"]), =(context_mode,continue)]).
+example_agent_config('claude-opus', 'claude-code', [=(model,opus), =(system_prompt,"You are a senior software engineer. Be thorough.")]).
+example_agent_config(yolo, 'claude-code', [=(model,haiku), =(auto_tools,true), =(system_prompt,"Be fast and take action without asking.")]).
+example_agent_config(gemini, gemini, [=(model,'gemini-2.5-flash')]).
+example_agent_config('ollama-local', 'ollama-api', [=(model,llama3), =(host,localhost), =(port,11434)]).
+example_agent_config('ollama-remote', 'ollama-api', [=(model,codellama), =(host,'192.168.1.100'), =(port,11434)]).
+example_agent_config('claude-api', claude, [=(model,'claude-sonnet-4-20250514'), =(api_key,'$ANTHROPIC_API_KEY')]).
+example_agent_config(openai, openai, [=(model,'gpt-4o'), =(api_key,'$OPENAI_API_KEY')]).
+example_agent_config('openai-mini', openai, [=(model,'gpt-4o-mini'), =(api_key,'$OPENAI_API_KEY')]).
+example_agent_config('coding-assistant', 'claude-code', [=(model,sonnet), =(agent_md,"./agents/coding.md"), =(skills,["./skills/git.md","./skills/testing.md"]), =(tools,["bash","read","write","edit"]), =(system_prompt,"You are a coding assistant focused on clean, tested code.")]).
+
+%% config_search_path(+Path, +Category)
+config_search_path('uwsal.json', required).
+config_search_path('~/uwsal.json', required).
+config_search_path('coro.json', fallback).
+config_search_path('~/coro.json', fallback).
 
 %% Parse CLI arguments using SWI-Prolog optparse
 parse_cli_args(Argv, Options) :-
