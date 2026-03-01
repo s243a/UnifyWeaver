@@ -12,6 +12,8 @@
     parse_cli_args/2,
     example_agent_config/3,
     config_search_path/2,
+    config_field_json_default/2,
+    config_dir_file_name/1,
     load_config/2,
     resolve_api_key/3
 ]).
@@ -119,6 +121,32 @@ config_search_path('uwsal.json', required).
 config_search_path('~/uwsal.json', required).
 config_search_path('coro.json', fallback).
 config_search_path('~/coro.json', fallback).
+
+%% config_field_json_default(+FieldName, +JsonDefault)
+%% Maps agent config fields to JSON-safe defaults for code generation.
+%% Special values: positional (name=arg), no_default (data.get with no fallback)
+config_field_json_default(name, positional).
+config_field_json_default(backend, '\'coro\'').
+config_field_json_default(model, no_default).
+config_field_json_default(host, no_default).
+config_field_json_default(port, no_default).
+config_field_json_default(api_key, no_default).
+config_field_json_default(command, no_default).
+config_field_json_default(system_prompt, no_default).
+config_field_json_default(agent_md, no_default).
+config_field_json_default(tools, '[\'bash\', \'read\', \'write\', \'edit\']').
+config_field_json_default(context_mode, '\'continue\'').
+config_field_json_default(skills, '[]').
+config_field_json_default(extra, {}).
+
+%% config_dir_file_name(+FileName)
+%% Standard config file names searched by load_config_from_dir.
+config_dir_file_name('agents.yaml').
+config_dir_file_name('agents.yml').
+config_dir_file_name('agents.json').
+config_dir_file_name('.agents.yaml').
+config_dir_file_name('.agents.yml').
+config_dir_file_name('.agents.json').
 
 %% Parse CLI arguments using SWI-Prolog optparse
 parse_cli_args(Argv, Options) :-

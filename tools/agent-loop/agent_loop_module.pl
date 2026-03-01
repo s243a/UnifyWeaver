@@ -407,6 +407,24 @@ agent_config_field(timeout,             'int',            '300',     "").
 agent_config_field(show_tokens,         'bool',           'True',    "").
 agent_config_field(extra,               'dict',           'field(default_factory=dict)', "").
 
+%% config_field_json_default(FieldName, JsonDefault)
+%% Override for fields whose dataclass default can't be used directly in data.get()
+%% 'positional' means the field is a positional arg, not from dict
+%% 'no_default' means data.get(field) with no default (returns None)
+config_field_json_default(name,     positional).
+config_field_json_default(backend,  '\'coro\'').
+config_field_json_default(model,    no_default).
+config_field_json_default(host,     no_default).
+config_field_json_default(port,     no_default).
+config_field_json_default(api_key,  no_default).
+config_field_json_default(command,  no_default).
+config_field_json_default(system_prompt, no_default).
+config_field_json_default(agent_md, no_default).
+config_field_json_default(tools,    '[\'bash\', \'read\', \'write\', \'edit\']').
+config_field_json_default(context_mode, '\'continue\'').
+config_field_json_default(skills,   '[]').
+config_field_json_default(extra,    '{}').
+
 %% default_agent_preset(Name, BackendAtom, Properties)
 default_agent_preset(default, coro, [command='claude']).
 default_agent_preset('claude-sonnet', 'claude-code', [model=sonnet]).
@@ -452,6 +470,14 @@ config_search_path('uwsal.json', required).
 config_search_path('~/uwsal.json', required).
 config_search_path('coro.json', fallback).
 config_search_path('~/coro.json', fallback).
+
+%% config_dir_file_name(FileName) — search order for load_config_from_dir
+config_dir_file_name('agents.yaml').
+config_dir_file_name('agents.yml').
+config_dir_file_name('agents.json').
+config_dir_file_name('.agents.yaml').
+config_dir_file_name('.agents.yml').
+config_dir_file_name('.agents.json').
 
 %% =============================================================================
 %% Tools Module Data
@@ -1087,6 +1113,8 @@ generate_prolog_config :-
     write(S, '    parse_cli_args/2,\n'),
     write(S, '    example_agent_config/3,\n'),
     write(S, '    config_search_path/2,\n'),
+    write(S, '    config_field_json_default/2,\n'),
+    write(S, '    config_dir_file_name/1,\n'),
     write(S, '    load_config/2,\n'),
     write(S, '    resolve_api_key/3\n'),
     write(S, ']).\n\n'),
@@ -1137,6 +1165,21 @@ generate_prolog_config :-
     write(S, '%% config_search_path(+Path, +Category)\n'),
     forall(config_search_path(CPath, Cat), (
         format(S, 'config_search_path(~q, ~q).~n', [CPath, Cat])
+    )),
+    write(S, '\n'),
+    %% Emit config_field_json_default facts
+    write(S, '%% config_field_json_default(+FieldName, +JsonDefault)\n'),
+    write(S, '%% Maps agent config fields to JSON-safe defaults for code generation.\n'),
+    write(S, '%% Special values: positional (name=arg), no_default (data.get with no fallback)\n'),
+    forall(config_field_json_default(FName, FDefault), (
+        format(S, 'config_field_json_default(~q, ~q).~n', [FName, FDefault])
+    )),
+    write(S, '\n'),
+    %% Emit config_dir_file_name facts
+    write(S, '%% config_dir_file_name(+FileName)\n'),
+    write(S, '%% Standard config file names searched by load_config_from_dir.\n'),
+    forall(config_dir_file_name(FN), (
+        format(S, 'config_dir_file_name(~q).~n', [FN])
     )),
     write(S, '\n'),
     %% Generate parse_cli_args using optparse
@@ -1644,7 +1687,9 @@ generate_prolog_agent_loop :-
     write(S, ':- use_module(security).\n'),
     write(S, ':- use_module(costs).\n\n'),
     write(S, ':- dynamic conversation/1.\n'),
+    write(S, ':- dynamic conversation_undo/1.\n'),
     write(S, ':- dynamic max_iterations/1.\n'),
+    write(S, ':- dynamic current_backend/1.\n'),
     write(S, 'conversation([]).\n'),
     write(S, 'max_iterations(0).\n\n'),
     %% Main entry
@@ -1657,23 +1702,26 @@ generate_prolog_agent_loop :-
     write(S, '        true\n'),
     write(S, '    ; BName = coro),\n'),
     write(S, '    create_backend(BName, Options, Backend),\n'),
+    write(S, '    retractall(current_backend(_)),\n'),
+    write(S, '    assert(current_backend(Backend)),\n'),
     write(S, '    (member(security_profile(Prof), Options), Prof \\= none ->\n'),
     write(S, '        set_security_profile(Prof)\n'),
     write(S, '    ; true),\n'),
     write(S, '    cost_tracker_init(main),\n'),
     write(S, '    format("uwsal — Prolog agent loop (backend: ~w)~n", [BName]),\n'),
     write(S, '    write("Type /help for commands, /exit to quit."), nl,\n'),
-    write(S, '    repl_loop(Backend).\n\n'),
+    write(S, '    repl_loop.\n\n'),
     %% REPL loop
     write(S, '%% Main read-eval-print loop\n'),
-    write(S, 'repl_loop(Backend) :-\n'),
+    write(S, 'repl_loop :-\n'),
+    write(S, '    current_backend(Backend),\n'),
     write(S, '    write("> "),\n'),
     write(S, '    flush_output,\n'),
     write(S, '    read_line_to_string(user_input, Input),\n'),
     write(S, '    (Input = end_of_file -> write("Goodbye."), nl\n'),
-    write(S, '    ; Input = "" -> repl_loop(Backend)\n'),
-    write(S, '    ; process_input(Input, Backend) -> repl_loop(Backend)\n'),
-    write(S, '    ; repl_loop(Backend)).\n\n'),
+    write(S, '    ; Input = "" -> repl_loop\n'),
+    write(S, '    ; process_input(Input, Backend) -> repl_loop\n'),
+    write(S, '    ; repl_loop).\n\n'),
     %% Process input
     write(S, '%% Process user input: slash command or LLM request\n'),
     write(S, 'process_input(Input, Backend) :-\n'),
@@ -1790,7 +1838,7 @@ generate_prolog_agent_loop :-
     write(S, 'handle_action(call_handler(\'_handle_cost_command\', _), _) :-\n'),
     write(S, '    cost_tracker_format(main, CostStr),\n'),
     write(S, '    write(CostStr), nl.\n'),
-    %% /backend command
+    %% /backend command — display current or switch
     write(S, 'handle_action(call_handler(\'_handle_backend_command\', Args), Backend) :-\n'),
     write(S, '    (Args = "" ->\n'),
     write(S, '        get_dict(name, Backend, BName),\n'),
@@ -1798,7 +1846,18 @@ generate_prolog_agent_loop :-
     write(S, '        write("Available backends:"), nl,\n'),
     write(S, '        forall(backend_factory(N, _), format("  ~w~n", [N]))\n'),
     write(S, '    ;\n'),
-    write(S, '        format("Backend switching not yet supported in Prolog target.~n", [])\n'),
+    write(S, '        atom_string(TargetName, Args),\n'),
+    write(S, '        (backend_factory(TargetName, _) ->\n'),
+    write(S, '            create_backend(TargetName, [], NewBackend),\n'),
+    write(S, '            retractall(current_backend(_)),\n'),
+    write(S, '            assert(current_backend(NewBackend)),\n'),
+    write(S, '            format("Switched to backend: ~w~n", [TargetName])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("Unknown backend: ~w~nAvailable: ", [TargetName]),\n'),
+    write(S, '            findall(N, backend_factory(N, _), Names),\n'),
+    write(S, '            atomic_list_concat(Names, \', \', NamesStr),\n'),
+    write(S, '            write(NamesStr), nl\n'),
+    write(S, '        )\n'),
     write(S, '    ).\n'),
     %% /iterations command
     write(S, 'handle_action(call_handler(\'_handle_iterations_command\', Args), _) :-\n'),
@@ -1830,6 +1889,92 @@ generate_prolog_agent_loop :-
     write(S, '    Start is max(0, Len - N),\n'),
     write(S, '    format("~nLast ~w messages (~w total):~n", [N, Len]),\n'),
     write(S, '    show_messages(Msgs, Start, 0).\n'),
+    %% /delete command — remove messages by index or range
+    write(S, 'handle_action(call_handler(\'_handle_delete_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        write("Usage: /delete <index> or /delete <start>-<end>"), nl\n'),
+    write(S, '    ;\n'),
+    write(S, '        conversation(Msgs),\n'),
+    write(S, '        %% Save undo state\n'),
+    write(S, '        retractall(conversation_undo(_)),\n'),
+    write(S, '        assert(conversation_undo(Msgs)),\n'),
+    write(S, '        (sub_string(Args, DashIdx, 1, _, "-") ->\n'),
+    write(S, '            sub_string(Args, 0, DashIdx, _, StartStr),\n'),
+    write(S, '            AfterDash is DashIdx + 1,\n'),
+    write(S, '            sub_string(Args, AfterDash, _, 0, EndStr),\n'),
+    write(S, '            atom_number(StartStr, Start),\n'),
+    write(S, '            atom_number(EndStr, End)\n'),
+    write(S, '        ;\n'),
+    write(S, '            atom_number(Args, Start),\n'),
+    write(S, '            End = Start\n'),
+    write(S, '        ),\n'),
+    write(S, '        length(Msgs, Len),\n'),
+    write(S, '        (Start >= 0, End < Len, Start =< End ->\n'),
+    write(S, '            delete_range(Msgs, Start, End, 0, NewMsgs),\n'),
+    write(S, '            retractall(conversation(_)),\n'),
+    write(S, '            assert(conversation(NewMsgs)),\n'),
+    write(S, '            Deleted is End - Start + 1,\n'),
+    write(S, '            format("Deleted ~w message(s).~n", [Deleted])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("Invalid range. Messages: 0-~w~n", [Len])\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
+    %% /undo command
+    write(S, 'handle_action(call_handler(\'_handle_undo_command\', _), _) :-\n'),
+    write(S, '    (conversation_undo(OldMsgs) ->\n'),
+    write(S, '        conversation(Current),\n'),
+    write(S, '        retractall(conversation(_)),\n'),
+    write(S, '        assert(conversation(OldMsgs)),\n'),
+    write(S, '        retractall(conversation_undo(_)),\n'),
+    write(S, '        assert(conversation_undo(Current)),\n'),
+    write(S, '        length(OldMsgs, Len),\n'),
+    write(S, '        format("Restored conversation (~w messages). /undo again to swap back.~n", [Len])\n'),
+    write(S, '    ;\n'),
+    write(S, '        write("Nothing to undo."), nl\n'),
+    write(S, '    ).\n'),
+    %% /edit command — replace message content at index
+    write(S, 'handle_action(call_handler(\'_handle_edit_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        write("Usage: /edit <index> <new content>"), nl\n'),
+    write(S, '    ;\n'),
+    write(S, '        (sub_string(Args, SpIdx, 1, _, " ") ->\n'),
+    write(S, '            sub_string(Args, 0, SpIdx, _, IdxStr),\n'),
+    write(S, '            AfterSp is SpIdx + 1,\n'),
+    write(S, '            sub_string(Args, AfterSp, _, 0, NewContent)\n'),
+    write(S, '        ;\n'),
+    write(S, '            write("Usage: /edit <index> <new content>"), nl, fail\n'),
+    write(S, '        ),\n'),
+    write(S, '        atom_number(IdxStr, Idx),\n'),
+    write(S, '        conversation(Msgs),\n'),
+    write(S, '        length(Msgs, Len),\n'),
+    write(S, '        (Idx >= 0, Idx < Len ->\n'),
+    write(S, '            retractall(conversation_undo(_)),\n'),
+    write(S, '            assert(conversation_undo(Msgs)),\n'),
+    write(S, '            replace_at(Msgs, Idx, NewContent, 0, NewMsgs),\n'),
+    write(S, '            retractall(conversation(_)),\n'),
+    write(S, '            assert(conversation(NewMsgs)),\n'),
+    write(S, '            format("Edited message ~w.~n", [Idx])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("Invalid index. Messages: 0-~w~n", [Len])\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
+    %% /replay command — re-send message at index
+    write(S, 'handle_action(call_handler(\'_handle_replay_command\', Args), Backend) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        write("Usage: /replay <index>"), nl\n'),
+    write(S, '    ;\n'),
+    write(S, '        atom_number(Args, Idx),\n'),
+    write(S, '        conversation(Msgs),\n'),
+    write(S, '        length(Msgs, Len),\n'),
+    write(S, '        (Idx >= 0, Idx < Len ->\n'),
+    write(S, '            nth0(Idx, Msgs, Msg),\n'),
+    write(S, '            get_dict(content, Msg, Content),\n'),
+    write(S, '            format("Replaying message ~w: ~w~n", [Idx, Content]),\n'),
+    write(S, '            process_input(Content, Backend)\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("Invalid index. Messages: 0-~w~n", [Len])\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
     %% Catch-all for unimplemented handlers
     write(S, 'handle_action(not_a_command, _) :- write("Unknown command."), nl.\n'),
     write(S, 'handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).\n'),
@@ -1850,7 +1995,28 @@ generate_prolog_agent_loop :-
     write(S, '        )\n'),
     write(S, '    ; true),\n'),
     write(S, '    NextIdx is Idx + 1,\n'),
-    write(S, '    show_messages(Rest, Start, NextIdx).\n'),
+    write(S, '    show_messages(Rest, Start, NextIdx).\n\n'),
+    %% Helper: delete messages in range [Start, End] by index
+    write(S, '%% Delete messages in index range [Start, End]\n'),
+    write(S, 'delete_range([], _, _, _, []).\n'),
+    write(S, 'delete_range([_|Rest], Start, End, Idx, Result) :-\n'),
+    write(S, '    Idx >= Start, Idx =< End, !,\n'),
+    write(S, '    NextIdx is Idx + 1,\n'),
+    write(S, '    delete_range(Rest, Start, End, NextIdx, Result).\n'),
+    write(S, 'delete_range([H|Rest], Start, End, Idx, [H|Result]) :-\n'),
+    write(S, '    NextIdx is Idx + 1,\n'),
+    write(S, '    delete_range(Rest, Start, End, NextIdx, Result).\n\n'),
+    %% Helper: replace message content at index
+    write(S, '%% Replace content of message at index Idx\n'),
+    write(S, 'replace_at([], _, _, _, []).\n'),
+    write(S, 'replace_at([Msg|Rest], Target, NewContent, Idx, [NewMsg|Result]) :-\n'),
+    write(S, '    Idx =:= Target, !,\n'),
+    write(S, '    put_dict(content, Msg, NewContent, NewMsg),\n'),
+    write(S, '    NextIdx is Idx + 1,\n'),
+    write(S, '    replace_at(Rest, Target, NewContent, NextIdx, Result).\n'),
+    write(S, 'replace_at([H|Rest], Target, NewContent, Idx, [H|Result]) :-\n'),
+    write(S, '    NextIdx is Idx + 1,\n'),
+    write(S, '    replace_at(Rest, Target, NewContent, NextIdx, Result).\n'),
     close(S),
     format('  Generated prolog/agent_loop.pl~n', []).
 
@@ -2501,8 +2667,16 @@ generate_config :-
     write(S, '    # Global settings\n'),
     write(S, '    config_dir: str = ""\n'),
     write(S, '    skills_dir: str = ""\n\n\n'),
-    %% _resolve_env_var, _load_agent_config, load_config, etc. (imperative)
-    write_py(S, config_imperative_functions),
+    %% _resolve_env_var (imperative fragment)
+    write_py(S, config_resolve_env_var),
+    write(S, '\n'),
+    %% _load_agent_config (generated from agent_config_field/4 facts)
+    generate_load_agent_config(S),
+    %% load_config (imperative fragment)
+    write_py(S, config_load_config),
+    %% load_config_from_dir (generated from config_dir_file_name/1 facts)
+    write(S, '\n'),
+    generate_load_config_from_dir(S),
     write(S, '\n\n'),
     %% get_default_config — data-driven from default_agent_preset/3 facts
     write(S, 'def get_default_config() -> Config:\n'),
@@ -2596,7 +2770,71 @@ generate_json_string_list(S, [X|Xs]) :-
     format(S, '"~w", ', [X]),
     generate_json_string_list(S, Xs).
 
+%% --- Generator: _load_agent_config (from agent_config_field/4 facts) ---
+
+generate_load_agent_config(S) :-
+    write(S, 'def _load_agent_config(name: str, data: dict) -> AgentConfig:\n'),
+    write(S, '    """Load an agent config from a dictionary."""\n'),
+    write(S, '    if \'api_key\' in data:\n'),
+    write(S, '        data[\'api_key\'] = _resolve_env_var(data[\'api_key\'])\n\n'),
+    write(S, '    return AgentConfig(\n'),
+    %% Collect all fields in order
+    findall(F, agent_config_field(F, _, _, _), Fields),
+    generate_agent_config_fields(S, Fields),
+    write(S, '    )\n').
+
+generate_agent_config_fields(_, []).
+generate_agent_config_fields(S, [Field|Rest]) :-
+    (Rest = [] -> Comma = '' ; Comma = ','),
+    generate_one_config_field(S, Field, Comma),
+    generate_agent_config_fields(S, Rest).
+
+generate_one_config_field(S, Field, Comma) :-
+    (config_field_json_default(Field, positional) ->
+        %% Positional field — pass directly
+        format(S, '        ~w=~w~w~n', [Field, Field, Comma])
+    ; config_field_json_default(Field, no_default) ->
+        %% No default — data.get('field') returns None
+        format(S, '        ~w=data.get(\'~w\')~w~n', [Field, Field, Comma])
+    ; config_field_json_default(Field, JsonDefault) ->
+        %% Explicit JSON default
+        format(S, '        ~w=data.get(\'~w\', ~w)~w~n', [Field, Field, JsonDefault, Comma])
+    ;
+        %% Use the dataclass default directly
+        agent_config_field(Field, _, Default, _),
+        format(S, '        ~w=data.get(\'~w\', ~w)~w~n', [Field, Field, Default, Comma])
+    ).
+
 %% --- Generator: read_config_cascade (from config_search_path/3 facts) ---
+
+%% --- Generator: load_config_from_dir (from config_dir_file_name/1 facts) ---
+
+generate_load_config_from_dir(S) :-
+    write(S, 'def load_config_from_dir(dir_path: str | Path = None) -> Config | None:\n'),
+    write(S, '    """Load config from standard locations in a directory."""\n'),
+    write(S, '    if dir_path is None:\n'),
+    write(S, '        dir_path = Path.cwd()\n'),
+    write(S, '    else:\n'),
+    write(S, '        dir_path = Path(dir_path)\n\n'),
+    %% Generate the file name list from facts
+    findall(N, config_dir_file_name(N), Names),
+    write(S, '    for name in ['),
+    generate_config_dir_names(S, Names),
+    write(S, ']:\n'),
+    write_py(S, config_load_from_dir_footer).
+
+generate_config_dir_names(_, []).
+generate_config_dir_names(S, [Name]) :-
+    format(S, '\'~w\'', [Name]).
+generate_config_dir_names(S, [Name|Rest]) :-
+    Rest \= [],
+    %% Add line continuation after 3rd element (matching prototype formatting)
+    (Rest = [_, _, _] ->
+        format(S, '\'~w\',~n                 ', [Name])
+    ;
+        format(S, '\'~w\', ', [Name])
+    ),
+    generate_config_dir_names(S, Rest).
 
 generate_config_cascade(S) :-
     write(S, 'def read_config_cascade(no_fallback: bool = False) -> dict:\n'),
@@ -2707,14 +2945,39 @@ generate_aliases :-
     write(S, '# Default aliases\nDEFAULT_ALIASES = {\n'),
     generate_aliases_dict_entries(S),
     write(S, '}\n\n\n'),
-    %% AliasManager class — imperative fragment (includes format_list with categories)
-    write_py(S, aliases_class),
+    %% AliasManager class — split fragment + generated categories dict
+    write_py(S, aliases_class_header),
+    generate_alias_categories_dict(S),
+    write_py(S, aliases_class_footer),
     write(S, '\n\n'),
     %% create_default_aliases_file — imperative fragment
     write_py(S, aliases_create_default),
     nl(S),
     close(S),
     format('  Generated aliases.py~n', []).
+
+%% --- Generator: categories dict for AliasManager.format_list ---
+
+generate_alias_categories_dict(S) :-
+    write(S, '        categories = {\n'),
+    findall(cat(Cat, Keys), alias_category(Cat, Keys), Cats),
+    generate_alias_cat_entries(S, Cats),
+    write(S, '        }\n').
+
+generate_alias_cat_entries(_, []).
+generate_alias_cat_entries(S, [cat(Cat, Keys)|Rest]) :-
+    format(S, '            "~w": [', [Cat]),
+    generate_alias_cat_keys(S, Keys),
+    write(S, '],\n'),
+    generate_alias_cat_entries(S, Rest).
+
+generate_alias_cat_keys(_, []).
+generate_alias_cat_keys(S, [K]) :-
+    format(S, '"~w"', [K]).
+generate_alias_cat_keys(S, [K|Rest]) :-
+    Rest \= [],
+    format(S, '"~w", ', [K]),
+    generate_alias_cat_keys(S, Rest).
 
 %% Generate the DEFAULT_ALIASES dict entries grouped by category comments
 generate_aliases_dict_entries(S) :-
@@ -3458,7 +3721,13 @@ py_fragment(name_property, '    @property
         return f"{{display_name}}"
 ').
 
-%% --- Fragment: Messages array builder (OpenAI-style) ---
+%% --- Fragment family: Messages array builders ---
+%% Four variants for different API message formats:
+%%   messages_builder_system     — system as first message, simple (OpenAI API)
+%%   messages_builder_openrouter — system first, handles tool_calls + dedup (OpenRouter)
+%%   messages_builder_anthropic  — no system in messages, Anthropic passes separately
+%%   messages_builder_ollama     — conditional system, explicit current message append
+%% Selected per-backend via generate_backend_full/3.
 
 py_fragment(messages_builder_system, '        # Build messages array
         messages = [
@@ -4170,7 +4439,7 @@ py_fragment(config_resolve_api_key_footer, '    loc = file_locations.get(backend
 
 ').
 
-py_fragment(config_imperative_functions, 'def _resolve_env_var(value: str) -> str:
+py_fragment(config_resolve_env_var, 'def _resolve_env_var(value: str) -> str:
     """Resolve environment variable references like $VAR or ${VAR}."""
     if not isinstance(value, str):
         return value
@@ -4181,34 +4450,11 @@ py_fragment(config_imperative_functions, 'def _resolve_env_var(value: str) -> st
         return os.environ.get(var_name, value)
     return value
 
+').
 
-def _load_agent_config(name: str, data: dict) -> AgentConfig:
-    """Load an agent config from a dictionary."""
-    if \'api_key\' in data:
-        data[\'api_key\'] = _resolve_env_var(data[\'api_key\'])
+%% _load_agent_config is now generated from agent_config_field/4 + config_field_json_default/2
 
-    return AgentConfig(
-        name=name,
-        backend=data.get(\'backend\', \'coro\'),
-        model=data.get(\'model\'),
-        host=data.get(\'host\'),
-        port=data.get(\'port\'),
-        api_key=data.get(\'api_key\'),
-        command=data.get(\'command\'),
-        system_prompt=data.get(\'system_prompt\'),
-        agent_md=data.get(\'agent_md\'),
-        tools=data.get(\'tools\', [\'bash\', \'read\', \'write\', \'edit\']),
-        auto_tools=data.get(\'auto_tools\', False),
-        context_mode=data.get(\'context_mode\', \'continue\'),
-        max_context_tokens=data.get(\'max_context_tokens\', 100000),
-        max_messages=data.get(\'max_messages\', 50),
-        skills=data.get(\'skills\', []),
-        max_iterations=data.get(\'max_iterations\', 0),
-        timeout=data.get(\'timeout\', 300),
-        show_tokens=data.get(\'show_tokens\', True),
-        extra=data.get(\'extra\', {})
-    )
-
+py_fragment(config_load_config, '
 
 def load_config(path: str | Path) -> Config:
     """Load configuration from a YAML or JSON file."""
@@ -4240,17 +4486,11 @@ def load_config(path: str | Path) -> Config:
 
     return config
 
+').
 
-def load_config_from_dir(dir_path: str | Path = None) -> Config | None:
-    """Load config from standard locations in a directory."""
-    if dir_path is None:
-        dir_path = Path.cwd()
-    else:
-        dir_path = Path(dir_path)
+%% load_config_from_dir is now generated from config_dir_file_name/1 facts
 
-    for name in [\'agents.yaml\', \'agents.yml\', \'agents.json\',
-                 \'.agents.yaml\', \'.agents.yml\', \'.agents.json\']:
-        config_path = dir_path / name
+py_fragment(config_load_from_dir_footer, '        config_path = dir_path / name
         if config_path.exists():
             return load_config(config_path)
 
@@ -5190,7 +5430,7 @@ py_fragment(tools_handler_class_body, '
 ').
 
 %% =============================================================================
-py_fragment(aliases_class, 'class AliasManager:
+py_fragment(aliases_class_header, 'class AliasManager:
     """Manages command aliases."""
 
     def __init__(self, config_path: str | Path | None = None):
@@ -5268,15 +5508,11 @@ py_fragment(aliases_class, 'class AliasManager:
         lines = ["Aliases:"]
 
         # Group by category
-        categories = {
-            "Navigation": ["q", "x", "h", "?", "c", "s"],
-            "Sessions": ["sv", "ld", "ls"],
-            "Export": ["exp", "md", "html"],
-            "Backend": ["be", "sw", "yolo", "opus", "sonnet", "haiku", "gpt", "local"],
-            "Iterations": ["iter", "i0", "i1", "i3", "i5"],
-            "Other": ["fmt", "str", "$", "find", "grep"],
-        }
+').
 
+%% categories dict is now generated from alias_category/2 facts
+
+py_fragment(aliases_class_footer, '
         for category, keys in categories.items():
             cat_aliases = [(k, self.aliases[k]) for k in keys if k in self.aliases]
             if cat_aliases:
