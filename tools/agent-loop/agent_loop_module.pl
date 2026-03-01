@@ -832,6 +832,31 @@ cli_argument_group('Interactive with initial prompt', [prompt_interactive]).
 cli_argument_group('Prompt', [prompt]).
 
 %% =============================================================================
+%% CLI Override Behaviors
+%% =============================================================================
+
+%% cli_override(+ArgName, +ConfigField, +Behavior)
+%% Maps CLI arguments to agent_config field overrides in main().
+%% Behavior types:
+%%   simple          — if args.X: agent_config.F = args.X
+%%   set_true        — if args.X: agent_config.F = True
+%%   clear_list      — if args.X: agent_config.F = []
+%%   not_none_check  — if args.X is not None: agent_config.F = args.X
+%%   backend_special — backend + clear command if no args.command
+cli_override(backend, backend, backend_special).
+cli_override(command, command, simple).
+cli_override(model, model, simple).
+cli_override(host, host, simple).
+cli_override(port, port, simple).
+cli_override(api_key, api_key, simple).
+cli_override(context_mode, context_mode, simple).
+cli_override(auto_tools, auto_tools, set_true).
+cli_override(no_tools, tools, clear_list).
+cli_override(system_prompt, system_prompt, simple).
+cli_override(max_iterations, max_iterations, not_none_check).
+cli_override(max_tokens, max_context_tokens, not_none_check).
+
+%% =============================================================================
 %% CLI Fallback Chains
 %% =============================================================================
 
@@ -958,6 +983,10 @@ backend_factory('ollama-cli', [
 
 %% Backend factory dispatch order (matches prototype if/elif chain)
 backend_factory_order([coro, 'claude-code', gemini, claude, openai, openrouter, 'ollama-api', 'ollama-cli']).
+
+%% streaming_capable(+ResolveType) — backend resolve types that support Prolog streaming
+%% Only api_local (Ollama) is realistic for Prolog: localhost HTTP with NDJSON streaming
+streaming_capable(api_local).
 
 %% =============================================================================
 %% Code Generation — Target Directories & Path Helpers
@@ -1548,11 +1577,14 @@ generate_prolog_backends :-
     write(S, '    backend_factory_order/1,\n'),
     write(S, '    cli_fallbacks/2,\n'),
     write(S, '    create_backend/3,\n'),
-    write(S, '    send_request/4\n'),
+    write(S, '    send_request/4,\n'),
+    write(S, '    send_request_streaming/4,\n'),
+    write(S, '    streaming_capable/1\n'),
     write(S, ']).\n\n'),
     write(S, ':- use_module(library(http/http_open)).\n'),
     write(S, ':- use_module(library(http/http_header)).\n'),
     write(S, ':- use_module(library(json)).\n'),
+    write(S, ':- use_module(library(readutil)).\n'),
     write(S, ':- use_module(library(process)).\n'),
     write(S, ':- use_module(library(readutil)).\n\n'),
     %% Emit agent_backend facts
@@ -1686,7 +1718,73 @@ generate_prolog_backends :-
     write(S, '        get_dict(id, B, Id), get_dict(name, B, Name),\n'),
     write(S, '        get_dict(input, B, Input),\n'),
     write(S, '        TC = _{id: Id, name: Name, arguments: Input}\n'),
-    write(S, '    ), ToolCalls).\n'),
+    write(S, '    ), ToolCalls).\n\n'),
+    %% Streaming capability facts
+    write(S, '%% streaming_capable(+ResolveType) — which backends support streaming\n'),
+    forall(streaming_capable(Type), (
+        format(S, 'streaming_capable(~q).~n', [Type])
+    )),
+    write(S, '\n'),
+    %% Streaming request dispatch
+    write(S, '%% Send a streaming request (falls back to send_request if unsupported)\n'),
+    write(S, 'send_request_streaming(Backend, Messages, Tools, Response) :-\n'),
+    write(S, '    get_dict(spec, Backend, Spec),\n'),
+    write(S, '    member(resolve_type(Type), Spec),\n'),
+    write(S, '    (streaming_capable(Type) ->\n'),
+    write(S, '        send_request_streaming_raw(Type, Backend, Messages, Tools, Response)\n'),
+    write(S, '    ;\n'),
+    write(S, '        send_request(Backend, Messages, Tools, Response)\n'),
+    write(S, '    ).\n\n'),
+    %% Ollama NDJSON streaming
+    write(S, '%% Streaming for api_local (Ollama): NDJSON format\n'),
+    write(S, '%% Each line is a JSON object: {"message":{"content":"token"},"done":false}\n'),
+    write(S, 'send_request_streaming_raw(api_local, Backend, Messages, _Tools, Response) :-\n'),
+    write(S, '    get_dict(spec, Backend, Spec),\n'),
+    write(S, '    member(endpoint(BaseURL), Spec),\n'),
+    write(S, '    get_dict(options, Backend, Opts),\n'),
+    write(S, '    (member(model(Model), Opts) -> true\n'),
+    write(S, '    ; member(model(Model), Spec) -> true\n'),
+    write(S, '    ; Model = "llama3"),\n'),
+    write(S, '    Body = json(_{model: Model, messages: Messages, stream: true}),\n'),
+    write(S, '    setup_call_cleanup(\n'),
+    write(S, '        http_open(BaseURL, In, [\n'),
+    write(S, '            method(post),\n'),
+    write(S, '            request_header(\'Content-Type\'=\'application/json\'),\n'),
+    write(S, '            post(Body)\n'),
+    write(S, '        ]),\n'),
+    write(S, '        read_ndjson_stream(In, Content),\n'),
+    write(S, '        close(In)),\n'),
+    write(S, '    Response = _{content: Content, tool_calls: []}.\n\n'),
+    %% NDJSON stream reader
+    write(S, '%% Read NDJSON stream line by line, printing tokens as they arrive\n'),
+    write(S, 'read_ndjson_stream(In, Content) :-\n'),
+    write(S, '    read_ndjson_stream(In, [], Content).\n\n'),
+    write(S, 'read_ndjson_stream(In, Acc, Content) :-\n'),
+    write(S, '    (at_end_of_stream(In) ->\n'),
+    write(S, '        reverse(Acc, Tokens),\n'),
+    write(S, '        atomic_list_concat(Tokens, Content)\n'),
+    write(S, '    ;\n'),
+    write(S, '        read_line_to_string(In, Line),\n'),
+    write(S, '        (Line = end_of_file ->\n'),
+    write(S, '            reverse(Acc, Tokens),\n'),
+    write(S, '            atomic_list_concat(Tokens, Content)\n'),
+    write(S, '        ;\n'),
+    write(S, '            catch(\n'),
+    write(S, '                (open_string(Line, StrIn),\n'),
+    write(S, '                 json_read_dict(StrIn, Dict),\n'),
+    write(S, '                 close(StrIn),\n'),
+    write(S, '                 get_dict(message, Dict, Msg),\n'),
+    write(S, '                 get_dict(content, Msg, Token)),\n'),
+    write(S, '                _,\n'),
+    write(S, '                Token = ""),\n'),
+    write(S, '            (Token \\= "" ->\n'),
+    write(S, '                write(Token), flush_output,\n'),
+    write(S, '                read_ndjson_stream(In, [Token|Acc], Content)\n'),
+    write(S, '            ;\n'),
+    write(S, '                read_ndjson_stream(In, Acc, Content)\n'),
+    write(S, '            )\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
     close(S),
     format('  Generated prolog/backends.pl~n', []).
 
@@ -1715,9 +1813,11 @@ generate_prolog_agent_loop :-
     write(S, ':- dynamic max_iterations/1.\n'),
     write(S, ':- dynamic current_backend/1.\n'),
     write(S, ':- dynamic current_format/1.\n'),
+    write(S, ':- dynamic streaming/1.\n'),
     write(S, 'conversation([]).\n'),
     write(S, 'max_iterations(0).\n'),
     write(S, 'current_format(plain).\n'),
+    write(S, 'streaming(false).\n'),
     write(S, 'sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).\n\n'),
     %% Main entry
     write(S, '%% Entry point with default options\n'),
@@ -1776,13 +1876,23 @@ generate_prolog_agent_loop :-
     write(S, '            member(description(TDesc), TProps),\n'),
     write(S, '            ToolSpec = _{name: TName, description: TDesc}\n'),
     write(S, '        ), ToolSpecs),\n'),
-    write(S, '        send_request(Backend, Messages, ToolSpecs, Response),\n'),
-    write(S, '        handle_response(Backend, Response, Messages)\n'),
+    write(S, '        %% Check if streaming is enabled and backend supports it\n'),
+    write(S, '        get_dict(spec, Backend, BSpec),\n'),
+    write(S, '        member(resolve_type(RT), BSpec),\n'),
+    write(S, '        (streaming(true), streaming_capable(RT) ->\n'),
+    write(S, '            write("Assistant: "), flush_output,\n'),
+    write(S, '            send_request_streaming(Backend, Messages, ToolSpecs, Response),\n'),
+    write(S, '            nl, Streamed = true\n'),
+    write(S, '        ;\n'),
+    write(S, '            send_request(Backend, Messages, ToolSpecs, Response),\n'),
+    write(S, '            Streamed = false\n'),
+    write(S, '        ),\n'),
+    write(S, '        handle_response(Backend, Response, Messages, Streamed)\n'),
     write(S, '    ).\n\n'),
     %% Handle response
     write(S, '%% Handle LLM response, including tool calls\n'),
-    write(S, 'handle_response(Backend, Response, Messages) :-\n'),
-    write(S, '    (get_dict(content, Response, Content), Content \\= "" ->\n'),
+    write(S, 'handle_response(Backend, Response, Messages, Streamed) :-\n'),
+    write(S, '    (Streamed = false, get_dict(content, Response, Content), Content \\= "" ->\n'),
     write(S, '        write(Content), nl\n'),
     write(S, '    ; true),\n'),
     write(S, '    (get_dict(tool_calls, Response, ToolCalls), ToolCalls \\= [] ->\n'),
@@ -1818,7 +1928,7 @@ generate_prolog_agent_loop :-
     write(S, '            NextIter is Iteration + 1,\n'),
     write(S, '            handle_tool_calls(Backend, NextTCs, Msgs2, NextResponse, NextIter)\n'),
     write(S, '        ;\n'),
-    write(S, '            handle_response(Backend, NextResponse, Msgs2)\n'),
+    write(S, '            handle_response(Backend, NextResponse, Msgs2, false)\n'),
     write(S, '        )\n'),
     write(S, '    ).\n\n'),
     write(S, '%% Execute a list of tool calls, collecting results\n'),
@@ -1899,9 +2009,14 @@ generate_prolog_agent_loop :-
     write(S, '        (N =:= 0 -> write("Max iterations: unlimited")\n'),
     write(S, '        ; format("Max iterations set to ~w", [N])), nl\n'),
     write(S, '    ).\n'),
-    %% /stream command
+    %% /stream command — toggle streaming mode
     write(S, 'handle_action(call_handler(\'_handle_stream_command\', _), _) :-\n'),
-    write(S, '    write("Streaming not yet supported in Prolog target."), nl.\n'),
+    write(S, '    streaming(Current),\n'),
+    write(S, '    (Current = true -> New = false ; New = true),\n'),
+    write(S, '    retractall(streaming(_)),\n'),
+    write(S, '    assert(streaming(New)),\n'),
+    write(S, '    (New = true -> Status = enabled ; Status = disabled),\n'),
+    write(S, '    format("[Streaming ~w]~n", [Status]).\n'),
     %% /aliases command
     write(S, 'handle_action(call_handler(\'_handle_aliases_command\', _), _) :-\n'),
     write(S, '    write("Command aliases:"), nl,\n'),
@@ -3351,6 +3466,42 @@ generate_single_dispatch(S, Cmd, exact_or_prefix_sp, Props) :-
 %% Fallback: command with no handler (shouldn't happen, but safe)
 generate_single_dispatch(_, _, _, _).
 
+%% =============================================================================
+%% Generator helpers: Per-handler fragment emission
+%% =============================================================================
+
+%% handler_fragment_name(+Handler, -FragName)
+%% Converts '_handle_foo_command' to 'handler_foo_command'
+handler_fragment_name(Handler, FragName) :-
+    atom_concat('_handle_', Rest, Handler),
+    atom_concat('handler_', Rest, FragName).
+
+%% emit_handler_fragments(+Stream)
+%% Emits per-handler py_fragments in dispatch order, separated by blank lines.
+emit_handler_fragments(S) :-
+    slash_command_dispatch_order(AllCmds),
+    include(cmd_has_handler, AllCmds, WithHandlers),
+    emit_handler_list(S, WithHandlers, first).
+
+cmd_has_handler(Cmd) :-
+    slash_command(Cmd, _, Props, _),
+    member(handler(_), Props).
+
+emit_handler_list(_, [], _) :- !.
+emit_handler_list(S, [Cmd|Rest], first) :- !,
+    slash_command(Cmd, _, Props, _),
+    member(handler(Handler), Props),
+    handler_fragment_name(Handler, FragName),
+    write_py(S, FragName),
+    emit_handler_list(S, Rest, not_first).
+emit_handler_list(S, [Cmd|Rest], not_first) :-
+    slash_command(Cmd, _, Props, _),
+    member(handler(Handler), Props),
+    handler_fragment_name(Handler, FragName),
+    nl(S), nl(S),
+    write_py(S, FragName),
+    emit_handler_list(S, Rest, not_first).
+
 %% generate_help_text(S) - emit the _print_help method body
 generate_help_text(S) :-
     write(S, '    def _print_help(self) -> None:\n'),
@@ -3529,6 +3680,32 @@ generate_audit_levels_dict(S) :-
     )),
     write(S, '    }\n').
 
+%% generate_cli_overrides(S) - emit CLI argument overrides from cli_override/3 facts
+generate_cli_overrides(S) :-
+    write(S, '    # Override with command line args\n'),
+    forall(cli_override(Arg, Field, Behavior), (
+        emit_single_override(S, Arg, Field, Behavior)
+    )).
+
+emit_single_override(S, backend, _, backend_special) :- !,
+    write(S, '    if args.backend:\n'),
+    write(S, '        agent_config.backend = args.backend\n'),
+    write(S, '        # Clear command so backend uses its own default\n'),
+    write(S, '        if not args.command:\n'),
+    write(S, '            agent_config.command = None\n').
+emit_single_override(S, Arg, _, set_true) :- !,
+    format(S, '    if args.~w:~n', [Arg]),
+    format(S, '        agent_config.~w = True~n', [Arg]).
+emit_single_override(S, Arg, Field, clear_list) :- !,
+    format(S, '    if args.~w:~n', [Arg]),
+    format(S, '        agent_config.~w = []~n', [Field]).
+emit_single_override(S, Arg, Field, not_none_check) :- !,
+    format(S, '    if args.~w is not None:~n', [Arg]),
+    format(S, '        agent_config.~w = args.~w~n', [Field, Arg]).
+emit_single_override(S, Arg, Field, simple) :-
+    format(S, '    if args.~w:~n', [Arg]),
+    format(S, '        agent_config.~w = args.~w~n', [Field, Arg]).
+
 %% Comments for each fallback entry
 fallback_comment(coro, '               # no fallback (different CLI interface)') :- !.
 fallback_comment('claude-code', '        # no fallback') :- !.
@@ -3697,7 +3874,7 @@ generate_agent_loop_main :-
     %% Blank line separator (line 222)
     nl(S),
     %% 4. Command handler methods (lines 223-549)
-    write_py(S, agent_loop_command_handlers),
+    emit_handler_fragments(S),
     %% Blank line separators (lines 549-550)
     nl(S), nl(S),
     %% 5. Generated help text method (lines 551-595)
@@ -3731,8 +3908,11 @@ generate_agent_loop_main :-
     generate_argparse_block(S),
     %% Blank line separator (line 1181)
     nl(S),
-    %% 12. Main body: args parsing + run logic (lines 1182-1433)
-    write_py(S, agent_loop_main_body_pre_audit),
+    %% 12. Main body: args parsing, CLI overrides, audit, run logic
+    write_py(S, agent_loop_main_body_pre_overrides),
+    nl(S),
+    generate_cli_overrides(S),
+    write_py(S, agent_loop_main_body_post_overrides),
     generate_audit_levels_dict(S),
     write_py(S, agent_loop_main_body_post_audit),
     close(S),
@@ -8235,7 +8415,10 @@ py_fragment(agent_loop_class_init, 'class AgentLoop:
         return get_input_smart("You: ")
 ').
 
-py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(self, text: str) -> bool:
+%% Per-handler command fragments — split from agent_loop_command_handlers
+%% Emitted in slash_command_dispatch_order by emit_handler_fragments/2
+
+py_fragment(handler_iterations_command, '    def _handle_iterations_command(self, text: str) -> bool:
         """Handle /iterations N command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8253,9 +8436,9 @@ py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(sel
             print(f"[Max iterations set to: {iterations_str}]\\n")
         except ValueError as e:
             print(f"[Error: Invalid number - {e}]\\n")
-        return True
+        return True').
 
-    def _handle_backend_command(self, text: str) -> bool:
+py_fragment(handler_backend_command, '    def _handle_backend_command(self, text: str) -> bool:
         """Handle /backend <name> command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8282,9 +8465,9 @@ py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(sel
             print(f"[Switched to backend: {self.backend.name}]\\n")
         except Exception as e:
             print(f"[Error switching backend: {e}]\\n")
-        return True
+        return True').
 
-    def _handle_save_command(self, text: str) -> bool:
+py_fragment(handler_save_command, '    def _handle_save_command(self, text: str) -> bool:
         """Handle /save [name] command."""
         parts = text.split(None, 1)
         name = parts[1].strip() if len(parts) > 1 else None
@@ -8299,9 +8482,9 @@ py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(sel
             print(f"[Session saved: {self.session_id}]\\n")
         except Exception as e:
             print(f"[Error saving session: {e}]\\n")
-        return True
+        return True').
 
-    def _handle_load_command(self, text: str) -> bool:
+py_fragment(handler_load_command, '    def _handle_load_command(self, text: str) -> bool:
         """Handle /load <session_id> command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8321,9 +8504,9 @@ py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(sel
             print(f"[Session not found: {session_id}]\\n")
         except Exception as e:
             print(f"[Error loading session: {e}]\\n")
-        return True
+        return True').
 
-    def _handle_sessions_command(self) -> bool:
+py_fragment(handler_sessions_command, '    def _handle_sessions_command(self) -> bool:
         """Handle /sessions command."""
         sessions = self.session_manager.list_sessions()
         if not sessions:
@@ -8336,9 +8519,9 @@ py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(sel
         if len(sessions) > 10:
             print(f"  ... and {len(sessions) - 10} more")
         print()
-        return True
+        return True').
 
-    def _handle_format_command(self, text: str) -> bool:
+py_fragment(handler_format_command, '    def _handle_format_command(self, text: str) -> bool:
         """Handle /format [type] command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8353,9 +8536,9 @@ py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(sel
         except ValueError:
             print(f"[Unknown format: {format_name}]")
             print("[Available: plain, markdown, json, xml]\\n")
-        return True
+        return True').
 
-    def _handle_export_command(self, text: str) -> bool:
+py_fragment(handler_export_command, '    def _handle_export_command(self, text: str) -> bool:
         """Handle /export <path> command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8370,9 +8553,9 @@ py_fragment(agent_loop_command_handlers, '    def _handle_iterations_command(sel
             print(f"[Exported to: {path}]\\n")
         except Exception as e:
             print(f"[Error exporting: {e}]\\n")
-        return True
+        return True').
 
-    def _handle_cost_command(self) -> bool:
+py_fragment(handler_cost_command, '    def _handle_cost_command(self) -> bool:
         """Handle /cost command."""
         if not self.cost_tracker:
             print("[Cost tracking disabled]\\n")
@@ -8387,9 +8570,9 @@ Cost Summary:
   Total tokens: {summary[\'total_tokens\']:,}
   Estimated cost: {summary[\'cost_formatted\']}
 """)
-        return True
+        return True').
 
-    def _handle_search_command(self, text: str) -> bool:
+py_fragment(handler_search_command, '    def _handle_search_command(self, text: str) -> bool:
         """Handle /search <query> command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8414,9 +8597,9 @@ Cost Summary:
             print()
         except Exception as e:
             print(f"[Search error: {e}]\\n")
-        return True
+        return True').
 
-    def _handle_stream_command(self) -> bool:
+py_fragment(handler_stream_command, '    def _handle_stream_command(self) -> bool:
         """Handle /stream command to toggle streaming mode."""
         if not self.backend.supports_streaming():
             print(f"[Backend {self.backend.name} does not support streaming]\\n")
@@ -8425,21 +8608,21 @@ Cost Summary:
         self.streaming = not self.streaming
         status = "enabled" if self.streaming else "disabled"
         print(f"[Streaming {status}]\\n")
-        return True
+        return True').
 
-    def _handle_aliases_command(self) -> bool:
+py_fragment(handler_aliases_command, '    def _handle_aliases_command(self) -> bool:
         """Handle /aliases command."""
         print(self.alias_manager.format_list())
         print()
-        return True
+        return True').
 
-    def _handle_templates_command(self) -> bool:
+py_fragment(handler_templates_command, '    def _handle_templates_command(self) -> bool:
         """Handle /templates command."""
         print(self.template_manager.format_list())
         print()
-        return True
+        return True').
 
-    def _handle_history_command(self, text: str) -> bool:
+py_fragment(handler_history_command, '    def _handle_history_command(self, text: str) -> bool:
         """Handle /history [n] command."""
         parts = text.split()
         limit = 10
@@ -8450,17 +8633,17 @@ Cost Summary:
                 pass
         print(self.history_manager.format_history(limit))
         print()
-        return True
+        return True').
 
-    def _handle_undo_command(self) -> bool:
+py_fragment(handler_undo_command, '    def _handle_undo_command(self) -> bool:
         """Handle /undo command."""
         if self.history_manager.undo():
             print("[Undo successful]\\n")
         else:
             print("[Nothing to undo]\\n")
-        return True
+        return True').
 
-    def _handle_delete_command(self, text: str) -> bool:
+py_fragment(handler_delete_command, '    def _handle_delete_command(self, text: str) -> bool:
         """Handle /delete <n> or /delete <start>-<end> command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8503,9 +8686,9 @@ Cost Summary:
                 print(f"[Invalid index: {index}]\\n")
         except ValueError:
             print("[Invalid index]\\n")
-        return True
+        return True').
 
-    def _handle_edit_command(self, text: str) -> bool:
+py_fragment(handler_edit_command, '    def _handle_edit_command(self, text: str) -> bool:
         """Handle /edit <index> command."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8539,9 +8722,9 @@ Cost Summary:
                 print("[Edit cancelled]\\n")
         except EOFError:
             print("[Edit cancelled]\\n")
-        return True
+        return True').
 
-    def _handle_replay_command(self, text: str) -> bool:
+py_fragment(handler_replay_command, '    def _handle_replay_command(self, text: str) -> bool:
         """Handle /replay <index> command to re-send a message."""
         parts = text.split(None, 1)
         if len(parts) < 2:
@@ -8804,7 +8987,7 @@ def _resolve_command(backend_type: str, configured: str | None,
 ').
 
 
-py_fragment(agent_loop_main_body_pre_audit, '    args = parser.parse_args()
+py_fragment(agent_loop_main_body_pre_overrides, '    args = parser.parse_args()
 
     # Handle --init-config
     if args.init_config:
@@ -8868,36 +9051,9 @@ py_fragment(agent_loop_main_body_pre_audit, '    args = parser.parse_args()
         sys.exit(1)
 
     agent_config = config.agents[agent_name]
+').
 
-    # Override with command line args
-    if args.backend:
-        agent_config.backend = args.backend
-        # Clear command so backend uses its own default
-        if not args.command:
-            agent_config.command = None
-    if args.command:
-        agent_config.command = args.command
-    if args.model:
-        agent_config.model = args.model
-    if args.host:
-        agent_config.host = args.host
-    if args.port:
-        agent_config.port = args.port
-    if args.api_key:
-        agent_config.api_key = args.api_key
-    if args.context_mode:
-        agent_config.context_mode = args.context_mode
-    if args.auto_tools:
-        agent_config.auto_tools = True
-    if args.no_tools:
-        agent_config.tools = []
-    if args.system_prompt:
-        agent_config.system_prompt = args.system_prompt
-    if args.max_iterations is not None:
-        agent_config.max_iterations = args.max_iterations
-    if args.max_tokens is not None:
-        agent_config.max_context_tokens = args.max_tokens
-
+py_fragment(agent_loop_main_body_post_overrides, '
     # Create backend
     try:
         backend = create_backend_from_config(

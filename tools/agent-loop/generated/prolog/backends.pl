@@ -9,12 +9,15 @@
     backend_factory_order/1,
     cli_fallbacks/2,
     create_backend/3,
-    send_request/4
+    send_request/4,
+    send_request_streaming/4,
+    streaming_capable/1
 ]).
 
 :- use_module(library(http/http_open)).
 :- use_module(library(http/http_header)).
 :- use_module(library(json)).
+:- use_module(library(readutil)).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 
@@ -149,3 +152,67 @@ extract_anthropic(Blocks, Content, ToolCalls) :-
         get_dict(input, B, Input),
         TC = _{id: Id, name: Name, arguments: Input}
     ), ToolCalls).
+
+%% streaming_capable(+ResolveType) — which backends support streaming
+streaming_capable(api_local).
+
+%% Send a streaming request (falls back to send_request if unsupported)
+send_request_streaming(Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(resolve_type(Type), Spec),
+    (streaming_capable(Type) ->
+        send_request_streaming_raw(Type, Backend, Messages, Tools, Response)
+    ;
+        send_request(Backend, Messages, Tools, Response)
+    ).
+
+%% Streaming for api_local (Ollama): NDJSON format
+%% Each line is a JSON object: {"message":{"content":"token"},"done":false}
+send_request_streaming_raw(api_local, Backend, Messages, _Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(endpoint(BaseURL), Spec),
+    get_dict(options, Backend, Opts),
+    (member(model(Model), Opts) -> true
+    ; member(model(Model), Spec) -> true
+    ; Model = "llama3"),
+    Body = json(_{model: Model, messages: Messages, stream: true}),
+    setup_call_cleanup(
+        http_open(BaseURL, In, [
+            method(post),
+            request_header('Content-Type'='application/json'),
+            post(Body)
+        ]),
+        read_ndjson_stream(In, Content),
+        close(In)),
+    Response = _{content: Content, tool_calls: []}.
+
+%% Read NDJSON stream line by line, printing tokens as they arrive
+read_ndjson_stream(In, Content) :-
+    read_ndjson_stream(In, [], Content).
+
+read_ndjson_stream(In, Acc, Content) :-
+    (at_end_of_stream(In) ->
+        reverse(Acc, Tokens),
+        atomic_list_concat(Tokens, Content)
+    ;
+        read_line_to_string(In, Line),
+        (Line = end_of_file ->
+            reverse(Acc, Tokens),
+            atomic_list_concat(Tokens, Content)
+        ;
+            catch(
+                (open_string(Line, StrIn),
+                 json_read_dict(StrIn, Dict),
+                 close(StrIn),
+                 get_dict(message, Dict, Msg),
+                 get_dict(content, Msg, Token)),
+                _,
+                Token = ""),
+            (Token \= "" ->
+                write(Token), flush_output,
+                read_ndjson_stream(In, [Token|Acc], Content)
+            ;
+                read_ndjson_stream(In, Acc, Content)
+            )
+        )
+    ).

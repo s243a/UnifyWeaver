@@ -22,9 +22,11 @@
 :- dynamic max_iterations/1.
 :- dynamic current_backend/1.
 :- dynamic current_format/1.
+:- dynamic streaming/1.
 conversation([]).
 max_iterations(0).
 current_format(plain).
+streaming(false).
 sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).
 
 %% Entry point with default options
@@ -84,13 +86,23 @@ process_input(Input, Backend) :-
             member(description(TDesc), TProps),
             ToolSpec = _{name: TName, description: TDesc}
         ), ToolSpecs),
-        send_request(Backend, Messages, ToolSpecs, Response),
-        handle_response(Backend, Response, Messages)
+        %% Check if streaming is enabled and backend supports it
+        get_dict(spec, Backend, BSpec),
+        member(resolve_type(RT), BSpec),
+        (streaming(true), streaming_capable(RT) ->
+            write("Assistant: "), flush_output,
+            send_request_streaming(Backend, Messages, ToolSpecs, Response),
+            nl, Streamed = true
+        ;
+            send_request(Backend, Messages, ToolSpecs, Response),
+            Streamed = false
+        ),
+        handle_response(Backend, Response, Messages, Streamed)
     ).
 
 %% Handle LLM response, including tool calls
-handle_response(Backend, Response, Messages) :-
-    (get_dict(content, Response, Content), Content \= "" ->
+handle_response(Backend, Response, Messages, Streamed) :-
+    (Streamed = false, get_dict(content, Response, Content), Content \= "" ->
         write(Content), nl
     ; true),
     (get_dict(tool_calls, Response, ToolCalls), ToolCalls \= [] ->
@@ -127,7 +139,7 @@ handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-
             NextIter is Iteration + 1,
             handle_tool_calls(Backend, NextTCs, Msgs2, NextResponse, NextIter)
         ;
-            handle_response(Backend, NextResponse, Msgs2)
+            handle_response(Backend, NextResponse, Msgs2, false)
         )
     ).
 
@@ -207,7 +219,12 @@ handle_action(call_handler('_handle_iterations_command', Args), _) :-
         ; format("Max iterations set to ~w", [N])), nl
     ).
 handle_action(call_handler('_handle_stream_command', _), _) :-
-    write("Streaming not yet supported in Prolog target."), nl.
+    streaming(Current),
+    (Current = true -> New = false ; New = true),
+    retractall(streaming(_)),
+    assert(streaming(New)),
+    (New = true -> Status = enabled ; Status = disabled),
+    format("[Streaming ~w]~n", [Status]).
 handle_action(call_handler('_handle_aliases_command', _), _) :-
     write("Command aliases:"), nl,
     forall(command_alias(Alias, Target), (
