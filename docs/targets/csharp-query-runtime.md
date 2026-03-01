@@ -71,8 +71,10 @@ The current implementation emits static C# builders that assemble the plan via n
 - Cache/index reuse (e.g. `new QueryExecutorOptions(ReuseCaches: true)`) assumes deterministic/pure relations. Disable caches (or clear them via `executor.ClearCaches()`) if underlying facts/providers can change or have side effects.
 - Seeded transitive-closure caches treat the seed list as a set (deduped + order-insensitive), so calls with the same seeds in different orders share a cache entry.
 - Seeded transitive-closure caches are bounded via `QueryExecutorOptions(SeededCacheMaxEntries: ...)` (default `4096` per cache key); set `0` to disable seeded transitive cache reuse while keeping other caches enabled.
+- Seeded transitive-closure cache admission can be tuned via `QueryExecutorOptions(SeededCacheAdmissionMinRows: ...)` (default `0` = always admit; values `> 0` skip storing tiny result sets to reduce LRU churn).
 - Single concrete transitive pair probes (`source,target` both bound) now cache exact probe results (`TransitiveClosurePairsSingleProbe` and `GroupedTransitiveClosurePairsSingleProbe`) to avoid repeating one-off BFS checks across repeated calls.
 - Pair-probe caches are bounded via `QueryExecutorOptions(PairProbeCacheMaxEntries: ...)` (default `4096` per cache key); set `0` to disable pair-probe caching while keeping other cache reuse enabled.
+- Pair-probe cache admission can be tuned via `QueryExecutorOptions(PairProbeCacheAdmissionMinCost: ...)` (default `0` = always admit; values `> 0` require a minimum directional probe-cost estimate before storing).
 - Bounded seeded/pair probe caches use LRU eviction (recent cache hits refresh recency).
 
 ## Current Limitations
@@ -111,7 +113,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - `var trace = new QueryExecutionTrace();`
   - `foreach (var row in executor.Execute(plan, parameters, trace)) { ... }`
   - `Console.WriteLine(trace.ToString());`
-  - Cache traces include eviction counters (`evictions`) for bounded caches.
+  - Cache traces include eviction and admission counters (`evictions`, `admissions`, `admission_skips`) for bounded caches.
 - Cancellation (long-running queries/fixpoints):
   - `using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));`
   - `foreach (var row in executor.Execute(plan, parameters, trace, cts.Token)) { ... }`
@@ -120,7 +122,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 - Prepared-style cache reuse (useful for repeated parameterized calls):
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));`
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: 1024));`
+  - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: 1024, SeededCacheAdmissionMinRows: 2));`
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: 1024));`
+  - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: 1024, PairProbeCacheAdmissionMinCost: 2));`
   - `executor.ClearCaches();` (if underlying facts change)
   - See “Ordering, Purity, and Effects” below for ordering/side-effect assumptions.
 

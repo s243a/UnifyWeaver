@@ -326,7 +326,9 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
         int PairProbeCacheMaxEntries = 4096,
-        int SeededCacheMaxEntries = 4096);
+        int SeededCacheMaxEntries = 4096,
+        int PairProbeCacheAdmissionMinCost = 0,
+        int SeededCacheAdmissionMinRows = 0);
 
     public sealed record QueryNodeTrace(
         int Id,
@@ -343,7 +345,9 @@ namespace UnifyWeaver.QueryRuntime
         long Lookups,
         long Hits,
         long Builds,
-        long Evictions
+        long Evictions,
+        long Admissions,
+        long AdmissionSkips
     );
 
     public sealed record QueryStrategyTrace(
@@ -386,6 +390,10 @@ namespace UnifyWeaver.QueryRuntime
             public long Builds;
 
             public long Evictions;
+
+            public long Admissions;
+
+            public long AdmissionSkips;
         }
 
         private sealed class PlanNodeStrategyComparer : IEqualityComparer<(PlanNode Node, string Strategy)>
@@ -470,6 +478,26 @@ namespace UnifyWeaver.QueryRuntime
 
             var stats = GetOrAdd(cache, key);
             stats.Evictions += count;
+        }
+
+        internal void RecordCacheAdmission(string cache, string key, bool admitted, long count = 1)
+        {
+            if (cache is null) throw new ArgumentNullException(nameof(cache));
+            if (key is null) throw new ArgumentNullException(nameof(key));
+            if (count <= 0)
+            {
+                return;
+            }
+
+            var stats = GetOrAdd(cache, key);
+            if (admitted)
+            {
+                stats.Admissions += count;
+            }
+            else
+            {
+                stats.AdmissionSkips += count;
+            }
         }
 
         internal void RecordStrategy(PlanNode node, string strategy)
@@ -569,7 +597,9 @@ namespace UnifyWeaver.QueryRuntime
                         stats.Lookups,
                         stats.Hits,
                         stats.Builds,
-                        stats.Evictions);
+                        stats.Evictions,
+                        stats.Admissions,
+                        stats.AdmissionSkips);
                 })
                 .OrderBy(s => s.Cache, StringComparer.Ordinal)
                 .ThenBy(s => s.Key, StringComparer.Ordinal)
@@ -672,6 +702,10 @@ namespace UnifyWeaver.QueryRuntime
                         .Append(cache.Builds)
                         .Append(" evictions=")
                         .Append(cache.Evictions)
+                        .Append(" admissions=")
+                        .Append(cache.Admissions)
+                        .Append(" admission_skips=")
+                        .Append(cache.AdmissionSkips)
                         .AppendLine();
                 }
             }
@@ -996,6 +1030,8 @@ namespace UnifyWeaver.QueryRuntime
         private readonly EvaluationContext? _cacheContext;
         private readonly int _pairProbeCacheMaxEntries;
         private readonly int _seededCacheMaxEntries;
+        private readonly int _pairProbeCacheAdmissionMinCost;
+        private readonly int _seededCacheAdmissionMinRows;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
@@ -1004,6 +1040,8 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext = options.ReuseCaches ? new EvaluationContext() : null;
             _pairProbeCacheMaxEntries = Math.Max(0, options.PairProbeCacheMaxEntries);
             _seededCacheMaxEntries = Math.Max(0, options.SeededCacheMaxEntries);
+            _pairProbeCacheAdmissionMinCost = Math.Max(0, options.PairProbeCacheAdmissionMinCost);
+            _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
         }
 
         public IEnumerable<object[]> Execute(
@@ -7190,11 +7228,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(forwardCost, backwardCost);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             pairStore,
                             new RowWrapper(groupedPairKey),
                             rows.Count > 0,
                             _pairProbeCacheMaxEntries,
+                            admitPairProbeCache,
                             trace,
                             "GroupedTransitiveClosurePairsSingleProbe",
                             traceKey);
@@ -7655,11 +7695,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             memoizedRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "GroupedTransitiveClosureSeeded",
                             traceKey);
@@ -7754,11 +7796,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             singleRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "GroupedTransitiveClosureSeeded",
                             traceKey);
@@ -7821,11 +7865,13 @@ namespace UnifyWeaver.QueryRuntime
                         context.GroupedTransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetLruBoundedRowWrapperCacheEntry(
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
                         totalRows,
                         _seededCacheMaxEntries,
+                        admitSeededCache,
                         trace,
                         "GroupedTransitiveClosureSeeded",
                         traceKey);
@@ -8058,11 +8104,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             memoizedRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "GroupedTransitiveClosureSeededByTarget",
                             traceKey);
@@ -8160,11 +8208,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
                             singleRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "GroupedTransitiveClosureSeededByTarget",
                             traceKey);
@@ -8227,11 +8277,13 @@ namespace UnifyWeaver.QueryRuntime
                         context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetLruBoundedRowWrapperCacheEntry(
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
                         totalRows,
                         _seededCacheMaxEntries,
+                        admitSeededCache,
                         trace,
                         "GroupedTransitiveClosureSeededByTarget",
                         traceKey);
@@ -9184,6 +9236,38 @@ namespace UnifyWeaver.QueryRuntime
             TouchLruAccess(store, key);
         }
 
+        private static void TryAdmitLruBoundedRowWrapperCacheEntry<TValue>(
+            Dictionary<RowWrapper, TValue> store,
+            RowWrapper key,
+            TValue value,
+            int maxEntries,
+            bool admitted,
+            QueryExecutionTrace? trace,
+            string cacheName,
+            string traceKey)
+        {
+            trace?.RecordCacheAdmission(cacheName, traceKey, admitted);
+            if (!admitted)
+            {
+                return;
+            }
+
+            SetLruBoundedRowWrapperCacheEntry(
+                store,
+                key,
+                value,
+                maxEntries,
+                trace,
+                cacheName,
+                traceKey);
+        }
+
+        private bool ShouldAdmitSeededCacheRows(int rowCount) =>
+            rowCount >= _seededCacheAdmissionMinRows;
+
+        private bool ShouldAdmitPairProbeCacheEntry(int forwardCost, int backwardCost) =>
+            Math.Min(Math.Max(0, forwardCost), Math.Max(0, backwardCost)) >= _pairProbeCacheAdmissionMinCost;
+
         private static bool TryGetParameterValue(
             object[] tuple,
             IReadOnlyList<int> inputPositions,
@@ -9295,11 +9379,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
                             memoizedRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "TransitiveClosureSeeded",
                             traceKey);
@@ -9380,11 +9466,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
                             singleRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "TransitiveClosureSeeded",
                             traceKey);
@@ -9467,11 +9555,13 @@ namespace UnifyWeaver.QueryRuntime
                         context.TransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetLruBoundedRowWrapperCacheEntry(
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
                         totalRows,
                         _seededCacheMaxEntries,
+                        admitSeededCache,
                         trace,
                         "TransitiveClosureSeeded",
                         traceKey);
@@ -9574,11 +9664,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
                             memoizedRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "TransitiveClosureSeededByTarget",
                             traceKey);
@@ -9659,11 +9751,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
                             singleRows,
                             _seededCacheMaxEntries,
+                            admitSeededCache,
                             trace,
                             "TransitiveClosureSeededByTarget",
                             traceKey);
@@ -9746,11 +9840,13 @@ namespace UnifyWeaver.QueryRuntime
                         context.TransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
-                    SetLruBoundedRowWrapperCacheEntry(
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
                         totalRows,
                         _seededCacheMaxEntries,
+                        admitSeededCache,
                         trace,
                         "TransitiveClosureSeededByTarget",
                         traceKey);
@@ -9872,11 +9968,13 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
                         }
 
-                        SetLruBoundedRowWrapperCacheEntry(
+                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(forwardCost, backwardCost);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
                             pairStore,
                             new RowWrapper(pairProbeKey),
                             rows.Count > 0,
                             _pairProbeCacheMaxEntries,
+                            admitPairProbeCache,
                             trace,
                             "TransitiveClosurePairsSingleProbe",
                             traceKey);
