@@ -7,7 +7,7 @@
     slash_command/4,
     command_alias/2,
     slash_command_group/2,
-    resolve_command/2,
+    resolve_command/3,
     handle_slash_command/3
 ]).
 
@@ -74,20 +74,33 @@ slash_command_group('Export & Costs', [export, cost]).
 slash_command_group('History', [history, delete, edit, replay, undo]).
 slash_command_group('Shortcuts', [aliases, templates]).
 
-%% Resolve aliases and prefixes to canonical command
-resolve_command(Input, Command) :-
+%% Resolve aliases — may return "command args" for compound aliases
+resolve_command(Input, Command, ExtraArgs) :-
     (command_alias(Input, Canonical) ->
-        atom_string(Command, Canonical)
-    ; atom_string(Command, Input)).
+        %% Alias may contain embedded args like "backend yolo"
+        (sub_string(Canonical, SpaceIdx, 1, _, " ") ->
+            sub_string(Canonical, 0, SpaceIdx, _, CmdPart),
+            AfterSpace is SpaceIdx + 1,
+            sub_string(Canonical, AfterSpace, _, 0, ExtraArgs),
+            atom_string(Command, CmdPart)
+        ;
+            atom_string(Command, Canonical),
+            ExtraArgs = ""
+        )
+    ; atom_string(Command, Input), ExtraArgs = "").
 
 %% Handle a slash command — returns action to take
 handle_slash_command(RawCmd, Args, Action) :-
     (atom_concat('/', Cmd0, RawCmd) -> true ; Cmd0 = RawCmd),
     atom_string(Cmd0, CmdStr),
-    resolve_command(CmdStr, CmdAtom),
+    resolve_command(CmdStr, CmdAtom, ExtraArgs),
+    %% Merge ExtraArgs with explicit Args
+    (ExtraArgs = "" -> FinalArgs = Args
+    ; Args = "" -> FinalArgs = ExtraArgs
+    ; atom_concat(ExtraArgs, " ", Tmp), atom_concat(Tmp, Args, FinalArgs)),
     (slash_command(CmdAtom, _Match, Opts, _Help) ->
         (member(handler(Handler), Opts) ->
-            Action = call_handler(Handler, Args)
+            Action = call_handler(Handler, FinalArgs)
         ; CmdAtom = exit -> Action = exit
         ; CmdAtom = clear -> Action = clear
         ; CmdAtom = help -> Action = help

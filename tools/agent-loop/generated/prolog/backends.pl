@@ -14,7 +14,7 @@
 
 :- use_module(library(http/http_open)).
 :- use_module(library(http/http_header)).
-:- use_module(library(http/json)).
+:- use_module(library(json)).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 
@@ -53,14 +53,19 @@ create_backend(Name, Options, Backend) :-
     ; format(atom(Err), "Unknown backend: ~w", [Name]),
       throw(error(Err))).
 
-%% Send a request to an API backend
+%% Send a request to a backend and normalize the response
 send_request(Backend, Messages, Tools, Response) :-
     get_dict(spec, Backend, Spec),
     member(resolve_type(Type), Spec),
-    send_request_by_type(Type, Backend, Messages, Tools, Response).
+    catch(
+        (send_request_raw(Type, Backend, Messages, Tools, RawResponse),
+         extract_response(RawResponse, Response)),
+        Error,
+        (format(atom(ErrMsg), "Request error: ~w", [Error]),
+         Response = _{content: ErrMsg, tool_calls: []})).
 
 %% API backend: HTTP JSON request
-send_request_by_type(api, Backend, Messages, Tools, Response) :-
+send_request_raw(api, Backend, Messages, Tools, Response) :-
     get_dict(spec, Backend, Spec),
     member(endpoint(URL), Spec),
     member(model(Model), Spec),
@@ -70,17 +75,20 @@ send_request_by_type(api, Backend, Messages, Tools, Response) :-
     (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),
     atom_concat(AuthP, Key, AuthVal),
     Body = json(_{model: Model, messages: Messages, tools: Tools}),
-    http_open(URL, In, [
-        method(post),
-        request_header(AuthH=AuthVal),
-        request_header('Content-Type'='application/json'),
-        post(Body)
-    ]),
-    json_read_dict(In, Response),
-    close(In).
+    setup_call_cleanup(
+        http_open(URL, In, [
+            method(post),
+            request_header(AuthH=AuthVal),
+            request_header('Content-Type'='application/json'),
+            post(Body)
+        ]),
+        json_read_dict(In, Response),
+        close(In)).
+send_request_raw(openrouter, B, M, T, R) :- send_request_raw(api, B, M, T, R).
+send_request_raw(api_local, B, M, T, R) :- send_request_raw(api, B, M, T, R).
 
 %% CLI backend: subprocess
-send_request_by_type(cli, Backend, Messages, _Tools, Response) :-
+send_request_raw(cli, Backend, Messages, _Tools, Response) :-
     get_dict(spec, Backend, Spec),
     member(command(Cmd), Spec),
     member(args(BaseArgs), Spec),
@@ -91,7 +99,53 @@ send_request_by_type(cli, Backend, Messages, _Tools, Response) :-
         process_create(path(Cmd), AllArgs,
             [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),
         (read_string(Out, _, StdOut),
-         read_string(Err, _, _StdErr),
-         process_wait(PID, _Status)),
+         read_string(Err, _, StdErr),
+         process_wait(PID, Status)),
         (close(Out), close(Err))),
-    Response = _{content: StdOut, tool_calls: []}.
+    (Status = exit(0) ->
+        Response = _{content: StdOut, tool_calls: []}
+    ; format(atom(ErrMsg), "Backend exited with ~w: ~w", [Status, StdErr]),
+        Response = _{content: ErrMsg, tool_calls: []}).
+
+%% Extract and normalize API response to _{content, tool_calls}
+extract_response(Raw, Normalized) :-
+    (get_dict(choices, Raw, Choices) ->
+        %% OpenAI/OpenRouter format
+        Choices = [FirstChoice|_],
+        get_dict(message, FirstChoice, Msg),
+        (get_dict(content, Msg, Content0) -> true ; Content0 = ""),
+        (Content0 = null -> Content = "" ; Content = Content0),
+        (get_dict(tool_calls, Msg, TCs) ->
+            maplist(normalize_openai_tc, TCs, ToolCalls)
+        ; ToolCalls = []),
+        Normalized = _{content: Content, tool_calls: ToolCalls}
+    ; get_dict(content, Raw, ContentList), is_list(ContentList) ->
+        %% Anthropic format — content is a list of blocks
+        extract_anthropic(ContentList, Content, ToolCalls),
+        Normalized = _{content: Content, tool_calls: ToolCalls}
+    ; %% Already normalized (e.g., CLI backend)
+        Normalized = Raw).
+
+%% Normalize OpenAI tool call format
+normalize_openai_tc(TC, Normalized) :-
+    get_dict(id, TC, Id),
+    get_dict(function, TC, Func),
+    get_dict(name, Func, Name),
+    get_dict(arguments, Func, ArgsJson),
+    (is_dict(ArgsJson) -> Args = ArgsJson
+    ; atom_to_term(ArgsJson, Args, _)),
+    Normalized = _{id: Id, name: Name, arguments: Args}.
+
+%% Extract Anthropic content blocks
+extract_anthropic(Blocks, Content, ToolCalls) :-
+    findall(Text, (
+        member(B, Blocks), get_dict(type, B, "text"),
+        get_dict(text, B, Text)
+    ), Texts),
+    atomic_list_concat(Texts, Content),
+    findall(TC, (
+        member(B, Blocks), get_dict(type, B, "tool_use"),
+        get_dict(id, B, Id), get_dict(name, B, Name),
+        get_dict(input, B, Input),
+        TC = _{id: Id, name: Name, arguments: Input}
+    ), ToolCalls).

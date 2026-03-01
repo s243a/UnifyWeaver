@@ -422,6 +422,37 @@ default_agent_preset('ollama-cli', 'ollama-cli', [model=llama3]).
 default_agent_preset(openai, openai, [model='gpt-4o']).
 default_agent_preset('gpt-4o-mini', openai, [model='gpt-4o-mini']).
 
+%% example_agent_config(Name, Backend, Properties)
+%% Used to generate the example config file (save_example_config).
+%% Richer than default_agent_preset — includes display-only examples.
+example_agent_config('claude-sonnet', 'claude-code',
+    [model=sonnet, tools=["bash", "read", "write", "edit"], context_mode=continue]).
+example_agent_config('claude-opus', 'claude-code',
+    [model=opus, system_prompt="You are a senior software engineer. Be thorough."]).
+example_agent_config(yolo, 'claude-code',
+    [model=haiku, auto_tools=true, system_prompt="Be fast and take action without asking."]).
+example_agent_config(gemini, gemini, [model='gemini-2.5-flash']).
+example_agent_config('ollama-local', 'ollama-api',
+    [model=llama3, host=localhost, port=11434]).
+example_agent_config('ollama-remote', 'ollama-api',
+    [model=codellama, host='192.168.1.100', port=11434]).
+example_agent_config('claude-api', claude,
+    [model='claude-sonnet-4-20250514', api_key='$ANTHROPIC_API_KEY']).
+example_agent_config(openai, openai, [model='gpt-4o', api_key='$OPENAI_API_KEY']).
+example_agent_config('openai-mini', openai, [model='gpt-4o-mini', api_key='$OPENAI_API_KEY']).
+example_agent_config('coding-assistant', 'claude-code',
+    [model=sonnet, agent_md="./agents/coding.md",
+     skills=["./skills/git.md", "./skills/testing.md"],
+     tools=["bash", "read", "write", "edit"],
+     system_prompt="You are a coding assistant focused on clean, tested code."]).
+
+%% config_search_path(Path, Type)
+%% Type: required (always searched) | fallback (skipped with --no-fallback)
+config_search_path('uwsal.json', required).
+config_search_path('~/uwsal.json', required).
+config_search_path('coro.json', fallback).
+config_search_path('~/coro.json', fallback).
+
 %% =============================================================================
 %% Tools Module Data
 %% =============================================================================
@@ -1054,11 +1085,13 @@ generate_prolog_config :-
     write(S, '    api_key_env_var/2,\n'),
     write(S, '    api_key_file/2,\n'),
     write(S, '    parse_cli_args/2,\n'),
+    write(S, '    example_agent_config/3,\n'),
+    write(S, '    config_search_path/2,\n'),
     write(S, '    load_config/2,\n'),
     write(S, '    resolve_api_key/3\n'),
     write(S, ']).\n\n'),
     write(S, ':- use_module(library(optparse)).\n'),
-    write(S, ':- use_module(library(http/json)).\n\n'),
+    write(S, ':- use_module(library(json)).\n\n'),
     %% Emit cli_argument facts
     write(S, '%% cli_argument(+Name, +Options)\n'),
     forall(cli_argument(Name, Opts), (
@@ -1090,6 +1123,20 @@ generate_prolog_config :-
     write(S, '%% api_key_file(+Backend, +FilePath)\n'),
     forall(api_key_file(Backend, FilePath), (
         format(S, 'api_key_file(~q, ~q).~n', [Backend, FilePath])
+    )),
+    write(S, '\n'),
+    %% Emit example_agent_config facts
+    write(S, '%% example_agent_config(+Name, +Backend, +Properties)\n'),
+    forall(example_agent_config(Name, Backend, Props), (
+        format(S, 'example_agent_config(~q, ~q, ', [Name, Backend]),
+        write_prolog_term(S, Props),
+        write(S, ').\n')
+    )),
+    write(S, '\n'),
+    %% Emit config_search_path facts
+    write(S, '%% config_search_path(+Path, +Category)\n'),
+    forall(config_search_path(CPath, Cat), (
+        format(S, 'config_search_path(~q, ~q).~n', [CPath, Cat])
     )),
     write(S, '\n'),
     %% Generate parse_cli_args using optparse
@@ -1275,7 +1322,7 @@ generate_prolog_commands :-
     write(S, '    slash_command/4,\n'),
     write(S, '    command_alias/2,\n'),
     write(S, '    slash_command_group/2,\n'),
-    write(S, '    resolve_command/2,\n'),
+    write(S, '    resolve_command/3,\n'),
     write(S, '    handle_slash_command/3\n'),
     write(S, ']).\n\n'),
     %% Emit slash_command facts
@@ -1301,20 +1348,33 @@ generate_prolog_commands :-
     )),
     write(S, '\n'),
     %% Generate resolve_command
-    write(S, '%% Resolve aliases and prefixes to canonical command\n'),
-    write(S, 'resolve_command(Input, Command) :-\n'),
+    write(S, '%% Resolve aliases — may return "command args" for compound aliases\n'),
+    write(S, 'resolve_command(Input, Command, ExtraArgs) :-\n'),
     write(S, '    (command_alias(Input, Canonical) ->\n'),
-    write(S, '        atom_string(Command, Canonical)\n'),
-    write(S, '    ; atom_string(Command, Input)).\n\n'),
+    write(S, '        %% Alias may contain embedded args like "backend yolo"\n'),
+    write(S, '        (sub_string(Canonical, SpaceIdx, 1, _, " ") ->\n'),
+    write(S, '            sub_string(Canonical, 0, SpaceIdx, _, CmdPart),\n'),
+    write(S, '            AfterSpace is SpaceIdx + 1,\n'),
+    write(S, '            sub_string(Canonical, AfterSpace, _, 0, ExtraArgs),\n'),
+    write(S, '            atom_string(Command, CmdPart)\n'),
+    write(S, '        ;\n'),
+    write(S, '            atom_string(Command, Canonical),\n'),
+    write(S, '            ExtraArgs = ""\n'),
+    write(S, '        )\n'),
+    write(S, '    ; atom_string(Command, Input), ExtraArgs = "").\n\n'),
     %% Generate handle_slash_command
     write(S, '%% Handle a slash command — returns action to take\n'),
     write(S, 'handle_slash_command(RawCmd, Args, Action) :-\n'),
     write(S, '    (atom_concat(''/'', Cmd0, RawCmd) -> true ; Cmd0 = RawCmd),\n'),
     write(S, '    atom_string(Cmd0, CmdStr),\n'),
-    write(S, '    resolve_command(CmdStr, CmdAtom),\n'),
+    write(S, '    resolve_command(CmdStr, CmdAtom, ExtraArgs),\n'),
+    write(S, '    %% Merge ExtraArgs with explicit Args\n'),
+    write(S, '    (ExtraArgs = "" -> FinalArgs = Args\n'),
+    write(S, '    ; Args = "" -> FinalArgs = ExtraArgs\n'),
+    write(S, '    ; atom_concat(ExtraArgs, " ", Tmp), atom_concat(Tmp, Args, FinalArgs)),\n'),
     write(S, '    (slash_command(CmdAtom, _Match, Opts, _Help) ->\n'),
     write(S, '        (member(handler(Handler), Opts) ->\n'),
-    write(S, '            Action = call_handler(Handler, Args)\n'),
+    write(S, '            Action = call_handler(Handler, FinalArgs)\n'),
     write(S, '        ; CmdAtom = exit -> Action = exit\n'),
     write(S, '        ; CmdAtom = clear -> Action = clear\n'),
     write(S, '        ; CmdAtom = help -> Action = help\n'),
@@ -1427,7 +1487,7 @@ generate_prolog_backends :-
     write(S, ']).\n\n'),
     write(S, ':- use_module(library(http/http_open)).\n'),
     write(S, ':- use_module(library(http/http_header)).\n'),
-    write(S, ':- use_module(library(http/json)).\n'),
+    write(S, ':- use_module(library(json)).\n'),
     write(S, ':- use_module(library(process)).\n'),
     write(S, ':- use_module(library(readutil)).\n\n'),
     %% Emit agent_backend facts
@@ -1467,14 +1527,20 @@ generate_prolog_backends :-
     write(S, '        Backend = backend{name: Name, spec: Spec, options: Options}\n'),
     write(S, '    ; format(atom(Err), "Unknown backend: ~w", [Name]),\n'),
     write(S, '      throw(error(Err))).\n\n'),
-    %% Generate send_request for API backends
-    write(S, '%% Send a request to an API backend\n'),
+    %% Generate send_request with response normalization
+    write(S, '%% Send a request to a backend and normalize the response\n'),
     write(S, 'send_request(Backend, Messages, Tools, Response) :-\n'),
     write(S, '    get_dict(spec, Backend, Spec),\n'),
     write(S, '    member(resolve_type(Type), Spec),\n'),
-    write(S, '    send_request_by_type(Type, Backend, Messages, Tools, Response).\n\n'),
+    write(S, '    catch(\n'),
+    write(S, '        (send_request_raw(Type, Backend, Messages, Tools, RawResponse),\n'),
+    write(S, '         extract_response(RawResponse, Response)),\n'),
+    write(S, '        Error,\n'),
+    write(S, '        (format(atom(ErrMsg), "Request error: ~w", [Error]),\n'),
+    write(S, '         Response = _{content: ErrMsg, tool_calls: []})).\n\n'),
+    %% API backend
     write(S, '%% API backend: HTTP JSON request\n'),
-    write(S, 'send_request_by_type(api, Backend, Messages, Tools, Response) :-\n'),
+    write(S, 'send_request_raw(api, Backend, Messages, Tools, Response) :-\n'),
     write(S, '    get_dict(spec, Backend, Spec),\n'),
     write(S, '    member(endpoint(URL), Spec),\n'),
     write(S, '    member(model(Model), Spec),\n'),
@@ -1484,16 +1550,20 @@ generate_prolog_backends :-
     write(S, '    (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),\n'),
     write(S, '    atom_concat(AuthP, Key, AuthVal),\n'),
     write(S, '    Body = json(_{model: Model, messages: Messages, tools: Tools}),\n'),
-    write(S, '    http_open(URL, In, [\n'),
-    write(S, '        method(post),\n'),
-    write(S, '        request_header(AuthH=AuthVal),\n'),
-    write(S, '        request_header(''Content-Type''=''application/json''),\n'),
-    write(S, '        post(Body)\n'),
-    write(S, '    ]),\n'),
-    write(S, '    json_read_dict(In, Response),\n'),
-    write(S, '    close(In).\n\n'),
+    write(S, '    setup_call_cleanup(\n'),
+    write(S, '        http_open(URL, In, [\n'),
+    write(S, '            method(post),\n'),
+    write(S, '            request_header(AuthH=AuthVal),\n'),
+    write(S, '            request_header(''Content-Type''=''application/json''),\n'),
+    write(S, '            post(Body)\n'),
+    write(S, '        ]),\n'),
+    write(S, '        json_read_dict(In, Response),\n'),
+    write(S, '        close(In)).\n'),
+    write(S, 'send_request_raw(openrouter, B, M, T, R) :- send_request_raw(api, B, M, T, R).\n'),
+    write(S, 'send_request_raw(api_local, B, M, T, R) :- send_request_raw(api, B, M, T, R).\n\n'),
+    %% CLI backend
     write(S, '%% CLI backend: subprocess\n'),
-    write(S, 'send_request_by_type(cli, Backend, Messages, _Tools, Response) :-\n'),
+    write(S, 'send_request_raw(cli, Backend, Messages, _Tools, Response) :-\n'),
     write(S, '    get_dict(spec, Backend, Spec),\n'),
     write(S, '    member(command(Cmd), Spec),\n'),
     write(S, '    member(args(BaseArgs), Spec),\n'),
@@ -1504,10 +1574,54 @@ generate_prolog_backends :-
     write(S, '        process_create(path(Cmd), AllArgs,\n'),
     write(S, '            [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),\n'),
     write(S, '        (read_string(Out, _, StdOut),\n'),
-    write(S, '         read_string(Err, _, _StdErr),\n'),
-    write(S, '         process_wait(PID, _Status)),\n'),
+    write(S, '         read_string(Err, _, StdErr),\n'),
+    write(S, '         process_wait(PID, Status)),\n'),
     write(S, '        (close(Out), close(Err))),\n'),
-    write(S, '    Response = _{content: StdOut, tool_calls: []}.\n'),
+    write(S, '    (Status = exit(0) ->\n'),
+    write(S, '        Response = _{content: StdOut, tool_calls: []}\n'),
+    write(S, '    ; format(atom(ErrMsg), "Backend exited with ~w: ~w", [Status, StdErr]),\n'),
+    write(S, '        Response = _{content: ErrMsg, tool_calls: []}).\n\n'),
+    %% Response extraction / normalization
+    write(S, '%% Extract and normalize API response to _{content, tool_calls}\n'),
+    write(S, 'extract_response(Raw, Normalized) :-\n'),
+    write(S, '    (get_dict(choices, Raw, Choices) ->\n'),
+    write(S, '        %% OpenAI/OpenRouter format\n'),
+    write(S, '        Choices = [FirstChoice|_],\n'),
+    write(S, '        get_dict(message, FirstChoice, Msg),\n'),
+    write(S, '        (get_dict(content, Msg, Content0) -> true ; Content0 = ""),\n'),
+    write(S, '        (Content0 = null -> Content = "" ; Content = Content0),\n'),
+    write(S, '        (get_dict(tool_calls, Msg, TCs) ->\n'),
+    write(S, '            maplist(normalize_openai_tc, TCs, ToolCalls)\n'),
+    write(S, '        ; ToolCalls = []),\n'),
+    write(S, '        Normalized = _{content: Content, tool_calls: ToolCalls}\n'),
+    write(S, '    ; get_dict(content, Raw, ContentList), is_list(ContentList) ->\n'),
+    write(S, '        %% Anthropic format — content is a list of blocks\n'),
+    write(S, '        extract_anthropic(ContentList, Content, ToolCalls),\n'),
+    write(S, '        Normalized = _{content: Content, tool_calls: ToolCalls}\n'),
+    write(S, '    ; %% Already normalized (e.g., CLI backend)\n'),
+    write(S, '        Normalized = Raw).\n\n'),
+    write(S, '%% Normalize OpenAI tool call format\n'),
+    write(S, 'normalize_openai_tc(TC, Normalized) :-\n'),
+    write(S, '    get_dict(id, TC, Id),\n'),
+    write(S, '    get_dict(function, TC, Func),\n'),
+    write(S, '    get_dict(name, Func, Name),\n'),
+    write(S, '    get_dict(arguments, Func, ArgsJson),\n'),
+    write(S, '    (is_dict(ArgsJson) -> Args = ArgsJson\n'),
+    write(S, '    ; atom_to_term(ArgsJson, Args, _)),\n'),
+    write(S, '    Normalized = _{id: Id, name: Name, arguments: Args}.\n\n'),
+    write(S, '%% Extract Anthropic content blocks\n'),
+    write(S, 'extract_anthropic(Blocks, Content, ToolCalls) :-\n'),
+    write(S, '    findall(Text, (\n'),
+    write(S, '        member(B, Blocks), get_dict(type, B, "text"),\n'),
+    write(S, '        get_dict(text, B, Text)\n'),
+    write(S, '    ), Texts),\n'),
+    write(S, '    atomic_list_concat(Texts, Content),\n'),
+    write(S, '    findall(TC, (\n'),
+    write(S, '        member(B, Blocks), get_dict(type, B, "tool_use"),\n'),
+    write(S, '        get_dict(id, B, Id), get_dict(name, B, Name),\n'),
+    write(S, '        get_dict(input, B, Input),\n'),
+    write(S, '        TC = _{id: Id, name: Name, arguments: Input}\n'),
+    write(S, '    ), ToolCalls).\n'),
     close(S),
     format('  Generated prolog/backends.pl~n', []).
 
@@ -1530,7 +1644,9 @@ generate_prolog_agent_loop :-
     write(S, ':- use_module(security).\n'),
     write(S, ':- use_module(costs).\n\n'),
     write(S, ':- dynamic conversation/1.\n'),
-    write(S, 'conversation([]).\n\n'),
+    write(S, ':- dynamic max_iterations/1.\n'),
+    write(S, 'conversation([]).\n'),
+    write(S, 'max_iterations(0).\n\n'),
     %% Main entry
     write(S, '%% Entry point with default options\n'),
     write(S, 'agent_loop :- agent_loop([]).\n\n'),
@@ -1561,10 +1677,18 @@ generate_prolog_agent_loop :-
     %% Process input
     write(S, '%% Process user input: slash command or LLM request\n'),
     write(S, 'process_input(Input, Backend) :-\n'),
-    write(S, '    (atom_concat(''/'', _, Input) ->\n'),
-    write(S, '        %% Slash command\n'),
-    write(S, '        atom_string(InputAtom, Input),\n'),
-    write(S, '        handle_slash_command(InputAtom, "", Action),\n'),
+    write(S, '    (sub_string(Input, 0, 1, _, "/") ->\n'),
+    write(S, '        %% Slash command — split into command and args\n'),
+    write(S, '        (sub_string(Input, SpaceIdx, 1, _, " ") ->\n'),
+    write(S, '            sub_string(Input, 0, SpaceIdx, _, CmdPart),\n'),
+    write(S, '            AfterSpace is SpaceIdx + 1,\n'),
+    write(S, '            sub_string(Input, AfterSpace, _, 0, ArgsPart)\n'),
+    write(S, '        ;\n'),
+    write(S, '            CmdPart = Input, ArgsPart = ""\n'),
+    write(S, '        ),\n'),
+    write(S, '        atom_string(CmdAtom, CmdPart),\n'),
+    write(S, '        atom_string(ArgsAtom, ArgsPart),\n'),
+    write(S, '        handle_slash_command(CmdAtom, ArgsAtom, Action),\n'),
     write(S, '        handle_action(Action, Backend)\n'),
     write(S, '    ;\n'),
     write(S, '        %% LLM request\n'),
@@ -1594,17 +1718,34 @@ generate_prolog_agent_loop :-
     write(S, '        retractall(conversation(_)),\n'),
     write(S, '        assert(conversation(NewMsgs))\n'),
     write(S, '    ).\n\n'),
-    %% Handle tool calls
+    %% Handle tool calls with iteration tracking
     write(S, '%% Execute tool calls and continue conversation\n'),
-    write(S, 'handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse) :-\n'),
-    write(S, '    AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},\n'),
-    write(S, '    append(Messages, [AsstMsg], Msgs1),\n'),
-    write(S, '    execute_tool_calls(Backend, ToolCalls, ToolResults),\n'),
-    write(S, '    append(Msgs1, ToolResults, Msgs2),\n'),
-    write(S, '    findall(TS, (tool_spec(TN, TP), member(description(TD), TP),\n'),
-    write(S, '        TS = _{name: TN, description: TD}), TSList),\n'),
-    write(S, '    send_request(Backend, Msgs2, TSList, NextResponse),\n'),
-    write(S, '    handle_response(Backend, NextResponse, Msgs2).\n\n'),
+    write(S, 'handle_tool_calls(Backend, ToolCalls, Messages, _) :-\n'),
+    write(S, '    handle_tool_calls(Backend, ToolCalls, Messages, _, 1).\n\n'),
+    write(S, 'handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-\n'),
+    write(S, '    %% Check iteration limit\n'),
+    write(S, '    max_iterations(MaxIter),\n'),
+    write(S, '    (MaxIter > 0, Iteration > MaxIter ->\n'),
+    write(S, '        format("~n[Paused after ~w iterations. Send a message to continue.]~n", [MaxIter]),\n'),
+    write(S, '        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},\n'),
+    write(S, '        append(Messages, [AsstMsg], NewMsgs),\n'),
+    write(S, '        retractall(conversation(_)),\n'),
+    write(S, '        assert(conversation(NewMsgs))\n'),
+    write(S, '    ;\n'),
+    write(S, '        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},\n'),
+    write(S, '        append(Messages, [AsstMsg], Msgs1),\n'),
+    write(S, '        execute_tool_calls(Backend, ToolCalls, ToolResults),\n'),
+    write(S, '        append(Msgs1, ToolResults, Msgs2),\n'),
+    write(S, '        findall(TS, (tool_spec(TN, TP), member(description(TD), TP),\n'),
+    write(S, '            TS = _{name: TN, description: TD}), TSList),\n'),
+    write(S, '        send_request(Backend, Msgs2, TSList, NextResponse),\n'),
+    write(S, '        (get_dict(tool_calls, NextResponse, NextTCs), NextTCs \\= [] ->\n'),
+    write(S, '            NextIter is Iteration + 1,\n'),
+    write(S, '            handle_tool_calls(Backend, NextTCs, Msgs2, NextResponse, NextIter)\n'),
+    write(S, '        ;\n'),
+    write(S, '            handle_response(Backend, NextResponse, Msgs2)\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n\n'),
     write(S, '%% Execute a list of tool calls, collecting results\n'),
     write(S, 'execute_tool_calls(_Backend, [], []).\n'),
     write(S, 'execute_tool_calls(Backend, [TC|Rest], [Result|Results]) :-\n'),
@@ -1631,19 +1772,85 @@ generate_prolog_agent_loop :-
     write(S, '    write("Context cleared."), nl.\n'),
     write(S, 'handle_action(help, _) :-\n'),
     write(S, '    write("Available commands:"), nl,\n'),
-    write(S, '    forall(slash_command(Name, _Match, _Opts, Help), (\n'),
-    write(S, '        format("  /~w — ~w~n", [Name, Help])\n'),
+    write(S, '    forall(slash_command_group(Group, Cmds), (\n'),
+    write(S, '        format("~n  ~w:~n", [Group]),\n'),
+    write(S, '        forall(member(CmdName, Cmds), (\n'),
+    write(S, '            slash_command(CmdName, _, Opts, Help),\n'),
+    write(S, '            (member(help_display(Disp), Opts) -> true ; format(atom(Disp), "/~w", [CmdName])),\n'),
+    write(S, '            format("    ~w~t~30| ~w~n", [Disp, Help])\n'),
+    write(S, '        ))\n'),
     write(S, '    )).\n'),
     write(S, 'handle_action(status, Backend) :-\n'),
     write(S, '    get_dict(name, Backend, BName),\n'),
     write(S, '    conversation(Msgs),\n'),
     write(S, '    length(Msgs, MsgCount),\n'),
     write(S, '    cost_tracker_format(main, CostStr),\n'),
-    write(S, '    format("Backend: ~w~nMessages: ~w~nTokens: ~w~n", [BName, MsgCount, CostStr]).\n'),
+    write(S, '    format("Backend: ~w~nMessages: ~w~nCosts: ~w~n", [BName, MsgCount, CostStr]).\n'),
+    %% /cost command
+    write(S, 'handle_action(call_handler(\'_handle_cost_command\', _), _) :-\n'),
+    write(S, '    cost_tracker_format(main, CostStr),\n'),
+    write(S, '    write(CostStr), nl.\n'),
+    %% /backend command
+    write(S, 'handle_action(call_handler(\'_handle_backend_command\', Args), Backend) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        get_dict(name, Backend, BName),\n'),
+    write(S, '        format("Current backend: ~w~n", [BName]),\n'),
+    write(S, '        write("Available backends:"), nl,\n'),
+    write(S, '        forall(backend_factory(N, _), format("  ~w~n", [N]))\n'),
+    write(S, '    ;\n'),
+    write(S, '        format("Backend switching not yet supported in Prolog target.~n", [])\n'),
+    write(S, '    ).\n'),
+    %% /iterations command
+    write(S, 'handle_action(call_handler(\'_handle_iterations_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        max_iterations(N),\n'),
+    write(S, '        (N =:= 0 -> write("Max iterations: unlimited")\n'),
+    write(S, '        ; format("Max iterations: ~w", [N])), nl\n'),
+    write(S, '    ;\n'),
+    write(S, '        atom_number(Args, N),\n'),
+    write(S, '        retractall(max_iterations(_)),\n'),
+    write(S, '        assert(max_iterations(N)),\n'),
+    write(S, '        (N =:= 0 -> write("Max iterations: unlimited")\n'),
+    write(S, '        ; format("Max iterations set to ~w", [N])), nl\n'),
+    write(S, '    ).\n'),
+    %% /stream command
+    write(S, 'handle_action(call_handler(\'_handle_stream_command\', _), _) :-\n'),
+    write(S, '    write("Streaming not yet supported in Prolog target."), nl.\n'),
+    %% /aliases command
+    write(S, 'handle_action(call_handler(\'_handle_aliases_command\', _), _) :-\n'),
+    write(S, '    write("Command aliases:"), nl,\n'),
+    write(S, '    forall(command_alias(Alias, Target), (\n'),
+    write(S, '        format("  /~w -> /~w~n", [Alias, Target])\n'),
+    write(S, '    )).\n'),
+    %% /history command
+    write(S, 'handle_action(call_handler(\'_handle_history_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" -> N = 10 ; atom_number(Args, N)),\n'),
+    write(S, '    conversation(Msgs),\n'),
+    write(S, '    length(Msgs, Len),\n'),
+    write(S, '    Start is max(0, Len - N),\n'),
+    write(S, '    format("~nLast ~w messages (~w total):~n", [N, Len]),\n'),
+    write(S, '    show_messages(Msgs, Start, 0).\n'),
+    %% Catch-all for unimplemented handlers
     write(S, 'handle_action(not_a_command, _) :- write("Unknown command."), nl.\n'),
     write(S, 'handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).\n'),
     write(S, 'handle_action(call_handler(Handler, _Args), _) :-\n'),
-    write(S, '    format("Handler ~w not yet implemented in Prolog target.~n", [Handler]).\n'),
+    write(S, '    format("Handler ~w not yet implemented in Prolog target.~n", [Handler]).\n\n'),
+    %% Helper for /history
+    write(S, '%% Show conversation messages from index Start\n'),
+    write(S, 'show_messages([], _, _).\n'),
+    write(S, 'show_messages([Msg|Rest], Start, Idx) :-\n'),
+    write(S, '    (Idx >= Start ->\n'),
+    write(S, '        get_dict(role, Msg, Role),\n'),
+    write(S, '        get_dict(content, Msg, Content),\n'),
+    write(S, '        (atom_length(Content, CLen), CLen > 80 ->\n'),
+    write(S, '            sub_atom(Content, 0, 80, _, Preview),\n'),
+    write(S, '            format("  [~w] ~w: ~w...~n", [Idx, Role, Preview])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("  [~w] ~w: ~w~n", [Idx, Role, Content])\n'),
+    write(S, '        )\n'),
+    write(S, '    ; true),\n'),
+    write(S, '    NextIdx is Idx + 1,\n'),
+    write(S, '    show_messages(Rest, Start, NextIdx).\n'),
     close(S),
     format('  Generated prolog/agent_loop.pl~n', []).
 
@@ -2248,8 +2455,8 @@ generate_config :-
     write(S, '"""Configuration system for agent loop variants."""\n\n'),
     write(S, 'import os\nimport json\nfrom pathlib import Path\n'),
     write(S, 'from dataclasses import dataclass, field\nfrom typing import Any\n\n\n'),
-    %% Config cascade function (imperative)
-    write_py(S, config_read_cascade),
+    %% Config cascade function (generated from config_search_path/3 facts)
+    generate_config_cascade(S),
     write(S, '\n\n'),
     %% resolve_api_key with data-driven env vars and file paths
     write_py(S, config_resolve_api_key_header),
@@ -2315,11 +2522,112 @@ generate_config :-
         write(S, '    )\n\n')
     )),
     write(S, '    return config\n\n\n'),
-    %% save_example_config (imperative)
-    write_py(S, config_save_example),
+    %% save_example_config (generated from example_agent_config/3 facts)
+    generate_config_save_example(S),
     write(S, '\n'),
     close(S),
     format('  Generated config.py~n', []).
+
+%% --- Generator: save_example_config (from example_agent_config/3 facts) ---
+
+generate_config_save_example(S) :-
+    write(S, 'def save_example_config(path: str | Path):\n'),
+    write(S, '    """Save an example configuration file."""\n'),
+    write(S, '    path = Path(path)\n\n'),
+    write(S, '    example = {\n'),
+    write(S, '        "default": "claude-sonnet",\n'),
+    write(S, '        "skills_dir": "./skills",\n'),
+    write(S, '        "agents": {\n'),
+    findall(cfg(N,B,P), example_agent_config(N, B, P), Configs),
+    generate_example_agents(S, Configs),
+    write(S, '        }\n'),
+    write(S, '    }\n'),
+    write_py(S, config_save_example_tail).
+
+generate_example_agents(_, []).
+generate_example_agents(S, [cfg(Name, Backend, Props)]) :-
+    generate_one_example_agent(S, Name, Backend, Props, last).
+generate_example_agents(S, [cfg(Name, Backend, Props)|Rest]) :-
+    Rest \= [],
+    generate_one_example_agent(S, Name, Backend, Props, notlast),
+    generate_example_agents(S, Rest).
+
+generate_one_example_agent(S, Name, Backend, Props, LastFlag) :-
+    format(S, '            "~w": {~n', [Name]),
+    format(S, '                "backend": "~w"', [Backend]),
+    %% Emit remaining properties
+    generate_example_props(S, Props),
+    (LastFlag = last ->
+        write(S, '\n            }\n')
+    ;
+        write(S, '\n            },\n')
+    ).
+
+generate_example_props(_, []).
+generate_example_props(S, [Key=Value|Rest]) :-
+    write(S, ',\n'),
+    generate_one_example_prop(S, Key, Value),
+    generate_example_props(S, Rest).
+
+generate_one_example_prop(S, Key, true) :-
+    format(S, '                "~w": True', [Key]).
+generate_one_example_prop(S, Key, false) :-
+    format(S, '                "~w": False', [Key]).
+generate_one_example_prop(S, Key, Value) :-
+    integer(Value),
+    format(S, '                "~w": ~w', [Key, Value]).
+generate_one_example_prop(S, Key, Value) :-
+    is_list(Value),
+    format(S, '                "~w": [', [Key]),
+    generate_json_string_list(S, Value),
+    write(S, ']').
+generate_one_example_prop(S, Key, Value) :-
+    atom(Value), Value \= true, Value \= false,
+    format(S, '                "~w": "~w"', [Key, Value]).
+generate_one_example_prop(S, Key, Value) :-
+    string(Value),
+    format(S, '                "~w": "~w"', [Key, Value]).
+
+generate_json_string_list(_, []).
+generate_json_string_list(S, [X]) :-
+    format(S, '"~w"', [X]).
+generate_json_string_list(S, [X|Xs]) :-
+    Xs \= [],
+    format(S, '"~w", ', [X]),
+    generate_json_string_list(S, Xs).
+
+%% --- Generator: read_config_cascade (from config_search_path/3 facts) ---
+
+generate_config_cascade(S) :-
+    write(S, 'def read_config_cascade(no_fallback: bool = False) -> dict:\n'),
+    write(S, '    """Read config from uwsal.json, falling back to coro.json."""\n'),
+    write(S, '    candidates = [\n'),
+    findall(P, config_search_path(P, required), RequiredPaths),
+    forall(member(Path, RequiredPaths), (
+        generate_cascade_path_entry(S, Path, '')
+    )),
+    write(S, '    ]\n'),
+    write(S, '    if not no_fallback:\n'),
+    write(S, '        candidates += [\n'),
+    findall(P, config_search_path(P, fallback), FallbackPaths),
+    forall(member(Path, FallbackPaths), (
+        generate_cascade_path_entry(S, Path, '    ')
+    )),
+    write(S, '        ]\n'),
+    write(S, '    for path in candidates:\n'),
+    write(S, '        try:\n'),
+    write(S, '            with open(path) as f:\n'),
+    write(S, '                return json.load(f)\n'),
+    write(S, '        except (FileNotFoundError, json.JSONDecodeError):\n'),
+    write(S, '            continue\n'),
+    write(S, '    return {}\n').
+
+generate_cascade_path_entry(S, Path, ExtraIndent) :-
+    (atom_concat('~/', _, Path) ->
+        format(S, '    ~w    os.path.expanduser(\'~w\'),~n', [ExtraIndent, Path])
+    ;
+        format(S, '    ~w    \'~w\',~n', [ExtraIndent, Path])
+    ).
 
 %% =============================================================================
 %% Generator: display.py
@@ -2378,7 +2686,9 @@ generate_tools_module :-
     write_py(S, tools_security_config),
     write(S, '\n\n'),
     %% ToolHandler class (header + generated dispatch + body)
-    write_py(S, tools_handler_class_header),
+    findall(T, tool_handler(T, _), DefaultTools),
+    format_python_string_list(DefaultTools, DefaultToolsStr),
+    write_py(S, tools_handler_class_header, [default_tools=DefaultToolsStr]),
     generate_tool_dispatch(S),
     write_py(S, tools_handler_class_body),
     write(S, '\n'),
@@ -3821,25 +4131,7 @@ py_fragment(context_manager_class, 'class ContextManager:
 %% Fragments: config.py
 %% =============================================================================
 
-py_fragment(config_read_cascade, 'def read_config_cascade(no_fallback: bool = False) -> dict:
-    """Read config from uwsal.json, falling back to coro.json."""
-    candidates = [
-        \'uwsal.json\',
-        os.path.expanduser(\'~/uwsal.json\'),
-    ]
-    if not no_fallback:
-        candidates += [
-            \'coro.json\',
-            os.path.expanduser(\'~/coro.json\'),
-        ]
-    for path in candidates:
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            continue
-    return {}
-').
+%% config_read_cascade fragment deleted — now generated from config_search_path/3 facts
 
 py_fragment(config_resolve_api_key_header, '
 def resolve_api_key(backend_type: str, cli_key: str | None = None,
@@ -3965,73 +4257,7 @@ def load_config_from_dir(dir_path: str | Path = None) -> Config | None:
     return None
 ').
 
-py_fragment(config_save_example, 'def save_example_config(path: str | Path):
-    """Save an example configuration file."""
-    path = Path(path)
-
-    example = {
-        "default": "claude-sonnet",
-        "skills_dir": "./skills",
-        "agents": {
-            "claude-sonnet": {
-                "backend": "claude-code",
-                "model": "sonnet",
-                "tools": ["bash", "read", "write", "edit"],
-                "context_mode": "continue"
-            },
-            "claude-opus": {
-                "backend": "claude-code",
-                "model": "opus",
-                "system_prompt": "You are a senior software engineer. Be thorough."
-            },
-            "yolo": {
-                "backend": "claude-code",
-                "model": "haiku",
-                "auto_tools": True,
-                "system_prompt": "Be fast and take action without asking."
-            },
-            "gemini": {
-                "backend": "gemini",
-                "model": "gemini-2.5-flash"
-            },
-            "ollama-local": {
-                "backend": "ollama-api",
-                "model": "llama3",
-                "host": "localhost",
-                "port": 11434
-            },
-            "ollama-remote": {
-                "backend": "ollama-api",
-                "model": "codellama",
-                "host": "192.168.1.100",
-                "port": 11434
-            },
-            "claude-api": {
-                "backend": "claude",
-                "model": "claude-sonnet-4-20250514",
-                "api_key": "$ANTHROPIC_API_KEY"
-            },
-            "openai": {
-                "backend": "openai",
-                "model": "gpt-4o",
-                "api_key": "$OPENAI_API_KEY"
-            },
-            "openai-mini": {
-                "backend": "openai",
-                "model": "gpt-4o-mini",
-                "api_key": "$OPENAI_API_KEY"
-            },
-            "coding-assistant": {
-                "backend": "claude-code",
-                "model": "sonnet",
-                "agent_md": "./agents/coding.md",
-                "skills": ["./skills/git.md", "./skills/testing.md"],
-                "tools": ["bash", "read", "write", "edit"],
-                "system_prompt": "You are a coding assistant focused on clean, tested code."
-            }
-        }
-    }
-
+py_fragment(config_save_example_tail, '
     if path.suffix in (\'.yaml\', \'.yml\'):
         if not HAS_YAML:
             raise ImportError("PyYAML not installed for YAML output")
@@ -4560,7 +4786,7 @@ py_fragment(tools_handler_class_header, 'class ToolHandler:
         security: SecurityConfig | None = None,
         audit: AuditLogger | None = None
     ):
-        self.allowed_tools = allowed_tools or [\'bash\', \'read\', \'write\', \'edit\']
+        self.allowed_tools = allowed_tools or {{default_tools}}
         self.confirm_destructive = confirm_destructive
         self.working_dir = working_dir or os.getcwd()
         self.security = security or SecurityConfig()
@@ -8508,6 +8734,22 @@ write_set_elements(S, [DT|Rest]) :-
     Rest \= [],
     format(S, '\'~w\', ', [DT]),
     write_set_elements(S, Rest).
+
+%% format_python_string_list(+AtomList, -FormattedString)
+%% Converts [bash, read, write, edit] to the atom ['bash', 'read', 'write', 'edit']
+format_python_string_list(Items, Result) :-
+    format_py_str_items(Items, Inner),
+    atom_concat('[', Inner, Tmp),
+    atom_concat(Tmp, ']', Result).
+
+format_py_str_items([], '').
+format_py_str_items([X], Result) :-
+    format(atom(Result), '\'~w\'', [X]).
+format_py_str_items([X|Xs], Result) :-
+    Xs \= [],
+    format(atom(First), '\'~w\', ', [X]),
+    format_py_str_items(Xs, RestStr),
+    atom_concat(First, RestStr, Result).
 
 %% --- ollama_cli (uses: format_prompt, clean_output_simple, list_models_cli, name_property) ---
 
