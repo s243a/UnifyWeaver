@@ -14,13 +14,18 @@
 :- use_module(commands).
 :- use_module(security).
 :- use_module(costs).
+:- use_module(library(json)).
+:- use_module(library(filesex)).
 
 :- dynamic conversation/1.
 :- dynamic conversation_undo/1.
 :- dynamic max_iterations/1.
 :- dynamic current_backend/1.
+:- dynamic current_format/1.
 conversation([]).
 max_iterations(0).
+current_format(plain).
+sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).
 
 %% Entry point with default options
 agent_loop :- agent_loop([]).
@@ -297,6 +302,122 @@ handle_action(call_handler('_handle_replay_command', Args), Backend) :-
             format("Invalid index. Messages: 0-~w~n", [Len])
         )
     ).
+handle_action(call_handler('_handle_save_command', Args), Backend) :-
+    conversation(Msgs),
+    get_dict(name, Backend, BName),
+    length(Msgs, MsgCount),
+    get_time(Now), stamp_date_time(Now, DT, local),
+    format_time(atom(SessionId), "%Y%m%d_%H%M%S", DT),
+    (Args = "" -> Name = SessionId ; atom_string(Name, Args)),
+    sessions_dir(SDir),
+    make_directory_path(SDir),
+    format(atom(FileName), "~w/~w.json", [SDir, SessionId]),
+    SessionData = _{metadata: _{id: SessionId, name: Name, backend: BName, message_count: MsgCount}, messages: Msgs},
+    setup_call_cleanup(
+        open(FileName, write, Out),
+        json_write_dict(Out, SessionData, []),
+        close(Out)),
+    format("Saved session: ~w (~w messages)~n", [SessionId, MsgCount]).
+handle_action(call_handler('_handle_load_command', Args), _) :-
+    (Args = "" ->
+        write("Usage: /load <session_id>"), nl
+    ;
+        atom_string(SessionId, Args),
+        sessions_dir(SDir),
+        format(atom(FileName), "~w/~w.json", [SDir, SessionId]),
+        (exists_file(FileName) ->
+            setup_call_cleanup(
+                open(FileName, read, In),
+                json_read_dict(In, Data),
+                close(In)),
+            get_dict(messages, Data, Msgs),
+            retractall(conversation(_)),
+            assert(conversation(Msgs)),
+            length(Msgs, Len),
+            (get_dict(metadata, Data, Meta), get_dict(name, Meta, Name) -> true ; Name = SessionId),
+            format("Loaded session: ~w (~w messages)~n", [Name, Len])
+        ;
+            format("Session not found: ~w~n", [SessionId])
+        )
+    ).
+handle_action(call_handler('_handle_sessions_command', _), _) :-
+    sessions_dir(SDir),
+    (exists_directory(SDir) ->
+        directory_files(SDir, AllFiles),
+        include(json_file, AllFiles, JsonFiles),
+        (JsonFiles = [] ->
+            write("No saved sessions."), nl
+        ;
+            write("Saved sessions:"), nl,
+            forall(member(F, JsonFiles), (
+                format(atom(FullPath), "~w/~w", [SDir, F]),
+                catch((
+                    setup_call_cleanup(
+                        open(FullPath, read, In),
+                        json_read_dict(In, Data),
+                        close(In)),
+                    get_dict(metadata, Data, Meta),
+                    get_dict(id, Meta, Id),
+                    get_dict(name, Meta, Name),
+                    get_dict(message_count, Meta, MC),
+                    format("  ~w: ~w (~w msgs)~n", [Id, Name, MC])
+                ), _, (
+                    file_name_extension(Base, _, F),
+                    format("  ~w: (unreadable)~n", [Base])
+                ))
+            ))
+        )
+    ; write("No saved sessions."), nl).
+handle_action(call_handler('_handle_format_command', Args), _) :-
+    (Args = "" ->
+        current_format(Fmt),
+        format("Current format: ~w~nAvailable: plain, markdown, json, xml~n", [Fmt])
+    ;
+        atom_string(NewFmt, Args),
+        (member(NewFmt, [plain, markdown, json, xml]) ->
+            retractall(current_format(_)),
+            assert(current_format(NewFmt)),
+            format("Format set to: ~w~n", [NewFmt])
+        ;
+            format("Unknown format: ~w~nAvailable: plain, markdown, json, xml~n", [NewFmt])
+        )
+    ).
+handle_action(call_handler('_handle_export_command', Args), _) :-
+    (Args = "" ->
+        write("Usage: /export <path> (.md, .html, .json, .txt)"), nl
+    ;
+        atom_string(FilePath, Args),
+        conversation(Msgs),
+        length(Msgs, Len),
+        file_name_extension(_, Ext, FilePath),
+        (export_conversation(Ext, Msgs, Content) ->
+            setup_call_cleanup(
+                open(FilePath, write, Out),
+                write(Out, Content),
+                close(Out)),
+            format("Exported ~w messages to ~w~n", [Len, FilePath])
+        ;
+            format("Unsupported format: .~w (use .md, .html, .json, .txt)~n", [Ext])
+        )
+    ).
+handle_action(call_handler('_handle_search_command', Args), _) :-
+    (Args = "" ->
+        write("Usage: /search <query>"), nl
+    ;
+        sessions_dir(SDir),
+        (exists_directory(SDir) ->
+            directory_files(SDir, AllFiles),
+            include(json_file, AllFiles, JsonFiles),
+            atom_string(Query, Args),
+            format("Search results for '~w':~n", [Query]),
+            search_sessions(SDir, JsonFiles, Query, 0, Found),
+            (Found =:= 0 -> format("  No results for: ~w~n", [Query]) ; true)
+        ;
+            write("No sessions directory found."), nl
+        )
+    ).
+handle_action(call_handler('_handle_templates_command', _), _) :-
+    write("No templates loaded."), nl.
 handle_action(not_a_command, _) :- write("Unknown command."), nl.
 handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).
 handle_action(call_handler(Handler, _Args), _) :-
@@ -338,3 +459,67 @@ replace_at([Msg|Rest], Target, NewContent, Idx, [NewMsg|Result]) :-
 replace_at([H|Rest], Target, NewContent, Idx, [H|Result]) :-
     NextIdx is Idx + 1,
     replace_at(Rest, Target, NewContent, NextIdx, Result).
+
+%% Filter for .json files
+json_file(F) :- file_name_extension(_, json, F).
+
+%% Export conversation to different formats
+export_conversation(json, Msgs, Content) :-
+    with_output_to(string(Content), json_write_dict(current_output, Msgs, [])).
+export_conversation(md, Msgs, Content) :-
+    with_output_to(string(Content), (
+        write("# Conversation\n\n"),
+        forall(member(Msg, Msgs), (
+            get_dict(role, Msg, Role),
+            get_dict(content, Msg, C),
+            (Role = "user" -> write("**You:**") ; write("**Assistant:**")),
+            nl, nl, write(C), nl, nl
+        ))
+    )).
+export_conversation(txt, Msgs, Content) :-
+    with_output_to(string(Content), (
+        forall(member(Msg, Msgs), (
+            get_dict(role, Msg, Role),
+            get_dict(content, Msg, C),
+            format("~w: ~w~n~n", [Role, C])
+        ))
+    )).
+export_conversation(html, Msgs, Content) :-
+    with_output_to(string(Content), (
+        write("<html><body>\n"),
+        forall(member(Msg, Msgs), (
+            get_dict(role, Msg, Role),
+            get_dict(content, Msg, C),
+            format("<div class=\"~w\"><b>~w:</b><p>~w</p></div>\n", [Role, Role, C])
+        )),
+        write("</body></html>\n")
+    )).
+
+%% Search across saved session files
+search_sessions(_, [], _, Found, Found).
+search_sessions(SDir, [F|Rest], Query, Acc, Found) :-
+    format(atom(Path), "~w/~w", [SDir, F]),
+    catch((
+        setup_call_cleanup(open(Path, read, In), json_read_dict(In, Data), close(In)),
+        get_dict(messages, Data, Msgs),
+        get_dict(metadata, Data, Meta),
+        get_dict(id, Meta, SessId),
+        search_messages(SessId, Msgs, Query, Acc, Acc1)
+    ), _, Acc1 = Acc),
+    search_sessions(SDir, Rest, Query, Acc1, Found).
+
+search_messages(_, [], _, Acc, Acc).
+search_messages(SessId, [Msg|Rest], Query, Acc, Found) :-
+    get_dict(content, Msg, Content),
+    get_dict(role, Msg, Role),
+    (sub_string(Content, _, _, _, Query) ->
+        (Role = "user" -> RLabel = "You" ; RLabel = "Asst"),
+        (string_length(Content, CL), CL > 60 ->
+            sub_string(Content, 0, 60, _, Snippet),
+            format("  [~w] ~w: ~w...~n", [SessId, RLabel, Snippet])
+        ;
+            format("  [~w] ~w: ~w~n", [SessId, RLabel, Content])
+        ),
+        Acc1 is Acc + 1
+    ; Acc1 = Acc),
+    search_messages(SessId, Rest, Query, Acc1, Found).

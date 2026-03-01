@@ -14,6 +14,7 @@
     config_search_path/2,
     config_field_json_default/2,
     config_dir_file_name/1,
+    audit_profile_level/2,
     load_config/2,
     resolve_api_key/3
 ]).
@@ -147,6 +148,13 @@ config_dir_file_name('agents.json').
 config_dir_file_name('.agents.yaml').
 config_dir_file_name('.agents.yml').
 config_dir_file_name('.agents.json').
+
+%% audit_profile_level(+Profile, +AuditLevel)
+%% Maps security profile to audit logging level.
+audit_profile_level(open, disabled).
+audit_profile_level(cautious, basic).
+audit_profile_level(guarded, detailed).
+audit_profile_level(paranoid, forensic).
 
 %% Parse CLI arguments using SWI-Prolog optparse
 parse_cli_args(Argv, Options) :-

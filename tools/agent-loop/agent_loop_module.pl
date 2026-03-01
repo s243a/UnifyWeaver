@@ -12,9 +12,16 @@
     generate_module/1,
     agent_backend/2,
     tool_spec/2,
+    tool_handler/2,
+    destructive_tool/1,
     security_profile/2,
     model_pricing/3,
-    security_module/3
+    security_module/3,
+    audit_profile_level/2,
+    slash_command/4,
+    command_alias/2,
+    backend_factory/2,
+    backend_factory_order/1
 ]).
 
 :- discontiguous generate_backend_full/3.
@@ -269,6 +276,13 @@ security_profile(paranoid, [
     max_file_read_size(1048576),
     max_file_write_size(10485760)
 ]).
+
+%% audit_profile_level(+ProfileName, +AuditLevel)
+%% Maps security profile to audit logging level.
+audit_profile_level(open, disabled).
+audit_profile_level(cautious, basic).
+audit_profile_level(guarded, detailed).
+audit_profile_level(paranoid, forensic).
 
 %% Regex lists referenced by profiles
 regex_list(guarded_extra_blocks, [
@@ -1115,6 +1129,7 @@ generate_prolog_config :-
     write(S, '    config_search_path/2,\n'),
     write(S, '    config_field_json_default/2,\n'),
     write(S, '    config_dir_file_name/1,\n'),
+    write(S, '    audit_profile_level/2,\n'),
     write(S, '    load_config/2,\n'),
     write(S, '    resolve_api_key/3\n'),
     write(S, ']).\n\n'),
@@ -1180,6 +1195,13 @@ generate_prolog_config :-
     write(S, '%% Standard config file names searched by load_config_from_dir.\n'),
     forall(config_dir_file_name(FN), (
         format(S, 'config_dir_file_name(~q).~n', [FN])
+    )),
+    write(S, '\n'),
+    %% Emit audit_profile_level facts
+    write(S, '%% audit_profile_level(+Profile, +AuditLevel)\n'),
+    write(S, '%% Maps security profile to audit logging level.\n'),
+    forall(audit_profile_level(P, L), (
+        format(S, 'audit_profile_level(~q, ~q).~n', [P, L])
     )),
     write(S, '\n'),
     %% Generate parse_cli_args using optparse
@@ -1685,13 +1707,18 @@ generate_prolog_agent_loop :-
     write(S, ':- use_module(backends).\n'),
     write(S, ':- use_module(commands).\n'),
     write(S, ':- use_module(security).\n'),
-    write(S, ':- use_module(costs).\n\n'),
+    write(S, ':- use_module(costs).\n'),
+    write(S, ':- use_module(library(json)).\n'),
+    write(S, ':- use_module(library(filesex)).\n\n'),
     write(S, ':- dynamic conversation/1.\n'),
     write(S, ':- dynamic conversation_undo/1.\n'),
     write(S, ':- dynamic max_iterations/1.\n'),
     write(S, ':- dynamic current_backend/1.\n'),
+    write(S, ':- dynamic current_format/1.\n'),
     write(S, 'conversation([]).\n'),
-    write(S, 'max_iterations(0).\n\n'),
+    write(S, 'max_iterations(0).\n'),
+    write(S, 'current_format(plain).\n'),
+    write(S, 'sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).\n\n'),
     %% Main entry
     write(S, '%% Entry point with default options\n'),
     write(S, 'agent_loop :- agent_loop([]).\n\n'),
@@ -1975,6 +2002,129 @@ generate_prolog_agent_loop :-
     write(S, '            format("Invalid index. Messages: 0-~w~n", [Len])\n'),
     write(S, '        )\n'),
     write(S, '    ).\n'),
+    %% /save command — save conversation to session file
+    write(S, 'handle_action(call_handler(\'_handle_save_command\', Args), Backend) :-\n'),
+    write(S, '    conversation(Msgs),\n'),
+    write(S, '    get_dict(name, Backend, BName),\n'),
+    write(S, '    length(Msgs, MsgCount),\n'),
+    write(S, '    get_time(Now), stamp_date_time(Now, DT, local),\n'),
+    write(S, '    format_time(atom(SessionId), "%Y%m%d_%H%M%S", DT),\n'),
+    write(S, '    (Args = "" -> Name = SessionId ; atom_string(Name, Args)),\n'),
+    write(S, '    sessions_dir(SDir),\n'),
+    write(S, '    make_directory_path(SDir),\n'),
+    write(S, '    format(atom(FileName), "~w/~w.json", [SDir, SessionId]),\n'),
+    write(S, '    SessionData = _{metadata: _{id: SessionId, name: Name, backend: BName, message_count: MsgCount}, messages: Msgs},\n'),
+    write(S, '    setup_call_cleanup(\n'),
+    write(S, '        open(FileName, write, Out),\n'),
+    write(S, '        json_write_dict(Out, SessionData, []),\n'),
+    write(S, '        close(Out)),\n'),
+    write(S, '    format("Saved session: ~w (~w messages)~n", [SessionId, MsgCount]).\n'),
+    %% /load command — load session from file
+    write(S, 'handle_action(call_handler(\'_handle_load_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        write("Usage: /load <session_id>"), nl\n'),
+    write(S, '    ;\n'),
+    write(S, '        atom_string(SessionId, Args),\n'),
+    write(S, '        sessions_dir(SDir),\n'),
+    write(S, '        format(atom(FileName), "~w/~w.json", [SDir, SessionId]),\n'),
+    write(S, '        (exists_file(FileName) ->\n'),
+    write(S, '            setup_call_cleanup(\n'),
+    write(S, '                open(FileName, read, In),\n'),
+    write(S, '                json_read_dict(In, Data),\n'),
+    write(S, '                close(In)),\n'),
+    write(S, '            get_dict(messages, Data, Msgs),\n'),
+    write(S, '            retractall(conversation(_)),\n'),
+    write(S, '            assert(conversation(Msgs)),\n'),
+    write(S, '            length(Msgs, Len),\n'),
+    write(S, '            (get_dict(metadata, Data, Meta), get_dict(name, Meta, Name) -> true ; Name = SessionId),\n'),
+    write(S, '            format("Loaded session: ~w (~w messages)~n", [Name, Len])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("Session not found: ~w~n", [SessionId])\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
+    %% /sessions command — list saved sessions
+    write(S, 'handle_action(call_handler(\'_handle_sessions_command\', _), _) :-\n'),
+    write(S, '    sessions_dir(SDir),\n'),
+    write(S, '    (exists_directory(SDir) ->\n'),
+    write(S, '        directory_files(SDir, AllFiles),\n'),
+    write(S, '        include(json_file, AllFiles, JsonFiles),\n'),
+    write(S, '        (JsonFiles = [] ->\n'),
+    write(S, '            write("No saved sessions."), nl\n'),
+    write(S, '        ;\n'),
+    write(S, '            write("Saved sessions:"), nl,\n'),
+    write(S, '            forall(member(F, JsonFiles), (\n'),
+    write(S, '                format(atom(FullPath), "~w/~w", [SDir, F]),\n'),
+    write(S, '                catch((\n'),
+    write(S, '                    setup_call_cleanup(\n'),
+    write(S, '                        open(FullPath, read, In),\n'),
+    write(S, '                        json_read_dict(In, Data),\n'),
+    write(S, '                        close(In)),\n'),
+    write(S, '                    get_dict(metadata, Data, Meta),\n'),
+    write(S, '                    get_dict(id, Meta, Id),\n'),
+    write(S, '                    get_dict(name, Meta, Name),\n'),
+    write(S, '                    get_dict(message_count, Meta, MC),\n'),
+    write(S, '                    format("  ~w: ~w (~w msgs)~n", [Id, Name, MC])\n'),
+    write(S, '                ), _, (\n'),
+    write(S, '                    file_name_extension(Base, _, F),\n'),
+    write(S, '                    format("  ~w: (unreadable)~n", [Base])\n'),
+    write(S, '                ))\n'),
+    write(S, '            ))\n'),
+    write(S, '        )\n'),
+    write(S, '    ; write("No saved sessions."), nl).\n'),
+    %% /format command — get/set context format
+    write(S, 'handle_action(call_handler(\'_handle_format_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        current_format(Fmt),\n'),
+    write(S, '        format("Current format: ~w~nAvailable: plain, markdown, json, xml~n", [Fmt])\n'),
+    write(S, '    ;\n'),
+    write(S, '        atom_string(NewFmt, Args),\n'),
+    write(S, '        (member(NewFmt, [plain, markdown, json, xml]) ->\n'),
+    write(S, '            retractall(current_format(_)),\n'),
+    write(S, '            assert(current_format(NewFmt)),\n'),
+    write(S, '            format("Format set to: ~w~n", [NewFmt])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("Unknown format: ~w~nAvailable: plain, markdown, json, xml~n", [NewFmt])\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
+    %% /export command — export conversation to file
+    write(S, 'handle_action(call_handler(\'_handle_export_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        write("Usage: /export <path> (.md, .html, .json, .txt)"), nl\n'),
+    write(S, '    ;\n'),
+    write(S, '        atom_string(FilePath, Args),\n'),
+    write(S, '        conversation(Msgs),\n'),
+    write(S, '        length(Msgs, Len),\n'),
+    write(S, '        file_name_extension(_, Ext, FilePath),\n'),
+    write(S, '        (export_conversation(Ext, Msgs, Content) ->\n'),
+    write(S, '            setup_call_cleanup(\n'),
+    write(S, '                open(FilePath, write, Out),\n'),
+    write(S, '                write(Out, Content),\n'),
+    write(S, '                close(Out)),\n'),
+    write(S, '            format("Exported ~w messages to ~w~n", [Len, FilePath])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("Unsupported format: .~w (use .md, .html, .json, .txt)~n", [Ext])\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
+    %% /search command — search across saved sessions
+    write(S, 'handle_action(call_handler(\'_handle_search_command\', Args), _) :-\n'),
+    write(S, '    (Args = "" ->\n'),
+    write(S, '        write("Usage: /search <query>"), nl\n'),
+    write(S, '    ;\n'),
+    write(S, '        sessions_dir(SDir),\n'),
+    write(S, '        (exists_directory(SDir) ->\n'),
+    write(S, '            directory_files(SDir, AllFiles),\n'),
+    write(S, '            include(json_file, AllFiles, JsonFiles),\n'),
+    write(S, '            atom_string(Query, Args),\n'),
+    write(S, '            format("Search results for \'~w\':~n", [Query]),\n'),
+    write(S, '            search_sessions(SDir, JsonFiles, Query, 0, Found),\n'),
+    write(S, '            (Found =:= 0 -> format("  No results for: ~w~n", [Query]) ; true)\n'),
+    write(S, '        ;\n'),
+    write(S, '            write("No sessions directory found."), nl\n'),
+    write(S, '        )\n'),
+    write(S, '    ).\n'),
+    %% /templates command (stub)
+    write(S, 'handle_action(call_handler(\'_handle_templates_command\', _), _) :-\n'),
+    write(S, '    write("No templates loaded."), nl.\n'),
     %% Catch-all for unimplemented handlers
     write(S, 'handle_action(not_a_command, _) :- write("Unknown command."), nl.\n'),
     write(S, 'handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).\n'),
@@ -2016,7 +2166,70 @@ generate_prolog_agent_loop :-
     write(S, '    replace_at(Rest, Target, NewContent, NextIdx, Result).\n'),
     write(S, 'replace_at([H|Rest], Target, NewContent, Idx, [H|Result]) :-\n'),
     write(S, '    NextIdx is Idx + 1,\n'),
-    write(S, '    replace_at(Rest, Target, NewContent, NextIdx, Result).\n'),
+    write(S, '    replace_at(Rest, Target, NewContent, NextIdx, Result).\n\n'),
+    %% Helper: filter JSON files
+    write(S, '%% Filter for .json files\n'),
+    write(S, 'json_file(F) :- file_name_extension(_, json, F).\n\n'),
+    %% Export conversation helpers
+    write(S, '%% Export conversation to different formats\n'),
+    write(S, 'export_conversation(json, Msgs, Content) :-\n'),
+    write(S, '    with_output_to(string(Content), json_write_dict(current_output, Msgs, [])).\n'),
+    write(S, 'export_conversation(md, Msgs, Content) :-\n'),
+    write(S, '    with_output_to(string(Content), (\n'),
+    write(S, '        write("# Conversation\\n\\n"),\n'),
+    write(S, '        forall(member(Msg, Msgs), (\n'),
+    write(S, '            get_dict(role, Msg, Role),\n'),
+    write(S, '            get_dict(content, Msg, C),\n'),
+    write(S, '            (Role = "user" -> write("**You:**") ; write("**Assistant:**")),\n'),
+    write(S, '            nl, nl, write(C), nl, nl\n'),
+    write(S, '        ))\n'),
+    write(S, '    )).\n'),
+    write(S, 'export_conversation(txt, Msgs, Content) :-\n'),
+    write(S, '    with_output_to(string(Content), (\n'),
+    write(S, '        forall(member(Msg, Msgs), (\n'),
+    write(S, '            get_dict(role, Msg, Role),\n'),
+    write(S, '            get_dict(content, Msg, C),\n'),
+    write(S, '            format("~w: ~w~n~n", [Role, C])\n'),
+    write(S, '        ))\n'),
+    write(S, '    )).\n'),
+    write(S, 'export_conversation(html, Msgs, Content) :-\n'),
+    write(S, '    with_output_to(string(Content), (\n'),
+    write(S, '        write("<html><body>\\n"),\n'),
+    write(S, '        forall(member(Msg, Msgs), (\n'),
+    write(S, '            get_dict(role, Msg, Role),\n'),
+    write(S, '            get_dict(content, Msg, C),\n'),
+    write(S, '            format("<div class=\\"~w\\"><b>~w:</b><p>~w</p></div>\\n", [Role, Role, C])\n'),
+    write(S, '        )),\n'),
+    write(S, '        write("</body></html>\\n")\n'),
+    write(S, '    )).\n\n'),
+    %% Session search helpers
+    write(S, '%% Search across saved session files\n'),
+    write(S, 'search_sessions(_, [], _, Found, Found).\n'),
+    write(S, 'search_sessions(SDir, [F|Rest], Query, Acc, Found) :-\n'),
+    write(S, '    format(atom(Path), "~w/~w", [SDir, F]),\n'),
+    write(S, '    catch((\n'),
+    write(S, '        setup_call_cleanup(open(Path, read, In), json_read_dict(In, Data), close(In)),\n'),
+    write(S, '        get_dict(messages, Data, Msgs),\n'),
+    write(S, '        get_dict(metadata, Data, Meta),\n'),
+    write(S, '        get_dict(id, Meta, SessId),\n'),
+    write(S, '        search_messages(SessId, Msgs, Query, Acc, Acc1)\n'),
+    write(S, '    ), _, Acc1 = Acc),\n'),
+    write(S, '    search_sessions(SDir, Rest, Query, Acc1, Found).\n\n'),
+    write(S, 'search_messages(_, [], _, Acc, Acc).\n'),
+    write(S, 'search_messages(SessId, [Msg|Rest], Query, Acc, Found) :-\n'),
+    write(S, '    get_dict(content, Msg, Content),\n'),
+    write(S, '    get_dict(role, Msg, Role),\n'),
+    write(S, '    (sub_string(Content, _, _, _, Query) ->\n'),
+    write(S, '        (Role = "user" -> RLabel = "You" ; RLabel = "Asst"),\n'),
+    write(S, '        (string_length(Content, CL), CL > 60 ->\n'),
+    write(S, '            sub_string(Content, 0, 60, _, Snippet),\n'),
+    write(S, '            format("  [~w] ~w: ~w...~n", [SessId, RLabel, Snippet])\n'),
+    write(S, '        ;\n'),
+    write(S, '            format("  [~w] ~w: ~w~n", [SessId, RLabel, Content])\n'),
+    write(S, '        ),\n'),
+    write(S, '        Acc1 is Acc + 1\n'),
+    write(S, '    ; Acc1 = Acc),\n'),
+    write(S, '    search_messages(SessId, Rest, Query, Acc1, Found).\n'),
     close(S),
     format('  Generated prolog/agent_loop.pl~n', []).
 
@@ -3307,6 +3520,15 @@ generate_fallback_entries(S, [BT|Rest]) :-
     ),
     generate_fallback_entries(S, Rest).
 
+%% generate_audit_levels_dict(S) - emit audit_levels dict from audit_profile_level/2 facts
+generate_audit_levels_dict(S) :-
+    write(S, '\n    # Create audit logger based on security profile\n'),
+    write(S, '    audit_levels = {\n'),
+    forall(audit_profile_level(Profile, Level), (
+        format(S, '        \'~w\': \'~w\',~n', [Profile, Level])
+    )),
+    write(S, '    }\n').
+
 %% Comments for each fallback entry
 fallback_comment(coro, '               # no fallback (different CLI interface)') :- !.
 fallback_comment('claude-code', '        # no fallback') :- !.
@@ -3510,7 +3732,9 @@ generate_agent_loop_main :-
     %% Blank line separator (line 1181)
     nl(S),
     %% 12. Main body: args parsing + run logic (lines 1182-1433)
-    write_py(S, agent_loop_main_body),
+    write_py(S, agent_loop_main_body_pre_audit),
+    generate_audit_levels_dict(S),
+    write_py(S, agent_loop_main_body_post_audit),
     close(S),
     format('  Generated agent_loop.py~n', []).
 
@@ -8580,7 +8804,7 @@ def _resolve_command(backend_type: str, configured: str | None,
 ').
 
 
-py_fragment(agent_loop_main_body, '    args = parser.parse_args()
+py_fragment(agent_loop_main_body_pre_audit, '    args = parser.parse_args()
 
     # Handle --init-config
     if args.init_config:
@@ -8748,15 +8972,9 @@ py_fragment(agent_loop_main_body, '    args = parser.parse_args()
         security.proot_allowed_dirs.append(d)
     for d in security_cfg.get(\'proot_allowed_dirs\', []):
         security.proot_allowed_dirs.append(d)
+').
 
-    # Create audit logger based on security profile
-    audit_levels = {
-        \'open\': \'disabled\',
-        \'cautious\': \'basic\',
-        \'guarded\': \'detailed\',
-        \'paranoid\': \'forensic\',
-    }
-    audit_level = audit_levels.get(security_profile, \'basic\')
+py_fragment(agent_loop_main_body_post_audit, '    audit_level = audit_levels.get(security_profile, \'basic\')
     audit_log_dir = security_cfg.get(\'audit_log_dir\')
     audit_logger = AuditLogger(log_dir=audit_log_dir, level=audit_level)
 
