@@ -16,7 +16,9 @@
 :- use_module(costs).
 
 :- dynamic conversation/1.
+:- dynamic conversation_undo/1.
 :- dynamic max_iterations/1.
+:- dynamic current_backend/1.
 conversation([]).
 max_iterations(0).
 
@@ -30,23 +32,26 @@ agent_loop(Args) :-
         true
     ; BName = coro),
     create_backend(BName, Options, Backend),
+    retractall(current_backend(_)),
+    assert(current_backend(Backend)),
     (member(security_profile(Prof), Options), Prof \= none ->
         set_security_profile(Prof)
     ; true),
     cost_tracker_init(main),
     format("uwsal — Prolog agent loop (backend: ~w)~n", [BName]),
     write("Type /help for commands, /exit to quit."), nl,
-    repl_loop(Backend).
+    repl_loop.
 
 %% Main read-eval-print loop
-repl_loop(Backend) :-
+repl_loop :-
+    current_backend(Backend),
     write("> "),
     flush_output,
     read_line_to_string(user_input, Input),
     (Input = end_of_file -> write("Goodbye."), nl
-    ; Input = "" -> repl_loop(Backend)
-    ; process_input(Input, Backend) -> repl_loop(Backend)
-    ; repl_loop(Backend)).
+    ; Input = "" -> repl_loop
+    ; process_input(Input, Backend) -> repl_loop
+    ; repl_loop).
 
 %% Process user input: slash command or LLM request
 process_input(Input, Backend) :-
@@ -171,7 +176,18 @@ handle_action(call_handler('_handle_backend_command', Args), Backend) :-
         write("Available backends:"), nl,
         forall(backend_factory(N, _), format("  ~w~n", [N]))
     ;
-        format("Backend switching not yet supported in Prolog target.~n", [])
+        atom_string(TargetName, Args),
+        (backend_factory(TargetName, _) ->
+            create_backend(TargetName, [], NewBackend),
+            retractall(current_backend(_)),
+            assert(current_backend(NewBackend)),
+            format("Switched to backend: ~w~n", [TargetName])
+        ;
+            format("Unknown backend: ~w~nAvailable: ", [TargetName]),
+            findall(N, backend_factory(N, _), Names),
+            atomic_list_concat(Names, ', ', NamesStr),
+            write(NamesStr), nl
+        )
     ).
 handle_action(call_handler('_handle_iterations_command', Args), _) :-
     (Args = "" ->
@@ -199,6 +215,88 @@ handle_action(call_handler('_handle_history_command', Args), _) :-
     Start is max(0, Len - N),
     format("~nLast ~w messages (~w total):~n", [N, Len]),
     show_messages(Msgs, Start, 0).
+handle_action(call_handler('_handle_delete_command', Args), _) :-
+    (Args = "" ->
+        write("Usage: /delete <index> or /delete <start>-<end>"), nl
+    ;
+        conversation(Msgs),
+        %% Save undo state
+        retractall(conversation_undo(_)),
+        assert(conversation_undo(Msgs)),
+        (sub_string(Args, DashIdx, 1, _, "-") ->
+            sub_string(Args, 0, DashIdx, _, StartStr),
+            AfterDash is DashIdx + 1,
+            sub_string(Args, AfterDash, _, 0, EndStr),
+            atom_number(StartStr, Start),
+            atom_number(EndStr, End)
+        ;
+            atom_number(Args, Start),
+            End = Start
+        ),
+        length(Msgs, Len),
+        (Start >= 0, End < Len, Start =< End ->
+            delete_range(Msgs, Start, End, 0, NewMsgs),
+            retractall(conversation(_)),
+            assert(conversation(NewMsgs)),
+            Deleted is End - Start + 1,
+            format("Deleted ~w message(s).~n", [Deleted])
+        ;
+            format("Invalid range. Messages: 0-~w~n", [Len])
+        )
+    ).
+handle_action(call_handler('_handle_undo_command', _), _) :-
+    (conversation_undo(OldMsgs) ->
+        conversation(Current),
+        retractall(conversation(_)),
+        assert(conversation(OldMsgs)),
+        retractall(conversation_undo(_)),
+        assert(conversation_undo(Current)),
+        length(OldMsgs, Len),
+        format("Restored conversation (~w messages). /undo again to swap back.~n", [Len])
+    ;
+        write("Nothing to undo."), nl
+    ).
+handle_action(call_handler('_handle_edit_command', Args), _) :-
+    (Args = "" ->
+        write("Usage: /edit <index> <new content>"), nl
+    ;
+        (sub_string(Args, SpIdx, 1, _, " ") ->
+            sub_string(Args, 0, SpIdx, _, IdxStr),
+            AfterSp is SpIdx + 1,
+            sub_string(Args, AfterSp, _, 0, NewContent)
+        ;
+            write("Usage: /edit <index> <new content>"), nl, fail
+        ),
+        atom_number(IdxStr, Idx),
+        conversation(Msgs),
+        length(Msgs, Len),
+        (Idx >= 0, Idx < Len ->
+            retractall(conversation_undo(_)),
+            assert(conversation_undo(Msgs)),
+            replace_at(Msgs, Idx, NewContent, 0, NewMsgs),
+            retractall(conversation(_)),
+            assert(conversation(NewMsgs)),
+            format("Edited message ~w.~n", [Idx])
+        ;
+            format("Invalid index. Messages: 0-~w~n", [Len])
+        )
+    ).
+handle_action(call_handler('_handle_replay_command', Args), Backend) :-
+    (Args = "" ->
+        write("Usage: /replay <index>"), nl
+    ;
+        atom_number(Args, Idx),
+        conversation(Msgs),
+        length(Msgs, Len),
+        (Idx >= 0, Idx < Len ->
+            nth0(Idx, Msgs, Msg),
+            get_dict(content, Msg, Content),
+            format("Replaying message ~w: ~w~n", [Idx, Content]),
+            process_input(Content, Backend)
+        ;
+            format("Invalid index. Messages: 0-~w~n", [Len])
+        )
+    ).
 handle_action(not_a_command, _) :- write("Unknown command."), nl.
 handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).
 handle_action(call_handler(Handler, _Args), _) :-
@@ -219,3 +317,24 @@ show_messages([Msg|Rest], Start, Idx) :-
     ; true),
     NextIdx is Idx + 1,
     show_messages(Rest, Start, NextIdx).
+
+%% Delete messages in index range [Start, End]
+delete_range([], _, _, _, []).
+delete_range([_|Rest], Start, End, Idx, Result) :-
+    Idx >= Start, Idx =< End, !,
+    NextIdx is Idx + 1,
+    delete_range(Rest, Start, End, NextIdx, Result).
+delete_range([H|Rest], Start, End, Idx, [H|Result]) :-
+    NextIdx is Idx + 1,
+    delete_range(Rest, Start, End, NextIdx, Result).
+
+%% Replace content of message at index Idx
+replace_at([], _, _, _, []).
+replace_at([Msg|Rest], Target, NewContent, Idx, [NewMsg|Result]) :-
+    Idx =:= Target, !,
+    put_dict(content, Msg, NewContent, NewMsg),
+    NextIdx is Idx + 1,
+    replace_at(Rest, Target, NewContent, NextIdx, Result).
+replace_at([H|Rest], Target, NewContent, Idx, [H|Result]) :-
+    NextIdx is Idx + 1,
+    replace_at(Rest, Target, NewContent, NextIdx, Result).
