@@ -36,6 +36,8 @@ run_tests :-
     test_streaming_capability,
     test_retry_config,
     test_bindings_summary,
+    test_model_pricing,
+    test_anthropic_backend_detection,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -239,4 +241,44 @@ test_bindings_summary :-
         generate_bindings_summary(prolog, PlSummary),
         atom(PlSummary),
         sub_atom(PlSummary, _, _, _, 'prolog bindings (5)')
+    )).
+
+%% ============================================================================
+%% Test 11: Model Pricing Facts
+%% ============================================================================
+
+test_model_pricing :-
+    format("~nModel pricing:~n"),
+    findall(M, agent_loop_module:model_pricing(M, _, _), Models),
+    length(Models, Count),
+    assert_eq('Model pricing count', Count, 16),
+    assert_true('claude-sonnet pricing exists', (
+        agent_loop_module:model_pricing("claude-sonnet-4-20250514", InP, OutP),
+        InP =:= 3.0, OutP =:= 15.0
+    )),
+    assert_true('llama3 pricing exists', (
+        agent_loop_module:model_pricing("llama3", InP2, OutP2),
+        InP2 =:= 0.0, OutP2 =:= 0.0
+    )).
+
+%% ============================================================================
+%% Test 12: Anthropic Backend Detection
+%% ============================================================================
+
+test_anthropic_backend_detection :-
+    format("~nAnthropic backend detection:~n"),
+    assert_true('claude_api has x-api-key auth', (
+        agent_loop_module:agent_backend(claude_api, Props),
+        member(auth_header(AH0), Props),
+        atom_string(AH0, "x-api-key")
+    )),
+    assert_true('openai_api has Authorization auth', (
+        agent_loop_module:agent_backend(openai_api, OAProps),
+        member(auth_header(AH), OAProps),
+        atom_string(AH, "Authorization")
+    )),
+    assert_true('openrouter_api has Authorization auth', (
+        agent_loop_module:agent_backend(openrouter_api, Props2),
+        member(auth_header(AH2), Props2),
+        atom_string(AH2, "Authorization")
     )).
