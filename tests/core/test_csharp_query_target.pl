@@ -312,7 +312,9 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_seed_cache_eviction_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_eviction_runtime,
         verify_parameterized_reachability_seed_cache_lru_recency_runtime,
+        verify_parameterized_reachability_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime,
+        verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_seed_cache_admission_runtime,
         verify_parameterized_reachability_by_target_seed_cache_admission_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime,
@@ -320,6 +322,8 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_admission_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_admission_runtime,
         verify_transitive_closure_cache_reuse_runtime,
         verify_grouped_transitive_closure_cache_reuse_runtime,
         verify_mutual_recursion_plan,
@@ -3605,6 +3609,33 @@ verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime :
         HotParams,
         HarnessSource).
 
+verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_reach_param_end/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[e, adm, cata]],
+    WarmParams2 = [[b, adm, cata]],
+    TouchParams = [[e, adm, cata]],
+    InsertParams = [[c, adm, cata]],
+    HotParams = [[e, adm, cata]],
+    ColdParams = [[b, adm, cata]],
+    harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosureSeededByTarget',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
+         'CACHE_EVICTIONS:GroupedTransitiveClosureSeededByTarget=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime :-
     csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -3831,6 +3862,33 @@ verify_parameterized_reachability_seed_cache_lru_recency_runtime :-
         HotParams,
         HarnessSource).
 
+verify_parameterized_reachability_by_target_seed_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_end/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[charlie]],
+    WarmParams2 = [[bob]],
+    TouchParams = [[charlie]],
+    InsertParams = [[alice]],
+    HotParams = [[charlie]],
+    ColdParams = [[bob]],
+    harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeededByTarget',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
+         'CACHE_EVICTIONS:TransitiveClosureSeededByTarget=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_reachability_seed_cache_admission_runtime :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -4003,6 +4061,56 @@ verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admissi
          'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
          'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=1',
          'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_admission_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    WarmColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
+    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosureSeeded',
+        8,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
+         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
+         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_admission_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    WarmColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
+    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosureSeededByTarget',
+        8,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=false',
+         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
+         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=0',
+         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=2'],
         HotParams,
         HarnessSource).
 
