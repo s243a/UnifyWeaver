@@ -151,8 +151,9 @@ send_request_raw(cli, Backend, Messages, _Tools, Response) :-
     ; format(atom(ErrMsg), "Backend exited with ~w: ~w", [Status, StdErr]),
         Response = _{content: ErrMsg, tool_calls: []}).
 
-%% Extract and normalize API response to _{content, tool_calls}
+%% Extract and normalize API response to _{content, tool_calls, usage}
 extract_response(Raw, Normalized) :-
+    extract_usage(Raw, Usage),
     (get_dict(choices, Raw, Choices) ->
         %% OpenAI/OpenRouter format
         Choices = [FirstChoice|_],
@@ -162,13 +163,14 @@ extract_response(Raw, Normalized) :-
         (get_dict(tool_calls, Msg, TCs) ->
             maplist(normalize_openai_tc, TCs, ToolCalls)
         ; ToolCalls = []),
-        Normalized = _{content: Content, tool_calls: ToolCalls}
+        Normalized = _{content: Content, tool_calls: ToolCalls, usage: Usage}
     ; get_dict(content, Raw, ContentList), is_list(ContentList) ->
         %% Anthropic format — content is a list of blocks
         extract_anthropic(ContentList, Content, ToolCalls),
-        Normalized = _{content: Content, tool_calls: ToolCalls}
+        Normalized = _{content: Content, tool_calls: ToolCalls, usage: Usage}
     ; %% Already normalized (e.g., CLI backend)
-        Normalized = Raw).
+        (get_dict(content, Raw, _) -> Normalized = Raw.put(usage, Usage)
+        ; Normalized = Raw.put(usage, Usage))).
 
 %% Normalize OpenAI tool call format
 normalize_openai_tc(TC, Normalized) :-
@@ -193,6 +195,20 @@ extract_anthropic(Blocks, Content, ToolCalls) :-
         get_dict(input, B, Input),
         TC = _{id: Id, name: Name, arguments: Input}
     ), ToolCalls).
+
+%% Extract usage/token counts from API response
+extract_usage(Raw, Usage) :-
+    (get_dict(usage, Raw, U) ->
+        (get_dict(prompt_tokens, U, InTok) -> true
+        ; get_dict(input_tokens, U, InTok) -> true
+        ; InTok = 0),
+        (get_dict(completion_tokens, U, OutTok) -> true
+        ; get_dict(output_tokens, U, OutTok) -> true
+        ; OutTok = 0),
+        Usage = _{input_tokens: InTok, output_tokens: OutTok}
+    ;
+        Usage = _{input_tokens: 0, output_tokens: 0}
+    ).
 
 %% streaming_capable(+ResolveType) — which backends support streaming
 streaming_capable(api_local).
@@ -227,7 +243,7 @@ send_request_streaming_raw(api_local, Backend, Messages, _Tools, Response) :-
         ]),
         read_ndjson_stream(In, Content),
         close(In)),
-    Response = _{content: Content, tool_calls: []}.
+    Response = _{content: Content, tool_calls: [], usage: _{input_tokens: 0, output_tokens: 0}}.
 
 %% Read NDJSON stream line by line, printing tokens as they arrive
 read_ndjson_stream(In, Content) :-
@@ -260,8 +276,21 @@ read_ndjson_stream(In, Acc, Content) :-
         )
     ).
 
-%% SSE streaming for API backends
+%% SSE streaming for API backends — dispatches by auth type
 send_request_streaming_raw(api, Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    (member(auth_header("x-api-key"), Spec) ->
+        send_request_streaming_anthropic(Backend, Messages, Tools, Response)
+    ;
+        send_request_streaming_openai(Backend, Messages, Tools, Response)
+    ).
+
+%% OpenRouter delegates to api SSE
+send_request_streaming_raw(openrouter, B, M, T, R) :-
+    send_request_streaming_raw(api, B, M, T, R).
+
+%% OpenAI-format SSE streaming
+send_request_streaming_openai(Backend, Messages, Tools, Response) :-
     get_dict(spec, Backend, Spec),
     member(endpoint(URL), Spec),
     member(model(Model), Spec),
@@ -280,11 +309,128 @@ send_request_streaming_raw(api, Backend, Messages, Tools, Response) :-
         ]),
         read_sse_stream(In, Content, ToolCalls),
         close(In)),
-    Response = _{content: Content, tool_calls: ToolCalls}.
+    Response = _{content: Content, tool_calls: ToolCalls, usage: _{input_tokens: 0, output_tokens: 0}}.
 
-%% OpenRouter delegates to api SSE
-send_request_streaming_raw(openrouter, B, M, T, R) :-
-    send_request_streaming_raw(api, B, M, T, R).
+%% Anthropic-format SSE streaming
+send_request_streaming_anthropic(Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(endpoint(URL), Spec),
+    member(model(Model), Spec),
+    get_dict(options, Backend, Opts),
+    (member(api_key(Key), Opts) -> true ; Key = none),
+    %% Extract system prompt from messages
+    (Messages = [SysMsg|RestMsgs],
+     get_dict(role, SysMsg, "system"),
+     get_dict(content, SysMsg, SysContent) ->
+        System = SysContent, UserMsgs = RestMsgs
+    ;
+        System = "", UserMsgs = Messages),
+    %% Build tool definitions for Anthropic format
+    (Tools \= [] ->
+        maplist([T, AT]>>(
+            get_dict(name, T, TN),
+            get_dict(description, T, TD),
+            AT = _{name: TN, description: TD, input_schema: _{type: "object", properties: _{}}}
+        ), Tools, AnthTools),
+        Body0 = _{model: Model, messages: UserMsgs, tools: AnthTools,
+                   max_tokens: 4096, stream: true}
+    ;
+        Body0 = _{model: Model, messages: UserMsgs,
+                   max_tokens: 4096, stream: true}),
+    (System \= "" -> Body = Body0.put(system, System) ; Body = Body0),
+    setup_call_cleanup(
+        http_open(URL, In, [
+            method(post),
+            request_header('x-api-key'=Key),
+            request_header('anthropic-version'='2023-06-01'),
+            request_header('Content-Type'='application/json'),
+            post(json(Body))
+        ]),
+        read_anthropic_sse_stream(In, Content, ToolCalls, Usage),
+        close(In)),
+    Response = _{content: Content, tool_calls: ToolCalls, usage: Usage}.
+
+%% Anthropic SSE stream parser
+read_anthropic_sse_stream(In, Content, ToolCalls, Usage) :-
+    read_anthropic_sse_stream(In, [], [], 0, 0, [], Content, ToolCalls, Usage).
+
+read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, _CurTool,
+                          Content, ToolCalls, Usage) :-
+    (at_end_of_stream(In) ->
+        reverse(TokAcc, Tokens),
+        atomic_list_concat(Tokens, Content),
+        reverse(TCAcc, ToolCalls),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
+    ;
+        read_line_to_string(In, Line),
+        (Line = end_of_file ->
+            reverse(TokAcc, Tokens),
+            atomic_list_concat(Tokens, Content),
+            reverse(TCAcc, ToolCalls),
+            Usage = _{input_tokens: InToks, output_tokens: OutToks}
+        ; sub_string(Line, 0, 6, _, "data: ") ->
+            sub_string(Line, 6, _, 0, Payload),
+            catch(
+                (open_string(Payload, StrIn),
+                 json_read_dict(StrIn, Evt),
+                 close(StrIn)),
+                _, (Evt = null)),
+            (Evt \= null ->
+                handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks,
+                                       Content, ToolCalls, Usage)
+            ;
+                read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+                                          Content, ToolCalls, Usage)
+            )
+        ;
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+                                      Content, ToolCalls, Usage)
+        )
+    ).
+
+%% Handle individual Anthropic SSE events
+handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks,
+                       Content, ToolCalls, Usage) :-
+    get_dict(type, Evt, Type),
+    (Type = "message_start" ->
+        %% Extract input token count from message.usage
+        (get_dict(message, Evt, Msg),
+         get_dict(usage, Msg, MUsage),
+         get_dict(input_tokens, MUsage, NewInToks) -> true
+        ; NewInToks = InToks),
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, NewInToks, OutToks, [],
+                                  Content, ToolCalls, Usage)
+    ; Type = "content_block_delta" ->
+        get_dict(delta, Evt, Delta),
+        get_dict(type, Delta, DType),
+        (DType = "text_delta" ->
+            get_dict(text, Delta, Token),
+            write(Token), flush_output,
+            read_anthropic_sse_stream(In, [Token|TokAcc], TCAcc, InToks, OutToks, [],
+                                      Content, ToolCalls, Usage)
+        ;
+            %% input_json_delta or other — skip
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+                                      Content, ToolCalls, Usage)
+        )
+    ; Type = "message_delta" ->
+        %% Extract output token count
+        (get_dict(usage, Evt, DUsage),
+         get_dict(output_tokens, DUsage, NewOutToks) -> true
+        ; NewOutToks = OutToks),
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, NewOutToks, [],
+                                  Content, ToolCalls, Usage)
+    ; Type = "message_stop" ->
+        %% Finalize
+        reverse(TokAcc, Tokens),
+        atomic_list_concat(Tokens, Content),
+        reverse(TCAcc, ToolCalls),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
+    ;
+        %% ping, content_block_start, content_block_stop, etc. — skip
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+                                  Content, ToolCalls, Usage)
+    ).
 
 %% SSE stream parser — reads "data: <json>" lines
 read_sse_stream(In, Content, ToolCalls) :-

@@ -158,10 +158,20 @@ handle_response(Backend, Response, Messages, Streamed) :-
     (Streamed = false, get_dict(content, Response, Content), Content \= "" ->
         write(Content), nl
     ; true),
+    %% Track cost if usage data available
+    (get_dict(usage, Response, Usage),
+     get_dict(input_tokens, Usage, InTok),
+     get_dict(output_tokens, Usage, OutTok),
+     (InTok > 0 ; OutTok > 0) ->
+        get_dict(spec, Backend, BSpec),
+        (member(model(Model), BSpec) -> true ; Model = "unknown"),
+        cost_tracker_add(main, Model, InTok, OutTok)
+    ; true),
     (get_dict(tool_calls, Response, ToolCalls), ToolCalls \= [] ->
         handle_tool_calls(Backend, ToolCalls, Messages, Response)
     ;
-        AsstMsg = _{role: "assistant", content: Content},
+        (get_dict(content, Response, Content2) -> true ; Content2 = ""),
+        AsstMsg = _{role: "assistant", content: Content2},
         append(Messages, [AsstMsg], NewMsgs),
         retractall(conversation(_)),
         assert(conversation(NewMsgs))
@@ -188,6 +198,15 @@ handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-
         findall(TS, (tool_spec(TN, TP), member(description(TD), TP),
             TS = _{name: TN, description: TD}), TSList),
         send_request(Backend, Msgs2, TSList, NextResponse),
+        %% Track cost for tool-loop response
+        (get_dict(usage, NextResponse, NUsage),
+         get_dict(input_tokens, NUsage, NInTok),
+         get_dict(output_tokens, NUsage, NOutTok),
+         (NInTok > 0 ; NOutTok > 0) ->
+            get_dict(spec, Backend, BSpec2),
+            (member(model(NModel), BSpec2) -> true ; NModel = "unknown"),
+            cost_tracker_add(main, NModel, NInTok, NOutTok)
+        ; true),
         (get_dict(tool_calls, NextResponse, NextTCs), NextTCs \= [] ->
             NextIter is Iteration + 1,
             handle_tool_calls(Backend, NextTCs, Msgs2, NextResponse, NextIter)
