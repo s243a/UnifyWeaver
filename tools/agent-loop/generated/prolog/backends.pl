@@ -9,6 +9,8 @@
     backend_factory_order/1,
     cli_fallbacks/2,
     create_backend/3,
+    retry_config/3,
+    retry_call/2,
     send_request/4,
     send_request_streaming/4,
     streaming_capable/1
@@ -20,6 +22,8 @@
 :- use_module(library(readutil)).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
+:- use_module(library(random)).
+:- discontiguous send_request_streaming_raw/5.
 
 %% agent_backend(+Name, +Properties)
 agent_backend(coro, [type(cli), class_name('CoroBackend'), command("claude"), args(["--verbose"]), description("Coro-code CLI backend using single-task mode"), context_format(conversation_history), output_parser(coro_parser), supports_streaming(false), module_imports(['json as _json',os,subprocess,re,tempfile]), class_docstring('Coro-code CLI backend using single-task mode.'), display_name('Coro ({self.command})'), helper_fragments([])]).
@@ -56,8 +60,45 @@ create_backend(Name, Options, Backend) :-
     ; format(atom(Err), "Unknown backend: ~w", [Name]),
       throw(error(Err))).
 
-%% Send a request to a backend and normalize the response
+%% retry_config(MaxAttempts, BaseDelay, MaxDelay)
+retry_config(3, 1.0, 30.0).
+
+%% is_retryable(+Error) — errors worth retrying
+is_retryable(error(existence_error(url, _), _)).
+is_retryable(error(socket_error(_), _)).
+is_retryable(error(timeout_error, _)).
+
+%% retry_call(+Goal, +Options) — retry with exponential backoff + jitter
+retry_call(Goal, Options) :-
+    (member(max_attempts(Max), Options) -> true ; retry_config(Max, _, _)),
+    (member(base_delay(Base), Options) -> true ; retry_config(_, Base, _)),
+    (member(max_delay(MaxD), Options) -> true ; retry_config(_, _, MaxD)),
+    retry_call_(Goal, 1, Max, Base, MaxD).
+
+retry_call_(Goal, Attempt, Max, Base, MaxD) :-
+    catch(
+        call(Goal),
+        Error,
+        (   Attempt < Max,
+            is_retryable(Error) ->
+            Delay is min(MaxD, Base * (2 ^ (Attempt - 1))),
+            random(Jitter),
+            ActualDelay is Delay * (0.5 + Jitter),
+            format("[Retry ~w/~w in ~2fs]~n", [Attempt, Max, ActualDelay]),
+            sleep(ActualDelay),
+            NextAttempt is Attempt + 1,
+            retry_call_(Goal, NextAttempt, Max, Base, MaxD)
+        ;   throw(Error)
+        )
+    ).
+
+%% Send a request to a backend (with retry) and normalize the response
 send_request(Backend, Messages, Tools, Response) :-
+    retry_call(
+        send_request_inner(Backend, Messages, Tools, Response),
+        []).
+
+send_request_inner(Backend, Messages, Tools, Response) :-
     get_dict(spec, Backend, Spec),
     member(resolve_type(Type), Spec),
     catch(
@@ -155,6 +196,8 @@ extract_anthropic(Blocks, Content, ToolCalls) :-
 
 %% streaming_capable(+ResolveType) — which backends support streaming
 streaming_capable(api_local).
+streaming_capable(api).
+streaming_capable(openrouter).
 
 %% Send a streaming request (falls back to send_request if unsupported)
 send_request_streaming(Backend, Messages, Tools, Response) :-
@@ -214,5 +257,78 @@ read_ndjson_stream(In, Acc, Content) :-
             ;
                 read_ndjson_stream(In, Acc, Content)
             )
+        )
+    ).
+
+%% SSE streaming for API backends
+send_request_streaming_raw(api, Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(endpoint(URL), Spec),
+    member(model(Model), Spec),
+    get_dict(options, Backend, Opts),
+    (member(api_key(Key), Opts) -> true ; Key = none),
+    (member(auth_header(AuthH), Spec) -> true ; AuthH = "Authorization"),
+    (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),
+    atom_concat(AuthP, Key, AuthVal),
+    Body = json(_{model: Model, messages: Messages, tools: Tools, stream: true}),
+    setup_call_cleanup(
+        http_open(URL, In, [
+            method(post),
+            request_header(AuthH=AuthVal),
+            request_header('Content-Type'='application/json'),
+            post(Body)
+        ]),
+        read_sse_stream(In, Content, ToolCalls),
+        close(In)),
+    Response = _{content: Content, tool_calls: ToolCalls}.
+
+%% OpenRouter delegates to api SSE
+send_request_streaming_raw(openrouter, B, M, T, R) :-
+    send_request_streaming_raw(api, B, M, T, R).
+
+%% SSE stream parser — reads "data: <json>" lines
+read_sse_stream(In, Content, ToolCalls) :-
+    read_sse_stream(In, [], [], Content, ToolCalls).
+
+read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls) :-
+    (at_end_of_stream(In) ->
+        reverse(TokenAcc, Tokens),
+        atomic_list_concat(Tokens, Content),
+        reverse(TCAcc, ToolCalls)
+    ;
+        read_line_to_string(In, Line),
+        (Line = end_of_file ->
+            reverse(TokenAcc, Tokens),
+            atomic_list_concat(Tokens, Content),
+            reverse(TCAcc, ToolCalls)
+        ; sub_string(Line, 0, 6, _, "data: ") ->
+            sub_string(Line, 6, _, 0, Payload),
+            (Payload = "[DONE]" ->
+                reverse(TokenAcc, Tokens),
+                atomic_list_concat(Tokens, Content),
+                reverse(TCAcc, ToolCalls)
+            ;
+                catch(
+                    (open_string(Payload, StrIn),
+                     json_read_dict(StrIn, Chunk),
+                     close(StrIn)),
+                    _, (Chunk = null)),
+                (Chunk \= null,
+                 get_dict(choices, Chunk, Choices),
+                 Choices = [Choice|_],
+                 get_dict(delta, Choice, Delta) ->
+                    (get_dict(content, Delta, Token), Token \= null ->
+                        write(Token), flush_output,
+                        read_sse_stream(In, [Token|TokenAcc], TCAcc, Content, ToolCalls)
+                    ;
+                        read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls)
+                    )
+                ;
+                    read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls)
+                )
+            )
+        ;
+            %% Skip non-data lines (empty lines, comments, event types)
+            read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls)
         )
     ).
