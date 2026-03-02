@@ -318,12 +318,14 @@ test_csharp_query_target :-
         verify_parameterized_reachability_seed_cache_admission_runtime,
         verify_parameterized_reachability_by_target_seed_cache_admission_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_admission_normalized_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_admission_selectivity_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_selectivity_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_normalized_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_admission_runtime,
         verify_transitive_closure_cache_reuse_runtime,
@@ -3966,6 +3968,32 @@ verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime :-
         HotParams,
         HarnessSource).
 
+verify_parameterized_reachability_pairs_single_probe_cache_admission_normalized_runtime :-
+    csharp_query_target:build_query_plan(test_admission_reach_pair/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, e], [a, e]],
+    WarmColdParams = [[b, e], [b, e]],
+    HotParams = [[a, e], [a, e]],
+    ColdParams = [[b, e], [b, e]],
+    harness_source_with_pair_cache_admission_normalized_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosurePairsSingleProbe',
+        2,
+        2,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=false',
+         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
+         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=0',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=2'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_runtime :-
     csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -4115,6 +4143,32 @@ verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admissi
          'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
          'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=1',
          'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_normalized_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_reach_pair/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, e, adm, cata], [a, e, adm, cata]],
+    WarmColdParams = [[b, e, adm, cata], [b, e, adm, cata]],
+    HotParams = [[a, e, adm, cata], [a, e, adm, cata]],
+    ColdParams = [[b, e, adm, cata], [b, e, adm, cata]],
+    harness_source_with_pair_cache_admission_normalized_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        2,
+        2,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=false',
+         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
+         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=0',
+         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=2'],
         HotParams,
         HarnessSource).
 
@@ -5918,6 +5972,59 @@ Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
 Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
     ', [ModuleClass, PairLimit, MinCost, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+
+harness_source_with_pair_cache_admission_normalized_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        MinCostPerProbe,
+        Source) :-
+    csharp_params_literal(WarmHotParams, WarmHotLiteral),
+    csharp_params_literal(WarmColdParams, WarmColdLiteral),
+    csharp_params_literal(HotParams, HotLiteral),
+    csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(
+        ReuseCaches: true,
+        PairProbeCacheMaxEntries: ~w,
+        PairProbeCacheAdmissionMinCost: ~w,
+        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+var warmHotParameters = ~w;
+var warmHotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmHotParameters, warmHotTrace).ToList();
+var warmColdParameters = ~w;
+var warmColdTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmColdParameters, warmColdTrace).ToList();
+var hotParameters = ~w;
+var hotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
+var coldParameters = ~w;
+var coldTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
+
+var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var admissions = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions)
+    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions);
+var admissionSkips = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips)
+    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips);
+Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
+Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
+Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
+Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
+    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
     (   Params == []

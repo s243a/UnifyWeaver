@@ -328,6 +328,7 @@ namespace UnifyWeaver.QueryRuntime
         int PairProbeCacheMaxEntries = 4096,
         int SeededCacheMaxEntries = 4096,
         int PairProbeCacheAdmissionMinCost = 0,
+        double PairProbeCacheAdmissionMinCostPerProbe = 0,
         int SeededCacheAdmissionMinRows = 0,
         double SeededCacheAdmissionMinRowsPerSeed = 0);
 
@@ -1032,6 +1033,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _pairProbeCacheMaxEntries;
         private readonly int _seededCacheMaxEntries;
         private readonly int _pairProbeCacheAdmissionMinCost;
+        private readonly double _pairProbeCacheAdmissionMinCostPerProbe;
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
 
@@ -1043,6 +1045,7 @@ namespace UnifyWeaver.QueryRuntime
             _pairProbeCacheMaxEntries = Math.Max(0, options.PairProbeCacheMaxEntries);
             _seededCacheMaxEntries = Math.Max(0, options.SeededCacheMaxEntries);
             _pairProbeCacheAdmissionMinCost = Math.Max(0, options.PairProbeCacheAdmissionMinCost);
+            _pairProbeCacheAdmissionMinCostPerProbe = Math.Max(0d, options.PairProbeCacheAdmissionMinCostPerProbe);
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
         }
@@ -7159,6 +7162,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (IsSingleConcreteGroupedPairRequest(targetsBySource, sourcesByTarget))
                 {
+                    var probeCount = Math.Max(1, parameters.Count);
                     var seedEntry = targetsBySource.First();
                     var sourceKey = seedEntry.Key.Row;
                     var target = seedEntry.Value.First();
@@ -7231,7 +7235,11 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
                         }
 
-                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(forwardCost, backwardCost);
+                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
+                            forwardCost,
+                            backwardCost,
+                            probeCount,
+                            useCostPerProbeGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             pairStore,
                             new RowWrapper(groupedPairKey),
@@ -9303,8 +9311,27 @@ namespace UnifyWeaver.QueryRuntime
             return rowsPerSeed >= _seededCacheAdmissionMinRowsPerSeed;
         }
 
-        private bool ShouldAdmitPairProbeCacheEntry(int forwardCost, int backwardCost) =>
-            Math.Min(Math.Max(0, forwardCost), Math.Max(0, backwardCost)) >= _pairProbeCacheAdmissionMinCost;
+        private bool ShouldAdmitPairProbeCacheEntry(
+            int forwardCost,
+            int backwardCost,
+            int probeCount = 1,
+            bool useCostPerProbeGate = false)
+        {
+            var minCost = Math.Min(Math.Max(0, forwardCost), Math.Max(0, backwardCost));
+            if (minCost < _pairProbeCacheAdmissionMinCost)
+            {
+                return false;
+            }
+
+            if (!useCostPerProbeGate || _pairProbeCacheAdmissionMinCostPerProbe <= 0d)
+            {
+                return true;
+            }
+
+            var normalizedProbeCount = Math.Max(1, probeCount);
+            var costPerProbe = (double)minCost / normalizedProbeCount;
+            return costPerProbe >= _pairProbeCacheAdmissionMinCostPerProbe;
+        }
 
         private static bool TryGetParameterValue(
             object[] tuple,
@@ -9973,6 +10000,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (IsSingleConcretePairRequest(bySource, byTarget))
                 {
+                    var probeCount = Math.Max(1, parameters.Count);
                     var source = bySource.First().Key;
                     var target = bySource.First().Value.First();
                     var edges = GetFactsList(closure.EdgeRelation, context);
@@ -10024,7 +10052,11 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
                         }
 
-                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(forwardCost, backwardCost);
+                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
+                            forwardCost,
+                            backwardCost,
+                            probeCount,
+                            useCostPerProbeGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             pairStore,
                             new RowWrapper(pairProbeKey),
