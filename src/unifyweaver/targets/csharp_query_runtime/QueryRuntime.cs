@@ -328,7 +328,8 @@ namespace UnifyWeaver.QueryRuntime
         int PairProbeCacheMaxEntries = 4096,
         int SeededCacheMaxEntries = 4096,
         int PairProbeCacheAdmissionMinCost = 0,
-        int SeededCacheAdmissionMinRows = 0);
+        int SeededCacheAdmissionMinRows = 0,
+        double SeededCacheAdmissionMinRowsPerSeed = 0);
 
     public sealed record QueryNodeTrace(
         int Id,
@@ -1032,6 +1033,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _seededCacheMaxEntries;
         private readonly int _pairProbeCacheAdmissionMinCost;
         private readonly int _seededCacheAdmissionMinRows;
+        private readonly double _seededCacheAdmissionMinRowsPerSeed;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
@@ -1042,6 +1044,7 @@ namespace UnifyWeaver.QueryRuntime
             _seededCacheMaxEntries = Math.Max(0, options.SeededCacheMaxEntries);
             _pairProbeCacheAdmissionMinCost = Math.Max(0, options.PairProbeCacheAdmissionMinCost);
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
+            _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
         }
 
         public IEnumerable<object[]> Execute(
@@ -7695,7 +7698,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            memoizedRows.Count,
+                            orderedSeeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
@@ -7796,7 +7802,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            singleRows.Count,
+                            orderedSeeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
@@ -7865,7 +7874,10 @@ namespace UnifyWeaver.QueryRuntime
                         context.GroupedTransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
-                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(
+                        totalRows.Count,
+                        orderedSeeds.Count,
+                        useRowsPerSeedGate: true);
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
@@ -8104,7 +8116,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            memoizedRows.Count,
+                            orderedSeeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
@@ -8208,7 +8223,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            singleRows.Count,
+                            orderedSeeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
@@ -8277,7 +8295,10 @@ namespace UnifyWeaver.QueryRuntime
                         context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
-                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(
+                        totalRows.Count,
+                        orderedSeeds.Count,
+                        useRowsPerSeedGate: true);
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
@@ -9262,8 +9283,25 @@ namespace UnifyWeaver.QueryRuntime
                 traceKey);
         }
 
-        private bool ShouldAdmitSeededCacheRows(int rowCount) =>
-            rowCount >= _seededCacheAdmissionMinRows;
+        private bool ShouldAdmitSeededCacheRows(
+            int rowCount,
+            int seedCount = 1,
+            bool useRowsPerSeedGate = false)
+        {
+            if (rowCount < _seededCacheAdmissionMinRows)
+            {
+                return false;
+            }
+
+            if (!useRowsPerSeedGate || _seededCacheAdmissionMinRowsPerSeed <= 0d)
+            {
+                return true;
+            }
+
+            var normalizedSeedCount = Math.Max(1, seedCount);
+            var rowsPerSeed = (double)rowCount / normalizedSeedCount;
+            return rowsPerSeed >= _seededCacheAdmissionMinRowsPerSeed;
+        }
 
         private bool ShouldAdmitPairProbeCacheEntry(int forwardCost, int backwardCost) =>
             Math.Min(Math.Max(0, forwardCost), Math.Max(0, backwardCost)) >= _pairProbeCacheAdmissionMinCost;
@@ -9379,7 +9417,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            memoizedRows.Count,
+                            seeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
@@ -9466,7 +9507,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            singleRows.Count,
+                            seeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
@@ -9555,7 +9599,10 @@ namespace UnifyWeaver.QueryRuntime
                         context.TransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
-                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(
+                        totalRows.Count,
+                        seeds.Count,
+                        useRowsPerSeedGate: true);
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
@@ -9664,7 +9711,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(memoizedRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            memoizedRows.Count,
+                            seeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
@@ -9751,7 +9801,10 @@ namespace UnifyWeaver.QueryRuntime
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
-                        var admitSeededCache = ShouldAdmitSeededCacheRows(singleRows.Count);
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            singleRows.Count,
+                            seeds.Count,
+                            useRowsPerSeedGate: true);
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
@@ -9840,7 +9893,10 @@ namespace UnifyWeaver.QueryRuntime
                         context.TransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
-                    var admitSeededCache = ShouldAdmitSeededCacheRows(totalRows.Count);
+                    var admitSeededCache = ShouldAdmitSeededCacheRows(
+                        totalRows.Count,
+                        seeds.Count,
+                        useRowsPerSeedGate: true);
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
