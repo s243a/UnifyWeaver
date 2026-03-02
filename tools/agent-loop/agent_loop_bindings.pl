@@ -10,7 +10,9 @@
 
 :- module(agent_loop_bindings, [
     init_agent_loop_bindings/0,
-    agent_loop_binding_summary/0
+    agent_loop_binding_summary/0,
+    compile_binding_code/3,
+    generate_bindings_summary/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/binding_registry', [
@@ -127,6 +129,62 @@ init_agent_loop_bindings :-
     register_agent_loop_effects,
     register_python_bindings,
     register_prolog_bindings.
+
+%% ============================================================================
+%% Binding Consumers — Code Generation from Bindings
+%% ============================================================================
+
+%% compile_binding_code(+Target, +Pred, -Code)
+%% Generate a target-language code snippet for a binding
+compile_binding_code(Target, Pred, Code) :-
+    binding(Target, Pred, TargetName, Inputs, Outputs, Options),
+    format_binding_code(Target, Pred, TargetName, Inputs, Outputs, Options, Code).
+
+%% Python code generation
+format_binding_code(python, _Pred, TargetName, Inputs, Outputs, Options, Code) :-
+    (member(pattern(dict_lookup), Options) ->
+        %% Dict lookup pattern: result = DICT[key]
+        Inputs = [InputName-_|_],
+        Outputs = [OutputName-_|_],
+        format(atom(Code), '~w = ~w  # ~w -> ~w', [OutputName, TargetName, InputName, OutputName])
+    ; member(import(Mod), Options) ->
+        %% Imported function call
+        maplist([N-_,N]>>true, Inputs, INames),
+        atomic_list_concat(INames, ', ', ArgStr),
+        Outputs = [OutputName-_|_],
+        format(atom(Code), 'from ~w import ~w~n~w = ~w(~w)', [Mod, TargetName, OutputName, TargetName, ArgStr])
+    ;
+        %% Default function call
+        maplist([N-_,N]>>true, Inputs, INames),
+        atomic_list_concat(INames, ', ', ArgStr),
+        Outputs = [OutputName-_|_],
+        format(atom(Code), '~w = ~w(~w)', [OutputName, TargetName, ArgStr])
+    ).
+
+%% Prolog code generation
+format_binding_code(prolog, _Pred, TargetName, Inputs, Outputs, _Options, Code) :-
+    maplist([N-_,N]>>true, Inputs, INames),
+    maplist([N-_,N]>>true, Outputs, ONames),
+    append(INames, ONames, AllArgs),
+    atomic_list_concat(AllArgs, ', ', ArgStr),
+    format(atom(Code), '~w(~w)', [TargetName, ArgStr]).
+
+%% generate_bindings_summary(+Target, -Summary)
+%% Generate a formatted summary of all bindings for a target
+generate_bindings_summary(Target, Summary) :-
+    bindings_for_target(Target, Bindings),
+    length(Bindings, Count),
+    format(atom(Header), '## ~w bindings (~w)~n', [Target, Count]),
+    findall(Line, (
+        member(binding(Target, Pred, TName, Inputs, Outputs, Opts), Bindings),
+        maplist([N-T,Pair]>>(format(atom(Pair), '~w:~w', [N, T])), Inputs, IPairs),
+        maplist([N-T,Pair]>>(format(atom(Pair), '~w:~w', [N, T])), Outputs, OPairs),
+        atomic_list_concat(IPairs, ', ', IStr),
+        atomic_list_concat(OPairs, ', ', OStr),
+        (member(pure, Opts) -> Eff = pure ; Eff = effectful),
+        format(atom(Line), '  ~w -> ~w(~w) => (~w) [~w]', [Pred, TName, IStr, OStr, Eff])
+    ), Lines),
+    atomic_list_concat([Header|Lines], '\n', Summary).
 
 %% ============================================================================
 %% Summary / Diagnostic

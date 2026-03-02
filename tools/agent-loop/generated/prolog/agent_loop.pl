@@ -23,10 +23,14 @@
 :- dynamic current_backend/1.
 :- dynamic current_format/1.
 :- dynamic streaming/1.
+:- dynamic context_max_tokens/1.
+:- dynamic context_max_messages/1.
 conversation([]).
 max_iterations(0).
 current_format(plain).
 streaming(false).
+context_max_tokens(100000).
+context_max_messages(50).
 sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).
 
 %% Entry point with default options
@@ -54,11 +58,59 @@ repl_loop :-
     current_backend(Backend),
     write("> "),
     flush_output,
-    read_line_to_string(user_input, Input),
-    (Input = end_of_file -> write("Goodbye."), nl
+    read_input_smart(Input),
+    (Input = "/exit" -> write("Goodbye."), nl
     ; Input = "" -> repl_loop
     ; process_input(Input, Backend) -> repl_loop
     ; repl_loop).
+
+%% Smart input reader with multi-line support
+read_input_smart(Input) :-
+    read_line_to_string(user_input, Line),
+    (Line = end_of_file -> Input = "/exit"
+    ; is_multiline_trigger(Line) ->
+        get_multiline_delimiter(Line, Delim),
+        read_multiline(Delim, [Line], Input)
+    ; atom_string(Input, Line)
+    ).
+
+is_multiline_trigger(Line) :-
+    (sub_string(Line, 0, 3, _, "```")
+    ; sub_string(Line, 0, 3, _, "<<<")
+    ; string_concat(_, "\\", Line)
+    ).
+
+get_multiline_delimiter(Line, Delim) :-
+    (sub_string(Line, 0, 3, _, "```") -> Delim = "```"
+    ; sub_string(Line, 0, 3, _, "<<<") -> Delim = "<<<"
+    ; Delim = continuation
+    ).
+
+read_multiline(continuation, Acc, Input) :-
+    last(Acc, LastLine),
+    (string_concat(_, "\\", LastLine) ->
+        read_line_to_string(user_input, Next),
+        (Next = end_of_file ->
+            atomic_list_concat(Acc, "\n", Input)
+        ;
+            append(Acc, [Next], Acc2),
+            read_multiline(continuation, Acc2, Input)
+        )
+    ;
+        atomic_list_concat(Acc, "\n", Input)
+    ).
+read_multiline(Delim, Acc, Input) :-
+    Delim \= continuation,
+    read_line_to_string(user_input, Next),
+    (Next = end_of_file ->
+        atomic_list_concat(Acc, "\n", Input)
+    ; Next = Delim ->
+        append(Acc, [Next], AllLines),
+        atomic_list_concat(AllLines, "\n", Input)
+    ;
+        append(Acc, [Next], Acc2),
+        read_multiline(Delim, Acc2, Input)
+    ).
 
 %% Process user input: slash command or LLM request
 process_input(Input, Backend) :-
@@ -79,7 +131,8 @@ process_input(Input, Backend) :-
         %% LLM request
         conversation(History),
         UserMsg = _{role: "user", content: Input},
-        append(History, [UserMsg], Messages),
+        append(History, [UserMsg], Messages0),
+        trim_context(Messages0, Messages),
         %% Build tool specs
         findall(ToolSpec, (
             tool_spec(TName, TProps),
@@ -540,3 +593,32 @@ search_messages(SessId, [Msg|Rest], Query, Acc, Found) :-
         Acc1 is Acc + 1
     ; Acc1 = Acc),
     search_messages(SessId, Rest, Query, Acc1, Found).
+
+%% Context sliding — trim messages by count and estimated tokens
+trim_context(Messages, Trimmed) :-
+    context_max_messages(MaxMsgs),
+    length(Messages, Len),
+    (Len > MaxMsgs ->
+        Drop is Len - MaxMsgs,
+        length(Prefix, Drop),
+        append(Prefix, Trimmed0, Messages)
+    ; Trimmed0 = Messages),
+    context_max_tokens(MaxTokens),
+    trim_by_tokens(Trimmed0, MaxTokens, Trimmed).
+
+trim_by_tokens(Msgs, MaxTokens, Trimmed) :-
+    estimate_tokens(Msgs, Total),
+    (Total > MaxTokens ->
+        Msgs = [_|Rest],
+        trim_by_tokens(Rest, MaxTokens, Trimmed)
+    ; Trimmed = Msgs).
+
+estimate_tokens(Msgs, Total) :-
+    foldl(msg_tokens, Msgs, 0, Total).
+
+msg_tokens(Msg, Acc, Total) :-
+    (get_dict(content, Msg, Content) ->
+        atom_length(Content, Len),
+        Tokens is Len // 4
+    ; Tokens = 0),
+    Total is Acc + Tokens.
