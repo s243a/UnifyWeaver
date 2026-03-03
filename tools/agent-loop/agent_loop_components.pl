@@ -52,14 +52,52 @@ agent_tool_type:validate_config(Config) :-
 agent_tool_type:init_component(_Name, _Config).
 
 agent_tool_type:compile_component(Name, Config, Options, Code) :-
-    member(handler(H), Config),
     (member(target(prolog), Options) ->
-        format(atom(Code), "tool_handler(~q, ~q).", [Name, H])
+        (member(fact_type(FT), Options) ->
+            compile_tool_fact(FT, Name, Config, Code)
+        ;
+            compile_tool_all_facts(Name, Config, Code)
+        )
     ; member(target(python), Options) ->
-        format(atom(Code), "    '~w': ~w,", [Name, H])
+        member(handler(H), Config),
+        (member(indent(N), Options) -> true ; N = 4),
+        (member(self_prefix(true), Options) ->
+            format(atom(HStr), "self.~w", [H])
+        ;   atom_string(H, HStr)),
+        length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
+        format(atom(Code), "~w'~w': ~w,", [Indent, Name, HStr])
     ;
+        member(handler(H), Config),
         format(atom(Code), "tool_handler(~q, ~q).", [Name, H])
     ).
+
+%% compile_tool_fact(+FactType, +Name, +Config, -Code)
+%% Generate a single Prolog fact line for a tool component.
+compile_tool_fact(tool_spec, Name, Config, Code) :-
+    member(tool_spec_props(Props), Config),
+    Props \= [],
+    with_output_to(atom(Code), (
+        format('tool_spec(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(current_output, Props),
+        write(').')
+    )).
+
+compile_tool_fact(tool_handler, Name, Config, Code) :-
+    member(handler(H), Config),
+    format(atom(Code), "tool_handler(~q, ~q).", [Name, H]).
+
+compile_tool_fact(destructive_tool, Name, Config, Code) :-
+    member(destructive(true), Config),
+    format(atom(Code), "destructive_tool(~q).", [Name]).
+
+%% compile_tool_all_facts(+Name, +Config, -Code)
+%% Generate all Prolog fact lines for a tool, joined with newlines.
+compile_tool_all_facts(Name, Config, Code) :-
+    findall(Fact, (
+        member(FT, [tool_spec, tool_handler, destructive_tool]),
+        compile_tool_fact(FT, Name, Config, Fact)
+    ), Facts),
+    atomic_list_concat(Facts, '\n', Code).
 
 %% --- Slash command type ---
 
@@ -151,12 +189,13 @@ register_tool_components :-
     forall(agent_loop_module:tool_handler(Name, Handler), (
         (agent_loop_module:tool_spec(Name, Props) ->
             (member(description(Desc), Props) -> true ; Desc = "")
-        ; Desc = ""),
+        ; Props = [], Desc = ""),
         (agent_loop_module:destructive_tool(Name) -> Destr = true ; Destr = false),
         declare_component(agent_tools, Name, tool_handler, [
             handler(Handler),
             description(Desc),
             destructive(Destr),
+            tool_spec_props(Props),
             initialization(eager)
         ])
     )).
@@ -198,30 +237,30 @@ register_agent_loop_components :-
 %% emit_tool_facts(+Stream, +Options)
 %% Emit tool-related Prolog facts via the component registry.
 emit_tool_facts(S, _Options) :-
-    %% tool_spec via component registry
+    %% tool_spec via compile_component
     write(S, '%% tool_spec(+ToolName, +Properties)\n'),
-    forall(component(agent_tools, Name, tool_handler, _Config), (
-        agent_loop_module:tool_spec(Name, Props),
-        format(S, 'tool_spec(~q, ', [Name]),
-        agent_loop_module:write_prolog_term(S, Props),
-        write(S, ').\n')
+    forall(component(agent_tools, Name, tool_handler, _), (
+        (compile_component(agent_tools, Name, [target(prolog), fact_type(tool_spec)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
     )),
     write(S, '\n'),
-    %% tool_handler via component registry
+    %% tool_handler via compile_component
     write(S, '%% tool_handler(+ToolName, +HandlerPredicate)\n'),
-    forall(component(agent_tools, Name, tool_handler, Config), (
-        member(handler(Handler), Config),
-        format(S, 'tool_handler(~q, ~q).~n', [Name, Handler])
+    forall(component(agent_tools, Name, tool_handler, _), (
+        compile_component(agent_tools, Name, [target(prolog), fact_type(tool_handler)], Code),
+        write(S, Code), nl(S)
     )),
     write(S, '\n'),
-    %% destructive_tool via component registry
+    %% destructive_tool via compile_component
     write(S, '%% destructive_tool(+ToolName)\n'),
-    forall((component(agent_tools, Name, tool_handler, Config),
-            member(destructive(true), Config)), (
-        format(S, 'destructive_tool(~q).~n', [Name])
+    forall((component(agent_tools, Name, tool_handler, Cfg),
+            member(destructive(true), Cfg)), (
+        compile_component(agent_tools, Name, [target(prolog), fact_type(destructive_tool)], Code),
+        write(S, Code), nl(S)
     )),
     write(S, '\n'),
-    %% tool_description — different shape, stays as raw fact iteration
+    %% tool_description — stays as raw fact iteration (cross-cutting shape)
     write(S, '%% tool_description(+Backend, +ToolName, +Verb, +ParamKey, +DisplayMode)\n'),
     forall(agent_loop_module:tool_description(Backend, TN, Verb, PK, DM), (
         format(S, 'tool_description(~q, ~q, ~q, ~q, ', [Backend, TN, Verb, PK]),

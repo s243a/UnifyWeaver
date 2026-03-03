@@ -9867,13 +9867,17 @@ generate_describe_fallback(S, _) :-
 %% --- generate_tool_dispatch/1: emit self.tools dict + self.destructive_tools set ---
 
 generate_tool_dispatch(S) :-
+    agent_loop_components:register_agent_loop_components,
     write(S, '\n        self.tools = {\n'),
-    forall(tool_handler(TN, MN), (
-        format(S, '            \'~w\': self.~w,~n', [TN, MN])
+    forall(component(agent_tools, TN, tool_handler, _), (
+        compile_component(agent_tools, TN,
+            [target(python), self_prefix(true), indent(12)], Code),
+        write(S, Code), nl(S)
     )),
     write(S, '        }\n'),
     write(S, '\n        self.destructive_tools = {'),
-    findall(DT, destructive_tool(DT), DTs),
+    findall(DT, (component(agent_tools, DT, tool_handler, Cfg),
+                 member(destructive(true), Cfg)), DTs),
     write_set_elements(S, DTs),
     write(S, '}\n').
 
