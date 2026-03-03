@@ -11,6 +11,7 @@
 :- module(agent_loop_components, [
     register_agent_loop_components/0,
     agent_loop_component_summary/0,
+    emit_predicate_summary/0,
     emit_tool_facts/2,
     emit_command_facts/2,
     emit_backend_facts/2,
@@ -556,3 +557,22 @@ agent_loop_component_summary :-
     format("  Backends: ~w ~w~n", [NB, Backends]),
     format("  Security: ~w ~w~n", [NS, Sec]),
     format("  Costs:    ~w~n", [NCo]).
+
+%% emit_predicate_summary/0
+%% Documents all generator-to-emit-path mappings.
+emit_predicate_summary :-
+    format("~n=== Generator-to-Emit-Path Summary ===~n~n"),
+    format("Generators using component/emit paths:~n"),
+    format("  costs.py          -> emit_cost_facts/2 [target(python)]~n"),
+    format("  tools.py          -> emit_security_facts/2 [blocked_* fact_types]~n"),
+    format("  tools.py          -> generate_tool_dispatch/1 (component iteration)~n"),
+    format("  backends/__init__ -> emit_backend_init_imports/2 + emit_backend_init_optional/2~n"),
+    format("  security/profiles -> component(agent_security, ...) iteration~n"),
+    format("  Prolog generators -> emit_tool/command/backend/security/cost_facts/2~n"),
+    format("~nGenerators using raw fact iteration (by design):~n"),
+    format("  aliases.py        -> command_alias/2 (structural ordering with comments)~n"),
+    format("  config.py         -> agent_config_field/4, default_agent_preset/3~n"),
+    format("  context.py        -> context_enum/3, message_field/3~n"),
+    format("  agent_loop.py     -> audit_profile_level/2, cli_override/3~n"),
+    format("  backends/<name>   -> agent_backend/2 + py_fragment/2~n"),
+    format("~n").

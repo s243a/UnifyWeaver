@@ -3072,7 +3072,7 @@ generate_security_profiles :-
     write(S, 'def get_builtin_profiles() -> dict[str, SecurityProfile]:\n'),
     write(S, '    """Return all built-in security profiles."""\n'),
     write(S, '    return {\n'),
-    forall(security_profile(Name, Props), (
+    forall(component(agent_security, Name, security_profile, Props), (
         generate_profile_entry(S, Name, Props)
     )),
     write(S, '    }\n\n\n'),

@@ -54,6 +54,7 @@ run_tests :-
     test_cost_python_compile,
     test_security_blocked_py,
     test_backend_init_imports,
+    test_python_integration,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -678,4 +679,15 @@ test_backend_init_imports :-
             agent_loop_components:emit_backend_init_optional(IS2, [])
         )),
         sub_atom(Output2, _, _, _, 'try:')
+    )).
+
+%% ============================================================================
+%% Test 29: Python Integration Tests via pytest
+%% ============================================================================
+
+test_python_integration :-
+    format("~nPython integration tests:~n"),
+    assert_true('Python integration tests pass', (
+        shell('cd generated/python && python3 -m pytest ../../test_integration.py -q --tb=short 2>&1', ExitCode),
+        ExitCode =:= 0
     )).
