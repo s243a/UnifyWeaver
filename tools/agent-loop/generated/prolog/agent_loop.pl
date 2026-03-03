@@ -156,7 +156,8 @@ process_input(Input, Backend) :-
         findall(ToolSpec, (
             tool_spec(TName, TProps),
             member(description(TDesc), TProps),
-            ToolSpec = _{name: TName, description: TDesc}
+            build_tool_input_schema(TName, TSchema),
+            ToolSpec = _{name: TName, description: TDesc, input_schema: TSchema}
         ), ToolSpecs),
         %% Check if streaming is enabled and backend supports it
         get_dict(spec, Backend, BSpec),
@@ -221,7 +222,8 @@ handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-
         execute_tool_calls(Backend, ToolCalls, ToolResults),
         append(Msgs1, ToolResults, Msgs2),
         findall(TS, (tool_spec(TN, TP), member(description(TD), TP),
-            TS = _{name: TN, description: TD}), TSList),
+            build_tool_input_schema(TN, TSch),
+            TS = _{name: TN, description: TD, input_schema: TSch}), TSList),
         send_request(Backend, Msgs2, TSList, NextResponse),
         %% Track cost for tool-loop response
         (get_dict(usage, NextResponse, NUsage),
@@ -347,7 +349,7 @@ handle_action(call_handler('_handle_tokens_command', _), _) :-
     foldl([M,A,T]>>(get_dict(content,M,C) -> atom_length(C,L), T is A+L ; T=A),
           Msgs, 0, TotalChars),
     Tokens is round(TotalChars / CPT),
-    context_limit(Limit),
+    context_max_tokens(Limit),
     format("Context: ~w tokens (est.) / ~w limit (~w messages, ~1f chars/token)~n",
            [Tokens, Limit, NMsgs, CPT]).
 handle_action(call_handler('_handle_aliases_command', _), _) :-
@@ -677,16 +679,26 @@ update_token_calibration(CharCount, TokenCount) :-
     ; true).
 
 %% Context sliding — trim messages by count and estimated tokens
+%% Preserves leading system message if present
 trim_context(Messages, Trimmed) :-
+    (Messages = [SysMsg|Rest], get_dict(role, SysMsg, "system") ->
+        HasSys = true, Body = Rest
+    ;   HasSys = false, Body = Messages),
     context_max_messages(MaxMsgs),
-    length(Messages, Len),
-    (Len > MaxMsgs ->
-        Drop is Len - MaxMsgs,
+    (HasSys = true -> EffMax is MaxMsgs - 1 ; EffMax = MaxMsgs),
+    length(Body, Len),
+    (Len > EffMax ->
+        Drop is Len - EffMax,
         length(Prefix, Drop),
-        append(Prefix, Trimmed0, Messages)
-    ; Trimmed0 = Messages),
+        append(Prefix, Kept, Body)
+    ;   Kept = Body),
     context_max_tokens(MaxTokens),
-    trim_by_tokens(Trimmed0, MaxTokens, Trimmed).
+    (HasSys = true ->
+        msg_tokens(SysMsg, 0, SysTok),
+        Budget is MaxTokens - SysTok,
+        trim_by_tokens(Kept, Budget, TrimmedBody),
+        Trimmed = [SysMsg|TrimmedBody]
+    ;   trim_by_tokens(Kept, MaxTokens, Trimmed)).
 
 trim_by_tokens(Msgs, MaxTokens, Trimmed) :-
     estimate_tokens(Msgs, Total),

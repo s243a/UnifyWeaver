@@ -40,6 +40,8 @@ run_tests :-
     test_anthropic_backend_detection,
     test_prolog_only_commands,
     test_retryable_error_clauses,
+    test_security_enforcement_wiring,
+    test_tool_parameter_schemas,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -324,4 +326,57 @@ test_retryable_error_clauses :-
     assert_true('format_api_error exported', (
         agent_loop_module:agent_backend(claude_api, CProps),
         member(auth_header(_), CProps)  %% proxy: backends section fully emitted
+    )).
+
+%% ============================================================================
+%% Test 15: Security Enforcement Wiring
+%% ============================================================================
+
+test_security_enforcement_wiring :-
+    format("~nSecurity enforcement wiring:~n"),
+    assert_true('bash tool has timeout spec', (
+        agent_loop_module:tool_spec(bash, BashProps),
+        member(timeout(T), BashProps),
+        T =:= 120
+    )),
+    assert_true('cautious profile has path validation', (
+        agent_loop_module:security_profile(cautious, CautProps),
+        member(path_validation(true), CautProps)
+    )),
+    assert_true('cautious profile has command blocklist', (
+        agent_loop_module:security_profile(cautious, CautProps2),
+        member(command_blocklist(true), CautProps2)
+    )),
+    assert_true('all tools have parameters', (
+        forall(agent_loop_module:tool_spec(_, TProps),
+               member(parameters(_), TProps))
+    )).
+
+%% ============================================================================
+%% Test 16: Tool Parameter Schemas
+%% ============================================================================
+
+test_tool_parameter_schemas :-
+    format("~nTool parameter schemas:~n"),
+    assert_true('bash has command param', (
+        agent_loop_module:tool_spec(bash, BProps),
+        member(parameters(BParams), BProps),
+        member(param(command, string, required, _), BParams)
+    )),
+    assert_true('read has path param', (
+        agent_loop_module:tool_spec(read, RProps),
+        member(parameters(RParams), RProps),
+        member(param(path, string, required, _), RParams)
+    )),
+    assert_true('write has path and content params', (
+        agent_loop_module:tool_spec(write, WProps),
+        member(parameters(WParams), WProps),
+        member(param(path, string, required, _), WParams),
+        member(param(content, string, required, _), WParams)
+    )),
+    assert_true('edit has 3 required params', (
+        agent_loop_module:tool_spec(edit, EProps),
+        member(parameters(EParams), EProps),
+        length(EParams, 3),
+        forall(member(param(_, _, Req, _), EParams), Req = required)
     )).
