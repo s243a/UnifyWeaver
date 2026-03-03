@@ -47,6 +47,10 @@ run_tests :-
     test_emit_backend_facts,
     test_compile_component_multi_fact,
     test_python_tool_dispatch_via_components,
+    test_compile_command_component,
+    test_compile_backend_component,
+    test_security_component_registration,
+    test_cost_component_registration,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -524,4 +528,81 @@ test_python_tool_dispatch_via_components :-
             agent_loop_module:generate_tool_dispatch(DS2)
         )),
         sub_atom(DispOutput2, _, _, _, 'self.destructive_tools = {')
+    )).
+
+%% ============================================================================
+%% Test 22: Compile Command Component
+%% ============================================================================
+
+test_compile_command_component :-
+    format("~nCompile command component:~n"),
+    register_agent_loop_components,
+    %% slash_command fact_type produces correct output
+    assert_true('help command via compile_component', (
+        compile_component(agent_commands, help,
+            [target(prolog), fact_type(slash_command)], Code),
+        sub_atom(Code, _, _, _, 'slash_command(help'),
+        sub_atom(Code, _, _, _, 'exact')
+    )),
+    %% iterations command has match_type prefix
+    assert_true('iterations command has prefix match_type', (
+        compile_component(agent_commands, iterations,
+            [target(prolog), fact_type(slash_command)], Code2),
+        sub_atom(Code2, _, _, _, 'prefix')
+    )).
+
+%% ============================================================================
+%% Test 23: Compile Backend Component
+%% ============================================================================
+
+test_compile_backend_component :-
+    format("~nCompile backend component:~n"),
+    register_agent_loop_components,
+    %% backend_factory fact_type
+    assert_true('claude backend via compile_component', (
+        compile_component(agent_backends, claude,
+            [target(prolog), fact_type(backend_factory)], Code),
+        sub_atom(Code, _, _, _, 'backend_factory(claude')
+    )),
+    %% coro backend produces backend_factory
+    assert_true('coro backend via compile_component', (
+        compile_component(agent_backends, coro,
+            [target(prolog), fact_type(backend_factory)], Code2),
+        sub_atom(Code2, _, _, _, 'backend_factory(coro')
+    )).
+
+%% ============================================================================
+%% Test 24: Security Component Registration
+%% ============================================================================
+
+test_security_component_registration :-
+    format("~nSecurity component registration:~n"),
+    register_agent_loop_components,
+    %% 4 security profiles registered
+    assert_true('4 security profiles registered', (
+        findall(N, component(agent_security, N, security_profile, _), Ns),
+        length(Ns, 4)
+    )),
+    %% compile_component produces security_profile(cautious,...
+    assert_true('cautious profile via compile_component', (
+        compile_component(agent_security, cautious, [target(prolog)], Code),
+        sub_atom(Code, _, _, _, 'security_profile(cautious')
+    )).
+
+%% ============================================================================
+%% Test 25: Cost Component Registration
+%% ============================================================================
+
+test_cost_component_registration :-
+    format("~nCost component registration:~n"),
+    register_agent_loop_components,
+    %% 16 model costs registered
+    assert_true('16 model costs registered', (
+        findall(M, component(agent_costs, M, model_pricing, _), Ms),
+        length(Ms, 16)
+    )),
+    %% compile_component produces model_pricing(
+    assert_true('opus cost via compile_component', (
+        compile_component(agent_costs, opus, [target(prolog)], Code),
+        sub_atom(Code, _, _, _, 'model_pricing(')
     )).
