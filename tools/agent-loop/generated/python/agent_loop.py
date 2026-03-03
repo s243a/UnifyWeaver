@@ -28,6 +28,13 @@ from history import HistoryManager
 from multiline import get_input_smart
 from display import DisplayMode, Spinner
 
+# Binding registry metadata:
+#   tool_handler/2 -> TOOL_HANDLERS[name](name) [pure]
+#   slash_command/4 -> SLASH_COMMANDS.get(name)(name) [pure]
+#   backend_factory/2 -> create_backend_from_config(name) [effectful]
+#   audit_profile_level/2 -> audit_levels[profile](profile) [pure]
+#   security_profile/2 -> SecurityConfig.from_profile(name) [effectful]
+#
 
 class AgentLoop:
     """Main agent loop orchestrating all components."""

@@ -27,6 +27,7 @@
 
 :- discontiguous generate_backend_full/3.
 :- use_module(agent_loop_components).
+:- use_module(agent_loop_bindings).
 
 %% =============================================================================
 %% Agent Backend Definitions
@@ -1053,6 +1054,7 @@ generate_all(python) :-
     generate_module(security_proot_sandbox),
     generate_module(agent_loop_main),
     generate_module(readme),
+    agent_loop_components:emit_test_metadata,
     write('Python target done.'), nl.
 
 generate_all(prolog) :-
@@ -3390,24 +3392,10 @@ generate_context :-
     write(S, 'from typing import Literal\n'),
     write(S, 'from enum import Enum\n\n\n'),
     %% Generate enums from context_enum/3 facts
-    forall(context_enum(EnumName, DocStr, Values), (
-        format(S, 'class ~w(Enum):~n', [EnumName]),
-        format(S, '    """~w"""~n', [DocStr]),
-        forall(member(value(PyName, StrVal, Comment), Values), (
-            format(S, '    ~w = "~w"    # ~w~n',
-                   [PyName, StrVal, Comment])
-        )),
-        write(S, '\n\n')
-    )),
+    agent_loop_components:emit_context_enums(S, [target(python)]),
     %% Generate Message dataclass from message_field/3 facts
     write(S, '@dataclass\nclass Message:\n    """A single message in the conversation."""\n'),
-    forall(message_field(Name, Type, Default), (
-        (Default = none ->
-            format(S, '    ~w: ~w~n', [Name, Type])
-        ;
-            format(S, '    ~w: ~w = ~w~n', [Name, Type, Default])
-        )
-    )),
+    agent_loop_components:emit_message_fields(S, [target(python)]),
     write(S, '\n\n'),
     %% Helper functions (imperative — embedded)
     write_py(S, context_helpers),
@@ -3454,18 +3442,7 @@ generate_config :-
     write(S, 'except ImportError:\n    HAS_YAML = False\n\n\n'),
     %% Generate AgentConfig dataclass from agent_config_field/4 facts
     write(S, '@dataclass\nclass AgentConfig:\n    """Configuration for an agent variant."""\n'),
-    forall(agent_config_field(Name, Type, Default, Comment), (
-        (Comment = "" ->
-            CommentStr = ""
-        ;
-            format(atom(CommentStr), '  # ~w', [Comment])
-        ),
-        (Default = none ->
-            format(S, '    ~w: ~w~w~n', [Name, Type, CommentStr])
-        ;
-            format(S, '    ~w: ~w = ~w~w~n', [Name, Type, Default, CommentStr])
-        )
-    )),
+    agent_loop_components:emit_agent_config_fields(S, [target(python)]),
     write(S, '\n\n'),
     %% Config dataclass (simple, inline)
     write(S, '@dataclass\nclass Config:\n    """Root configuration with multiple agent variants."""\n'),
@@ -4161,17 +4138,13 @@ generate_fallback_entries(S, [BT|Rest]) :-
 generate_audit_levels_dict(S) :-
     write(S, '\n    # Create audit logger based on security profile\n'),
     write(S, '    audit_levels = {\n'),
-    forall(audit_profile_level(Profile, Level), (
-        format(S, '        \'~w\': \'~w\',~n', [Profile, Level])
-    )),
+    agent_loop_components:emit_audit_levels(S, [target(python)]),
     write(S, '    }\n').
 
 %% generate_cli_overrides(S) - emit CLI argument overrides from cli_override/3 facts
 generate_cli_overrides(S) :-
     write(S, '    # Override with command line args\n'),
-    forall(cli_override(Arg, Field, Behavior), (
-        emit_single_override(S, Arg, Field, Behavior)
-    )).
+    agent_loop_components:emit_cli_overrides(S, [target(python)]).
 
 emit_single_override(S, backend, _, backend_special) :- !,
     write(S, '    if args.backend:\n'),
@@ -4331,8 +4304,10 @@ generate_agent_loop_main :-
     open(Path, write, S),
     %% 1. Imports (lines 1-30)
     write_py(S, agent_loop_imports),
-    %% Blank line separators (lines 30-31)
-    nl(S), nl(S),
+    %% Binding dispatch documentation
+    nl(S),
+    agent_loop_bindings:emit_binding_dispatch_comment(S, []),
+    nl(S),
     %% 2. Class definition + __init__ + _get_input (lines 32-121)
     write_py(S, agent_loop_class_init),
     %% Blank line separator (line 121)

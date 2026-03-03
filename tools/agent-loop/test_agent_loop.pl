@@ -55,6 +55,11 @@ run_tests :-
     test_security_blocked_py,
     test_backend_init_imports,
     test_python_integration,
+    test_emit_context_enums,
+    test_emit_message_fields,
+    test_emit_agent_config_fields,
+    test_binding_imports,
+    test_prolog_integration,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -689,5 +694,100 @@ test_python_integration :-
     format("~nPython integration tests:~n"),
     assert_true('Python integration tests pass', (
         shell('cd generated/python && python3 -m pytest ../../test_integration.py -q --tb=short 2>&1', ExitCode),
+        ExitCode =:= 0
+    )).
+
+%% ============================================================================
+%% Test 30: Emit Context Enums
+%% ============================================================================
+
+test_emit_context_enums :-
+    format("~nEmit context enums:~n"),
+    assert_true('emit_context_enums has ContextBehavior', (
+        with_output_to(atom(Output), (
+            current_output(CS),
+            agent_loop_components:emit_context_enums(CS, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, 'class ContextBehavior(Enum):')
+    )),
+    assert_true('emit_context_enums has ContextFormat', (
+        with_output_to(atom(Output2), (
+            current_output(CS2),
+            agent_loop_components:emit_context_enums(CS2, [target(python)])
+        )),
+        sub_atom(Output2, _, _, _, 'class ContextFormat(Enum):')
+    )).
+
+%% ============================================================================
+%% Test 31: Emit Message Fields
+%% ============================================================================
+
+test_emit_message_fields :-
+    format("~nEmit message fields:~n"),
+    assert_true('emit_message_fields has role', (
+        with_output_to(atom(Output), (
+            current_output(MS),
+            agent_loop_components:emit_message_fields(MS, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, 'role:')
+    )),
+    assert_true('emit_message_fields has content', (
+        with_output_to(atom(Output2), (
+            current_output(MS2),
+            agent_loop_components:emit_message_fields(MS2, [target(python)])
+        )),
+        sub_atom(Output2, _, _, _, 'content:')
+    )).
+
+%% ============================================================================
+%% Test 32: Emit Agent Config Fields
+%% ============================================================================
+
+test_emit_agent_config_fields :-
+    format("~nEmit agent config fields:~n"),
+    assert_true('emit_agent_config_fields has name', (
+        with_output_to(atom(Output), (
+            current_output(AS),
+            agent_loop_components:emit_agent_config_fields(AS, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, 'name: str')
+    )),
+    assert_true('emit_agent_config_fields has backend', (
+        with_output_to(atom(Output2), (
+            current_output(AS2),
+            agent_loop_components:emit_agent_config_fields(AS2, [target(python)])
+        )),
+        sub_atom(Output2, _, _, _, 'backend: str')
+    )).
+
+%% ============================================================================
+%% Test 33: Binding Import and Dispatch Comment Emission
+%% ============================================================================
+
+test_binding_imports :-
+    format("~nBinding imports:~n"),
+    assert_true('emit_binding_imports produces from lines', (
+        with_output_to(atom(Output), (
+            current_output(BS),
+            agent_loop_bindings:emit_binding_imports(BS, [])
+        )),
+        sub_atom(Output, _, _, _, 'from')
+    )),
+    assert_true('emit_binding_dispatch_comment has metadata', (
+        with_output_to(atom(COutput), (
+            current_output(CS),
+            agent_loop_bindings:emit_binding_dispatch_comment(CS, [])
+        )),
+        sub_atom(COutput, _, _, _, 'Binding registry')
+    )).
+
+%% ============================================================================
+%% Test 34: Prolog Integration Tests
+%% ============================================================================
+
+test_prolog_integration :-
+    format("~nProlog integration tests:~n"),
+    assert_true('Prolog integration tests pass', (
+        shell('swipl -l test_prolog_integration.pl -g "run_prolog_tests, halt" 2>&1', ExitCode),
         ExitCode =:= 0
     )).

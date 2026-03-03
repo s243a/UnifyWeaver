@@ -12,7 +12,9 @@
     init_agent_loop_bindings/0,
     agent_loop_binding_summary/0,
     compile_binding_code/3,
-    generate_bindings_summary/2
+    generate_bindings_summary/2,
+    emit_binding_imports/2,
+    emit_binding_dispatch_comment/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/binding_registry', [
@@ -185,6 +187,41 @@ generate_bindings_summary(Target, Summary) :-
         format(atom(Line), '  ~w -> ~w(~w) => (~w) [~w]', [Pred, TName, IStr, OStr, Eff])
     ), Lines),
     atomic_list_concat([Header|Lines], '\n', Summary).
+
+%% ============================================================================
+%% Binding Emit Helpers — for Python generator integration
+%% ============================================================================
+
+%% emit_binding_imports(+Stream, +Options)
+%% Emit Python import lines for bindings that have import(Module) in options.
+emit_binding_imports(S, _Options) :-
+    init_agent_loop_bindings,
+    findall(Mod-TName, (
+        binding(python, _Pred, TName, _Ins, _Outs, Opts),
+        member(import(Mod), Opts)
+    ), ImportPairs),
+    forall(member(Mod-TName, ImportPairs), (
+        %% Extract base name for dotted targets (e.g. SecurityConfig.from_profile → SecurityConfig)
+        (sub_atom(TName, Before, _, _, '.') ->
+            sub_atom(TName, 0, Before, _, BaseName)
+        ;
+            BaseName = TName
+        ),
+        format(S, 'from ~w import ~w~n', [Mod, BaseName])
+    )).
+
+%% emit_binding_dispatch_comment(+Stream, +Options)
+%% Emit a comment block documenting binding metadata for the current file.
+emit_binding_dispatch_comment(S, _Options) :-
+    init_agent_loop_bindings,
+    write(S, '# Binding registry metadata:\n'),
+    forall(binding(python, Pred, TName, Inputs, _Outputs, Opts), (
+        maplist([N-_T,N]>>true, Inputs, INames),
+        atomic_list_concat(INames, ', ', IStr),
+        (member(pure, Opts) -> Eff = pure ; Eff = effectful),
+        format(S, '#   ~w -> ~w(~w) [~w]~n', [Pred, TName, IStr, Eff])
+    )),
+    write(S, '#\n').
 
 %% ============================================================================
 %% Summary / Diagnostic
