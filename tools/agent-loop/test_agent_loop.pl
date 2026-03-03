@@ -45,6 +45,8 @@ run_tests :-
     test_emit_tool_facts,
     test_emit_command_facts,
     test_emit_backend_facts,
+    test_compile_component_multi_fact,
+    test_python_tool_dispatch_via_components,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -451,4 +453,75 @@ test_emit_backend_facts :-
     )),
     assert_true('cli_fallbacks emitted', (
         sub_atom(Output, _, _, _, 'cli_fallbacks(')
+    )).
+
+%% ============================================================================
+%% Test 20: Compile Component Multi-Fact Output
+%% ============================================================================
+
+test_compile_component_multi_fact :-
+    format("~nCompile component multi-fact:~n"),
+    register_agent_loop_components,
+    %% Full multi-fact output for bash (prolog target, no fact_type)
+    assert_true('bash full multi-fact has tool_spec', (
+        compile_component(agent_tools, bash, [target(prolog)], Code),
+        sub_atom(Code, _, _, _, 'tool_spec(bash')
+    )),
+    assert_true('bash full multi-fact has tool_handler', (
+        compile_component(agent_tools, bash, [target(prolog)], Code2),
+        sub_atom(Code2, _, _, _, 'tool_handler(bash')
+    )),
+    assert_true('bash full multi-fact has destructive_tool', (
+        compile_component(agent_tools, bash, [target(prolog)], Code3),
+        sub_atom(Code3, _, _, _, 'destructive_tool(bash')
+    )),
+    %% Selective fact_type: tool_handler only
+    assert_true('bash tool_handler only via fact_type', (
+        compile_component(agent_tools, bash,
+            [target(prolog), fact_type(tool_handler)], HCode),
+        sub_atom(HCode, _, _, _, 'tool_handler(bash'),
+        \+ sub_atom(HCode, _, _, _, 'tool_spec(')
+    )),
+    %% read is NOT destructive — full output should NOT have destructive_tool
+    assert_true('read has no destructive_tool', (
+        compile_component(agent_tools, read, [target(prolog)], RCode),
+        \+ sub_atom(RCode, _, _, _, 'destructive_tool(')
+    )).
+
+%% ============================================================================
+%% Test 21: Python Tool Dispatch via Components
+%% ============================================================================
+
+test_python_tool_dispatch_via_components :-
+    format("~nPython tool dispatch via components:~n"),
+    register_agent_loop_components,
+    %% Python compile_component with self_prefix
+    assert_true('bash python self_prefix', (
+        compile_component(agent_tools, bash,
+            [target(python), self_prefix(true), indent(12)], PyCode),
+        sub_atom(PyCode, _, _, _, 'self._execute_bash')
+    )),
+    %% Python compile_component indentation
+    assert_true('python indent(12) produces 12 spaces', (
+        compile_component(agent_tools, bash,
+            [target(python), self_prefix(true), indent(12)], PyCode2),
+        atom_chars(PyCode2, Chars),
+        append(Spaces, ['\''|_], Chars),
+        length(Spaces, 12),
+        forall(member(Sp, Spaces), Sp = ' ')
+    )),
+    %% Capture generate_tool_dispatch output
+    assert_true('generate_tool_dispatch has bash entry', (
+        with_output_to(atom(DispOutput), (
+            current_output(DS),
+            agent_loop_module:generate_tool_dispatch(DS)
+        )),
+        sub_atom(DispOutput, _, _, _, '\'bash\': self._execute_bash,')
+    )),
+    assert_true('generate_tool_dispatch has destructive_tools', (
+        with_output_to(atom(DispOutput2), (
+            current_output(DS2),
+            agent_loop_module:generate_tool_dispatch(DS2)
+        )),
+        sub_atom(DispOutput2, _, _, _, 'self.destructive_tools = {')
     )).
