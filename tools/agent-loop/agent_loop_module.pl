@@ -21,10 +21,12 @@
     slash_command/4,
     command_alias/2,
     backend_factory/2,
-    backend_factory_order/1
+    backend_factory_order/1,
+    write_prolog_term/2
 ]).
 
 :- discontiguous generate_backend_full/3.
+:- use_module(agent_loop_components).
 
 %% =============================================================================
 %% Agent Backend Definitions
@@ -1064,6 +1066,7 @@ generate_all(prolog) :-
 %% =============================================================================
 
 generate_prolog_modules :-
+    agent_loop_components:register_agent_loop_components,
     generate_prolog_costs,
     generate_prolog_config,
     generate_prolog_tools,
@@ -1304,34 +1307,8 @@ generate_prolog_tools :-
     write(S, ':- use_module(library(readutil)).\n'),
     write(S, ':- use_module(library(time)).\n'),
     write(S, ':- use_module(security).\n\n'),
-    %% Emit tool_spec facts
-    write(S, '%% tool_spec(+ToolName, +Properties)\n'),
-    forall(tool_spec(Name, Props), (
-        format(S, 'tool_spec(~q, ', [Name]),
-        write_prolog_term(S, Props),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
-    %% Emit tool_handler facts
-    write(S, '%% tool_handler(+ToolName, +HandlerPredicate)\n'),
-    forall(tool_handler(Name, Handler), (
-        format(S, 'tool_handler(~q, ~q).~n', [Name, Handler])
-    )),
-    write(S, '\n'),
-    %% Emit destructive_tool facts
-    write(S, '%% destructive_tool(+ToolName)\n'),
-    forall(destructive_tool(Name), (
-        format(S, 'destructive_tool(~q).~n', [Name])
-    )),
-    write(S, '\n'),
-    %% Emit tool_description facts
-    write(S, '%% tool_description(+Backend, +ToolName, +Verb, +ParamKey, +DisplayMode)\n'),
-    forall(tool_description(Backend, TN, Verb, PK, DM), (
-        format(S, 'tool_description(~q, ~q, ~q, ~q, ', [Backend, TN, Verb, PK]),
-        write_prolog_term(S, DM),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
+    %% Emit tool facts via component registry
+    agent_loop_components:emit_tool_facts(S, [target(prolog)]),
     %% Generate tool execution predicates
     write(S, '%% Execute a tool by name\n'),
     write(S, 'execute_tool(ToolName, Params, Result) :-\n'),
@@ -1483,28 +1460,8 @@ generate_prolog_commands :-
     write(S, '    resolve_command/3,\n'),
     write(S, '    handle_slash_command/3\n'),
     write(S, ']).\n\n'),
-    %% Emit slash_command facts
-    write(S, '%% slash_command(+Name, +MatchType, +Options, +HelpText)\n'),
-    forall(slash_command(Name, Match, Opts, Help), (
-        format(S, 'slash_command(~q, ~q, ', [Name, Match]),
-        write_prolog_term(S, Opts),
-        format(S, ', ~q).~n', [Help])
-    )),
-    write(S, '\n'),
-    %% Emit command_alias facts
-    write(S, '%% command_alias(+Alias, +CanonicalName)\n'),
-    forall(command_alias(Alias, Canonical), (
-        format(S, 'command_alias(~q, ~q).~n', [Alias, Canonical])
-    )),
-    write(S, '\n'),
-    %% Emit slash_command_group facts
-    write(S, '%% slash_command_group(+GroupName, +CommandList)\n'),
-    forall(slash_command_group(Group, Cmds), (
-        format(S, 'slash_command_group(~q, ', [Group]),
-        write_prolog_term(S, Cmds),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
+    %% Emit command facts via component registry
+    agent_loop_components:emit_command_facts(S, [target(prolog)]),
     %% Generate resolve_command
     write(S, '%% Resolve aliases — may return "command args" for compound aliases\n'),
     write(S, 'resolve_command(Input, Command, ExtraArgs) :-\n'),
@@ -1656,36 +1613,8 @@ generate_prolog_backends :-
     write(S, ':- use_module(library(readutil)).\n'),
     write(S, ':- use_module(library(random)).\n'),
     write(S, ':- discontiguous send_request_streaming_raw/5.\n\n'),
-    %% Emit agent_backend facts
-    write(S, '%% agent_backend(+Name, +Properties)\n'),
-    forall(agent_backend(Name, Props), (
-        format(S, 'agent_backend(~q, ', [Name]),
-        write_prolog_term(S, Props),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
-    %% Emit backend_factory facts
-    write(S, '%% backend_factory(+Name, +FactorySpec)\n'),
-    forall(backend_factory(Name, Spec), (
-        format(S, 'backend_factory(~q, ', [Name]),
-        write_prolog_term(S, Spec),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
-    %% Emit backend_factory_order
-    (backend_factory_order(Order) ->
-        format(S, 'backend_factory_order(', []),
-        write_prolog_term(S, Order),
-        write(S, ').\n\n')
-    ; true),
-    %% Emit cli_fallbacks
-    write(S, '%% cli_fallbacks(+BackendName, +FallbackList)\n'),
-    forall(cli_fallbacks(Name, Fallbacks), (
-        format(S, 'cli_fallbacks(~q, ', [Name]),
-        write_prolog_term(S, Fallbacks),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
+    %% Emit backend facts via component registry
+    agent_loop_components:emit_backend_facts(S, [target(prolog)]),
     %% Generate create_backend
     write(S, '%% Create a backend configuration from factory specs\n'),
     write(S, 'create_backend(Name, Options, Backend) :-\n'),

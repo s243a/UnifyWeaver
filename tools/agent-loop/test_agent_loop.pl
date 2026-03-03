@@ -42,6 +42,9 @@ run_tests :-
     test_retryable_error_clauses,
     test_security_enforcement_wiring,
     test_tool_parameter_schemas,
+    test_emit_tool_facts,
+    test_emit_command_facts,
+    test_emit_backend_facts,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -379,4 +382,73 @@ test_tool_parameter_schemas :-
         member(parameters(EParams), EProps),
         length(EParams, 3),
         forall(member(param(_, _, Req, _), EParams), Req = required)
+    )).
+
+%% ============================================================================
+%% Test 17: Emit Tool Facts via Component Registry
+%% ============================================================================
+
+test_emit_tool_facts :-
+    format("~nEmit tool facts:~n"),
+    register_agent_loop_components,
+    with_output_to(atom(Output), (
+        current_output(S),
+        agent_loop_components:emit_tool_facts(S, [target(prolog)])
+    )),
+    assert_true('tool_spec(bash,...) emitted', (
+        sub_atom(Output, _, _, _, 'tool_spec(bash')
+    )),
+    assert_true('tool_handler(bash,...) emitted', (
+        sub_atom(Output, _, _, _, 'tool_handler(bash')
+    )),
+    assert_true('destructive_tool emitted', (
+        sub_atom(Output, _, _, _, 'destructive_tool(')
+    )),
+    assert_true('tool_description emitted', (
+        sub_atom(Output, _, _, _, 'tool_description(')
+    )).
+
+%% ============================================================================
+%% Test 18: Emit Command Facts via Component Registry
+%% ============================================================================
+
+test_emit_command_facts :-
+    format("~nEmit command facts:~n"),
+    register_agent_loop_components,
+    with_output_to(atom(Output), (
+        current_output(S),
+        agent_loop_components:emit_command_facts(S, [target(prolog)])
+    )),
+    assert_true('slash_command(help,...) emitted', (
+        sub_atom(Output, _, _, _, 'slash_command(help')
+    )),
+    assert_true('command_alias emitted', (
+        sub_atom(Output, _, _, _, 'command_alias(')
+    )),
+    assert_true('slash_command_group emitted', (
+        sub_atom(Output, _, _, _, 'slash_command_group(')
+    )).
+
+%% ============================================================================
+%% Test 19: Emit Backend Facts via Component Registry
+%% ============================================================================
+
+test_emit_backend_facts :-
+    format("~nEmit backend facts:~n"),
+    register_agent_loop_components,
+    with_output_to(atom(Output), (
+        current_output(S),
+        agent_loop_components:emit_backend_facts(S, [target(prolog)])
+    )),
+    assert_true('agent_backend emitted', (
+        sub_atom(Output, _, _, _, 'agent_backend(')
+    )),
+    assert_true('backend_factory emitted', (
+        sub_atom(Output, _, _, _, 'backend_factory(')
+    )),
+    assert_true('backend_factory_order emitted', (
+        sub_atom(Output, _, _, _, 'backend_factory_order(')
+    )),
+    assert_true('cli_fallbacks emitted', (
+        sub_atom(Output, _, _, _, 'cli_fallbacks(')
     )).
