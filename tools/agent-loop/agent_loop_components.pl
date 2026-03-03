@@ -10,7 +10,10 @@
 
 :- module(agent_loop_components, [
     register_agent_loop_components/0,
-    agent_loop_component_summary/0
+    agent_loop_component_summary/0,
+    emit_tool_facts/2,
+    emit_command_facts/2,
+    emit_backend_facts/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -187,6 +190,108 @@ register_agent_loop_components :-
     register_tool_components,
     register_command_components,
     register_backend_components.
+
+%% ============================================================================
+%% Stream Emitters — Write Prolog facts via the component registry
+%% ============================================================================
+
+%% emit_tool_facts(+Stream, +Options)
+%% Emit tool-related Prolog facts via the component registry.
+emit_tool_facts(S, _Options) :-
+    %% tool_spec via component registry
+    write(S, '%% tool_spec(+ToolName, +Properties)\n'),
+    forall(component(agent_tools, Name, tool_handler, _Config), (
+        agent_loop_module:tool_spec(Name, Props),
+        format(S, 'tool_spec(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(S, Props),
+        write(S, ').\n')
+    )),
+    write(S, '\n'),
+    %% tool_handler via component registry
+    write(S, '%% tool_handler(+ToolName, +HandlerPredicate)\n'),
+    forall(component(agent_tools, Name, tool_handler, Config), (
+        member(handler(Handler), Config),
+        format(S, 'tool_handler(~q, ~q).~n', [Name, Handler])
+    )),
+    write(S, '\n'),
+    %% destructive_tool via component registry
+    write(S, '%% destructive_tool(+ToolName)\n'),
+    forall((component(agent_tools, Name, tool_handler, Config),
+            member(destructive(true), Config)), (
+        format(S, 'destructive_tool(~q).~n', [Name])
+    )),
+    write(S, '\n'),
+    %% tool_description — different shape, stays as raw fact iteration
+    write(S, '%% tool_description(+Backend, +ToolName, +Verb, +ParamKey, +DisplayMode)\n'),
+    forall(agent_loop_module:tool_description(Backend, TN, Verb, PK, DM), (
+        format(S, 'tool_description(~q, ~q, ~q, ~q, ', [Backend, TN, Verb, PK]),
+        agent_loop_module:write_prolog_term(S, DM),
+        write(S, ').\n')
+    )),
+    write(S, '\n').
+
+%% emit_command_facts(+Stream, +Options)
+%% Emit command-related Prolog facts via the component registry.
+emit_command_facts(S, _Options) :-
+    %% slash_command via component registry
+    write(S, '%% slash_command(+Name, +MatchType, +Options, +HelpText)\n'),
+    forall(component(agent_commands, Name, slash_command, Config), (
+        member(match_type(Match), Config),
+        member(help_text(Help), Config),
+        (member(options(Opts), Config) -> true ; Opts = []),
+        format(S, 'slash_command(~q, ~q, ', [Name, Match]),
+        agent_loop_module:write_prolog_term(S, Opts),
+        format(S, ', ~q).~n', [Help])
+    )),
+    write(S, '\n'),
+    %% command_alias — cross-cutting, stays as raw fact iteration
+    write(S, '%% command_alias(+Alias, +CanonicalName)\n'),
+    forall(agent_loop_module:command_alias(Alias, Canonical), (
+        format(S, 'command_alias(~q, ~q).~n', [Alias, Canonical])
+    )),
+    write(S, '\n'),
+    %% slash_command_group — cross-cutting, stays as raw fact iteration
+    write(S, '%% slash_command_group(+GroupName, +CommandList)\n'),
+    forall(agent_loop_module:slash_command_group(Group, Cmds), (
+        format(S, 'slash_command_group(~q, ', [Group]),
+        agent_loop_module:write_prolog_term(S, Cmds),
+        write(S, ').\n')
+    )),
+    write(S, '\n').
+
+%% emit_backend_facts(+Stream, +Options)
+%% Emit backend-related Prolog facts via the component registry.
+emit_backend_facts(S, _Options) :-
+    %% agent_backend — rich property list not in registry, stays raw
+    write(S, '%% agent_backend(+Name, +Properties)\n'),
+    forall(agent_loop_module:agent_backend(Name, Props), (
+        format(S, 'agent_backend(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(S, Props),
+        write(S, ').\n')
+    )),
+    write(S, '\n'),
+    %% backend_factory via component registry
+    write(S, '%% backend_factory(+Name, +FactorySpec)\n'),
+    forall(component(agent_backends, Name, backend, Config), (
+        format(S, 'backend_factory(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(S, Config),
+        write(S, ').\n')
+    )),
+    write(S, '\n'),
+    %% backend_factory_order — singleton, stays raw
+    (agent_loop_module:backend_factory_order(Order) ->
+        format(S, 'backend_factory_order(', []),
+        agent_loop_module:write_prolog_term(S, Order),
+        write(S, ').\n\n')
+    ; true),
+    %% cli_fallbacks — stays raw
+    write(S, '%% cli_fallbacks(+BackendName, +FallbackList)\n'),
+    forall(agent_loop_module:cli_fallbacks(Name, Fallbacks), (
+        format(S, 'cli_fallbacks(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(S, Fallbacks),
+        write(S, ').\n')
+    )),
+    write(S, '\n').
 
 %% agent_loop_component_summary/0
 %% Registers everything and prints a summary.
