@@ -15,7 +15,9 @@
     emit_command_facts/2,
     emit_backend_facts/2,
     emit_security_facts/2,
-    emit_cost_facts/2
+    emit_cost_facts/2,
+    emit_backend_init_imports/2,
+    emit_backend_init_optional/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -223,11 +225,15 @@ agent_cost_type:validate_config(Config) :-
 
 agent_cost_type:init_component(_Name, _Config).
 
-agent_cost_type:compile_component(_Name, Config, _Options, Code) :-
+agent_cost_type:compile_component(_Name, Config, Options, Code) :-
     member(input_price(In), Config),
     member(output_price(Out), Config),
     member(model_string(Model), Config),
-    format(atom(Code), "model_pricing(~q, ~w, ~w).", [Model, In, Out]).
+    (member(target(python), Options) ->
+        format(atom(Code), '    "~w": {"input": ~w, "output": ~w},', [Model, In, Out])
+    ;
+        format(atom(Code), "model_pricing(~q, ~w, ~w).", [Model, In, Out])
+    ).
 
 %% ============================================================================
 %% Category and Type Registration
@@ -434,47 +440,103 @@ emit_backend_facts(S, _Options) :-
     write(S, '\n').
 
 %% emit_security_facts(+Stream, +Options)
-%% Emit security-related Prolog facts via the component registry.
-emit_security_facts(S, _Options) :-
-    %% security_profile via compile_component
-    write(S, '%% security_profile(+Name, +Properties)\n'),
-    forall(component(agent_security, Name, security_profile, _), (
-        compile_component(agent_security, Name, [target(prolog)], Code),
-        write(S, Code), nl(S)
-    )),
-    write(S, '\n'),
-    %% blocked_path — simple enumeration, stays raw
-    write(S, '%% blocked_path(+AbsolutePath)\n'),
-    forall(agent_loop_module:blocked_path(P), (
-        format(S, 'blocked_path(~q).~n', [P])
-    )),
-    write(S, '\n'),
-    %% blocked_path_prefix — stays raw
-    write(S, '%% blocked_path_prefix(+Prefix)\n'),
-    forall(agent_loop_module:blocked_path_prefix(P), (
-        format(S, 'blocked_path_prefix(~q).~n', [P])
-    )),
-    write(S, '\n'),
-    %% blocked_home_pattern — stays raw
-    write(S, '%% blocked_home_pattern(+Pattern)\n'),
-    forall(agent_loop_module:blocked_home_pattern(P), (
-        format(S, 'blocked_home_pattern(~q).~n', [P])
-    )),
-    write(S, '\n'),
-    %% blocked_command_pattern — stays raw
-    write(S, '%% blocked_command_pattern(+Regex, +Description)\n'),
-    forall(agent_loop_module:blocked_command_pattern(Regex, Desc), (
-        format(S, 'blocked_command_pattern(~q, ~q).~n', [Regex, Desc])
-    )),
-    write(S, '\n').
+%% Emit security-related facts — dispatches on target(python) vs target(prolog).
+emit_security_facts(S, Options) :-
+    (member(target(python), Options) ->
+        %% Python path: emit blocked_* facts as collection entries
+        (member(fact_type(FT), Options) ->
+            emit_security_blocked_py(S, FT)
+        ;
+            emit_security_blocked_py(S, blocked_path),
+            emit_security_blocked_py(S, blocked_path_prefix),
+            emit_security_blocked_py(S, blocked_home_pattern),
+            emit_security_blocked_py(S, blocked_command_pattern)
+        )
+    ;
+        %% Prolog path: security_profile via compile_component + raw enumerations
+        write(S, '%% security_profile(+Name, +Properties)\n'),
+        forall(component(agent_security, Name, security_profile, _), (
+            compile_component(agent_security, Name, [target(prolog)], Code),
+            write(S, Code), nl(S)
+        )),
+        write(S, '\n'),
+        write(S, '%% blocked_path(+AbsolutePath)\n'),
+        forall(agent_loop_module:blocked_path(P), (
+            format(S, 'blocked_path(~q).~n', [P])
+        )),
+        write(S, '\n'),
+        write(S, '%% blocked_path_prefix(+Prefix)\n'),
+        forall(agent_loop_module:blocked_path_prefix(P), (
+            format(S, 'blocked_path_prefix(~q).~n', [P])
+        )),
+        write(S, '\n'),
+        write(S, '%% blocked_home_pattern(+Pattern)\n'),
+        forall(agent_loop_module:blocked_home_pattern(P), (
+            format(S, 'blocked_home_pattern(~q).~n', [P])
+        )),
+        write(S, '\n'),
+        write(S, '%% blocked_command_pattern(+Regex, +Description)\n'),
+        forall(agent_loop_module:blocked_command_pattern(Regex, Desc), (
+            format(S, 'blocked_command_pattern(~q, ~q).~n', [Regex, Desc])
+        )),
+        write(S, '\n')
+    ).
+
+%% emit_security_blocked_py(+Stream, +FactType)
+%% Emit blocked_* facts as Python set/tuple/list entries.
+emit_security_blocked_py(S, blocked_path) :-
+    forall(agent_loop_module:blocked_path(P),
+        format(S, '    \'~w\',~n', [P])).
+emit_security_blocked_py(S, blocked_path_prefix) :-
+    forall(agent_loop_module:blocked_path_prefix(P),
+        format(S, '    \'~w\',~n', [P])).
+emit_security_blocked_py(S, blocked_home_pattern) :-
+    forall(agent_loop_module:blocked_home_pattern(P),
+        format(S, '    \'~w\',~n', [P])).
+emit_security_blocked_py(S, blocked_command_pattern) :-
+    forall(agent_loop_module:blocked_command_pattern(Regex, Desc),
+        format(S, '    (r\'~w\', "~w"),~n', [Regex, Desc])).
 
 %% emit_cost_facts(+Stream, +Options)
-%% Emit cost-related Prolog facts via the component registry.
-emit_cost_facts(S, _Options) :-
-    write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
-    forall(component(agent_costs, Model, model_pricing, _), (
-        compile_component(agent_costs, Model, [target(prolog)], Code),
-        write(S, Code), nl(S)
+%% Emit cost facts — dispatches on target(python) vs target(prolog).
+emit_cost_facts(S, Options) :-
+    (member(target(python), Options) ->
+        forall(component(agent_costs, Model, model_pricing, _), (
+            compile_component(agent_costs, Model, [target(python)], Code),
+            write(S, Code), nl(S)
+        ))
+    ;
+        write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
+        forall(component(agent_costs, Model, model_pricing, _), (
+            compile_component(agent_costs, Model, [target(prolog)], Code),
+            write(S, Code), nl(S)
+        ))
+    ).
+
+%% emit_backend_init_imports(+Stream, +Options)
+%% Emit Python import lines for non-optional backends.
+emit_backend_init_imports(S, _Options) :-
+    forall((agent_loop_module:agent_backend(Name, Props),
+            \+ member(optional_import(true), Props)), (
+        agent_loop_module:resolve_class_name(Name, ClassName),
+        agent_loop_module:resolve_file_name(Name, FileName),
+        format(S, 'from .~w import ~w~n', [FileName, ClassName])
+    )).
+
+%% emit_backend_init_optional(+Stream, +Options)
+%% Emit Python try/except import blocks for optional backends.
+emit_backend_init_optional(S, _Options) :-
+    forall((agent_loop_module:agent_backend(Name, Props),
+            member(optional_import(true), Props)), (
+        agent_loop_module:resolve_class_name(Name, ClassName),
+        agent_loop_module:resolve_file_name(Name, FileName),
+        member(description(Desc), Props),
+        format(S, '~n# ~w (optional - requires pip package)~n', [Desc]),
+        format(S, 'try:~n', []),
+        format(S, '    from .~w import ~w~n', [FileName, ClassName]),
+        format(S, '    __all__.append(\'~w\')~n', [ClassName]),
+        format(S, 'except ImportError:~n', []),
+        format(S, '    pass~n', [])
     )).
 
 %% agent_loop_component_summary/0
