@@ -10,11 +10,14 @@
     tool_description/5,
     execute_tool/3,
     describe_tool_call/4,
-    confirm_destructive/2
+    confirm_destructive/2,
+    build_tool_input_schema/2
 ]).
 
 :- use_module(library(process)).
 :- use_module(library(readutil)).
+:- use_module(library(time)).
+:- use_module(security).
 
 %% tool_spec(+ToolName, +Properties)
 tool_spec(bash, [description("Execute a bash command"), parameters([param(command,string,required,"The command to execute")]), confirmation_required(true), timeout(120)]).
@@ -64,21 +67,41 @@ execute_tool(ToolName, Params, Result) :-
 
 execute_tool_impl(bash, Params, Result) :-
     get_dict(command, Params, Cmd),
-    setup_call_cleanup(
-        process_create(path(bash), ['-c', Cmd],
-            [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),
-        (read_string(Out, _, StdOut),
-         read_string(Err, _, StdErr),
-         process_wait(PID, Status)),
-        (close(Out), close(Err))),
-    (Status = exit(0) ->
-        Result = ok(StdOut)
-    ;   format(atom(ErrMsg), "Exit ~w: ~w~w", [Status, StdOut, StdErr]),
-        Result = error(ErrMsg)).
+    check_command_allowed(Cmd, CmdCheck),
+    (CmdCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ;
+        tool_spec(bash, BashProps),
+        (member(timeout(Timeout), BashProps) -> true ; Timeout = 120),
+        catch(
+            call_with_time_limit(Timeout, (
+                setup_call_cleanup(
+                    process_create(path(bash), ['-c', Cmd],
+                        [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),
+                    (read_string(Out, _, StdOut),
+                     read_string(Err, _, StdErr),
+                     process_wait(PID, Status)),
+                    (close(Out), close(Err))),
+                (Status = exit(0) ->
+                    Result0 = ok(StdOut)
+                ;   format(atom(ErrMsg), "Exit ~w: ~w~w", [Status, StdOut, StdErr]),
+                    Result0 = error(ErrMsg))
+            )),
+            time_limit_exceeded,
+            (format(atom(TimeErr), "Command timed out after ~w seconds", [Timeout]),
+             Result0 = error(TimeErr))
+        ),
+        Result = Result0
+    ).
 
 execute_tool_impl(read, Params, Result) :-
     get_dict(path, Params, FilePath),
-    (exists_file(FilePath) ->
+    check_path_allowed(FilePath, PathCheck),
+    (PathCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ; exists_file(FilePath) ->
         read_file_to_string(FilePath, Content, []),
         Result = ok(Content)
     ;   format(atom(Err), "File not found: ~w", [FilePath]),
@@ -87,18 +110,28 @@ execute_tool_impl(read, Params, Result) :-
 execute_tool_impl(write, Params, Result) :-
     get_dict(path, Params, FilePath),
     get_dict(content, Params, Content),
-    setup_call_cleanup(
-        open(FilePath, write, Out),
-        write(Out, Content),
-        close(Out)),
-    format(atom(Msg), "Wrote ~w", [FilePath]),
-    Result = ok(Msg).
+    check_path_allowed(FilePath, PathCheck),
+    (PathCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ;
+        setup_call_cleanup(
+            open(FilePath, write, Out),
+            write(Out, Content),
+            close(Out)),
+        format(atom(Msg), "Wrote ~w", [FilePath]),
+        Result = ok(Msg)
+    ).
 
 execute_tool_impl(edit, Params, Result) :-
     get_dict(path, Params, FilePath),
     get_dict(old_string, Params, OldStr),
     get_dict(new_string, Params, NewStr),
-    (exists_file(FilePath) ->
+    check_path_allowed(FilePath, PathCheck),
+    (PathCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ; exists_file(FilePath) ->
         read_file_to_string(FilePath, Content, []),
         (sub_string(Content, Before, _, After, OldStr) ->
             sub_string(Content, 0, Before, _, Pre),
@@ -114,6 +147,25 @@ execute_tool_impl(edit, Params, Result) :-
         ;   Result = error("Old string not found"))
     ;   format(atom(Err), "File not found: ~w", [FilePath]),
         Result = error(Err)).
+
+%% Build JSON Schema input_schema from tool_spec parameters
+build_tool_input_schema(ToolName, Schema) :-
+    tool_spec(ToolName, Props),
+    member(parameters(Params), Props),
+    build_properties(Params, PropsDict),
+    build_required(Params, ReqList),
+    Schema = _{type: "object", properties: PropsDict, required: ReqList}.
+
+build_properties([], _{}).
+build_properties([param(Name, Type, _, Desc)|Rest], Props) :-
+    build_properties(Rest, RestProps),
+    put_dict(Name, RestProps, _{type: Type, description: Desc}, Props).
+
+build_required([], []).
+build_required([param(Name, _, required, _)|Rest], [Name|RR]) :-
+    build_required(Rest, RR).
+build_required([param(_, _, O, _)|Rest], RR) :-
+    O \= required, build_required(Rest, RR).
 
 %% Describe a tool call for display
 describe_tool_call(Backend, ToolName, Params, Desc) :-

@@ -360,7 +360,8 @@ send_request_streaming_anthropic(Backend, Messages, Tools, Response) :-
         maplist([T, AT]>>(
             get_dict(name, T, TN),
             get_dict(description, T, TD),
-            AT = _{name: TN, description: TD, input_schema: _{type: "object", properties: _{}}}
+            (get_dict(input_schema, T, TIS) -> true ; TIS = _{type: "object", properties: _{}}),
+            AT = _{name: TN, description: TD, input_schema: TIS}
         ), Tools, AnthTools),
         Body0 = _{model: Model, messages: UserMsgs, tools: AnthTools,
                    max_tokens: 4096, stream: true}
