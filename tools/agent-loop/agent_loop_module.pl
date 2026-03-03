@@ -1123,11 +1123,8 @@ generate_prolog_costs :-
     write(S, '    cost_tracker_total/2,\n'),
     write(S, '    cost_tracker_format/2\n'),
     write(S, ']).\n\n'),
-    %% Emit all model_pricing facts
-    write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
-    forall(model_pricing(Model, In, Out), (
-        format(S, 'model_pricing(~q, ~w, ~w).~n', [Model, In, Out])
-    )),
+    %% Emit cost facts via component registry
+    agent_loop_components:emit_cost_facts(S, [target(prolog)]),
     %% Emit cost tracker implementation
     write(S, '\n%% Cost tracker using dynamic state\n'),
     write(S, ':- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)\n\n'),
@@ -1520,38 +1517,8 @@ generate_prolog_security :-
     write(S, ':- use_module(library(pcre)).\n\n'),
     write(S, ':- dynamic current_security_profile/1.\n'),
     write(S, 'current_security_profile(cautious).\n\n'),
-    %% Emit security_profile facts
-    write(S, '%% security_profile(+Name, +Properties)\n'),
-    forall(security_profile(Name, Props), (
-        format(S, 'security_profile(~q, ', [Name]),
-        write_prolog_term(S, Props),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
-    %% Emit blocked_path facts
-    write(S, '%% blocked_path(+AbsolutePath)\n'),
-    forall(blocked_path(P), (
-        format(S, 'blocked_path(~q).~n', [P])
-    )),
-    write(S, '\n'),
-    %% Emit blocked_path_prefix facts
-    write(S, '%% blocked_path_prefix(+Prefix)\n'),
-    forall(blocked_path_prefix(P), (
-        format(S, 'blocked_path_prefix(~q).~n', [P])
-    )),
-    write(S, '\n'),
-    %% Emit blocked_home_pattern facts
-    write(S, '%% blocked_home_pattern(+Pattern)\n'),
-    forall(blocked_home_pattern(P), (
-        format(S, 'blocked_home_pattern(~q).~n', [P])
-    )),
-    write(S, '\n'),
-    %% Emit blocked_command_pattern facts
-    write(S, '%% blocked_command_pattern(+Regex, +Description)\n'),
-    forall(blocked_command_pattern(Regex, Desc), (
-        format(S, 'blocked_command_pattern(~q, ~q).~n', [Regex, Desc])
-    )),
-    write(S, '\n'),
+    %% Emit security facts via component registry
+    agent_loop_components:emit_security_facts(S, [target(prolog)]),
     %% Generate check predicates
     write(S, '%% Check if a file path is allowed under current profile\n'),
     write(S, 'check_path_allowed(Path, Result) :-\n'),
@@ -4255,6 +4222,7 @@ fallback_comment(_, '').
 
 %% generate_backend_factory_fn(S) - emit the create_backend_from_config function
 generate_backend_factory_fn(S) :-
+    agent_loop_components:register_agent_loop_components,
     %% Function signature
     write(S, 'def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",\n'),
     write(S, '                               sandbox: bool = False, approval_mode: str = "yolo",\n'),
@@ -4276,7 +4244,7 @@ generate_backend_factory_fn(S) :-
 %% generate_factory_chain(S, Backends, FirstFlag)
 generate_factory_chain(_, [], _) :- !.
 generate_factory_chain(S, [BT|Rest], FirstFlag) :-
-    backend_factory(BT, Props),
+    component(agent_backends, BT, backend, Props),
     generate_factory_branch(S, BT, Props, FirstFlag),
     generate_factory_chain(S, Rest, not_first).
 

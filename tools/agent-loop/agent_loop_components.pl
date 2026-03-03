@@ -13,7 +13,9 @@
     agent_loop_component_summary/0,
     emit_tool_facts/2,
     emit_command_facts/2,
-    emit_backend_facts/2
+    emit_backend_facts/2,
+    emit_security_facts/2,
+    emit_cost_facts/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -119,14 +121,26 @@ agent_command_type:validate_config(Config) :-
 agent_command_type:init_component(_Name, _Config).
 
 agent_command_type:compile_component(Name, Config, Options, Code) :-
+    (member(target(prolog), Options) ->
+        (member(fact_type(FT), Options) ->
+            compile_command_fact(FT, Name, Config, Code)
+        ;
+            compile_command_fact(slash_command, Name, Config, Code)
+        )
+    ;
+        compile_command_fact(slash_command, Name, Config, Code)
+    ).
+
+%% compile_command_fact(+FactType, +Name, +Config, -Code)
+compile_command_fact(slash_command, Name, Config, Code) :-
     member(match_type(MT), Config),
     member(help_text(HT), Config),
     (member(options(Opts), Config) -> true ; Opts = []),
-    (member(target(prolog), Options) ->
-        format(atom(Code), "slash_command(~q, ~q, ~q, ~q).", [Name, MT, Opts, HT])
-    ;
-        format(atom(Code), "slash_command(~q, ~q, ~q, ~q).", [Name, MT, Opts, HT])
-    ).
+    with_output_to(atom(Code), (
+        format('slash_command(~q, ~q, ', [Name, MT]),
+        agent_loop_module:write_prolog_term(current_output, Opts),
+        format(', ~q).', [HT])
+    )).
 
 %% --- Backend factory type ---
 
@@ -149,10 +163,71 @@ agent_backend_type:init_component(_Name, _Config).
 
 agent_backend_type:compile_component(Name, Config, Options, Code) :-
     (member(target(prolog), Options) ->
-        format(atom(Code), "backend_factory(~q, ~q).", [Name, Config])
+        (member(fact_type(FT), Options) ->
+            compile_backend_fact(FT, Name, Config, Code)
+        ;
+            compile_backend_fact(backend_factory, Name, Config, Code)
+        )
     ;
-        format(atom(Code), "backend_factory(~q, ~q).", [Name, Config])
+        compile_backend_fact(backend_factory, Name, Config, Code)
     ).
+
+%% compile_backend_fact(+FactType, +Name, +Config, -Code)
+compile_backend_fact(backend_factory, Name, Config, Code) :-
+    with_output_to(atom(Code), (
+        format('backend_factory(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(current_output, Config),
+        write(').')
+    )).
+
+%% --- Security profile type ---
+
+:- module_transparent agent_security_type:type_info/1.
+:- module_transparent agent_security_type:validate_config/1.
+:- module_transparent agent_security_type:init_component/2.
+:- module_transparent agent_security_type:compile_component/4.
+
+agent_security_type:type_info(info{
+    name: 'Agent Security Profile',
+    version: '1.0.0',
+    description: 'Security profile with path/command validation rules'
+}).
+
+agent_security_type:validate_config(_Config).
+
+agent_security_type:init_component(_Name, _Config).
+
+agent_security_type:compile_component(Name, Config, _Options, Code) :-
+    with_output_to(atom(Code), (
+        format('security_profile(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(current_output, Config),
+        write(').')
+    )).
+
+%% --- Model cost type ---
+
+:- module_transparent agent_cost_type:type_info/1.
+:- module_transparent agent_cost_type:validate_config/1.
+:- module_transparent agent_cost_type:init_component/2.
+:- module_transparent agent_cost_type:compile_component/4.
+
+agent_cost_type:type_info(info{
+    name: 'Agent Model Cost',
+    version: '1.0.0',
+    description: 'Model pricing for token cost tracking'
+}).
+
+agent_cost_type:validate_config(Config) :-
+    member(input_price(_), Config),
+    member(output_price(_), Config).
+
+agent_cost_type:init_component(_Name, _Config).
+
+agent_cost_type:compile_component(_Name, Config, _Options, Code) :-
+    member(input_price(In), Config),
+    member(output_price(Out), Config),
+    member(model_string(Model), Config),
+    format(atom(Code), "model_pricing(~q, ~w, ~w).", [Model, In, Out]).
 
 %% ============================================================================
 %% Category and Type Registration
@@ -167,6 +242,12 @@ register_agent_loop_categories :-
     ]),
     define_category(agent_backends, "Agent-loop backend definitions", [
         requires_compilation(true)
+    ]),
+    define_category(agent_security, "Agent-loop security profiles", [
+        requires_compilation(true)
+    ]),
+    define_category(agent_costs, "Agent-loop model pricing", [
+        requires_compilation(true)
     ]).
 
 register_agent_loop_types :-
@@ -178,6 +259,12 @@ register_agent_loop_types :-
     ]),
     register_component_type(agent_backends, backend, agent_backend_type, [
         description("Agent backend factory")
+    ]),
+    register_component_type(agent_security, security_profile, agent_security_type, [
+        description("Security profile definition")
+    ]),
+    register_component_type(agent_costs, model_pricing, agent_cost_type, [
+        description("Model token pricing")
     ]).
 
 %% ============================================================================
@@ -217,6 +304,23 @@ register_backend_components :-
         declare_component(agent_backends, Name, backend, Spec)
     )).
 
+%% Populate security components from security_profile/2
+register_security_components :-
+    forall(agent_loop_module:security_profile(Name, Props), (
+        declare_component(agent_security, Name, security_profile, Props)
+    )).
+
+%% Populate cost components from model_pricing/3
+register_cost_components :-
+    forall(agent_loop_module:model_pricing(Model, In, Out), (
+        (atom(Model) -> ModelAtom = Model ; atom_string(ModelAtom, Model)),
+        declare_component(agent_costs, ModelAtom, model_pricing, [
+            input_price(In),
+            output_price(Out),
+            model_string(Model)
+        ])
+    )).
+
 %% ============================================================================
 %% Master Registration
 %% ============================================================================
@@ -228,7 +332,9 @@ register_agent_loop_components :-
     register_agent_loop_types,
     register_tool_components,
     register_command_components,
-    register_backend_components.
+    register_backend_components,
+    register_security_components,
+    register_cost_components.
 
 %% ============================================================================
 %% Stream Emitters — Write Prolog facts via the component registry
@@ -272,15 +378,11 @@ emit_tool_facts(S, _Options) :-
 %% emit_command_facts(+Stream, +Options)
 %% Emit command-related Prolog facts via the component registry.
 emit_command_facts(S, _Options) :-
-    %% slash_command via component registry
+    %% slash_command via compile_component
     write(S, '%% slash_command(+Name, +MatchType, +Options, +HelpText)\n'),
-    forall(component(agent_commands, Name, slash_command, Config), (
-        member(match_type(Match), Config),
-        member(help_text(Help), Config),
-        (member(options(Opts), Config) -> true ; Opts = []),
-        format(S, 'slash_command(~q, ~q, ', [Name, Match]),
-        agent_loop_module:write_prolog_term(S, Opts),
-        format(S, ', ~q).~n', [Help])
+    forall(component(agent_commands, Name, slash_command, _), (
+        compile_component(agent_commands, Name, [target(prolog), fact_type(slash_command)], Code),
+        write(S, Code), nl(S)
     )),
     write(S, '\n'),
     %% command_alias — cross-cutting, stays as raw fact iteration
@@ -309,12 +411,11 @@ emit_backend_facts(S, _Options) :-
         write(S, ').\n')
     )),
     write(S, '\n'),
-    %% backend_factory via component registry
+    %% backend_factory via compile_component
     write(S, '%% backend_factory(+Name, +FactorySpec)\n'),
-    forall(component(agent_backends, Name, backend, Config), (
-        format(S, 'backend_factory(~q, ', [Name]),
-        agent_loop_module:write_prolog_term(S, Config),
-        write(S, ').\n')
+    forall(component(agent_backends, Name, backend, _), (
+        compile_component(agent_backends, Name, [target(prolog), fact_type(backend_factory)], Code),
+        write(S, Code), nl(S)
     )),
     write(S, '\n'),
     %% backend_factory_order — singleton, stays raw
@@ -332,6 +433,50 @@ emit_backend_facts(S, _Options) :-
     )),
     write(S, '\n').
 
+%% emit_security_facts(+Stream, +Options)
+%% Emit security-related Prolog facts via the component registry.
+emit_security_facts(S, _Options) :-
+    %% security_profile via compile_component
+    write(S, '%% security_profile(+Name, +Properties)\n'),
+    forall(component(agent_security, Name, security_profile, _), (
+        compile_component(agent_security, Name, [target(prolog)], Code),
+        write(S, Code), nl(S)
+    )),
+    write(S, '\n'),
+    %% blocked_path — simple enumeration, stays raw
+    write(S, '%% blocked_path(+AbsolutePath)\n'),
+    forall(agent_loop_module:blocked_path(P), (
+        format(S, 'blocked_path(~q).~n', [P])
+    )),
+    write(S, '\n'),
+    %% blocked_path_prefix — stays raw
+    write(S, '%% blocked_path_prefix(+Prefix)\n'),
+    forall(agent_loop_module:blocked_path_prefix(P), (
+        format(S, 'blocked_path_prefix(~q).~n', [P])
+    )),
+    write(S, '\n'),
+    %% blocked_home_pattern — stays raw
+    write(S, '%% blocked_home_pattern(+Pattern)\n'),
+    forall(agent_loop_module:blocked_home_pattern(P), (
+        format(S, 'blocked_home_pattern(~q).~n', [P])
+    )),
+    write(S, '\n'),
+    %% blocked_command_pattern — stays raw
+    write(S, '%% blocked_command_pattern(+Regex, +Description)\n'),
+    forall(agent_loop_module:blocked_command_pattern(Regex, Desc), (
+        format(S, 'blocked_command_pattern(~q, ~q).~n', [Regex, Desc])
+    )),
+    write(S, '\n').
+
+%% emit_cost_facts(+Stream, +Options)
+%% Emit cost-related Prolog facts via the component registry.
+emit_cost_facts(S, _Options) :-
+    write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
+    forall(component(agent_costs, Model, model_pricing, _), (
+        compile_component(agent_costs, Model, [target(prolog)], Code),
+        write(S, Code), nl(S)
+    )).
+
 %% agent_loop_component_summary/0
 %% Registers everything and prints a summary.
 agent_loop_component_summary :-
@@ -339,8 +484,13 @@ agent_loop_component_summary :-
     list_components(agent_tools, Tools),
     list_components(agent_commands, Cmds),
     list_components(agent_backends, Backends),
+    list_components(agent_security, Sec),
+    list_components(agent_costs, Costs),
     length(Tools, NT), length(Cmds, NC), length(Backends, NB),
+    length(Sec, NS), length(Costs, NCo),
     format("~nAgent-loop components registered:~n"),
     format("  Tools:    ~w ~w~n", [NT, Tools]),
     format("  Commands: ~w ~w~n", [NC, Cmds]),
-    format("  Backends: ~w ~w~n", [NB, Backends]).
+    format("  Backends: ~w ~w~n", [NB, Backends]),
+    format("  Security: ~w ~w~n", [NS, Sec]),
+    format("  Costs:    ~w~n", [NCo]).
