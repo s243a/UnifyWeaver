@@ -51,6 +51,9 @@ run_tests :-
     test_compile_backend_component,
     test_security_component_registration,
     test_cost_component_registration,
+    test_cost_python_compile,
+    test_security_blocked_py,
+    test_backend_init_imports,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -605,4 +608,74 @@ test_cost_component_registration :-
     assert_true('opus cost via compile_component', (
         compile_component(agent_costs, opus, [target(prolog)], Code),
         sub_atom(Code, _, _, _, 'model_pricing(')
+    )).
+
+%% ============================================================================
+%% Test 26: Cost Python Compile Component
+%% ============================================================================
+
+test_cost_python_compile :-
+    format("~nCost Python compile:~n"),
+    register_agent_loop_components,
+    %% Python compile_component produces dict entry
+    assert_true('opus python cost dict entry', (
+        compile_component(agent_costs, opus, [target(python)], Code),
+        sub_atom(Code, _, _, _, '"opus": {"input":')
+    )),
+    %% emit_cost_facts with target(python) produces all 16 entries
+    assert_true('emit_cost_facts python has 16 entries', (
+        with_output_to(atom(Output), (
+            current_output(CS),
+            agent_loop_components:emit_cost_facts(CS, [target(python)])
+        )),
+        findall(_, sub_atom(Output, _, _, _, '"input":'), Matches),
+        length(Matches, 16)
+    )).
+
+%% ============================================================================
+%% Test 27: Security Blocked Python Emit
+%% ============================================================================
+
+test_security_blocked_py :-
+    format("~nSecurity blocked Python emit:~n"),
+    %% blocked_path produces Python set entries
+    assert_true('blocked_path python has /etc/shadow', (
+        with_output_to(atom(Output), (
+            current_output(BS),
+            agent_loop_components:emit_security_facts(BS,
+                [target(python), fact_type(blocked_path)])
+        )),
+        sub_atom(Output, _, _, _, '/etc/shadow')
+    )),
+    %% blocked_command_pattern produces Python regex tuples
+    assert_true('blocked_command_pattern python has regex tuples', (
+        with_output_to(atom(Output2), (
+            current_output(BS2),
+            agent_loop_components:emit_security_facts(BS2,
+                [target(python), fact_type(blocked_command_pattern)])
+        )),
+        sub_atom(Output2, _, _, _, '(r\'')
+    )).
+
+%% ============================================================================
+%% Test 28: Backend Init Import Emit
+%% ============================================================================
+
+test_backend_init_imports :-
+    format("~nBackend init imports:~n"),
+    %% emit_backend_init_imports produces 'from .' import lines
+    assert_true('backend init imports has from .', (
+        with_output_to(atom(Output), (
+            current_output(IS),
+            agent_loop_components:emit_backend_init_imports(IS, [])
+        )),
+        sub_atom(Output, _, _, _, 'from .')
+    )),
+    %% emit_backend_init_optional produces try/except blocks
+    assert_true('backend init optional has try:', (
+        with_output_to(atom(Output2), (
+            current_output(IS2),
+            agent_loop_components:emit_backend_init_optional(IS2, [])
+        )),
+        sub_atom(Output2, _, _, _, 'try:')
     )).
