@@ -13,6 +13,7 @@
     retry_call/2,
     send_request/4,
     send_request_streaming/4,
+    format_api_error/2,
     streaming_capable/1
 ]).
 
@@ -67,6 +68,23 @@ retry_config(3, 1.0, 30.0).
 is_retryable(error(existence_error(url, _), _)).
 is_retryable(error(socket_error(_), _)).
 is_retryable(error(timeout_error, _)).
+is_retryable(error(_, context(_, status(429, _)))).
+is_retryable(error(_, context(_, status(500, _)))).
+is_retryable(error(_, context(_, status(502, _)))).
+is_retryable(error(_, context(_, status(503, _)))).
+
+%% format_api_error(+Error, -Message) — human-readable error description
+format_api_error(error(_, context(_, status(429, _))), "Rate limited (429). Will retry.") :- !.
+format_api_error(error(_, context(_, status(500, _))), "Internal server error (500)") :- !.
+format_api_error(error(_, context(_, status(502, _))), "Bad gateway (502)") :- !.
+format_api_error(error(_, context(_, status(503, _))), "Service unavailable (503)") :- !.
+format_api_error(error(existence_error(url, URL), _), Msg) :-
+    !, format(atom(Msg), "Connection failed: ~w", [URL]).
+format_api_error(error(socket_error(E), _), Msg) :-
+    !, format(atom(Msg), "Socket error: ~w", [E]).
+format_api_error(error(timeout_error, _), "Request timed out") :- !.
+format_api_error(Error, Msg) :-
+    format(atom(Msg), "Request error: ~w", [Error]).
 
 %% retry_call(+Goal, +Options) — retry with exponential backoff + jitter
 retry_call(Goal, Options) :-
@@ -84,7 +102,8 @@ retry_call_(Goal, Attempt, Max, Base, MaxD) :-
             Delay is min(MaxD, Base * (2 ^ (Attempt - 1))),
             random(Jitter),
             ActualDelay is Delay * (0.5 + Jitter),
-            format("[Retry ~w/~w in ~2fs]~n", [Attempt, Max, ActualDelay]),
+            (format_api_error(Error, ErrMsg) -> true ; ErrMsg = "unknown"),
+            format("[~w — Retry ~w/~w in ~2fs]~n", [ErrMsg, Attempt, Max, ActualDelay]),
             sleep(ActualDelay),
             NextAttempt is Attempt + 1,
             retry_call_(Goal, NextAttempt, Max, Base, MaxD)
@@ -105,8 +124,9 @@ send_request_inner(Backend, Messages, Tools, Response) :-
         (send_request_raw(Type, Backend, Messages, Tools, RawResponse),
          extract_response(RawResponse, Response)),
         Error,
-        (format(atom(ErrMsg), "Request error: ~w", [Error]),
-         Response = _{content: ErrMsg, tool_calls: []})).
+        (format_api_error(Error, ErrMsg),
+         format("[Error] ~w~n", [ErrMsg]),
+         Response = _{content: ErrMsg, tool_calls: [], usage: _{input_tokens: 0, output_tokens: 0}})).
 
 %% API backend: HTTP JSON request
 send_request_raw(api, Backend, Messages, Tools, Response) :-
@@ -241,37 +261,46 @@ send_request_streaming_raw(api_local, Backend, Messages, _Tools, Response) :-
             request_header('Content-Type'='application/json'),
             post(Body)
         ]),
-        read_ndjson_stream(In, Content),
+        read_ndjson_stream(In, Content, Usage),
         close(In)),
-    Response = _{content: Content, tool_calls: [], usage: _{input_tokens: 0, output_tokens: 0}}.
+    Response = _{content: Content, tool_calls: [], usage: Usage}.
 
 %% Read NDJSON stream line by line, printing tokens as they arrive
-read_ndjson_stream(In, Content) :-
-    read_ndjson_stream(In, [], Content).
+read_ndjson_stream(In, Content, Usage) :-
+    read_ndjson_stream(In, [], 0, 0, Content, Usage).
 
-read_ndjson_stream(In, Acc, Content) :-
+read_ndjson_stream(In, Acc, InToks, OutToks, Content, Usage) :-
     (at_end_of_stream(In) ->
         reverse(Acc, Tokens),
-        atomic_list_concat(Tokens, Content)
+        atomic_list_concat(Tokens, Content),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
     ;
         read_line_to_string(In, Line),
         (Line = end_of_file ->
             reverse(Acc, Tokens),
-            atomic_list_concat(Tokens, Content)
+            atomic_list_concat(Tokens, Content),
+            Usage = _{input_tokens: InToks, output_tokens: OutToks}
         ;
             catch(
                 (open_string(Line, StrIn),
                  json_read_dict(StrIn, Dict),
-                 close(StrIn),
-                 get_dict(message, Dict, Msg),
-                 get_dict(content, Msg, Token)),
-                _,
-                Token = ""),
-            (Token \= "" ->
-                write(Token), flush_output,
-                read_ndjson_stream(In, [Token|Acc], Content)
+                 close(StrIn)),
+                _, (Dict = _{done: false})),
+            %% Check for usage in final chunk
+            (get_dict(done, Dict, true) ->
+                (get_dict(prompt_eval_count, Dict, PEC) -> NewIn = PEC ; NewIn = InToks),
+                (get_dict(eval_count, Dict, EC) -> NewOut = EC ; NewOut = OutToks),
+                reverse(Acc, Tokens2),
+                atomic_list_concat(Tokens2, Content),
+                Usage = _{input_tokens: NewIn, output_tokens: NewOut}
             ;
-                read_ndjson_stream(In, Acc, Content)
+                (get_dict(message, Dict, Msg), get_dict(content, Msg, Token) -> true ; Token = ""),
+                (Token \= "" ->
+                    write(Token), flush_output,
+                    read_ndjson_stream(In, [Token|Acc], InToks, OutToks, Content, Usage)
+                ;
+                    read_ndjson_stream(In, Acc, InToks, OutToks, Content, Usage)
+                )
             )
         )
     ).
@@ -299,7 +328,8 @@ send_request_streaming_openai(Backend, Messages, Tools, Response) :-
     (member(auth_header(AuthH), Spec) -> true ; AuthH = "Authorization"),
     (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),
     atom_concat(AuthP, Key, AuthVal),
-    Body = json(_{model: Model, messages: Messages, tools: Tools, stream: true}),
+    Body = json(_{model: Model, messages: Messages, tools: Tools,
+                  stream: true, stream_options: _{include_usage: true}}),
     setup_call_cleanup(
         http_open(URL, In, [
             method(post),
@@ -307,9 +337,9 @@ send_request_streaming_openai(Backend, Messages, Tools, Response) :-
             request_header('Content-Type'='application/json'),
             post(Body)
         ]),
-        read_sse_stream(In, Content, ToolCalls),
+        read_sse_stream(In, Content, ToolCalls, Usage),
         close(In)),
-    Response = _{content: Content, tool_calls: ToolCalls, usage: _{input_tokens: 0, output_tokens: 0}}.
+    Response = _{content: Content, tool_calls: ToolCalls, usage: Usage}.
 
 %% Anthropic-format SSE streaming
 send_request_streaming_anthropic(Backend, Messages, Tools, Response) :-
@@ -354,7 +384,7 @@ send_request_streaming_anthropic(Backend, Messages, Tools, Response) :-
 read_anthropic_sse_stream(In, Content, ToolCalls, Usage) :-
     read_anthropic_sse_stream(In, [], [], 0, 0, [], Content, ToolCalls, Usage).
 
-read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, _CurTool,
+read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
                           Content, ToolCalls, Usage) :-
     (at_end_of_stream(In) ->
         reverse(TokAcc, Tokens),
@@ -376,105 +406,186 @@ read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, _CurTool,
                  close(StrIn)),
                 _, (Evt = null)),
             (Evt \= null ->
-                handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks,
+                handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks, CurTool,
                                        Content, ToolCalls, Usage)
             ;
-                read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+                read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
                                           Content, ToolCalls, Usage)
             )
         ;
-            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
                                       Content, ToolCalls, Usage)
         )
     ).
 
 %% Handle individual Anthropic SSE events
-handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks,
+handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks, CurTool,
                        Content, ToolCalls, Usage) :-
     get_dict(type, Evt, Type),
     (Type = "message_start" ->
-        %% Extract input token count from message.usage
         (get_dict(message, Evt, Msg),
          get_dict(usage, Msg, MUsage),
          get_dict(input_tokens, MUsage, NewInToks) -> true
         ; NewInToks = InToks),
-        read_anthropic_sse_stream(In, TokAcc, TCAcc, NewInToks, OutToks, [],
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, NewInToks, OutToks, CurTool,
                                   Content, ToolCalls, Usage)
+    ; Type = "content_block_start" ->
+        get_dict(content_block, Evt, CB),
+        (get_dict(type, CB, "tool_use") ->
+            get_dict(id, CB, TId),
+            get_dict(name, CB, TName),
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks,
+                                      tool_state(TId, TName, []),
+                                      Content, ToolCalls, Usage)
+        ;
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                      Content, ToolCalls, Usage)
+        )
     ; Type = "content_block_delta" ->
         get_dict(delta, Evt, Delta),
         get_dict(type, Delta, DType),
         (DType = "text_delta" ->
             get_dict(text, Delta, Token),
             write(Token), flush_output,
-            read_anthropic_sse_stream(In, [Token|TokAcc], TCAcc, InToks, OutToks, [],
+            read_anthropic_sse_stream(In, [Token|TokAcc], TCAcc, InToks, OutToks, CurTool,
+                                      Content, ToolCalls, Usage)
+        ; DType = "input_json_delta" ->
+            get_dict(partial_json, Delta, Fragment),
+            (CurTool = tool_state(CTId, CTName, CTFrags) ->
+                NewCurTool = tool_state(CTId, CTName, [Fragment|CTFrags])
+            ; NewCurTool = CurTool),
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, NewCurTool,
                                       Content, ToolCalls, Usage)
         ;
-            %% input_json_delta or other — skip
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                      Content, ToolCalls, Usage)
+        )
+    ; Type = "content_block_stop" ->
+        (CurTool = tool_state(CSId, CSName, CSFrags) ->
+            reverse(CSFrags, FragsOrdered),
+            atomic_list_concat(FragsOrdered, JsonStr),
+            (JsonStr = "" -> Args = _{}
+            ; catch(
+                (open_string(JsonStr, JIn), json_read_dict(JIn, Args), close(JIn)),
+                _, Args = _{})),
+            TC = _{id: CSId, name: CSName, arguments: Args},
+            read_anthropic_sse_stream(In, TokAcc, [TC|TCAcc], InToks, OutToks, [],
+                                      Content, ToolCalls, Usage)
+        ;
             read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
                                       Content, ToolCalls, Usage)
         )
     ; Type = "message_delta" ->
-        %% Extract output token count
         (get_dict(usage, Evt, DUsage),
          get_dict(output_tokens, DUsage, NewOutToks) -> true
         ; NewOutToks = OutToks),
-        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, NewOutToks, [],
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, NewOutToks, CurTool,
                                   Content, ToolCalls, Usage)
     ; Type = "message_stop" ->
-        %% Finalize
         reverse(TokAcc, Tokens),
         atomic_list_concat(Tokens, Content),
         reverse(TCAcc, ToolCalls),
         Usage = _{input_tokens: InToks, output_tokens: OutToks}
     ;
-        %% ping, content_block_start, content_block_stop, etc. — skip
-        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
                                   Content, ToolCalls, Usage)
     ).
 
-%% SSE stream parser — reads "data: <json>" lines
-read_sse_stream(In, Content, ToolCalls) :-
-    read_sse_stream(In, [], [], Content, ToolCalls).
+%% Accumulate OpenAI tool call deltas by index
+accumulate_tc_delta(DeltaTC, Acc, NewAcc) :-
+    get_dict(index, DeltaTC, Idx),
+    (get_dict(function, DeltaTC, Func) -> true ; Func = _{}),
+    (get_dict(id, DeltaTC, Id0) -> true ; Id0 = none),
+    (get_dict(name, Func, Name0) -> true ; Name0 = none),
+    (get_dict(arguments, Func, ArgFrag) -> true ; ArgFrag = ""),
+    length(Acc, CurLen),
+    (Idx < CurLen ->
+        nth0(Idx, Acc, tc_state(ExId, ExName, ExFrags)),
+        (Id0 \= none -> NId = Id0 ; NId = ExId),
+        (Name0 \= none -> NName = Name0 ; NName = ExName),
+        (ArgFrag \= "" -> NFrags = [ArgFrag|ExFrags] ; NFrags = ExFrags),
+        replace_nth0(Idx, Acc, tc_state(NId, NName, NFrags), NewAcc)
+    ;
+        (Id0 \= none -> FId = Id0 ; FId = ""),
+        (Name0 \= none -> FName = Name0 ; FName = ""),
+        (ArgFrag \= "" -> Frags0 = [ArgFrag] ; Frags0 = []),
+        append(Acc, [tc_state(FId, FName, Frags0)], NewAcc)
+    ).
 
-read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls) :-
+replace_nth0(0, [_|Rest], Elem, [Elem|Rest]) :- !.
+replace_nth0(N, [H|Rest], Elem, [H|Result]) :-
+    N > 0, N1 is N - 1,
+    replace_nth0(N1, Rest, Elem, Result).
+
+%% Finalize tool call accumulators into normalized dicts
+finalize_tc_acc([], []) :- !.
+finalize_tc_acc([tc_state(_,_,_)|_] = Acc, ToolCalls) :- !,
+    maplist(finalize_one_tc, Acc, ToolCalls).
+finalize_tc_acc(Acc, ToolCalls) :- reverse(Acc, ToolCalls).
+
+finalize_one_tc(tc_state(Id, Name, RevFrags), TC) :-
+    reverse(RevFrags, Frags),
+    atomic_list_concat(Frags, JsonStr),
+    (JsonStr = "" -> Args = _{}
+    ; catch(
+        (open_string(JsonStr, JIn), json_read_dict(JIn, Args), close(JIn)),
+        _, Args = _{})),
+    TC = _{id: Id, name: Name, arguments: Args}.
+
+%% SSE stream parser — reads "data: <json>" lines
+read_sse_stream(In, Content, ToolCalls, Usage) :-
+    read_sse_stream(In, [], [], 0, 0, Content, ToolCalls, Usage).
+
+read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage) :-
     (at_end_of_stream(In) ->
         reverse(TokenAcc, Tokens),
         atomic_list_concat(Tokens, Content),
-        reverse(TCAcc, ToolCalls)
+        finalize_tc_acc(TCAcc, ToolCalls),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
     ;
         read_line_to_string(In, Line),
         (Line = end_of_file ->
             reverse(TokenAcc, Tokens),
             atomic_list_concat(Tokens, Content),
-            reverse(TCAcc, ToolCalls)
+            finalize_tc_acc(TCAcc, ToolCalls),
+            Usage = _{input_tokens: InToks, output_tokens: OutToks}
         ; sub_string(Line, 0, 6, _, "data: ") ->
             sub_string(Line, 6, _, 0, Payload),
             (Payload = "[DONE]" ->
                 reverse(TokenAcc, Tokens),
                 atomic_list_concat(Tokens, Content),
-                reverse(TCAcc, ToolCalls)
+                finalize_tc_acc(TCAcc, ToolCalls),
+                Usage = _{input_tokens: InToks, output_tokens: OutToks}
             ;
                 catch(
                     (open_string(Payload, StrIn),
                      json_read_dict(StrIn, Chunk),
                      close(StrIn)),
                     _, (Chunk = null)),
-                (Chunk \= null,
-                 get_dict(choices, Chunk, Choices),
-                 Choices = [Choice|_],
-                 get_dict(delta, Choice, Delta) ->
+                %% Check for usage in chunk
+                (Chunk \= null, get_dict(usage, Chunk, CUsage) ->
+                    (get_dict(prompt_tokens, CUsage, NIn) -> true ; NIn = InToks),
+                    (get_dict(completion_tokens, CUsage, NOut) -> true ; NOut = OutToks),
+                    read_sse_stream(In, TokenAcc, TCAcc, NIn, NOut, Content, ToolCalls, Usage)
+                ; Chunk \= null,
+                  get_dict(choices, Chunk, Choices),
+                  Choices = [Choice|_],
+                  get_dict(delta, Choice, Delta) ->
                     (get_dict(content, Delta, Token), Token \= null ->
                         write(Token), flush_output,
-                        read_sse_stream(In, [Token|TokenAcc], TCAcc, Content, ToolCalls)
+                        read_sse_stream(In, [Token|TokenAcc], TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
+                    ; get_dict(tool_calls, Delta, DeltaTCs) ->
+                        foldl(accumulate_tc_delta, DeltaTCs, TCAcc, NewTCAcc),
+                        read_sse_stream(In, TokenAcc, NewTCAcc, InToks, OutToks, Content, ToolCalls, Usage)
                     ;
-                        read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls)
+                        read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
                     )
                 ;
-                    read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls)
+                    read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
                 )
             )
         ;
-            %% Skip non-data lines (empty lines, comments, event types)
-            read_sse_stream(In, TokenAcc, TCAcc, Content, ToolCalls)
+            %% Skip non-data lines
+            read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
         )
     ).

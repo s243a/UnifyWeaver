@@ -31,6 +31,25 @@ current_format(plain).
 streaming(false).
 context_max_tokens(100000).
 context_max_messages(50).
+:- dynamic chars_per_token/1.
+chars_per_token(4.0).
+:- dynamic ansi_enabled/1.
+ansi_enabled(true).
+:- initialization((getenv('NO_COLOR', _) -> retractall(ansi_enabled(_)), assert(ansi_enabled(false)) ; true)).
+ansi_code(reset,   "\033[0m").
+ansi_code(bold,    "\033[1m").
+ansi_code(dim,     "\033[2m").
+ansi_code(red,     "\033[31m").
+ansi_code(green,   "\033[32m").
+ansi_code(yellow,  "\033[33m").
+ansi_code(cyan,    "\033[36m").
+ansi_format(Style, Fmt, Args) :-
+    (ansi_enabled(true), ansi_code(Style, Code), ansi_code(reset, Reset) ->
+        atom_string(CodeA, Code), atom_string(ResetA, Reset),
+        atomic_list_concat([CodeA, Fmt, ResetA], FullFmt),
+        format(FullFmt, Args)
+    ; format(Fmt, Args)).
+
 sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).
 
 %% Entry point with default options
@@ -49,8 +68,8 @@ agent_loop(Args) :-
         set_security_profile(Prof)
     ; true),
     cost_tracker_init(main),
-    format("uwsal — Prolog agent loop (backend: ~w)~n", [BName]),
-    write("Type /help for commands, /exit to quit."), nl,
+    ansi_format(bold, "uwsal — Prolog agent loop (backend: ~w)~n", [BName]),
+    ansi_format(dim, "Type /help for commands, /exit to quit.~n", []),
     repl_loop.
 
 %% Main read-eval-print loop
@@ -165,7 +184,13 @@ handle_response(Backend, Response, Messages, Streamed) :-
      (InTok > 0 ; OutTok > 0) ->
         get_dict(spec, Backend, BSpec),
         (member(model(Model), BSpec) -> true ; Model = "unknown"),
-        cost_tracker_add(main, Model, InTok, OutTok)
+        cost_tracker_add(main, Model, InTok, OutTok),
+        %% Calibrate token estimation from actual usage
+        (InTok > 0 ->
+            foldl([M,A,T]>>(get_dict(content,M,MC) -> atom_length(MC,L), T is A+L ; T=A),
+                  Messages, 0, TotalChars),
+            update_token_calibration(TotalChars, InTok)
+        ; true)
     ; true),
     (get_dict(tool_calls, Response, ToolCalls), ToolCalls \= [] ->
         handle_tool_calls(Backend, ToolCalls, Messages, Response)
@@ -185,7 +210,7 @@ handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-
     %% Check iteration limit
     max_iterations(MaxIter),
     (MaxIter > 0, Iteration > MaxIter ->
-        format("~n[Paused after ~w iterations. Send a message to continue.]~n", [MaxIter]),
+        ansi_format(yellow, "~n[Paused after ~w iterations. Send a message to continue.]~n", [MaxIter]),
         AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},
         append(Messages, [AsstMsg], NewMsgs),
         retractall(conversation(_)),
@@ -222,7 +247,7 @@ execute_tool_calls(Backend, [TC|Rest], [Result|Results]) :-
     get_dict(arguments, TC, Params),
     atom_string(ToolAtom, ToolName),
     describe_tool_call(Backend, ToolAtom, Params, Desc),
-    format("[tool] ~w~n", [Desc]),
+    ansi_format(cyan, "[tool] ~w~n", [Desc]),
     (confirm_destructive(ToolAtom, true) ->
         execute_tool(ToolAtom, Params, ToolResult),
         (ToolResult = ok(Output) -> Content = Output ; ToolResult = error(Err) -> Content = Err),
@@ -240,9 +265,9 @@ handle_action(clear, _) :-
     assert(conversation([])),
     write("Context cleared."), nl.
 handle_action(help, _) :-
-    write("Available commands:"), nl,
+    ansi_format(bold, "Available commands:~n", []),
     forall(slash_command_group(Group, Cmds), (
-        format("~n  ~w:~n", [Group]),
+        ansi_format(bold, "~n  ~w:~n", [Group]),
         forall(member(CmdName, Cmds), (
             slash_command(CmdName, _, Opts, Help),
             (member(help_display(Disp), Opts) -> true ; format(atom(Disp), "/~w", [CmdName])),
@@ -297,6 +322,34 @@ handle_action(call_handler('_handle_stream_command', _), _) :-
     assert(streaming(New)),
     (New = true -> Status = enabled ; Status = disabled),
     format("[Streaming ~w]~n", [Status]).
+handle_action(call_handler('_handle_model_command', Args), _) :-
+    current_backend(Backend),
+    get_dict(spec, Backend, Spec),
+    (Args = "" ->
+        (member(model(M), Spec) -> format("Current model: ~w~n", [M])
+        ; write("No model set in current backend"), nl)
+    ;
+        atom_string(_, Args),
+        (select(model(_), Spec, Rest) ->
+            NewSpec = [model(Args)|Rest]
+        ;
+            NewSpec = [model(Args)|Spec]
+        ),
+        put_dict(spec, Backend, NewSpec, NewBackend),
+        retractall(current_backend(_)),
+        assert(current_backend(NewBackend)),
+        format("Model switched to: ~w~n", [Args])
+    ).
+handle_action(call_handler('_handle_tokens_command', _), _) :-
+    conversation(Msgs),
+    length(Msgs, NMsgs),
+    chars_per_token(CPT),
+    foldl([M,A,T]>>(get_dict(content,M,C) -> atom_length(C,L), T is A+L ; T=A),
+          Msgs, 0, TotalChars),
+    Tokens is round(TotalChars / CPT),
+    context_limit(Limit),
+    format("Context: ~w tokens (est.) / ~w limit (~w messages, ~1f chars/token)~n",
+           [Tokens, Limit, NMsgs, CPT]).
 handle_action(call_handler('_handle_aliases_command', _), _) :-
     write("Command aliases:"), nl,
     forall(command_alias(Alias, Target), (
@@ -613,6 +666,16 @@ search_messages(SessId, [Msg|Rest], Query, Acc, Found) :-
     ; Acc1 = Acc),
     search_messages(SessId, Rest, Query, Acc1, Found).
 
+%% update_token_calibration(+CharCount, +TokenCount) — adjust chars_per_token ratio
+update_token_calibration(CharCount, TokenCount) :-
+    (TokenCount > 0, CharCount > 0 ->
+        chars_per_token(OldRatio),
+        Observed is CharCount / TokenCount,
+        NewRatio is 0.9 * OldRatio + 0.1 * Observed,
+        retractall(chars_per_token(_)),
+        assert(chars_per_token(NewRatio))
+    ; true).
+
 %% Context sliding — trim messages by count and estimated tokens
 trim_context(Messages, Trimmed) :-
     context_max_messages(MaxMsgs),
@@ -638,6 +701,7 @@ estimate_tokens(Msgs, Total) :-
 msg_tokens(Msg, Acc, Total) :-
     (get_dict(content, Msg, Content) ->
         atom_length(Content, Len),
-        Tokens is Len // 4
+        chars_per_token(CPT),
+        Tokens is round(Len / CPT)
     ; Tokens = 0),
     Total is Acc + Tokens.

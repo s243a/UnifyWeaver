@@ -26,6 +26,8 @@ slash_command(export, prefix, [handler('_handle_export_command'), comment('/expo
 slash_command(cost, exact, [aliases([costs]), handler('_handle_cost_command'), comment('/cost - show cost tracking')], 'Show API cost tracking summary').
 slash_command(search, prefix, [handler('_handle_search_command'), comment('/search <query> - search sessions'), help_display('/search <query>')], 'Search across saved sessions').
 slash_command(stream, exact, [aliases([streaming]), handler('_handle_stream_command'), comment('/stream - toggle streaming mode')], 'Toggle streaming mode for API backends').
+slash_command(model, prefix_sp, [handler('_handle_model_command'), comment('/model [name] - show or switch model'), help_display('/model [name]'), target(prolog)], 'Show or switch model at runtime').
+slash_command(tokens, exact, [handler('_handle_tokens_command'), comment('/tokens - show context token estimate'), target(prolog)], 'Show context token estimate and limit').
 slash_command(aliases, exact, [handler('_handle_aliases_command'), comment('Aliases')], 'List command aliases (e.g., /q -> /quit)').
 slash_command(templates, exact, [handler('_handle_templates_command'), comment('Templates')], 'List prompt templates').
 slash_command(history, exact_or_prefix_sp, [handler('_handle_history_command'), comment('History'), help_display('/history [n]')], 'Show last n messages (default 10)').
@@ -68,9 +70,9 @@ command_alias("grep", "search").
 
 %% slash_command_group(+GroupName, +CommandList)
 slash_command_group('Commands (with or without / prefix)', [exit, clear, status, help]).
-slash_command_group('Loop Control', [iterations, backend, format, stream]).
+slash_command_group('Loop Control', [iterations, backend, model, format, stream]).
 slash_command_group('Sessions', [save, load, sessions, search]).
-slash_command_group('Export & Costs', [export, cost]).
+slash_command_group('Export & Costs', [export, cost, tokens]).
 slash_command_group('History', [history, delete, edit, replay, undo]).
 slash_command_group('Shortcuts', [aliases, templates]).
 
