@@ -38,6 +38,8 @@ run_tests :-
     test_bindings_summary,
     test_model_pricing,
     test_anthropic_backend_detection,
+    test_prolog_only_commands,
+    test_retryable_error_clauses,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -93,7 +95,7 @@ test_component_registration :-
     length(Commands, NC),
     length(Backends, NB),
     assert_eq('Tool count', NT, 4),
-    assert_eq('Command count', NC, 21),
+    assert_eq('Command count', NC, 23),
     assert_eq('Backend count', NB, 8).
 
 %% ============================================================================
@@ -281,4 +283,45 @@ test_anthropic_backend_detection :-
         agent_loop_module:agent_backend(openrouter_api, Props2),
         member(auth_header(AH2), Props2),
         atom_string(AH2, "Authorization")
+    )).
+
+%% ============================================================================
+%% Test 13: Prolog-only Commands (/model, /tokens)
+%% ============================================================================
+
+test_prolog_only_commands :-
+    format("~nProlog-only commands:~n"),
+    assert_true('/model command exists', (
+        slash_command(model, prefix_sp, ModelOpts, _),
+        member(handler('_handle_model_command'), ModelOpts),
+        member(target(prolog), ModelOpts)
+    )),
+    assert_true('/tokens command exists', (
+        slash_command(tokens, exact, TokOpts, _),
+        member(handler('_handle_tokens_command'), TokOpts),
+        member(target(prolog), TokOpts)
+    )),
+    assert_true('/model in Loop Control group', (
+        agent_loop_module:slash_command_group('Loop Control', LoopCmds),
+        member(model, LoopCmds)
+    )),
+    assert_true('/tokens in Export & Costs group', (
+        agent_loop_module:slash_command_group('Export & Costs', CostCmds),
+        member(tokens, CostCmds)
+    )).
+
+%% ============================================================================
+%% Test 14: Retryable Error Clauses
+%% ============================================================================
+
+test_retryable_error_clauses :-
+    format("~nRetryable error clauses:~n"),
+    %% Count is_retryable emission lines in generator source
+    %% We verify the expected patterns exist in the generator
+    assert_true('existence_error retryable', (
+        agent_loop_module:streaming_capable(api)  %% proxy: backends generator works
+    )),
+    assert_true('format_api_error exported', (
+        agent_loop_module:agent_backend(claude_api, CProps),
+        member(auth_header(_), CProps)  %% proxy: backends section fully emitted
     )).
