@@ -18,7 +18,13 @@
     emit_security_facts/2,
     emit_cost_facts/2,
     emit_backend_init_imports/2,
-    emit_backend_init_optional/2
+    emit_backend_init_optional/2,
+    emit_context_enums/2,
+    emit_message_fields/2,
+    emit_agent_config_fields/2,
+    emit_audit_levels/2,
+    emit_cli_overrides/2,
+    emit_test_metadata/0
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -540,6 +546,116 @@ emit_backend_init_optional(S, _Options) :-
         format(S, '    pass~n', [])
     )).
 
+%% ============================================================================
+%% Python Emit Predicates — context.py, config.py, agent_loop.py
+%% ============================================================================
+
+%% emit_context_enums(+Stream, +Options)
+%% Emit Python Enum classes from context_enum/3 facts.
+emit_context_enums(S, _Options) :-
+    forall(agent_loop_module:context_enum(EnumName, DocStr, Values), (
+        format(S, 'class ~w(Enum):~n', [EnumName]),
+        format(S, '    """~w"""~n', [DocStr]),
+        forall(member(value(PyName, StrVal, Comment), Values), (
+            format(S, '    ~w = "~w"    # ~w~n', [PyName, StrVal, Comment])
+        )),
+        write(S, '\n\n')
+    )).
+
+%% emit_message_fields(+Stream, +Options)
+%% Emit Python dataclass fields from message_field/3 facts.
+emit_message_fields(S, _Options) :-
+    forall(agent_loop_module:message_field(Name, Type, Default), (
+        (Default = none ->
+            format(S, '    ~w: ~w~n', [Name, Type])
+        ;
+            format(S, '    ~w: ~w = ~w~n', [Name, Type, Default])
+        )
+    )).
+
+%% emit_agent_config_fields(+Stream, +Options)
+%% Emit Python dataclass fields from agent_config_field/4 facts.
+emit_agent_config_fields(S, _Options) :-
+    forall(agent_loop_module:agent_config_field(Name, Type, Default, Comment), (
+        (Comment = "" ->
+            CommentStr = ""
+        ;
+            format(atom(CommentStr), '  # ~w', [Comment])
+        ),
+        (Default = none ->
+            format(S, '    ~w: ~w~w~n', [Name, Type, CommentStr])
+        ;
+            format(S, '    ~w: ~w = ~w~w~n', [Name, Type, Default, CommentStr])
+        )
+    )).
+
+%% emit_audit_levels(+Stream, +Options)
+%% Emit Python dict entries from audit_profile_level/2 facts.
+emit_audit_levels(S, _Options) :-
+    forall(agent_loop_module:audit_profile_level(Profile, Level), (
+        format(S, '        \'~w\': \'~w\',~n', [Profile, Level])
+    )).
+
+%% emit_cli_overrides(+Stream, +Options)
+%% Emit Python CLI override dispatch from cli_override/3 facts.
+emit_cli_overrides(S, _Options) :-
+    forall(agent_loop_module:cli_override(Arg, Field, Behavior), (
+        agent_loop_module:emit_single_override(S, Arg, Field, Behavior)
+    )).
+
+%% ============================================================================
+%% Test Metadata Generation
+%% ============================================================================
+
+%% emit_test_metadata/0
+%% Writes test_metadata.json with component registry data for parameterized tests.
+emit_test_metadata :-
+    register_agent_loop_components,
+    agent_loop_module:output_path(python, 'test_metadata.json', Path),
+    open(Path, write, S),
+    %% Collect component data
+    findall(M, component(agent_costs, M, model_pricing, _), CostModels),
+    findall(N, component(agent_tools, N, tool_handler, _), ToolNames),
+    findall(P, component(agent_security, P, security_profile, _), SecProfiles),
+    findall(B, component(agent_backends, B, backend, _), BackendNames),
+    findall(C, component(agent_commands, C, slash_command, _), CmdNames),
+    length(CostModels, NC), length(ToolNames, NT), length(SecProfiles, NS),
+    length(BackendNames, NB), length(CmdNames, NCm),
+    %% Write JSON
+    write(S, '{\n'),
+    %% costs
+    format(S, '  "costs": {"count": ~w, "models": [', [NC]),
+    emit_json_string_list(S, CostModels),
+    write(S, ']},\n'),
+    %% tools
+    format(S, '  "tools": {"count": ~w, "names": [', [NT]),
+    emit_json_string_list(S, ToolNames),
+    write(S, ']},\n'),
+    %% security
+    format(S, '  "security": {"count": ~w, "profiles": [', [NS]),
+    emit_json_string_list(S, SecProfiles),
+    write(S, ']},\n'),
+    %% backends
+    format(S, '  "backends": {"count": ~w, "names": [', [NB]),
+    emit_json_string_list(S, BackendNames),
+    write(S, ']},\n'),
+    %% commands
+    format(S, '  "commands": {"count": ~w, "names": [', [NCm]),
+    emit_json_string_list(S, CmdNames),
+    write(S, ']}\n'),
+    write(S, '}\n'),
+    close(S),
+    format('  Generated test_metadata.json~n', []).
+
+%% emit_json_string_list(+Stream, +List)
+%% Write a list of atoms as JSON string array entries (no trailing comma).
+emit_json_string_list(_, []).
+emit_json_string_list(S, [X]) :- !,
+    format(S, '"~w"', [X]).
+emit_json_string_list(S, [X|Rest]) :-
+    format(S, '"~w", ', [X]),
+    emit_json_string_list(S, Rest).
+
 %% agent_loop_component_summary/0
 %% Registers everything and prints a summary.
 agent_loop_component_summary :-
@@ -562,17 +678,20 @@ agent_loop_component_summary :-
 %% Documents all generator-to-emit-path mappings.
 emit_predicate_summary :-
     format("~n=== Generator-to-Emit-Path Summary ===~n~n"),
+    format("Verification: pytest integration tests (primary) + prototype diff (optional)~n~n"),
     format("Generators using component/emit paths:~n"),
     format("  costs.py          -> emit_cost_facts/2 [target(python)]~n"),
     format("  tools.py          -> emit_security_facts/2 [blocked_* fact_types]~n"),
     format("  tools.py          -> generate_tool_dispatch/1 (component iteration)~n"),
     format("  backends/__init__ -> emit_backend_init_imports/2 + emit_backend_init_optional/2~n"),
     format("  security/profiles -> component(agent_security, ...) iteration~n"),
+    format("  context.py        -> emit_context_enums/2, emit_message_fields/2~n"),
+    format("  config.py         -> emit_agent_config_fields/2~n"),
+    format("  agent_loop.py     -> emit_audit_levels/2, emit_cli_overrides/2~n"),
+    format("  agent_loop.py     -> emit_binding_dispatch_comment/2 (binding metadata)~n"),
     format("  Prolog generators -> emit_tool/command/backend/security/cost_facts/2~n"),
     format("~nGenerators using raw fact iteration (by design):~n"),
     format("  aliases.py        -> command_alias/2 (structural ordering with comments)~n"),
-    format("  config.py         -> agent_config_field/4, default_agent_preset/3~n"),
-    format("  context.py        -> context_enum/3, message_field/3~n"),
-    format("  agent_loop.py     -> audit_profile_level/2, cli_override/3~n"),
+    format("  config.py         -> default_agent_preset/3, api_key_env_var/2~n"),
     format("  backends/<name>   -> agent_backend/2 + py_fragment/2~n"),
     format("~n").
