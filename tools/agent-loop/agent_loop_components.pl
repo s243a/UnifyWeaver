@@ -24,7 +24,15 @@
     emit_agent_config_fields/2,
     emit_audit_levels/2,
     emit_cli_overrides/2,
-    emit_test_metadata/0
+    emit_test_metadata/0,
+    emit_prolog_config_facts/2,
+    emit_api_key_env_vars_py/2,
+    emit_api_key_files_py/2,
+    emit_default_presets_py/2,
+    emit_security_module_imports/2,
+    emit_help_groups/2,
+    emit_readme_sections/2,
+    emit_backend_module_imports/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -461,6 +469,11 @@ emit_security_facts(S, Options) :-
         )
     ;
         %% Prolog path: security_profile via compile_component + raw enumerations
+        write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
+        emit_indexing_directive(S, security_profile/2),
+        emit_indexing_directive(S, blocked_path/1),
+        emit_indexing_directive(S, blocked_path_prefix/1),
+        write(S, '\n'),
         write(S, '%% security_profile(+Name, +Properties)\n'),
         forall(component(agent_security, Name, security_profile, _), (
             compile_component(agent_security, Name, [target(prolog)], Code),
@@ -513,6 +526,9 @@ emit_cost_facts(S, Options) :-
             write(S, Code), nl(S)
         ))
     ;
+        write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
+        emit_indexing_directive(S, model_pricing/3),
+        write(S, '\n'),
         write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
         forall(component(agent_costs, Model, model_pricing, _), (
             compile_component(agent_costs, Model, [target(prolog)], Code),
@@ -545,6 +561,119 @@ emit_backend_init_optional(S, _Options) :-
         format(S, 'except ImportError:~n', []),
         format(S, '    pass~n', [])
     )).
+
+%% ============================================================================
+%% Prolog Target Optimization Helpers
+%% ============================================================================
+
+%% emit_indexing_directive(+Stream, +Pred/Arity)
+%% Emit an indexing hint comment for predicates that benefit from
+%% SWI-Prolog's first-argument indexing (auto-applied to fact tables).
+emit_indexing_directive(S, Pred/Arity) :-
+    format(S, '%%   ~w/~w: first-argument indexed~n', [Pred, Arity]).
+
+%% emit_optimization_notes(+Stream, +Notes)
+%% Emit optimization documentation as Prolog comments.
+emit_optimization_notes(S, Notes) :-
+    write(S, '%% Optimization notes:\n'),
+    forall(member(Note, Notes), (
+        format(S, '%%   - ~w~n', [Note])
+    )),
+    write(S, '\n').
+
+%% ============================================================================
+%% Prolog Config Emit — replaces 10 forall loops in generate_prolog_config
+%% ============================================================================
+
+%% emit_prolog_config_facts(+Stream, +Options)
+%% Emit all fact sections for generated prolog/config.pl.
+%% Consolidates 10 forall loops from generate_prolog_config into one predicate.
+%% When target is Prolog, emits :- det() directives for deterministic lookups.
+emit_prolog_config_facts(S, _Options) :-
+    %% Optimization notes and indexing hints
+    emit_optimization_notes(S, [
+        'api_key_env_var/2, api_key_file/2: deterministic lookup per backend',
+        'audit_profile_level/2: deterministic lookup per profile',
+        'cli_argument/2: first-argument indexed on atom names (63 clauses)',
+        'config_field_json_default/2: deterministic lookup per field'
+    ]),
+    write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
+    emit_indexing_directive(S, cli_argument/2),
+    emit_indexing_directive(S, api_key_env_var/2),
+    emit_indexing_directive(S, api_key_file/2),
+    emit_indexing_directive(S, audit_profile_level/2),
+    emit_indexing_directive(S, config_field_json_default/2),
+    write(S, '\n'),
+    %% cli_argument facts
+    write(S, '%% cli_argument(+Name, +Options)\n'),
+    forall(agent_loop_module:cli_argument(Name, Opts), (
+        format(S, 'cli_argument(~q, ', [Name]),
+        agent_loop_module:write_prolog_term(S, Opts),
+        write(S, ').\n')
+    )),
+    write(S, '\n'),
+    %% agent_config_field facts
+    write(S, '%% agent_config_field(+Name, +Type, +Default, +Description)\n'),
+    forall(agent_loop_module:agent_config_field(Name, Type, Default, Desc), (
+        format(S, 'agent_config_field(~q, ~q, ~q, ~q).~n', [Name, Type, Default, Desc])
+    )),
+    write(S, '\n'),
+    %% default_agent_preset facts
+    write(S, '%% default_agent_preset(+PresetName, +Backend, +Overrides)\n'),
+    forall(agent_loop_module:default_agent_preset(Name, Backend, Overrides), (
+        format(S, 'default_agent_preset(~q, ~q, ', [Name, Backend]),
+        agent_loop_module:write_prolog_term(S, Overrides),
+        write(S, ').\n')
+    )),
+    write(S, '\n'),
+    %% api_key_env_var facts
+    write(S, '%% api_key_env_var(+Backend, +EnvVar)\n'),
+    forall(agent_loop_module:api_key_env_var(Backend, EnvVar), (
+        format(S, 'api_key_env_var(~q, ~q).~n', [Backend, EnvVar])
+    )),
+    write(S, '\n'),
+    %% api_key_file facts
+    write(S, '%% api_key_file(+Backend, +FilePath)\n'),
+    forall(agent_loop_module:api_key_file(Backend, FilePath), (
+        format(S, 'api_key_file(~q, ~q).~n', [Backend, FilePath])
+    )),
+    write(S, '\n'),
+    %% example_agent_config facts
+    write(S, '%% example_agent_config(+Name, +Backend, +Properties)\n'),
+    forall(agent_loop_module:example_agent_config(Name, Backend, Props), (
+        format(S, 'example_agent_config(~q, ~q, ', [Name, Backend]),
+        agent_loop_module:write_prolog_term(S, Props),
+        write(S, ').\n')
+    )),
+    write(S, '\n'),
+    %% config_search_path facts
+    write(S, '%% config_search_path(+Path, +Category)\n'),
+    forall(agent_loop_module:config_search_path(CPath, Cat), (
+        format(S, 'config_search_path(~q, ~q).~n', [CPath, Cat])
+    )),
+    write(S, '\n'),
+    %% config_field_json_default facts
+    write(S, '%% config_field_json_default(+FieldName, +JsonDefault)\n'),
+    write(S, '%% Maps agent config fields to JSON-safe defaults for code generation.\n'),
+    write(S, '%% Special values: positional (name=arg), no_default (data.get with no fallback)\n'),
+    forall(agent_loop_module:config_field_json_default(FName, FDefault), (
+        format(S, 'config_field_json_default(~q, ~q).~n', [FName, FDefault])
+    )),
+    write(S, '\n'),
+    %% config_dir_file_name facts
+    write(S, '%% config_dir_file_name(+FileName)\n'),
+    write(S, '%% Standard config file names searched by load_config_from_dir.\n'),
+    forall(agent_loop_module:config_dir_file_name(FN), (
+        format(S, 'config_dir_file_name(~q).~n', [FN])
+    )),
+    write(S, '\n'),
+    %% audit_profile_level facts
+    write(S, '%% audit_profile_level(+Profile, +AuditLevel)\n'),
+    write(S, '%% Maps security profile to audit logging level.\n'),
+    forall(agent_loop_module:audit_profile_level(P, L), (
+        format(S, 'audit_profile_level(~q, ~q).~n', [P, L])
+    )),
+    write(S, '\n').
 
 %% ============================================================================
 %% Python Emit Predicates — context.py, config.py, agent_loop.py
@@ -602,6 +731,85 @@ emit_cli_overrides(S, _Options) :-
     forall(agent_loop_module:cli_override(Arg, Field, Behavior), (
         agent_loop_module:emit_single_override(S, Arg, Field, Behavior)
     )).
+
+%% ============================================================================
+%% Python Emit Predicates — config.py data-driven sections
+%% ============================================================================
+
+%% emit_api_key_env_vars_py(+Stream, +Options)
+%% Emit Python dict entries from api_key_env_var/2 facts.
+emit_api_key_env_vars_py(S, _Options) :-
+    forall(agent_loop_module:api_key_env_var(Backend, Var), (
+        format(S, '        \'~w\': \'~w\',~n', [Backend, Var])
+    )).
+
+%% emit_api_key_files_py(+Stream, +Options)
+%% Emit Python dict entries from api_key_file/2 facts.
+emit_api_key_files_py(S, _Options) :-
+    forall(agent_loop_module:api_key_file(Backend, Path), (
+        format(S, '        \'~w\': \'~w\',~n', [Backend, Path])
+    )).
+
+%% emit_default_presets_py(+Stream, +Options)
+%% Emit Python AgentConfig preset entries from default_agent_preset/3 facts.
+emit_default_presets_py(S, _Options) :-
+    forall(agent_loop_module:default_agent_preset(Name, Backend, Props), (
+        format(S, '    config.agents[\'~w\'] = AgentConfig(~n', [Name]),
+        format(S, '        name=\'~w\',~n', [Name]),
+        format(S, '        backend=\'~w\',~n', [Backend]),
+        forall(member(Key=Val, Props), (
+            (Val = true -> format(S, '        ~w=True,~n', [Key])
+            ; Val = false -> format(S, '        ~w=False,~n', [Key])
+            ; number(Val) -> format(S, '        ~w=~w,~n', [Key, Val])
+            ; format(S, '        ~w=\'~w\',~n', [Key, Val])
+            )
+        )),
+        write(S, '    )\n\n')
+    )).
+
+%% emit_security_module_imports(+Stream, +Options)
+%% Emit Python import lines from security_module/3 facts.
+emit_security_module_imports(S, _Options) :-
+    forall(agent_loop_module:security_module(Mod, Primary, Extras), (
+        AllNames = [Primary|Extras],
+        atomic_list_concat(AllNames, ', ', NamesStr),
+        format(S, 'from .~w import ~w~n', [Mod, NamesStr])
+    )).
+
+%% emit_help_groups(+Stream, +Options)
+%% Emit Python help text from slash_command_group/2 facts.
+emit_help_groups(S, _Options) :-
+    forall(agent_loop_module:slash_command_group(GroupLabel, CmdNames), (
+        include(agent_loop_module:is_python_command, CmdNames, PyCmds),
+        (PyCmds \= [] ->
+            format(S, '~w:~n', [GroupLabel]),
+            forall(member(CmdName, PyCmds),
+                agent_loop_module:format_help_line(S, CmdName)
+            ),
+            write(S, '\n')
+        ; true)
+    )).
+
+%% emit_readme_sections(+Stream, +Options)
+%% Emit README markdown for backends and tools.
+emit_readme_sections(S, _Options) :-
+    write(S, '## Backends\n\n'),
+    forall(agent_loop_module:agent_backend(Name, Props), (
+        member(description(Desc), Props),
+        format(S, '- **~w**: ~w~n', [Name, Desc])
+    )),
+    write(S, '\n## Tools\n\n'),
+    forall(agent_loop_module:tool_spec(Name, Props), (
+        member(description(Desc), Props),
+        format(S, '- **~w**: ~w~n', [Name, Desc])
+    )).
+
+%% emit_backend_module_imports(+Stream, +Options)
+%% Emit Python import lines from an imports list in Options.
+emit_backend_module_imports(S, Options) :-
+    (member(imports(Imports), Options) ->
+        forall(member(Imp, Imports), format(S, 'import ~w~n', [Imp]))
+    ; true).
 
 %% ============================================================================
 %% Test Metadata Generation
@@ -684,14 +892,19 @@ emit_predicate_summary :-
     format("  tools.py          -> emit_security_facts/2 [blocked_* fact_types]~n"),
     format("  tools.py          -> generate_tool_dispatch/1 (component iteration)~n"),
     format("  backends/__init__ -> emit_backend_init_imports/2 + emit_backend_init_optional/2~n"),
+    format("  backends/<name>   -> emit_backend_module_imports/2 [imports(list)]~n"),
+    format("  security/__init__ -> emit_security_module_imports/2~n"),
     format("  security/profiles -> component(agent_security, ...) iteration~n"),
     format("  context.py        -> emit_context_enums/2, emit_message_fields/2~n"),
-    format("  config.py         -> emit_agent_config_fields/2~n"),
+    format("  config.py         -> emit_agent_config_fields/2, emit_api_key_env_vars_py/2~n"),
+    format("  config.py         -> emit_api_key_files_py/2, emit_default_presets_py/2~n"),
     format("  agent_loop.py     -> emit_audit_levels/2, emit_cli_overrides/2~n"),
-    format("  agent_loop.py     -> emit_binding_dispatch_comment/2 (binding metadata)~n"),
+    format("  agent_loop.py     -> emit_binding_dispatch_comment/2 (8 bindings)~n"),
+    format("  agent_loop.py     -> emit_help_groups/2~n"),
+    format("  README.md         -> emit_readme_sections/2~n"),
     format("  Prolog generators -> emit_tool/command/backend/security/cost_facts/2~n"),
+    format("  prolog/config.pl  -> emit_prolog_config_facts/2 (with indexing hints)~n"),
     format("~nGenerators using raw fact iteration (by design):~n"),
     format("  aliases.py        -> command_alias/2 (structural ordering with comments)~n"),
-    format("  config.py         -> default_agent_preset/3, api_key_env_var/2~n"),
     format("  backends/<name>   -> agent_backend/2 + py_fragment/2~n"),
     format("~n").

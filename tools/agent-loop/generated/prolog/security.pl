@@ -19,6 +19,11 @@
 :- dynamic current_security_profile/1.
 current_security_profile(cautious).
 
+%% Indexing hints (SWI-Prolog auto-indexes first argument):
+%%   security_profile/2: first-argument indexed
+%%   blocked_path/1: first-argument indexed
+%%   blocked_path_prefix/1: first-argument indexed
+
 %% security_profile(+Name, +Properties)
 security_profile(open, [description("No restrictions - for trusted manual use"), path_validation(false), command_blocklist(false), command_proxying(disabled), audit_logging(disabled)]).
 security_profile(cautious, [description("Basic safety for well-behaved agents like Claude Code"), path_validation(true), command_blocklist(true), command_proxying(disabled), audit_logging(basic)]).

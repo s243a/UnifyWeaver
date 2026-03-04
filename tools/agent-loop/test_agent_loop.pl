@@ -60,6 +60,12 @@ run_tests :-
     test_emit_agent_config_fields,
     test_binding_imports,
     test_prolog_integration,
+    test_emit_prolog_config_facts,
+    test_emit_api_key_env_vars_py,
+    test_emit_default_presets_py,
+    test_emit_help_groups,
+    test_new_binding_count,
+    test_binding_compile_api_key,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -98,8 +104,8 @@ test_binding_registration :-
     bindings_for_target(prolog, PlBindings),
     length(PyBindings, NPy),
     length(PlBindings, NPl),
-    assert_eq('Python binding count', NPy, 5),
-    assert_eq('Prolog binding count', NPl, 5).
+    assert_eq('Python binding count', NPy, 8),
+    assert_eq('Prolog binding count', NPl, 7).
 
 %% ============================================================================
 %% Test 2: Component Registration
@@ -257,12 +263,12 @@ test_bindings_summary :-
     assert_true('Python summary generated', (
         generate_bindings_summary(python, Summary),
         atom(Summary),
-        sub_atom(Summary, _, _, _, 'python bindings (5)')
+        sub_atom(Summary, _, _, _, 'python bindings (8)')
     )),
     assert_true('Prolog summary generated', (
         generate_bindings_summary(prolog, PlSummary),
         atom(PlSummary),
-        sub_atom(PlSummary, _, _, _, 'prolog bindings (5)')
+        sub_atom(PlSummary, _, _, _, 'prolog bindings (7)')
     )).
 
 %% ============================================================================
@@ -790,4 +796,125 @@ test_prolog_integration :-
     assert_true('Prolog integration tests pass', (
         shell('swipl -l test_prolog_integration.pl -g "run_prolog_tests, halt" 2>&1', ExitCode),
         ExitCode =:= 0
+    )).
+
+%% ============================================================================
+%% Test 35: Prolog Config Emit Predicate
+%% ============================================================================
+
+test_emit_prolog_config_facts :-
+    format("~nProlog config emit:~n"),
+    assert_true('emit_prolog_config_facts contains cli_argument', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_prolog_config_facts(S, [target(prolog)])
+        )),
+        sub_atom(Output, _, _, _, 'cli_argument(agent,')
+    )),
+    assert_true('emit_prolog_config_facts contains audit_profile_level', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_prolog_config_facts(S2, [target(prolog)])
+        )),
+        sub_atom(Output2, _, _, _, 'audit_profile_level(')
+    )),
+    assert_true('emit_prolog_config_facts contains indexing hints', (
+        with_output_to(atom(Output3), (
+            current_output(S3),
+            agent_loop_components:emit_prolog_config_facts(S3, [target(prolog)])
+        )),
+        sub_atom(Output3, _, _, _, 'first-argument indexed')
+    )).
+
+%% ============================================================================
+%% Test 36: Python Config Emit Predicates
+%% ============================================================================
+
+test_emit_api_key_env_vars_py :-
+    format("~nPython config emit:~n"),
+    assert_true('emit_api_key_env_vars_py contains claude', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_api_key_env_vars_py(S, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, 'claude')
+    )),
+    assert_true('emit_api_key_files_py contains file path', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_api_key_files_py(S2, [target(python)])
+        )),
+        sub_atom(Output2, _, _, _, '~/')
+    )).
+
+test_emit_default_presets_py :-
+    format("~nDefault presets emit:~n"),
+    assert_true('emit_default_presets_py contains default agent', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_default_presets_py(S, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, 'config.agents[\'default\']')
+    )),
+    assert_true('emit_default_presets_py contains yolo', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_default_presets_py(S2, [target(python)])
+        )),
+        sub_atom(Output2, _, _, _, 'auto_tools=True')
+    )).
+
+%% ============================================================================
+%% Test 37: Help Groups Emit
+%% ============================================================================
+
+test_emit_help_groups :-
+    format("~nHelp groups emit:~n"),
+    assert_true('emit_help_groups contains /exit', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_help_groups(S, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, '/exit')
+    )),
+    assert_true('emit_help_groups contains /help', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_help_groups(S2, [target(python)])
+        )),
+        sub_atom(Output2, _, _, _, '/help')
+    )).
+
+%% ============================================================================
+%% Test 38: New Binding Count and Compilation
+%% ============================================================================
+
+test_new_binding_count :-
+    format("~nNew binding count:~n"),
+    clear_all_bindings,
+    agent_loop_bindings:init_agent_loop_bindings,
+    assert_true('Python bindings count is 8', (
+        bindings_for_target(python, PyBindings),
+        length(PyBindings, 8)
+    )),
+    assert_true('Prolog bindings count is 7', (
+        bindings_for_target(prolog, PlBindings),
+        length(PlBindings, 7)
+    )),
+    assert_true('api_key_env_var has Python binding', (
+        bindings_for_predicate(api_key_env_var/2, Bindings),
+        member(binding(python, _, _, _, _, _), Bindings)
+    )).
+
+test_binding_compile_api_key :-
+    format("~nBinding compilation:~n"),
+    clear_all_bindings,
+    agent_loop_bindings:init_agent_loop_bindings,
+    assert_true('compile_binding_code for api_key_env_var', (
+        agent_loop_bindings:compile_binding_code(python, api_key_env_var/2, Code),
+        sub_atom(Code, _, _, _, 'API_KEY_ENV_VARS')
+    )),
+    assert_true('compile_binding_code for api_key_file', (
+        agent_loop_bindings:compile_binding_code(python, api_key_file/2, Code2),
+        sub_atom(Code2, _, _, _, 'API_KEY_FILE_PATHS')
     )).

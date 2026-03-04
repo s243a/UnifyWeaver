@@ -34,6 +34,9 @@ from display import DisplayMode, Spinner
 #   backend_factory/2 -> create_backend_from_config(name) [effectful]
 #   audit_profile_level/2 -> audit_levels[profile](profile) [pure]
 #   security_profile/2 -> SecurityConfig.from_profile(name) [effectful]
+#   api_key_env_var/2 -> API_KEY_ENV_VARS[backend](backend) [pure]
+#   api_key_file/2 -> API_KEY_FILE_PATHS[backend](backend) [pure]
+#   default_agent_preset/3 -> get_default_config().agents[name](name) [pure]
 #
 
 class AgentLoop:

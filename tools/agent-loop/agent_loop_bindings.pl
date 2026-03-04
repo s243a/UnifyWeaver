@@ -41,7 +41,10 @@ register_agent_loop_effects :-
     declare_effect(slash_command/4, [deterministic, pure]),
     declare_effect(backend_factory/2, [deterministic, pure]),
     declare_effect(audit_profile_level/2, [deterministic, pure, total]),
-    declare_effect(security_profile/2, [deterministic, pure]).
+    declare_effect(security_profile/2, [deterministic, pure]),
+    declare_effect(api_key_env_var/2, [deterministic, pure]),
+    declare_effect(api_key_file/2, [deterministic, pure]),
+    declare_effect(default_agent_preset/3, [deterministic, pure]).
 
 %% ============================================================================
 %% Python Target Bindings
@@ -81,7 +84,28 @@ register_python_bindings :-
         'SecurityConfig.from_profile',
         [name-atom],
         [config-object],
-        [effect(io), deterministic, import('security.profiles')]).
+        [effect(io), deterministic, import('security.profiles')]),
+
+    %% api_key_env_var/2 -> env_vars dict lookup
+    declare_binding(python, api_key_env_var/2,
+        'API_KEY_ENV_VARS[backend]',
+        [backend-atom],
+        [env_var-string],
+        [pure, deterministic, pattern(dict_lookup)]),
+
+    %% api_key_file/2 -> file_locations dict lookup
+    declare_binding(python, api_key_file/2,
+        'API_KEY_FILE_PATHS[backend]',
+        [backend-atom],
+        [file_path-string],
+        [pure, deterministic, pattern(dict_lookup)]),
+
+    %% default_agent_preset/3 -> preset config lookup
+    declare_binding(python, default_agent_preset/3,
+        'get_default_config().agents[name]',
+        [name-atom],
+        [backend-atom, overrides-list],
+        [pure, deterministic, pattern(dict_lookup)]).
 
 %% ============================================================================
 %% Prolog Target Bindings
@@ -121,6 +145,20 @@ register_prolog_bindings :-
         security_profile,
         [name-atom],
         [config-list],
+        [pure, deterministic]),
+
+    %% api_key_env_var/2 -> direct fact access
+    declare_binding(prolog, api_key_env_var/2,
+        api_key_env_var,
+        [backend-atom],
+        [env_var-atom],
+        [pure, deterministic]),
+
+    %% api_key_file/2 -> direct fact access
+    declare_binding(prolog, api_key_file/2,
+        api_key_file,
+        [backend-atom],
+        [file_path-atom],
         [pure, deterministic]).
 
 %% ============================================================================

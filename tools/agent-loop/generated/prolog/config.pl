@@ -22,6 +22,19 @@
 :- use_module(library(optparse)).
 :- use_module(library(json)).
 
+%% Optimization notes:
+%%   - api_key_env_var/2, api_key_file/2: deterministic lookup per backend
+%%   - audit_profile_level/2: deterministic lookup per profile
+%%   - cli_argument/2: first-argument indexed on atom names (63 clauses)
+%%   - config_field_json_default/2: deterministic lookup per field
+
+%% Indexing hints (SWI-Prolog auto-indexes first argument):
+%%   cli_argument/2: first-argument indexed
+%%   api_key_env_var/2: first-argument indexed
+%%   api_key_file/2: first-argument indexed
+%%   audit_profile_level/2: first-argument indexed
+%%   config_field_json_default/2: first-argument indexed
+
 %% cli_argument(+Name, +Options)
 cli_argument(agent, [long('--agent'), short('-a'), default(none), help('Agent variant from config file (e.g., yolo, claude-opus, ollama)')]).
 cli_argument(config, [long('--config'), short('-C'), default(none), help('Path to config file (agents.yaml or agents.json)')]).
