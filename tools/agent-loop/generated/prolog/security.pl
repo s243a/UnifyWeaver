@@ -23,6 +23,8 @@ current_security_profile(cautious).
 %%   security_profile/2: first-argument indexed
 %%   blocked_path/1: first-argument indexed
 %%   blocked_path_prefix/1: first-argument indexed
+%%   blocked_home_pattern/1: first-argument indexed
+%%   blocked_command_pattern/2: first-argument indexed
 
 %% security_profile(+Name, +Properties)
 security_profile(open, [description("No restrictions - for trusted manual use"), path_validation(false), command_blocklist(false), command_proxying(disabled), audit_logging(disabled)]).

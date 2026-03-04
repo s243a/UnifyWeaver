@@ -1393,6 +1393,7 @@ generate_prolog_commands :-
     write(S, '    resolve_command/3,\n'),
     write(S, '    handle_slash_command/3\n'),
     write(S, ']).\n\n'),
+    write(S, '%% Dependencies: none (self-contained command definitions)\n\n'),
     %% Emit command facts via component registry
     agent_loop_components:emit_command_facts(S, [target(prolog)]),
     %% Generate resolve_command
@@ -1513,9 +1514,10 @@ generate_prolog_backends :-
     write(S, ':- use_module(library(json)).\n'),
     write(S, ':- use_module(library(readutil)).\n'),
     write(S, ':- use_module(library(process)).\n'),
-    write(S, ':- use_module(library(readutil)).\n'),
     write(S, ':- use_module(library(random)).\n'),
     write(S, ':- discontiguous send_request_streaming_raw/5.\n\n'),
+    write(S, '%% Dependencies: costs (model_pricing/3 for cost tracking)\n'),
+    write(S, '%%              config (api_key_env_var/2 for key resolution)\n\n'),
     %% Emit backend facts via component registry
     agent_loop_components:emit_backend_facts(S, [target(prolog)]),
     %% Generate create_backend
@@ -1689,11 +1691,7 @@ generate_prolog_backends :-
     write(S, '        Usage = _{input_tokens: 0, output_tokens: 0}\n'),
     write(S, '    ).\n\n'),
     %% Streaming capability facts
-    write(S, '%% streaming_capable(+ResolveType) — which backends support streaming\n'),
-    forall(streaming_capable(Type), (
-        format(S, 'streaming_capable(~q).~n', [Type])
-    )),
-    write(S, '\n'),
+    agent_loop_components:emit_streaming_capable_facts(S, [target(prolog)]),
     %% Streaming request dispatch
     write(S, '%% Send a streaming request (falls back to send_request if unsupported)\n'),
     write(S, 'send_request_streaming(Backend, Messages, Tools, Response) :-\n'),
@@ -3003,9 +3001,7 @@ generate_security_profiles :-
     write(S, 'def get_builtin_profiles() -> dict[str, SecurityProfile]:\n'),
     write(S, '    """Return all built-in security profiles."""\n'),
     write(S, '    return {\n'),
-    forall(component(agent_security, Name, security_profile, Props), (
-        generate_profile_entry(S, Name, Props)
-    )),
+    agent_loop_components:emit_security_profile_entries(S, [target(python)]),
     write(S, '    }\n\n\n'),
     %% get_profile()
     write(S, 'def get_profile(name: str) -> SecurityProfile:\n'),
@@ -3537,17 +3533,11 @@ generate_config_cascade(S) :-
     write(S, 'def read_config_cascade(no_fallback: bool = False) -> dict:\n'),
     write(S, '    """Read config from uwsal.json, falling back to coro.json."""\n'),
     write(S, '    candidates = [\n'),
-    findall(P, config_search_path(P, required), RequiredPaths),
-    forall(member(Path, RequiredPaths), (
-        generate_cascade_path_entry(S, Path, '')
-    )),
+    agent_loop_components:emit_cascade_paths(S, [path_type(required), indent('')]),
     write(S, '    ]\n'),
     write(S, '    if not no_fallback:\n'),
     write(S, '        candidates += [\n'),
-    findall(P, config_search_path(P, fallback), FallbackPaths),
-    forall(member(Path, FallbackPaths), (
-        generate_cascade_path_entry(S, Path, '    ')
-    )),
+    agent_loop_components:emit_cascade_paths(S, [path_type(fallback), indent('    ')]),
     write(S, '        ]\n'),
     write(S, '    for path in candidates:\n'),
     write(S, '        try:\n'),
@@ -3703,11 +3693,7 @@ alias_category_comment(_, _).
 %% Write aliases for a simple category
 generate_alias_group(S, Category, Comment) :-
     write(S, Comment),
-    alias_category(Category, Keys),
-    forall(member(K, Keys), (
-        command_alias(K, V),
-        format(S, '    "~w": "~w",~n', [K, V])
-    )).
+    agent_loop_components:emit_alias_group_entries(S, [category(Category)]).
 
 %% Backend is special: has two sub-groups with separate comments
 generate_alias_group_backend(S) :-
@@ -3762,7 +3748,7 @@ generate_single_dispatch(S, exit, exact, Props) :-
     !,
     (member(aliases(Aliases), Props) -> true ; Aliases = []),
     write(S, '        if cmd == \'exit\''),
-    forall(member(A, Aliases), format(S, ' or cmd == \'~w\'', [A])),
+    agent_loop_components:emit_alias_conditions(S, [aliases(Aliases), match_style(exact)]),
     write(S, ':\n'),
     write(S, '            self.running = False\n'),
     write(S, '            return True\n').
@@ -3796,7 +3782,7 @@ generate_single_dispatch(S, Cmd, exact, Props) :-
         format(S, '        # ~w~n', [Comment])
     ; true),
     format(S, '        if cmd == \'~w\'', [Cmd]),
-    forall(member(A, Aliases), format(S, ' or cmd == \'~w\'', [A])),
+    agent_loop_components:emit_alias_conditions(S, [aliases(Aliases), match_style(exact)]),
     write(S, ':\n'),
     format(S, '            return self.~w()~n', [Handler]).
 
@@ -3817,7 +3803,7 @@ generate_single_dispatch(S, Cmd, prefix_sp, Props) :-
         format(S, '        # ~w~n', [Comment])
     ; true),
     format(S, '        if cmd.startswith(\'~w \')', [Cmd]),
-    forall(member(A, Aliases), format(S, ' or cmd.startswith(\'~w \')', [A])),
+    agent_loop_components:emit_alias_conditions(S, [aliases(Aliases), match_style(prefix_sp)]),
     write(S, ':\n'),
     format(S, '            return self.~w(text)~n', [Handler]).
 
@@ -3926,17 +3912,11 @@ generate_argparse_groups(_, [], _) :- !.
 generate_argparse_groups(S, [GroupComment-ArgNames|Rest], first) :- !,
     %% First group: no leading blank line
     format(S, '    # ~w~n', [GroupComment]),
-    forall(member(ArgName, ArgNames), (
-        cli_argument(ArgName, Props),
-        generate_add_argument(S, Props)
-    )),
+    agent_loop_components:emit_argparse_group_args(S, [args(ArgNames)]),
     generate_argparse_groups(S, Rest, not_first).
 generate_argparse_groups(S, [GroupComment-ArgNames|Rest], not_first) :-
     format(S, '~n    # ~w~n', [GroupComment]),
-    forall(member(ArgName, ArgNames), (
-        cli_argument(ArgName, Props),
-        generate_add_argument(S, Props)
-    )),
+    agent_loop_components:emit_argparse_group_args(S, [args(ArgNames)]),
     generate_argparse_groups(S, Rest, not_first).
 
 %% generate_add_argument(S, Props) - emit a single parser.add_argument(...)
@@ -9621,7 +9601,7 @@ generate_send_message_sig(S) :-
 generate_backend_helpers(S, BackendName) :-
     agent_backend(BackendName, Props),
     member(helper_fragments(Frags), Props),
-    forall(member(F, Frags), emit_helper_fragment(S, BackendName, F)),
+    agent_loop_components:emit_backend_helper_fragments(S, [backend(BackendName), fragments(Frags)]),
     member(display_name(DN), Props),
     write_py(S, name_property, [display_name=DN]).
 
@@ -9689,11 +9669,7 @@ generate_describe_fallback(S, _) :-
 generate_tool_dispatch(S) :-
     agent_loop_components:register_agent_loop_components,
     write(S, '\n        self.tools = {\n'),
-    forall(component(agent_tools, TN, tool_handler, _), (
-        compile_component(agent_tools, TN,
-            [target(python), self_prefix(true), indent(12)], Code),
-        write(S, Code), nl(S)
-    )),
+    agent_loop_components:emit_tool_dispatch_entries(S, [target(python)]),
     write(S, '        }\n'),
     write(S, '\n        self.destructive_tools = {'),
     findall(DT, (component(agent_tools, DT, tool_handler, Cfg),
@@ -10189,9 +10165,7 @@ generate_backend_full(S, openrouter_api, _) :-
     %% Generate DEFAULT_TOOL_SCHEMAS from tool_spec/2 facts
     write(S, '# Default tool schemas for function calling (OpenAI format)\n'),
     write(S, 'DEFAULT_TOOL_SCHEMAS = [\n'),
-    forall(tool_spec(ToolName, ToolProps), (
-        generate_tool_schema_py(S, ToolName, ToolProps)
-    )),
+    agent_loop_components:emit_tool_schemas_py(S, [target(python)]),
     write(S, ']\n\n\n'),
     generate_backend_class_decl(S, openrouter_api),
     write(S, '    def __init__(\n        self,\n        api_key: str | None = None,\n'),

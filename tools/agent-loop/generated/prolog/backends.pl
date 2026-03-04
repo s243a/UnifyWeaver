@@ -22,9 +22,22 @@
 :- use_module(library(json)).
 :- use_module(library(readutil)).
 :- use_module(library(process)).
-:- use_module(library(readutil)).
 :- use_module(library(random)).
 :- discontiguous send_request_streaming_raw/5.
+
+%% Dependencies: costs (model_pricing/3 for cost tracking)
+%%              config (api_key_env_var/2 for key resolution)
+
+%% Optimization notes:
+%%   - agent_backend/2: deterministic lookup by backend name
+%%   - backend_factory/2: deterministic lookup by factory name
+%%   - streaming_capable/1: 3-clause fact table
+
+%% Indexing hints (SWI-Prolog auto-indexes first argument):
+%%   agent_backend/2: first-argument indexed (8 clauses)
+%%   backend_factory/2: first-argument indexed (8 clauses)
+%%   cli_fallbacks/2: first-argument indexed (4 clauses)
+%%   streaming_capable/1: first-argument indexed
 
 %% agent_backend(+Name, +Properties)
 agent_backend(coro, [type(cli), class_name('CoroBackend'), command("claude"), args(["--verbose"]), description("Coro-code CLI backend using single-task mode"), context_format(conversation_history), output_parser(coro_parser), supports_streaming(false), module_imports(['json as _json',os,subprocess,re,tempfile]), class_docstring('Coro-code CLI backend using single-task mode.'), display_name('Coro ({self.command})'), helper_fragments([])]).
