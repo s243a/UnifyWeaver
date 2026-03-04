@@ -7265,6 +7265,16 @@ namespace UnifyWeaver.QueryRuntime
                     if (forwardTargetsBySource.Count > 0 && backwardSourcesByTarget.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeMixed");
+                        if (_pairProbeCacheMaxEntries > 0 && _pairProbeCacheAdmissionMinCostPerProbe > 0d)
+                        {
+                            return ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                                closure,
+                                inputPositions,
+                                forwardTargetsBySource,
+                                backwardSourcesByTarget,
+                                context);
+                        }
+
                         return ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
                             closure,
                             inputPositions,
@@ -7406,6 +7416,233 @@ namespace UnifyWeaver.QueryRuntime
             {
                 yield return row;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> forwardTargetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
+            EvaluationContext context)
+        {
+            var trace = context.Trace;
+            var groupedCacheKey = (closure.EdgeRelation, closure.Predicate, string.Join(",", closure.GroupIndices));
+            if (!context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var pairStore))
+            {
+                pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
+            }
+
+            var edges = GetFactsList(closure.EdgeRelation, context);
+            var groupKeyCount = closure.GroupIndices.Count;
+            var fromKeyIndices = new int[groupKeyCount + 1];
+            var toKeyIndices = new int[groupKeyCount + 1];
+            for (var i = 0; i < groupKeyCount; i++)
+            {
+                fromKeyIndices[i] = closure.GroupIndices[i];
+                toKeyIndices[i] = closure.GroupIndices[i];
+            }
+
+            fromKeyIndices[groupKeyCount] = 0;
+            toKeyIndices[groupKeyCount] = 1;
+
+            var succIndex = GetJoinIndex(closure.EdgeRelation, fromKeyIndices, edges, context);
+            var predIndex = GetJoinIndex(closure.EdgeRelation, toKeyIndices, edges, context);
+            var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+            var sourceCostCache = new Dictionary<RowWrapper, int>(wrapperComparer);
+            var targetCostCache = new Dictionary<RowWrapper, int>(wrapperComparer);
+            var forwardMisses = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+            var backwardMisses = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+            var cachedRows = new List<object[]>();
+            var missedPairs = new List<(object[] PairKey, int ForwardCost, int BackwardCost)>();
+
+            foreach (var sourceEntry in forwardTargetsBySource)
+            {
+                var sourceWrapper = sourceEntry.Key;
+                var sourceKey = sourceWrapper.Row;
+
+                if (!sourceCostCache.TryGetValue(sourceWrapper, out var forwardCost))
+                {
+                    forwardCost = CountEdgeBucket(succIndex, sourceKey);
+                    sourceCostCache.Add(sourceWrapper, forwardCost);
+                }
+
+                foreach (var target in sourceEntry.Value)
+                {
+                    var targetKey = new object[sourceKey.Length];
+                    Array.Copy(sourceKey, targetKey, sourceKey.Length - 1);
+                    targetKey[sourceKey.Length - 1] = target;
+                    var targetWrapper = new RowWrapper(targetKey);
+
+                    if (!targetCostCache.TryGetValue(targetWrapper, out var backwardCost))
+                    {
+                        backwardCost = CountEdgeBucket(predIndex, targetKey);
+                        targetCostCache.Add(targetWrapper, backwardCost);
+                    }
+
+                    var groupedPairKey = new object[sourceKey.Length + 1];
+                    Array.Copy(sourceKey, groupedPairKey, sourceKey.Length);
+                    groupedPairKey[sourceKey.Length] = target;
+                    var sourceLabel = string.Join("|", sourceKey.Select(value => value is null ? "<null>" : FormatCacheSeedValue(value)));
+                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+                    var traceKey =
+                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups={string.Join(",", closure.GroupIndices)}:pair={sourceLabel}->{targetLabel}";
+
+                    if (TryGetLruRowWrapperCacheValue(pairStore, new RowWrapper(groupedPairKey), out var pairReachable))
+                    {
+                        trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                        if (pairReachable)
+                        {
+                            cachedRows.Add(BuildGroupedClosureRow(closure.Predicate.Arity, groupKeyCount, closure.GroupIndices, groupedPairKey));
+                        }
+                    }
+                    else
+                    {
+                        trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+                        AddGroupedPairRequest(forwardMisses, sourceWrapper, target);
+                        missedPairs.Add((groupedPairKey, forwardCost, backwardCost));
+                    }
+                }
+            }
+
+            foreach (var targetEntry in backwardSourcesByTarget)
+            {
+                var targetWrapper = targetEntry.Key;
+                var targetKey = targetWrapper.Row;
+                if (!targetCostCache.TryGetValue(targetWrapper, out var backwardCost))
+                {
+                    backwardCost = CountEdgeBucket(predIndex, targetKey);
+                    targetCostCache.Add(targetWrapper, backwardCost);
+                }
+
+                var target = targetKey[groupKeyCount];
+                foreach (var source in targetEntry.Value)
+                {
+                    var sourceKey = new object[targetKey.Length];
+                    Array.Copy(targetKey, sourceKey, targetKey.Length - 1);
+                    sourceKey[targetKey.Length - 1] = source;
+                    var sourceWrapper = new RowWrapper(sourceKey);
+
+                    if (!sourceCostCache.TryGetValue(sourceWrapper, out var forwardCost))
+                    {
+                        forwardCost = CountEdgeBucket(succIndex, sourceKey);
+                        sourceCostCache.Add(sourceWrapper, forwardCost);
+                    }
+
+                    var groupedPairKey = new object[sourceKey.Length + 1];
+                    Array.Copy(sourceKey, groupedPairKey, sourceKey.Length);
+                    groupedPairKey[sourceKey.Length] = target;
+                    var sourceLabel = string.Join("|", sourceKey.Select(value => value is null ? "<null>" : FormatCacheSeedValue(value)));
+                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+                    var traceKey =
+                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups={string.Join(",", closure.GroupIndices)}:pair={sourceLabel}->{targetLabel}";
+
+                    if (TryGetLruRowWrapperCacheValue(pairStore, new RowWrapper(groupedPairKey), out var pairReachable))
+                    {
+                        trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                        if (pairReachable)
+                        {
+                            cachedRows.Add(BuildGroupedClosureRow(closure.Predicate.Arity, groupKeyCount, closure.GroupIndices, groupedPairKey));
+                        }
+                    }
+                    else
+                    {
+                        trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+                        AddGroupedPairRequest(backwardMisses, targetWrapper, source);
+                        missedPairs.Add((groupedPairKey, forwardCost, backwardCost));
+                    }
+                }
+            }
+
+            List<object[]> computedRows;
+            if (forwardMisses.Count > 0 && backwardMisses.Count > 0)
+            {
+                computedRows = ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
+                    closure,
+                    inputPositions,
+                    forwardMisses,
+                    backwardMisses,
+                    context).ToList();
+            }
+            else if (forwardMisses.Count > 0)
+            {
+                computedRows = ExecuteSeededGroupedTransitiveClosurePairsForward(
+                    closure,
+                    forwardMisses,
+                    context).ToList();
+            }
+            else if (backwardMisses.Count > 0)
+            {
+                computedRows = ExecuteSeededGroupedTransitiveClosurePairsBackward(
+                    closure,
+                    backwardMisses,
+                    context).ToList();
+            }
+            else
+            {
+                computedRows = new List<object[]>();
+            }
+
+            var reachablePairs = new HashSet<RowWrapper>(StructuralRowWrapperComparer);
+            foreach (var row in computedRows)
+            {
+                if (row is null || row.Length < 2)
+                {
+                    continue;
+                }
+
+                var pairKey = new object[groupKeyCount + 2];
+                for (var i = 0; i < groupKeyCount; i++)
+                {
+                    pairKey[i] = row[closure.GroupIndices[i]];
+                }
+
+                pairKey[groupKeyCount] = row[0];
+                pairKey[groupKeyCount + 1] = row[1];
+                reachablePairs.Add(new RowWrapper(pairKey));
+            }
+
+            var probeCount = Math.Max(1, missedPairs.Count);
+            foreach (var pair in missedPairs)
+            {
+                var pairKey = pair.PairKey;
+                var sourceSlice = new object[groupKeyCount + 1];
+                Array.Copy(pairKey, sourceSlice, groupKeyCount + 1);
+                var target = pairKey[groupKeyCount + 1];
+                var sourceLabel = string.Join("|", sourceSlice.Select(value => value is null ? "<null>" : FormatCacheSeedValue(value)));
+                var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+                var traceKey =
+                    $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups={string.Join(",", closure.GroupIndices)}:pair={sourceLabel}->{targetLabel}";
+                var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
+                    pair.ForwardCost,
+                    pair.BackwardCost,
+                    probeCount,
+                    useCostPerProbeGate: true);
+                var pairReachable = reachablePairs.Contains(new RowWrapper(pairKey));
+
+                TryAdmitLruBoundedRowWrapperCacheEntry(
+                    pairStore,
+                    new RowWrapper(pairKey),
+                    pairReachable,
+                    _pairProbeCacheMaxEntries,
+                    admitPairProbeCache,
+                    trace,
+                    "GroupedTransitiveClosurePairsSingleProbe",
+                    traceKey);
+            }
+
+            if (cachedRows.Count == 0)
+            {
+                return computedRows;
+            }
+
+            if (computedRows.Count == 0)
+            {
+                return cachedRows;
+            }
+
+            cachedRows.AddRange(computedRows);
+            return cachedRows;
         }
 
         private bool TryBuildGroupedPairProbeDirectionBatches(
@@ -10082,6 +10319,15 @@ namespace UnifyWeaver.QueryRuntime
                     if (forwardBySource.Count > 0 && backwardByTarget.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeMixed");
+                        if (_pairProbeCacheMaxEntries > 0 && _pairProbeCacheAdmissionMinCostPerProbe > 0d)
+                        {
+                            return ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                                closure,
+                                forwardBySource,
+                                backwardByTarget,
+                                context);
+                        }
+
                         return ExecuteSeededTransitiveClosurePairsMixedDirection(
                             closure,
                             forwardBySource,
@@ -10191,6 +10437,190 @@ namespace UnifyWeaver.QueryRuntime
             {
                 yield return row;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+            TransitiveClosureNode closure,
+            IReadOnlyDictionary<object?, HashSet<object?>> forwardBySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
+            EvaluationContext context)
+        {
+            var trace = context.Trace;
+            var pairCacheKey = (closure.EdgeRelation, closure.Predicate);
+            if (!context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var pairStore))
+            {
+                pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
+            }
+
+            var edges = GetFactsList(closure.EdgeRelation, context);
+            var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+            var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
+            var sourceCostCache = new Dictionary<object?, int>();
+            var targetCostCache = new Dictionary<object?, int>();
+
+            var cachedRows = new List<object[]>();
+            var missedPairs = new List<(object? Source, object? Target, int ForwardCost, int BackwardCost)>();
+            var forwardMisses = new Dictionary<object?, HashSet<object?>>();
+            var backwardMisses = new Dictionary<object?, HashSet<object?>>();
+
+            foreach (var sourceEntry in forwardBySource)
+            {
+                var source = sourceEntry.Key;
+                if (!sourceCostCache.TryGetValue(source, out var forwardCost))
+                {
+                    forwardCost = CountEdgeBucket(succIndex, source);
+                    sourceCostCache.Add(source, forwardCost);
+                }
+
+                foreach (var target in sourceEntry.Value)
+                {
+                    if (!targetCostCache.TryGetValue(target, out var backwardCost))
+                    {
+                        backwardCost = CountEdgeBucket(predIndex, target);
+                        targetCostCache.Add(target, backwardCost);
+                    }
+
+                    var pairProbeKey = new object[] { source!, target! };
+                    var sourceLabel = source is null ? "<null>" : FormatCacheSeedValue(source);
+                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+                    var traceKey =
+                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:pair={sourceLabel}->{targetLabel}";
+
+                    if (TryGetLruRowWrapperCacheValue(pairStore, new RowWrapper(pairProbeKey), out var pairReachable))
+                    {
+                        trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                        if (pairReachable)
+                        {
+                            cachedRows.Add(new object[] { source!, target! });
+                        }
+                    }
+                    else
+                    {
+                        trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+                        AddPairRequest(forwardMisses, source, target);
+                        missedPairs.Add((source, target, forwardCost, backwardCost));
+                    }
+                }
+            }
+
+            foreach (var targetEntry in backwardByTarget)
+            {
+                var target = targetEntry.Key;
+                if (!targetCostCache.TryGetValue(target, out var backwardCost))
+                {
+                    backwardCost = CountEdgeBucket(predIndex, target);
+                    targetCostCache.Add(target, backwardCost);
+                }
+
+                foreach (var source in targetEntry.Value)
+                {
+                    if (!sourceCostCache.TryGetValue(source, out var forwardCost))
+                    {
+                        forwardCost = CountEdgeBucket(succIndex, source);
+                        sourceCostCache.Add(source, forwardCost);
+                    }
+
+                    var pairProbeKey = new object[] { source!, target! };
+                    var sourceLabel = source is null ? "<null>" : FormatCacheSeedValue(source);
+                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+                    var traceKey =
+                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:pair={sourceLabel}->{targetLabel}";
+
+                    if (TryGetLruRowWrapperCacheValue(pairStore, new RowWrapper(pairProbeKey), out var pairReachable))
+                    {
+                        trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                        if (pairReachable)
+                        {
+                            cachedRows.Add(new object[] { source!, target! });
+                        }
+                    }
+                    else
+                    {
+                        trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+                        AddPairRequest(backwardMisses, target, source);
+                        missedPairs.Add((source, target, forwardCost, backwardCost));
+                    }
+                }
+            }
+
+            List<object[]> computedRows;
+            if (forwardMisses.Count > 0 && backwardMisses.Count > 0)
+            {
+                computedRows = ExecuteSeededTransitiveClosurePairsMixedDirection(
+                    closure,
+                    forwardMisses,
+                    backwardMisses,
+                    context).ToList();
+            }
+            else if (forwardMisses.Count > 0)
+            {
+                computedRows = ExecuteSeededTransitiveClosurePairsForward(
+                    closure,
+                    forwardMisses,
+                    context).ToList();
+            }
+            else if (backwardMisses.Count > 0)
+            {
+                computedRows = ExecuteSeededTransitiveClosurePairsBackward(
+                    closure,
+                    backwardMisses,
+                    context).ToList();
+            }
+            else
+            {
+                computedRows = new List<object[]>();
+            }
+
+            var reachablePairs = new HashSet<RowWrapper>(StructuralRowWrapperComparer);
+            foreach (var row in computedRows)
+            {
+                if (row is null || row.Length < 2)
+                {
+                    continue;
+                }
+
+                reachablePairs.Add(new RowWrapper(new object[] { row[0], row[1] }));
+            }
+
+            var probeCount = Math.Max(1, missedPairs.Count);
+            foreach (var pair in missedPairs)
+            {
+                var pairProbeKey = new object[] { pair.Source!, pair.Target! };
+                var sourceLabel = pair.Source is null ? "<null>" : FormatCacheSeedValue(pair.Source);
+                var targetLabel = pair.Target is null ? "<null>" : FormatCacheSeedValue(pair.Target);
+                var traceKey =
+                    $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:pair={sourceLabel}->{targetLabel}";
+                var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
+                    pair.ForwardCost,
+                    pair.BackwardCost,
+                    probeCount,
+                    useCostPerProbeGate: true);
+                var pairReachable = reachablePairs.Contains(new RowWrapper(pairProbeKey));
+
+                TryAdmitLruBoundedRowWrapperCacheEntry(
+                    pairStore,
+                    new RowWrapper(pairProbeKey),
+                    pairReachable,
+                    _pairProbeCacheMaxEntries,
+                    admitPairProbeCache,
+                    trace,
+                    "TransitiveClosurePairsSingleProbe",
+                    traceKey);
+            }
+
+            if (cachedRows.Count == 0)
+            {
+                return computedRows;
+            }
+
+            if (computedRows.Count == 0)
+            {
+                return cachedRows;
+            }
+
+            cachedRows.AddRange(computedRows);
+            return cachedRows;
         }
 
         private bool TryBuildPairProbeDirectionBatches(
