@@ -1177,75 +1177,8 @@ generate_prolog_config :-
     write(S, ']).\n\n'),
     write(S, ':- use_module(library(optparse)).\n'),
     write(S, ':- use_module(library(json)).\n\n'),
-    %% Emit cli_argument facts
-    write(S, '%% cli_argument(+Name, +Options)\n'),
-    forall(cli_argument(Name, Opts), (
-        format(S, 'cli_argument(~q, ', [Name]),
-        write_prolog_term(S, Opts),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
-    %% Emit agent_config_field facts
-    write(S, '%% agent_config_field(+Name, +Type, +Default, +Description)\n'),
-    forall(agent_config_field(Name, Type, Default, Desc), (
-        format(S, 'agent_config_field(~q, ~q, ~q, ~q).~n', [Name, Type, Default, Desc])
-    )),
-    write(S, '\n'),
-    %% Emit default_agent_preset facts
-    write(S, '%% default_agent_preset(+PresetName, +Backend, +Overrides)\n'),
-    forall(default_agent_preset(Name, Backend, Overrides), (
-        format(S, 'default_agent_preset(~q, ~q, ', [Name, Backend]),
-        write_prolog_term(S, Overrides),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
-    %% Emit api_key_env_var and api_key_file facts
-    write(S, '%% api_key_env_var(+Backend, +EnvVar)\n'),
-    forall(api_key_env_var(Backend, EnvVar), (
-        format(S, 'api_key_env_var(~q, ~q).~n', [Backend, EnvVar])
-    )),
-    write(S, '\n'),
-    write(S, '%% api_key_file(+Backend, +FilePath)\n'),
-    forall(api_key_file(Backend, FilePath), (
-        format(S, 'api_key_file(~q, ~q).~n', [Backend, FilePath])
-    )),
-    write(S, '\n'),
-    %% Emit example_agent_config facts
-    write(S, '%% example_agent_config(+Name, +Backend, +Properties)\n'),
-    forall(example_agent_config(Name, Backend, Props), (
-        format(S, 'example_agent_config(~q, ~q, ', [Name, Backend]),
-        write_prolog_term(S, Props),
-        write(S, ').\n')
-    )),
-    write(S, '\n'),
-    %% Emit config_search_path facts
-    write(S, '%% config_search_path(+Path, +Category)\n'),
-    forall(config_search_path(CPath, Cat), (
-        format(S, 'config_search_path(~q, ~q).~n', [CPath, Cat])
-    )),
-    write(S, '\n'),
-    %% Emit config_field_json_default facts
-    write(S, '%% config_field_json_default(+FieldName, +JsonDefault)\n'),
-    write(S, '%% Maps agent config fields to JSON-safe defaults for code generation.\n'),
-    write(S, '%% Special values: positional (name=arg), no_default (data.get with no fallback)\n'),
-    forall(config_field_json_default(FName, FDefault), (
-        format(S, 'config_field_json_default(~q, ~q).~n', [FName, FDefault])
-    )),
-    write(S, '\n'),
-    %% Emit config_dir_file_name facts
-    write(S, '%% config_dir_file_name(+FileName)\n'),
-    write(S, '%% Standard config file names searched by load_config_from_dir.\n'),
-    forall(config_dir_file_name(FN), (
-        format(S, 'config_dir_file_name(~q).~n', [FN])
-    )),
-    write(S, '\n'),
-    %% Emit audit_profile_level facts
-    write(S, '%% audit_profile_level(+Profile, +AuditLevel)\n'),
-    write(S, '%% Maps security profile to audit logging level.\n'),
-    forall(audit_profile_level(P, L), (
-        format(S, 'audit_profile_level(~q, ~q).~n', [P, L])
-    )),
-    write(S, '\n'),
+    %% Emit all config facts via centralized emit predicate
+    agent_loop_components:emit_prolog_config_facts(S, [target(prolog)]),
     %% Generate parse_cli_args using optparse
     write(S, '%% Parse CLI arguments using SWI-Prolog optparse\n'),
     write(S, 'parse_cli_args(Argv, Options) :-\n'),
@@ -2998,11 +2931,7 @@ generate_security_init :-
     write(S, 'PATH-based wrapper scripts, and proot filesystem isolation.\n'),
     write(S, '"""\n\n'),
     %% Imports — one import line per module, comma-separated exports
-    forall(security_module(Mod, Primary, Extras), (
-        AllNames = [Primary|Extras],
-        atomic_list_concat(AllNames, ', ', NamesStr),
-        format(S, 'from .~w import ~w~n', [Mod, NamesStr])
-    )),
+    agent_loop_components:emit_security_module_imports(S, [target(python)]),
     %% __all__
     write(S, '\n__all__ = [\n'),
     findall(Export, (
@@ -3423,16 +3352,12 @@ generate_config :-
     write_py(S, config_resolve_api_key_header),
     %% Generate env_vars dict from api_key_env_var/2 facts
     write(S, '    env_vars = {\n'),
-    forall(api_key_env_var(Backend, Var), (
-        format(S, '        \'~w\': \'~w\',~n', [Backend, Var])
-    )),
+    agent_loop_components:emit_api_key_env_vars_py(S, [target(python)]),
     write(S, '    }\n'),
     write_py(S, config_resolve_api_key_middle),
     %% Generate file_locations dict from api_key_file/2 facts
     write(S, '    file_locations = {\n'),
-    forall(api_key_file(Backend, Path), (
-        format(S, '        \'~w\': \'~w\',~n', [Backend, Path])
-    )),
+    agent_loop_components:emit_api_key_files_py(S, [target(python)]),
     write(S, '    }\n'),
     write_py(S, config_resolve_api_key_footer),
     write(S, '\n'),
@@ -3466,19 +3391,7 @@ generate_config :-
     write(S, 'def get_default_config() -> Config:\n'),
     write(S, '    """Get a default configuration with common presets."""\n'),
     write(S, '    config = Config()\n\n'),
-    forall(default_agent_preset(Name, Backend, Props), (
-        format(S, '    config.agents[\'~w\'] = AgentConfig(~n', [Name]),
-        format(S, '        name=\'~w\',~n', [Name]),
-        format(S, '        backend=\'~w\',~n', [Backend]),
-        forall(member(Key=Val, Props), (
-            (Val = true -> format(S, '        ~w=True,~n', [Key])
-            ; Val = false -> format(S, '        ~w=False,~n', [Key])
-            ; number(Val) -> format(S, '        ~w=~w,~n', [Key, Val])
-            ; format(S, '        ~w=\'~w\',~n', [Key, Val])
-            )
-        )),
-        write(S, '    )\n\n')
-    )),
+    agent_loop_components:emit_default_presets_py(S, [target(python)]),
     write(S, '    return config\n\n\n'),
     %% save_example_config (generated from example_agent_config/3 facts)
     generate_config_save_example(S),
@@ -3962,17 +3875,7 @@ generate_help_text(S) :-
     write(S, '        """Print help message."""\n'),
     write(S, '        print("""\n'),
     %% Generate help text from slash_command_group/2 and slash_command/4
-    forall(slash_command_group(GroupLabel, CmdNames), (
-        %% Filter out Prolog-only commands for Python help text
-        include(is_python_command, CmdNames, PyCmds),
-        (PyCmds \= [] ->
-            format(S, '~w:~n', [GroupLabel]),
-            forall(member(CmdName, PyCmds),
-                format_help_line(S, CmdName)
-            ),
-            write(S, '\n')
-        ; true)
-    )),
+    agent_loop_components:emit_help_groups(S, [target(python)]),
     %% Multi-line input section (static, not data-driven)
     write(S, 'Multi-line Input:\n'),
     write(S, '  Start with ``` for code blocks\n'),
@@ -4395,16 +4298,7 @@ generate_readme :-
     write(S, 'Prolog facts for tabular data (CLI arguments, slash commands, aliases, fallbacks)\n'),
     write(S, 'and `py_fragment` atoms for imperative logic.\n\n'),
     write(S, 'Regenerate with: `swipl -g "generate_all, halt" ../agent_loop_module.pl`\n\n'),
-    write(S, '## Backends\n\n'),
-    forall(agent_backend(Name, Props), (
-        member(description(Desc), Props),
-        format(S, '- **~w**: ~w~n', [Name, Desc])
-    )),
-    write(S, '\n## Tools\n\n'),
-    forall(tool_spec(Name, Props), (
-        member(description(Desc), Props),
-        format(S, '- **~w**: ~w~n', [Name, Desc])
-    )),
+    agent_loop_components:emit_readme_sections(S, [target(python)]),
     write(S, '\n## Usage\n\n'),
     write(S, '```bash\n'),
     write(S, 'python3 agent_loop.py              # interactive\n'),
@@ -9700,7 +9594,7 @@ generate_backend_header(S, BackendName) :-
     member(description(Desc), Props),
     member(module_imports(Imports), Props),
     format(S, '"""~w"""~n~n', [Desc]),
-    forall(member(Imp, Imports), format(S, 'import ~w~n', [Imp])),
+    agent_loop_components:emit_backend_module_imports(S, [target(python), imports(Imports)]),
     (member(sdk_guard(SDK), Props) ->
         %% SDK backends: base import + sdk_import_guard fragment
         write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n'),

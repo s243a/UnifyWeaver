@@ -11,6 +11,9 @@
     cost_tracker_format/2
 ]).
 
+%% Indexing hints (SWI-Prolog auto-indexes first argument):
+%%   model_pricing/3: first-argument indexed
+
 %% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)
 model_pricing("claude-opus-4-20250514", 15.0, 75.0).
 model_pricing("claude-sonnet-4-20250514", 3.0, 15.0).
