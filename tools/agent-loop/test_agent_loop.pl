@@ -66,6 +66,14 @@ run_tests :-
     test_emit_help_groups,
     test_new_binding_count,
     test_binding_compile_api_key,
+    test_emit_streaming_capable_facts,
+    test_emit_security_profile_entries,
+    test_emit_tool_dispatch_entries,
+    test_emit_cascade_paths,
+    test_emit_alias_conditions,
+    test_emit_argparse_group_args,
+    test_emit_backend_optimization_hints,
+    test_emit_command_optimization_hints,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -917,4 +925,142 @@ test_binding_compile_api_key :-
     assert_true('compile_binding_code for api_key_file', (
         agent_loop_bindings:compile_binding_code(python, api_key_file/2, Code2),
         sub_atom(Code2, _, _, _, 'API_KEY_FILE_PATHS')
+    )).
+
+%% ============================================================================
+%% Batch 3 Emit Predicate Tests
+%% ============================================================================
+
+test_emit_streaming_capable_facts :-
+    format("~nStreaming capable emit:~n"),
+    assert_true('emit_streaming_capable_facts contains streaming_capable', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_streaming_capable_facts(S, [target(prolog)])
+        )),
+        sub_atom(Output, _, _, _, 'streaming_capable(')
+    )),
+    assert_true('emit_streaming_capable_facts contains api type', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_streaming_capable_facts(S2, [target(prolog)])
+        )),
+        sub_atom(Output2, _, _, _, 'streaming_capable(api)')
+    )).
+
+test_emit_security_profile_entries :-
+    format("~nSecurity profile entries emit:~n"),
+    agent_loop_components:register_agent_loop_components,
+    assert_true('emit_security_profile_entries contains cautious', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_security_profile_entries(S, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, 'cautious')
+    )).
+
+test_emit_tool_dispatch_entries :-
+    format("~nTool dispatch entries emit:~n"),
+    agent_loop_components:register_agent_loop_components,
+    assert_true('emit_tool_dispatch_entries contains bash', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_tool_dispatch_entries(S, [target(python)])
+        )),
+        sub_atom(Output, _, _, _, '\'bash\'')
+    )),
+    assert_true('emit_tool_dispatch_entries contains self._execute', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_tool_dispatch_entries(S2, [target(python)])
+        )),
+        sub_atom(Output2, _, _, _, 'self._execute')
+    )).
+
+test_emit_cascade_paths :-
+    format("~nCascade paths emit:~n"),
+    assert_true('emit_cascade_paths required contains uwsal.json', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_cascade_paths(S, [path_type(required), indent('')])
+        )),
+        sub_atom(Output, _, _, _, 'uwsal.json')
+    )),
+    assert_true('emit_cascade_paths fallback exists', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_cascade_paths(S2, [path_type(fallback), indent('    ')])
+        )),
+        atom_length(Output2, Len2),
+        Len2 > 0
+    )).
+
+test_emit_alias_conditions :-
+    format("~nAlias conditions emit:~n"),
+    assert_true('emit_alias_conditions exact generates or cmd ==', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_alias_conditions(S, [aliases([q, x]), match_style(exact)])
+        )),
+        sub_atom(Output, _, _, _, 'or cmd == \'q\'')
+    )),
+    assert_true('emit_alias_conditions prefix_sp generates startswith', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_alias_conditions(S2, [aliases([be]), match_style(prefix_sp)])
+        )),
+        sub_atom(Output2, _, _, _, 'startswith(\'be \')')
+    )).
+
+test_emit_argparse_group_args :-
+    format("~nArgparse group args emit:~n"),
+    assert_true('emit_argparse_group_args contains add_argument', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_argparse_group_args(S, [args([agent])])
+        )),
+        sub_atom(Output, _, _, _, 'add_argument')
+    )).
+
+test_emit_backend_optimization_hints :-
+    format("~nBackend optimization hints:~n"),
+    agent_loop_components:register_agent_loop_components,
+    assert_true('emit_backend_facts includes indexing hints', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_backend_facts(S, [target(prolog)])
+        )),
+        sub_atom(Output, _, _, _, 'Indexing hints')
+    )),
+    assert_true('emit_backend_facts includes agent_backend clause count', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_backend_facts(S2, [target(prolog)])
+        )),
+        sub_atom(Output2, _, _, _, 'agent_backend/2: first-argument indexed (8 clauses)')
+    )).
+
+test_emit_command_optimization_hints :-
+    format("~nCommand optimization hints:~n"),
+    agent_loop_components:register_agent_loop_components,
+    assert_true('emit_command_facts includes indexing hints', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_command_facts(S, [target(prolog)])
+        )),
+        sub_atom(Output, _, _, _, 'Indexing hints')
+    )),
+    assert_true('emit_command_facts includes slash_command clause count', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_command_facts(S2, [target(prolog)])
+        )),
+        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (23 clauses)')
+    )),
+    assert_true('emit_command_facts includes command_alias clause count', (
+        with_output_to(atom(Output3), (
+            current_output(S3),
+            agent_loop_components:emit_command_facts(S3, [target(prolog)])
+        )),
+        sub_atom(Output3, _, _, _, 'command_alias/2: first-argument indexed (30 clauses)')
     )).

@@ -11,6 +11,16 @@
     handle_slash_command/3
 ]).
 
+%% Dependencies: none (self-contained command definitions)
+
+%% Optimization notes:
+%%   - slash_command/4: first-argument atom-indexed, all distinct
+%%   - command_alias/2: first-argument string hash-indexed, all distinct
+
+%% Indexing hints (SWI-Prolog auto-indexes first argument):
+%%   slash_command/4: first-argument indexed (23 clauses)
+%%   command_alias/2: first-argument indexed (30 clauses)
+
 %% slash_command(+Name, +MatchType, +Options, +HelpText)
 slash_command(exit, exact, [aliases([quit]), help_display('/exit, /quit')], 'Exit the agent loop').
 slash_command(clear, exact, [], 'Clear conversation context').

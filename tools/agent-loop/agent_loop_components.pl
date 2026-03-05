@@ -32,7 +32,16 @@
     emit_security_module_imports/2,
     emit_help_groups/2,
     emit_readme_sections/2,
-    emit_backend_module_imports/2
+    emit_backend_module_imports/2,
+    emit_streaming_capable_facts/2,
+    emit_security_profile_entries/2,
+    emit_tool_schemas_py/2,
+    emit_tool_dispatch_entries/2,
+    emit_cascade_paths/2,
+    emit_alias_group_entries/2,
+    emit_alias_conditions/2,
+    emit_argparse_group_args/2,
+    emit_backend_helper_fragments/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -399,6 +408,17 @@ emit_tool_facts(S, _Options) :-
 %% emit_command_facts(+Stream, +Options)
 %% Emit command-related Prolog facts via the component registry.
 emit_command_facts(S, _Options) :-
+    %% Optimization notes and indexing hints
+    findall(_, component(agent_commands, _, slash_command, _), SCs), length(SCs, NSC),
+    findall(_, agent_loop_module:command_alias(_, _), CAs), length(CAs, NCA),
+    emit_optimization_notes(S, [
+        'slash_command/4: first-argument atom-indexed, all distinct',
+        'command_alias/2: first-argument string hash-indexed, all distinct'
+    ]),
+    write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
+    emit_indexing_directive(S, slash_command/4, NSC),
+    emit_indexing_directive(S, command_alias/2, NCA),
+    write(S, '\n'),
     %% slash_command via compile_component
     write(S, '%% slash_command(+Name, +MatchType, +Options, +HelpText)\n'),
     forall(component(agent_commands, Name, slash_command, _), (
@@ -424,6 +444,21 @@ emit_command_facts(S, _Options) :-
 %% emit_backend_facts(+Stream, +Options)
 %% Emit backend-related Prolog facts via the component registry.
 emit_backend_facts(S, _Options) :-
+    %% Optimization notes and indexing hints
+    emit_optimization_notes(S, [
+        'agent_backend/2: deterministic lookup by backend name',
+        'backend_factory/2: deterministic lookup by factory name',
+        'streaming_capable/1: 3-clause fact table'
+    ]),
+    findall(_, agent_loop_module:agent_backend(_, _), ABs), length(ABs, NAB),
+    findall(_, (component(agent_backends, _, backend, _)), BFs), length(BFs, NBF),
+    findall(_, agent_loop_module:cli_fallbacks(_, _), CFs), length(CFs, NCF),
+    write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
+    emit_indexing_directive(S, agent_backend/2, NAB),
+    emit_indexing_directive(S, backend_factory/2, NBF),
+    emit_indexing_directive(S, cli_fallbacks/2, NCF),
+    emit_indexing_directive(S, streaming_capable/1),
+    write(S, '\n'),
     %% agent_backend — rich property list not in registry, stays raw
     write(S, '%% agent_backend(+Name, +Properties)\n'),
     forall(agent_loop_module:agent_backend(Name, Props), (
@@ -473,6 +508,8 @@ emit_security_facts(S, Options) :-
         emit_indexing_directive(S, security_profile/2),
         emit_indexing_directive(S, blocked_path/1),
         emit_indexing_directive(S, blocked_path_prefix/1),
+        emit_indexing_directive(S, blocked_home_pattern/1),
+        emit_indexing_directive(S, blocked_command_pattern/2),
         write(S, '\n'),
         write(S, '%% security_profile(+Name, +Properties)\n'),
         forall(component(agent_security, Name, security_profile, _), (
@@ -571,6 +608,11 @@ emit_backend_init_optional(S, _Options) :-
 %% SWI-Prolog's first-argument indexing (auto-applied to fact tables).
 emit_indexing_directive(S, Pred/Arity) :-
     format(S, '%%   ~w/~w: first-argument indexed~n', [Pred, Arity]).
+
+%% emit_indexing_directive(+Stream, +Pred/Arity, +ClauseCount)
+%% Variant with clause count annotation.
+emit_indexing_directive(S, Pred/Arity, Count) :-
+    format(S, '%%   ~w/~w: first-argument indexed (~w clauses)~n', [Pred, Arity, Count]).
 
 %% emit_optimization_notes(+Stream, +Notes)
 %% Emit optimization documentation as Prolog comments.
@@ -812,6 +854,94 @@ emit_backend_module_imports(S, Options) :-
     ; true).
 
 %% ============================================================================
+%% Forall Lift Batch 3 — Prolog backends, security profiles, tool dispatch,
+%% config cascade, aliases, argparse, backend helpers
+%% ============================================================================
+
+%% emit_streaming_capable_facts(+Stream, +Options)
+%% Emit streaming_capable/1 Prolog facts for generate_prolog_backends.
+emit_streaming_capable_facts(S, _Options) :-
+    write(S, '%% streaming_capable(+ResolveType) — which backends support streaming\n'),
+    forall(agent_loop_module:streaming_capable(Type),
+        format(S, 'streaming_capable(~q).~n', [Type])),
+    write(S, '\n').
+
+%% emit_security_profile_entries(+Stream, +Options)
+%% Emit Python SecurityProfile entries from component registry.
+emit_security_profile_entries(S, _Options) :-
+    register_agent_loop_components,
+    forall(component(agent_security, Name, security_profile, Props), (
+        agent_loop_module:generate_profile_entry(S, Name, Props)
+    )).
+
+%% emit_tool_schemas_py(+Stream, +Options)
+%% Emit Python tool schema dicts from tool_spec/2 facts.
+emit_tool_schemas_py(S, _Options) :-
+    forall(agent_loop_module:tool_spec(ToolName, ToolProps), (
+        agent_loop_module:generate_tool_schema_py(S, ToolName, ToolProps)
+    )).
+
+%% emit_tool_dispatch_entries(+Stream, +Options)
+%% Emit self.tools dict entries via compile_component/4.
+emit_tool_dispatch_entries(S, _Options) :-
+    register_agent_loop_components,
+    forall(component(agent_tools, TN, tool_handler, _), (
+        compile_component(agent_tools, TN,
+            [target(python), self_prefix(true), indent(12)], Code),
+        write(S, Code), nl(S)
+    )).
+
+%% emit_cascade_paths(+Stream, +Options)
+%% Emit config cascade path entries. Options: path_type(required|fallback), indent(Str).
+emit_cascade_paths(S, Options) :-
+    (member(path_type(Type), Options) -> true ; Type = required),
+    (member(indent(Indent), Options) -> true ; Indent = ''),
+    findall(P, agent_loop_module:config_search_path(P, Type), Paths),
+    forall(member(Path, Paths), (
+        agent_loop_module:generate_cascade_path_entry(S, Path, Indent)
+    )).
+
+%% emit_alias_group_entries(+Stream, +Options)
+%% Emit Python dict entries for an alias category.
+emit_alias_group_entries(S, Options) :-
+    member(category(Category), Options),
+    agent_loop_module:alias_category(Category, Keys),
+    forall(member(K, Keys), (
+        agent_loop_module:command_alias(K, V),
+        format(S, '    "~w": "~w",~n', [K, V])
+    )).
+
+%% emit_alias_conditions(+Stream, +Options)
+%% Emit alias match conditions for command dispatch.
+%% Options: aliases(List), match_style(exact|prefix_sp).
+emit_alias_conditions(S, Options) :-
+    member(aliases(Aliases), Options),
+    (member(match_style(prefix_sp), Options) ->
+        forall(member(A, Aliases),
+            format(S, ' or cmd.startswith(\'~w \')', [A]))
+    ;
+        forall(member(A, Aliases),
+            format(S, ' or cmd == \'~w\'', [A]))
+    ).
+
+%% emit_argparse_group_args(+Stream, +Options)
+%% Emit parser.add_argument() calls for a group of CLI arguments.
+emit_argparse_group_args(S, Options) :-
+    member(args(ArgNames), Options),
+    forall(member(ArgName, ArgNames), (
+        agent_loop_module:cli_argument(ArgName, Props),
+        agent_loop_module:generate_add_argument(S, Props)
+    )).
+
+%% emit_backend_helper_fragments(+Stream, +Options)
+%% Emit trailing helper method fragments for a backend.
+emit_backend_helper_fragments(S, Options) :-
+    member(backend(BackendName), Options),
+    member(fragments(Frags), Options),
+    forall(member(F, Frags),
+        agent_loop_module:emit_helper_fragment(S, BackendName, F)).
+
+%% ============================================================================
 %% Test Metadata Generation
 %% ============================================================================
 
@@ -890,21 +1020,28 @@ emit_predicate_summary :-
     format("Generators using component/emit paths:~n"),
     format("  costs.py          -> emit_cost_facts/2 [target(python)]~n"),
     format("  tools.py          -> emit_security_facts/2 [blocked_* fact_types]~n"),
-    format("  tools.py          -> generate_tool_dispatch/1 (component iteration)~n"),
+    format("  tools.py          -> emit_tool_dispatch_entries/2 (component iteration)~n"),
     format("  backends/__init__ -> emit_backend_init_imports/2 + emit_backend_init_optional/2~n"),
     format("  backends/<name>   -> emit_backend_module_imports/2 [imports(list)]~n"),
+    format("  backends/<name>   -> emit_backend_helper_fragments/2~n"),
     format("  security/__init__ -> emit_security_module_imports/2~n"),
-    format("  security/profiles -> component(agent_security, ...) iteration~n"),
+    format("  security/profiles -> emit_security_profile_entries/2~n"),
     format("  context.py        -> emit_context_enums/2, emit_message_fields/2~n"),
     format("  config.py         -> emit_agent_config_fields/2, emit_api_key_env_vars_py/2~n"),
     format("  config.py         -> emit_api_key_files_py/2, emit_default_presets_py/2~n"),
+    format("  config.py         -> emit_cascade_paths/2 [path_type(required|fallback)]~n"),
     format("  agent_loop.py     -> emit_audit_levels/2, emit_cli_overrides/2~n"),
     format("  agent_loop.py     -> emit_binding_dispatch_comment/2 (8 bindings)~n"),
     format("  agent_loop.py     -> emit_help_groups/2~n"),
+    format("  agent_loop.py     -> emit_alias_conditions/2, emit_argparse_group_args/2~n"),
     format("  README.md         -> emit_readme_sections/2~n"),
     format("  Prolog generators -> emit_tool/command/backend/security/cost_facts/2~n"),
     format("  prolog/config.pl  -> emit_prolog_config_facts/2 (with indexing hints)~n"),
+    format("  prolog/backends   -> emit_streaming_capable_facts/2~n"),
+    format("  prolog/backends   -> emit_backend_facts/2 (with optimization notes)~n"),
+    format("  prolog/commands   -> emit_command_facts/2 (with optimization notes)~n"),
+    format("  openrouter_api    -> emit_tool_schemas_py/2~n"),
     format("~nGenerators using raw fact iteration (by design):~n"),
-    format("  aliases.py        -> command_alias/2 (structural ordering with comments)~n"),
+    format("  aliases.py        -> emit_alias_group_entries/2 + structural ordering~n"),
     format("  backends/<name>   -> agent_backend/2 + py_fragment/2~n"),
     format("~n").
