@@ -232,21 +232,20 @@ generate_bindings_summary(Target, Summary) :-
 
 %% emit_binding_imports(+Stream, +Options)
 %% Emit Python import lines for bindings that have import(Module) in options.
+%% Uses unified emit_module_imports/2 via from() spec terms.
 emit_binding_imports(S, _Options) :-
     init_agent_loop_bindings,
-    findall(Mod-TName, (
+    findall(from(Mod, [BaseName]), (
         binding(python, _Pred, TName, _Ins, _Outs, Opts),
-        member(import(Mod), Opts)
-    ), ImportPairs),
-    forall(member(Mod-TName, ImportPairs), (
+        member(import(Mod), Opts),
         %% Extract base name for dotted targets (e.g. SecurityConfig.from_profile → SecurityConfig)
         (sub_atom(TName, Before, _, _, '.') ->
             sub_atom(TName, 0, Before, _, BaseName)
         ;
             BaseName = TName
-        ),
-        format(S, 'from ~w import ~w~n', [Mod, BaseName])
-    )).
+        )
+    ), Specs),
+    agent_loop_components:emit_module_imports(S, Specs).
 
 %% emit_binding_dispatch_comment(+Stream, +Options)
 %% Emit a comment block documenting binding metadata for the current file.

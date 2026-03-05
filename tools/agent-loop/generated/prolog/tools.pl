@@ -19,6 +19,11 @@
 :- use_module(library(time)).
 :- use_module(security).
 
+%% Tabling: memoize tool schema construction across REPL iterations
+:- table build_tool_input_schema/2.
+
+%% JIT multi-arg indexing: tool_description/5 benefits from (arg1, arg2) indexing
+
 %% tool_spec(+ToolName, +Properties)
 tool_spec(bash, [description("Execute a bash command"), parameters([param(command,string,required,"The command to execute")]), confirmation_required(true), timeout(120)]).
 tool_spec(read, [description("Read a file"), parameters([param(path,string,required,"Path to file")]), confirmation_required(false)]).

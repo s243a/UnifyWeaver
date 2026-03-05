@@ -25,8 +25,9 @@
 :- use_module(library(random)).
 :- discontiguous send_request_streaming_raw/5.
 
-%% Dependencies: costs (model_pricing/3 for cost tracking)
-%%              config (api_key_env_var/2 for key resolution)
+%% Dependencies:
+%%   costs (model_pricing/3 for cost tracking)
+%%   config (api_key_env_var/2 for key resolution)
 
 %% Optimization notes:
 %%   - agent_backend/2: deterministic lookup by backend name
@@ -47,7 +48,7 @@ agent_backend(claude_api, [type(api), class_name('ClaudeAPIBackend'), endpoint("
 agent_backend(openai_api, [type(api), class_name('OpenAIBackend'), file_name(openai_api), endpoint("https://api.openai.com/v1/chat/completions"), model("gpt-4o"), auth_env("OPENAI_API_KEY"), auth_header("Authorization"), auth_prefix("Bearer "), description("OpenAI API backend"), context_format(messages_array), supports_tools(true), supports_streaming(true), optional_import(true), module_imports([os]), sdk_guard(openai), class_docstring('OpenAI API backend (GPT-4, GPT-3.5, etc.).'), display_name('OpenAI ({self.model})'), helper_fragments([extract_tool_calls_openai])]).
 agent_backend(ollama_api, [type(api), class_name('OllamaAPIBackend'), endpoint("http://localhost:11434/api/chat"), model("llama3"), description("Ollama REST API backend for local models"), default_host("localhost"), default_port(11434), context_format(messages_array), auth_required(false), supports_streaming(true), module_imports([json,'urllib.request','urllib.error']), class_docstring('Ollama REST API backend for local models.'), display_name('Ollama API ({self.model}@{self.host}:{self.port})'), helper_fragments([list_models_api])]).
 agent_backend(ollama_cli, [type(cli), class_name('OllamaCLIBackend'), command("ollama"), args(["run"]), description("Ollama CLI backend using 'ollama run' command"), default_model("llama3"), context_format(conversation_history), supports_streaming(false), module_imports([subprocess]), class_docstring('Ollama CLI backend using \'ollama run\' command.'), display_name('Ollama CLI ({self.model})'), helper_fragments([format_prompt,clean_output_simple,list_models_cli])]).
-agent_backend(openrouter_api, [type(api), class_name('OpenRouterBackend'), endpoint("https://openrouter.ai/api/v1/chat/completions"), model("anthropic/claude-sonnet-4-20250514"), auth_env("OPENROUTER_API_KEY"), auth_header("Authorization"), auth_prefix("Bearer "), description("OpenRouter API backend with model routing"), context_format(messages_array), supports_tools(true), supports_streaming(true), module_imports([json,os,sys,'urllib.request','urllib.error']), class_docstring('OpenRouter API backend (OpenAI-compatible, no pip deps).'), display_name('OpenRouter ({self.model})'), helper_fragments([supports_streaming_true,sse_streaming_openrouter,describe_tool_call_openrouter])]).
+agent_backend(openrouter_api, [type(api), class_name('OpenRouterBackend'), endpoint("https://openrouter.ai/api/v1/chat/completions"), model("anthropic/claude-sonnet-4-20250514"), auth_env("OPENROUTER_API_KEY"), auth_header("Authorization"), auth_prefix("Bearer "), description("OpenRouter API backend with model routing"), context_format(messages_array), supports_tools(true), supports_streaming(true), module_imports([json,os,sys]), from_imports([-('urllib.request',[urlopen,'Request']),-('urllib.error',['HTTPError','URLError'])]), class_docstring('OpenRouter API backend (OpenAI-compatible, no pip deps).'), display_name('OpenRouter ({self.model})'), helper_fragments([supports_streaming_true,sse_streaming_openrouter,describe_tool_call_openrouter])]).
 
 %% backend_factory(+Name, +FactorySpec)
 backend_factory(coro, [resolve_type(cli), class_name('CoroBackend'), default_command(coro), constructor_args([arg(command,cmd),arg(no_fallback,no_fallback),arg_expr(max_context_tokens,'agent_config.max_context_tokens\n            if agent_config.max_context_tokens != 100000 else 0')])]).
@@ -101,9 +102,10 @@ format_api_error(Error, Msg) :-
 
 %% retry_call(+Goal, +Options) — retry with exponential backoff + jitter
 retry_call(Goal, Options) :-
-    (member(max_attempts(Max), Options) -> true ; retry_config(Max, _, _)),
-    (member(base_delay(Base), Options) -> true ; retry_config(_, Base, _)),
-    (member(max_delay(MaxD), Options) -> true ; retry_config(_, _, MaxD)),
+    retry_config(DefaultMax, DefaultBase, DefaultMaxD),
+    (member(max_attempts(Max), Options) -> true ; Max = DefaultMax),
+    (member(base_delay(Base), Options) -> true ; Base = DefaultBase),
+    (member(max_delay(MaxD), Options) -> true ; MaxD = DefaultMaxD),
     retry_call_(Goal, 1, Max, Base, MaxD).
 
 retry_call_(Goal, Attempt, Max, Base, MaxD) :-
