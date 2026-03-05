@@ -41,7 +41,11 @@
     emit_alias_group_entries/2,
     emit_alias_conditions/2,
     emit_argparse_group_args/2,
-    emit_backend_helper_fragments/2
+    emit_backend_helper_fragments/2,
+    emit_module_imports/2,
+    emit_module_dependencies/2,
+    backend_import_specs/2,
+    security_import_specs/1
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -810,13 +814,10 @@ emit_default_presets_py(S, _Options) :-
     )).
 
 %% emit_security_module_imports(+Stream, +Options)
-%% Emit Python import lines from security_module/3 facts.
+%% Emit Python import lines from security_module/3 facts via unified import system.
 emit_security_module_imports(S, _Options) :-
-    forall(agent_loop_module:security_module(Mod, Primary, Extras), (
-        AllNames = [Primary|Extras],
-        atomic_list_concat(AllNames, ', ', NamesStr),
-        format(S, 'from .~w import ~w~n', [Mod, NamesStr])
-    )).
+    security_import_specs(Specs),
+    emit_module_imports(S, Specs).
 
 %% emit_help_groups(+Stream, +Options)
 %% Emit Python help text from slash_command_group/2 facts.
@@ -847,11 +848,80 @@ emit_readme_sections(S, _Options) :-
     )).
 
 %% emit_backend_module_imports(+Stream, +Options)
-%% Emit Python import lines from an imports list in Options.
+%% Emit Python import lines from an imports list in Options via unified import system.
 emit_backend_module_imports(S, Options) :-
     (member(imports(Imports), Options) ->
-        forall(member(Imp, Imports), format(S, 'import ~w~n', [Imp]))
+        maplist([Imp]>>(format(S, 'import ~w~n', [Imp])), Imports)
     ; true).
+
+%% ============================================================================
+%% Unified Import Infrastructure
+%% ============================================================================
+
+%% Import spec terms:
+%%   bare(Mod)                -> import Mod
+%%   from(Mod, Names)         -> from Mod import N1, N2
+%%   from_relative(Mod, Names) -> from .Mod import N1, N2
+
+%% emit_module_imports(+Stream, +Specs)
+%% Dispatch on structured import spec terms to emit Python import lines.
+emit_module_imports(S, Specs) :-
+    forall(member(Spec, Specs), emit_one_import(S, Spec)).
+
+emit_one_import(S, bare(Mod)) :-
+    format(S, 'import ~w~n', [Mod]).
+emit_one_import(S, from(Mod, Names)) :-
+    atomic_list_concat(Names, ', ', NStr),
+    format(S, 'from ~w import ~w~n', [Mod, NStr]).
+emit_one_import(S, from_relative(Mod, Names)) :-
+    atomic_list_concat(Names, ', ', NStr),
+    format(S, 'from .~w import ~w~n', [Mod, NStr]).
+
+%% backend_import_specs(+Props, -Specs)
+%% Convert a backend's module_imports + optional from_imports into spec list.
+backend_import_specs(Props, Specs) :-
+    (member(module_imports(Mods), Props) -> true ; Mods = []),
+    (member(from_imports(FromMap), Props) -> true ; FromMap = []),
+    findall(Spec, (
+        member(Mod, Mods),
+        (member(Mod-Names, FromMap) ->
+            Spec = from(Mod, Names)
+        ;
+            Spec = bare(Mod)
+        )
+    ), ModSpecs),
+    %% Pick up from_imports entries whose module isn't in module_imports
+    findall(from(Mod, Names), (
+        member(Mod-Names, FromMap),
+        \+ member(Mod, Mods)
+    ), ExtraFromSpecs),
+    append(ModSpecs, ExtraFromSpecs, Specs).
+
+%% security_import_specs(-Specs)
+%% Convert security_module/3 facts into from_relative spec list.
+security_import_specs(Specs) :-
+    findall(from_relative(Mod, [Primary|Extras]),
+        agent_loop_module:security_module(Mod, Primary, Extras),
+        Specs).
+
+%% ============================================================================
+%% Module Dependency Emitter
+%% ============================================================================
+
+%% emit_module_dependencies(+Stream, +Options)
+%% Emit dependency documentation from module_dependency/3 facts.
+%% Options must include module(Mod) to select which module's deps to emit.
+emit_module_dependencies(S, Options) :-
+    member(module(Mod), Options),
+    findall(Dep-Reason, agent_loop_module:module_dependency(Mod, Dep, Reason), Deps),
+    (Deps = [] ->
+        write(S, '%% Dependencies: none (self-contained)\n')
+    ;
+        write(S, '%% Dependencies:\n'),
+        forall(member(Dep-Reason, Deps),
+            format(S, '%%   ~w (~w)~n', [Dep, Reason]))
+    ),
+    write(S, '\n').
 
 %% ============================================================================
 %% Forall Lift Batch 3 — Prolog backends, security profiles, tool dispatch,
@@ -980,7 +1050,17 @@ emit_test_metadata :-
     %% commands
     format(S, '  "commands": {"count": ~w, "names": [', [NCm]),
     emit_json_string_list(S, CmdNames),
-    write(S, ']}\n'),
+    write(S, ']},\n'),
+    %% destructive_tools
+    findall(DT, agent_loop_module:destructive_tool(DT), DestructiveTools),
+    write(S, '  "destructive_tools": ['),
+    emit_json_string_list(S, DestructiveTools),
+    write(S, '],\n'),
+    %% module_dependencies
+    findall(Src-Tgt, agent_loop_module:module_dependency(Src, Tgt, _), DepPairs),
+    write(S, '  "module_dependencies": {'),
+    emit_dep_map_json(S, DepPairs),
+    write(S, '}\n'),
     write(S, '}\n'),
     close(S),
     format('  Generated test_metadata.json~n', []).
@@ -993,6 +1073,24 @@ emit_json_string_list(S, [X]) :- !,
 emit_json_string_list(S, [X|Rest]) :-
     format(S, '"~w", ', [X]),
     emit_json_string_list(S, Rest).
+
+%% emit_dep_map_json(+Stream, +Pairs)
+%% Write module dependency pairs as JSON: {"src": ["tgt1", "tgt2"], ...}
+emit_dep_map_json(_, []).
+emit_dep_map_json(S, Pairs) :-
+    %% Group by source
+    findall(Src, member(Src-_, Pairs), SrcsDup),
+    sort(SrcsDup, Srcs),
+    emit_dep_map_entries(S, Srcs, Pairs, first).
+
+emit_dep_map_entries(_, [], _, _).
+emit_dep_map_entries(S, [Src|Rest], Pairs, Pos) :-
+    (Pos = first -> true ; write(S, ', ')),
+    findall(Tgt, member(Src-Tgt, Pairs), Tgts),
+    format(S, '"~w": [', [Src]),
+    emit_json_string_list(S, Tgts),
+    write(S, ']'),
+    emit_dep_map_entries(S, Rest, Pairs, subsequent).
 
 %% agent_loop_component_summary/0
 %% Registers everything and prints a summary.
@@ -1041,6 +1139,11 @@ emit_predicate_summary :-
     format("  prolog/backends   -> emit_backend_facts/2 (with optimization notes)~n"),
     format("  prolog/commands   -> emit_command_facts/2 (with optimization notes)~n"),
     format("  openrouter_api    -> emit_tool_schemas_py/2~n"),
+    format("~nUnified import infrastructure:~n"),
+    format("  emit_module_imports/2     -> bare/from/from_relative spec dispatch~n"),
+    format("  backend_import_specs/2    -> module_imports + from_imports -> specs~n"),
+    format("  security_import_specs/1   -> security_module/3 -> from_relative specs~n"),
+    format("  emit_module_dependencies/2 -> module_dependency/3 fact-driven comments~n"),
     format("~nGenerators using raw fact iteration (by design):~n"),
     format("  aliases.py        -> emit_alias_group_entries/2 + structural ordering~n"),
     format("  backends/<name>   -> agent_backend/2 + py_fragment/2~n"),

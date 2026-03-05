@@ -74,6 +74,10 @@ run_tests :-
     test_emit_argparse_group_args,
     test_emit_backend_optimization_hints,
     test_emit_command_optimization_hints,
+    test_emit_module_imports,
+    test_backend_import_specs,
+    test_module_dependency_facts,
+    test_emit_module_dependencies,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -1063,4 +1067,87 @@ test_emit_command_optimization_hints :-
             agent_loop_components:emit_command_facts(S3, [target(prolog)])
         )),
         sub_atom(Output3, _, _, _, 'command_alias/2: first-argument indexed (30 clauses)')
+    )).
+
+%% ============================================================================
+%% Unified Import Infrastructure Tests
+%% ============================================================================
+
+test_emit_module_imports :-
+    format("~nUnified import infrastructure:~n"),
+    %% Test bare import
+    assert_true('bare import produces import X', (
+        with_output_to(atom(Output1), (
+            current_output(S1),
+            agent_loop_components:emit_module_imports(S1, [bare(json)])
+        )),
+        sub_atom(Output1, _, _, _, 'import json')
+    )),
+    %% Test from import
+    assert_true('from import produces from X import Y', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_module_imports(S2, [from('urllib.request', [urlopen, 'Request'])])
+        )),
+        sub_atom(Output2, _, _, _, 'from urllib.request import urlopen, Request')
+    )),
+    %% Test from_relative import
+    assert_true('from_relative import produces from .X import Y', (
+        with_output_to(atom(Output3), (
+            current_output(S3),
+            agent_loop_components:emit_module_imports(S3, [from_relative(audit, ['AuditLogger'])])
+        )),
+        sub_atom(Output3, _, _, _, 'from .audit import AuditLogger')
+    )).
+
+test_backend_import_specs :-
+    format("~nBackend import specs:~n"),
+    %% Test openrouter_api specs include from() for urllib
+    assert_true('openrouter_api specs include from(urllib.request, ...)', (
+        agent_loop_module:agent_backend(openrouter_api, Props),
+        agent_loop_components:backend_import_specs(Props, Specs),
+        member(from('urllib.request', _), Specs)
+    )),
+    %% Test openrouter_api has bare imports for json, os, sys
+    assert_true('openrouter_api specs include bare(json)', (
+        agent_loop_module:agent_backend(openrouter_api, Props2),
+        agent_loop_components:backend_import_specs(Props2, Specs2),
+        member(bare(json), Specs2)
+    )),
+    %% Test ollama_cli has only bare imports
+    assert_true('ollama_cli specs are all bare', (
+        agent_loop_module:agent_backend(ollama_cli, Props3),
+        agent_loop_components:backend_import_specs(Props3, Specs3),
+        member(bare(subprocess), Specs3)
+    )).
+
+test_module_dependency_facts :-
+    format("~nModule dependency facts:~n"),
+    assert_true('tools depends on security', (
+        agent_loop_module:module_dependency(tools, security, _)
+    )),
+    assert_true('agent_loop depends on backends', (
+        agent_loop_module:module_dependency(agent_loop, backends, _)
+    )),
+    assert_true('backends depends on costs', (
+        agent_loop_module:module_dependency(backends, costs, _)
+    )).
+
+test_emit_module_dependencies :-
+    format("~nModule dependency emitter:~n"),
+    %% Test backends has dependencies
+    assert_true('emit_module_dependencies for backends includes costs', (
+        with_output_to(atom(Output1), (
+            current_output(S1),
+            agent_loop_components:emit_module_dependencies(S1, [module(backends)])
+        )),
+        sub_atom(Output1, _, _, _, 'costs')
+    )),
+    %% Test commands has no dependencies (self-contained)
+    assert_true('emit_module_dependencies for commands says self-contained', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_module_dependencies(S2, [module(commands)])
+        )),
+        sub_atom(Output2, _, _, _, 'self-contained')
     )).

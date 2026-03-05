@@ -474,3 +474,23 @@ class TestComponentDriven:
             f"Tools count mismatch: {len(TOOL_SPECS)} != {test_metadata['tools']['count']}"
         assert len(get_builtin_profiles()) == test_metadata["security"]["count"], \
             f"Security count mismatch: {len(get_builtin_profiles())} != {test_metadata['security']['count']}"
+
+    def test_command_count_match(self, test_metadata):
+        """Command count in metadata matches expected slash command count."""
+        assert test_metadata["commands"]["count"] == 23, \
+            f"Command count mismatch: {test_metadata['commands']['count']} != 23"
+
+    def test_destructive_tools_match(self, test_metadata):
+        """Destructive tools in metadata match DESTRUCTIVE_TOOLS in generated code."""
+        from tools_generated import DESTRUCTIVE_TOOLS
+        for tool in test_metadata.get("destructive_tools", []):
+            assert tool in DESTRUCTIVE_TOOLS, \
+                f"Destructive tool '{tool}' in metadata but not in DESTRUCTIVE_TOOLS"
+
+    def test_module_dependencies_present(self, test_metadata):
+        """Module dependencies map has expected structure."""
+        deps = test_metadata.get("module_dependencies", {})
+        assert "agent_loop" in deps, "agent_loop should have dependencies"
+        assert "security" in deps["agent_loop"], "agent_loop should depend on security"
+        assert "backends" in deps, "backends should have dependencies"
+        assert "costs" in deps["backends"], "backends should depend on costs"

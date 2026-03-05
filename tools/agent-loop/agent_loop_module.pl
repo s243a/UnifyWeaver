@@ -22,12 +22,29 @@
     command_alias/2,
     backend_factory/2,
     backend_factory_order/1,
-    write_prolog_term/2
+    write_prolog_term/2,
+    module_dependency/3
 ]).
 
 :- discontiguous generate_backend_full/3.
 :- use_module(agent_loop_components).
 :- use_module(agent_loop_bindings).
+
+%% =============================================================================
+%% Module Dependency Graph
+%% =============================================================================
+
+%% module_dependency(+SourceModule, +TargetModule, +Reason)
+%% Declarative cross-module dependency facts for generated use_module directives.
+module_dependency(tools, security, 'check_path_allowed/2, check_command_allowed/2').
+module_dependency(agent_loop, config, 'load_config/1, get_default_config/0').
+module_dependency(agent_loop, tools, 'tool handler dispatch').
+module_dependency(agent_loop, backends, 'create_backend/3, send_request/4').
+module_dependency(agent_loop, commands, 'handle_slash_command/3').
+module_dependency(agent_loop, security, 'set_security_profile/1').
+module_dependency(agent_loop, costs, 'cost_tracker_add/4').
+module_dependency(backends, costs, 'model_pricing/3 for cost tracking').
+module_dependency(backends, config, 'api_key_env_var/2 for key resolution').
 
 %% =============================================================================
 %% Agent Backend Definitions
@@ -176,7 +193,11 @@ agent_backend(openrouter_api, [
     supports_tools(true),
     supports_streaming(true),
     %% Generation metadata
-    module_imports([json, os, sys, 'urllib.request', 'urllib.error']),
+    module_imports([json, os, sys]),
+    from_imports([
+        'urllib.request' - ['urlopen', 'Request'],
+        'urllib.error'   - ['HTTPError', 'URLError']
+    ]),
     class_docstring('OpenRouter API backend (OpenAI-compatible, no pip deps).'),
     display_name('OpenRouter ({self.model})'),
     helper_fragments([supports_streaming_true, sse_streaming_openrouter, describe_tool_call_openrouter])
@@ -1240,6 +1261,9 @@ generate_prolog_tools :-
     write(S, ':- use_module(library(readutil)).\n'),
     write(S, ':- use_module(library(time)).\n'),
     write(S, ':- use_module(security).\n\n'),
+    write(S, '%% Tabling: memoize tool schema construction across REPL iterations\n'),
+    write(S, ':- table build_tool_input_schema/2.\n\n'),
+    write(S, '%% JIT multi-arg indexing: tool_description/5 benefits from (arg1, arg2) indexing\n\n'),
     %% Emit tool facts via component registry
     agent_loop_components:emit_tool_facts(S, [target(prolog)]),
     %% Generate tool execution predicates
@@ -1393,7 +1417,7 @@ generate_prolog_commands :-
     write(S, '    resolve_command/3,\n'),
     write(S, '    handle_slash_command/3\n'),
     write(S, ']).\n\n'),
-    write(S, '%% Dependencies: none (self-contained command definitions)\n\n'),
+    agent_loop_components:emit_module_dependencies(S, [module(commands)]),
     %% Emit command facts via component registry
     agent_loop_components:emit_command_facts(S, [target(prolog)]),
     %% Generate resolve_command
@@ -1516,8 +1540,7 @@ generate_prolog_backends :-
     write(S, ':- use_module(library(process)).\n'),
     write(S, ':- use_module(library(random)).\n'),
     write(S, ':- discontiguous send_request_streaming_raw/5.\n\n'),
-    write(S, '%% Dependencies: costs (model_pricing/3 for cost tracking)\n'),
-    write(S, '%%              config (api_key_env_var/2 for key resolution)\n\n'),
+    agent_loop_components:emit_module_dependencies(S, [module(backends)]),
     %% Emit backend facts via component registry
     agent_loop_components:emit_backend_facts(S, [target(prolog)]),
     %% Generate create_backend
@@ -1553,9 +1576,10 @@ generate_prolog_backends :-
     write(S, '    format(atom(Msg), "Request error: ~w", [Error]).\n\n'),
     write(S, '%% retry_call(+Goal, +Options) — retry with exponential backoff + jitter\n'),
     write(S, 'retry_call(Goal, Options) :-\n'),
-    write(S, '    (member(max_attempts(Max), Options) -> true ; retry_config(Max, _, _)),\n'),
-    write(S, '    (member(base_delay(Base), Options) -> true ; retry_config(_, Base, _)),\n'),
-    write(S, '    (member(max_delay(MaxD), Options) -> true ; retry_config(_, _, MaxD)),\n'),
+    write(S, '    retry_config(DefaultMax, DefaultBase, DefaultMaxD),\n'),
+    write(S, '    (member(max_attempts(Max), Options) -> true ; Max = DefaultMax),\n'),
+    write(S, '    (member(base_delay(Base), Options) -> true ; Base = DefaultBase),\n'),
+    write(S, '    (member(max_delay(MaxD), Options) -> true ; MaxD = DefaultMaxD),\n'),
     write(S, '    retry_call_(Goal, 1, Max, Base, MaxD).\n\n'),
     write(S, 'retry_call_(Goal, Attempt, Max, Base, MaxD) :-\n'),
     write(S, '    catch(\n'),
@@ -3015,9 +3039,7 @@ generate_security_profiles :-
 generate_regex_list_py(S, ListName, PyVarName) :-
     regex_list(ListName, Patterns),
     format(S, '~w = [~n', [PyVarName]),
-    forall(member(P, Patterns), (
-        format(S, '    ~w,~n', [P])
-    )),
+    maplist([P]>>(format(S, '    ~w,~n', [P])), Patterns),
     write(S, ']\n').
 
 %% Write a single profile entry in get_builtin_profiles()
@@ -3880,7 +3902,7 @@ is_python_command(CmdName) :-
 format_help_line(S, CmdName) :-
     slash_command(CmdName, _, Props, _),
     member(help_lines(Lines), Props), !,
-    forall(member(Line, Lines), format(S, '  ~w~n', [Line])).
+    maplist([Line]>>(format(S, '  ~w~n', [Line])), Lines).
 
 %% Normal single-line help entry
 format_help_line(S, CmdName) :-
@@ -3896,7 +3918,7 @@ format_help_line(S, CmdName) :-
     atom_length(CmdDisplay, Len),
     PadLen is max(1, 19 - Len),
     format(S, '  ~w', [CmdDisplay]),
-    forall(between(1, PadLen, _), write(S, ' ')),
+    format(S, '~*c', [PadLen, 0' ]),
     format(S, '- ~w~n', [HelpText]).
 
 %% =============================================================================
@@ -9572,9 +9594,9 @@ generate_backend(Name) :-
 generate_backend_header(S, BackendName) :-
     agent_backend(BackendName, Props),
     member(description(Desc), Props),
-    member(module_imports(Imports), Props),
     format(S, '"""~w"""~n~n', [Desc]),
-    agent_loop_components:emit_backend_module_imports(S, [target(python), imports(Imports)]),
+    agent_loop_components:backend_import_specs(Props, ImportSpecs),
+    agent_loop_components:emit_module_imports(S, ImportSpecs),
     (member(sdk_guard(SDK), Props) ->
         %% SDK backends: base import + sdk_import_guard fragment
         write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n'),
@@ -10155,13 +10177,7 @@ generate_backend_full(S, coro, _) :-
 %% --- openrouter_api (uses: messages_builder_openrouter, describe_tool_call_openrouter, sse_streaming_openrouter) ---
 
 generate_backend_full(S, openrouter_api, _) :-
-    agent_backend(openrouter_api, Props),
-    member(description(Desc), Props),
-    format(S, '"""~w"""~n~n', [Desc]),
-    write(S, 'import json\nimport os\nimport sys\n'),
-    write(S, 'from urllib.request import urlopen, Request\n'),
-    write(S, 'from urllib.error import HTTPError, URLError\n'),
-    write(S, 'from .base import AgentBackend, AgentResponse, ToolCall\n\n\n'),
+    generate_backend_header(S, openrouter_api),
     %% Generate DEFAULT_TOOL_SCHEMAS from tool_spec/2 facts
     write(S, '# Default tool schemas for function calling (OpenAI format)\n'),
     write(S, 'DEFAULT_TOOL_SCHEMAS = [\n'),

@@ -11,7 +11,7 @@
     handle_slash_command/3
 ]).
 
-%% Dependencies: none (self-contained command definitions)
+%% Dependencies: none (self-contained)
 
 %% Optimization notes:
 %%   - slash_command/4: first-argument atom-indexed, all distinct
