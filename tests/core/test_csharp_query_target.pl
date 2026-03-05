@@ -308,7 +308,9 @@ test_csharp_query_target :-
         verify_parameterized_reachability_seed_cache_eviction_runtime,
         verify_parameterized_reachability_by_target_seed_cache_eviction_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_eviction_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_eviction_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_eviction_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_eviction_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_eviction_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_eviction_runtime,
         verify_parameterized_reachability_seed_cache_lru_recency_runtime,
@@ -3588,6 +3590,52 @@ verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_evictio
         ExecParams,
         HarnessSource).
 
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_eviction_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z], [p, q]],
+    WarmParams2 = [[x, z], [p, r]],
+    ExecParams = [[a, z], [p, q]],
+    harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        ExecParams,
+        'TransitiveClosurePairsSingleProbe',
+        1,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'p,q',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=false'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_eviction_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z, red, cat1], [p, q, red, cat1]],
+    WarmParams2 = [[x, z, red, cat1], [p, r, red, cat1]],
+    ExecParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        ExecParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        1,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'p,q,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=false'],
+        ExecParams,
+        HarnessSource).
+
 verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime :-
     csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -5714,9 +5762,76 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
      Console.WriteLine(string.Join(",", projected));
    }
  
+  var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+  Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
+    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+
+harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        ExecParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        MinCostPerProbe,
+        Source) :-
+    csharp_params_literal(WarmParams1, WarmLiteral1),
+    csharp_params_literal(WarmParams2, WarmLiteral2),
+    csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(
+        ReuseCaches: true,
+        PairProbeCacheMaxEntries: ~w,
+        PairProbeCacheAdmissionMinCost: ~w,
+        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+var _planText = QueryPlanExplainer.Explain(result.Plan);
+var warmParameters1 = ~w;
+var warmTrace1 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
+var warmParameters2 = ~w;
+var warmTrace2 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters2, warmTrace2).ToList();
+var parameters = ~w;
+var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+
+ var trace = new QueryExecutionTrace();
+ foreach (var row in executor.Execute(result.Plan, parameters, trace))
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(",", projected));
+   }
+ 
    var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
    Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
-    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_seed_limit(ModuleClass, WarmParams1, WarmParams2, ExecParams, Cache, SeedLimit, Source) :-
     csharp_params_literal(WarmParams1, WarmLiteral1),
