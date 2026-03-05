@@ -5,5 +5,5 @@
   "backends": {"count": 8, "names": ["coro", "claude-code", "gemini", "claude", "openai", "openrouter", "ollama-api", "ollama-cli"]},
   "commands": {"count": 23, "names": ["exit", "clear", "help", "status", "iterations", "backend", "save", "load", "sessions", "format", "export", "cost", "search", "stream", "model", "tokens", "aliases", "templates", "history", "undo", "delete", "edit", "replay"]},
   "destructive_tools": ["bash", "write", "edit"],
-  "module_dependencies": {"agent_loop": ["config", "tools", "backends", "commands", "security", "costs"], "backends": ["costs", "config"], "tools": ["security"]}
+  "module_dependencies": {"agent_loop": ["config", "tools", "backends", "commands", "security", "costs"], "backends": ["costs", "config"], "config": ["backends"], "security": ["config"], "tools": ["security"]}
 }

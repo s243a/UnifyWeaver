@@ -45,7 +45,8 @@
     emit_module_imports/2,
     emit_module_dependencies/2,
     backend_import_specs/2,
-    security_import_specs/1
+    security_import_specs/1,
+    emit_dependency_diagram/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -826,9 +827,7 @@ emit_help_groups(S, _Options) :-
         include(agent_loop_module:is_python_command, CmdNames, PyCmds),
         (PyCmds \= [] ->
             format(S, '~w:~n', [GroupLabel]),
-            forall(member(CmdName, PyCmds),
-                agent_loop_module:format_help_line(S, CmdName)
-            ),
+            maplist([CmdName]>>(agent_loop_module:format_help_line(S, CmdName)), PyCmds),
             write(S, '\n')
         ; true)
     )).
@@ -837,15 +836,11 @@ emit_help_groups(S, _Options) :-
 %% Emit README markdown for backends and tools.
 emit_readme_sections(S, _Options) :-
     write(S, '## Backends\n\n'),
-    forall(agent_loop_module:agent_backend(Name, Props), (
-        member(description(Desc), Props),
-        format(S, '- **~w**: ~w~n', [Name, Desc])
-    )),
+    findall(Name-Desc, (agent_loop_module:agent_backend(Name, Props), member(description(Desc), Props)), BPairs),
+    maplist([Name-Desc]>>(format(S, '- **~w**: ~w~n', [Name, Desc])), BPairs),
     write(S, '\n## Tools\n\n'),
-    forall(agent_loop_module:tool_spec(Name, Props), (
-        member(description(Desc), Props),
-        format(S, '- **~w**: ~w~n', [Name, Desc])
-    )).
+    findall(Name-Desc, (agent_loop_module:tool_spec(Name, Props), member(description(Desc), Props)), TPairs),
+    maplist([Name-Desc]>>(format(S, '- **~w**: ~w~n', [Name, Desc])), TPairs).
 
 %% emit_backend_module_imports(+Stream, +Options)
 %% Emit Python import lines from an imports list in Options via unified import system.
@@ -922,6 +917,24 @@ emit_module_dependencies(S, Options) :-
             format(S, '%%   ~w (~w)~n', [Dep, Reason]))
     ),
     write(S, '\n').
+
+%% ============================================================================
+%% Dependency Diagram
+%% ============================================================================
+
+%% emit_dependency_diagram(+Stream, +Options)
+%% Emit Mermaid dependency diagram from module_dependency/3 facts.
+emit_dependency_diagram(S, _Options) :-
+    write(S, '## Module Dependencies\n\n'),
+    write(S, '```mermaid\ngraph TD\n'),
+    %% Collect all modules mentioned in dependencies
+    findall(M, (agent_loop_module:module_dependency(M, _, _) ; agent_loop_module:module_dependency(_, M, _)), MsDup),
+    sort(MsDup, Modules),
+    maplist([M]>>(format(S, '    ~w[~w]~n', [M, M])), Modules),
+    write(S, '\n'),
+    forall(agent_loop_module:module_dependency(Src, Tgt, _Reason),
+        format(S, '    ~w --> ~w~n', [Src, Tgt])),
+    write(S, '```\n\n').
 
 %% ============================================================================
 %% Forall Lift Batch 3 — Prolog backends, security profiles, tool dispatch,

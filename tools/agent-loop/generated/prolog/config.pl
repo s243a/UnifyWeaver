@@ -22,6 +22,9 @@
 :- use_module(library(optparse)).
 :- use_module(library(json)).
 
+%% Dependencies:
+%%   backends (api_key_env_var/2 backend name lookup)
+
 %% Optimization notes:
 %%   - api_key_env_var/2, api_key_file/2: deterministic lookup per backend
 %%   - audit_profile_level/2: deterministic lookup per profile

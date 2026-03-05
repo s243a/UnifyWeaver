@@ -11,6 +11,8 @@
     cost_tracker_format/2
 ]).
 
+%% Dependencies: none (self-contained)
+
 %% Indexing hints (SWI-Prolog auto-indexes first argument):
 %%   model_pricing/3: first-argument indexed
 

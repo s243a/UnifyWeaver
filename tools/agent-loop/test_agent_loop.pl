@@ -78,6 +78,9 @@ run_tests :-
     test_backend_import_specs,
     test_module_dependency_facts,
     test_emit_module_dependencies,
+    test_det_annotations_in_generated,
+    test_dependency_diagram_output,
+    test_module_dependencies_complete,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -116,8 +119,8 @@ test_binding_registration :-
     bindings_for_target(prolog, PlBindings),
     length(PyBindings, NPy),
     length(PlBindings, NPl),
-    assert_eq('Python binding count', NPy, 8),
-    assert_eq('Prolog binding count', NPl, 7).
+    assert_eq('Python binding count', NPy, 11),
+    assert_eq('Prolog binding count', NPl, 10).
 
 %% ============================================================================
 %% Test 2: Component Registration
@@ -275,12 +278,12 @@ test_bindings_summary :-
     assert_true('Python summary generated', (
         generate_bindings_summary(python, Summary),
         atom(Summary),
-        sub_atom(Summary, _, _, _, 'python bindings (8)')
+        sub_atom(Summary, _, _, _, 'python bindings (11)')
     )),
     assert_true('Prolog summary generated', (
         generate_bindings_summary(prolog, PlSummary),
         atom(PlSummary),
-        sub_atom(PlSummary, _, _, _, 'prolog bindings (7)')
+        sub_atom(PlSummary, _, _, _, 'prolog bindings (10)')
     )).
 
 %% ============================================================================
@@ -905,13 +908,13 @@ test_new_binding_count :-
     format("~nNew binding count:~n"),
     clear_all_bindings,
     agent_loop_bindings:init_agent_loop_bindings,
-    assert_true('Python bindings count is 8', (
+    assert_true('Python bindings count is 11', (
         bindings_for_target(python, PyBindings),
-        length(PyBindings, 8)
+        length(PyBindings, 11)
     )),
-    assert_true('Prolog bindings count is 7', (
+    assert_true('Prolog bindings count is 10', (
         bindings_for_target(prolog, PlBindings),
-        length(PlBindings, 7)
+        length(PlBindings, 10)
     )),
     assert_true('api_key_env_var has Python binding', (
         bindings_for_predicate(api_key_env_var/2, Bindings),
@@ -1150,4 +1153,60 @@ test_emit_module_dependencies :-
             agent_loop_components:emit_module_dependencies(S2, [module(commands)])
         )),
         sub_atom(Output2, _, _, _, 'self-contained')
+    )).
+
+%% ============================================================================
+%% :- det annotations, dependency diagram, complete dependency coverage
+%% ============================================================================
+
+test_det_annotations_in_generated :-
+    format("~nDet annotations in generated files:~n"),
+    assert_true('generated tools.pl contains :- det(execute_tool/3)', (
+        read_file_to_string('generated/prolog/tools.pl', Content, []),
+        sub_string(Content, _, _, _, ":- det(execute_tool/3)")
+    )),
+    assert_true('generated backends.pl contains :- det(create_backend/3)', (
+        read_file_to_string('generated/prolog/backends.pl', Content2, []),
+        sub_string(Content2, _, _, _, ":- det(create_backend/3)")
+    )),
+    assert_true('generated commands.pl contains :- det(resolve_command/3)', (
+        read_file_to_string('generated/prolog/commands.pl', Content3, []),
+        sub_string(Content3, _, _, _, ":- det(resolve_command/3)")
+    )),
+    assert_true('generated security.pl contains :- det(check_path_allowed/2)', (
+        read_file_to_string('generated/prolog/security.pl', Content4, []),
+        sub_string(Content4, _, _, _, ":- det(check_path_allowed/2)")
+    )).
+
+test_dependency_diagram_output :-
+    format("~nDependency diagram:~n"),
+    assert_true('emit_dependency_diagram contains mermaid', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_dependency_diagram(S, [])
+        )),
+        sub_atom(Output, _, _, _, 'mermaid')
+    )),
+    assert_true('emit_dependency_diagram contains graph TD', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_dependency_diagram(S2, [])
+        )),
+        sub_atom(Output2, _, _, _, 'graph TD')
+    )),
+    assert_true('emit_dependency_diagram contains agent_loop --> tools', (
+        with_output_to(atom(Output3), (
+            current_output(S3),
+            agent_loop_components:emit_dependency_diagram(S3, [])
+        )),
+        sub_atom(Output3, _, _, _, 'agent_loop --> tools')
+    )).
+
+test_module_dependencies_complete :-
+    format("~nComplete dependency coverage:~n"),
+    assert_true('config depends on backends', (
+        agent_loop_module:module_dependency(config, backends, _)
+    )),
+    assert_true('security depends on config', (
+        agent_loop_module:module_dependency(security, config, _)
     )).

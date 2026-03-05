@@ -16,6 +16,13 @@
 
 :- use_module(library(pcre)).
 
+%% Dependencies:
+%%   config (audit_profile_level/2 from config)
+
+:- det(check_path_allowed/2).
+:- det(check_command_allowed/2).
+:- det(set_security_profile/1).
+
 :- dynamic current_security_profile/1.
 current_security_profile(cautious).
 
