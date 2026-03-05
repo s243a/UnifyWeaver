@@ -118,6 +118,10 @@
 :- dynamic user:test_admission_group_reach_param/4.
 :- dynamic user:test_admission_group_reach_param_end/4.
 :- dynamic user:test_admission_group_reach_pair/4.
+:- dynamic user:test_admission_mixed_lru_edge/2.
+:- dynamic user:test_admission_mixed_lru_reach/2.
+:- dynamic user:test_admission_group_mixed_lru_edge/4.
+:- dynamic user:test_admission_group_mixed_lru_reach/4.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
 :- dynamic user:test_order_summary/1.
@@ -316,6 +320,8 @@ test_csharp_query_target :-
         verify_parameterized_reachability_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_seed_cache_admission_runtime,
         verify_parameterized_reachability_by_target_seed_cache_admission_runtime,
@@ -1025,6 +1031,34 @@ setup_test_data :-
         test_admission_group_edge(X, Y, L, Cat),
         test_admission_group_reach_pair(Y, Z, L, Cat)
     )),
+    assertz(user:test_admission_mixed_lru_edge(a, z)),
+    assertz(user:test_admission_mixed_lru_edge(x, z)),
+    assertz(user:test_admission_mixed_lru_edge(y, z)),
+    assertz(user:test_admission_mixed_lru_edge(p, q)),
+    assertz(user:test_admission_mixed_lru_edge(p, r)),
+    assertz(user:test_admission_mixed_lru_edge(p, s)),
+    assertz(user:mode(test_admission_mixed_lru_reach(+, +))),
+    assertz(user:(test_admission_mixed_lru_reach(X, Y) :-
+        test_admission_mixed_lru_edge(X, Y)
+    )),
+    assertz(user:(test_admission_mixed_lru_reach(X, Z) :-
+        test_admission_mixed_lru_edge(X, Y),
+        test_admission_mixed_lru_reach(Y, Z)
+    )),
+    assertz(user:test_admission_group_mixed_lru_edge(a, z, red, cat1)),
+    assertz(user:test_admission_group_mixed_lru_edge(x, z, red, cat1)),
+    assertz(user:test_admission_group_mixed_lru_edge(y, z, red, cat1)),
+    assertz(user:test_admission_group_mixed_lru_edge(p, q, red, cat1)),
+    assertz(user:test_admission_group_mixed_lru_edge(p, r, red, cat1)),
+    assertz(user:test_admission_group_mixed_lru_edge(p, s, red, cat1)),
+    assertz(user:mode(test_admission_group_mixed_lru_reach(+, +, +, +))),
+    assertz(user:(test_admission_group_mixed_lru_reach(X, Y, L, Cat) :-
+        test_admission_group_mixed_lru_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_admission_group_mixed_lru_reach(X, Z, L, Cat) :-
+        test_admission_group_mixed_lru_edge(X, Y, L, Cat),
+        test_admission_group_mixed_lru_reach(Y, Z, L, Cat)
+    )),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -1197,6 +1231,12 @@ cleanup_test_data :-
     retractall(user:mode(test_admission_group_reach_param_end(_, _, _, _))),
     retractall(user:test_admission_group_reach_pair(_, _, _, _)),
     retractall(user:mode(test_admission_group_reach_pair(_, _, _, _))),
+    retractall(user:test_admission_mixed_lru_edge(_, _)),
+    retractall(user:test_admission_mixed_lru_reach(_, _)),
+    retractall(user:mode(test_admission_mixed_lru_reach(_, _))),
+    retractall(user:test_admission_group_mixed_lru_edge(_, _, _, _)),
+    retractall(user:test_admission_group_mixed_lru_reach(_, _, _, _)),
+    retractall(user:mode(test_admission_group_mixed_lru_reach(_, _, _, _))),
     retractall(user:test_reachable(_, _)),
     retractall(user:test_cat(_)),
     retractall(user:test_catmix(_)),
@@ -3663,6 +3703,64 @@ verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime :
         HotParams,
         HarnessSource).
 
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_admission_mixed_lru_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z], [p, q]],
+    WarmParams2 = [[x, z], [p, r]],
+    TouchParams = [[a, z], [p, q]],
+    InsertParams = [[y, z], [p, s]],
+    HotParams = [[a, z], [p, q]],
+    ColdParams = [[x, z], [p, r]],
+    harness_source_with_pair_cache_lru_recency_normalized_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
+         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
+         'CACHE_EVICTIONS:TransitiveClosurePairsSingleProbe=2'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_mixed_lru_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z, red, cat1], [p, q, red, cat1]],
+    WarmParams2 = [[x, z, red, cat1], [p, r, red, cat1]],
+    TouchParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    InsertParams = [[y, z, red, cat1], [p, s, red, cat1]],
+    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ColdParams = [[x, z, red, cat1], [p, r, red, cat1]],
+    harness_source_with_pair_cache_lru_recency_normalized_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
+         'CACHE_EVICTIONS:GroupedTransitiveClosurePairsSingleProbe=2'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency_runtime :-
     csharp_query_target:build_query_plan(test_admission_group_reach_param_end/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -5939,6 +6037,65 @@ Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
     ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+
+harness_source_with_pair_cache_lru_recency_normalized_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        MinCostPerProbe,
+        Source) :-
+    csharp_params_literal(WarmParams1, WarmLiteral1),
+    csharp_params_literal(WarmParams2, WarmLiteral2),
+    csharp_params_literal(TouchParams, TouchLiteral),
+    csharp_params_literal(InsertParams, InsertLiteral),
+    csharp_params_literal(HotParams, HotLiteral),
+    csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(
+        ReuseCaches: true,
+        PairProbeCacheMaxEntries: ~w,
+        PairProbeCacheAdmissionMinCost: ~w,
+        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+var warmParameters1 = ~w;
+var warmTrace1 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
+var warmParameters2 = ~w;
+var warmTrace2 = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, warmParameters2, warmTrace2).ToList();
+var touchParameters = ~w;
+var touchTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, touchParameters, touchTrace).ToList();
+var insertParameters = ~w;
+var insertTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, insertParameters, insertTrace).ToList();
+var hotParameters = ~w;
+var hotTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
+var coldParameters = ~w;
+var coldTrace = new QueryExecutionTrace();
+_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
+
+var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
+var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Evictions);
+Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
+Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
+Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
+    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_seed_cache_lru_recency_flag(
         ModuleClass,
