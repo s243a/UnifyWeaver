@@ -494,3 +494,12 @@ class TestComponentDriven:
         assert "security" in deps["agent_loop"], "agent_loop should depend on security"
         assert "backends" in deps, "backends should have dependencies"
         assert "costs" in deps["backends"], "backends should depend on costs"
+
+    def test_readme_has_mermaid(self):
+        """Generated README.md contains a Mermaid dependency diagram."""
+        readme_path = os.path.join(os.path.dirname(__file__), "generated", "python", "README.md")
+        with open(readme_path) as f:
+            content = f.read()
+        assert "```mermaid" in content, "README should contain mermaid code block"
+        assert "graph TD" in content, "README should contain graph TD directive"
+        assert "agent_loop" in content, "README diagram should reference agent_loop module"

@@ -19,8 +19,16 @@
 :- use_module(library(time)).
 :- use_module(security).
 
+%% Dependencies:
+%%   security (check_path_allowed/2, check_command_allowed/2)
+
 %% Tabling: memoize tool schema construction across REPL iterations
 :- table build_tool_input_schema/2.
+
+:- det(execute_tool/3).
+:- det(describe_tool_call/4).
+:- det(confirm_destructive/2).
+:- det(build_tool_input_schema/2).
 
 %% JIT multi-arg indexing: tool_description/5 benefits from (arg1, arg2) indexing
 

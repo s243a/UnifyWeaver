@@ -37,6 +37,9 @@ from display import DisplayMode, Spinner
 #   api_key_env_var/2 -> API_KEY_ENV_VARS[backend](backend) [pure]
 #   api_key_file/2 -> API_KEY_FILE_PATHS[backend](backend) [pure]
 #   default_agent_preset/3 -> get_default_config().agents[name](name) [pure]
+#   model_pricing/3 -> DEFAULT_PRICING[model](model) [pure]
+#   config_search_path/2 -> CONFIG_SEARCH_PATHS[path_type](path_type) [pure]
+#   destructive_tool/1 -> DESTRUCTIVE_TOOLS(tool_name) [pure]
 #
 
 class AgentLoop:

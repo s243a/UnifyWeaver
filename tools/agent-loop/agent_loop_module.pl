@@ -45,6 +45,8 @@ module_dependency(agent_loop, security, 'set_security_profile/1').
 module_dependency(agent_loop, costs, 'cost_tracker_add/4').
 module_dependency(backends, costs, 'model_pricing/3 for cost tracking').
 module_dependency(backends, config, 'api_key_env_var/2 for key resolution').
+module_dependency(config, backends, 'api_key_env_var/2 backend name lookup').
+module_dependency(security, config, 'audit_profile_level/2 from config').
 
 %% =============================================================================
 %% Agent Backend Definitions
@@ -1051,7 +1053,8 @@ generate_all(python) :-
     make_directory_path(SecurityDir),
     generate_module(backends_init),
     generate_module(backends_base),
-    forall(agent_backend(Name, _), generate_backend(Name)),
+    findall(BN, agent_backend(BN, _), BackendNames),
+    maplist(generate_backend, BackendNames),
     generate_module(security_init),
     generate_module(security_profiles),
     generate_module(costs),
@@ -1147,6 +1150,7 @@ generate_prolog_costs :-
     write(S, '    cost_tracker_total/2,\n'),
     write(S, '    cost_tracker_format/2\n'),
     write(S, ']).\n\n'),
+    agent_loop_components:emit_module_dependencies(S, [module(costs)]),
     %% Emit cost facts via component registry
     agent_loop_components:emit_cost_facts(S, [target(prolog)]),
     %% Emit cost tracker implementation
@@ -1198,6 +1202,7 @@ generate_prolog_config :-
     write(S, ']).\n\n'),
     write(S, ':- use_module(library(optparse)).\n'),
     write(S, ':- use_module(library(json)).\n\n'),
+    agent_loop_components:emit_module_dependencies(S, [module(config)]),
     %% Emit all config facts via centralized emit predicate
     agent_loop_components:emit_prolog_config_facts(S, [target(prolog)]),
     %% Generate parse_cli_args using optparse
@@ -1261,8 +1266,13 @@ generate_prolog_tools :-
     write(S, ':- use_module(library(readutil)).\n'),
     write(S, ':- use_module(library(time)).\n'),
     write(S, ':- use_module(security).\n\n'),
+    agent_loop_components:emit_module_dependencies(S, [module(tools)]),
     write(S, '%% Tabling: memoize tool schema construction across REPL iterations\n'),
     write(S, ':- table build_tool_input_schema/2.\n\n'),
+    write(S, ':- det(execute_tool/3).\n'),
+    write(S, ':- det(describe_tool_call/4).\n'),
+    write(S, ':- det(confirm_destructive/2).\n'),
+    write(S, ':- det(build_tool_input_schema/2).\n\n'),
     write(S, '%% JIT multi-arg indexing: tool_description/5 benefits from (arg1, arg2) indexing\n\n'),
     %% Emit tool facts via component registry
     agent_loop_components:emit_tool_facts(S, [target(prolog)]),
@@ -1418,6 +1428,8 @@ generate_prolog_commands :-
     write(S, '    handle_slash_command/3\n'),
     write(S, ']).\n\n'),
     agent_loop_components:emit_module_dependencies(S, [module(commands)]),
+    write(S, ':- det(resolve_command/3).\n'),
+    write(S, ':- det(handle_slash_command/3).\n\n'),
     %% Emit command facts via component registry
     agent_loop_components:emit_command_facts(S, [target(prolog)]),
     %% Generate resolve_command
@@ -1476,6 +1488,10 @@ generate_prolog_security :-
     write(S, '    set_security_profile/1\n'),
     write(S, ']).\n\n'),
     write(S, ':- use_module(library(pcre)).\n\n'),
+    agent_loop_components:emit_module_dependencies(S, [module(security)]),
+    write(S, ':- det(check_path_allowed/2).\n'),
+    write(S, ':- det(check_command_allowed/2).\n'),
+    write(S, ':- det(set_security_profile/1).\n\n'),
     write(S, ':- dynamic current_security_profile/1.\n'),
     write(S, 'current_security_profile(cautious).\n\n'),
     %% Emit security facts via component registry
@@ -1540,6 +1556,9 @@ generate_prolog_backends :-
     write(S, ':- use_module(library(process)).\n'),
     write(S, ':- use_module(library(random)).\n'),
     write(S, ':- discontiguous send_request_streaming_raw/5.\n\n'),
+    write(S, ':- det(create_backend/3).\n'),
+    write(S, ':- det(retry_call/2).\n'),
+    write(S, ':- det(format_api_error/2).\n\n'),
     agent_loop_components:emit_module_dependencies(S, [module(backends)]),
     %% Emit backend facts via component registry
     agent_loop_components:emit_backend_facts(S, [target(prolog)]),
@@ -3724,10 +3743,9 @@ generate_alias_group_backend(S) :-
     command_alias("sw", SwV), format(S, '    "sw": "~w",  # switch~n', [SwV]),
     write(S, '\n'),
     write(S, '    # Common backend switches\n'),
-    forall(
-        member(K, ["yolo", "opus", "sonnet", "haiku", "gpt", "local"]),
-        (command_alias(K, V), format(S, '    "~w": "~w",~n', [K, V]))
-    ),
+    maplist([K]>>(
+        command_alias(K, V), format(S, '    "~w": "~w",~n', [K, V])
+    ), ["yolo", "opus", "sonnet", "haiku", "gpt", "local"]),
     write(S, '\n'),
     write(S, '    # Format shortcuts\n'),
     command_alias("fmt", FmtV), format(S, '    "fmt": "~w",~n', [FmtV]).
@@ -4301,7 +4319,9 @@ generate_readme :-
     write(S, 'and `py_fragment` atoms for imperative logic.\n\n'),
     write(S, 'Regenerate with: `swipl -g "generate_all, halt" ../agent_loop_module.pl`\n\n'),
     agent_loop_components:emit_readme_sections(S, [target(python)]),
-    write(S, '\n## Usage\n\n'),
+    write(S, '\n'),
+    agent_loop_components:emit_dependency_diagram(S, []),
+    write(S, '## Usage\n\n'),
     write(S, '```bash\n'),
     write(S, 'python3 agent_loop.py              # interactive\n'),
     write(S, 'python3 agent_loop.py "prompt"     # single prompt\n'),
@@ -10383,14 +10403,10 @@ write_quoted_list(S, [Item|Rest]) :-
 %% Query helpers for introspection
 list_backends :-
     write('Available backends:'), nl,
-    forall(agent_backend(Name, Props), (
-        member(description(Desc), Props),
-        format('  ~w: ~w~n', [Name, Desc])
-    )).
+    findall(Name-Desc, (agent_backend(Name, Props), member(description(Desc), Props)), Pairs),
+    maplist([Name-Desc]>>(format('  ~w: ~w~n', [Name, Desc])), Pairs).
 
 list_tools :-
     write('Available tools:'), nl,
-    forall(tool_spec(Name, Props), (
-        member(description(Desc), Props),
-        format('  ~w: ~w~n', [Name, Desc])
-    )).
+    findall(Name-Desc, (tool_spec(Name, Props), member(description(Desc), Props)), Pairs),
+    maplist([Name-Desc]>>(format('  ~w: ~w~n', [Name, Desc])), Pairs).

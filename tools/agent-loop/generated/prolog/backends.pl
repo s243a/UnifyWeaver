@@ -25,6 +25,10 @@
 :- use_module(library(random)).
 :- discontiguous send_request_streaming_raw/5.
 
+:- det(create_backend/3).
+:- det(retry_call/2).
+:- det(format_api_error/2).
+
 %% Dependencies:
 %%   costs (model_pricing/3 for cost tracking)
 %%   config (api_key_env_var/2 for key resolution)

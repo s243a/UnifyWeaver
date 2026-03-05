@@ -13,6 +13,9 @@
 
 %% Dependencies: none (self-contained)
 
+:- det(resolve_command/3).
+:- det(handle_slash_command/3).
+
 %% Optimization notes:
 %%   - slash_command/4: first-argument atom-indexed, all distinct
 %%   - command_alias/2: first-argument string hash-indexed, all distinct

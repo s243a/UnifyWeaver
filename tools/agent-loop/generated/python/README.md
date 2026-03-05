@@ -24,6 +24,31 @@ Regenerate with: `swipl -g "generate_all, halt" ../agent_loop_module.pl`
 - **write**: Write content to a file
 - **edit**: Edit a file with search/replace
 
+## Module Dependencies
+
+```mermaid
+graph TD
+    agent_loop[agent_loop]
+    backends[backends]
+    commands[commands]
+    config[config]
+    costs[costs]
+    security[security]
+    tools[tools]
+
+    tools --> security
+    agent_loop --> config
+    agent_loop --> tools
+    agent_loop --> backends
+    agent_loop --> commands
+    agent_loop --> security
+    agent_loop --> costs
+    backends --> costs
+    backends --> config
+    config --> backends
+    security --> config
+```
+
 ## Usage
 
 ```bash

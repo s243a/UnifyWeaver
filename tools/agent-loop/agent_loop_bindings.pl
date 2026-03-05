@@ -105,7 +105,28 @@ register_python_bindings :-
         'get_default_config().agents[name]',
         [name-atom],
         [backend-atom, overrides-list],
-        [pure, deterministic, pattern(dict_lookup)]).
+        [pure, deterministic, pattern(dict_lookup)]),
+
+    %% model_pricing/3 -> costs.DEFAULT_PRICING dict lookup
+    declare_binding(python, model_pricing/3,
+        'DEFAULT_PRICING[model]',
+        [model-atom],
+        [input_cost-float, output_cost-float],
+        [import('costs'), pure, deterministic, pattern(dict_lookup)]),
+
+    %% config_search_path/2 -> config search path list
+    declare_binding(python, config_search_path/2,
+        'CONFIG_SEARCH_PATHS[path_type]',
+        [path_type-atom],
+        [path-string],
+        [import('config'), pure, deterministic, pattern(dict_lookup)]),
+
+    %% destructive_tool/1 -> tools_generated.DESTRUCTIVE_TOOLS membership
+    declare_binding(python, destructive_tool/1,
+        'DESTRUCTIVE_TOOLS',
+        [tool_name-atom],
+        [],
+        [import('tools_generated'), pure, deterministic, pattern(set_membership)]).
 
 %% ============================================================================
 %% Prolog Target Bindings
@@ -159,6 +180,27 @@ register_prolog_bindings :-
         api_key_file,
         [backend-atom],
         [file_path-atom],
+        [pure, deterministic]),
+
+    %% model_pricing/3 -> direct fact access
+    declare_binding(prolog, model_pricing/3,
+        model_pricing,
+        [model-atom],
+        [input_cost-float, output_cost-float],
+        [pure, deterministic]),
+
+    %% config_search_path/2 -> direct fact access
+    declare_binding(prolog, config_search_path/2,
+        config_search_path,
+        [path_type-atom],
+        [path-string],
+        [pure, deterministic]),
+
+    %% destructive_tool/1 -> direct fact access
+    declare_binding(prolog, destructive_tool/1,
+        destructive_tool,
+        [tool_name-atom],
+        [],
         [pure, deterministic]).
 
 %% ============================================================================
