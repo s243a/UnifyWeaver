@@ -79,6 +79,10 @@ run_tests :-
     test_module_dependency_facts,
     test_emit_module_dependencies,
     test_det_annotations_in_generated,
+    test_det_annotations_expanded,
+    test_binding_metadata_in_generated,
+    test_target_level_maplist_in_generated,
+    test_no_forall_in_components,
     test_dependency_diagram_output,
     test_module_dependencies_complete,
     %% Report
@@ -1209,4 +1213,107 @@ test_module_dependencies_complete :-
     )),
     assert_true('security depends on config', (
         agent_loop_module:module_dependency(security, config, _)
+    )).
+
+%% ============================================================================
+%% Step 2 expanded: :- det in costs, config, agent_loop, main
+%% ============================================================================
+
+test_det_annotations_expanded :-
+    format("~nExpanded det annotations:~n"),
+    %% costs.pl
+    assert_true('costs.pl has :- det(cost_tracker_init/1)', (
+        read_file_to_string('generated/prolog/costs.pl', C1, []),
+        sub_string(C1, _, _, _, ":- det(cost_tracker_init/1)")
+    )),
+    assert_true('costs.pl has :- det(cost_tracker_format/2)', (
+        read_file_to_string('generated/prolog/costs.pl', C2, []),
+        sub_string(C2, _, _, _, ":- det(cost_tracker_format/2)")
+    )),
+    %% config.pl
+    assert_true('config.pl has :- det(parse_cli_args/2)', (
+        read_file_to_string('generated/prolog/config.pl', C3, []),
+        sub_string(C3, _, _, _, ":- det(parse_cli_args/2)")
+    )),
+    assert_true('config.pl has :- det(load_config/2)', (
+        read_file_to_string('generated/prolog/config.pl', C4, []),
+        sub_string(C4, _, _, _, ":- det(load_config/2)")
+    )),
+    %% agent_loop.pl
+    assert_true('agent_loop.pl has :- det(sessions_dir/1)', (
+        read_file_to_string('generated/prolog/agent_loop.pl', C5, []),
+        sub_string(C5, _, _, _, ":- det(sessions_dir/1)")
+    )),
+    assert_true('agent_loop.pl has :- det(process_input/2)', (
+        read_file_to_string('generated/prolog/agent_loop.pl', C6, []),
+        sub_string(C6, _, _, _, ":- det(process_input/2)")
+    )),
+    %% main.pl
+    assert_true('main.pl has :- det(main/1)', (
+        read_file_to_string('generated/prolog/main.pl', C7, []),
+        sub_string(C7, _, _, _, ":- det(main/1)")
+    )).
+
+%% ============================================================================
+%% Step 3: Binding metadata comments in generated Python files
+%% ============================================================================
+
+test_binding_metadata_in_generated :-
+    format("~nBinding metadata in generated files:~n"),
+    assert_true('costs.py has Binding for model_pricing/3', (
+        read_file_to_string('generated/python/costs.py', C1, []),
+        sub_string(C1, _, _, _, "DEFAULT_PRICING"),
+        sub_string(C1, _, _, _, "dict_lookup")
+    )),
+    assert_true('tools_generated.py has Binding for tool_handler/2', (
+        read_file_to_string('generated/python/tools_generated.py', C2, []),
+        sub_string(C2, _, _, _, "TOOL_HANDLERS")
+    )),
+    assert_true('tools_generated.py has Binding for destructive_tool/1', (
+        read_file_to_string('generated/python/tools_generated.py', C3, []),
+        sub_string(C3, _, _, _, "DESTRUCTIVE_TOOLS"),
+        sub_string(C3, _, _, _, "set_membership")
+    )),
+    assert_true('agent_loop.py has binding dispatch comment', (
+        read_file_to_string('generated/python/agent_loop.py', C4, []),
+        sub_string(C4, _, _, _, "Binding registry metadata")
+    )).
+
+%% ============================================================================
+%% Step 4: Target-level forall→maplist in generated Prolog
+%% ============================================================================
+
+test_target_level_maplist_in_generated :-
+    format("~nTarget-level maplist in generated Prolog:~n"),
+    read_file_to_string('generated/prolog/agent_loop.pl', Content, []),
+    %% No forall left
+    assert_true('generated agent_loop.pl has no forall(backend_factory', (
+        \+ sub_string(Content, _, _, _, "forall(backend_factory")
+    )),
+    assert_true('generated agent_loop.pl has no forall(command_alias', (
+        \+ sub_string(Content, _, _, _, "forall(command_alias")
+    )),
+    assert_true('generated agent_loop.pl has no forall(member(Msg', (
+        \+ sub_string(Content, _, _, _, "forall(member(Msg")
+    )),
+    %% maplist present
+    assert_true('generated agent_loop.pl has maplist([N]>>', (
+        sub_string(Content, _, _, _, "maplist([N]>>")
+    )),
+    assert_true('generated agent_loop.pl has maplist([Msg]>>', (
+        sub_string(Content, _, _, _, "maplist([Msg]>>")
+    )),
+    assert_true('generated agent_loop.pl has maplist([Group-Cmds]>>', (
+        sub_string(Content, _, _, _, "maplist([Group-Cmds]>>")
+    )).
+
+%% ============================================================================
+%% Step 1 verification: no forall in components
+%% ============================================================================
+
+test_no_forall_in_components :-
+    format("~nNo forall in components:~n"),
+    assert_true('agent_loop_components.pl has no forall calls', (
+        read_file_to_string('agent_loop_components.pl', Content, []),
+        \+ sub_string(Content, _, _, _, "forall(")
     )).

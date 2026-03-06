@@ -14,7 +14,8 @@
     compile_binding_code/3,
     generate_bindings_summary/2,
     emit_binding_imports/2,
-    emit_binding_dispatch_comment/2
+    emit_binding_dispatch_comment/2,
+    emit_binding_metadata_comment/3
 ]).
 
 :- reexport('../../src/unifyweaver/core/binding_registry', [
@@ -301,6 +302,18 @@ emit_binding_dispatch_comment(S, _Options) :-
         format(S, '#   ~w -> ~w(~w) [~w]~n', [Pred, TName, IStr, Eff])
     )),
     write(S, '#\n').
+
+%% emit_binding_metadata_comment(+Stream, +Target, +Pred)
+%% Emit a comment documenting binding metadata for a specific predicate.
+%% Safe no-op if the predicate has no binding for the target.
+emit_binding_metadata_comment(S, Target, Pred) :-
+    init_agent_loop_bindings,
+    (binding(Target, Pred, TName, Inputs, _Outputs, Opts) ->
+        maplist([N-_T,N]>>true, Inputs, INames),
+        atomic_list_concat(INames, ', ', IStr),
+        (member(pattern(P), Opts) -> true ; P = function_call),
+        format(S, '# Binding: ~w -> ~w(~w) [~w]~n', [Pred, TName, IStr, P])
+    ; true).
 
 %% ============================================================================
 %% Summary / Diagnostic

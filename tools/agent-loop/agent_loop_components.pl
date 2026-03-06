@@ -308,7 +308,8 @@ register_agent_loop_types :-
 
 %% Populate tool components from tool_handler/2 + tool_spec/2 + destructive_tool/1
 register_tool_components :-
-    forall(agent_loop_module:tool_handler(Name, Handler), (
+    findall(Name-Handler, agent_loop_module:tool_handler(Name, Handler), Pairs),
+    maplist([Name-Handler]>>(
         (agent_loop_module:tool_spec(Name, Props) ->
             (member(description(Desc), Props) -> true ; Desc = "")
         ; Props = [], Desc = ""),
@@ -320,41 +321,41 @@ register_tool_components :-
             tool_spec_props(Props),
             initialization(eager)
         ])
-    )).
+    ), Pairs).
 
 %% Populate command components from slash_command/4
 register_command_components :-
-    forall(agent_loop_module:slash_command(Name, MatchType, Opts, Help), (
+    findall(Name-MatchType-Opts-Help, agent_loop_module:slash_command(Name, MatchType, Opts, Help), Entries),
+    maplist([Name-MatchType-Opts-Help]>>(
         declare_component(agent_commands, Name, slash_command, [
             match_type(MatchType),
             options(Opts),
             help_text(Help),
             initialization(eager)
         ])
-    )).
+    ), Entries).
 
 %% Populate backend components from backend_factory/2
 register_backend_components :-
-    forall(agent_loop_module:backend_factory(Name, Spec), (
-        declare_component(agent_backends, Name, backend, Spec)
-    )).
+    findall(Name-Spec, agent_loop_module:backend_factory(Name, Spec), Pairs),
+    maplist([Name-Spec]>>(declare_component(agent_backends, Name, backend, Spec)), Pairs).
 
 %% Populate security components from security_profile/2
 register_security_components :-
-    forall(agent_loop_module:security_profile(Name, Props), (
-        declare_component(agent_security, Name, security_profile, Props)
-    )).
+    findall(Name-Props, agent_loop_module:security_profile(Name, Props), Pairs),
+    maplist([Name-Props]>>(declare_component(agent_security, Name, security_profile, Props)), Pairs).
 
 %% Populate cost components from model_pricing/3
 register_cost_components :-
-    forall(agent_loop_module:model_pricing(Model, In, Out), (
+    findall(Model-In-Out, agent_loop_module:model_pricing(Model, In, Out), Entries),
+    maplist([Model-In-Out]>>(
         (atom(Model) -> ModelAtom = Model ; atom_string(ModelAtom, Model)),
         declare_component(agent_costs, ModelAtom, model_pricing, [
             input_price(In),
             output_price(Out),
             model_string(Model)
         ])
-    )).
+    ), Entries).
 
 %% ============================================================================
 %% Master Registration
@@ -380,34 +381,37 @@ register_agent_loop_components :-
 emit_tool_facts(S, _Options) :-
     %% tool_spec via compile_component
     write(S, '%% tool_spec(+ToolName, +Properties)\n'),
-    forall(component(agent_tools, Name, tool_handler, _), (
+    findall(Name, component(agent_tools, Name, tool_handler, _), ToolNames),
+    maplist([Name]>>(
         (compile_component(agent_tools, Name, [target(prolog), fact_type(tool_spec)], Code) ->
             write(S, Code), nl(S)
         ; true)
-    )),
+    ), ToolNames),
     write(S, '\n'),
     %% tool_handler via compile_component
     write(S, '%% tool_handler(+ToolName, +HandlerPredicate)\n'),
-    forall(component(agent_tools, Name, tool_handler, _), (
+    maplist([Name]>>(
         compile_component(agent_tools, Name, [target(prolog), fact_type(tool_handler)], Code),
         write(S, Code), nl(S)
-    )),
+    ), ToolNames),
     write(S, '\n'),
     %% destructive_tool via compile_component
     write(S, '%% destructive_tool(+ToolName)\n'),
-    forall((component(agent_tools, Name, tool_handler, Cfg),
-            member(destructive(true), Cfg)), (
+    findall(Name, (component(agent_tools, Name, tool_handler, Cfg),
+            member(destructive(true), Cfg)), DestrNames),
+    maplist([Name]>>(
         compile_component(agent_tools, Name, [target(prolog), fact_type(destructive_tool)], Code),
         write(S, Code), nl(S)
-    )),
+    ), DestrNames),
     write(S, '\n'),
     %% tool_description — stays as raw fact iteration (cross-cutting shape)
     write(S, '%% tool_description(+Backend, +ToolName, +Verb, +ParamKey, +DisplayMode)\n'),
-    forall(agent_loop_module:tool_description(Backend, TN, Verb, PK, DM), (
+    findall(td(Backend, TN, Verb, PK, DM), agent_loop_module:tool_description(Backend, TN, Verb, PK, DM), TDs),
+    maplist([td(Backend, TN, Verb, PK, DM)]>>(
         format(S, 'tool_description(~q, ~q, ~q, ~q, ', [Backend, TN, Verb, PK]),
         agent_loop_module:write_prolog_term(S, DM),
         write(S, ').\n')
-    )),
+    ), TDs),
     write(S, '\n').
 
 %% emit_command_facts(+Stream, +Options)
@@ -426,24 +430,25 @@ emit_command_facts(S, _Options) :-
     write(S, '\n'),
     %% slash_command via compile_component
     write(S, '%% slash_command(+Name, +MatchType, +Options, +HelpText)\n'),
-    forall(component(agent_commands, Name, slash_command, _), (
-        compile_component(agent_commands, Name, [target(prolog), fact_type(slash_command)], Code),
+    findall(CName, component(agent_commands, CName, slash_command, _), CmdNames),
+    maplist([CName]>>(
+        compile_component(agent_commands, CName, [target(prolog), fact_type(slash_command)], Code),
         write(S, Code), nl(S)
-    )),
+    ), CmdNames),
     write(S, '\n'),
     %% command_alias — cross-cutting, stays as raw fact iteration
     write(S, '%% command_alias(+Alias, +CanonicalName)\n'),
-    forall(agent_loop_module:command_alias(Alias, Canonical), (
-        format(S, 'command_alias(~q, ~q).~n', [Alias, Canonical])
-    )),
+    findall(Alias-Canonical, agent_loop_module:command_alias(Alias, Canonical), AliasPairs),
+    maplist([Alias-Canonical]>>(format(S, 'command_alias(~q, ~q).~n', [Alias, Canonical])), AliasPairs),
     write(S, '\n'),
     %% slash_command_group — cross-cutting, stays as raw fact iteration
     write(S, '%% slash_command_group(+GroupName, +CommandList)\n'),
-    forall(agent_loop_module:slash_command_group(Group, Cmds), (
+    findall(Group-Cmds, agent_loop_module:slash_command_group(Group, Cmds), GroupPairs),
+    maplist([Group-Cmds]>>(
         format(S, 'slash_command_group(~q, ', [Group]),
         agent_loop_module:write_prolog_term(S, Cmds),
         write(S, ').\n')
-    )),
+    ), GroupPairs),
     write(S, '\n').
 
 %% emit_backend_facts(+Stream, +Options)
@@ -466,18 +471,20 @@ emit_backend_facts(S, _Options) :-
     write(S, '\n'),
     %% agent_backend — rich property list not in registry, stays raw
     write(S, '%% agent_backend(+Name, +Properties)\n'),
-    forall(agent_loop_module:agent_backend(Name, Props), (
+    findall(Name-Props, agent_loop_module:agent_backend(Name, Props), ABPairs),
+    maplist([Name-Props]>>(
         format(S, 'agent_backend(~q, ', [Name]),
         agent_loop_module:write_prolog_term(S, Props),
         write(S, ').\n')
-    )),
+    ), ABPairs),
     write(S, '\n'),
     %% backend_factory via compile_component
     write(S, '%% backend_factory(+Name, +FactorySpec)\n'),
-    forall(component(agent_backends, Name, backend, _), (
-        compile_component(agent_backends, Name, [target(prolog), fact_type(backend_factory)], Code),
+    findall(BFName, component(agent_backends, BFName, backend, _), BFNames),
+    maplist([BFName]>>(
+        compile_component(agent_backends, BFName, [target(prolog), fact_type(backend_factory)], Code),
         write(S, Code), nl(S)
-    )),
+    ), BFNames),
     write(S, '\n'),
     %% backend_factory_order — singleton, stays raw
     (agent_loop_module:backend_factory_order(Order) ->
@@ -487,11 +494,12 @@ emit_backend_facts(S, _Options) :-
     ; true),
     %% cli_fallbacks — stays raw
     write(S, '%% cli_fallbacks(+BackendName, +FallbackList)\n'),
-    forall(agent_loop_module:cli_fallbacks(Name, Fallbacks), (
-        format(S, 'cli_fallbacks(~q, ', [Name]),
+    findall(CFName-Fallbacks, agent_loop_module:cli_fallbacks(CFName, Fallbacks), CFPairs),
+    maplist([CFName-Fallbacks]>>(
+        format(S, 'cli_fallbacks(~q, ', [CFName]),
         agent_loop_module:write_prolog_term(S, Fallbacks),
         write(S, ').\n')
-    )),
+    ), CFPairs),
     write(S, '\n').
 
 %% emit_security_facts(+Stream, +Options)
@@ -517,82 +525,82 @@ emit_security_facts(S, Options) :-
         emit_indexing_directive(S, blocked_command_pattern/2),
         write(S, '\n'),
         write(S, '%% security_profile(+Name, +Properties)\n'),
-        forall(component(agent_security, Name, security_profile, _), (
-            compile_component(agent_security, Name, [target(prolog)], Code),
+        findall(SPName, component(agent_security, SPName, security_profile, _), SPNames),
+        maplist([SPName]>>(
+            compile_component(agent_security, SPName, [target(prolog)], Code),
             write(S, Code), nl(S)
-        )),
+        ), SPNames),
         write(S, '\n'),
         write(S, '%% blocked_path(+AbsolutePath)\n'),
-        forall(agent_loop_module:blocked_path(P), (
-            format(S, 'blocked_path(~q).~n', [P])
-        )),
+        findall(P, agent_loop_module:blocked_path(P), BPs),
+        maplist([P]>>(format(S, 'blocked_path(~q).~n', [P])), BPs),
         write(S, '\n'),
         write(S, '%% blocked_path_prefix(+Prefix)\n'),
-        forall(agent_loop_module:blocked_path_prefix(P), (
-            format(S, 'blocked_path_prefix(~q).~n', [P])
-        )),
+        findall(P, agent_loop_module:blocked_path_prefix(P), BPPs),
+        maplist([P]>>(format(S, 'blocked_path_prefix(~q).~n', [P])), BPPs),
         write(S, '\n'),
         write(S, '%% blocked_home_pattern(+Pattern)\n'),
-        forall(agent_loop_module:blocked_home_pattern(P), (
-            format(S, 'blocked_home_pattern(~q).~n', [P])
-        )),
+        findall(P, agent_loop_module:blocked_home_pattern(P), BHPs),
+        maplist([P]>>(format(S, 'blocked_home_pattern(~q).~n', [P])), BHPs),
         write(S, '\n'),
         write(S, '%% blocked_command_pattern(+Regex, +Description)\n'),
-        forall(agent_loop_module:blocked_command_pattern(Regex, Desc), (
-            format(S, 'blocked_command_pattern(~q, ~q).~n', [Regex, Desc])
-        )),
+        findall(Regex-Desc, agent_loop_module:blocked_command_pattern(Regex, Desc), BCPs),
+        maplist([Regex-Desc]>>(format(S, 'blocked_command_pattern(~q, ~q).~n', [Regex, Desc])), BCPs),
         write(S, '\n')
     ).
 
 %% emit_security_blocked_py(+Stream, +FactType)
 %% Emit blocked_* facts as Python set/tuple/list entries.
 emit_security_blocked_py(S, blocked_path) :-
-    forall(agent_loop_module:blocked_path(P),
-        format(S, '    \'~w\',~n', [P])).
+    findall(P, agent_loop_module:blocked_path(P), Ps),
+    maplist([P]>>(format(S, '    \'~w\',~n', [P])), Ps).
 emit_security_blocked_py(S, blocked_path_prefix) :-
-    forall(agent_loop_module:blocked_path_prefix(P),
-        format(S, '    \'~w\',~n', [P])).
+    findall(P, agent_loop_module:blocked_path_prefix(P), Ps),
+    maplist([P]>>(format(S, '    \'~w\',~n', [P])), Ps).
 emit_security_blocked_py(S, blocked_home_pattern) :-
-    forall(agent_loop_module:blocked_home_pattern(P),
-        format(S, '    \'~w\',~n', [P])).
+    findall(P, agent_loop_module:blocked_home_pattern(P), Ps),
+    maplist([P]>>(format(S, '    \'~w\',~n', [P])), Ps).
 emit_security_blocked_py(S, blocked_command_pattern) :-
-    forall(agent_loop_module:blocked_command_pattern(Regex, Desc),
-        format(S, '    (r\'~w\', "~w"),~n', [Regex, Desc])).
+    findall(Regex-Desc, agent_loop_module:blocked_command_pattern(Regex, Desc), Ps),
+    maplist([Regex-Desc]>>(format(S, '    (r\'~w\', "~w"),~n', [Regex, Desc])), Ps).
 
 %% emit_cost_facts(+Stream, +Options)
 %% Emit cost facts — dispatches on target(python) vs target(prolog).
 emit_cost_facts(S, Options) :-
+    findall(Model, component(agent_costs, Model, model_pricing, _), Models),
     (member(target(python), Options) ->
-        forall(component(agent_costs, Model, model_pricing, _), (
+        maplist([Model]>>(
             compile_component(agent_costs, Model, [target(python)], Code),
             write(S, Code), nl(S)
-        ))
+        ), Models)
     ;
         write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
         emit_indexing_directive(S, model_pricing/3),
         write(S, '\n'),
         write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
-        forall(component(agent_costs, Model, model_pricing, _), (
+        maplist([Model]>>(
             compile_component(agent_costs, Model, [target(prolog)], Code),
             write(S, Code), nl(S)
-        ))
+        ), Models)
     ).
 
 %% emit_backend_init_imports(+Stream, +Options)
 %% Emit Python import lines for non-optional backends.
 emit_backend_init_imports(S, _Options) :-
-    forall((agent_loop_module:agent_backend(Name, Props),
-            \+ member(optional_import(true), Props)), (
+    findall(Name-Props, (agent_loop_module:agent_backend(Name, Props),
+            \+ member(optional_import(true), Props)), Pairs),
+    maplist([Name-Props]>>(
         agent_loop_module:resolve_class_name(Name, ClassName),
         agent_loop_module:resolve_file_name(Name, FileName),
         format(S, 'from .~w import ~w~n', [FileName, ClassName])
-    )).
+    ), Pairs).
 
 %% emit_backend_init_optional(+Stream, +Options)
 %% Emit Python try/except import blocks for optional backends.
 emit_backend_init_optional(S, _Options) :-
-    forall((agent_loop_module:agent_backend(Name, Props),
-            member(optional_import(true), Props)), (
+    findall(Name-Props, (agent_loop_module:agent_backend(Name, Props),
+            member(optional_import(true), Props)), Pairs),
+    maplist([Name-Props]>>(
         agent_loop_module:resolve_class_name(Name, ClassName),
         agent_loop_module:resolve_file_name(Name, FileName),
         member(description(Desc), Props),
@@ -602,7 +610,7 @@ emit_backend_init_optional(S, _Options) :-
         format(S, '    __all__.append(\'~w\')~n', [ClassName]),
         format(S, 'except ImportError:~n', []),
         format(S, '    pass~n', [])
-    )).
+    ), Pairs).
 
 %% ============================================================================
 %% Prolog Target Optimization Helpers
@@ -623,9 +631,7 @@ emit_indexing_directive(S, Pred/Arity, Count) :-
 %% Emit optimization documentation as Prolog comments.
 emit_optimization_notes(S, Notes) :-
     write(S, '%% Optimization notes:\n'),
-    forall(member(Note, Notes), (
-        format(S, '%%   - ~w~n', [Note])
-    )),
+    maplist([Note]>>(format(S, '%%   - ~w~n', [Note])), Notes),
     write(S, '\n').
 
 %% ============================================================================
@@ -653,73 +659,71 @@ emit_prolog_config_facts(S, _Options) :-
     write(S, '\n'),
     %% cli_argument facts
     write(S, '%% cli_argument(+Name, +Options)\n'),
-    forall(agent_loop_module:cli_argument(Name, Opts), (
+    findall(Name-Opts, agent_loop_module:cli_argument(Name, Opts), CLIArgs),
+    maplist([Name-Opts]>>(
         format(S, 'cli_argument(~q, ', [Name]),
         agent_loop_module:write_prolog_term(S, Opts),
         write(S, ').\n')
-    )),
+    ), CLIArgs),
     write(S, '\n'),
     %% agent_config_field facts
     write(S, '%% agent_config_field(+Name, +Type, +Default, +Description)\n'),
-    forall(agent_loop_module:agent_config_field(Name, Type, Default, Desc), (
+    findall(acf(Name, Type, Default, Desc), agent_loop_module:agent_config_field(Name, Type, Default, Desc), ACFs),
+    maplist([acf(Name, Type, Default, Desc)]>>(
         format(S, 'agent_config_field(~q, ~q, ~q, ~q).~n', [Name, Type, Default, Desc])
-    )),
+    ), ACFs),
     write(S, '\n'),
     %% default_agent_preset facts
     write(S, '%% default_agent_preset(+PresetName, +Backend, +Overrides)\n'),
-    forall(agent_loop_module:default_agent_preset(Name, Backend, Overrides), (
+    findall(dap(Name, Backend, Overrides), agent_loop_module:default_agent_preset(Name, Backend, Overrides), DAPs),
+    maplist([dap(Name, Backend, Overrides)]>>(
         format(S, 'default_agent_preset(~q, ~q, ', [Name, Backend]),
         agent_loop_module:write_prolog_term(S, Overrides),
         write(S, ').\n')
-    )),
+    ), DAPs),
     write(S, '\n'),
     %% api_key_env_var facts
     write(S, '%% api_key_env_var(+Backend, +EnvVar)\n'),
-    forall(agent_loop_module:api_key_env_var(Backend, EnvVar), (
-        format(S, 'api_key_env_var(~q, ~q).~n', [Backend, EnvVar])
-    )),
+    findall(Backend-EnvVar, agent_loop_module:api_key_env_var(Backend, EnvVar), AKEs),
+    maplist([Backend-EnvVar]>>(format(S, 'api_key_env_var(~q, ~q).~n', [Backend, EnvVar])), AKEs),
     write(S, '\n'),
     %% api_key_file facts
     write(S, '%% api_key_file(+Backend, +FilePath)\n'),
-    forall(agent_loop_module:api_key_file(Backend, FilePath), (
-        format(S, 'api_key_file(~q, ~q).~n', [Backend, FilePath])
-    )),
+    findall(Backend-FilePath, agent_loop_module:api_key_file(Backend, FilePath), AKFs),
+    maplist([Backend-FilePath]>>(format(S, 'api_key_file(~q, ~q).~n', [Backend, FilePath])), AKFs),
     write(S, '\n'),
     %% example_agent_config facts
     write(S, '%% example_agent_config(+Name, +Backend, +Properties)\n'),
-    forall(agent_loop_module:example_agent_config(Name, Backend, Props), (
+    findall(eac(Name, Backend, Props), agent_loop_module:example_agent_config(Name, Backend, Props), EACs),
+    maplist([eac(Name, Backend, Props)]>>(
         format(S, 'example_agent_config(~q, ~q, ', [Name, Backend]),
         agent_loop_module:write_prolog_term(S, Props),
         write(S, ').\n')
-    )),
+    ), EACs),
     write(S, '\n'),
     %% config_search_path facts
     write(S, '%% config_search_path(+Path, +Category)\n'),
-    forall(agent_loop_module:config_search_path(CPath, Cat), (
-        format(S, 'config_search_path(~q, ~q).~n', [CPath, Cat])
-    )),
+    findall(CPath-Cat, agent_loop_module:config_search_path(CPath, Cat), CSPs),
+    maplist([CPath-Cat]>>(format(S, 'config_search_path(~q, ~q).~n', [CPath, Cat])), CSPs),
     write(S, '\n'),
     %% config_field_json_default facts
     write(S, '%% config_field_json_default(+FieldName, +JsonDefault)\n'),
     write(S, '%% Maps agent config fields to JSON-safe defaults for code generation.\n'),
     write(S, '%% Special values: positional (name=arg), no_default (data.get with no fallback)\n'),
-    forall(agent_loop_module:config_field_json_default(FName, FDefault), (
-        format(S, 'config_field_json_default(~q, ~q).~n', [FName, FDefault])
-    )),
+    findall(FName-FDefault, agent_loop_module:config_field_json_default(FName, FDefault), CFJDs),
+    maplist([FName-FDefault]>>(format(S, 'config_field_json_default(~q, ~q).~n', [FName, FDefault])), CFJDs),
     write(S, '\n'),
     %% config_dir_file_name facts
     write(S, '%% config_dir_file_name(+FileName)\n'),
     write(S, '%% Standard config file names searched by load_config_from_dir.\n'),
-    forall(agent_loop_module:config_dir_file_name(FN), (
-        format(S, 'config_dir_file_name(~q).~n', [FN])
-    )),
+    findall(FN, agent_loop_module:config_dir_file_name(FN), FNs),
+    maplist([FN]>>(format(S, 'config_dir_file_name(~q).~n', [FN])), FNs),
     write(S, '\n'),
     %% audit_profile_level facts
     write(S, '%% audit_profile_level(+Profile, +AuditLevel)\n'),
     write(S, '%% Maps security profile to audit logging level.\n'),
-    forall(agent_loop_module:audit_profile_level(P, L), (
-        format(S, 'audit_profile_level(~q, ~q).~n', [P, L])
-    )),
+    findall(P-L, agent_loop_module:audit_profile_level(P, L), APLs),
+    maplist([P-L]>>(format(S, 'audit_profile_level(~q, ~q).~n', [P, L])), APLs),
     write(S, '\n').
 
 %% ============================================================================
@@ -729,30 +733,33 @@ emit_prolog_config_facts(S, _Options) :-
 %% emit_context_enums(+Stream, +Options)
 %% Emit Python Enum classes from context_enum/3 facts.
 emit_context_enums(S, _Options) :-
-    forall(agent_loop_module:context_enum(EnumName, DocStr, Values), (
+    findall(ce(EnumName, DocStr, Values), agent_loop_module:context_enum(EnumName, DocStr, Values), CEs),
+    maplist([ce(EnumName, DocStr, Values)]>>(
         format(S, 'class ~w(Enum):~n', [EnumName]),
         format(S, '    """~w"""~n', [DocStr]),
-        forall(member(value(PyName, StrVal, Comment), Values), (
+        maplist([value(PyName, StrVal, Comment)]>>(
             format(S, '    ~w = "~w"    # ~w~n', [PyName, StrVal, Comment])
-        )),
+        ), Values),
         write(S, '\n\n')
-    )).
+    ), CEs).
 
 %% emit_message_fields(+Stream, +Options)
 %% Emit Python dataclass fields from message_field/3 facts.
 emit_message_fields(S, _Options) :-
-    forall(agent_loop_module:message_field(Name, Type, Default), (
+    findall(mf(Name, Type, Default), agent_loop_module:message_field(Name, Type, Default), MFs),
+    maplist([mf(Name, Type, Default)]>>(
         (Default = none ->
             format(S, '    ~w: ~w~n', [Name, Type])
         ;
             format(S, '    ~w: ~w = ~w~n', [Name, Type, Default])
         )
-    )).
+    ), MFs).
 
 %% emit_agent_config_fields(+Stream, +Options)
 %% Emit Python dataclass fields from agent_config_field/4 facts.
 emit_agent_config_fields(S, _Options) :-
-    forall(agent_loop_module:agent_config_field(Name, Type, Default, Comment), (
+    findall(acf(Name, Type, Default, Comment), agent_loop_module:agent_config_field(Name, Type, Default, Comment), ACFs),
+    maplist([acf(Name, Type, Default, Comment)]>>(
         (Comment = "" ->
             CommentStr = ""
         ;
@@ -763,21 +770,19 @@ emit_agent_config_fields(S, _Options) :-
         ;
             format(S, '    ~w: ~w = ~w~w~n', [Name, Type, Default, CommentStr])
         )
-    )).
+    ), ACFs).
 
 %% emit_audit_levels(+Stream, +Options)
 %% Emit Python dict entries from audit_profile_level/2 facts.
 emit_audit_levels(S, _Options) :-
-    forall(agent_loop_module:audit_profile_level(Profile, Level), (
-        format(S, '        \'~w\': \'~w\',~n', [Profile, Level])
-    )).
+    findall(Profile-Level, agent_loop_module:audit_profile_level(Profile, Level), Pairs),
+    maplist([Profile-Level]>>(format(S, '        \'~w\': \'~w\',~n', [Profile, Level])), Pairs).
 
 %% emit_cli_overrides(+Stream, +Options)
 %% Emit Python CLI override dispatch from cli_override/3 facts.
 emit_cli_overrides(S, _Options) :-
-    forall(agent_loop_module:cli_override(Arg, Field, Behavior), (
-        agent_loop_module:emit_single_override(S, Arg, Field, Behavior)
-    )).
+    findall(co(Arg, Field, Behavior), agent_loop_module:cli_override(Arg, Field, Behavior), COs),
+    maplist([co(Arg, Field, Behavior)]>>(agent_loop_module:emit_single_override(S, Arg, Field, Behavior)), COs).
 
 %% ============================================================================
 %% Python Emit Predicates — config.py data-driven sections
@@ -786,33 +791,32 @@ emit_cli_overrides(S, _Options) :-
 %% emit_api_key_env_vars_py(+Stream, +Options)
 %% Emit Python dict entries from api_key_env_var/2 facts.
 emit_api_key_env_vars_py(S, _Options) :-
-    forall(agent_loop_module:api_key_env_var(Backend, Var), (
-        format(S, '        \'~w\': \'~w\',~n', [Backend, Var])
-    )).
+    findall(Backend-Var, agent_loop_module:api_key_env_var(Backend, Var), Pairs),
+    maplist([Backend-Var]>>(format(S, '        \'~w\': \'~w\',~n', [Backend, Var])), Pairs).
 
 %% emit_api_key_files_py(+Stream, +Options)
 %% Emit Python dict entries from api_key_file/2 facts.
 emit_api_key_files_py(S, _Options) :-
-    forall(agent_loop_module:api_key_file(Backend, Path), (
-        format(S, '        \'~w\': \'~w\',~n', [Backend, Path])
-    )).
+    findall(Backend-Path, agent_loop_module:api_key_file(Backend, Path), Pairs),
+    maplist([Backend-Path]>>(format(S, '        \'~w\': \'~w\',~n', [Backend, Path])), Pairs).
 
 %% emit_default_presets_py(+Stream, +Options)
 %% Emit Python AgentConfig preset entries from default_agent_preset/3 facts.
 emit_default_presets_py(S, _Options) :-
-    forall(agent_loop_module:default_agent_preset(Name, Backend, Props), (
+    findall(dap(Name, Backend, Props), agent_loop_module:default_agent_preset(Name, Backend, Props), DAPs),
+    maplist([dap(Name, Backend, Props)]>>(
         format(S, '    config.agents[\'~w\'] = AgentConfig(~n', [Name]),
         format(S, '        name=\'~w\',~n', [Name]),
         format(S, '        backend=\'~w\',~n', [Backend]),
-        forall(member(Key=Val, Props), (
+        maplist([Key=Val]>>(
             (Val = true -> format(S, '        ~w=True,~n', [Key])
             ; Val = false -> format(S, '        ~w=False,~n', [Key])
             ; number(Val) -> format(S, '        ~w=~w,~n', [Key, Val])
             ; format(S, '        ~w=\'~w\',~n', [Key, Val])
             )
-        )),
+        ), Props),
         write(S, '    )\n\n')
-    )).
+    ), DAPs).
 
 %% emit_security_module_imports(+Stream, +Options)
 %% Emit Python import lines from security_module/3 facts via unified import system.
@@ -823,14 +827,15 @@ emit_security_module_imports(S, _Options) :-
 %% emit_help_groups(+Stream, +Options)
 %% Emit Python help text from slash_command_group/2 facts.
 emit_help_groups(S, _Options) :-
-    forall(agent_loop_module:slash_command_group(GroupLabel, CmdNames), (
+    findall(GroupLabel-CmdNames, agent_loop_module:slash_command_group(GroupLabel, CmdNames), Groups),
+    maplist([GroupLabel-CmdNames]>>(
         include(agent_loop_module:is_python_command, CmdNames, PyCmds),
         (PyCmds \= [] ->
             format(S, '~w:~n', [GroupLabel]),
             maplist([CmdName]>>(agent_loop_module:format_help_line(S, CmdName)), PyCmds),
             write(S, '\n')
         ; true)
-    )).
+    ), Groups).
 
 %% emit_readme_sections(+Stream, +Options)
 %% Emit README markdown for backends and tools.
@@ -861,7 +866,7 @@ emit_backend_module_imports(S, Options) :-
 %% emit_module_imports(+Stream, +Specs)
 %% Dispatch on structured import spec terms to emit Python import lines.
 emit_module_imports(S, Specs) :-
-    forall(member(Spec, Specs), emit_one_import(S, Spec)).
+    maplist([Spec]>>(emit_one_import(S, Spec)), Specs).
 
 emit_one_import(S, bare(Mod)) :-
     format(S, 'import ~w~n', [Mod]).
@@ -913,8 +918,7 @@ emit_module_dependencies(S, Options) :-
         write(S, '%% Dependencies: none (self-contained)\n')
     ;
         write(S, '%% Dependencies:\n'),
-        forall(member(Dep-Reason, Deps),
-            format(S, '%%   ~w (~w)~n', [Dep, Reason]))
+        maplist([Dep-Reason]>>(format(S, '%%   ~w (~w)~n', [Dep, Reason])), Deps)
     ),
     write(S, '\n').
 
@@ -932,8 +936,8 @@ emit_dependency_diagram(S, _Options) :-
     sort(MsDup, Modules),
     maplist([M]>>(format(S, '    ~w[~w]~n', [M, M])), Modules),
     write(S, '\n'),
-    forall(agent_loop_module:module_dependency(Src, Tgt, _Reason),
-        format(S, '    ~w --> ~w~n', [Src, Tgt])),
+    findall(Src-Tgt, agent_loop_module:module_dependency(Src, Tgt, _), DepEdges),
+    maplist([Src-Tgt]>>(format(S, '    ~w --> ~w~n', [Src, Tgt])), DepEdges),
     write(S, '```\n\n').
 
 %% ============================================================================
@@ -945,34 +949,33 @@ emit_dependency_diagram(S, _Options) :-
 %% Emit streaming_capable/1 Prolog facts for generate_prolog_backends.
 emit_streaming_capable_facts(S, _Options) :-
     write(S, '%% streaming_capable(+ResolveType) — which backends support streaming\n'),
-    forall(agent_loop_module:streaming_capable(Type),
-        format(S, 'streaming_capable(~q).~n', [Type])),
+    findall(Type, agent_loop_module:streaming_capable(Type), Types),
+    maplist([Type]>>(format(S, 'streaming_capable(~q).~n', [Type])), Types),
     write(S, '\n').
 
 %% emit_security_profile_entries(+Stream, +Options)
 %% Emit Python SecurityProfile entries from component registry.
 emit_security_profile_entries(S, _Options) :-
     register_agent_loop_components,
-    forall(component(agent_security, Name, security_profile, Props), (
-        agent_loop_module:generate_profile_entry(S, Name, Props)
-    )).
+    findall(Name-Props, component(agent_security, Name, security_profile, Props), SPEs),
+    maplist([Name-Props]>>(agent_loop_module:generate_profile_entry(S, Name, Props)), SPEs).
 
 %% emit_tool_schemas_py(+Stream, +Options)
 %% Emit Python tool schema dicts from tool_spec/2 facts.
 emit_tool_schemas_py(S, _Options) :-
-    forall(agent_loop_module:tool_spec(ToolName, ToolProps), (
-        agent_loop_module:generate_tool_schema_py(S, ToolName, ToolProps)
-    )).
+    findall(ToolName-ToolProps, agent_loop_module:tool_spec(ToolName, ToolProps), TSs),
+    maplist([ToolName-ToolProps]>>(agent_loop_module:generate_tool_schema_py(S, ToolName, ToolProps)), TSs).
 
 %% emit_tool_dispatch_entries(+Stream, +Options)
 %% Emit self.tools dict entries via compile_component/4.
 emit_tool_dispatch_entries(S, _Options) :-
     register_agent_loop_components,
-    forall(component(agent_tools, TN, tool_handler, _), (
+    findall(TN, component(agent_tools, TN, tool_handler, _), TNs),
+    maplist([TN]>>(
         compile_component(agent_tools, TN,
             [target(python), self_prefix(true), indent(12)], Code),
         write(S, Code), nl(S)
-    )).
+    ), TNs).
 
 %% emit_cascade_paths(+Stream, +Options)
 %% Emit config cascade path entries. Options: path_type(required|fallback), indent(Str).
@@ -980,19 +983,17 @@ emit_cascade_paths(S, Options) :-
     (member(path_type(Type), Options) -> true ; Type = required),
     (member(indent(Indent), Options) -> true ; Indent = ''),
     findall(P, agent_loop_module:config_search_path(P, Type), Paths),
-    forall(member(Path, Paths), (
-        agent_loop_module:generate_cascade_path_entry(S, Path, Indent)
-    )).
+    maplist([Path]>>(agent_loop_module:generate_cascade_path_entry(S, Path, Indent)), Paths).
 
 %% emit_alias_group_entries(+Stream, +Options)
 %% Emit Python dict entries for an alias category.
 emit_alias_group_entries(S, Options) :-
     member(category(Category), Options),
     agent_loop_module:alias_category(Category, Keys),
-    forall(member(K, Keys), (
+    maplist([K]>>(
         agent_loop_module:command_alias(K, V),
         format(S, '    "~w": "~w",~n', [K, V])
-    )).
+    ), Keys).
 
 %% emit_alias_conditions(+Stream, +Options)
 %% Emit alias match conditions for command dispatch.
@@ -1000,29 +1001,26 @@ emit_alias_group_entries(S, Options) :-
 emit_alias_conditions(S, Options) :-
     member(aliases(Aliases), Options),
     (member(match_style(prefix_sp), Options) ->
-        forall(member(A, Aliases),
-            format(S, ' or cmd.startswith(\'~w \')', [A]))
+        maplist([A]>>(format(S, ' or cmd.startswith(\'~w \')', [A])), Aliases)
     ;
-        forall(member(A, Aliases),
-            format(S, ' or cmd == \'~w\'', [A]))
+        maplist([A]>>(format(S, ' or cmd == \'~w\'', [A])), Aliases)
     ).
 
 %% emit_argparse_group_args(+Stream, +Options)
 %% Emit parser.add_argument() calls for a group of CLI arguments.
 emit_argparse_group_args(S, Options) :-
     member(args(ArgNames), Options),
-    forall(member(ArgName, ArgNames), (
+    maplist([ArgName]>>(
         agent_loop_module:cli_argument(ArgName, Props),
         agent_loop_module:generate_add_argument(S, Props)
-    )).
+    ), ArgNames).
 
 %% emit_backend_helper_fragments(+Stream, +Options)
 %% Emit trailing helper method fragments for a backend.
 emit_backend_helper_fragments(S, Options) :-
     member(backend(BackendName), Options),
     member(fragments(Frags), Options),
-    forall(member(F, Frags),
-        agent_loop_module:emit_helper_fragment(S, BackendName, F)).
+    maplist([F]>>(agent_loop_module:emit_helper_fragment(S, BackendName, F)), Frags).
 
 %% ============================================================================
 %% Test Metadata Generation

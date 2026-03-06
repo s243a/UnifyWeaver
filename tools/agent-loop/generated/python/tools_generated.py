@@ -1,5 +1,8 @@
 """Auto-generated tool definitions from Prolog specs."""
 
+# Binding: tool_handler/2 -> TOOL_HANDLERS[name](name) [dict_lookup]
+# Binding: destructive_tool/1 -> DESTRUCTIVE_TOOLS(tool_name) [set_membership]
+
 TOOL_SPECS = {
     "bash": {
         "description": "Execute a bash command",

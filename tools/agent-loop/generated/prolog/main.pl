@@ -11,6 +11,8 @@
 :- use_module(costs).
 :- use_module(agent_loop).
 
+:- det(main/1).
+
 :- initialization(main, main).
 
 main(Argv) :-

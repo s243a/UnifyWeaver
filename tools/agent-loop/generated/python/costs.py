@@ -12,6 +12,8 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError
 
 
+# Binding: model_pricing/3 -> DEFAULT_PRICING[model](model) [dict_lookup]
+
 # Pricing per 1M tokens (auto-generated from Prolog facts)
 DEFAULT_PRICING = {
     "claude-opus-4-20250514": {"input": 15.0, "output": 75.0},
