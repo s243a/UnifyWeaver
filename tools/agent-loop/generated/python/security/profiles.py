@@ -6,6 +6,7 @@ proxied, what's logged, and what isolation is applied.
 
 from dataclasses import dataclass, field
 
+# Binding: security_profile/2 -> SecurityConfig.from_profile(name) [function_call]
 
 @dataclass
 class SecurityProfile:

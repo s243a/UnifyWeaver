@@ -88,6 +88,17 @@ run_tests :-
     test_compile_component_python_targets,
     test_write_lines_helper,
     test_no_forall_in_bindings,
+    test_compile_tool_spec_python,
+    test_compile_destructive_tool_python,
+    test_emit_py_set_from_components,
+    test_explicit_prolog_security_compile,
+    test_explicit_prolog_cost_compile,
+    test_emit_prolog_facts_from_components,
+    test_translate_agent_goal,
+    test_translate_agent_goals,
+    test_binding_parity,
+    test_binding_metadata_coverage,
+    test_write_lines_multiline_equiv,
     test_dependency_diagram_output,
     test_module_dependencies_complete,
     %% Report
@@ -129,7 +140,7 @@ test_binding_registration :-
     length(PyBindings, NPy),
     length(PlBindings, NPl),
     assert_eq('Python binding count', NPy, 11),
-    assert_eq('Prolog binding count', NPl, 10).
+    assert_eq('Prolog binding count', NPl, 11).
 
 %% ============================================================================
 %% Test 2: Component Registration
@@ -292,7 +303,7 @@ test_bindings_summary :-
     assert_true('Prolog summary generated', (
         generate_bindings_summary(prolog, PlSummary),
         atom(PlSummary),
-        sub_atom(PlSummary, _, _, _, 'prolog bindings (10)')
+        sub_atom(PlSummary, _, _, _, 'prolog bindings (11)')
     )).
 
 %% ============================================================================
@@ -921,9 +932,9 @@ test_new_binding_count :-
         bindings_for_target(python, PyBindings),
         length(PyBindings, 11)
     )),
-    assert_true('Prolog bindings count is 10', (
+    assert_true('Prolog bindings count is 11', (
         bindings_for_target(prolog, PlBindings),
-        length(PlBindings, 10)
+        length(PlBindings, 11)
     )),
     assert_true('api_key_env_var has Python binding', (
         bindings_for_predicate(api_key_env_var/2, Bindings),
@@ -1420,4 +1431,220 @@ test_no_forall_in_bindings :-
     assert_true('agent_loop_bindings.pl has no forall calls', (
         read_file_to_string('agent_loop_bindings.pl', Content, []),
         \+ sub_string(Content, _, _, _, "forall(")
+    )).
+
+%% ============================================================================
+%% Compile tool_spec Python
+%% ============================================================================
+
+test_compile_tool_spec_python :-
+    format("~nCompile tool_spec Python:~n"),
+    register_agent_loop_components,
+    assert_true('tool_spec Python compile produces dict entry', (
+        compile_component(agent_tools, bash, [target(python), fact_type(tool_spec)], Code),
+        sub_atom(Code, _, _, _, '"bash"'),
+        sub_atom(Code, _, _, _, '"description"')
+    )),
+    assert_true('tool_spec Python compile includes parameters', (
+        compile_component(agent_tools, write, [target(python), fact_type(tool_spec)], Code2),
+        sub_atom(Code2, _, _, _, '"parameters"')
+    )).
+
+%% ============================================================================
+%% Compile destructive_tool Python
+%% ============================================================================
+
+test_compile_destructive_tool_python :-
+    format("~nCompile destructive_tool Python:~n"),
+    register_agent_loop_components,
+    assert_true('destructive_tool Python compile produces set entry for bash', (
+        compile_component(agent_tools, bash, [target(python), fact_type(destructive_tool)], Code),
+        sub_atom(Code, _, _, _, '"bash"')
+    )),
+    assert_true('destructive_tool Python compile fails for non-destructive', (
+        \+ compile_component(agent_tools, read, [target(python), fact_type(destructive_tool)], _)
+    )).
+
+%% ============================================================================
+%% Emit py set from components
+%% ============================================================================
+
+test_emit_py_set_from_components :-
+    format("~nEmit py set from components:~n"),
+    register_agent_loop_components,
+    agent_loop_bindings:init_agent_loop_bindings,
+    assert_true('emit_py_set produces DESTRUCTIVE_TOOLS set', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_py_set_from_components(S, agent_tools,
+                destructive_tool/1, python, [fact_type(destructive_tool)])
+        )),
+        sub_atom(Output, _, _, _, 'DESTRUCTIVE_TOOLS'),
+        sub_atom(Output, _, _, _, '"bash"')
+    )),
+    assert_true('emit_py_dict with dict_name override', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_py_dict_from_components(S2, agent_tools,
+                tool_handler/2, python, [fact_type(tool_spec), dict_name('TOOL_SPECS')])
+        )),
+        sub_atom(Output2, _, _, _, 'TOOL_SPECS'),
+        sub_atom(Output2, _, _, _, '"bash"')
+    )).
+
+%% ============================================================================
+%% Explicit Prolog security compile
+%% ============================================================================
+
+test_explicit_prolog_security_compile :-
+    format("~nExplicit Prolog security compile:~n"),
+    register_agent_loop_components,
+    assert_true('security compile_component with target(prolog)', (
+        compile_component(agent_security, cautious, [target(prolog)], Code),
+        sub_atom(Code, _, _, _, 'security_profile'),
+        sub_atom(Code, _, _, _, 'cautious')
+    )).
+
+%% ============================================================================
+%% Explicit Prolog cost compile
+%% ============================================================================
+
+test_explicit_prolog_cost_compile :-
+    format("~nExplicit Prolog cost compile:~n"),
+    register_agent_loop_components,
+    assert_true('cost compile_component with target(prolog)', (
+        compile_component(agent_costs, opus, [target(prolog)], Code),
+        sub_atom(Code, _, _, _, 'model_pricing'),
+        sub_atom(Code, _, _, _, 'opus')
+    )).
+
+%% ============================================================================
+%% Emit Prolog facts from components
+%% ============================================================================
+
+test_emit_prolog_facts_from_components :-
+    format("~nEmit Prolog facts from components:~n"),
+    register_agent_loop_components,
+    assert_true('emit_prolog_facts emits cost facts', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:emit_prolog_facts_from_components(S, agent_costs, model_pricing, [])
+        )),
+        sub_atom(Output, _, _, _, 'model_pricing'),
+        sub_atom(Output, _, _, _, 'opus')
+    )),
+    assert_true('emit_prolog_facts emits security facts', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:emit_prolog_facts_from_components(S2, agent_security, security_profile, [])
+        )),
+        sub_atom(Output2, _, _, _, 'security_profile'),
+        sub_atom(Output2, _, _, _, 'cautious')
+    )).
+
+%% ============================================================================
+%% Translate agent goal
+%% ============================================================================
+
+test_translate_agent_goal :-
+    format("~nTranslate agent goal:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    assert_true('translate_agent_goal for model_pricing', (
+        agent_loop_bindings:translate_agent_goal(model_pricing(opus, _, _), Code),
+        sub_atom(Code, _, _, _, 'DEFAULT_PRICING')
+    )),
+    assert_true('translate_agent_goal for destructive_tool', (
+        agent_loop_bindings:translate_agent_goal(destructive_tool(bash), Code2),
+        sub_atom(Code2, _, _, _, 'DESTRUCTIVE_TOOLS')
+    )),
+    assert_true('translate_agent_goal for tool_handler', (
+        agent_loop_bindings:translate_agent_goal(tool_handler(bash, _), Code3),
+        sub_atom(Code3, _, _, _, 'TOOL_HANDLERS')
+    )),
+    assert_true('translate_agent_goal Prolog target', (
+        agent_loop_bindings:translate_agent_goal(prolog, model_pricing(opus, _, _), Code4),
+        sub_atom(Code4, _, _, _, 'model_pricing')
+    )).
+
+%% ============================================================================
+%% Translate agent goals list
+%% ============================================================================
+
+test_translate_agent_goals :-
+    format("~nTranslate agent goals list:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    assert_true('translate_agent_goals multi-goal', (
+        agent_loop_bindings:translate_agent_goals(
+            [model_pricing(opus, _, _), tool_handler(bash, _)],
+            python,
+            CodeBlock
+        ),
+        sub_atom(CodeBlock, _, _, _, 'DEFAULT_PRICING'),
+        sub_atom(CodeBlock, _, _, _, 'TOOL_HANDLERS')
+    )),
+    assert_true('translate_agent_goals empty list', (
+        agent_loop_bindings:translate_agent_goals([], python, Code),
+        Code == ''
+    )).
+
+%% ============================================================================
+%% Binding parity
+%% ============================================================================
+
+test_binding_parity :-
+    format("~nBinding parity:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    findall(Pred, binding(python, Pred, _, _, _, _), PyPreds),
+    findall(Pred, binding(prolog, Pred, _, _, _, _), PlPreds),
+    length(PyPreds, PyCount),
+    length(PlPreds, PlCount),
+    assert_eq('Python and Prolog binding counts match', PyCount, PlCount),
+    sort(PyPreds, PySorted),
+    sort(PlPreds, PlSorted),
+    assert_true('Python and Prolog cover same predicates', (
+        PySorted == PlSorted
+    )).
+
+%% ============================================================================
+%% Binding metadata coverage
+%% ============================================================================
+
+test_binding_metadata_coverage :-
+    format("~nBinding metadata coverage:~n"),
+    assert_true('costs.py has binding metadata', (
+        read_file_to_string('generated/python/costs.py', C1, []),
+        sub_string(C1, _, _, _, "# Binding:")
+    )),
+    assert_true('tools_generated.py has binding metadata', (
+        read_file_to_string('generated/python/tools_generated.py', C2, []),
+        sub_string(C2, _, _, _, "# Binding:")
+    )),
+    assert_true('config.py has binding metadata', (
+        read_file_to_string('generated/python/config.py', C3, []),
+        sub_string(C3, _, _, _, "# Binding:")
+    )),
+    assert_true('security/profiles.py has binding metadata', (
+        read_file_to_string('generated/python/security/profiles.py', C4, []),
+        sub_string(C4, _, _, _, "# Binding:")
+    )).
+
+%% ============================================================================
+%% write_lines multiline equivalence
+%% ============================================================================
+
+test_write_lines_multiline_equiv :-
+    format("~nwrite_lines multiline equivalence:~n"),
+    assert_true('write_lines matches sequential writes', (
+        with_output_to(atom(Output1), (
+            current_output(S1),
+            write(S1, 'line1\n'),
+            write(S1, 'line2\n'),
+            write(S1, '\n'),
+            write(S1, 'line3\n')
+        )),
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:write_lines(S2, ['line1', 'line2', '', 'line3'])
+        )),
+        Output1 == Output2
     )).
