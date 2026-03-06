@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Callable
 
 
+# Binding: slash_command/4 -> SLASH_COMMANDS.get(name)(name) [dict_lookup]
+
 # Default aliases
 DEFAULT_ALIASES = {
     # Short forms

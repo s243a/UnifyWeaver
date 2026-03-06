@@ -101,6 +101,14 @@ run_tests :-
     test_write_lines_multiline_equiv,
     test_dependency_diagram_output,
     test_module_dependencies_complete,
+    test_translate_all_bindings,
+    test_binding_metadata_extended,
+    test_emit_from_components_dict,
+    test_emit_from_components_set,
+    test_emit_from_components_facts,
+    test_emit_format_equiv,
+    test_component_roundtrip_all_targets,
+    test_all_bindings_compile,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -1648,3 +1656,236 @@ test_write_lines_multiline_equiv :-
         )),
         Output1 == Output2
     )).
+
+%% ============================================================================
+%% Translate all bindings coverage
+%% ============================================================================
+
+test_translate_all_bindings :-
+    format("~nTranslate all bindings:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    %% Test all 11 bindings × Python target
+    assert_true('translate slash_command/4 python', (
+        agent_loop_bindings:translate_agent_goal(python, slash_command(help, _, _, _), Code1),
+        sub_atom(Code1, _, _, _, 'SLASH_COMMANDS')
+    )),
+    assert_true('translate backend_factory/2 python', (
+        agent_loop_bindings:translate_agent_goal(python, backend_factory(coro, _), Code2),
+        sub_atom(Code2, _, _, _, 'create_backend_from_config')
+    )),
+    assert_true('translate audit_profile_level/2 python', (
+        agent_loop_bindings:translate_agent_goal(python, audit_profile_level(basic, _), Code3),
+        sub_atom(Code3, _, _, _, 'audit_levels')
+    )),
+    assert_true('translate security_profile/2 python', (
+        agent_loop_bindings:translate_agent_goal(python, security_profile(open, _), Code4),
+        sub_atom(Code4, _, _, _, 'SecurityConfig')
+    )),
+    assert_true('translate api_key_env_var/2 python', (
+        agent_loop_bindings:translate_agent_goal(python, api_key_env_var(claude, _), Code5),
+        sub_atom(Code5, _, _, _, 'API_KEY_ENV_VARS')
+    )),
+    assert_true('translate api_key_file/2 python', (
+        agent_loop_bindings:translate_agent_goal(python, api_key_file(claude, _), Code6),
+        sub_atom(Code6, _, _, _, 'API_KEY_FILE_PATHS')
+    )),
+    assert_true('translate default_agent_preset/3 python', (
+        agent_loop_bindings:translate_agent_goal(python, default_agent_preset(default, _, _), Code7),
+        sub_atom(Code7, _, _, _, 'get_default_config')
+    )),
+    assert_true('translate config_search_path/2 python', (
+        agent_loop_bindings:translate_agent_goal(python, config_search_path(local, _), Code8),
+        sub_atom(Code8, _, _, _, 'CONFIG_SEARCH_PATHS')
+    )),
+    %% Test remaining bindings × Prolog target
+    assert_true('translate slash_command/4 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, slash_command(help, _, _, _), PlCode1),
+        sub_atom(PlCode1, _, _, _, 'slash_command')
+    )),
+    assert_true('translate backend_factory/2 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, backend_factory(coro, _), PlCode2),
+        sub_atom(PlCode2, _, _, _, 'create_backend')
+    )),
+    assert_true('translate audit_profile_level/2 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, audit_profile_level(basic, _), PlCode3),
+        sub_atom(PlCode3, _, _, _, 'audit_profile_level')
+    )),
+    assert_true('translate security_profile/2 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, security_profile(open, _), PlCode4),
+        sub_atom(PlCode4, _, _, _, 'security_profile')
+    )),
+    assert_true('translate api_key_env_var/2 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, api_key_env_var(claude, _), PlCode5),
+        sub_atom(PlCode5, _, _, _, 'api_key_env_var')
+    )),
+    assert_true('translate api_key_file/2 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, api_key_file(claude, _), PlCode6),
+        sub_atom(PlCode6, _, _, _, 'api_key_file')
+    )),
+    assert_true('translate default_agent_preset/3 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, default_agent_preset(default, _, _), PlCode7),
+        sub_atom(PlCode7, _, _, _, 'default_agent_preset')
+    )),
+    assert_true('translate config_search_path/2 prolog', (
+        agent_loop_bindings:translate_agent_goal(prolog, config_search_path(local, _), PlCode8),
+        sub_atom(PlCode8, _, _, _, 'config_search_path')
+    )).
+
+%% ============================================================================
+%% Extended binding metadata coverage (aliases.py and backends/__init__.py)
+%% ============================================================================
+
+test_binding_metadata_extended :-
+    format("~nExtended binding metadata coverage:~n"),
+    assert_true('aliases.py has binding metadata', (
+        read_file_to_string('generated/python/aliases.py', C1, []),
+        sub_string(C1, _, _, _, "# Binding:")
+    )),
+    assert_true('backends/__init__.py has binding metadata', (
+        read_file_to_string('generated/python/backends/__init__.py', C2, []),
+        sub_string(C2, _, _, _, "# Binding:")
+    )).
+
+%% ============================================================================
+%% Unified emit_from_components tests
+%% ============================================================================
+
+test_emit_from_components_dict :-
+    format("~nUnified emit_from_components dict format:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    agent_loop_components:register_agent_loop_components,
+    assert_true('emit_from_components dict produces output', (
+        with_output_to(atom(Output),
+            agent_loop_components:emit_from_components(current_output,
+                agent_costs, model_pricing/3, python, dict, [])),
+        sub_atom(Output, _, _, _, 'DEFAULT_PRICING'),
+        sub_atom(Output, _, _, _, '{'),
+        sub_atom(Output, _, _, _, '}')
+    )),
+    assert_true('emit_from_components dict with dict_name override', (
+        with_output_to(atom(Output2),
+            agent_loop_components:emit_from_components(current_output,
+                agent_costs, model_pricing/3, python, dict, [dict_name('MY_DICT')])),
+        sub_atom(Output2, _, _, _, 'MY_DICT')
+    )).
+
+test_emit_from_components_set :-
+    format("~nUnified emit_from_components set format:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    agent_loop_components:register_agent_loop_components,
+    assert_true('emit_from_components set produces output', (
+        with_output_to(atom(Output),
+            agent_loop_components:emit_from_components(current_output,
+                agent_tools, destructive_tool/1, python, set,
+                [fact_type(destructive_tool), dict_name('TEST_SET')])),
+        sub_atom(Output, _, _, _, 'TEST_SET'),
+        sub_atom(Output, _, _, _, '{')
+    )).
+
+test_emit_from_components_facts :-
+    format("~nUnified emit_from_components facts format:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    agent_loop_components:register_agent_loop_components,
+    assert_true('emit_from_components facts produces Prolog', (
+        with_output_to(atom(Output),
+            agent_loop_components:emit_from_components(current_output,
+                agent_costs, model_pricing/3, prolog, facts, [])),
+        sub_atom(Output, _, _, _, 'model_pricing'),
+        \+ sub_atom(Output, _, _, _, '=')
+    )),
+    assert_true('emit_from_components facts with fact_type', (
+        with_output_to(atom(Output2),
+            agent_loop_components:emit_from_components(current_output,
+                agent_tools, tool_handler/2, prolog, facts, [fact_type(tool_handler)])),
+        sub_atom(Output2, _, _, _, 'tool_handler')
+    )).
+
+%% ============================================================================
+%% Format equivalence tests
+%% ============================================================================
+
+test_emit_format_equiv :-
+    format("~nFormat equivalence (wrapper vs direct):~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    agent_loop_components:register_agent_loop_components,
+    %% dict wrapper == emit_from_components with dict format
+    assert_true('emit_py_dict_from_components matches emit_from_components dict', (
+        with_output_to(atom(Old),
+            agent_loop_components:emit_py_dict_from_components(current_output,
+                agent_costs, model_pricing/3, python, [])),
+        with_output_to(atom(New),
+            agent_loop_components:emit_from_components(current_output,
+                agent_costs, model_pricing/3, python, dict, [])),
+        Old == New
+    )),
+    %% set wrapper == emit_from_components with set format
+    assert_true('emit_py_set_from_components matches emit_from_components set', (
+        with_output_to(atom(Old2),
+            agent_loop_components:emit_py_set_from_components(current_output,
+                agent_tools, destructive_tool/1, python,
+                [fact_type(destructive_tool), dict_name('DESTRUCTIVE_TOOLS')])),
+        with_output_to(atom(New2),
+            agent_loop_components:emit_from_components(current_output,
+                agent_tools, destructive_tool/1, python, set,
+                [fact_type(destructive_tool), dict_name('DESTRUCTIVE_TOOLS')])),
+        Old2 == New2
+    )),
+    %% facts wrapper == emit_from_components with facts format
+    assert_true('emit_prolog_facts matches emit_from_components facts', (
+        with_output_to(atom(Old3),
+            agent_loop_components:emit_prolog_facts_from_components(current_output,
+                agent_costs, model_pricing, [])),
+        with_output_to(atom(New3),
+            agent_loop_components:emit_from_components(current_output,
+                agent_costs, _Pred, prolog, facts, [fact_type(model_pricing)])),
+        Old3 == New3
+    )).
+
+%% ============================================================================
+%% Component roundtrip all targets
+%% ============================================================================
+
+test_component_roundtrip_all_targets :-
+    format("~nComponent roundtrip all targets:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    agent_loop_components:register_agent_loop_components,
+    findall(Cat-Name, component(Cat, Name, _, _), AllRaw),
+    sort(AllRaw, All),
+    length(All, TotalComponents),
+    %% Test Python compilation for all components
+    findall(Cat-Name, (
+        member(Cat-Name, All),
+        compile_component(Cat, Name, [target(python)], _PyCode)
+    ), PySuccesses),
+    length(PySuccesses, PyCount),
+    assert_true('All components compile for Python target', (
+        PyCount > 0
+    )),
+    %% Test Prolog compilation for all components
+    findall(Cat-Name, (
+        member(Cat-Name, All),
+        compile_component(Cat, Name, [target(prolog)], _PlCode)
+    ), PlSuccesses),
+    length(PlSuccesses, PlCount),
+    assert_true('All components compile for Prolog target', (
+        PlCount > 0
+    )),
+    format("  (~w components total, ~w Python, ~w Prolog compiled)~n",
+           [TotalComponents, PyCount, PlCount]).
+
+%% ============================================================================
+%% All bindings compile
+%% ============================================================================
+
+test_all_bindings_compile :-
+    format("~nAll bindings compile:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    findall(Target-Pred, binding(Target, Pred, _, _, _, _), AllBindings),
+    length(AllBindings, Total),
+    findall(Target-Pred, (
+        member(Target-Pred, AllBindings),
+        agent_loop_bindings:compile_binding_code(Target, Pred, Code),
+        atom(Code), Code \== ''
+    ), Successes),
+    length(Successes, SuccessCount),
+    assert_eq('All bindings compile successfully', Total, SuccessCount).
