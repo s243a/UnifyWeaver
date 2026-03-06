@@ -50,6 +50,14 @@ ansi_format(Style, Fmt, Args) :-
         format(FullFmt, Args)
     ; format(Fmt, Args)).
 
+:- det(sessions_dir/1).
+:- det(agent_loop/0).
+:- det(agent_loop/1).
+:- det(read_input_smart/1).
+:- det(process_input/2).
+:- det(handle_response/4).
+:- det(handle_tool_calls/4).
+
 sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).
 
 %% Entry point with default options
@@ -268,14 +276,15 @@ handle_action(clear, _) :-
     write("Context cleared."), nl.
 handle_action(help, _) :-
     ansi_format(bold, "Available commands:~n", []),
-    forall(slash_command_group(Group, Cmds), (
+    findall(Group-Cmds, slash_command_group(Group, Cmds), Groups),
+    maplist([Group-Cmds]>>(
         ansi_format(bold, "~n  ~w:~n", [Group]),
-        forall(member(CmdName, Cmds), (
+        maplist([CmdName]>>(
             slash_command(CmdName, _, Opts, Help),
             (member(help_display(Disp), Opts) -> true ; format(atom(Disp), "/~w", [CmdName])),
             format("    ~w~t~30| ~w~n", [Disp, Help])
-        ))
-    )).
+        ), Cmds)
+    ), Groups).
 handle_action(status, Backend) :-
     get_dict(name, Backend, BName),
     conversation(Msgs),
@@ -290,7 +299,8 @@ handle_action(call_handler('_handle_backend_command', Args), Backend) :-
         get_dict(name, Backend, BName),
         format("Current backend: ~w~n", [BName]),
         write("Available backends:"), nl,
-        forall(backend_factory(N, _), format("  ~w~n", [N]))
+        findall(N, backend_factory(N, _), Ns),
+        maplist([N]>>(format("  ~w~n", [N])), Ns)
     ;
         atom_string(TargetName, Args),
         (backend_factory(TargetName, _) ->
@@ -354,9 +364,10 @@ handle_action(call_handler('_handle_tokens_command', _), _) :-
            [Tokens, Limit, NMsgs, CPT]).
 handle_action(call_handler('_handle_aliases_command', _), _) :-
     write("Command aliases:"), nl,
-    forall(command_alias(Alias, Target), (
+    findall(Alias-Target, command_alias(Alias, Target), AliasPairs),
+    maplist([Alias-Target]>>(
         format("  /~w -> /~w~n", [Alias, Target])
-    )).
+    ), AliasPairs).
 handle_action(call_handler('_handle_history_command', Args), _) :-
     (Args = "" -> N = 10 ; atom_number(Args, N)),
     conversation(Msgs),
@@ -493,7 +504,7 @@ handle_action(call_handler('_handle_sessions_command', _), _) :-
             write("No saved sessions."), nl
         ;
             write("Saved sessions:"), nl,
-            forall(member(F, JsonFiles), (
+            maplist([F]>>(
                 format(atom(FullPath), "~w/~w", [SDir, F]),
                 catch((
                     setup_call_cleanup(
@@ -509,7 +520,7 @@ handle_action(call_handler('_handle_sessions_command', _), _) :-
                     file_name_extension(Base, _, F),
                     format("  ~w: (unreadable)~n", [Base])
                 ))
-            ))
+            ), JsonFiles)
         )
     ; write("No saved sessions."), nl).
 handle_action(call_handler('_handle_format_command', Args), _) :-
@@ -613,29 +624,29 @@ export_conversation(json, Msgs, Content) :-
 export_conversation(md, Msgs, Content) :-
     with_output_to(string(Content), (
         write("# Conversation\n\n"),
-        forall(member(Msg, Msgs), (
+        maplist([Msg]>>(
             get_dict(role, Msg, Role),
             get_dict(content, Msg, C),
             (Role = "user" -> write("**You:**") ; write("**Assistant:**")),
             nl, nl, write(C), nl, nl
-        ))
+        ), Msgs)
     )).
 export_conversation(txt, Msgs, Content) :-
     with_output_to(string(Content), (
-        forall(member(Msg, Msgs), (
+        maplist([Msg]>>(
             get_dict(role, Msg, Role),
             get_dict(content, Msg, C),
             format("~w: ~w~n~n", [Role, C])
-        ))
+        ), Msgs)
     )).
 export_conversation(html, Msgs, Content) :-
     with_output_to(string(Content), (
         write("<html><body>\n"),
-        forall(member(Msg, Msgs), (
+        maplist([Msg]>>(
             get_dict(role, Msg, Role),
             get_dict(content, Msg, C),
             format("<div class=\"~w\"><b>~w:</b><p>~w</p></div>\n", [Role, Role, C])
-        )),
+        ), Msgs),
         write("</body></html>\n")
     )).
 

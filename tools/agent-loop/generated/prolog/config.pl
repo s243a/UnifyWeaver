@@ -22,6 +22,10 @@
 :- use_module(library(optparse)).
 :- use_module(library(json)).
 
+:- det(parse_cli_args/2).
+:- det(load_config/2).
+:- det(resolve_api_key/3).
+
 %% Dependencies:
 %%   backends (api_key_env_var/2 backend name lookup)
 

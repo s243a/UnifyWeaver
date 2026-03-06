@@ -11,6 +11,11 @@
     cost_tracker_format/2
 ]).
 
+:- det(cost_tracker_init/1).
+:- det(cost_tracker_add/4).
+:- det(cost_tracker_total/2).
+:- det(cost_tracker_format/2).
+
 %% Dependencies: none (self-contained)
 
 %% Indexing hints (SWI-Prolog auto-indexes first argument):
