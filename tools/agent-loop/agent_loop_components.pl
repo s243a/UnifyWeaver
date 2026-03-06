@@ -48,6 +48,12 @@
     security_import_specs/1,
     emit_dependency_diagram/2,
     write_lines/2,
+    emit_from_components/6,
+    resolve_collection_name/5,
+    compile_options/4,
+    emit_open_delimiter/4,
+    emit_close_delimiter/3,
+    compute_indent/2,
     emit_py_dict_from_components/5,
     emit_py_set_from_components/5,
     emit_prolog_facts_from_components/4
@@ -451,30 +457,17 @@ register_agent_loop_components :-
 %% emit_tool_facts(+Stream, +Options)
 %% Emit tool-related Prolog facts via the component registry.
 emit_tool_facts(S, _Options) :-
-    %% tool_spec via compile_component
+    %% tool_spec via unified emit
     write(S, '%% tool_spec(+ToolName, +Properties)\n'),
-    findall(Name, component(agent_tools, Name, tool_handler, _), ToolNames),
-    maplist([Name]>>(
-        (compile_component(agent_tools, Name, [target(prolog), fact_type(tool_spec)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), ToolNames),
+    emit_from_components(S, agent_tools, tool_handler/2, prolog, facts, [fact_type(tool_spec)]),
     write(S, '\n'),
-    %% tool_handler via compile_component
+    %% tool_handler via unified emit
     write(S, '%% tool_handler(+ToolName, +HandlerPredicate)\n'),
-    maplist([Name]>>(
-        compile_component(agent_tools, Name, [target(prolog), fact_type(tool_handler)], Code),
-        write(S, Code), nl(S)
-    ), ToolNames),
+    emit_from_components(S, agent_tools, tool_handler/2, prolog, facts, [fact_type(tool_handler)]),
     write(S, '\n'),
-    %% destructive_tool via compile_component
+    %% destructive_tool via unified emit
     write(S, '%% destructive_tool(+ToolName)\n'),
-    findall(Name, (component(agent_tools, Name, tool_handler, Cfg),
-            member(destructive(true), Cfg)), DestrNames),
-    maplist([Name]>>(
-        compile_component(agent_tools, Name, [target(prolog), fact_type(destructive_tool)], Code),
-        write(S, Code), nl(S)
-    ), DestrNames),
+    emit_from_components(S, agent_tools, tool_handler/2, prolog, facts, [fact_type(destructive_tool)]),
     write(S, '\n'),
     %% tool_description — stays as raw fact iteration (cross-cutting shape)
     write(S, '%% tool_description(+Backend, +ToolName, +Verb, +ParamKey, +DisplayMode)\n'),
@@ -500,13 +493,9 @@ emit_command_facts(S, _Options) :-
     emit_indexing_directive(S, slash_command/4, NSC),
     emit_indexing_directive(S, command_alias/2, NCA),
     write(S, '\n'),
-    %% slash_command via compile_component
+    %% slash_command via unified emit
     write(S, '%% slash_command(+Name, +MatchType, +Options, +HelpText)\n'),
-    findall(CName, component(agent_commands, CName, slash_command, _), CmdNames),
-    maplist([CName]>>(
-        compile_component(agent_commands, CName, [target(prolog), fact_type(slash_command)], Code),
-        write(S, Code), nl(S)
-    ), CmdNames),
+    emit_from_components(S, agent_commands, slash_command/4, prolog, facts, [fact_type(slash_command)]),
     write(S, '\n'),
     %% command_alias — cross-cutting, stays as raw fact iteration
     write(S, '%% command_alias(+Alias, +CanonicalName)\n'),
@@ -550,13 +539,9 @@ emit_backend_facts(S, _Options) :-
         write(S, ').\n')
     ), ABPairs),
     write(S, '\n'),
-    %% backend_factory via compile_component
+    %% backend_factory via unified emit
     write(S, '%% backend_factory(+Name, +FactorySpec)\n'),
-    findall(BFName, component(agent_backends, BFName, backend, _), BFNames),
-    maplist([BFName]>>(
-        compile_component(agent_backends, BFName, [target(prolog), fact_type(backend_factory)], Code),
-        write(S, Code), nl(S)
-    ), BFNames),
+    emit_from_components(S, agent_backends, backend_factory/2, prolog, facts, [fact_type(backend_factory)]),
     write(S, '\n'),
     %% backend_factory_order — singleton, stays raw
     (agent_loop_module:backend_factory_order(Order) ->
@@ -597,11 +582,7 @@ emit_security_facts(S, Options) :-
         emit_indexing_directive(S, blocked_command_pattern/2),
         write(S, '\n'),
         write(S, '%% security_profile(+Name, +Properties)\n'),
-        findall(SPName, component(agent_security, SPName, security_profile, _), SPNames),
-        maplist([SPName]>>(
-            compile_component(agent_security, SPName, [target(prolog)], Code),
-            write(S, Code), nl(S)
-        ), SPNames),
+        emit_from_components(S, agent_security, security_profile/2, prolog, facts, []),
         write(S, '\n'),
         write(S, '%% blocked_path(+AbsolutePath)\n'),
         findall(P, agent_loop_module:blocked_path(P), BPs),
@@ -639,21 +620,14 @@ emit_security_blocked_py(S, blocked_command_pattern) :-
 %% emit_cost_facts(+Stream, +Options)
 %% Emit cost facts — dispatches on target(python) vs target(prolog).
 emit_cost_facts(S, Options) :-
-    findall(Model, component(agent_costs, Model, model_pricing, _), Models),
     (member(target(python), Options) ->
-        maplist([Model]>>(
-            compile_component(agent_costs, Model, [target(python)], Code),
-            write(S, Code), nl(S)
-        ), Models)
+        emit_from_components(S, agent_costs, model_pricing/3, python, facts, Options)
     ;
         write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
         emit_indexing_directive(S, model_pricing/3),
         write(S, '\n'),
         write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
-        maplist([Model]>>(
-            compile_component(agent_costs, Model, [target(prolog)], Code),
-            write(S, Code), nl(S)
-        ), Models)
+        emit_from_components(S, agent_costs, model_pricing/3, prolog, facts, Options)
     ).
 
 %% emit_backend_init_imports(+Stream, +Options)
@@ -1252,62 +1226,82 @@ write_lines(S, [Line|Rest]) :-
     nl(S),
     write_lines(S, Rest).
 
-%% emit_py_dict_from_components(+Stream, +Category, +Pred, +Target, +Options)
-%% Emit a complete Python dict by querying binding metadata for the dict name
-%% and compiling each component in Category with target(python).
-%% Pred is the binding predicate (e.g., model_pricing/3) used to look up the dict name.
+%% ============================================================================
+%% Unified Component Emission
+%% ============================================================================
+
+%% emit_from_components(+Stream, +Category, +Pred, +Target, +Format, +Options)
+%% Generic component emission — single predicate for all output formats.
+%% Format: dict | set | facts | list
+%%   dict  — Python dict with binding-derived or overridden name
+%%   set   — Python set with binding-derived or overridden name
+%%   list  — Python list with binding-derived or overridden name
+%%   facts — Prolog facts (no collection wrapper, just bare facts)
 %% Options:
-%%   dict_name(Name)    — override binding-derived dict name
-%%   outer_indent(N)    — indent the wrapper { } lines by N spaces
+%%   dict_name(Name)    — override binding-derived collection name
+%%   outer_indent(N)    — indent the wrapper delimiters by N spaces
 %%   indent(N)          — indent each entry by N spaces (passed to compile_component)
 %%   fact_type(FT)      — select specific fact type for compilation
-emit_py_dict_from_components(S, Category, Pred, Target, Options) :-
+emit_from_components(S, Category, Pred, Target, Format, Options) :-
     agent_loop_bindings:init_agent_loop_bindings,
-    (member(dict_name(DictName), Options) ->
-        true
-    ;
-        agent_loop_bindings:binding_dict_name(Target, Pred, DictName)
-    ),
-    (member(outer_indent(OI), Options) -> true ; OI = 0),
-    length(OSpaces, OI), maplist(=(0' ), OSpaces), atom_chars(OIndent, OSpaces),
-    format(S, '~w~w = {~n', [OIndent, DictName]),
+    resolve_collection_name(Format, Target, Pred, Options, CollName),
+    compute_indent(Options, Indent),
+    emit_open_delimiter(S, Format, Indent, CollName),
     findall(Name, component(Category, Name, _, _), Names),
+    compile_options(Format, Target, Options, CompileOpts),
     maplist([Name]>>(
-        (compile_component(Category, Name, [target(Target)|Options], Code) ->
+        (compile_component(Category, Name, CompileOpts, Code) ->
             write(S, Code), nl(S)
         ; true)
     ), Names),
-    format(S, '~w}~n', [OIndent]).
+    emit_close_delimiter(S, Format, Indent).
+
+%% resolve_collection_name(+Format, +Target, +Pred, +Options, -Name)
+%% Resolve the collection variable name from options or binding metadata.
+resolve_collection_name(facts, _, _, _, '') :- !.
+resolve_collection_name(_, _Target, _Pred, Options, Name) :-
+    member(dict_name(Name), Options), !.
+resolve_collection_name(_, Target, Pred, _, Name) :-
+    agent_loop_bindings:binding_dict_name(Target, Pred, Name).
+
+%% compile_options(+Format, +Target, +Options, -CompileOpts)
+%% Build the options list passed to compile_component.
+compile_options(facts, _Target, Options, [target(prolog)|Options]) :- !.
+compile_options(_, Target, Options, [target(Target)|Options]).
+
+%% emit_open_delimiter(+Stream, +Format, +Indent, +Name)
+%% Write the opening delimiter for a collection.
+emit_open_delimiter(_, facts, _, _) :- !.
+emit_open_delimiter(S, dict, Indent, Name) :- format(S, '~w~w = {~n', [Indent, Name]).
+emit_open_delimiter(S, set, Indent, Name) :- format(S, '~w~w = {~n', [Indent, Name]).
+emit_open_delimiter(S, list, Indent, Name) :- format(S, '~w~w = [~n', [Indent, Name]).
+
+%% emit_close_delimiter(+Stream, +Format, +Indent)
+%% Write the closing delimiter for a collection.
+emit_close_delimiter(_, facts, _) :- !.
+emit_close_delimiter(S, dict, Indent) :- format(S, '~w}~n', [Indent]).
+emit_close_delimiter(S, set, Indent) :- format(S, '~w}~n', [Indent]).
+emit_close_delimiter(S, list, Indent) :- format(S, '~w]~n', [Indent]).
+
+%% compute_indent(+Options, -Indent)
+%% Compute the indentation string from outer_indent option.
+compute_indent(Options, Indent) :-
+    (member(outer_indent(OI), Options) -> true ; OI = 0),
+    length(Spaces, OI), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces).
+
+%% ---- Backward-compatible wrappers ----
+
+%% emit_py_dict_from_components(+Stream, +Category, +Pred, +Target, +Options)
+%% Backward-compatible wrapper — delegates to emit_from_components/6 with dict format.
+emit_py_dict_from_components(S, Cat, Pred, Target, Opts) :-
+    emit_from_components(S, Cat, Pred, Target, dict, Opts).
 
 %% emit_py_set_from_components(+Stream, +Category, +Pred, +Target, +Options)
-%% Emit a complete Python set by querying binding metadata for the set name
-%% and compiling each component in Category with target(python).
-%% Options: same as emit_py_dict_from_components.
-emit_py_set_from_components(S, Category, Pred, Target, Options) :-
-    agent_loop_bindings:init_agent_loop_bindings,
-    (member(dict_name(SetName), Options) ->
-        true
-    ;
-        agent_loop_bindings:binding_dict_name(Target, Pred, SetName)
-    ),
-    (member(outer_indent(OI), Options) -> true ; OI = 0),
-    length(OSpaces, OI), maplist(=(0' ), OSpaces), atom_chars(OIndent, OSpaces),
-    format(S, '~w~w = {~n', [OIndent, SetName]),
-    findall(Name, component(Category, Name, _, _), Names),
-    maplist([Name]>>(
-        (compile_component(Category, Name, [target(Target)|Options], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), Names),
-    format(S, '~w}~n', [OIndent]).
+%% Backward-compatible wrapper — delegates to emit_from_components/6 with set format.
+emit_py_set_from_components(S, Cat, Pred, Target, Opts) :-
+    emit_from_components(S, Cat, Pred, Target, set, Opts).
 
 %% emit_prolog_facts_from_components(+Stream, +Category, +FactType, +Options)
-%% Emit Prolog facts by iterating components in Category and compiling each
-%% with target(prolog). FactType selects the specific fact type for compilation.
-emit_prolog_facts_from_components(S, Category, FactType, Options) :-
-    findall(Name, component(Category, Name, _, _), Names),
-    maplist([Name]>>(
-        (compile_component(Category, Name, [target(prolog), fact_type(FactType)|Options], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), Names).
+%% Backward-compatible wrapper — delegates to emit_from_components/6 with facts format.
+emit_prolog_facts_from_components(S, Cat, FactType, Opts) :-
+    emit_from_components(S, Cat, _Pred, prolog, facts, [fact_type(FactType)|Opts]).
