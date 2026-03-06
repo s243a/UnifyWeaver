@@ -46,7 +46,9 @@
     emit_module_dependencies/2,
     backend_import_specs/2,
     security_import_specs/1,
-    emit_dependency_diagram/2
+    emit_dependency_diagram/2,
+    write_lines/2,
+    emit_py_dict_from_components/5
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -158,6 +160,14 @@ agent_command_type:compile_component(Name, Config, Options, Code) :-
         ;
             compile_command_fact(slash_command, Name, Config, Code)
         )
+    ; member(target(python), Options) ->
+        member(match_type(MT), Config),
+        member(help_text(HT), Config),
+        (member(options(Opts), Config) -> true ; Opts = []),
+        (member(indent(N), Options) -> true ; N = 4),
+        length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
+        format(atom(Code), "~w'~w': {'match': '~w', 'options': ~q, 'help': ~q},",
+               [Indent, Name, MT, Opts, HT])
     ;
         compile_command_fact(slash_command, Name, Config, Code)
     ).
@@ -199,6 +209,13 @@ agent_backend_type:compile_component(Name, Config, Options, Code) :-
         ;
             compile_backend_fact(backend_factory, Name, Config, Code)
         )
+    ; member(target(python), Options) ->
+        member(class_name(ClassName), Config),
+        member(resolve_type(ResolveType), Config),
+        (member(indent(N), Options) -> true ; N = 4),
+        length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
+        format(atom(Code), "~w'~w': {'class': '~w', 'resolve': '~w'},",
+               [Indent, Name, ClassName, ResolveType])
     ;
         compile_backend_fact(backend_factory, Name, Config, Code)
     ).
@@ -228,12 +245,21 @@ agent_security_type:validate_config(_Config).
 
 agent_security_type:init_component(_Name, _Config).
 
-agent_security_type:compile_component(Name, Config, _Options, Code) :-
-    with_output_to(atom(Code), (
-        format('security_profile(~q, ', [Name]),
-        agent_loop_module:write_prolog_term(current_output, Config),
-        write(').')
-    )).
+agent_security_type:compile_component(Name, Config, Options, Code) :-
+    (member(target(python), Options) ->
+        (member(indent(N), Options) -> true ; N = 4),
+        length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
+        (member(path_validation(PV), Config) -> true ; PV = false),
+        (member(command_validation(CV), Config) -> true ; CV = false),
+        format(atom(Code), "~w'~w': {'path_validation': ~w, 'command_validation': ~w},",
+               [Indent, Name, PV, CV])
+    ;
+        with_output_to(atom(Code), (
+            format('security_profile(~q, ', [Name]),
+            agent_loop_module:write_prolog_term(current_output, Config),
+            write(').')
+        ))
+    ).
 
 %% --- Model cost type ---
 
@@ -1140,7 +1166,7 @@ emit_predicate_summary :-
     format("  config.py         -> emit_api_key_files_py/2, emit_default_presets_py/2~n"),
     format("  config.py         -> emit_cascade_paths/2 [path_type(required|fallback)]~n"),
     format("  agent_loop.py     -> emit_audit_levels/2, emit_cli_overrides/2~n"),
-    format("  agent_loop.py     -> emit_binding_dispatch_comment/2 (8 bindings)~n"),
+    format("  agent_loop.py     -> emit_binding_dispatch_comment/2 (11 bindings)~n"),
     format("  agent_loop.py     -> emit_help_groups/2~n"),
     format("  agent_loop.py     -> emit_alias_conditions/2, emit_argparse_group_args/2~n"),
     format("  README.md         -> emit_readme_sections/2~n"),
@@ -1155,7 +1181,44 @@ emit_predicate_summary :-
     format("  backend_import_specs/2    -> module_imports + from_imports -> specs~n"),
     format("  security_import_specs/1   -> security_module/3 -> from_relative specs~n"),
     format("  emit_module_dependencies/2 -> module_dependency/3 fact-driven comments~n"),
+    format("~nBinding-driven emission:~n"),
+    format("  costs.py          -> emit_py_dict_from_components/5 (binding_dict_name for DEFAULT_PRICING)~n"),
+    format("  tools_generated   -> binding_dict_name/3 for DESTRUCTIVE_TOOLS~n"),
+    format("  agent_loop.py     -> binding_dict_name/3 for audit_levels~n"),
+    format("~nData-driven helpers:~n"),
+    format("  write_lines/2              -> emit list of strings as lines~n"),
+    format("  emit_py_dict_from_components/5 -> binding + component-driven Python dict~n"),
     format("~nGenerators using raw fact iteration (by design):~n"),
     format("  aliases.py        -> emit_alias_group_entries/2 + structural ordering~n"),
     format("  backends/<name>   -> agent_backend/2 + py_fragment/2~n"),
     format("~n").
+
+%% ============================================================================
+%% Data-driven Emission Helpers
+%% ============================================================================
+
+%% write_lines(+Stream, +Lines)
+%% Write a list of strings as lines to Stream.
+%% Each element is written followed by a newline.
+write_lines(_, []).
+write_lines(S, [Line|Rest]) :-
+    write(S, Line),
+    nl(S),
+    write_lines(S, Rest).
+
+%% emit_py_dict_from_components(+Stream, +Category, +Pred, +Target, +Options)
+%% Emit a complete Python dict by querying binding metadata for the dict name
+%% and compiling each component in Category with target(python).
+%% Pred is the binding predicate (e.g., model_pricing/3) used to look up the dict name.
+%% Options can include indent(N) for component indentation.
+emit_py_dict_from_components(S, Category, Pred, Target, Options) :-
+    agent_loop_bindings:init_agent_loop_bindings,
+    agent_loop_bindings:binding_dict_name(Target, Pred, DictName),
+    format(S, '~w = {~n', [DictName]),
+    findall(Name, component(Category, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(Category, Name, [target(Target)|Options], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    write(S, '}\n').

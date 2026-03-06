@@ -83,6 +83,11 @@ run_tests :-
     test_binding_metadata_in_generated,
     test_target_level_maplist_in_generated,
     test_no_forall_in_components,
+    test_binding_patterns_extended,
+    test_binding_dict_name,
+    test_compile_component_python_targets,
+    test_write_lines_helper,
+    test_no_forall_in_bindings,
     test_dependency_diagram_output,
     test_module_dependencies_complete,
     %% Report
@@ -1315,5 +1320,104 @@ test_no_forall_in_components :-
     format("~nNo forall in components:~n"),
     assert_true('agent_loop_components.pl has no forall calls', (
         read_file_to_string('agent_loop_components.pl', Content, []),
+        \+ sub_string(Content, _, _, _, "forall(")
+    )).
+
+%% ============================================================================
+%% Extended binding patterns: method_call, chained_call, set_membership
+%% ============================================================================
+
+test_binding_patterns_extended :-
+    format("~nExtended binding patterns:~n"),
+    init_agent_loop_bindings,
+    %% set_membership pattern
+    assert_true('set_membership generates if-in', (
+        compile_binding_code(python, destructive_tool/1, Code),
+        sub_atom(Code, _, _, _, 'in DESTRUCTIVE_TOOLS')
+    )),
+    %% dict_lookup pattern
+    assert_true('dict_lookup generates assignment', (
+        compile_binding_code(python, model_pricing/3, Code2),
+        sub_atom(Code2, _, _, _, 'DEFAULT_PRICING')
+    )),
+    %% binding_pattern/3 query
+    assert_true('binding_pattern returns dict_lookup for model_pricing', (
+        agent_loop_bindings:binding_pattern(python, model_pricing/3, dict_lookup)
+    )),
+    assert_true('binding_pattern returns set_membership for destructive_tool', (
+        agent_loop_bindings:binding_pattern(python, destructive_tool/1, set_membership)
+    )).
+
+%% ============================================================================
+%% binding_dict_name/3 tests
+%% ============================================================================
+
+test_binding_dict_name :-
+    format("~nBinding dict name:~n"),
+    init_agent_loop_bindings,
+    assert_true('binding_dict_name extracts DEFAULT_PRICING from model_pricing/3', (
+        agent_loop_bindings:binding_dict_name(python, model_pricing/3, 'DEFAULT_PRICING')
+    )),
+    assert_true('binding_dict_name extracts audit_levels from audit_profile_level/2', (
+        agent_loop_bindings:binding_dict_name(python, audit_profile_level/2, audit_levels)
+    )),
+    assert_true('binding_dict_name returns DESTRUCTIVE_TOOLS for destructive_tool/1', (
+        agent_loop_bindings:binding_dict_name(python, destructive_tool/1, 'DESTRUCTIVE_TOOLS')
+    )).
+
+%% ============================================================================
+%% compile_component/4 Python target tests
+%% ============================================================================
+
+test_compile_component_python_targets :-
+    format("~nCompile component Python targets:~n"),
+    register_agent_loop_components,
+    %% Command component Python
+    assert_true('command compile_component with target(python) produces dict entry', (
+        compile_component(agent_commands, help, [target(python)], Code),
+        sub_atom(Code, _, _, _, 'help')
+    )),
+    %% Backend component Python
+    assert_true('backend compile_component with target(python) produces dict entry', (
+        compile_component(agent_backends, coro, [target(python)], Code2),
+        sub_atom(Code2, _, _, _, 'coro')
+    )),
+    %% Security component Python
+    assert_true('security compile_component with target(python) produces dict entry', (
+        compile_component(agent_security, cautious, [target(python)], Code3),
+        sub_atom(Code3, _, _, _, 'cautious')
+    )).
+
+%% ============================================================================
+%% write_lines/2 helper test
+%% ============================================================================
+
+test_write_lines_helper :-
+    format("~nwrite_lines helper:~n"),
+    assert_true('write_lines emits multiple lines', (
+        with_output_to(atom(Output), (
+            current_output(S),
+            agent_loop_components:write_lines(S, ['line1', 'line2', 'line3'])
+        )),
+        sub_atom(Output, _, _, _, 'line1'),
+        sub_atom(Output, _, _, _, 'line2'),
+        sub_atom(Output, _, _, _, 'line3')
+    )),
+    assert_true('write_lines empty list produces no output', (
+        with_output_to(atom(Output2), (
+            current_output(S2),
+            agent_loop_components:write_lines(S2, [])
+        )),
+        Output2 == ''
+    )).
+
+%% ============================================================================
+%% No forall in bindings
+%% ============================================================================
+
+test_no_forall_in_bindings :-
+    format("~nNo forall in bindings:~n"),
+    assert_true('agent_loop_bindings.pl has no forall calls', (
+        read_file_to_string('agent_loop_bindings.pl', Content, []),
         \+ sub_string(Content, _, _, _, "forall(")
     )).

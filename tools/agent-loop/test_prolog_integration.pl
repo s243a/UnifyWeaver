@@ -13,6 +13,7 @@
 :- use_module(generated/prolog/commands).
 :- use_module(generated/prolog/security).
 :- use_module(generated/prolog/backends).
+:- use_module(generated/prolog/config).
 
 :- dynamic pl_test_passed/1, pl_test_failed/1.
 
@@ -25,6 +26,8 @@ run_prolog_tests :-
     test_commands_module,
     test_security_module,
     test_backends_module,
+    test_cost_tracker_runtime,
+    test_config_runtime,
     %% Report
     aggregate_all(count, pl_test_passed(_), Passed),
     aggregate_all(count, pl_test_failed(_), Failed),
@@ -137,4 +140,67 @@ test_backends_module :-
     pl_assert_true('backend_factory_order has 8', (
         backends:backend_factory_order(Order),
         length(Order, 8)
+    )).
+
+%% ============================================================================
+%% Runtime tests: cost_tracker
+%% ============================================================================
+
+test_cost_tracker_runtime :-
+    format("~ncost_tracker runtime:~n"),
+    %% Init a test tracker
+    costs:cost_tracker_init(test_runtime),
+    pl_assert_true('cost_tracker_init creates zero state', (
+        costs:cost_tracker_total(test_runtime, tokens(0, 0))
+    )),
+    %% Add usage — suppress output
+    with_output_to(string(_), (
+        costs:cost_tracker_add(test_runtime, "opus", 100, 50)
+    )),
+    pl_assert_true('cost_tracker_add accumulates tokens', (
+        costs:cost_tracker_total(test_runtime, tokens(100, 50))
+    )),
+    %% Add more
+    with_output_to(string(_), (
+        costs:cost_tracker_add(test_runtime, "haiku", 200, 100)
+    )),
+    pl_assert_true('cost_tracker_add accumulates across calls', (
+        costs:cost_tracker_total(test_runtime, tokens(300, 150))
+    )),
+    %% Format
+    costs:cost_tracker_format(test_runtime, Formatted),
+    pl_assert_true('cost_tracker_format produces readable string', (
+        sub_string(Formatted, _, _, _, "300 input"),
+        sub_string(Formatted, _, _, _, "150 output")
+    )),
+    %% Clean up
+    costs:cost_tracker_init(test_runtime).
+
+%% ============================================================================
+%% Runtime tests: config module
+%% ============================================================================
+
+test_config_runtime :-
+    format("~nconfig runtime:~n"),
+    %% resolve_api_key with explicit key
+    config:resolve_api_key(claude, 'test-key-123', Key),
+    pl_assert_eq('resolve_api_key explicit returns explicit', Key, 'test-key-123'),
+    %% resolve_api_key with no key available (nonexistent backend)
+    config:resolve_api_key(nonexistent_backend, none, Key2),
+    pl_assert_eq('resolve_api_key fallback returns none', Key2, none),
+    %% load_config with nonexistent file
+    config:load_config('/tmp/nonexistent_agent_config.json', Config),
+    pl_assert_true('load_config nonexistent returns empty dict', is_dict(Config)),
+    %% cli_argument fact lookup
+    pl_assert_true('cli_argument backend has choices', (
+        config:cli_argument(backend, Props),
+        member(choices(_), Props)
+    )),
+    %% default_agent_preset lookup
+    pl_assert_true('default_agent_preset yolo uses claude-code', (
+        config:default_agent_preset(yolo, 'claude-code', _)
+    )),
+    %% audit_profile_level lookup
+    pl_assert_true('audit_profile_level paranoid is forensic', (
+        config:audit_profile_level(paranoid, forensic)
     )).
