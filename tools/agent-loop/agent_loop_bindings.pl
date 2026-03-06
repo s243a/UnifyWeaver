@@ -3,6 +3,16 @@
 %% Maps agent-loop predicates to target-language functions via binding/6.
 %% Enables target generators to automatically emit cross-language code.
 %%
+%% Key predicates:
+%%   compile_binding_code/3     — generate target-language code from binding
+%%   binding_dict_name/3        — extract base structure name from binding target
+%%   binding_pattern/3          — get pattern type (dict_lookup, set_membership, etc.)
+%%   emit_binding_metadata_comment/3 — emit per-predicate binding comment
+%%   emit_binding_imports/2     — emit Python imports from binding metadata
+%%
+%% Supported patterns: dict_lookup, set_membership, method_call,
+%%   chained_call(Methods), function_call (default)
+%%
 %% Usage:
 %%   swipl -l agent_loop_bindings.pl -g "agent_loop_binding_summary, halt"
 %%
@@ -12,6 +22,8 @@
     init_agent_loop_bindings/0,
     agent_loop_binding_summary/0,
     compile_binding_code/3,
+    binding_dict_name/3,
+    binding_pattern/3,
     generate_bindings_summary/2,
     emit_binding_imports/2,
     emit_binding_dispatch_comment/2,
@@ -217,19 +229,67 @@ init_agent_loop_bindings :-
 %% Binding Consumers — Code Generation from Bindings
 %% ============================================================================
 
+%% binding_dict_name(+Target, +Pred, -DictName)
+%% Extract the base structure name from a binding's target.
+%% For dict lookups like 'DEFAULT_PRICING[model]', returns 'DEFAULT_PRICING'.
+%% For function calls like 'create_backend_from_config', returns the name as-is.
+binding_dict_name(Target, Pred, DictName) :-
+    binding(Target, Pred, TargetName, _Inputs, _Outputs, _Options),
+    (sub_atom(TargetName, Before, _, _, '[') ->
+        sub_atom(TargetName, 0, Before, _, DictName)
+    ; sub_atom(TargetName, Before, _, _, '.') ->
+        sub_atom(TargetName, 0, Before, _, DictName)
+    ;
+        DictName = TargetName
+    ).
+
+%% binding_pattern(+Target, +Pred, -Pattern)
+%% Get the binding pattern for a predicate, defaulting to function_call.
+binding_pattern(Target, Pred, Pattern) :-
+    binding(Target, Pred, _TName, _Inputs, _Outputs, Options),
+    (member(pattern(P), Options) -> Pattern = P ; Pattern = function_call).
+
 %% compile_binding_code(+Target, +Pred, -Code)
 %% Generate a target-language code snippet for a binding
 compile_binding_code(Target, Pred, Code) :-
     binding(Target, Pred, TargetName, Inputs, Outputs, Options),
     format_binding_code(Target, Pred, TargetName, Inputs, Outputs, Options, Code).
 
-%% Python code generation
+%% Python code generation — dispatches on pattern type
 format_binding_code(python, _Pred, TargetName, Inputs, Outputs, Options, Code) :-
     (member(pattern(dict_lookup), Options) ->
         %% Dict lookup pattern: result = DICT[key]
         Inputs = [InputName-_|_],
         Outputs = [OutputName-_|_],
         format(atom(Code), '~w = ~w  # ~w -> ~w', [OutputName, TargetName, InputName, OutputName])
+    ; member(pattern(set_membership), Options) ->
+        %% Set membership test: if key in SET_NAME:
+        Inputs = [InputName-_|_],
+        format(atom(Code), 'if ~w in ~w:', [InputName, TargetName])
+    ; member(pattern(method_call), Options) ->
+        %% Method call: result = obj.method(args)
+        Inputs = [ObjName-_|RestInputs],
+        maplist([N-_,N]>>true, RestInputs, ArgNames),
+        (ArgNames = [] ->
+            MethodExpr = TargetName
+        ;
+            atomic_list_concat(ArgNames, ', ', ArgStr),
+            format(atom(MethodExpr), '~w(~w)', [TargetName, ArgStr])
+        ),
+        (Outputs = [OutputName-_|_] ->
+            format(atom(Code), '~w = ~w~w', [OutputName, ObjName, MethodExpr])
+        ;
+            format(atom(Code), '~w~w', [ObjName, MethodExpr])
+        )
+    ; member(pattern(chained_call(Methods)), Options) ->
+        %% Chained method call: result = obj.m1().m2().m3()
+        Inputs = [ObjName-_|_],
+        format_chained_methods(Methods, ChainStr),
+        (Outputs = [OutputName-_|_] ->
+            format(atom(Code), '~w = ~w~w', [OutputName, ObjName, ChainStr])
+        ;
+            format(atom(Code), '~w~w', [ObjName, ChainStr])
+        )
     ; member(import(Mod), Options) ->
         %% Imported function call
         maplist([N-_,N]>>true, Inputs, INames),
@@ -251,6 +311,24 @@ format_binding_code(prolog, _Pred, TargetName, Inputs, Outputs, _Options, Code) 
     append(INames, ONames, AllArgs),
     atomic_list_concat(AllArgs, ', ', ArgStr),
     format(atom(Code), '~w(~w)', [TargetName, ArgStr]).
+
+%% format_chained_methods(+Methods, -ChainStr)
+%% Build a method chain string from a list of method specs.
+format_chained_methods([], '').
+format_chained_methods([Method|Rest], ChainStr) :-
+    (Method = method(Name, Args) ->
+        (Args = [] ->
+            format(atom(Part), '~w()', [Name])
+        ;
+            atomic_list_concat(Args, ', ', ArgStr),
+            format(atom(Part), '~w(~w)', [Name, ArgStr])
+        )
+    ;
+        %% Simple atom method name — no args
+        format(atom(Part), '~w()', [Method])
+    ),
+    format_chained_methods(Rest, RestStr),
+    atom_concat(Part, RestStr, ChainStr).
 
 %% generate_bindings_summary(+Target, -Summary)
 %% Generate a formatted summary of all bindings for a target
@@ -295,12 +373,14 @@ emit_binding_imports(S, _Options) :-
 emit_binding_dispatch_comment(S, _Options) :-
     init_agent_loop_bindings,
     write(S, '# Binding registry metadata:\n'),
-    forall(binding(python, Pred, TName, Inputs, _Outputs, Opts), (
+    findall(Pred-TName-Inputs-Opts,
+        binding(python, Pred, TName, Inputs, _Outputs, Opts), Entries),
+    maplist([Pred-TName-Inputs-Opts]>>(
         maplist([N-_T,N]>>true, Inputs, INames),
         atomic_list_concat(INames, ', ', IStr),
         (member(pure, Opts) -> Eff = pure ; Eff = effectful),
         format(S, '#   ~w -> ~w(~w) [~w]~n', [Pred, TName, IStr, Eff])
-    )),
+    ), Entries),
     write(S, '#\n').
 
 %% emit_binding_metadata_comment(+Stream, +Target, +Pred)
@@ -331,12 +411,16 @@ agent_loop_binding_summary :-
     format("  Prolog bindings: ~w~n", [NPl]),
     %% List each binding
     format("~n  Python:~n"),
-    forall(member(binding(python, Pred, TName, _, _, _), PyBindings),
-        format("    ~w -> ~w~n", [Pred, TName])),
+    maplist([binding(python, Pred, TName, _, _, _)]>>(
+        format("    ~w -> ~w~n", [Pred, TName])
+    ), PyBindings),
     format("~n  Prolog:~n"),
-    forall(member(binding(prolog, Pred, TName, _, _, _), PlBindings),
-        format("    ~w -> ~w~n", [Pred, TName])),
+    maplist([binding(prolog, Pred2, TName2, _, _, _)]>>(
+        format("    ~w -> ~w~n", [Pred2, TName2])
+    ), PlBindings),
     %% Show effects
     format("~n  Effects:~n"),
-    forall(effect(Pred, Effects),
-        format("    ~w: ~w~n", [Pred, Effects])).
+    findall(Pred3-Effects, effect(Pred3, Effects), EffPairs),
+    maplist([Pred3-Effects]>>(
+        format("    ~w: ~w~n", [Pred3, Effects])
+    ), EffPairs).

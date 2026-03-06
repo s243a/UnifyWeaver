@@ -3130,42 +3130,51 @@ generate_costs :-
     output_path(python, 'costs.py', CostsPath),
     open(CostsPath, write, S),
     %% Header and imports
-    write(S, '"""Cost tracking for API usage."""\n\n'),
-    write(S, 'from dataclasses import dataclass, field\n'),
-    write(S, 'from datetime import datetime\n'),
-    write(S, 'from typing import Any\n'),
-    write(S, 'import json\n'),
-    write(S, 'import os\n'),
-    write(S, 'import sys\n'),
-    write(S, 'import time\n'),
-    write(S, 'from pathlib import Path\n'),
-    write(S, 'from urllib.request import urlopen, Request\n'),
-    write(S, 'from urllib.error import URLError\n\n\n'),
+    agent_loop_components:write_lines(S, [
+        '"""Cost tracking for API usage."""',
+        '',
+        'from dataclasses import dataclass, field',
+        'from datetime import datetime',
+        'from typing import Any',
+        'import json',
+        'import os',
+        'import sys',
+        'import time',
+        'from pathlib import Path',
+        'from urllib.request import urlopen, Request',
+        'from urllib.error import URLError',
+        '', ''
+    ]),
     %% Binding metadata for this file
     agent_loop_bindings:emit_binding_metadata_comment(S, python, model_pricing/3),
     nl(S),
-    %% DEFAULT_PRICING dict — generated from model_pricing/3 facts
+    %% DEFAULT_PRICING dict — binding-driven + component-driven emission
     write(S, '# Pricing per 1M tokens (auto-generated from Prolog facts)\n'),
-    write(S, 'DEFAULT_PRICING = {\n'),
-    agent_loop_components:emit_cost_facts(S, [target(python)]),
-    write(S, '}\n\n\n'),
+    agent_loop_components:emit_py_dict_from_components(S, agent_costs, model_pricing/3, python, []),
+    write(S, '\n\n'),
     %% UsageRecord dataclass
-    write(S, '@dataclass\n'),
-    write(S, 'class UsageRecord:\n'),
-    write(S, '    """Record of a single API call."""\n'),
-    write(S, '    timestamp: str\n'),
-    write(S, '    model: str\n'),
-    write(S, '    input_tokens: int\n'),
-    write(S, '    output_tokens: int\n'),
-    write(S, '    input_cost: float\n'),
-    write(S, '    output_cost: float\n'),
-    write(S, '    total_cost: float\n\n\n'),
+    agent_loop_components:write_lines(S, [
+        '@dataclass',
+        'class UsageRecord:',
+        '    """Record of a single API call."""',
+        '    timestamp: str',
+        '    model: str',
+        '    input_tokens: int',
+        '    output_tokens: int',
+        '    input_cost: float',
+        '    output_cost: float',
+        '    total_cost: float',
+        '', ''
+    ]),
     %% CostTracker class — hybrid (structure from facts, methods embedded)
-    write(S, '@dataclass\n'),
-    write(S, 'class CostTracker:\n'),
-    write(S, '    """Track API costs for a session."""\n\n'),
-    write(S, '    pricing: dict = field(default_factory=lambda: DEFAULT_PRICING.copy())\n'),
-    write(S, '    records: list[UsageRecord] = field(default_factory=list)\n'),
+    agent_loop_components:write_lines(S, [
+        '@dataclass',
+        'class CostTracker:',
+        '    """Track API costs for a session."""',
+        '',
+        '    pricing: dict = field(default_factory=lambda: DEFAULT_PRICING.copy())',
+        '    records: list[UsageRecord] = field(default_factory=list)'
+    ]),
     write(S, '    total_input_tokens: int = 0\n'),
     write(S, '    total_output_tokens: int = 0\n'),
     write(S, '    total_cost: float = 0.0\n\n'),
@@ -3338,7 +3347,8 @@ generate_tools :-
     findall(Name, tool_spec(Name, _), Tools),
     generate_tool_specs(S, Tools),
     write(S, '}\n\n'),
-    write(S, 'DESTRUCTIVE_TOOLS = {\n'),
+    agent_loop_bindings:binding_dict_name(python, destructive_tool/1, DestrSetName),
+    format(S, '~w = {~n', [DestrSetName]),
     generate_destructive_list(S, Tools),
     write(S, '}\n'),
     close(S),
@@ -4086,9 +4096,12 @@ generate_fallback_entries(S, [BT|Rest]) :-
     generate_fallback_entries(S, Rest).
 
 %% generate_audit_levels_dict(S) - emit audit_levels dict from audit_profile_level/2 facts
+%% Uses binding_dict_name/3 to derive the Python variable name from binding metadata.
 generate_audit_levels_dict(S) :-
+    agent_loop_bindings:init_agent_loop_bindings,
+    agent_loop_bindings:binding_dict_name(python, audit_profile_level/2, DictName),
     write(S, '\n    # Create audit logger based on security profile\n'),
-    write(S, '    audit_levels = {\n'),
+    format(S, '    ~w = {~n', [DictName]),
     agent_loop_components:emit_audit_levels(S, [target(python)]),
     write(S, '    }\n').
 
