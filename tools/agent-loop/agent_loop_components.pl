@@ -48,7 +48,9 @@
     security_import_specs/1,
     emit_dependency_diagram/2,
     write_lines/2,
-    emit_py_dict_from_components/5
+    emit_py_dict_from_components/5,
+    emit_py_set_from_components/5,
+    emit_prolog_facts_from_components/4
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -94,13 +96,19 @@ agent_tool_type:compile_component(Name, Config, Options, Code) :-
             compile_tool_all_facts(Name, Config, Code)
         )
     ; member(target(python), Options) ->
-        member(handler(H), Config),
-        (member(indent(N), Options) -> true ; N = 4),
-        (member(self_prefix(true), Options) ->
-            format(atom(HStr), "self.~w", [H])
-        ;   atom_string(H, HStr)),
-        length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
-        format(atom(Code), "~w'~w': ~w,", [Indent, Name, HStr])
+        (member(fact_type(tool_spec), Options) ->
+            compile_tool_spec_python(Name, Config, Options, Code)
+        ; member(fact_type(destructive_tool), Options) ->
+            compile_destructive_tool_python(Name, Config, Options, Code)
+        ;
+            member(handler(H), Config),
+            (member(indent(N), Options) -> true ; N = 4),
+            (member(self_prefix(true), Options) ->
+                format(atom(HStr), "self.~w", [H])
+            ;   atom_string(H, HStr)),
+            length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
+            format(atom(Code), "~w'~w': ~w,", [Indent, Name, HStr])
+        )
     ;
         member(handler(H), Config),
         format(atom(Code), "tool_handler(~q, ~q).", [Name, H])
@@ -133,6 +141,36 @@ compile_tool_all_facts(Name, Config, Code) :-
         compile_tool_fact(FT, Name, Config, Fact)
     ), Facts),
     atomic_list_concat(Facts, '\n', Code).
+
+%% compile_tool_spec_python(+Name, +Config, +Options, -Code)
+%% Emit a Python dict entry for TOOL_SPECS with description and parameters.
+compile_tool_spec_python(Name, Config, Options, Code) :-
+    member(tool_spec_props(Props), Config),
+    Props \= [],
+    member(description(Desc), Props),
+    member(parameters(Params), Props),
+    (member(indent(N), Options) -> true ; N = 4),
+    length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
+    with_output_to(atom(Code), (
+        format('~w"~w": {~n', [Indent, Name]),
+        format('~w    "description": "~w",~n', [Indent, Desc]),
+        format('~w    "parameters": [~n', [Indent]),
+        maplist([param(PName, PType, PReq, PDesc)]>>(
+            (PReq = required -> PyReq = 'True' ; PyReq = 'False'),
+            format('~w        {"name": "~w", "type": "~w", "required": ~w, "description": "~w"},~n',
+                   [Indent, PName, PType, PyReq, PDesc])
+        ), Params),
+        format('~w    ]~n', [Indent]),
+        format('~w},', [Indent])
+    )).
+
+%% compile_destructive_tool_python(+Name, +Config, +Options, -Code)
+%% Emit a Python set entry for DESTRUCTIVE_TOOLS (only if destructive).
+compile_destructive_tool_python(Name, Config, Options, Code) :-
+    member(destructive(true), Config),
+    (member(indent(N), Options) -> true ; N = 4),
+    length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
+    format(atom(Code), '~w"~w",', [Indent, Name]).
 
 %% --- Slash command type ---
 
@@ -253,6 +291,12 @@ agent_security_type:compile_component(Name, Config, Options, Code) :-
         (member(command_validation(CV), Config) -> true ; CV = false),
         format(atom(Code), "~w'~w': {'path_validation': ~w, 'command_validation': ~w},",
                [Indent, Name, PV, CV])
+    ; member(target(prolog), Options) ->
+        with_output_to(atom(Code), (
+            format('security_profile(~q, ', [Name]),
+            agent_loop_module:write_prolog_term(current_output, Config),
+            write(').')
+        ))
     ;
         with_output_to(atom(Code), (
             format('security_profile(~q, ', [Name]),
@@ -286,6 +330,8 @@ agent_cost_type:compile_component(_Name, Config, Options, Code) :-
     member(model_string(Model), Config),
     (member(target(python), Options) ->
         format(atom(Code), '    "~w": {"input": ~w, "output": ~w},', [Model, In, Out])
+    ; member(target(prolog), Options) ->
+        format(atom(Code), "model_pricing(~q, ~w, ~w).", [Model, In, Out])
     ;
         format(atom(Code), "model_pricing(~q, ~w, ~w).", [Model, In, Out])
     ).
@@ -1210,15 +1256,58 @@ write_lines(S, [Line|Rest]) :-
 %% Emit a complete Python dict by querying binding metadata for the dict name
 %% and compiling each component in Category with target(python).
 %% Pred is the binding predicate (e.g., model_pricing/3) used to look up the dict name.
-%% Options can include indent(N) for component indentation.
+%% Options:
+%%   dict_name(Name)    — override binding-derived dict name
+%%   outer_indent(N)    — indent the wrapper { } lines by N spaces
+%%   indent(N)          — indent each entry by N spaces (passed to compile_component)
+%%   fact_type(FT)      — select specific fact type for compilation
 emit_py_dict_from_components(S, Category, Pred, Target, Options) :-
     agent_loop_bindings:init_agent_loop_bindings,
-    agent_loop_bindings:binding_dict_name(Target, Pred, DictName),
-    format(S, '~w = {~n', [DictName]),
+    (member(dict_name(DictName), Options) ->
+        true
+    ;
+        agent_loop_bindings:binding_dict_name(Target, Pred, DictName)
+    ),
+    (member(outer_indent(OI), Options) -> true ; OI = 0),
+    length(OSpaces, OI), maplist(=(0' ), OSpaces), atom_chars(OIndent, OSpaces),
+    format(S, '~w~w = {~n', [OIndent, DictName]),
     findall(Name, component(Category, Name, _, _), Names),
     maplist([Name]>>(
         (compile_component(Category, Name, [target(Target)|Options], Code) ->
             write(S, Code), nl(S)
         ; true)
     ), Names),
-    write(S, '}\n').
+    format(S, '~w}~n', [OIndent]).
+
+%% emit_py_set_from_components(+Stream, +Category, +Pred, +Target, +Options)
+%% Emit a complete Python set by querying binding metadata for the set name
+%% and compiling each component in Category with target(python).
+%% Options: same as emit_py_dict_from_components.
+emit_py_set_from_components(S, Category, Pred, Target, Options) :-
+    agent_loop_bindings:init_agent_loop_bindings,
+    (member(dict_name(SetName), Options) ->
+        true
+    ;
+        agent_loop_bindings:binding_dict_name(Target, Pred, SetName)
+    ),
+    (member(outer_indent(OI), Options) -> true ; OI = 0),
+    length(OSpaces, OI), maplist(=(0' ), OSpaces), atom_chars(OIndent, OSpaces),
+    format(S, '~w~w = {~n', [OIndent, SetName]),
+    findall(Name, component(Category, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(Category, Name, [target(Target)|Options], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    format(S, '~w}~n', [OIndent]).
+
+%% emit_prolog_facts_from_components(+Stream, +Category, +FactType, +Options)
+%% Emit Prolog facts by iterating components in Category and compiling each
+%% with target(prolog). FactType selects the specific fact type for compilation.
+emit_prolog_facts_from_components(S, Category, FactType, Options) :-
+    findall(Name, component(Category, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(Category, Name, [target(prolog), fact_type(FactType)|Options], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names).

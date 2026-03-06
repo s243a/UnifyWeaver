@@ -1190,27 +1190,28 @@ generate_prolog_config :-
     output_path(prolog, 'config.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, config, 'CLI argument parsing and configuration'),
-    write(S, ':- module(config, [\n'),
-    write(S, '    cli_argument/2,\n'),
-    write(S, '    agent_config_field/4,\n'),
-    write(S, '    default_agent_preset/3,\n'),
-    write(S, '    api_key_env_var/2,\n'),
-    write(S, '    api_key_file/2,\n'),
-    write(S, '    parse_cli_args/2,\n'),
-    write(S, '    example_agent_config/3,\n'),
-    write(S, '    config_search_path/2,\n'),
-    write(S, '    config_field_json_default/2,\n'),
-    write(S, '    config_dir_file_name/1,\n'),
-    write(S, '    audit_profile_level/2,\n'),
-    write(S, '    load_config/2,\n'),
-    write(S, '    resolve_api_key/3\n'),
-    write(S, ']).\n\n'),
-    write(S, ':- use_module(library(optparse)).\n'),
-    write(S, ':- use_module(library(json)).\n\n'),
-    %% Determinism annotations for single-clause rules
-    write(S, ':- det(parse_cli_args/2).\n'),
-    write(S, ':- det(load_config/2).\n'),
-    write(S, ':- det(resolve_api_key/3).\n\n'),
+    agent_loop_components:write_lines(S, [
+        ':- module(config, [',
+        '    cli_argument/2,',
+        '    agent_config_field/4,',
+        '    default_agent_preset/3,',
+        '    api_key_env_var/2,',
+        '    api_key_file/2,',
+        '    parse_cli_args/2,',
+        '    example_agent_config/3,',
+        '    config_search_path/2,',
+        '    config_field_json_default/2,',
+        '    config_dir_file_name/1,',
+        '    audit_profile_level/2,',
+        '    load_config/2,',
+        '    resolve_api_key/3',
+        ']).', '',
+        ':- use_module(library(optparse)).',
+        ':- use_module(library(json)).', '',
+        ':- det(parse_cli_args/2).',
+        ':- det(load_config/2).',
+        ':- det(resolve_api_key/3).', ''
+    ]),
     agent_loop_components:emit_module_dependencies(S, [module(config)]),
     %% Emit all config facts via centralized emit predicate
     agent_loop_components:emit_prolog_config_facts(S, [target(prolog)]),
@@ -3016,7 +3017,10 @@ generate_security_profiles :-
     write(S, 'Each profile defines a complete security posture: what\'s blocked, what\'s\n'),
     write(S, 'proxied, what\'s logged, and what isolation is applied.\n'),
     write(S, '"""\n\n'),
-    write(S, 'from dataclasses import dataclass, field\n\n\n'),
+    write(S, 'from dataclasses import dataclass, field\n\n'),
+    %% Binding metadata for this file
+    agent_loop_bindings:emit_binding_metadata_comment(S, python, security_profile/2),
+    nl(S),
     %% SecurityProfile dataclass
     write(S, '@dataclass\n'),
     write(S, 'class SecurityProfile:\n'),
@@ -3343,14 +3347,11 @@ generate_tools :-
     agent_loop_bindings:emit_binding_metadata_comment(S, python, tool_handler/2),
     agent_loop_bindings:emit_binding_metadata_comment(S, python, destructive_tool/1),
     nl(S),
-    write(S, 'TOOL_SPECS = {\n'),
-    findall(Name, tool_spec(Name, _), Tools),
-    generate_tool_specs(S, Tools),
-    write(S, '}\n\n'),
-    agent_loop_bindings:binding_dict_name(python, destructive_tool/1, DestrSetName),
-    format(S, '~w = {~n', [DestrSetName]),
-    generate_destructive_list(S, Tools),
-    write(S, '}\n'),
+    agent_loop_components:emit_py_dict_from_components(S, agent_tools, tool_handler/2, python,
+        [fact_type(tool_spec), dict_name('TOOL_SPECS')]),
+    nl(S),
+    agent_loop_components:emit_py_set_from_components(S, agent_tools, destructive_tool/1, python,
+        [fact_type(destructive_tool)]),
     close(S),
     format('  Generated tools_generated.py~n', []).
 
@@ -3391,10 +3392,12 @@ generate_destructive_list(S, [Name|Rest]) :-
 generate_context :-
     output_path(python, 'context.py', CtxPath),
     open(CtxPath, write, S),
-    write(S, '"""Context manager for conversation history."""\n\n'),
-    write(S, 'from dataclasses import dataclass, field\n'),
-    write(S, 'from typing import Literal\n'),
-    write(S, 'from enum import Enum\n\n\n'),
+    agent_loop_components:write_lines(S, [
+        '"""Context manager for conversation history."""', '',
+        'from dataclasses import dataclass, field',
+        'from typing import Literal',
+        'from enum import Enum', '', ''
+    ]),
     %% Generate enums from context_enum/3 facts
     agent_loop_components:emit_context_enums(S, [target(python)]),
     %% Generate Message dataclass from message_field/3 facts
@@ -3417,9 +3420,17 @@ generate_context :-
 generate_config :-
     output_path(python, 'config.py', CfgPath),
     open(CfgPath, write, S),
-    write(S, '"""Configuration system for agent loop variants."""\n\n'),
-    write(S, 'import os\nimport json\nfrom pathlib import Path\n'),
-    write(S, 'from dataclasses import dataclass, field\nfrom typing import Any\n\n\n'),
+    agent_loop_components:write_lines(S, [
+        '"""Configuration system for agent loop variants."""', '',
+        'import os', 'import json', 'from pathlib import Path',
+        'from dataclasses import dataclass, field', 'from typing import Any', '', ''
+    ]),
+    %% Binding metadata for this file
+    agent_loop_bindings:emit_binding_metadata_comment(S, python, api_key_env_var/2),
+    agent_loop_bindings:emit_binding_metadata_comment(S, python, api_key_file/2),
+    agent_loop_bindings:emit_binding_metadata_comment(S, python, default_agent_preset/3),
+    agent_loop_bindings:emit_binding_metadata_comment(S, python, config_search_path/2),
+    nl(S),
     %% Config cascade function (generated from config_search_path/3 facts)
     generate_config_cascade(S),
     write(S, '\n\n'),
@@ -3445,12 +3456,17 @@ generate_config :-
     agent_loop_components:emit_agent_config_fields(S, [target(python)]),
     write(S, '\n\n'),
     %% Config dataclass (simple, inline)
-    write(S, '@dataclass\nclass Config:\n    """Root configuration with multiple agent variants."""\n'),
-    write(S, '    default: str = "default"\n'),
-    write(S, '    agents: dict[str, AgentConfig] = field(default_factory=dict)\n\n'),
-    write(S, '    # Global settings\n'),
-    write(S, '    config_dir: str = ""\n'),
-    write(S, '    skills_dir: str = ""\n\n\n'),
+    agent_loop_components:write_lines(S, [
+        '@dataclass',
+        'class Config:',
+        '    """Root configuration with multiple agent variants."""',
+        '    default: str = "default"',
+        '    agents: dict[str, AgentConfig] = field(default_factory=dict)',
+        '',
+        '    # Global settings',
+        '    config_dir: str = ""',
+        '    skills_dir: str = ""', '', ''
+    ]),
     %% _resolve_env_var (imperative fragment)
     write_py(S, config_resolve_env_var),
     write(S, '\n'),

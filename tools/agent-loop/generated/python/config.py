@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Binding: api_key_env_var/2 -> API_KEY_ENV_VARS[backend](backend) [dict_lookup]
+# Binding: api_key_file/2 -> API_KEY_FILE_PATHS[backend](backend) [dict_lookup]
+# Binding: default_agent_preset/3 -> get_default_config().agents[name](name) [dict_lookup]
+# Binding: config_search_path/2 -> CONFIG_SEARCH_PATHS[path_type](path_type) [dict_lookup]
+
 def read_config_cascade(no_fallback: bool = False) -> dict:
     """Read config from uwsal.json, falling back to coro.json."""
     candidates = [

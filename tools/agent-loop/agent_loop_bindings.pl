@@ -27,7 +27,10 @@
     generate_bindings_summary/2,
     emit_binding_imports/2,
     emit_binding_dispatch_comment/2,
-    emit_binding_metadata_comment/3
+    emit_binding_metadata_comment/3,
+    translate_agent_goal/2,
+    translate_agent_goal/3,
+    translate_agent_goals/3
 ]).
 
 :- reexport('../../src/unifyweaver/core/binding_registry', [
@@ -209,6 +212,13 @@ register_prolog_bindings :-
         [path-string],
         [pure, deterministic]),
 
+    %% default_agent_preset/3 -> direct fact access
+    declare_binding(prolog, default_agent_preset/3,
+        default_agent_preset,
+        [name-atom],
+        [backend-atom, overrides-list],
+        [pure, deterministic]),
+
     %% destructive_tool/1 -> direct fact access
     declare_binding(prolog, destructive_tool/1,
         destructive_tool,
@@ -329,6 +339,37 @@ format_chained_methods([Method|Rest], ChainStr) :-
     ),
     format_chained_methods(Rest, RestStr),
     atom_concat(Part, RestStr, ChainStr).
+
+%% ============================================================================
+%% Goal Translation — Agent-loop adapter for binding-driven code generation
+%% ============================================================================
+
+%% translate_agent_goal(+Goal, -Code)
+%% Translate a Prolog goal term into Python code using the binding registry.
+%% Mirrors the main compiler's translate_goal/2 (python_target.pl:4304-4327)
+%% but works locally with agent-loop bindings.
+translate_agent_goal(Goal, Code) :-
+    translate_agent_goal(python, Goal, Code).
+
+%% translate_agent_goal(+Target, +Goal, -Code)
+%% Translate a Prolog goal term into target-language code.
+translate_agent_goal(Target, Goal, Code) :-
+    init_agent_loop_bindings,
+    functor(Goal, Pred, Arity),
+    binding(Target, Pred/Arity, _TargetName, _Inputs, _Outputs, _Options), !,
+    compile_binding_code(Target, Pred/Arity, Code).
+
+%% translate_agent_goals(+Goals, +Target, -CodeBlock)
+%% Translate a list of Prolog goals into a multi-line code block.
+translate_agent_goals([], _Target, '').
+translate_agent_goals([Goal|Rest], Target, CodeBlock) :-
+    translate_agent_goal(Target, Goal, Code),
+    translate_agent_goals(Rest, Target, RestCode),
+    (RestCode == '' ->
+        CodeBlock = Code
+    ;
+        atomic_list_concat([Code, '\n', RestCode], CodeBlock)
+    ).
 
 %% generate_bindings_summary(+Target, -Summary)
 %% Generate a formatted summary of all bindings for a target
