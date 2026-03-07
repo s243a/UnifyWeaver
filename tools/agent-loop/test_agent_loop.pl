@@ -109,6 +109,14 @@ run_tests :-
     test_emit_format_equiv,
     test_component_roundtrip_all_targets,
     test_all_bindings_compile,
+    test_entries_format,
+    test_security_rule_components,
+    test_prolog_fact_roundtrip,
+    test_python_entry_patterns,
+    test_generator_import_specs,
+    test_binding_equivalence_comments,
+    test_extract_target_helper,
+    test_all_entry_backend_compile,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -1889,3 +1897,192 @@ test_all_bindings_compile :-
     ), Successes),
     length(Successes, SuccessCount),
     assert_eq('All bindings compile successfully', Total, SuccessCount).
+
+%% ============================================================================
+%% entries format tests
+%% ============================================================================
+
+test_entries_format :-
+    format("~nEntries format:~n"),
+    agent_loop_components:register_agent_loop_components,
+    %% Entries format should have no wrapper delimiters
+    new_memory_file(MF),
+    open_memory_file(MF, write, S),
+    agent_loop_components:emit_from_components(S, agent_security_rules, _, python,
+        entries, [fact_type(blocked_path)]),
+    close(S),
+    memory_file_to_atom(MF, Output),
+    free_memory_file(MF),
+    %% Should NOT contain { or }
+    assert_true('entries format has no open brace', \+ sub_atom(Output, _, _, _, '{')),
+    assert_true('entries format has no close brace', \+ sub_atom(Output, _, _, _, '}')),
+    %% Should contain quoted paths
+    assert_true('entries format has path entries', sub_atom(Output, _, _, _, '/etc/shadow')).
+
+%% ============================================================================
+%% Security rule component tests
+%% ============================================================================
+
+test_security_rule_components :-
+    format("~nSecurity rule components:~n"),
+    agent_loop_components:register_agent_loop_components,
+    %% Count security rule components
+    findall(Name, component(agent_security_rules, Name, security_rule, _), Rules),
+    length(Rules, RuleCount),
+    assert_true('security rules registered', RuleCount > 0),
+    %% Verify blocked_path components exist
+    findall(N, (component(agent_security_rules, N, security_rule, C),
+                member(rule_type(blocked_path), C)), BPs),
+    length(BPs, BPCount),
+    assert_eq('blocked_path count', BPCount, 3),
+    %% Verify blocked_command_pattern components exist
+    findall(N, (component(agent_security_rules, N, security_rule, C),
+                member(rule_type(blocked_command_pattern), C)), BCPs),
+    length(BCPs, BCPCount),
+    assert_eq('blocked_command_pattern count', BCPCount, 9),
+    %% Compile a blocked_path for Python
+    compile_component(agent_security_rules, '/etc/shadow',
+        [target(python), fact_type(blocked_path)], PyCode),
+    assert_true('blocked_path Python compile', sub_atom(PyCode, _, _, _, '/etc/shadow')),
+    %% Compile a blocked_path for Prolog
+    compile_component(agent_security_rules, '/etc/shadow',
+        [target(prolog), fact_type(blocked_path)], PlCode),
+    assert_true('blocked_path Prolog compile', sub_atom(PlCode, _, _, _, 'blocked_path')).
+
+%% ============================================================================
+%% Prolog fact roundtrip tests
+%% ============================================================================
+
+test_prolog_fact_roundtrip :-
+    format("~nProlog fact roundtrip:~n"),
+    agent_loop_components:register_agent_loop_components,
+    %% Find first cost component and compile it
+    findall(N, component(agent_costs, N, _, _), CostNames),
+    CostNames = [FirstCost|_],
+    compile_component(agent_costs, FirstCost, [target(prolog)], CostCode),
+    atom_to_term(CostCode, CostTerm, _),
+    CostTerm = model_pricing(_, _, _),
+    assert_true('cost fact roundtrip parses', true),
+    %% Compile a tool fact and verify it parses
+    findall(N, component(agent_tools, N, tool_handler, _), ToolNames),
+    ToolNames = [FirstTool|_],
+    compile_component(agent_tools, FirstTool,
+        [target(prolog), fact_type(tool_handler)], ToolCode),
+    atom_to_term(ToolCode, ToolTerm, _),
+    ToolTerm = tool_handler(_, _),
+    assert_true('tool fact roundtrip parses', true),
+    %% Compile a security rule and verify
+    compile_component(agent_security_rules, '/etc/shadow',
+        [target(prolog), fact_type(blocked_path)], SecCode),
+    atom_to_term(SecCode, SecTerm, _),
+    SecTerm = blocked_path(_),
+    assert_true('security fact roundtrip parses', true).
+
+%% ============================================================================
+%% Python entry pattern tests
+%% ============================================================================
+
+test_python_entry_patterns :-
+    format("~nPython entry patterns:~n"),
+    agent_loop_components:register_agent_loop_components,
+    %% Dict format should have ':'
+    new_memory_file(MF1),
+    open_memory_file(MF1, write, S1),
+    agent_loop_components:emit_from_components(S1, agent_costs, model_pricing/3,
+        python, dict, []),
+    close(S1),
+    memory_file_to_atom(MF1, DictOut),
+    free_memory_file(MF1),
+    assert_true('dict output has colon', sub_atom(DictOut, _, _, _, ':')),
+    assert_true('dict output has open brace', sub_atom(DictOut, _, _, _, '{')),
+    %% Set format entries should have quotes
+    new_memory_file(MF2),
+    open_memory_file(MF2, write, S2),
+    agent_loop_components:emit_from_components(S2, agent_tools, tool_handler/2,
+        python, set, [fact_type(destructive_tool)]),
+    close(S2),
+    memory_file_to_atom(MF2, SetOut),
+    free_memory_file(MF2),
+    assert_true('set output has open brace', sub_atom(SetOut, _, _, _, '{')),
+    assert_true('set output has close brace', sub_atom(SetOut, _, _, _, '}')).
+
+%% ============================================================================
+%% Generator import specs tests
+%% ============================================================================
+
+test_generator_import_specs :-
+    format("~nGenerator import specs:~n"),
+    %% Verify specs exist for known generators
+    agent_loop_components:generator_import_specs(tools, ToolSpecs),
+    length(ToolSpecs, ToolSpecCount),
+    assert_true('tools has import specs', ToolSpecCount > 0),
+    agent_loop_components:generator_import_specs(aliases, AliasSpecs),
+    length(AliasSpecs, AliasSpecCount),
+    assert_true('aliases has import specs', AliasSpecCount > 0),
+    agent_loop_components:generator_import_specs(backends_base, BaseSpecs),
+    length(BaseSpecs, BaseSpecCount),
+    assert_true('backends_base has import specs', BaseSpecCount > 0),
+    %% Verify emit_import_specs produces correct output
+    new_memory_file(MF),
+    open_memory_file(MF, write, S),
+    agent_loop_components:emit_import_specs(S, [bare(os), from(typing, ['Any', 'List'])]),
+    close(S),
+    memory_file_to_atom(MF, Output),
+    free_memory_file(MF),
+    assert_true('import specs has bare import', sub_atom(Output, _, _, _, 'import os')),
+    assert_true('import specs has from import', sub_atom(Output, _, _, _, 'from typing import Any, List')).
+
+%% ============================================================================
+%% Binding equivalence comments tests
+%% ============================================================================
+
+test_binding_equivalence_comments :-
+    format("~nBinding equivalence comments:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    new_memory_file(MF),
+    open_memory_file(MF, write, S),
+    agent_loop_bindings:emit_binding_equivalence_comments(S, python, [
+        tool_handler(_, _), model_pricing(_, _, _)
+    ]),
+    close(S),
+    memory_file_to_atom(MF, Output),
+    free_memory_file(MF),
+    assert_true('equivalence has header', sub_atom(Output, _, _, _, 'equivalences')),
+    assert_true('equivalence has tool_handler', sub_atom(Output, _, _, _, 'tool_handler/2')),
+    assert_true('equivalence has model_pricing', sub_atom(Output, _, _, _, 'model_pricing/3')).
+
+%% ============================================================================
+%% extract_target helper tests
+%% ============================================================================
+
+test_extract_target_helper :-
+    format("~nextract_target helper:~n"),
+    agent_loop_components:extract_target([target(python)], T1),
+    assert_eq('extract python target', T1, python),
+    agent_loop_components:extract_target([target(prolog)], T2),
+    assert_eq('extract prolog target', T2, prolog),
+    agent_loop_components:extract_target([], T3),
+    assert_eq('extract default target', T3, prolog).
+
+%% ============================================================================
+%% all_entry backend compile tests
+%% ============================================================================
+
+test_all_entry_backend_compile :-
+    format("~nall_entry backend compile:~n"),
+    agent_loop_components:register_agent_loop_components,
+    %% Compile an all_entry for a non-optional backend
+    compile_component(agent_backends, coro,
+        [target(python), fact_type(all_entry)], AllCode),
+    assert_true('all_entry has class name', sub_atom(AllCode, _, _, _, 'CoroBackend')),
+    %% Verify entries format with all_entry
+    new_memory_file(MF),
+    open_memory_file(MF, write, S),
+    agent_loop_components:emit_from_components(S, agent_backends, backend_factory/2,
+        python, entries, [fact_type(all_entry)]),
+    close(S),
+    memory_file_to_atom(MF, Output),
+    free_memory_file(MF),
+    assert_true('all_entry entries has backend', sub_atom(Output, _, _, _, 'CoroBackend')),
+    %% Optional backends should NOT appear
+    assert_true('all_entry excludes optional', \+ sub_atom(Output, _, _, _, 'ClaudeAPIBackend')).

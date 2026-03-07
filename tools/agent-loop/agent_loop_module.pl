@@ -2915,26 +2915,17 @@ generate_backends_init :-
     nl(S),
     %% Direct imports (non-optional backends)
     agent_loop_components:emit_backend_init_imports(S, [target(python)]),
-    %% __all__ with direct backends
+    %% __all__ with direct backends — static entries + component-driven
     write(S, '\n__all__ = [\n'),
     write(S, '    \'AgentBackend\', \'AgentResponse\', \'ToolCall\',\n'),
-    findall(Name, (agent_backend(Name, Props), \+ member(optional_import(true), Props)), DirectBackends),
-    write_all_entries(S, DirectBackends),
+    agent_loop_components:emit_from_components(S, agent_backends, backend_factory/2,
+        python, entries, [fact_type(all_entry)]),
     write(S, ']\n'),
     %% Optional imports with try/except
     agent_loop_components:emit_backend_init_optional(S, [target(python)]),
     close(S),
     format('  Generated backends/__init__.py~n', []).
 
-write_all_entries(_, []).
-write_all_entries(S, [Name|Rest]) :-
-    resolve_class_name(Name, ClassName),
-    (Rest = [] ->
-        format(S, '    \'~w\'~n', [ClassName])
-    ;
-        format(S, '    \'~w\',~n', [ClassName])
-    ),
-    write_all_entries(S, Rest).
 
 %% =============================================================================
 %% Generator: backends/base.py
@@ -2944,9 +2935,9 @@ generate_backends_base :-
     output_path(python, 'backends/base.py', BasePath),
     open(BasePath, write, S),
     write(S, '"""Abstract base class for agent backends."""\n\n'),
-    write(S, 'from dataclasses import dataclass, field\n'),
-    write(S, 'from typing import Any\n'),
-    write(S, 'from abc import ABC, abstractmethod\n\n\n'),
+    agent_loop_components:generator_import_specs(backends_base, BaseImports),
+    agent_loop_components:emit_import_specs(S, BaseImports),
+    write(S, '\n\n'),
     %% ToolCall dataclass
     write(S, '@dataclass\n'),
     write(S, 'class ToolCall:\n'),
@@ -3154,6 +3145,9 @@ generate_costs :-
     ]),
     %% Binding metadata for this file
     agent_loop_bindings:emit_binding_metadata_comment(S, python, model_pricing/3),
+    agent_loop_bindings:emit_binding_equivalence_comments(S, python, [
+        model_pricing(_, _, _)
+    ]),
     nl(S),
     %% DEFAULT_PRICING dict — binding-driven + component-driven emission
     write(S, '# Pricing per 1M tokens (auto-generated from Prolog facts)\n'),
@@ -3642,12 +3636,13 @@ generate_tools_module :-
     output_path(python, 'tools.py', ToolsPath),
     open(ToolsPath, write, S),
     write(S, '"""Tool handler for executing agent tool calls."""\n\n'),
-    write(S, 'import os\nimport re\nimport subprocess\n'),
-    write(S, 'from dataclasses import dataclass, field\nfrom pathlib import Path\n'),
-    write(S, 'from backends.base import ToolCall\n'),
-    write(S, 'from security.audit import AuditLogger\n'),
-    write(S, 'from security.profiles import SecurityProfile, get_profile\n'),
-    write(S, 'from security.proxy import CommandProxyManager\n\n\n'),
+    agent_loop_components:generator_import_specs(tools, ToolImports),
+    agent_loop_components:emit_import_specs(S, ToolImports),
+    write(S, '\n'),
+    agent_loop_bindings:emit_binding_equivalence_comments(S, python, [
+        tool_handler(_, _), destructive_tool(_)
+    ]),
+    write(S, '\n'),
     %% ToolResult dataclass
     write(S, '@dataclass\nclass ToolResult:\n    """Result of executing a tool."""\n'),
     write(S, '    success: bool\n    output: str\n    tool_name: str\n\n\n'),
@@ -3694,7 +3689,10 @@ generate_tools_module :-
 generate_aliases :-
     output_path(python, 'aliases.py', AliasPath),
     open(AliasPath, write, S),
-    write(S, '"""Command aliases for the agent loop."""\n\nimport json\nfrom pathlib import Path\nfrom typing import Callable\n\n\n'),
+    write(S, '"""Command aliases for the agent loop."""\n\n'),
+    agent_loop_components:generator_import_specs(aliases, AliasImports),
+    agent_loop_components:emit_import_specs(S, AliasImports),
+    write(S, '\n\n'),
     %% Binding metadata for this file
     agent_loop_bindings:emit_binding_metadata_comment(S, python, slash_command/4),
     nl(S),

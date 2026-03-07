@@ -14,9 +14,9 @@ __all__ = [
     'CoroBackend',
     'ClaudeCodeBackend',
     'GeminiBackend',
+    'OpenRouterBackend',
     'OllamaAPIBackend',
     'OllamaCLIBackend',
-    'OpenRouterBackend'
 ]
 
 # Anthropic Claude API backend (optional - requires pip package)

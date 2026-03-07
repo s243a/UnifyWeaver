@@ -54,6 +54,11 @@
     emit_open_delimiter/4,
     emit_close_delimiter/3,
     compute_indent/2,
+    extract_target/2,
+    maybe_emit_prolog_hints/3,
+    indent_atom/2,
+    generator_import_specs/2,
+    emit_import_specs/2,
     emit_py_dict_from_components/5,
     emit_py_set_from_components/5,
     emit_prolog_facts_from_components/4
@@ -254,12 +259,19 @@ agent_backend_type:compile_component(Name, Config, Options, Code) :-
             compile_backend_fact(backend_factory, Name, Config, Code)
         )
     ; member(target(python), Options) ->
-        member(class_name(ClassName), Config),
-        member(resolve_type(ResolveType), Config),
-        (member(indent(N), Options) -> true ; N = 4),
-        length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
-        format(atom(Code), "~w'~w': {'class': '~w', 'resolve': '~w'},",
-               [Indent, Name, ClassName, ResolveType])
+        (member(fact_type(all_entry), Options) ->
+            %% Emit __all__ list entry: 'ClassName',
+            member(class_name(ClassName), Config),
+            indent_atom(Options, Indent),
+            \+ member(optional_import(true), Config),
+            format(atom(Code), "~w'~w',", [Indent, ClassName])
+        ;
+            member(class_name(ClassName), Config),
+            member(resolve_type(ResolveType), Config),
+            indent_atom(Options, Indent),
+            format(atom(Code), "~w'~w': {'class': '~w', 'resolve': '~w'},",
+                   [Indent, Name, ClassName, ResolveType])
+        )
     ;
         compile_backend_fact(backend_factory, Name, Config, Code)
     ).
@@ -342,6 +354,72 @@ agent_cost_type:compile_component(_Name, Config, Options, Code) :-
         format(atom(Code), "model_pricing(~q, ~w, ~w).", [Model, In, Out])
     ).
 
+%% ---- Security Rule Type ----
+
+:- module_transparent agent_security_rule_type:type_info/1.
+:- module_transparent agent_security_rule_type:validate_config/1.
+:- module_transparent agent_security_rule_type:init_component/2.
+:- module_transparent agent_security_rule_type:compile_component/4.
+
+agent_security_rule_type:type_info(info{
+    name: 'Agent Security Rule',
+    version: '1.0.0',
+    description: 'Security blocking rule for paths and commands'
+}).
+
+agent_security_rule_type:validate_config(Config) :-
+    member(rule_type(_), Config).
+
+agent_security_rule_type:init_component(_Name, _Config).
+
+agent_security_rule_type:compile_component(Name, Config, Options, Code) :-
+    member(rule_type(RuleType), Config),
+    %% Filter by fact_type if specified — only compile matching rule_type
+    (member(fact_type(FT), Options) -> RuleType == FT ; true),
+    compile_security_rule(RuleType, Name, Config, Options, Code).
+
+%% compile_security_rule(+RuleType, +Name, +Config, +Options, -Code)
+%% Target-polymorphic compilation for security blocking rules.
+compile_security_rule(blocked_path, Name, _, Options, Code) :-
+    (member(target(python), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), "~w'~w',", [Indent, Name])
+    ;
+        format(atom(Code), "blocked_path(~q).", [Name])
+    ).
+
+compile_security_rule(blocked_path_prefix, Name, _, Options, Code) :-
+    (member(target(python), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), "~w'~w',", [Indent, Name])
+    ;
+        format(atom(Code), "blocked_path_prefix(~q).", [Name])
+    ).
+
+compile_security_rule(blocked_home_pattern, Name, _, Options, Code) :-
+    (member(target(python), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), "~w'~w',", [Indent, Name])
+    ;
+        format(atom(Code), "blocked_home_pattern(~q).", [Name])
+    ).
+
+compile_security_rule(blocked_command_pattern, _, Config, Options, Code) :-
+    member(regex(Regex), Config),
+    member(description(Desc), Config),
+    (member(target(python), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), "~w(r'~w', \"~w\"),", [Indent, Regex, Desc])
+    ;
+        format(atom(Code), "blocked_command_pattern(~q, ~q).", [Regex, Desc])
+    ).
+
+%% indent_atom(+Options, -Indent)
+%% Compute indentation string from indent option (default 4 spaces).
+indent_atom(Options, Indent) :-
+    (member(indent(N), Options) -> true ; N = 4),
+    length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces).
+
 %% ============================================================================
 %% Category and Type Registration
 %% ============================================================================
@@ -361,6 +439,9 @@ register_agent_loop_categories :-
     ]),
     define_category(agent_costs, "Agent-loop model pricing", [
         requires_compilation(true)
+    ]),
+    define_category(agent_security_rules, "Agent-loop security blocking rules", [
+        requires_compilation(true)
     ]).
 
 register_agent_loop_types :-
@@ -378,6 +459,9 @@ register_agent_loop_types :-
     ]),
     register_component_type(agent_costs, model_pricing, agent_cost_type, [
         description("Model token pricing")
+    ]),
+    register_component_type(agent_security_rules, security_rule, agent_security_rule_type, [
+        description("Security blocking rule (path, prefix, pattern)")
     ]).
 
 %% ============================================================================
@@ -416,7 +500,19 @@ register_command_components :-
 %% Populate backend components from backend_factory/2
 register_backend_components :-
     findall(Name-Spec, agent_loop_module:backend_factory(Name, Spec), Pairs),
-    maplist([Name-Spec]>>(declare_component(agent_backends, Name, backend, Spec)), Pairs).
+    maplist([Name-Spec]>>(
+        %% Merge optional_import from agent_backend into component config
+        %% Match by class_name since agent_backend names differ from backend_factory names
+        (member(class_name(CN), Spec),
+         agent_loop_module:agent_backend(_, ABProps),
+         member(class_name(CN), ABProps),
+         member(optional_import(true), ABProps) ->
+            MergedSpec = [optional_import(true)|Spec]
+        ;
+            MergedSpec = Spec
+        ),
+        declare_component(agent_backends, Name, backend, MergedSpec)
+    ), Pairs).
 
 %% Populate security components from security_profile/2
 register_security_components :-
@@ -435,6 +531,25 @@ register_cost_components :-
         ])
     ), Entries).
 
+%% Populate security rule components from blocked_* facts
+register_security_rule_components :-
+    findall(P, agent_loop_module:blocked_path(P), BPs),
+    maplist([P]>>(declare_component(agent_security_rules, P, security_rule,
+        [rule_type(blocked_path)])), BPs),
+    findall(P, agent_loop_module:blocked_path_prefix(P), BPPs),
+    maplist([P]>>(declare_component(agent_security_rules, P, security_rule,
+        [rule_type(blocked_path_prefix)])), BPPs),
+    findall(P, agent_loop_module:blocked_home_pattern(P), BHPs),
+    maplist([P]>>(declare_component(agent_security_rules, P, security_rule,
+        [rule_type(blocked_home_pattern)])), BHPs),
+    findall(Regex-Desc, agent_loop_module:blocked_command_pattern(Regex, Desc), BCPs),
+    maplist([Regex-Desc]>>(
+        atom_string(RegexAtom, Regex),
+        atom_string(DescAtom, Desc),
+        declare_component(agent_security_rules, RegexAtom, security_rule,
+            [rule_type(blocked_command_pattern), regex(RegexAtom), description(DescAtom)])
+    ), BCPs).
+
 %% ============================================================================
 %% Master Registration
 %% ============================================================================
@@ -448,7 +563,8 @@ register_agent_loop_components :-
     register_command_components,
     register_backend_components,
     register_security_components,
-    register_cost_components.
+    register_cost_components,
+    register_security_rule_components.
 
 %% ============================================================================
 %% Stream Emitters — Write Prolog facts via the component registry
@@ -560,74 +676,53 @@ emit_backend_facts(S, _Options) :-
     write(S, '\n').
 
 %% emit_security_facts(+Stream, +Options)
-%% Emit security-related facts — dispatches on target(python) vs target(prolog).
+%% Emit security-related facts — target-polymorphic via extract_target.
 emit_security_facts(S, Options) :-
-    (member(target(python), Options) ->
-        %% Python path: emit blocked_* facts as collection entries
-        (member(fact_type(FT), Options) ->
-            emit_security_blocked_py(S, FT)
-        ;
-            emit_security_blocked_py(S, blocked_path),
-            emit_security_blocked_py(S, blocked_path_prefix),
-            emit_security_blocked_py(S, blocked_home_pattern),
-            emit_security_blocked_py(S, blocked_command_pattern)
-        )
+    extract_target(Options, Target),
+    maybe_emit_prolog_hints(S, Target, [
+        security_profile/2, blocked_path/1, blocked_path_prefix/1,
+        blocked_home_pattern/1, blocked_command_pattern/2
+    ]),
+    %% If caller requests a specific fact_type, emit only that
+    (member(fact_type(FT), Options) ->
+        emit_from_components(S, agent_security_rules, _, Target, entries,
+            [fact_type(FT)])
     ;
-        %% Prolog path: security_profile via compile_component + raw enumerations
-        write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
-        emit_indexing_directive(S, security_profile/2),
-        emit_indexing_directive(S, blocked_path/1),
-        emit_indexing_directive(S, blocked_path_prefix/1),
-        emit_indexing_directive(S, blocked_home_pattern/1),
-        emit_indexing_directive(S, blocked_command_pattern/2),
-        write(S, '\n'),
-        write(S, '%% security_profile(+Name, +Properties)\n'),
-        emit_from_components(S, agent_security, security_profile/2, prolog, facts, []),
-        write(S, '\n'),
-        write(S, '%% blocked_path(+AbsolutePath)\n'),
-        findall(P, agent_loop_module:blocked_path(P), BPs),
-        maplist([P]>>(format(S, 'blocked_path(~q).~n', [P])), BPs),
-        write(S, '\n'),
-        write(S, '%% blocked_path_prefix(+Prefix)\n'),
-        findall(P, agent_loop_module:blocked_path_prefix(P), BPPs),
-        maplist([P]>>(format(S, 'blocked_path_prefix(~q).~n', [P])), BPPs),
-        write(S, '\n'),
-        write(S, '%% blocked_home_pattern(+Pattern)\n'),
-        findall(P, agent_loop_module:blocked_home_pattern(P), BHPs),
-        maplist([P]>>(format(S, 'blocked_home_pattern(~q).~n', [P])), BHPs),
-        write(S, '\n'),
-        write(S, '%% blocked_command_pattern(+Regex, +Description)\n'),
-        findall(Regex-Desc, agent_loop_module:blocked_command_pattern(Regex, Desc), BCPs),
-        maplist([Regex-Desc]>>(format(S, 'blocked_command_pattern(~q, ~q).~n', [Regex, Desc])), BCPs),
-        write(S, '\n')
+        %% Prolog path needs security_profile + all rule types with headers
+        (Target == prolog ->
+            write(S, '%% security_profile(+Name, +Properties)\n'),
+            emit_from_components(S, agent_security, security_profile/2, prolog, facts, []),
+            write(S, '\n')
+        ; true),
+        emit_security_rule_group(S, Target, blocked_path, 'blocked_path(+AbsolutePath)'),
+        emit_security_rule_group(S, Target, blocked_path_prefix, 'blocked_path_prefix(+Prefix)'),
+        emit_security_rule_group(S, Target, blocked_home_pattern, 'blocked_home_pattern(+Pattern)'),
+        emit_security_rule_group(S, Target, blocked_command_pattern, 'blocked_command_pattern(+Regex, +Description)')
     ).
 
-%% emit_security_blocked_py(+Stream, +FactType)
-%% Emit blocked_* facts as Python set/tuple/list entries.
-emit_security_blocked_py(S, blocked_path) :-
-    findall(P, agent_loop_module:blocked_path(P), Ps),
-    maplist([P]>>(format(S, '    \'~w\',~n', [P])), Ps).
-emit_security_blocked_py(S, blocked_path_prefix) :-
-    findall(P, agent_loop_module:blocked_path_prefix(P), Ps),
-    maplist([P]>>(format(S, '    \'~w\',~n', [P])), Ps).
-emit_security_blocked_py(S, blocked_home_pattern) :-
-    findall(P, agent_loop_module:blocked_home_pattern(P), Ps),
-    maplist([P]>>(format(S, '    \'~w\',~n', [P])), Ps).
-emit_security_blocked_py(S, blocked_command_pattern) :-
-    findall(Regex-Desc, agent_loop_module:blocked_command_pattern(Regex, Desc), Ps),
-    maplist([Regex-Desc]>>(format(S, '    (r\'~w\', "~w"),~n', [Regex, Desc])), Ps).
+%% emit_security_rule_group(+Stream, +Target, +RuleType, +Header)
+%% Emit one group of security rules with an optional Prolog header comment.
+emit_security_rule_group(S, Target, RuleType, Header) :-
+    (Target == prolog ->
+        Format = facts,
+        format(S, '%% ~w~n', [Header])
+    ;
+        Format = entries
+    ),
+    emit_from_components(S, agent_security_rules, _, Target, Format,
+        [fact_type(RuleType)]),
+    (Target == prolog -> write(S, '\n') ; true).
 
 %% emit_cost_facts(+Stream, +Options)
-%% Emit cost facts — dispatches on target(python) vs target(prolog).
+%% Emit cost facts — target-polymorphic via extract_target + maybe_emit_prolog_hints.
 emit_cost_facts(S, Options) :-
-    (member(target(python), Options) ->
-        emit_from_components(S, agent_costs, model_pricing/3, python, facts, Options)
-    ;
-        write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
-        emit_indexing_directive(S, model_pricing/3),
-        write(S, '\n'),
+    extract_target(Options, Target),
+    maybe_emit_prolog_hints(S, Target, [model_pricing/3]),
+    (Target == prolog ->
         write(S, '%% model_pricing(+Model, +InputPricePerMTok, +OutputPricePerMTok)\n'),
-        emit_from_components(S, agent_costs, model_pricing/3, prolog, facts, Options)
+        emit_from_components(S, agent_costs, model_pricing/3, Target, facts, Options)
+    ;
+        emit_from_components(S, agent_costs, model_pricing/3, Target, entries, Options)
     ).
 
 %% emit_backend_init_imports(+Stream, +Options)
@@ -1227,6 +1322,39 @@ write_lines(S, [Line|Rest]) :-
     write_lines(S, Rest).
 
 %% ============================================================================
+%% Declarative Import Specifications
+%% ============================================================================
+
+%% generator_import_specs(+Generator, -Specs)
+%% Declarative import specs per generator file.
+%% Spec types: bare(Module) | from(Module, [Names])
+generator_import_specs(tools, [
+    bare(os), bare(re), bare(subprocess),
+    from(dataclasses, [dataclass, field]),
+    from(pathlib, ['Path']),
+    from('backends.base', ['ToolCall']),
+    from('security.audit', ['AuditLogger']),
+    from('security.profiles', ['SecurityProfile', get_profile]),
+    from('security.proxy', ['CommandProxyManager'])
+]).
+generator_import_specs(aliases, [
+    bare(json),
+    from(pathlib, ['Path']),
+    from(typing, ['Callable'])
+]).
+generator_import_specs(backends_base, [
+    from(dataclasses, [dataclass, field]),
+    from(typing, ['Any']),
+    from(abc, ['ABC', abstractmethod])
+]).
+
+%% emit_import_specs(+Stream, +Specs)
+%% Emit Python import statements from declarative specs.
+%% Delegates to emit_module_imports/2 (supports bare, from, from_relative).
+emit_import_specs(S, Specs) :-
+    emit_module_imports(S, Specs).
+
+%% ============================================================================
 %% Unified Component Emission
 %% ============================================================================
 
@@ -1258,6 +1386,7 @@ emit_from_components(S, Category, Pred, Target, Format, Options) :-
 
 %% resolve_collection_name(+Format, +Target, +Pred, +Options, -Name)
 %% Resolve the collection variable name from options or binding metadata.
+resolve_collection_name(entries, _, _, _, '') :- !.
 resolve_collection_name(facts, _, _, _, '') :- !.
 resolve_collection_name(_, _Target, _Pred, Options, Name) :-
     member(dict_name(Name), Options), !.
@@ -1266,11 +1395,13 @@ resolve_collection_name(_, Target, Pred, _, Name) :-
 
 %% compile_options(+Format, +Target, +Options, -CompileOpts)
 %% Build the options list passed to compile_component.
+compile_options(entries, Target, Options, [target(Target)|Options]) :- !.
 compile_options(facts, _Target, Options, [target(prolog)|Options]) :- !.
 compile_options(_, Target, Options, [target(Target)|Options]).
 
 %% emit_open_delimiter(+Stream, +Format, +Indent, +Name)
 %% Write the opening delimiter for a collection.
+emit_open_delimiter(_, entries, _, _) :- !.
 emit_open_delimiter(_, facts, _, _) :- !.
 emit_open_delimiter(S, dict, Indent, Name) :- format(S, '~w~w = {~n', [Indent, Name]).
 emit_open_delimiter(S, set, Indent, Name) :- format(S, '~w~w = {~n', [Indent, Name]).
@@ -1278,6 +1409,7 @@ emit_open_delimiter(S, list, Indent, Name) :- format(S, '~w~w = [~n', [Indent, N
 
 %% emit_close_delimiter(+Stream, +Format, +Indent)
 %% Write the closing delimiter for a collection.
+emit_close_delimiter(_, entries, _) :- !.
 emit_close_delimiter(_, facts, _) :- !.
 emit_close_delimiter(S, dict, Indent) :- format(S, '~w}~n', [Indent]).
 emit_close_delimiter(S, set, Indent) :- format(S, '~w}~n', [Indent]).
@@ -1288,6 +1420,19 @@ emit_close_delimiter(S, list, Indent) :- format(S, '~w]~n', [Indent]).
 compute_indent(Options, Indent) :-
     (member(outer_indent(OI), Options) -> true ; OI = 0),
     length(Spaces, OI), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces).
+
+%% extract_target(+Options, -Target)
+%% Extract target from options, defaulting to prolog.
+extract_target(Options, Target) :-
+    (member(target(T), Options) -> Target = T ; Target = prolog).
+
+%% maybe_emit_prolog_hints(+Stream, +Target, +Predicates)
+%% Emit SWI-Prolog indexing hints for Prolog target, no-op for Python.
+maybe_emit_prolog_hints(_, python, _) :- !.
+maybe_emit_prolog_hints(S, prolog, Predicates) :-
+    write(S, '%% Indexing hints (SWI-Prolog auto-indexes first argument):\n'),
+    maplist([Pred]>>(emit_indexing_directive(S, Pred)), Predicates),
+    write(S, '\n').
 
 %% ---- Backward-compatible wrappers ----
 

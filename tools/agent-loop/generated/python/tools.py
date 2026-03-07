@@ -10,6 +10,10 @@ from security.audit import AuditLogger
 from security.profiles import SecurityProfile, get_profile
 from security.proxy import CommandProxyManager
 
+# Prolog/Python binding equivalences:
+#   tool_handler/2 -> handler = TOOL_HANDLERS[name]  # name -> handler
+#   destructive_tool/1 -> if tool_name in DESTRUCTIVE_TOOLS:
+#
 
 @dataclass
 class ToolResult:

@@ -59,15 +59,15 @@ blocked_home_pattern('.netrc').
 blocked_home_pattern('.npmrc').
 
 %% blocked_command_pattern(+Regex, +Description)
-blocked_command_pattern("\\brm\\s+-[rf]*\\s+/", "rm with absolute path and force/recursive flags").
-blocked_command_pattern("\\bmkfs\\b", "filesystem format").
-blocked_command_pattern("\\bdd\\s+.*of=/dev/", "write to block device").
-blocked_command_pattern(">\\s*/dev/sd", "redirect to block device").
-blocked_command_pattern("\\bcurl\\b.*\\|\\s*(?:ba)?sh", "pipe remote script to shell").
-blocked_command_pattern("\\bwget\\b.*\\|\\s*(?:ba)?sh", "pipe remote script to shell").
-blocked_command_pattern("\\bchmod\\s+777\\b", "world-writable permissions").
-blocked_command_pattern(":\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;", "fork bomb").
-blocked_command_pattern("\\b>\\s*/etc/", "overwrite system config").
+blocked_command_pattern('\\brm\\s+-[rf]*\\s+/', 'rm with absolute path and force/recursive flags').
+blocked_command_pattern('\\bmkfs\\b', 'filesystem format').
+blocked_command_pattern('\\bdd\\s+.*of=/dev/', 'write to block device').
+blocked_command_pattern('>\\s*/dev/sd', 'redirect to block device').
+blocked_command_pattern('\\bcurl\\b.*\\|\\s*(?:ba)?sh', 'pipe remote script to shell').
+blocked_command_pattern('\\bwget\\b.*\\|\\s*(?:ba)?sh', 'pipe remote script to shell').
+blocked_command_pattern('\\bchmod\\s+777\\b', 'world-writable permissions').
+blocked_command_pattern(':\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;', 'fork bomb').
+blocked_command_pattern('\\b>\\s*/etc/', 'overwrite system config').
 
 %% Check if a file path is allowed under current profile
 check_path_allowed(Path, Result) :-
