@@ -2989,14 +2989,10 @@ generate_security_init :-
     write(S, '"""\n\n'),
     %% Imports — one import line per module, comma-separated exports
     agent_loop_components:emit_security_module_imports(S, [target(python)]),
-    %% __all__
-    write(S, '\n__all__ = [\n'),
-    findall(Export, (
-        security_module(_, Primary, Extras),
-        member(Export, [Primary|Extras])
-    ), AllExports),
-    write_quoted_list(S, AllExports),
-    write(S, ']\n'),
+    %% __all__ (declarative via generator_export_specs)
+    write(S, '\n'),
+    agent_loop_components:generator_export_specs(security_init, AllExports),
+    agent_loop_components:emit_export_specs(S, AllExports),
     close(S),
     format('  Generated security/__init__.py~n', []).
 
@@ -3011,7 +3007,10 @@ generate_security_profiles :-
     write(S, 'Each profile defines a complete security posture: what\'s blocked, what\'s\n'),
     write(S, 'proxied, what\'s logged, and what isolation is applied.\n'),
     write(S, '"""\n\n'),
-    write(S, 'from dataclasses import dataclass, field\n\n'),
+    %% Imports (declarative via generator_import_specs)
+    agent_loop_components:generator_import_specs(security_profiles, ProfImports),
+    agent_loop_components:emit_import_specs(S, ProfImports),
+    write(S, '\n'),
     %% Binding metadata for this file
     agent_loop_bindings:emit_binding_metadata_comment(S, python, security_profile/2),
     nl(S),
@@ -3127,22 +3126,11 @@ generate_profile_entry(S, Name, Props) :-
 generate_costs :-
     output_path(python, 'costs.py', CostsPath),
     open(CostsPath, write, S),
-    %% Header and imports
-    agent_loop_components:write_lines(S, [
-        '"""Cost tracking for API usage."""',
-        '',
-        'from dataclasses import dataclass, field',
-        'from datetime import datetime',
-        'from typing import Any',
-        'import json',
-        'import os',
-        'import sys',
-        'import time',
-        'from pathlib import Path',
-        'from urllib.request import urlopen, Request',
-        'from urllib.error import URLError',
-        '', ''
-    ]),
+    %% Header and imports (declarative via generator_import_specs)
+    write(S, '"""Cost tracking for API usage."""\n\n'),
+    agent_loop_components:generator_import_specs(costs, CostsImports),
+    agent_loop_components:emit_import_specs(S, CostsImports),
+    write(S, '\n\n'),
     %% Binding metadata for this file
     agent_loop_bindings:emit_binding_metadata_comment(S, python, model_pricing/3),
     agent_loop_bindings:emit_binding_equivalence_comments(S, python, [
@@ -3360,12 +3348,11 @@ generate_tools :-
 generate_context :-
     output_path(python, 'context.py', CtxPath),
     open(CtxPath, write, S),
-    agent_loop_components:write_lines(S, [
-        '"""Context manager for conversation history."""', '',
-        'from dataclasses import dataclass, field',
-        'from typing import Literal',
-        'from enum import Enum', '', ''
-    ]),
+    %% Header and imports (declarative via generator_import_specs)
+    write(S, '"""Context manager for conversation history."""\n\n'),
+    agent_loop_components:generator_import_specs(context, ContextImports),
+    agent_loop_components:emit_import_specs(S, ContextImports),
+    write(S, '\n\n'),
     %% Generate enums from context_enum/3 facts
     agent_loop_components:emit_context_enums(S, [target(python)]),
     %% Generate Message dataclass from message_field/3 facts
@@ -3388,11 +3375,11 @@ generate_context :-
 generate_config :-
     output_path(python, 'config.py', CfgPath),
     open(CfgPath, write, S),
-    agent_loop_components:write_lines(S, [
-        '"""Configuration system for agent loop variants."""', '',
-        'import os', 'import json', 'from pathlib import Path',
-        'from dataclasses import dataclass, field', 'from typing import Any', '', ''
-    ]),
+    %% Header and imports (declarative via generator_import_specs)
+    write(S, '"""Configuration system for agent loop variants."""\n\n'),
+    agent_loop_components:generator_import_specs(config, ConfigImports),
+    agent_loop_components:emit_import_specs(S, ConfigImports),
+    write(S, '\n\n'),
     %% Binding metadata for this file
     agent_loop_bindings:emit_binding_metadata_comment(S, python, api_key_env_var/2),
     agent_loop_bindings:emit_binding_metadata_comment(S, python, api_key_file/2),

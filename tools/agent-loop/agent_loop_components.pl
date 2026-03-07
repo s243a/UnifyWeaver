@@ -1347,12 +1347,115 @@ generator_import_specs(backends_base, [
     from(typing, ['Any']),
     from(abc, ['ABC', abstractmethod])
 ]).
+generator_import_specs(costs, [
+    from(dataclasses, [dataclass, field]),
+    from(datetime, [datetime]),
+    from(typing, ['Any']),
+    bare(json), bare(os), bare(sys), bare(time),
+    from(pathlib, ['Path']),
+    from('urllib.request', [urlopen, 'Request']),
+    from('urllib.error', ['URLError'])
+]).
+generator_import_specs(context, [
+    from(dataclasses, [dataclass, field]),
+    from(typing, ['Literal']),
+    from(enum, ['Enum'])
+]).
+generator_import_specs(config, [
+    bare(os), bare(json),
+    from(pathlib, ['Path']),
+    from(dataclasses, [dataclass, field]),
+    from(typing, ['Any'])
+]).
+generator_import_specs(security_profiles, [
+    from(dataclasses, [dataclass, field])
+]).
 
 %% emit_import_specs(+Stream, +Specs)
 %% Emit Python import statements from declarative specs.
 %% Delegates to emit_module_imports/2 (supports bare, from, from_relative).
 emit_import_specs(S, Specs) :-
     emit_module_imports(S, Specs).
+
+%% ============================================================================
+%% Declarative Export Specifications
+%% ============================================================================
+
+%% generator_export_specs(+Generator, -Exports)
+%% Declarative __all__ entries for a generator, data-driven from facts.
+generator_export_specs(security_init, Exports) :-
+    findall(Export, (
+        agent_loop_module:security_module(_, Primary, Extras),
+        member(Export, [Primary|Extras])
+    ), Exports).
+
+%% emit_export_specs(+Stream, +Exports)
+%% Emit a Python __all__ = [...] block from a list of export names.
+emit_export_specs(S, Exports) :-
+    write(S, '__all__ = [\n'),
+    maplist([E]>>(format(S, "    '~w',~n", [E])), Exports),
+    write(S, ']\n').
+
+%% ============================================================================
+%% Fragment Metadata
+%% ============================================================================
+
+%% py_fragment_metadata(+FragmentName, +Properties)
+%% Metadata annotations for py_fragment/2 facts.
+%% Properties: category(Cat), target(Target), imports([ImportSpec, ...])
+%% Enables future composition where generators auto-derive imports from fragments.
+py_fragment_metadata(tools_handler_class_body, [
+    category(tools), target(python),
+    imports([from('backends.base', ['ToolCall'])])
+]).
+py_fragment_metadata(tools_security_config, [
+    category(security), target(python),
+    imports([from('security.audit', ['AuditLogger'])])
+]).
+py_fragment_metadata(tools_validate_path, [
+    category(security), target(python),
+    imports([bare(os)])
+]).
+py_fragment_metadata(tools_is_command_blocked, [
+    category(security), target(python),
+    imports([bare(re)])
+]).
+py_fragment_metadata(context_manager_class, [
+    category(context), target(python),
+    imports([from(dataclasses, [dataclass, field])])
+]).
+py_fragment_metadata(context_helpers, [
+    category(context), target(python),
+    imports([])
+]).
+py_fragment_metadata(config_resolve_api_key_header, [
+    category(config), target(python),
+    imports([bare(os)])
+]).
+py_fragment_metadata(config_load_config, [
+    category(config), target(python),
+    imports([bare(json), from(pathlib, ['Path'])])
+]).
+py_fragment_metadata(security_audit_module, [
+    category(security), target(python),
+    imports([bare(os), bare(json)])
+]).
+py_fragment_metadata(agent_loop_imports, [
+    category(agent_loop), target(python),
+    imports([bare(os), bare(sys), bare(json)])
+]).
+
+%% fragment_imports(+FragmentName, -ImportSpecs)
+%% Get the import specs for a named fragment.
+fragment_imports(Name, Imports) :-
+    py_fragment_metadata(Name, Props),
+    member(imports(Imports), Props).
+
+%% fragment_category(+FragmentName, -Category)
+%% Get the category of a named fragment.
+fragment_category(Name, Category) :-
+    py_fragment_metadata(Name, Props),
+    member(category(Category), Props).
 
 %% ============================================================================
 %% Unified Component Emission
@@ -1450,3 +1553,76 @@ emit_py_set_from_components(S, Cat, Pred, Target, Opts) :-
 %% Backward-compatible wrapper — delegates to emit_from_components/6 with facts format.
 emit_prolog_facts_from_components(S, Cat, FactType, Opts) :-
     emit_from_components(S, Cat, _Pred, prolog, facts, [fact_type(FactType)|Opts]).
+
+%% ============================================================================
+%% Declarative Security Validation Rules
+%% ============================================================================
+%%
+%% These facts declare how security checks map to data categories.
+%% The compile predicates emit target-specific validation logic from them.
+
+%% path_check_rule(+RuleName, +CheckType, +Properties)
+%% Declarative security path validation rules.
+path_check_rule(exact_match,   blocked_path,        [comment("Exact blocked path match")]).
+path_check_rule(prefix_match,  blocked_path_prefix, [comment("Blocked path prefix match")]).
+path_check_rule(home_pattern,  blocked_home_pattern, [comment("Home directory pattern match")]).
+
+%% command_check_rule(+RuleName, +CheckType, +Properties)
+%% Declarative security command validation rules.
+command_check_rule(regex_match, blocked_command_pattern, [comment("Command regex pattern match")]).
+
+%% compile_path_check_rules(+Stream, +Target, +Options)
+%% Emit path validation logic for the given target, driven by path_check_rule/3 facts.
+compile_path_check_rules(S, python, _Options) :-
+    findall(CheckType-Props, path_check_rule(_, CheckType, Props), Rules),
+    maplist([CT-Ps]>>(
+        member(comment(Comment), Ps),
+        format(S, "    # ~w~n", [Comment]),
+        compile_path_check_python(S, CT)
+    ), Rules).
+compile_path_check_rules(S, prolog, _Options) :-
+    findall(RN-CT-Ps, path_check_rule(RN, CT, Ps), Rules),
+    maplist([RuleName-CheckType-Props]>>(
+        member(comment(Comment), Props),
+        format(S, "%% ~w: ~w~n", [RuleName, Comment]),
+        compile_path_check_prolog(S, CheckType)
+    ), Rules).
+
+compile_path_check_python(S, blocked_path) :-
+    write(S, '    if abs_path in _BLOCKED_PATHS:\n'),
+    write(S, '        return True\n').
+compile_path_check_python(S, blocked_path_prefix) :-
+    write(S, '    for prefix in _BLOCKED_PATH_PREFIXES:\n'),
+    write(S, '        if abs_path.startswith(prefix):\n'),
+    write(S, '            return True\n').
+compile_path_check_python(S, blocked_home_pattern) :-
+    write(S, '    home = os.path.expanduser("~")\n'),
+    write(S, '    for pattern in _BLOCKED_HOME_PATTERNS:\n'),
+    write(S, '        if abs_path.startswith(os.path.join(home, pattern)):\n'),
+    write(S, '            return True\n').
+
+compile_path_check_prolog(S, blocked_path) :-
+    write(S, 'is_path_blocked(Path) :- blocked_path(Path), !.\n').
+compile_path_check_prolog(S, blocked_path_prefix) :-
+    write(S, 'is_path_blocked(Path) :- blocked_path_prefix(Prefix), atom_concat(Prefix, _, Path), !.\n').
+compile_path_check_prolog(S, blocked_home_pattern) :-
+    write(S, 'is_path_blocked(Path) :- blocked_home_pattern(Pat), expand_home(Pat, Full), atom_concat(Full, _, Path), !.\n').
+
+%% compile_command_check_rules(+Stream, +Target, +Options)
+%% Emit command validation logic for the given target, driven by command_check_rule/3 facts.
+compile_command_check_rules(S, python, _Options) :-
+    findall(Props, command_check_rule(_, _, Props), Rules),
+    maplist([Ps]>>(
+        member(comment(Comment), Ps),
+        format(S, "    # ~w~n", [Comment]),
+        write(S, '    for pattern, desc in _BLOCKED_COMMAND_PATTERNS:\n'),
+        write(S, '        if re.search(pattern, command):\n'),
+        write(S, '            return True, desc\n')
+    ), Rules).
+compile_command_check_rules(S, prolog, _Options) :-
+    findall(RN-Ps, command_check_rule(RN, _, Ps), Rules),
+    maplist([RuleName-Props]>>(
+        member(comment(Comment), Props),
+        format(S, "%% ~w: ~w~n", [RuleName, Comment]),
+        write(S, 'is_command_blocked(Cmd, Desc) :- blocked_command_pattern(Regex, Desc), re_match(Regex, Cmd), !.\n')
+    ), Rules).

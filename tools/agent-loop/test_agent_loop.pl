@@ -117,6 +117,15 @@ run_tests :-
     test_binding_equivalence_comments,
     test_extract_target_helper,
     test_all_entry_backend_compile,
+    test_generator_import_specs_extended,
+    test_generator_export_specs,
+    test_py_fragment_metadata,
+    test_fragment_imports_helper,
+    test_path_check_rule_facts,
+    test_command_check_rule_facts,
+    test_compile_path_check_rules_python,
+    test_compile_path_check_rules_prolog,
+    test_source_component_equivalence,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2086,3 +2095,149 @@ test_all_entry_backend_compile :-
     assert_true('all_entry entries has backend', sub_atom(Output, _, _, _, 'CoroBackend')),
     %% Optional backends should NOT appear
     assert_true('all_entry excludes optional', \+ sub_atom(Output, _, _, _, 'ClaudeAPIBackend')).
+
+%% ============================================================================
+%% Tests for deeper declarative generalization (PR #748)
+%% ============================================================================
+
+test_generator_import_specs_extended :-
+    format("~ngenerator_import_specs extended:~n"),
+    %% Verify specs exist for the 4 newly added generators
+    assert_true('costs specs exist',
+        agent_loop_components:generator_import_specs(costs, _)),
+    assert_true('context specs exist',
+        agent_loop_components:generator_import_specs(context, _)),
+    assert_true('config specs exist',
+        agent_loop_components:generator_import_specs(config, _)),
+    assert_true('security_profiles specs exist',
+        agent_loop_components:generator_import_specs(security_profiles, _)),
+    %% Verify costs specs emit correct output
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:generator_import_specs(costs, CostsSpecs),
+    agent_loop_components:emit_import_specs(S, CostsSpecs),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('costs has import json', sub_atom(Output, _, _, _, 'import json')),
+    assert_true('costs has from dataclasses', sub_atom(Output, _, _, _, 'from dataclasses import')).
+
+test_generator_export_specs :-
+    format("~ngenerator_export_specs:~n"),
+    %% Verify security_init export specs
+    agent_loop_components:generator_export_specs(security_init, Exports),
+    assert_true('exports non-empty', Exports \= []),
+    assert_true('exports has AuditLogger', member('AuditLogger', Exports)),
+    assert_true('exports has SecurityProfile', member('SecurityProfile', Exports)),
+    %% Verify emit_export_specs output
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_export_specs(S, Exports),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('export has __all__', sub_atom(Output, _, _, _, '__all__ = [')).
+
+test_py_fragment_metadata :-
+    format("~npy_fragment_metadata:~n"),
+    %% Verify metadata facts exist
+    assert_true('tools_handler has metadata',
+        agent_loop_components:py_fragment_metadata(tools_handler_class_body, _)),
+    assert_true('context_manager has metadata',
+        agent_loop_components:py_fragment_metadata(context_manager_class, _)),
+    assert_true('security_audit has metadata',
+        agent_loop_components:py_fragment_metadata(security_audit_module, _)),
+    %% Verify category extraction
+    agent_loop_components:fragment_category(tools_handler_class_body, Cat),
+    assert_true('tools_handler category is tools', Cat == tools),
+    %% Count metadata facts (at least 10)
+    aggregate_all(count,
+        agent_loop_components:py_fragment_metadata(_, _), Count),
+    assert_true('at least 10 metadata facts', Count >= 10).
+
+test_fragment_imports_helper :-
+    format("~nfragment_imports helper:~n"),
+    %% Verify imports for tools_handler_class_body
+    agent_loop_components:fragment_imports(tools_handler_class_body, Imports),
+    assert_true('tools_handler has imports', Imports \= []),
+    assert_true('tools_handler imports backends.base',
+        member(from('backends.base', _), Imports)),
+    %% Verify config_load_config imports
+    agent_loop_components:fragment_imports(config_load_config, CfgImports),
+    assert_true('config_load has json import', member(bare(json), CfgImports)).
+
+test_path_check_rule_facts :-
+    format("~npath_check_rule facts:~n"),
+    %% Verify all 3 rules exist
+    assert_true('exact_match rule exists',
+        agent_loop_components:path_check_rule(exact_match, blocked_path, _)),
+    assert_true('prefix_match rule exists',
+        agent_loop_components:path_check_rule(prefix_match, blocked_path_prefix, _)),
+    assert_true('home_pattern rule exists',
+        agent_loop_components:path_check_rule(home_pattern, blocked_home_pattern, _)),
+    %% Verify count
+    aggregate_all(count, agent_loop_components:path_check_rule(_, _, _), Count),
+    assert_true('exactly 3 path rules', Count =:= 3).
+
+test_command_check_rule_facts :-
+    format("~ncommand_check_rule facts:~n"),
+    assert_true('regex_match rule exists',
+        agent_loop_components:command_check_rule(regex_match, blocked_command_pattern, _)),
+    aggregate_all(count, agent_loop_components:command_check_rule(_, _, _), CCount),
+    assert_true('exactly 1 command rule', CCount =:= 1).
+
+test_compile_path_check_rules_python :-
+    format("~ncompile_path_check_rules python:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:compile_path_check_rules(S, python, []),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('python has _BLOCKED_PATHS check',
+        sub_atom(Output, _, _, _, '_BLOCKED_PATHS')),
+    assert_true('python has prefix check',
+        sub_atom(Output, _, _, _, 'startswith(prefix)')),
+    assert_true('python has home expanduser',
+        sub_atom(Output, _, _, _, 'expanduser')),
+    assert_true('python has comment',
+        sub_atom(Output, _, _, _, '# Exact blocked path match')),
+    assert_true('python has return True',
+        sub_atom(Output, _, _, _, 'return True')).
+
+test_compile_path_check_rules_prolog :-
+    format("~ncompile_path_check_rules prolog:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:compile_path_check_rules(S, prolog, []),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('prolog has is_path_blocked',
+        sub_atom(Output, _, _, _, 'is_path_blocked')),
+    assert_true('prolog has blocked_path',
+        sub_atom(Output, _, _, _, 'blocked_path(Path)')),
+    assert_true('prolog has atom_concat',
+        sub_atom(Output, _, _, _, 'atom_concat')),
+    assert_true('prolog has expand_home',
+        sub_atom(Output, _, _, _, 'expand_home')).
+
+test_source_component_equivalence :-
+    format("~nsource-component equivalence:~n"),
+    agent_loop_components:register_agent_loop_components,
+    %% blocked_path count should match
+    aggregate_all(count, agent_loop_module:blocked_path(_), SrcBP),
+    aggregate_all(count, (
+        component(agent_security_rules, _, _, Cfg),
+        member(rule_type(blocked_path), Cfg)
+    ), CompBP),
+    assert_true('blocked_path count matches', SrcBP =:= CompBP),
+    %% blocked_path_prefix count should match
+    aggregate_all(count, agent_loop_module:blocked_path_prefix(_), SrcBPP),
+    aggregate_all(count, (
+        component(agent_security_rules, _, _, Cfg2),
+        member(rule_type(blocked_path_prefix), Cfg2)
+    ), CompBPP),
+    assert_true('blocked_path_prefix count matches', SrcBPP =:= CompBPP),
+    %% blocked_home_pattern count should match
+    aggregate_all(count, agent_loop_module:blocked_home_pattern(_), SrcBHP),
+    aggregate_all(count, (
+        component(agent_security_rules, _, _, Cfg3),
+        member(rule_type(blocked_home_pattern), Cfg3)
+    ), CompBHP),
+    assert_true('blocked_home_pattern count matches', SrcBHP =:= CompBHP),
+    %% blocked_command_pattern count should match
+    aggregate_all(count, agent_loop_module:blocked_command_pattern(_, _), SrcBCP),
+    aggregate_all(count, (
+        component(agent_security_rules, _, _, Cfg4),
+        member(rule_type(blocked_command_pattern), Cfg4)
+    ), CompBCP),
+    assert_true('blocked_command_pattern count matches', SrcBCP =:= CompBCP).
