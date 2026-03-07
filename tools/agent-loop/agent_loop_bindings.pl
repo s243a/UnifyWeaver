@@ -30,7 +30,8 @@
     emit_binding_metadata_comment/3,
     translate_agent_goal/2,
     translate_agent_goal/3,
-    translate_agent_goals/3
+    translate_agent_goals/3,
+    emit_binding_equivalence_comments/3
 ]).
 
 :- reexport('../../src/unifyweaver/core/binding_registry', [
@@ -435,6 +436,19 @@ emit_binding_metadata_comment(S, Target, Pred) :-
         (member(pattern(P), Opts) -> true ; P = function_call),
         format(S, '# Binding: ~w -> ~w(~w) [~w]~n', [Pred, TName, IStr, P])
     ; true).
+
+%% emit_binding_equivalence_comments(+Stream, +Target, +Goals)
+%% Emit a block of comments showing Prolog/Python binding equivalences.
+emit_binding_equivalence_comments(S, Target, Goals) :-
+    init_agent_loop_bindings,
+    write(S, '# Prolog/Python binding equivalences:\n'),
+    maplist([Goal]>>(
+        (translate_agent_goal(Target, Goal, Code) ->
+            functor(Goal, Name, Arity),
+            format(S, '#   ~w/~w -> ~w~n', [Name, Arity, Code])
+        ; true)
+    ), Goals),
+    write(S, '#\n').
 
 %% ============================================================================
 %% Summary / Diagnostic

@@ -13,6 +13,9 @@ from urllib.error import URLError
 
 
 # Binding: model_pricing/3 -> DEFAULT_PRICING[model](model) [dict_lookup]
+# Prolog/Python binding equivalences:
+#   model_pricing/3 -> input_cost = DEFAULT_PRICING[model]  # model -> input_cost
+#
 
 # Pricing per 1M tokens (auto-generated from Prolog facts)
 DEFAULT_PRICING = {
