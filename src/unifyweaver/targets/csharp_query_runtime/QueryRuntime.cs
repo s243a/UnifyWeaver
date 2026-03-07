@@ -7602,7 +7602,7 @@ namespace UnifyWeaver.QueryRuntime
                 reachablePairs.Add(new RowWrapper(pairKey));
             }
 
-            var probeCount = Math.Max(1, missedPairs.Count);
+            var probeCount = ComputeMixedGroupedPairProbeNormalizationCount(missedPairs, groupKeyCount);
             foreach (var pair in missedPairs)
             {
                 var pairKey = pair.PairKey;
@@ -9570,6 +9570,59 @@ namespace UnifyWeaver.QueryRuntime
             return costPerProbe >= _pairProbeCacheAdmissionMinCostPerProbe;
         }
 
+        private static int ComputeMixedPairProbeNormalizationCount(
+            IReadOnlyList<(object? Source, object? Target, int ForwardCost, int BackwardCost)> missedPairs)
+        {
+            if (missedPairs.Count == 0)
+            {
+                return 1;
+            }
+
+            var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+            var distinctSources = new HashSet<RowWrapper>(wrapperComparer);
+            var distinctTargets = new HashSet<RowWrapper>(wrapperComparer);
+
+            foreach (var pair in missedPairs)
+            {
+                distinctSources.Add(new RowWrapper(new object[] { pair.Source! }));
+                distinctTargets.Add(new RowWrapper(new object[] { pair.Target! }));
+            }
+
+            var distinctProbeKeys = Math.Max(1, distinctSources.Count + distinctTargets.Count);
+            return Math.Max(missedPairs.Count, distinctProbeKeys);
+        }
+
+        private static int ComputeMixedGroupedPairProbeNormalizationCount(
+            IReadOnlyList<(object[] PairKey, int ForwardCost, int BackwardCost)> missedPairs,
+            int groupKeyCount)
+        {
+            if (missedPairs.Count == 0)
+            {
+                return 1;
+            }
+
+            var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+            var distinctSources = new HashSet<RowWrapper>(wrapperComparer);
+            var distinctTargets = new HashSet<RowWrapper>(wrapperComparer);
+
+            foreach (var pair in missedPairs)
+            {
+                var pairKey = pair.PairKey;
+
+                var sourceSlice = new object[groupKeyCount + 1];
+                Array.Copy(pairKey, sourceSlice, groupKeyCount + 1);
+                distinctSources.Add(new RowWrapper(sourceSlice));
+
+                var targetSlice = new object[groupKeyCount + 1];
+                Array.Copy(pairKey, targetSlice, groupKeyCount);
+                targetSlice[groupKeyCount] = pairKey[groupKeyCount + 1];
+                distinctTargets.Add(new RowWrapper(targetSlice));
+            }
+
+            var distinctProbeKeys = Math.Max(1, distinctSources.Count + distinctTargets.Count);
+            return Math.Max(missedPairs.Count, distinctProbeKeys);
+        }
+
         private static bool TryGetParameterValue(
             object[] tuple,
             IReadOnlyList<int> inputPositions,
@@ -10583,7 +10636,7 @@ namespace UnifyWeaver.QueryRuntime
                 reachablePairs.Add(new RowWrapper(new object[] { row[0], row[1] }));
             }
 
-            var probeCount = Math.Max(1, missedPairs.Count);
+            var probeCount = ComputeMixedPairProbeNormalizationCount(missedPairs);
             foreach (var pair in missedPairs)
             {
                 var pairProbeKey = new object[] { pair.Source!, pair.Target! };
