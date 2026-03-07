@@ -61,7 +61,15 @@
     emit_import_specs/2,
     emit_py_dict_from_components/5,
     emit_py_set_from_components/5,
-    emit_prolog_facts_from_components/4
+    emit_prolog_facts_from_components/4,
+    generator_export_specs/2,
+    emit_export_specs/2,
+    emit_security_check_predicates/2,
+    emit_security_profile_fields/2,
+    generator_fragments/2,
+    derive_fragment_imports/2,
+    validate_generator_imports/2,
+    emit_config_section/3
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -1389,12 +1397,55 @@ generator_export_specs(security_init, Exports) :-
         member(Export, [Primary|Extras])
     ), Exports).
 
+generator_export_specs(backends_init, Exports) :-
+    StaticExports = ['AgentBackend', 'AgentResponse', 'ToolCall'],
+    findall(ClassName, (
+        agent_loop_module:backend_factory(_, Spec),
+        member(class_name(ClassName), Spec),
+        %% Exclude optional-import backends (they have try/except)
+        \+ (agent_loop_module:agent_backend(_, ABProps),
+            member(class_name(ClassName), ABProps),
+            member(optional_import(true), ABProps))
+    ), DynamicExports),
+    append(StaticExports, DynamicExports, Exports).
+
 %% emit_export_specs(+Stream, +Exports)
 %% Emit a Python __all__ = [...] block from a list of export names.
 emit_export_specs(S, Exports) :-
     write(S, '__all__ = [\n'),
     maplist([E]>>(format(S, "    '~w',~n", [E])), Exports),
     write(S, ']\n').
+
+%% ============================================================================
+%% Declarative Security Profile Fields
+%% ============================================================================
+
+%% emit_security_profile_fields(+Stream, +Options)
+%% Emit Python dataclass fields from security_profile_field/4 facts.
+%% Groups fields by layer, emitting blank lines and comment headers between groups.
+emit_security_profile_fields(S, _Options) :-
+    findall(field(Name, Type, Default, Props),
+        agent_loop_module:security_profile_field(Name, Type, Default, Props),
+        Fields),
+    emit_profile_fields_loop(S, Fields, none).
+
+emit_profile_fields_loop(_, [], _).
+emit_profile_fields_loop(S, [field(Name, Type, Default, Props)|Rest], PrevLayer) :-
+    %% Determine current layer (or 'none' if no layer property)
+    (member(layer(L), Props) -> CurLayer = L ; CurLayer = none),
+    %% Emit blank line + comment header when entering a new layer group
+    (CurLayer \= PrevLayer, member(comment(Comment), Props) ->
+        nl(S), format(S, "    # ~w~n", [Comment])
+    ; true),
+    %% Emit the field line
+    (Default == required ->
+        format(S, "    ~w: ~w~n", [Name, Type])
+    ; member(inline_comment(IC), Props) ->
+        format(S, "    ~w: ~w = ~w  # ~w~n", [Name, Type, Default, IC])
+    ;
+        format(S, "    ~w: ~w = ~w~n", [Name, Type, Default])
+    ),
+    emit_profile_fields_loop(S, Rest, CurLayer).
 
 %% ============================================================================
 %% Fragment Metadata
@@ -1456,6 +1507,70 @@ fragment_imports(Name, Imports) :-
 fragment_category(Name, Category) :-
     py_fragment_metadata(Name, Props),
     member(category(Category), Props).
+
+%% ============================================================================
+%% Fragment-Driven Import Derivation
+%% ============================================================================
+
+%% generator_fragments(+Generator, -FragmentNames)
+%% Declares which py_fragment/2 names a generator uses.
+generator_fragments(tools, [tools_handler_class_body, tools_security_config,
+                            tools_validate_path, tools_is_command_blocked]).
+generator_fragments(config, [config_resolve_api_key_header, config_load_config]).
+generator_fragments(context, [context_manager_class, context_helpers]).
+
+%% derive_fragment_imports(+Generator, -DerivedImports)
+%% Collects all import specs from a generator's fragments and deduplicates.
+derive_fragment_imports(Generator, DerivedImports) :-
+    generator_fragments(Generator, FragNames),
+    findall(Spec, (
+        member(FN, FragNames),
+        fragment_imports(FN, FragImports),
+        member(Spec, FragImports)
+    ), AllSpecs),
+    sort(AllSpecs, DerivedImports).
+
+%% validate_generator_imports(+Generator, -Warnings)
+%% Compares derived imports against declared generator_import_specs.
+%% Returns a list of missing(Spec) for specs in fragments but not declared.
+validate_generator_imports(Generator, Warnings) :-
+    derive_fragment_imports(Generator, Derived),
+    (generator_import_specs(Generator, Declared) -> true ; Declared = []),
+    findall(missing(Spec), (
+        member(Spec, Derived),
+        \+ member(Spec, Declared)
+    ), Warnings).
+
+%% ============================================================================
+%% Target-Polymorphic Config Section Emitters
+%% ============================================================================
+
+%% emit_config_section(+Stream, +Section, +Options)
+%% Unified config section emission — delegates to Python-specific or Prolog target.
+emit_config_section(S, api_key_env_vars, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        emit_api_key_env_vars_py(S, Options)
+    ;
+        findall(B-V, agent_loop_module:api_key_env_var(B, V), Pairs),
+        maplist([B-V]>>(format(S, "api_key_env_var(~q, ~q).~n", [B, V])), Pairs)
+    ).
+emit_config_section(S, api_key_files, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        emit_api_key_files_py(S, Options)
+    ;
+        findall(B-F, agent_loop_module:api_key_file(B, F), Pairs),
+        maplist([B-F]>>(format(S, "api_key_file(~q, ~q).~n", [B, F])), Pairs)
+    ).
+emit_config_section(S, default_presets, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        emit_default_presets_py(S, Options)
+    ;
+        findall(N-B-P, agent_loop_module:default_agent_preset(N, B, P), Presets),
+        maplist([N-B-P]>>(format(S, "default_agent_preset(~q, ~q, ~q).~n", [N, B, P])), Presets)
+    ).
 
 %% ============================================================================
 %% Unified Component Emission
@@ -1592,7 +1707,7 @@ compile_path_check_python(S, blocked_path) :-
     write(S, '    if abs_path in _BLOCKED_PATHS:\n'),
     write(S, '        return True\n').
 compile_path_check_python(S, blocked_path_prefix) :-
-    write(S, '    for prefix in _BLOCKED_PATH_PREFIXES:\n'),
+    write(S, '    for prefix in _BLOCKED_PREFIXES:\n'),
     write(S, '        if abs_path.startswith(prefix):\n'),
     write(S, '            return True\n').
 compile_path_check_python(S, blocked_home_pattern) :-
@@ -1626,3 +1741,43 @@ compile_command_check_rules(S, prolog, _Options) :-
         format(S, "%% ~w: ~w~n", [RuleName, Comment]),
         write(S, 'is_command_blocked(Cmd, Desc) :- blocked_command_pattern(Regex, Desc), re_match(Regex, Cmd), !.\n')
     ), Rules).
+
+%% ============================================================================
+%% Composed Security Check Predicates (Prolog target)
+%% ============================================================================
+
+%% emit_security_check_predicates(+Stream, +Options)
+%% Emits composed Prolog security check predicates:
+%%   1. is_path_blocked/1 (from compile_path_check_rules)
+%%   2. is_command_blocked/2 (from compile_command_check_rules)
+%%   3. check_path_allowed/2 (thin wrapper with profile dispatch)
+%%   4. check_command_allowed/2 (thin wrapper with profile dispatch)
+%%   5. set_security_profile/1 (profile switching)
+emit_security_check_predicates(S, _Options) :-
+    %% Building blocks from compiled rules
+    compile_path_check_rules(S, prolog, []),
+    nl(S),
+    compile_command_check_rules(S, prolog, []),
+    nl(S),
+    %% Thin wrapper: check_path_allowed/2
+    write(S, '%% Check if a file path is allowed under current profile\n'),
+    write(S, 'check_path_allowed(Path, Result) :-\n'),
+    write(S, '    current_security_profile(Profile),\n'),
+    write(S, '    (Profile = open -> Result = allowed\n'),
+    write(S, '    ; is_path_blocked(Path) -> Result = blocked("Blocked path")\n'),
+    write(S, '    ; Result = allowed).\n\n'),
+    %% Thin wrapper: check_command_allowed/2
+    write(S, '%% Check if a command is allowed under current profile\n'),
+    write(S, 'check_command_allowed(Command, Result) :-\n'),
+    write(S, '    current_security_profile(Profile),\n'),
+    write(S, '    (Profile = open -> Result = allowed\n'),
+    write(S, '    ; is_command_blocked(Command, Desc) -> Result = blocked(Desc)\n'),
+    write(S, '    ; Result = allowed).\n\n'),
+    %% set_security_profile/1
+    write(S, '%% Set the active security profile\n'),
+    write(S, 'set_security_profile(Profile) :-\n'),
+    write(S, '    (security_profile(Profile, _) ->\n'),
+    write(S, '        retractall(current_security_profile(_)),\n'),
+    write(S, '        assert(current_security_profile(Profile)),\n'),
+    write(S, '        format("Security profile set to: ~w~n", [Profile])\n'),
+    write(S, '    ; format("Unknown profile: ~w~n", [Profile])).\n').

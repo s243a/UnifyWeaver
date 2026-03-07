@@ -9,6 +9,8 @@
     blocked_path_prefix/1,
     blocked_home_pattern/1,
     blocked_command_pattern/2,
+    is_path_blocked/1,
+    is_command_blocked/2,
     check_path_allowed/2,
     check_command_allowed/2,
     set_security_profile/1
@@ -69,27 +71,28 @@ blocked_command_pattern('\\bchmod\\s+777\\b', 'world-writable permissions').
 blocked_command_pattern(':\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;', 'fork bomb').
 blocked_command_pattern('\\b>\\s*/etc/', 'overwrite system config').
 
+%% exact_match: Exact blocked path match
+is_path_blocked(Path) :- blocked_path(Path), !.
+%% prefix_match: Blocked path prefix match
+is_path_blocked(Path) :- blocked_path_prefix(Prefix), atom_concat(Prefix, _, Path), !.
+%% home_pattern: Home directory pattern match
+is_path_blocked(Path) :- blocked_home_pattern(Pat), expand_home(Pat, Full), atom_concat(Full, _, Path), !.
+
+%% regex_match: Command regex pattern match
+is_command_blocked(Cmd, Desc) :- blocked_command_pattern(Regex, Desc), re_match(Regex, Cmd), !.
+
 %% Check if a file path is allowed under current profile
 check_path_allowed(Path, Result) :-
     current_security_profile(Profile),
     (Profile = open -> Result = allowed
-    ; blocked_path(Path) -> Result = blocked("Blocked path")
-    ; (blocked_path_prefix(Prefix), atom_concat(Prefix, _, Path)) ->
-        Result = blocked("Blocked path prefix")
-    ; (getenv('HOME', Home),
-       blocked_home_pattern(Pattern),
-       atom_concat(Home, RestCheck, Path),
-       sub_atom(RestCheck, _, _, _, Pattern)) ->
-        Result = blocked("Blocked home pattern")
+    ; is_path_blocked(Path) -> Result = blocked("Blocked path")
     ; Result = allowed).
 
 %% Check if a command is allowed under current profile
 check_command_allowed(Command, Result) :-
     current_security_profile(Profile),
     (Profile = open -> Result = allowed
-    ; (blocked_command_pattern(Regex, Desc),
-       re_match(Regex, Command)) ->
-        Result = blocked(Desc)
+    ; is_command_blocked(Command, Desc) -> Result = blocked(Desc)
     ; Result = allowed).
 
 %% Set the active security profile
