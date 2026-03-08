@@ -368,6 +368,17 @@ regex_list(paranoid_confirm, [
     "r'^node\\s+[^-].*\\.js$'"
 ]).
 
+%% regex_list_variable(+PrologName, +PythonVariable)
+%% Declarative mapping from Prolog regex_list names to Python variable names.
+regex_list_variable(guarded_extra_blocks, '_GUARDED_EXTRA_BLOCKS').
+regex_list_variable(paranoid_safe, '_PARANOID_SAFE').
+regex_list_variable(paranoid_confirm, '_PARANOID_CONFIRM').
+regex_list_variable(paranoid_allowed, '_PARANOID_ALLOWED').
+
+%% regex_list_combined(+PythonVariable, +Source1, +Source2)
+%% Declares a combined Python variable as the concatenation of two regex list variables.
+regex_list_combined('_PARANOID_ALLOWED', '_PARANOID_SAFE', '_PARANOID_CONFIRM').
+
 %% =============================================================================
 %% Model Pricing Definitions
 %% =============================================================================
@@ -1510,23 +1521,20 @@ generate_prolog_security :-
     output_path(prolog, 'security.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, security, 'Security profiles and path/command validation'),
-    write(S, ':- module(security, [\n'),
-    write(S, '    security_profile/2,\n'),
-    write(S, '    blocked_path/1,\n'),
-    write(S, '    blocked_path_prefix/1,\n'),
-    write(S, '    blocked_home_pattern/1,\n'),
-    write(S, '    blocked_command_pattern/2,\n'),
-    write(S, '    is_path_blocked/1,\n'),
-    write(S, '    is_command_blocked/2,\n'),
-    write(S, '    check_path_allowed/2,\n'),
-    write(S, '    check_command_allowed/2,\n'),
-    write(S, '    set_security_profile/1\n'),
-    write(S, ']).\n\n'),
-    write(S, ':- use_module(library(pcre)).\n\n'),
+    agent_loop_components:emit_prolog_module_header(S, security, [
+        exports([
+            security_profile/2, blocked_path/1, blocked_path_prefix/1,
+            blocked_home_pattern/1, blocked_command_pattern/2,
+            is_path_blocked/1, is_command_blocked/2,
+            check_path_allowed/2, check_command_allowed/2,
+            set_security_profile/1
+        ]),
+        use_modules([library(pcre)])
+    ]),
     agent_loop_components:emit_module_dependencies(S, [module(security)]),
-    write(S, ':- det(check_path_allowed/2).\n'),
-    write(S, ':- det(check_command_allowed/2).\n'),
-    write(S, ':- det(set_security_profile/1).\n\n'),
+    agent_loop_components:emit_prolog_declarations(S, [
+        det([check_path_allowed/2, check_command_allowed/2, set_security_profile/1])
+    ]),
     write(S, ':- dynamic current_security_profile/1.\n'),
     write(S, 'current_security_profile(cautious).\n\n'),
     %% Emit security facts via component registry
@@ -3018,14 +3026,18 @@ generate_security_profiles :-
     write(S, '\n\n'),
     %% Regex lists
     write(S, '# ── Built-in profiles ─────────────────────────────────────────────────────\n\n'),
-    generate_regex_list_py(S, guarded_extra_blocks, '_GUARDED_EXTRA_BLOCKS'),
-    write(S, '\n'),
-    generate_regex_list_py(S, paranoid_safe, '_PARANOID_SAFE'),
-    write(S, '\n'),
-    generate_regex_list_py(S, paranoid_confirm, '_PARANOID_CONFIRM'),
-    write(S, '\n'),
-    write(S, '# Combined allowlist (safe + confirm)\n'),
-    write(S, '_PARANOID_ALLOWED = _PARANOID_SAFE + _PARANOID_CONFIRM\n\n\n'),
+    %% Emit regex lists — data-driven from regex_list_variable/2 facts
+    findall(LN-PV, (regex_list_variable(LN, PV), regex_list(LN, _)), RLVars),
+    maplist([LN-PV]>>(
+        generate_regex_list_py(S, LN, PV),
+        write(S, '\n')
+    ), RLVars),
+    %% Emit combined regex list variables
+    findall(combo(CV, Src1, Src2), regex_list_combined(CV, Src1, Src2), Combos),
+    maplist([combo(CV, Src1, Src2)]>>(
+        write(S, '# Combined allowlist (safe + confirm)\n'),
+        format(S, '~w = ~w + ~w~n~n~n', [CV, Src1, Src2])
+    ), Combos),
     %% get_builtin_profiles()
     write(S, 'def get_builtin_profiles() -> dict[str, SecurityProfile]:\n'),
     write(S, '    """Return all built-in security profiles."""\n'),
@@ -3080,13 +3092,9 @@ emit_profile_field_value(S, FieldName, 'str', Value) :-
 emit_profile_field_value(S, FieldName, 'int | None', Value) :-
     format(S, '            ~w=~w,~n', [FieldName, Value]).
 emit_profile_field_value(S, FieldName, 'list[str]', Value) :-
-    %% List fields reference named regex list variables
-    (Value = guarded_extra_blocks ->
-        format(S, '            ~w=list(_GUARDED_EXTRA_BLOCKS),~n', [FieldName])
-    ; Value = paranoid_allowed ->
-        format(S, '            ~w=list(_PARANOID_ALLOWED),~n', [FieldName])
-    ; Value = paranoid_safe ->
-        format(S, '            ~w=list(_PARANOID_SAFE),~n', [FieldName])
+    %% List fields — look up Python variable name from declarative facts
+    (regex_list_variable(Value, PyVar) ->
+        format(S, '            ~w=list(~w),~n', [FieldName, PyVar])
     ;
         format(S, '            ~w=~w,~n', [FieldName, Value])
     ).
@@ -3365,12 +3373,12 @@ generate_config :-
     write_py(S, config_resolve_api_key_header),
     %% Generate env_vars dict from api_key_env_var/2 facts
     write(S, '    env_vars = {\n'),
-    agent_loop_components:emit_api_key_env_vars_py(S, [target(python)]),
+    agent_loop_components:emit_config_section(S, api_key_env_vars, [target(python)]),
     write(S, '    }\n'),
     write_py(S, config_resolve_api_key_middle),
     %% Generate file_locations dict from api_key_file/2 facts
     write(S, '    file_locations = {\n'),
-    agent_loop_components:emit_api_key_files_py(S, [target(python)]),
+    agent_loop_components:emit_config_section(S, api_key_files, [target(python)]),
     write(S, '    }\n'),
     write_py(S, config_resolve_api_key_footer),
     write(S, '\n'),
@@ -3409,7 +3417,7 @@ generate_config :-
     write(S, 'def get_default_config() -> Config:\n'),
     write(S, '    """Get a default configuration with common presets."""\n'),
     write(S, '    config = Config()\n\n'),
-    agent_loop_components:emit_default_presets_py(S, [target(python)]),
+    agent_loop_components:emit_config_section(S, default_presets, [target(python)]),
     write(S, '    return config\n\n\n'),
     %% save_example_config (generated from example_agent_config/3 facts)
     generate_config_save_example(S),
