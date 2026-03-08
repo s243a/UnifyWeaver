@@ -327,6 +327,7 @@ test_csharp_query_target :-
         verify_parameterized_reachability_by_target_seed_cache_admission_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_admission_normalized_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_admission_duplicate_heavy_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_normalized_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_selectivity_runtime,
@@ -336,6 +337,7 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_selectivity_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_normalized_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_duplicate_heavy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_normalized_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_selectivity_runtime,
@@ -4137,10 +4139,36 @@ verify_parameterized_reachability_pairs_single_probe_cache_admission_normalized_
         2,
         HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=false',
+        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
          'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=0',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=2'],
+         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=1',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_single_probe_cache_admission_duplicate_heavy_runtime :-
+    csharp_query_target:build_query_plan(test_admission_reach_pair/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, e], [a, e], [a, e], [a, e], [a, e], [a, e]],
+    WarmColdParams = [[b, e], [b, e], [b, e], [b, e], [b, e], [b, e]],
+    HotParams = [[a, e], [a, e], [a, e], [a, e], [a, e], [a, e]],
+    ColdParams = [[b, e], [b, e], [b, e], [b, e], [b, e], [b, e]],
+    harness_source_with_pair_cache_admission_normalized_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosurePairsSingleProbe',
+        2,
+        2,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
+         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
+         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=1',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=1'],
         HotParams,
         HarnessSource).
 
@@ -4367,10 +4395,48 @@ verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admissi
         2,
         HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=false',
+        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=true',
          'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=0',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=2'],
+         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=1',
+         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_duplicate_heavy_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_reach_pair/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [
+        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata],
+        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata]
+    ],
+    WarmColdParams = [
+        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata],
+        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata]
+    ],
+    HotParams = [
+        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata],
+        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata]
+    ],
+    ColdParams = [
+        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata],
+        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata]
+    ],
+    harness_source_with_pair_cache_admission_normalized_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        2,
+        2,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
+         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=1',
+         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=1'],
         HotParams,
         HarnessSource).
 
