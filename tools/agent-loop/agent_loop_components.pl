@@ -71,7 +71,12 @@
     validate_generator_imports/2,
     emit_config_section/3,
     emit_prolog_module_header/3,
-    emit_prolog_declarations/2
+    emit_prolog_declarations/2,
+    emit_prolog_module_skeleton/3,
+    prolog_fragment_metadata/2,
+    generator_prolog_fragments/2,
+    prolog_fragment_category/2,
+    prolog_fragment_use_modules/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -1520,6 +1525,13 @@ py_fragment_metadata(security_proot_sandbox_module, [
 ]).
 py_fragment_metadata(aliases_class_header, [category(aliases), target(python), imports([])]).
 py_fragment_metadata(aliases_class_footer, [category(aliases), target(python), imports([])]).
+py_fragment_metadata(cost_usage_record, [category(costs), target(python), imports([from(dataclasses, [dataclass])])]).
+py_fragment_metadata(cost_tracker_class_def, [category(costs), target(python), imports([from(dataclasses, [dataclass, field])])]).
+py_fragment_metadata(cost_tracker_methods, [category(costs), target(python),
+    imports([from(datetime, [datetime]), from(pathlib, ['Path']), bare(json)])]).
+py_fragment_metadata(cost_openrouter, [category(costs), target(python),
+    imports([bare(os), bare(sys), bare(time), bare(json), from(pathlib, ['Path']),
+             from('urllib.request', [urlopen, 'Request']), from('urllib.error', ['URLError'])])]).
 
 %% fragment_imports(+FragmentName, -ImportSpecs)
 %% Get the import specs for a named fragment.
@@ -1541,6 +1553,8 @@ fragment_category(Name, Category) :-
 %% Declares which py_fragment/2 names a generator uses.
 generator_fragments(tools, [tools_handler_class_body, tools_security_config,
                             tools_validate_path, tools_is_command_blocked]).
+generator_fragments(costs, [cost_usage_record, cost_tracker_class_def,
+                            cost_tracker_methods, cost_openrouter]).
 generator_fragments(config, [config_resolve_api_key_header, config_load_config]).
 generator_fragments(context, [context_manager_class, context_helpers]).
 generator_fragments(security_audit, [security_audit_module]).
@@ -1559,6 +1573,66 @@ generator_fragments(agent_loop_main, [
     handler_delete_command, handler_edit_command,
     handler_replay_command
 ]).
+
+%% ============================================================================
+%% Prolog Fragment Metadata
+%% ============================================================================
+
+%% prolog_fragment_metadata(+FragmentName, +Properties)
+%% Metadata annotations for prolog_fragment/2 facts.
+%% Properties: category(Cat), target(prolog), use_modules([ModSpec, ...])
+%% Parallel to py_fragment_metadata/2 for Python fragments.
+
+prolog_fragment_metadata(cost_tracker_impl, [
+    category(costs), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(config_parse_cli, [
+    category(config), target(prolog), use_modules([library(optparse)])
+]).
+prolog_fragment_metadata(config_load_config, [
+    category(config), target(prolog), use_modules([library(json)])
+]).
+prolog_fragment_metadata(config_resolve_api_key, [
+    category(config), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(commands_resolve, [
+    category(commands), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(commands_handle_slash, [
+    category(commands), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(tools_execute_dispatch, [
+    category(tools), target(prolog),
+    use_modules([library(process), library(readutil), library(time)])
+]).
+prolog_fragment_metadata(tools_schema, [
+    category(tools), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(tools_describe, [
+    category(tools), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(tools_confirm, [
+    category(tools), target(prolog), use_modules([])
+]).
+
+%% prolog_fragment_category(+Name, -Category)
+prolog_fragment_category(Name, Category) :-
+    prolog_fragment_metadata(Name, Props),
+    member(category(Category), Props).
+
+%% prolog_fragment_use_modules(+Name, -UseModules)
+prolog_fragment_use_modules(Name, UseModules) :-
+    prolog_fragment_metadata(Name, Props),
+    member(use_modules(UseModules), Props).
+
+%% generator_prolog_fragments(+Generator, -FragmentNames)
+%% Declares which prolog_fragment/2 names a Prolog generator uses.
+generator_prolog_fragments(costs, [cost_tracker_impl]).
+generator_prolog_fragments(config, [config_parse_cli, config_load_config,
+                                    config_resolve_api_key]).
+generator_prolog_fragments(commands, [commands_resolve, commands_handle_slash]).
+generator_prolog_fragments(tools, [tools_execute_dispatch, tools_schema,
+                                   tools_describe, tools_confirm]).
 
 %% derive_fragment_imports(+Generator, -DerivedImports)
 %% Collects all import specs from a generator's fragments and deduplicates.
@@ -1652,6 +1726,57 @@ emit_prolog_declarations(S, Options) :-
     (member(dynamic(Dyns), Options) ->
         maplist([D]>>(format(S, ':- dynamic ~w.~n', [D])), Dyns)
     ; true).
+
+%% emit_prolog_module_skeleton(+Stream, +Module, +Directives)
+%% One-call module setup from an ordered list of directives.
+%% The order of directives in the list determines the output order.
+%% Supported directives:
+%%   exports(List)         — :- module(Name, [exports...]).
+%%   use_modules(List)     — :- use_module(...) with trailing blank line
+%%   use_modules_compact(List) — :- use_module(...) WITHOUT trailing blank line
+%%   det(List)             — :- det(...) with trailing blank line
+%%   dynamic(List)         — :- dynamic ... (no trailing blank)
+%%   dependencies(DepOpts) — %% Dependencies comment
+%%   discontiguous(List)   — :- discontiguous ... with trailing blank line
+%%   table(List)           — :- table ... with trailing blank line
+%%   table(List, Comment)  — %% Comment then :- table ... with trailing blank line
+emit_prolog_module_skeleton(S, Module, Directives) :-
+    emit_skeleton_directives(S, Module, Directives).
+
+emit_skeleton_directives(_, _, []).
+emit_skeleton_directives(S, Module, [D|Rest]) :-
+    emit_one_skeleton_directive(S, Module, D),
+    emit_skeleton_directives(S, Module, Rest).
+
+emit_one_skeleton_directive(S, Module, exports(Exports)) :- !,
+    format(S, ':- module(~w, [~n', [Module]),
+    length(Exports, Len),
+    emit_module_export_list(S, Exports, 1, Len),
+    write(S, ']).\n\n').
+emit_one_skeleton_directive(S, _, use_modules(UMs)) :- !,
+    maplist([UM]>>(format(S, ':- use_module(~w).~n', [UM])), UMs),
+    nl(S).
+emit_one_skeleton_directive(S, _, use_modules_compact(UMs)) :- !,
+    maplist([UM]>>(format(S, ':- use_module(~w).~n', [UM])), UMs).
+emit_one_skeleton_directive(S, _, det(Dets)) :- !,
+    maplist([D]>>(format(S, ':- det(~w).~n', [D])), Dets),
+    nl(S).
+emit_one_skeleton_directive(S, _, dynamic(Dyns)) :- !,
+    maplist([D]>>(format(S, ':- dynamic ~w.~n', [D])), Dyns).
+emit_one_skeleton_directive(S, _, dependencies(DepOpts)) :- !,
+    emit_module_dependencies(S, DepOpts).
+emit_one_skeleton_directive(S, _, discontiguous(Ds)) :- !,
+    maplist([D]>>(format(S, ':- discontiguous ~w.~n', [D])), Ds),
+    nl(S).
+emit_one_skeleton_directive(S, _, table(Ts)) :- !,
+    maplist([T]>>(format(S, ':- table ~w.~n', [T])), Ts),
+    nl(S).
+emit_one_skeleton_directive(S, _, table(Ts, Comment)) :- !,
+    format(S, '%% ~w~n', [Comment]),
+    maplist([T]>>(format(S, ':- table ~w.~n', [T])), Ts),
+    nl(S).
+emit_one_skeleton_directive(S, _, comment(Text)) :- !,
+    format(S, '%% ~w~n~n', [Text]).
 
 %% ============================================================================
 %% Unified Component Emission

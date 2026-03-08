@@ -454,6 +454,34 @@ agent_loop_main_body         (fragment)
 
 This approach keeps imperative logic in readable fragments while making repetitive, tabular data queryable and reusable across future language targets.
 
+### Prolog target generation
+
+The generator also produces 8 Prolog files in `generated/prolog/`. Prolog generation uses the same two-strategy approach:
+
+1. **`prolog_fragment/2` atoms** — Named Prolog code blocks stored as atoms, emitted with `write_prolog/2` (parallel to `py_fragment/2` + `write_py/2`)
+2. **`emit_prolog_module_skeleton/3`** — One-call module setup combining header, exports, use_modules, declarations, and directives from an ordered list
+
+| Abstraction | Purpose | Facts/Predicates |
+|-------------|---------|-----------------|
+| `prolog_fragment/2` | Named Prolog code blocks | 10 fragments across 4 generators |
+| `write_prolog/2` | Emit a named fragment to stream | Parallel to `write_py/2` |
+| `emit_prolog_module_skeleton/3` | Module header + directives | Supports `exports`, `det`, `dynamic`, `discontiguous`, `table`, `use_modules`, `comment` |
+| `prolog_fragment_metadata/2` | Fragment annotations (category, target, use_modules) | Parallel to `py_fragment_metadata/2` |
+| `generator_prolog_fragments/2` | Maps generators to their fragment names | 4 generators: costs, config, commands, tools |
+
+Example: `generate_prolog_costs` assembles costs.pl from a skeleton + 1 fragment, replacing ~40 write calls:
+
+```prolog
+generate_prolog_costs :-
+    emit_prolog_module_skeleton(S, costs, [
+        exports([model_pricing/3, cost_tracker_init/1, ...]),
+        det([cost_tracker_init/1, ...]),
+        dependencies([module(costs)])
+    ]),
+    emit_cost_facts(S, [target(prolog)]),
+    write_prolog(S, cost_tracker_impl).
+```
+
 ## Module Reference
 
 | Module | Description |

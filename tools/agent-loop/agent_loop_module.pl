@@ -1177,42 +1177,15 @@ generate_prolog_costs :-
     output_path(prolog, 'costs.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, costs, 'Token cost tracking'),
-    write(S, ':- module(costs, [\n'),
-    write(S, '    model_pricing/3,\n'),
-    write(S, '    cost_tracker_init/1,\n'),
-    write(S, '    cost_tracker_add/4,\n'),
-    write(S, '    cost_tracker_total/2,\n'),
-    write(S, '    cost_tracker_format/2\n'),
-    write(S, ']).\n\n'),
-    %% Determinism annotations for single-clause rules
-    write(S, ':- det(cost_tracker_init/1).\n'),
-    write(S, ':- det(cost_tracker_add/4).\n'),
-    write(S, ':- det(cost_tracker_total/2).\n'),
-    write(S, ':- det(cost_tracker_format/2).\n\n'),
-    agent_loop_components:emit_module_dependencies(S, [module(costs)]),
-    %% Emit cost facts via component registry
+    agent_loop_components:emit_prolog_module_skeleton(S, costs, [
+        exports([model_pricing/3, cost_tracker_init/1, cost_tracker_add/4,
+                 cost_tracker_total/2, cost_tracker_format/2]),
+        det([cost_tracker_init/1, cost_tracker_add/4,
+             cost_tracker_total/2, cost_tracker_format/2]),
+        dependencies([module(costs)])
+    ]),
     agent_loop_components:emit_cost_facts(S, [target(prolog)]),
-    %% Emit cost tracker implementation
-    write(S, '\n%% Cost tracker using dynamic state\n'),
-    write(S, ':- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)\n\n'),
-    write(S, 'cost_tracker_init(ID) :-\n'),
-    write(S, '    retractall(cost_state(ID, _, _)),\n'),
-    write(S, '    assert(cost_state(ID, 0, 0)).\n\n'),
-    write(S, 'cost_tracker_add(ID, Model, InputTokens, OutputTokens) :-\n'),
-    write(S, '    retract(cost_state(ID, OldIn, OldOut)),\n'),
-    write(S, '    NewIn is OldIn + InputTokens,\n'),
-    write(S, '    NewOut is OldOut + OutputTokens,\n'),
-    write(S, '    assert(cost_state(ID, NewIn, NewOut)),\n'),
-    write(S, '    (model_pricing(Model, InPrice, OutPrice) ->\n'),
-    write(S, '        Cost is (InputTokens * InPrice + OutputTokens * OutPrice) / 1000000,\n'),
-    write(S, '        format("  [cost: $~4f (~w in, ~w out)]~n", [Cost, InputTokens, OutputTokens])\n'),
-    write(S, '    ; true).\n\n'),
-    write(S, 'cost_tracker_total(ID, Total) :-\n'),
-    write(S, '    cost_state(ID, TotalIn, TotalOut),\n'),
-    write(S, '    Total = tokens(TotalIn, TotalOut).\n\n'),
-    write(S, 'cost_tracker_format(ID, Formatted) :-\n'),
-    write(S, '    cost_state(ID, TotalIn, TotalOut),\n'),
-    write(S, '    format(atom(Formatted), "~w input, ~w output tokens", [TotalIn, TotalOut]).\n'),
+    write_prolog(S, cost_tracker_impl),
     close(S),
     format('  Generated prolog/costs.pl~n', []).
 
@@ -1224,67 +1197,20 @@ generate_prolog_config :-
     output_path(prolog, 'config.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, config, 'CLI argument parsing and configuration'),
-    agent_loop_components:write_lines(S, [
-        ':- module(config, [',
-        '    cli_argument/2,',
-        '    agent_config_field/4,',
-        '    default_agent_preset/3,',
-        '    api_key_env_var/2,',
-        '    api_key_file/2,',
-        '    parse_cli_args/2,',
-        '    example_agent_config/3,',
-        '    config_search_path/2,',
-        '    config_field_json_default/2,',
-        '    config_dir_file_name/1,',
-        '    audit_profile_level/2,',
-        '    load_config/2,',
-        '    resolve_api_key/3',
-        ']).', '',
-        ':- use_module(library(optparse)).',
-        ':- use_module(library(json)).', '',
-        ':- det(parse_cli_args/2).',
-        ':- det(load_config/2).',
-        ':- det(resolve_api_key/3).', ''
+    agent_loop_components:emit_prolog_module_skeleton(S, config, [
+        exports([cli_argument/2, agent_config_field/4, default_agent_preset/3,
+                 api_key_env_var/2, api_key_file/2, parse_cli_args/2,
+                 example_agent_config/3, config_search_path/2,
+                 config_field_json_default/2, config_dir_file_name/1,
+                 audit_profile_level/2, load_config/2, resolve_api_key/3]),
+        use_modules([library(optparse), library(json)]),
+        det([parse_cli_args/2, load_config/2, resolve_api_key/3]),
+        dependencies([module(config)])
     ]),
-    agent_loop_components:emit_module_dependencies(S, [module(config)]),
-    %% Emit all config facts via centralized emit predicate
     agent_loop_components:emit_prolog_config_facts(S, [target(prolog)]),
-    %% Generate parse_cli_args using optparse
-    write(S, '%% Parse CLI arguments using SWI-Prolog optparse\n'),
-    write(S, 'parse_cli_args(Argv, Options) :-\n'),
-    write(S, '    build_opt_spec(Spec),\n'),
-    write(S, '    opt_parse(Spec, Argv, Options, _Positional).\n\n'),
-    write(S, 'build_opt_spec(Spec) :-\n'),
-    write(S, '    findall(OptSpec, (\n'),
-    write(S, '        cli_argument(Name, Props),\n'),
-    write(S, '        member(long(Long), Props),\n'),
-    write(S, '        atom_concat(''--'', OptName, Long),\n'),
-    write(S, '        build_one_opt(Name, OptName, Props, OptSpec)\n'),
-    write(S, '    ), Spec).\n\n'),
-    write(S, 'build_one_opt(Name, OptName, Props, opt(OptName, Name, Type, Help)) :-\n'),
-    write(S, '    (member(type(int), Props) -> Type = integer ; Type = atom),\n'),
-    write(S, '    (member(help(Help0), Props) -> Help0 = Help ; Help = \'\').\n\n'),
-    %% Generate load_config
-    write(S, '%% Load config from JSON file\n'),
-    write(S, 'load_config(Path, Config) :-\n'),
-    write(S, '    (exists_file(Path) ->\n'),
-    write(S, '        setup_call_cleanup(\n'),
-    write(S, '            open(Path, read, In),\n'),
-    write(S, '            json_read_dict(In, Config),\n'),
-    write(S, '            close(In))\n'),
-    write(S, '    ; Config = _{}).\n\n'),
-    %% Generate resolve_api_key
-    write(S, '%% Resolve API key: check explicit, then env var, then file\n'),
-    write(S, 'resolve_api_key(Backend, Explicit, Key) :-\n'),
-    write(S, '    (Explicit \\= none -> Key = Explicit\n'),
-    write(S, '    ; api_key_env_var(Backend, EnvVar),\n'),
-    write(S, '      getenv(EnvVar, Key), Key \\= \'\' -> true\n'),
-    write(S, '    ; api_key_file(Backend, FilePath),\n'),
-    write(S, '      expand_file_name(FilePath, [Expanded]),\n'),
-    write(S, '      exists_file(Expanded),\n'),
-    write(S, '      read_file_to_string(Expanded, Key0, []),\n'),
-    write(S, '      normalize_space(atom(Key), Key0) -> true\n'),
-    write(S, '    ; Key = none).\n'),
+    write_prolog(S, config_parse_cli),
+    write_prolog(S, config_load_config),
+    write_prolog(S, config_resolve_api_key),
     close(S),
     format('  Generated prolog/config.pl~n', []).
 
@@ -1296,163 +1222,23 @@ generate_prolog_tools :-
     output_path(prolog, 'tools.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, tools, 'Tool execution'),
-    write(S, ':- module(tools, [\n'),
-    write(S, '    tool_spec/2,\n'),
-    write(S, '    tool_handler/2,\n'),
-    write(S, '    destructive_tool/1,\n'),
-    write(S, '    tool_description/5,\n'),
-    write(S, '    execute_tool/3,\n'),
-    write(S, '    describe_tool_call/4,\n'),
-    write(S, '    confirm_destructive/2,\n'),
-    write(S, '    build_tool_input_schema/2\n'),
-    write(S, ']).\n\n'),
-    write(S, ':- use_module(library(process)).\n'),
-    write(S, ':- use_module(library(readutil)).\n'),
-    write(S, ':- use_module(library(time)).\n'),
-    write(S, ':- use_module(security).\n\n'),
-    agent_loop_components:emit_module_dependencies(S, [module(tools)]),
-    write(S, '%% Tabling: memoize tool schema construction across REPL iterations\n'),
-    write(S, ':- table build_tool_input_schema/2.\n\n'),
-    write(S, ':- det(execute_tool/3).\n'),
-    write(S, ':- det(describe_tool_call/4).\n'),
-    write(S, ':- det(confirm_destructive/2).\n'),
-    write(S, ':- det(build_tool_input_schema/2).\n\n'),
-    write(S, '%% JIT multi-arg indexing: tool_description/5 benefits from (arg1, arg2) indexing\n\n'),
-    %% Emit tool facts via component registry
+    agent_loop_components:emit_prolog_module_skeleton(S, tools, [
+        exports([tool_spec/2, tool_handler/2, destructive_tool/1,
+                 tool_description/5, execute_tool/3, describe_tool_call/4,
+                 confirm_destructive/2, build_tool_input_schema/2]),
+        use_modules([library(process), library(readutil), library(time), security]),
+        dependencies([module(tools)]),
+        table([build_tool_input_schema/2],
+              'Tabling: memoize tool schema construction across REPL iterations'),
+        det([execute_tool/3, describe_tool_call/4,
+             confirm_destructive/2, build_tool_input_schema/2]),
+        comment('JIT multi-arg indexing: tool_description/5 benefits from (arg1, arg2) indexing')
+    ]),
     agent_loop_components:emit_tool_facts(S, [target(prolog)]),
-    %% Generate tool execution predicates
-    write(S, '%% Execute a tool by name\n'),
-    write(S, 'execute_tool(ToolName, Params, Result) :-\n'),
-    write(S, '    (tool_handler(ToolName, _) -> true\n'),
-    write(S, '    ; format(atom(Err), "Unknown tool: ~w", [ToolName]),\n'),
-    write(S, '      Result = error(Err), !),\n'),
-    write(S, '    execute_tool_impl(ToolName, Params, Result).\n\n'),
-    %% Bash handler — with command validation and timeout
-    write(S, 'execute_tool_impl(bash, Params, Result) :-\n'),
-    write(S, '    get_dict(command, Params, Cmd),\n'),
-    write(S, '    check_command_allowed(Cmd, CmdCheck),\n'),
-    write(S, '    (CmdCheck = blocked(Reason) ->\n'),
-    write(S, '        format(atom(BlkErr), "Blocked: ~w", [Reason]),\n'),
-    write(S, '        Result = error(BlkErr)\n'),
-    write(S, '    ;\n'),
-    write(S, '        tool_spec(bash, BashProps),\n'),
-    write(S, '        (member(timeout(Timeout), BashProps) -> true ; Timeout = 120),\n'),
-    write(S, '        catch(\n'),
-    write(S, '            call_with_time_limit(Timeout, (\n'),
-    write(S, '                setup_call_cleanup(\n'),
-    write(S, '                    process_create(path(bash), [\'-c\', Cmd],\n'),
-    write(S, '                        [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),\n'),
-    write(S, '                    (read_string(Out, _, StdOut),\n'),
-    write(S, '                     read_string(Err, _, StdErr),\n'),
-    write(S, '                     process_wait(PID, Status)),\n'),
-    write(S, '                    (close(Out), close(Err))),\n'),
-    write(S, '                (Status = exit(0) ->\n'),
-    write(S, '                    Result0 = ok(StdOut)\n'),
-    write(S, '                ;   format(atom(ErrMsg), "Exit ~w: ~w~w", [Status, StdOut, StdErr]),\n'),
-    write(S, '                    Result0 = error(ErrMsg))\n'),
-    write(S, '            )),\n'),
-    write(S, '            time_limit_exceeded,\n'),
-    write(S, '            (format(atom(TimeErr), "Command timed out after ~w seconds", [Timeout]),\n'),
-    write(S, '             Result0 = error(TimeErr))\n'),
-    write(S, '        ),\n'),
-    write(S, '        Result = Result0\n'),
-    write(S, '    ).\n\n'),
-    %% Read handler — with path validation
-    write(S, 'execute_tool_impl(read, Params, Result) :-\n'),
-    write(S, '    get_dict(path, Params, FilePath),\n'),
-    write(S, '    check_path_allowed(FilePath, PathCheck),\n'),
-    write(S, '    (PathCheck = blocked(Reason) ->\n'),
-    write(S, '        format(atom(BlkErr), "Blocked: ~w", [Reason]),\n'),
-    write(S, '        Result = error(BlkErr)\n'),
-    write(S, '    ; exists_file(FilePath) ->\n'),
-    write(S, '        read_file_to_string(FilePath, Content, []),\n'),
-    write(S, '        Result = ok(Content)\n'),
-    write(S, '    ;   format(atom(Err), "File not found: ~w", [FilePath]),\n'),
-    write(S, '        Result = error(Err)).\n\n'),
-    %% Write handler — with path validation
-    write(S, 'execute_tool_impl(write, Params, Result) :-\n'),
-    write(S, '    get_dict(path, Params, FilePath),\n'),
-    write(S, '    get_dict(content, Params, Content),\n'),
-    write(S, '    check_path_allowed(FilePath, PathCheck),\n'),
-    write(S, '    (PathCheck = blocked(Reason) ->\n'),
-    write(S, '        format(atom(BlkErr), "Blocked: ~w", [Reason]),\n'),
-    write(S, '        Result = error(BlkErr)\n'),
-    write(S, '    ;\n'),
-    write(S, '        setup_call_cleanup(\n'),
-    write(S, '            open(FilePath, write, Out),\n'),
-    write(S, '            write(Out, Content),\n'),
-    write(S, '            close(Out)),\n'),
-    write(S, '        format(atom(Msg), "Wrote ~w", [FilePath]),\n'),
-    write(S, '        Result = ok(Msg)\n'),
-    write(S, '    ).\n\n'),
-    %% Edit handler — with path validation
-    write(S, 'execute_tool_impl(edit, Params, Result) :-\n'),
-    write(S, '    get_dict(path, Params, FilePath),\n'),
-    write(S, '    get_dict(old_string, Params, OldStr),\n'),
-    write(S, '    get_dict(new_string, Params, NewStr),\n'),
-    write(S, '    check_path_allowed(FilePath, PathCheck),\n'),
-    write(S, '    (PathCheck = blocked(Reason) ->\n'),
-    write(S, '        format(atom(BlkErr), "Blocked: ~w", [Reason]),\n'),
-    write(S, '        Result = error(BlkErr)\n'),
-    write(S, '    ; exists_file(FilePath) ->\n'),
-    write(S, '        read_file_to_string(FilePath, Content, []),\n'),
-    write(S, '        (sub_string(Content, Before, _, After, OldStr) ->\n'),
-    write(S, '            sub_string(Content, 0, Before, _, Pre),\n'),
-    write(S, '            Len is Before + (string_length(Content) - Before - After),\n'),
-    write(S, '            sub_string(Content, Len, After, 0, Post),\n'),
-    write(S, '            string_concat(Pre, NewStr, Temp),\n'),
-    write(S, '            string_concat(Temp, Post, NewContent),\n'),
-    write(S, '            setup_call_cleanup(\n'),
-    write(S, '                open(FilePath, write, Out),\n'),
-    write(S, '                write(Out, NewContent),\n'),
-    write(S, '                close(Out)),\n'),
-    write(S, '            Result = ok("Edit applied")\n'),
-    write(S, '        ;   Result = error("Old string not found"))\n'),
-    write(S, '    ;   format(atom(Err), "File not found: ~w", [FilePath]),\n'),
-    write(S, '        Result = error(Err)).\n\n'),
-    %% Build tool input schema for LLM tool_use
-    write(S, '%% Build JSON Schema input_schema from tool_spec parameters\n'),
-    write(S, 'build_tool_input_schema(ToolName, Schema) :-\n'),
-    write(S, '    tool_spec(ToolName, Props),\n'),
-    write(S, '    member(parameters(Params), Props),\n'),
-    write(S, '    build_properties(Params, PropsDict),\n'),
-    write(S, '    build_required(Params, ReqList),\n'),
-    write(S, '    Schema = _{type: "object", properties: PropsDict, required: ReqList}.\n\n'),
-    write(S, 'build_properties([], _{}).\n'),
-    write(S, 'build_properties([param(Name, Type, _, Desc)|Rest], Props) :-\n'),
-    write(S, '    build_properties(Rest, RestProps),\n'),
-    write(S, '    put_dict(Name, RestProps, _{type: Type, description: Desc}, Props).\n\n'),
-    write(S, 'build_required([], []).\n'),
-    write(S, 'build_required([param(Name, _, required, _)|Rest], [Name|RR]) :-\n'),
-    write(S, '    build_required(Rest, RR).\n'),
-    write(S, 'build_required([param(_, _, O, _)|Rest], RR) :-\n'),
-    write(S, '    O \\= required, build_required(Rest, RR).\n\n'),
-    %% Describe tool call
-    write(S, '%% Describe a tool call for display\n'),
-    write(S, 'describe_tool_call(Backend, ToolName, Params, Desc) :-\n'),
-    write(S, '    (tool_description(Backend, ToolName, Verb, ParamKey, Mode) ->\n'),
-    write(S, '        (get_dict(ParamKey, Params, Val0) -> true ; Val0 = "?"),\n'),
-    write(S, '        format_tool_value(Mode, Val0, Val),\n'),
-    write(S, '        format(atom(Desc), "~w ~w", [Verb, Val])\n'),
-    write(S, '    ; atom_string(ToolName, Desc)).\n\n'),
-    write(S, 'format_tool_value(basename, Path, Base) :-\n'),
-    write(S, '    file_base_name(Path, Base).\n'),
-    write(S, 'format_tool_value(raw, Val, Val).\n'),
-    write(S, 'format_tool_value(truncate(Max), Val, Truncated) :-\n'),
-    write(S, '    string_length(Val, Len),\n'),
-    write(S, '    (Len > Max ->\n'),
-    write(S, '        Cut is Max - 3,\n'),
-    write(S, '        sub_string(Val, 0, Cut, _, Pre),\n'),
-    write(S, '        string_concat(Pre, "...", Truncated)\n'),
-    write(S, '    ; Truncated = Val).\n\n'),
-    %% Confirm destructive
-    write(S, '%% Confirm before executing destructive tools\n'),
-    write(S, 'confirm_destructive(ToolName, Approved) :-\n'),
-    write(S, '    (destructive_tool(ToolName) ->\n'),
-    write(S, '        format("Tool \'~w\' may modify files. Execute? [y/N] ", [ToolName]),\n'),
-    write(S, '        read_line_to_string(user_input, Response),\n'),
-    write(S, '        (member(Response, ["y", "Y", "yes"]) -> Approved = true ; Approved = false)\n'),
-    write(S, '    ; Approved = true).\n'),
+    write_prolog(S, tools_execute_dispatch),
+    write_prolog(S, tools_schema),
+    write_prolog(S, tools_describe),
+    write_prolog(S, tools_confirm),
     close(S),
     format('  Generated prolog/tools.pl~n', []).
 
@@ -1464,52 +1250,15 @@ generate_prolog_commands :-
     output_path(prolog, 'commands.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, commands, 'Slash commands and aliases'),
-    write(S, ':- module(commands, [\n'),
-    write(S, '    slash_command/4,\n'),
-    write(S, '    command_alias/2,\n'),
-    write(S, '    slash_command_group/2,\n'),
-    write(S, '    resolve_command/3,\n'),
-    write(S, '    handle_slash_command/3\n'),
-    write(S, ']).\n\n'),
-    agent_loop_components:emit_module_dependencies(S, [module(commands)]),
-    write(S, ':- det(resolve_command/3).\n'),
-    write(S, ':- det(handle_slash_command/3).\n\n'),
-    %% Emit command facts via component registry
+    agent_loop_components:emit_prolog_module_skeleton(S, commands, [
+        exports([slash_command/4, command_alias/2, slash_command_group/2,
+                 resolve_command/3, handle_slash_command/3]),
+        dependencies([module(commands)]),
+        det([resolve_command/3, handle_slash_command/3])
+    ]),
     agent_loop_components:emit_command_facts(S, [target(prolog)]),
-    %% Generate resolve_command
-    write(S, '%% Resolve aliases — may return "command args" for compound aliases\n'),
-    write(S, 'resolve_command(Input, Command, ExtraArgs) :-\n'),
-    write(S, '    (command_alias(Input, Canonical) ->\n'),
-    write(S, '        %% Alias may contain embedded args like "backend yolo"\n'),
-    write(S, '        (sub_string(Canonical, SpaceIdx, 1, _, " ") ->\n'),
-    write(S, '            sub_string(Canonical, 0, SpaceIdx, _, CmdPart),\n'),
-    write(S, '            AfterSpace is SpaceIdx + 1,\n'),
-    write(S, '            sub_string(Canonical, AfterSpace, _, 0, ExtraArgs),\n'),
-    write(S, '            atom_string(Command, CmdPart)\n'),
-    write(S, '        ;\n'),
-    write(S, '            atom_string(Command, Canonical),\n'),
-    write(S, '            ExtraArgs = ""\n'),
-    write(S, '        )\n'),
-    write(S, '    ; atom_string(Command, Input), ExtraArgs = "").\n\n'),
-    %% Generate handle_slash_command
-    write(S, '%% Handle a slash command — returns action to take\n'),
-    write(S, 'handle_slash_command(RawCmd, Args, Action) :-\n'),
-    write(S, '    (atom_concat(''/'', Cmd0, RawCmd) -> true ; Cmd0 = RawCmd),\n'),
-    write(S, '    atom_string(Cmd0, CmdStr),\n'),
-    write(S, '    resolve_command(CmdStr, CmdAtom, ExtraArgs),\n'),
-    write(S, '    %% Merge ExtraArgs with explicit Args\n'),
-    write(S, '    (ExtraArgs = "" -> FinalArgs = Args\n'),
-    write(S, '    ; Args = "" -> FinalArgs = ExtraArgs\n'),
-    write(S, '    ; atom_concat(ExtraArgs, " ", Tmp), atom_concat(Tmp, Args, FinalArgs)),\n'),
-    write(S, '    (slash_command(CmdAtom, _Match, Opts, _Help) ->\n'),
-    write(S, '        (member(handler(Handler), Opts) ->\n'),
-    write(S, '            Action = call_handler(Handler, FinalArgs)\n'),
-    write(S, '        ; CmdAtom = exit -> Action = exit\n'),
-    write(S, '        ; CmdAtom = clear -> Action = clear\n'),
-    write(S, '        ; CmdAtom = help -> Action = help\n'),
-    write(S, '        ; CmdAtom = status -> Action = status\n'),
-    write(S, '        ; Action = unknown(CmdAtom))\n'),
-    write(S, '    ; Action = not_a_command).\n'),
+    write_prolog(S, commands_resolve),
+    write_prolog(S, commands_handle_slash),
     close(S),
     format('  Generated prolog/commands.pl~n', []).
 
@@ -1521,18 +1270,14 @@ generate_prolog_security :-
     output_path(prolog, 'security.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, security, 'Security profiles and path/command validation'),
-    agent_loop_components:emit_prolog_module_header(S, security, [
-        exports([
-            security_profile/2, blocked_path/1, blocked_path_prefix/1,
-            blocked_home_pattern/1, blocked_command_pattern/2,
-            is_path_blocked/1, is_command_blocked/2,
-            check_path_allowed/2, check_command_allowed/2,
-            set_security_profile/1
-        ]),
-        use_modules([library(pcre)])
-    ]),
-    agent_loop_components:emit_module_dependencies(S, [module(security)]),
-    agent_loop_components:emit_prolog_declarations(S, [
+    agent_loop_components:emit_prolog_module_skeleton(S, security, [
+        exports([security_profile/2, blocked_path/1, blocked_path_prefix/1,
+                 blocked_home_pattern/1, blocked_command_pattern/2,
+                 is_path_blocked/1, is_command_blocked/2,
+                 check_path_allowed/2, check_command_allowed/2,
+                 set_security_profile/1]),
+        use_modules([library(pcre)]),
+        dependencies([module(security)]),
         det([check_path_allowed/2, check_command_allowed/2, set_security_profile/1])
     ]),
     write(S, ':- dynamic current_security_profile/1.\n'),
@@ -1552,30 +1297,18 @@ generate_prolog_backends :-
     output_path(prolog, 'backends.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, backends, 'Backend definitions and API dispatch'),
-    write(S, ':- module(backends, [\n'),
-    write(S, '    agent_backend/2,\n'),
-    write(S, '    backend_factory/2,\n'),
-    write(S, '    backend_factory_order/1,\n'),
-    write(S, '    cli_fallbacks/2,\n'),
-    write(S, '    create_backend/3,\n'),
-    write(S, '    retry_config/3,\n'),
-    write(S, '    retry_call/2,\n'),
-    write(S, '    send_request/4,\n'),
-    write(S, '    send_request_streaming/4,\n'),
-    write(S, '    format_api_error/2,\n'),
-    write(S, '    streaming_capable/1\n'),
-    write(S, ']).\n\n'),
-    write(S, ':- use_module(library(http/http_open)).\n'),
-    write(S, ':- use_module(library(http/http_header)).\n'),
-    write(S, ':- use_module(library(json)).\n'),
-    write(S, ':- use_module(library(readutil)).\n'),
-    write(S, ':- use_module(library(process)).\n'),
-    write(S, ':- use_module(library(random)).\n'),
-    write(S, ':- discontiguous send_request_streaming_raw/5.\n\n'),
-    write(S, ':- det(create_backend/3).\n'),
-    write(S, ':- det(retry_call/2).\n'),
-    write(S, ':- det(format_api_error/2).\n\n'),
-    agent_loop_components:emit_module_dependencies(S, [module(backends)]),
+    agent_loop_components:emit_prolog_module_skeleton(S, backends, [
+        exports([agent_backend/2, backend_factory/2, backend_factory_order/1,
+                 cli_fallbacks/2, create_backend/3, retry_config/3, retry_call/2,
+                 send_request/4, send_request_streaming/4, format_api_error/2,
+                 streaming_capable/1]),
+        use_modules_compact([library(http/http_open), library(http/http_header),
+                             library(json), library(readutil), library(process),
+                             library(random)]),
+        discontiguous([send_request_streaming_raw/5]),
+        det([create_backend/3, retry_call/2, format_api_error/2]),
+        dependencies([module(backends)])
+    ]),
     %% Emit backend facts via component registry
     agent_loop_components:emit_backend_facts(S, [target(prolog)]),
     %% Generate create_backend
@@ -3102,6 +2835,203 @@ emit_profile_field_value(S, FieldName, 'list[str]', Value) :-
 %% =============================================================================
 %% Generator: costs.py
 %% =============================================================================
+%% --- Cost py_fragments ---
+
+py_fragment(cost_usage_record, '@dataclass
+class UsageRecord:
+    """Record of a single API call."""
+    timestamp: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    input_cost: float
+    output_cost: float
+    total_cost: float
+
+
+').
+
+py_fragment(cost_tracker_class_def, '@dataclass
+class CostTracker:
+    """Track API costs for a session."""
+
+    pricing: dict = field(default_factory=lambda: DEFAULT_PRICING.copy())
+    records: list[UsageRecord] = field(default_factory=list)
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cost: float = 0.0
+
+').
+
+py_fragment(cost_tracker_methods, '    def record_usage(self, model: str, input_tokens: int, output_tokens: int) -> UsageRecord:
+        """Record token usage and calculate cost."""
+        pricing = self.pricing.get(model, {"input": 0.0, "output": 0.0})
+        input_cost = (input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (output_tokens / 1_000_000) * pricing["output"]
+        total_cost = input_cost + output_cost
+        record = UsageRecord(
+            timestamp=datetime.now().isoformat(),
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            input_cost=input_cost,
+            output_cost=output_cost,
+            total_cost=total_cost
+        )
+        self.records.append(record)
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.total_cost += total_cost
+        return record
+
+    def get_summary(self) -> dict:
+        """Get a summary of costs."""
+        return {
+            "total_requests": len(self.records),
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_tokens": self.total_input_tokens + self.total_output_tokens,
+            "total_cost_usd": round(self.total_cost, 6),
+            "cost_formatted": f"${self.total_cost:.4f}"
+        }
+
+    def format_status(self) -> str:
+        """Format cost status for display."""
+        summary = self.get_summary()
+        return (
+            f"Tokens: {summary[\'total_input_tokens\']:,} in / "
+            f"{summary[\'total_output_tokens\']:,} out | "
+            f"Cost: {summary[\'cost_formatted\']}"
+        )
+
+    def reset(self) -> None:
+        """Reset all tracking."""
+        self.records.clear()
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost = 0.0
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization."""
+        return {
+            "summary": self.get_summary(),
+            "records": [
+                {
+                    "timestamp": r.timestamp,
+                    "model": r.model,
+                    "input_tokens": r.input_tokens,
+                    "output_tokens": r.output_tokens,
+                    "input_cost": r.input_cost,
+                    "output_cost": r.output_cost,
+                    "total_cost": r.total_cost
+                }
+                for r in self.records
+            ]
+        }
+
+    def save(self, path: str | Path) -> None:
+        """Save cost data to JSON file."""
+        path = Path(path)
+        path.write_text(json.dumps(self.to_dict(), indent=2))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "CostTracker":
+        """Load cost data from JSON file."""
+        path = Path(path)
+        data = json.loads(path.read_text())
+        tracker = cls()
+        for r in data.get("records", []):
+            record = UsageRecord(
+                timestamp=r["timestamp"],
+                model=r["model"],
+                input_tokens=r["input_tokens"],
+                output_tokens=r["output_tokens"],
+                input_cost=r["input_cost"],
+                output_cost=r["output_cost"],
+                total_cost=r["total_cost"]
+            )
+            tracker.records.append(record)
+            tracker.total_input_tokens += record.input_tokens
+            tracker.total_output_tokens += record.output_tokens
+            tracker.total_cost += record.total_cost
+        return tracker
+
+    def set_pricing(self, model: str, input_price: float, output_price: float) -> None:
+        """Set custom pricing for a model (per 1M tokens)."""
+        self.pricing[model] = {"input": input_price, "output": output_price}
+
+    def ensure_pricing(self, model: str) -> bool:
+        """Ensure pricing exists for a model. Fetch from OpenRouter if needed."""
+        if model in self.pricing:
+            return True
+        pricing = fetch_openrouter_pricing(model)
+        if pricing:
+            self.pricing[model] = pricing
+            return True
+        return False
+
+
+').
+
+py_fragment(cost_openrouter, '# --- OpenRouter pricing ---
+
+_OPENROUTER_CACHE_DIR = Path(os.environ.get(
+    \'AGENT_LOOP_CACHE\', os.path.expanduser(\'~/.agent-loop/cache\')
+))
+_OPENROUTER_CACHE_FILE = _OPENROUTER_CACHE_DIR / \'openrouter_pricing.json\'
+_OPENROUTER_CACHE_TTL = 86400  # 1 day
+
+
+def _load_openrouter_cache() -> dict | None:
+    """Load cached OpenRouter pricing if fresh enough."""
+    try:
+        if not _OPENROUTER_CACHE_FILE.exists():
+            return None
+        age = time.time() - _OPENROUTER_CACHE_FILE.stat().st_mtime
+        if age > _OPENROUTER_CACHE_TTL:
+            return None
+        return json.loads(_OPENROUTER_CACHE_FILE.read_text())
+    except Exception:
+        return None
+
+
+def _save_openrouter_cache(pricing: dict) -> None:
+    """Save OpenRouter pricing to cache."""
+    try:
+        _OPENROUTER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _OPENROUTER_CACHE_FILE.write_text(json.dumps(pricing))
+    except Exception:
+        pass
+
+
+def fetch_openrouter_pricing(model_id: str) -> dict | None:
+    """Fetch pricing for a model from OpenRouter\'s API."""
+    cache = _load_openrouter_cache()
+    if cache and model_id in cache:
+        return cache[model_id]
+    try:
+        req = Request(
+            \'https://openrouter.ai/api/v1/models\',
+            headers={\'Content-Type\': \'application/json\'}
+        )
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+    except (URLError, json.JSONDecodeError, OSError) as e:
+        print(f"  [OpenRouter pricing fetch failed: {e}]", file=sys.stderr)
+        return None
+    pricing_cache = {}
+    for m in data.get(\'data\', []):
+        mid = m.get(\'id\', \'\')
+        p = m.get(\'pricing\', {})
+        prompt_per_token = float(p.get(\'prompt\', \'0\') or \'0\')
+        completion_per_token = float(p.get(\'completion\', \'0\') or \'0\')
+        pricing_cache[mid] = {
+            \'input\': round(prompt_per_token * 1_000_000, 4),
+            \'output\': round(completion_per_token * 1_000_000, 4),
+        }
+    _save_openrouter_cache(pricing_cache)
+    return pricing_cache.get(model_id)
+').
 
 generate_costs :-
     output_path(python, 'costs.py', CostsPath),
@@ -3121,182 +3051,11 @@ generate_costs :-
     write(S, '# Pricing per 1M tokens (auto-generated from Prolog facts)\n'),
     agent_loop_components:emit_py_dict_from_components(S, agent_costs, model_pricing/3, python, []),
     write(S, '\n\n'),
-    %% UsageRecord dataclass
-    agent_loop_components:write_lines(S, [
-        '@dataclass',
-        'class UsageRecord:',
-        '    """Record of a single API call."""',
-        '    timestamp: str',
-        '    model: str',
-        '    input_tokens: int',
-        '    output_tokens: int',
-        '    input_cost: float',
-        '    output_cost: float',
-        '    total_cost: float',
-        '', ''
-    ]),
-    %% CostTracker class — hybrid (structure from facts, methods embedded)
-    agent_loop_components:write_lines(S, [
-        '@dataclass',
-        'class CostTracker:',
-        '    """Track API costs for a session."""',
-        '',
-        '    pricing: dict = field(default_factory=lambda: DEFAULT_PRICING.copy())',
-        '    records: list[UsageRecord] = field(default_factory=list)'
-    ]),
-    write(S, '    total_input_tokens: int = 0\n'),
-    write(S, '    total_output_tokens: int = 0\n'),
-    write(S, '    total_cost: float = 0.0\n\n'),
-    write(S, '    def record_usage(self, model: str, input_tokens: int, output_tokens: int) -> UsageRecord:\n'),
-    write(S, '        """Record token usage and calculate cost."""\n'),
-    write(S, '        pricing = self.pricing.get(model, {"input": 0.0, "output": 0.0})\n'),
-    write(S, '        input_cost = (input_tokens / 1_000_000) * pricing["input"]\n'),
-    write(S, '        output_cost = (output_tokens / 1_000_000) * pricing["output"]\n'),
-    write(S, '        total_cost = input_cost + output_cost\n'),
-    write(S, '        record = UsageRecord(\n'),
-    write(S, '            timestamp=datetime.now().isoformat(),\n'),
-    write(S, '            model=model,\n'),
-    write(S, '            input_tokens=input_tokens,\n'),
-    write(S, '            output_tokens=output_tokens,\n'),
-    write(S, '            input_cost=input_cost,\n'),
-    write(S, '            output_cost=output_cost,\n'),
-    write(S, '            total_cost=total_cost\n'),
-    write(S, '        )\n'),
-    write(S, '        self.records.append(record)\n'),
-    write(S, '        self.total_input_tokens += input_tokens\n'),
-    write(S, '        self.total_output_tokens += output_tokens\n'),
-    write(S, '        self.total_cost += total_cost\n'),
-    write(S, '        return record\n\n'),
-    write(S, '    def get_summary(self) -> dict:\n'),
-    write(S, '        """Get a summary of costs."""\n'),
-    write(S, '        return {\n'),
-    write(S, '            "total_requests": len(self.records),\n'),
-    write(S, '            "total_input_tokens": self.total_input_tokens,\n'),
-    write(S, '            "total_output_tokens": self.total_output_tokens,\n'),
-    write(S, '            "total_tokens": self.total_input_tokens + self.total_output_tokens,\n'),
-    write(S, '            "total_cost_usd": round(self.total_cost, 6),\n'),
-    write(S, '            "cost_formatted": f"${self.total_cost:.4f}"\n'),
-    write(S, '        }\n\n'),
-    write(S, '    def format_status(self) -> str:\n'),
-    write(S, '        """Format cost status for display."""\n'),
-    write(S, '        summary = self.get_summary()\n'),
-    write(S, '        return (\n'),
-    write(S, '            f"Tokens: {summary[\'total_input_tokens\']:,} in / "\n'),
-    write(S, '            f"{summary[\'total_output_tokens\']:,} out | "\n'),
-    write(S, '            f"Cost: {summary[\'cost_formatted\']}"\n'),
-    write(S, '        )\n\n'),
-    write(S, '    def reset(self) -> None:\n'),
-    write(S, '        """Reset all tracking."""\n'),
-    write(S, '        self.records.clear()\n'),
-    write(S, '        self.total_input_tokens = 0\n'),
-    write(S, '        self.total_output_tokens = 0\n'),
-    write(S, '        self.total_cost = 0.0\n\n'),
-    write(S, '    def to_dict(self) -> dict:\n'),
-    write(S, '        """Convert to dictionary for serialization."""\n'),
-    write(S, '        return {\n'),
-    write(S, '            "summary": self.get_summary(),\n'),
-    write(S, '            "records": [\n'),
-    write(S, '                {\n'),
-    write(S, '                    "timestamp": r.timestamp,\n'),
-    write(S, '                    "model": r.model,\n'),
-    write(S, '                    "input_tokens": r.input_tokens,\n'),
-    write(S, '                    "output_tokens": r.output_tokens,\n'),
-    write(S, '                    "input_cost": r.input_cost,\n'),
-    write(S, '                    "output_cost": r.output_cost,\n'),
-    write(S, '                    "total_cost": r.total_cost\n'),
-    write(S, '                }\n'),
-    write(S, '                for r in self.records\n'),
-    write(S, '            ]\n'),
-    write(S, '        }\n\n'),
-    write(S, '    def save(self, path: str | Path) -> None:\n'),
-    write(S, '        """Save cost data to JSON file."""\n'),
-    write(S, '        path = Path(path)\n'),
-    write(S, '        path.write_text(json.dumps(self.to_dict(), indent=2))\n\n'),
-    write(S, '    @classmethod\n'),
-    write(S, '    def load(cls, path: str | Path) -> "CostTracker":\n'),
-    write(S, '        """Load cost data from JSON file."""\n'),
-    write(S, '        path = Path(path)\n'),
-    write(S, '        data = json.loads(path.read_text())\n'),
-    write(S, '        tracker = cls()\n'),
-    write(S, '        for r in data.get("records", []):\n'),
-    write(S, '            record = UsageRecord(\n'),
-    write(S, '                timestamp=r["timestamp"],\n'),
-    write(S, '                model=r["model"],\n'),
-    write(S, '                input_tokens=r["input_tokens"],\n'),
-    write(S, '                output_tokens=r["output_tokens"],\n'),
-    write(S, '                input_cost=r["input_cost"],\n'),
-    write(S, '                output_cost=r["output_cost"],\n'),
-    write(S, '                total_cost=r["total_cost"]\n'),
-    write(S, '            )\n'),
-    write(S, '            tracker.records.append(record)\n'),
-    write(S, '            tracker.total_input_tokens += record.input_tokens\n'),
-    write(S, '            tracker.total_output_tokens += record.output_tokens\n'),
-    write(S, '            tracker.total_cost += record.total_cost\n'),
-    write(S, '        return tracker\n\n'),
-    write(S, '    def set_pricing(self, model: str, input_price: float, output_price: float) -> None:\n'),
-    write(S, '        """Set custom pricing for a model (per 1M tokens)."""\n'),
-    write(S, '        self.pricing[model] = {"input": input_price, "output": output_price}\n\n'),
-    write(S, '    def ensure_pricing(self, model: str) -> bool:\n'),
-    write(S, '        """Ensure pricing exists for a model. Fetch from OpenRouter if needed."""\n'),
-    write(S, '        if model in self.pricing:\n'),
-    write(S, '            return True\n'),
-    write(S, '        pricing = fetch_openrouter_pricing(model)\n'),
-    write(S, '        if pricing:\n'),
-    write(S, '            self.pricing[model] = pricing\n'),
-    write(S, '            return True\n'),
-    write(S, '        return False\n\n\n'),
-    %% OpenRouter pricing helper
-    write(S, '# --- OpenRouter pricing ---\n\n'),
-    write(S, '_OPENROUTER_CACHE_DIR = Path(os.environ.get(\n'),
-    write(S, '    \'AGENT_LOOP_CACHE\', os.path.expanduser(\'~/.agent-loop/cache\')\n'),
-    write(S, '))\n'),
-    write(S, '_OPENROUTER_CACHE_FILE = _OPENROUTER_CACHE_DIR / \'openrouter_pricing.json\'\n'),
-    write(S, '_OPENROUTER_CACHE_TTL = 86400  # 1 day\n\n\n'),
-    write(S, 'def _load_openrouter_cache() -> dict | None:\n'),
-    write(S, '    """Load cached OpenRouter pricing if fresh enough."""\n'),
-    write(S, '    try:\n'),
-    write(S, '        if not _OPENROUTER_CACHE_FILE.exists():\n'),
-    write(S, '            return None\n'),
-    write(S, '        age = time.time() - _OPENROUTER_CACHE_FILE.stat().st_mtime\n'),
-    write(S, '        if age > _OPENROUTER_CACHE_TTL:\n'),
-    write(S, '            return None\n'),
-    write(S, '        return json.loads(_OPENROUTER_CACHE_FILE.read_text())\n'),
-    write(S, '    except Exception:\n'),
-    write(S, '        return None\n\n\n'),
-    write(S, 'def _save_openrouter_cache(pricing: dict) -> None:\n'),
-    write(S, '    """Save OpenRouter pricing to cache."""\n'),
-    write(S, '    try:\n'),
-    write(S, '        _OPENROUTER_CACHE_DIR.mkdir(parents=True, exist_ok=True)\n'),
-    write(S, '        _OPENROUTER_CACHE_FILE.write_text(json.dumps(pricing))\n'),
-    write(S, '    except Exception:\n'),
-    write(S, '        pass\n\n\n'),
-    write(S, 'def fetch_openrouter_pricing(model_id: str) -> dict | None:\n'),
-    write(S, '    """Fetch pricing for a model from OpenRouter\'s API."""\n'),
-    write(S, '    cache = _load_openrouter_cache()\n'),
-    write(S, '    if cache and model_id in cache:\n'),
-    write(S, '        return cache[model_id]\n'),
-    write(S, '    try:\n'),
-    write(S, '        req = Request(\n'),
-    write(S, '            \'https://openrouter.ai/api/v1/models\',\n'),
-    write(S, '            headers={\'Content-Type\': \'application/json\'}\n'),
-    write(S, '        )\n'),
-    write(S, '        with urlopen(req, timeout=10) as resp:\n'),
-    write(S, '            data = json.loads(resp.read().decode())\n'),
-    write(S, '    except (URLError, json.JSONDecodeError, OSError) as e:\n'),
-    write(S, '        print(f"  [OpenRouter pricing fetch failed: {e}]", file=sys.stderr)\n'),
-    write(S, '        return None\n'),
-    write(S, '    pricing_cache = {}\n'),
-    write(S, '    for m in data.get(\'data\', []):\n'),
-    write(S, '        mid = m.get(\'id\', \'\')\n'),
-    write(S, '        p = m.get(\'pricing\', {})\n'),
-    write(S, '        prompt_per_token = float(p.get(\'prompt\', \'0\') or \'0\')\n'),
-    write(S, '        completion_per_token = float(p.get(\'completion\', \'0\') or \'0\')\n'),
-    write(S, '        pricing_cache[mid] = {\n'),
-    write(S, '            \'input\': round(prompt_per_token * 1_000_000, 4),\n'),
-    write(S, '            \'output\': round(completion_per_token * 1_000_000, 4),\n'),
-    write(S, '        }\n'),
-    write(S, '    _save_openrouter_cache(pricing_cache)\n'),
-    write(S, '    return pricing_cache.get(model_id)\n'),
+    %% Classes and methods (declarative via py_fragments)
+    write_py(S, cost_usage_record),
+    write_py(S, cost_tracker_class_def),
+    write_py(S, cost_tracker_methods),
+    write_py(S, cost_openrouter),
     close(S),
     format('  Generated costs.py~n', []).
 
@@ -4383,6 +4142,297 @@ replace_all_sub(String, Sub, Rep, Result) :-
     ;
         Result = String
     ).
+
+%% --- Prolog fragments: named Prolog code blocks ---
+%% Parallel to py_fragment/2 — stores Prolog code for write_prolog/2.
+%% Extracts verbatim Prolog into composable, testable units.
+
+:- discontiguous prolog_fragment/2.
+
+%% Write a named Prolog fragment to stream
+write_prolog(S, Name) :-
+    (prolog_fragment(Name, Code) ->
+        write(S, Code)
+    ;
+        format(atom(Msg), 'Unknown prolog_fragment: ~w', [Name]),
+        throw(error(existence_error(prolog_fragment, Name), context(write_prolog/2, Msg)))
+    ).
+
+%% Write a Prolog fragment with {{Key}} -> Value substitutions
+write_prolog(S, Name, Subs) :-
+    prolog_fragment(Name, Code),
+    apply_subs(Code, Subs, Result),
+    write(S, Result).
+
+%% --- Fragment: cost_tracker_impl (costs.pl) ---
+
+prolog_fragment(cost_tracker_impl, '
+%% Cost tracker using dynamic state
+:- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)
+
+cost_tracker_init(ID) :-
+    retractall(cost_state(ID, _, _)),
+    assert(cost_state(ID, 0, 0)).
+
+cost_tracker_add(ID, Model, InputTokens, OutputTokens) :-
+    retract(cost_state(ID, OldIn, OldOut)),
+    NewIn is OldIn + InputTokens,
+    NewOut is OldOut + OutputTokens,
+    assert(cost_state(ID, NewIn, NewOut)),
+    (model_pricing(Model, InPrice, OutPrice) ->
+        Cost is (InputTokens * InPrice + OutputTokens * OutPrice) / 1000000,
+        format("  [cost: $~4f (~w in, ~w out)]~n", [Cost, InputTokens, OutputTokens])
+    ; true).
+
+cost_tracker_total(ID, Total) :-
+    cost_state(ID, TotalIn, TotalOut),
+    Total = tokens(TotalIn, TotalOut).
+
+cost_tracker_format(ID, Formatted) :-
+    cost_state(ID, TotalIn, TotalOut),
+    format(atom(Formatted), "~w input, ~w output tokens", [TotalIn, TotalOut]).
+').
+
+%% --- Fragment: config_parse_cli (config.pl) ---
+
+prolog_fragment(config_parse_cli, '%% Parse CLI arguments using SWI-Prolog optparse
+parse_cli_args(Argv, Options) :-
+    build_opt_spec(Spec),
+    opt_parse(Spec, Argv, Options, _Positional).
+
+build_opt_spec(Spec) :-
+    findall(OptSpec, (
+        cli_argument(Name, Props),
+        member(long(Long), Props),
+        atom_concat(''--'', OptName, Long),
+        build_one_opt(Name, OptName, Props, OptSpec)
+    ), Spec).
+
+build_one_opt(Name, OptName, Props, opt(OptName, Name, Type, Help)) :-
+    (member(type(int), Props) -> Type = integer ; Type = atom),
+    (member(help(Help0), Props) -> Help0 = Help ; Help = '''').
+
+').
+
+%% --- Fragment: config_load_config (config.pl) ---
+
+prolog_fragment(config_load_config, '%% Load config from JSON file
+load_config(Path, Config) :-
+    (exists_file(Path) ->
+        setup_call_cleanup(
+            open(Path, read, In),
+            json_read_dict(In, Config),
+            close(In))
+    ; Config = _{}).
+
+').
+
+%% --- Fragment: config_resolve_api_key (config.pl) ---
+
+prolog_fragment(config_resolve_api_key, '%% Resolve API key: check explicit, then env var, then file
+resolve_api_key(Backend, Explicit, Key) :-
+    (Explicit \\= none -> Key = Explicit
+    ; api_key_env_var(Backend, EnvVar),
+      getenv(EnvVar, Key), Key \\= '''' -> true
+    ; api_key_file(Backend, FilePath),
+      expand_file_name(FilePath, [Expanded]),
+      exists_file(Expanded),
+      read_file_to_string(Expanded, Key0, []),
+      normalize_space(atom(Key), Key0) -> true
+    ; Key = none).
+').
+
+%% --- Fragment: commands_resolve (commands.pl) ---
+
+prolog_fragment(commands_resolve, '%% Resolve aliases — may return "command args" for compound aliases
+resolve_command(Input, Command, ExtraArgs) :-
+    (command_alias(Input, Canonical) ->
+        %% Alias may contain embedded args like "backend yolo"
+        (sub_string(Canonical, SpaceIdx, 1, _, " ") ->
+            sub_string(Canonical, 0, SpaceIdx, _, CmdPart),
+            AfterSpace is SpaceIdx + 1,
+            sub_string(Canonical, AfterSpace, _, 0, ExtraArgs),
+            atom_string(Command, CmdPart)
+        ;
+            atom_string(Command, Canonical),
+            ExtraArgs = ""
+        )
+    ; atom_string(Command, Input), ExtraArgs = "").
+
+').
+
+%% --- Fragment: commands_handle_slash (commands.pl) ---
+
+prolog_fragment(commands_handle_slash, '%% Handle a slash command — returns action to take
+handle_slash_command(RawCmd, Args, Action) :-
+    (atom_concat(''/'', Cmd0, RawCmd) -> true ; Cmd0 = RawCmd),
+    atom_string(Cmd0, CmdStr),
+    resolve_command(CmdStr, CmdAtom, ExtraArgs),
+    %% Merge ExtraArgs with explicit Args
+    (ExtraArgs = "" -> FinalArgs = Args
+    ; Args = "" -> FinalArgs = ExtraArgs
+    ; atom_concat(ExtraArgs, " ", Tmp), atom_concat(Tmp, Args, FinalArgs)),
+    (slash_command(CmdAtom, _Match, Opts, _Help) ->
+        (member(handler(Handler), Opts) ->
+            Action = call_handler(Handler, FinalArgs)
+        ; CmdAtom = exit -> Action = exit
+        ; CmdAtom = clear -> Action = clear
+        ; CmdAtom = help -> Action = help
+        ; CmdAtom = status -> Action = status
+        ; Action = unknown(CmdAtom))
+    ; Action = not_a_command).
+').
+
+%% --- Fragment: tools_execute_dispatch (tools.pl) ---
+
+prolog_fragment(tools_execute_dispatch, '%% Execute a tool by name
+execute_tool(ToolName, Params, Result) :-
+    (tool_handler(ToolName, _) -> true
+    ; format(atom(Err), "Unknown tool: ~w", [ToolName]),
+      Result = error(Err), !),
+    execute_tool_impl(ToolName, Params, Result).
+
+execute_tool_impl(bash, Params, Result) :-
+    get_dict(command, Params, Cmd),
+    check_command_allowed(Cmd, CmdCheck),
+    (CmdCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ;
+        tool_spec(bash, BashProps),
+        (member(timeout(Timeout), BashProps) -> true ; Timeout = 120),
+        catch(
+            call_with_time_limit(Timeout, (
+                setup_call_cleanup(
+                    process_create(path(bash), [''-c'', Cmd],
+                        [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),
+                    (read_string(Out, _, StdOut),
+                     read_string(Err, _, StdErr),
+                     process_wait(PID, Status)),
+                    (close(Out), close(Err))),
+                (Status = exit(0) ->
+                    Result0 = ok(StdOut)
+                ;   format(atom(ErrMsg), "Exit ~w: ~w~w", [Status, StdOut, StdErr]),
+                    Result0 = error(ErrMsg))
+            )),
+            time_limit_exceeded,
+            (format(atom(TimeErr), "Command timed out after ~w seconds", [Timeout]),
+             Result0 = error(TimeErr))
+        ),
+        Result = Result0
+    ).
+
+execute_tool_impl(read, Params, Result) :-
+    get_dict(path, Params, FilePath),
+    check_path_allowed(FilePath, PathCheck),
+    (PathCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ; exists_file(FilePath) ->
+        read_file_to_string(FilePath, Content, []),
+        Result = ok(Content)
+    ;   format(atom(Err), "File not found: ~w", [FilePath]),
+        Result = error(Err)).
+
+execute_tool_impl(write, Params, Result) :-
+    get_dict(path, Params, FilePath),
+    get_dict(content, Params, Content),
+    check_path_allowed(FilePath, PathCheck),
+    (PathCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ;
+        setup_call_cleanup(
+            open(FilePath, write, Out),
+            write(Out, Content),
+            close(Out)),
+        format(atom(Msg), "Wrote ~w", [FilePath]),
+        Result = ok(Msg)
+    ).
+
+execute_tool_impl(edit, Params, Result) :-
+    get_dict(path, Params, FilePath),
+    get_dict(old_string, Params, OldStr),
+    get_dict(new_string, Params, NewStr),
+    check_path_allowed(FilePath, PathCheck),
+    (PathCheck = blocked(Reason) ->
+        format(atom(BlkErr), "Blocked: ~w", [Reason]),
+        Result = error(BlkErr)
+    ; exists_file(FilePath) ->
+        read_file_to_string(FilePath, Content, []),
+        (sub_string(Content, Before, _, After, OldStr) ->
+            sub_string(Content, 0, Before, _, Pre),
+            Len is Before + (string_length(Content) - Before - After),
+            sub_string(Content, Len, After, 0, Post),
+            string_concat(Pre, NewStr, Temp),
+            string_concat(Temp, Post, NewContent),
+            setup_call_cleanup(
+                open(FilePath, write, Out),
+                write(Out, NewContent),
+                close(Out)),
+            Result = ok("Edit applied")
+        ;   Result = error("Old string not found"))
+    ;   format(atom(Err), "File not found: ~w", [FilePath]),
+        Result = error(Err)).
+
+').
+
+%% --- Fragment: tools_schema (tools.pl) ---
+
+prolog_fragment(tools_schema, '%% Build JSON Schema input_schema from tool_spec parameters
+build_tool_input_schema(ToolName, Schema) :-
+    tool_spec(ToolName, Props),
+    member(parameters(Params), Props),
+    build_properties(Params, PropsDict),
+    build_required(Params, ReqList),
+    Schema = _{type: "object", properties: PropsDict, required: ReqList}.
+
+build_properties([], _{}).
+build_properties([param(Name, Type, _, Desc)|Rest], Props) :-
+    build_properties(Rest, RestProps),
+    put_dict(Name, RestProps, _{type: Type, description: Desc}, Props).
+
+build_required([], []).
+build_required([param(Name, _, required, _)|Rest], [Name|RR]) :-
+    build_required(Rest, RR).
+build_required([param(_, _, O, _)|Rest], RR) :-
+    O \\= required, build_required(Rest, RR).
+
+').
+
+%% --- Fragment: tools_describe (tools.pl) ---
+
+prolog_fragment(tools_describe, '%% Describe a tool call for display
+describe_tool_call(Backend, ToolName, Params, Desc) :-
+    (tool_description(Backend, ToolName, Verb, ParamKey, Mode) ->
+        (get_dict(ParamKey, Params, Val0) -> true ; Val0 = "?"),
+        format_tool_value(Mode, Val0, Val),
+        format(atom(Desc), "~w ~w", [Verb, Val])
+    ; atom_string(ToolName, Desc)).
+
+format_tool_value(basename, Path, Base) :-
+    file_base_name(Path, Base).
+format_tool_value(raw, Val, Val).
+format_tool_value(truncate(Max), Val, Truncated) :-
+    string_length(Val, Len),
+    (Len > Max ->
+        Cut is Max - 3,
+        sub_string(Val, 0, Cut, _, Pre),
+        string_concat(Pre, "...", Truncated)
+    ; Truncated = Val).
+
+').
+
+%% --- Fragment: tools_confirm (tools.pl) ---
+
+prolog_fragment(tools_confirm, '%% Confirm before executing destructive tools
+confirm_destructive(ToolName, Approved) :-
+    (destructive_tool(ToolName) ->
+        format("Tool ''~w'' may modify files. Execute? [y/N] ", [ToolName]),
+        read_line_to_string(user_input, Response),
+        (member(Response, ["y", "Y", "yes"]) -> Approved = true ; Approved = false)
+    ; Approved = true).
+').
 
 %% --- Fragment: _format_prompt (shared by 5 CLI backends) ---
 
