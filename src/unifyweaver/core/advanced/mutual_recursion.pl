@@ -89,7 +89,7 @@ merge_scc_constraints(Predicates, MergedConstraints) :-
 %  intersection of constraints (most restrictive wins):
 %  - If ANY predicate has unique(false), memoization is disabled for all
 %  - If ANY predicate requires ordered, hash-based memo is used for all
-compile_mutual_recursion(Predicates, Options, BashCode) :-
+compile_mutual_recursion(Predicates, Options, Code) :-
     format('  Compiling mutual recursion group: ~w~n', [Predicates]),
 
     % Merge constraints from all predicates in the SCC
@@ -114,8 +114,48 @@ compile_mutual_recursion(Predicates, Options, BashCode) :-
     ;   MemoStrategy = standard
     ),
 
-    % Generate bash code for the group
-    generate_mutual_recursion_bash(Predicates, MemoEnabled, MemoStrategy, BashCode).
+    % Determine target
+    (   member(target(Target), AllOptions) -> true
+    ;   Target = bash
+    ),
+    format('  Target: ~w~n', [Target]),
+
+    % Generate code for the group
+    (   Target == r ->
+        generate_mutual_recursion_r(Predicates, MemoEnabled, MemoStrategy, Code)
+    ;   Target == bash ->
+        generate_mutual_recursion_bash(Predicates, MemoEnabled, MemoStrategy, Code)
+    ;   format('Error: Unsupported target ~w for mutual recursion~n', [Target]),
+        fail
+    ).
+
+%% generate_mutual_recursion_r(+Predicates, +MemoEnabled, +MemoStrategy, -RCode)
+generate_mutual_recursion_r(Predicates, MemoEnabled, MemoStrategy, RCode) :-
+    findall(PredStr,
+        (   member(Pred/_Arity, Predicates),
+            atom_string(Pred, PredStr)
+        ),
+        PredStrs),
+    atomic_list_concat(PredStrs, '_', GroupName),
+
+    % Generate R header
+    (   MemoEnabled = true ->
+        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())'
+    ;   MemoDecl = '# Shared memoization disabled'
+    ),
+    format(string(HeaderCode), '# Mutually recursive group: ~w
+# Constraints: memo=~w, strategy=~w
+~w
+', [GroupName, MemoEnabled, MemoStrategy, MemoDecl]),
+    
+    % We will just use a stub for mutual recursion in R for now
+    % (Mutual recursion analysis is complex, stubbing to demonstrate the structure)
+    format(string(FunctionsCode), '
+# Mutual recursion predicates for group ~w
+# TODO: Implement full AST unrolling for mutual recursion in R
+', [GroupName]),
+
+    format(string(RCode), '~s~n~s', [HeaderCode, FunctionsCode]).
 
 %% generate_mutual_recursion_bash(+Predicates, +MemoEnabled, +MemoStrategy, -BashCode)
 generate_mutual_recursion_bash(Predicates, MemoEnabled, MemoStrategy, BashCode) :-
@@ -650,9 +690,12 @@ test_mutual_recursion :-
 
     (   can_compile_mutual_recursion(Predicates1) ->
         writeln('  ✓ Mutual recursion detected'),
-        compile_mutual_recursion(Predicates1, [], Code1),
+        compile_mutual_recursion(Predicates1, [target(bash)], Code1),
         write_bash_file('output/advanced/even_odd.sh', Code1),
-        writeln('  ✓ Compiled to output/advanced/even_odd.sh')
+        writeln('  ✓ Compiled to output/advanced/even_odd.sh (bash)'),
+        compile_mutual_recursion(Predicates1, [target(r)], Code1R),
+        write_bash_file('output/advanced/even_odd.R', Code1R),
+        writeln('  ✓ Compiled to output/advanced/even_odd.R (r)')
     ;   writeln('  ✗ FAIL - should detect mutual recursion')
     ),
 
