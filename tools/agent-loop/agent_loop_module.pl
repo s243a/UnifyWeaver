@@ -310,6 +310,29 @@ audit_profile_level(cautious, basic).
 audit_profile_level(guarded, detailed).
 audit_profile_level(paranoid, forensic).
 
+%% security_profile_field(+FieldName, +PythonType, +Default, +Properties)
+%% Declarative schema for SecurityProfile dataclass fields.
+%% Properties: layer(N), comment(Str), inline_comment(Str)
+security_profile_field(name,                'str',          required,                       []).
+security_profile_field(description,         'str',          '\'\'',                         []).
+security_profile_field(path_validation,     'bool',         'True',                         [layer(1), comment('Layer 1: Path validation')]).
+security_profile_field(blocked_paths,       'list[str]',    'field(default_factory=list)',   [layer(1)]).
+security_profile_field(allowed_paths,       'list[str]',    'field(default_factory=list)',   [layer(1)]).
+security_profile_field(command_blocklist,   'bool',         'True',                         [layer(2), comment('Layer 2: Command blocklist / allowlist')]).
+security_profile_field(blocked_commands,    'list[str]',    'field(default_factory=list)',   [layer(2)]).
+security_profile_field(allowed_commands,    'list[str]',    'field(default_factory=list)',   [layer(2)]).
+security_profile_field(allowed_commands_only,'bool',        'False',                        [layer(2), inline_comment('If True, only allowed_commands may run')]).
+security_profile_field(command_proxying,    'str',          '\'disabled\'',                 [layer(3), comment('Layer 3: Command proxying'), inline_comment('disabled, optional, enabled, strict')]).
+security_profile_field(path_proxying,       'bool',         'False',                        [layer(4), comment('Layer 3.5: PATH-based wrapper scripts')]).
+security_profile_field(proot_isolation,     'bool',         'False',                        [layer(5), comment('Layer 4: Filesystem isolation')]).
+security_profile_field(proot_allowed_dirs,  'list[str]',    'field(default_factory=list)',   [layer(5)]).
+security_profile_field(audit_logging,       'str',          '\'disabled\'',                 [layer(6), comment('Layer 5: Audit logging'), inline_comment('disabled, basic, detailed, forensic')]).
+security_profile_field(network_isolation,   'str',          '\'disabled\'',                 [layer(7), comment('Layer 6: Network isolation (future)'), inline_comment('disabled, localhost_only, blocked')]).
+security_profile_field(anomaly_detection,   'bool',         'False',                        [layer(8), comment('Layer 7: Anomaly detection (future)')]).
+security_profile_field(safe_commands,       'list[str]',    'field(default_factory=list)',   [comment('Safe commands — subset that skip confirmation')]).
+security_profile_field(max_file_read_size,  'int | None',   'None',                         [comment('Resource limits'), inline_comment('bytes, None = unlimited')]).
+security_profile_field(max_file_write_size, 'int | None',   'None',                         []).
+
 %% Regex lists referenced by profiles
 regex_list(guarded_extra_blocks, [
     "r'^sudo\\s'",
@@ -1493,6 +1516,8 @@ generate_prolog_security :-
     write(S, '    blocked_path_prefix/1,\n'),
     write(S, '    blocked_home_pattern/1,\n'),
     write(S, '    blocked_command_pattern/2,\n'),
+    write(S, '    is_path_blocked/1,\n'),
+    write(S, '    is_command_blocked/2,\n'),
     write(S, '    check_path_allowed/2,\n'),
     write(S, '    check_command_allowed/2,\n'),
     write(S, '    set_security_profile/1\n'),
@@ -1506,35 +1531,8 @@ generate_prolog_security :-
     write(S, 'current_security_profile(cautious).\n\n'),
     %% Emit security facts via component registry
     agent_loop_components:emit_security_facts(S, [target(prolog)]),
-    %% Generate check predicates
-    write(S, '%% Check if a file path is allowed under current profile\n'),
-    write(S, 'check_path_allowed(Path, Result) :-\n'),
-    write(S, '    current_security_profile(Profile),\n'),
-    write(S, '    (Profile = open -> Result = allowed\n'),
-    write(S, '    ; blocked_path(Path) -> Result = blocked("Blocked path")\n'),
-    write(S, '    ; (blocked_path_prefix(Prefix), atom_concat(Prefix, _, Path)) ->\n'),
-    write(S, '        Result = blocked("Blocked path prefix")\n'),
-    write(S, '    ; (getenv(''HOME'', Home),\n'),
-    write(S, '       blocked_home_pattern(Pattern),\n'),
-    write(S, '       atom_concat(Home, RestCheck, Path),\n'),
-    write(S, '       sub_atom(RestCheck, _, _, _, Pattern)) ->\n'),
-    write(S, '        Result = blocked("Blocked home pattern")\n'),
-    write(S, '    ; Result = allowed).\n\n'),
-    write(S, '%% Check if a command is allowed under current profile\n'),
-    write(S, 'check_command_allowed(Command, Result) :-\n'),
-    write(S, '    current_security_profile(Profile),\n'),
-    write(S, '    (Profile = open -> Result = allowed\n'),
-    write(S, '    ; (blocked_command_pattern(Regex, Desc),\n'),
-    write(S, '       re_match(Regex, Command)) ->\n'),
-    write(S, '        Result = blocked(Desc)\n'),
-    write(S, '    ; Result = allowed).\n\n'),
-    write(S, '%% Set the active security profile\n'),
-    write(S, 'set_security_profile(Profile) :-\n'),
-    write(S, '    (security_profile(Profile, _) ->\n'),
-    write(S, '        retractall(current_security_profile(_)),\n'),
-    write(S, '        assert(current_security_profile(Profile)),\n'),
-    write(S, '        format("Security profile set to: ~w~n", [Profile])\n'),
-    write(S, '    ; format("Unknown profile: ~w~n", [Profile])).\n'),
+    %% Generate check predicates (compiled from declarative rules)
+    agent_loop_components:emit_security_check_predicates(S, [target(prolog)]),
     close(S),
     format('  Generated prolog/security.pl~n', []).
 
@@ -2915,12 +2913,10 @@ generate_backends_init :-
     nl(S),
     %% Direct imports (non-optional backends)
     agent_loop_components:emit_backend_init_imports(S, [target(python)]),
-    %% __all__ with direct backends — static entries + component-driven
-    write(S, '\n__all__ = [\n'),
-    write(S, '    \'AgentBackend\', \'AgentResponse\', \'ToolCall\',\n'),
-    agent_loop_components:emit_from_components(S, agent_backends, backend_factory/2,
-        python, entries, [fact_type(all_entry)]),
-    write(S, ']\n'),
+    %% __all__ — declarative via generator_export_specs
+    nl(S),
+    agent_loop_components:generator_export_specs(backends_init, BackendsExports),
+    agent_loop_components:emit_export_specs(S, BackendsExports),
     %% Optional imports with try/except
     agent_loop_components:emit_backend_init_optional(S, [target(python)]),
     close(S),
@@ -3014,40 +3010,12 @@ generate_security_profiles :-
     %% Binding metadata for this file
     agent_loop_bindings:emit_binding_metadata_comment(S, python, security_profile/2),
     nl(S),
-    %% SecurityProfile dataclass
+    %% SecurityProfile dataclass — fields from declarative security_profile_field/4 facts
     write(S, '@dataclass\n'),
     write(S, 'class SecurityProfile:\n'),
     write(S, '    """Full security profile with all layer settings."""\n'),
-    write(S, '    name: str\n'),
-    write(S, '    description: str = \'\'\n\n'),
-    write(S, '    # Layer 1: Path validation\n'),
-    write(S, '    path_validation: bool = True\n'),
-    write(S, '    blocked_paths: list[str] = field(default_factory=list)\n'),
-    write(S, '    allowed_paths: list[str] = field(default_factory=list)\n\n'),
-    write(S, '    # Layer 2: Command blocklist / allowlist\n'),
-    write(S, '    command_blocklist: bool = True\n'),
-    write(S, '    blocked_commands: list[str] = field(default_factory=list)\n'),
-    write(S, '    allowed_commands: list[str] = field(default_factory=list)\n'),
-    write(S, '    allowed_commands_only: bool = False  # If True, only allowed_commands may run\n\n'),
-    write(S, '    # Layer 3: Command proxying\n'),
-    write(S, '    command_proxying: str = \'disabled\'  # disabled, optional, enabled, strict\n\n'),
-    write(S, '    # Layer 3.5: PATH-based wrapper scripts\n'),
-    write(S, '    path_proxying: bool = False\n\n'),
-    write(S, '    # Layer 4: Filesystem isolation\n'),
-    write(S, '    proot_isolation: bool = False\n'),
-    write(S, '    proot_allowed_dirs: list[str] = field(default_factory=list)\n\n'),
-    write(S, '    # Layer 5: Audit logging\n'),
-    write(S, '    audit_logging: str = \'disabled\'  # disabled, basic, detailed, forensic\n\n'),
-    write(S, '    # Layer 6: Network isolation (future)\n'),
-    write(S, '    network_isolation: str = \'disabled\'  # disabled, localhost_only, blocked\n\n'),
-    write(S, '    # Layer 7: Anomaly detection (future)\n'),
-    write(S, '    anomaly_detection: bool = False\n\n'),
-    write(S, '    # Safe commands — subset of allowed_commands that skip confirmation\n'),
-    write(S, '    # (read-only / harmless commands the user doesn\'t need to approve)\n'),
-    write(S, '    safe_commands: list[str] = field(default_factory=list)\n\n'),
-    write(S, '    # Resource limits\n'),
-    write(S, '    max_file_read_size: int | None = None   # bytes, None = unlimited\n'),
-    write(S, '    max_file_write_size: int | None = None\n\n\n'),
+    agent_loop_components:emit_security_profile_fields(S, [target(python)]),
+    write(S, '\n\n'),
     %% Regex lists
     write(S, '# ── Built-in profiles ─────────────────────────────────────────────────────\n\n'),
     generate_regex_list_py(S, guarded_extra_blocks, '_GUARDED_EXTRA_BLOCKS'),
@@ -3080,44 +3048,48 @@ generate_regex_list_py(S, ListName, PyVarName) :-
     write(S, ']\n').
 
 %% Write a single profile entry in get_builtin_profiles()
+%% Data-driven from security_profile_field/4 facts.
 generate_profile_entry(S, Name, Props) :-
     member(description(Desc), Props),
     format(S, '        \'~w\': SecurityProfile(~n', [Name]),
     format(S, '            name=\'~w\',~n', [Name]),
     format(S, '            description=\'~w\',~n', [Desc]),
-    %% Boolean fields with defaults
-    (member(path_validation(PV), Props) ->
-        py_bool(PV, PVPy), format(S, '            path_validation=~w,~n', [PVPy]) ; true),
-    (member(command_blocklist(CB), Props) ->
-        py_bool(CB, CBPy), format(S, '            command_blocklist=~w,~n', [CBPy]) ; true),
-    (member(allowed_commands_only(ACO), Props) ->
-        py_bool(ACO, ACOPy), format(S, '            allowed_commands_only=~w,~n', [ACOPy]) ; true),
-    %% List fields (reference named regex lists)
-    (member(blocked_commands(_), Props) ->
-        format(S, '            blocked_commands=list(_GUARDED_EXTRA_BLOCKS),~n', []) ; true),
-    (member(allowed_commands(ACRef), Props) ->
-        (ACRef = paranoid_allowed ->
-            format(S, '            allowed_commands=list(_PARANOID_ALLOWED),~n', [])
-        ;
-            true
-        ) ; true),
-    (member(safe_commands(_), Props) ->
-        format(S, '            safe_commands=list(_PARANOID_SAFE),~n', []) ; true),
-    %% String fields
-    (member(command_proxying(CP), Props) ->
-        format(S, '            command_proxying=\'~w\',~n', [CP]) ; true),
-    (member(audit_logging(AL), Props) ->
-        format(S, '            audit_logging=\'~w\',~n', [AL]) ; true),
-    (member(network_isolation(NI), Props) ->
-        format(S, '            network_isolation=\'~w\',~n', [NI]) ; true),
-    (member(anomaly_detection(AD), Props) ->
-        py_bool(AD, ADPy), format(S, '            anomaly_detection=~w,~n', [ADPy]) ; true),
-    %% Resource limits
-    (member(max_file_read_size(MFR), Props) ->
-        format(S, '            max_file_read_size=~w,~n', [MFR]) ; true),
-    (member(max_file_write_size(MFW), Props) ->
-        format(S, '            max_file_write_size=~w,~n', [MFW]) ; true),
+    %% Iterate over all schema fields (skip name, description — already emitted)
+    findall(FN-FType, (
+        security_profile_field(FN, FType, _, _),
+        FN \= name, FN \= description
+    ), FieldSpecs),
+    maplist([FN-FType]>>(emit_profile_field_if_present(S, FN, FType, Props)), FieldSpecs),
     write(S, '        ),\n').
+
+%% emit_profile_field_if_present(+Stream, +FieldName, +FieldType, +Props)
+%% Emit a field value if the profile has a matching property.
+emit_profile_field_if_present(S, FieldName, FieldType, Props) :-
+    functor(Prop, FieldName, 1),
+    (member(Prop, Props) ->
+        arg(1, Prop, Value),
+        emit_profile_field_value(S, FieldName, FieldType, Value)
+    ; true).
+
+%% Type-dispatched value formatting
+emit_profile_field_value(S, FieldName, 'bool', Value) :-
+    py_bool(Value, PyVal),
+    format(S, '            ~w=~w,~n', [FieldName, PyVal]).
+emit_profile_field_value(S, FieldName, 'str', Value) :-
+    format(S, '            ~w=\'~w\',~n', [FieldName, Value]).
+emit_profile_field_value(S, FieldName, 'int | None', Value) :-
+    format(S, '            ~w=~w,~n', [FieldName, Value]).
+emit_profile_field_value(S, FieldName, 'list[str]', Value) :-
+    %% List fields reference named regex list variables
+    (Value = guarded_extra_blocks ->
+        format(S, '            ~w=list(_GUARDED_EXTRA_BLOCKS),~n', [FieldName])
+    ; Value = paranoid_allowed ->
+        format(S, '            ~w=list(_PARANOID_ALLOWED),~n', [FieldName])
+    ; Value = paranoid_safe ->
+        format(S, '            ~w=list(_PARANOID_SAFE),~n', [FieldName])
+    ;
+        format(S, '            ~w=~w,~n', [FieldName, Value])
+    ).
 
 %% =============================================================================
 %% Generator: costs.py

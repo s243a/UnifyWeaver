@@ -10,7 +10,9 @@ from .ollama_cli import OllamaCLIBackend
 from .openrouter_api import OpenRouterBackend
 
 __all__ = [
-    'AgentBackend', 'AgentResponse', 'ToolCall',
+    'AgentBackend',
+    'AgentResponse',
+    'ToolCall',
     'CoroBackend',
     'ClaudeCodeBackend',
     'GeminiBackend',

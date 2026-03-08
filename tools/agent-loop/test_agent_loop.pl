@@ -126,6 +126,16 @@ run_tests :-
     test_compile_path_check_rules_python,
     test_compile_path_check_rules_prolog,
     test_source_component_equivalence,
+    test_emit_security_check_predicates,
+    test_compiled_rules_variable_name,
+    test_generator_export_specs_backends,
+    test_security_profile_field_facts,
+    test_emit_security_profile_fields,
+    test_generator_fragments,
+    test_derive_fragment_imports,
+    test_validate_generator_imports,
+    test_emit_config_section,
+    test_backends_init_export_roundtrip,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2241,3 +2251,128 @@ test_source_component_equivalence :-
         member(rule_type(blocked_command_pattern), Cfg4)
     ), CompBCP),
     assert_true('blocked_command_pattern count matches', SrcBCP =:= CompBCP).
+
+%% ============================================================================
+%% Composable Generator Tests
+%% ============================================================================
+
+test_emit_security_check_predicates :-
+    format("~nemit_security_check_predicates:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_security_check_predicates(S, [target(prolog)]),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('has is_path_blocked',
+        sub_atom(Output, _, _, _, 'is_path_blocked')),
+    assert_true('has is_command_blocked',
+        sub_atom(Output, _, _, _, 'is_command_blocked')),
+    assert_true('has check_path_allowed',
+        sub_atom(Output, _, _, _, 'check_path_allowed')),
+    assert_true('has check_command_allowed',
+        sub_atom(Output, _, _, _, 'check_command_allowed')),
+    assert_true('has set_security_profile',
+        sub_atom(Output, _, _, _, 'set_security_profile')).
+
+test_compiled_rules_variable_name :-
+    format("~ncompiled rules variable name fix:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:compile_path_check_rules(S, python, []),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('uses _BLOCKED_PREFIXES (not _BLOCKED_PATH_PREFIXES)',
+        sub_atom(Output, _, _, _, '_BLOCKED_PREFIXES')),
+    assert_true('no _BLOCKED_PATH_PREFIXES',
+        \+ sub_atom(Output, _, _, _, '_BLOCKED_PATH_PREFIXES')).
+
+test_generator_export_specs_backends :-
+    format("~ngenerator_export_specs backends_init:~n"),
+    agent_loop_components:generator_export_specs(backends_init, Exports),
+    assert_true('has AgentBackend',
+        member('AgentBackend', Exports)),
+    assert_true('has AgentResponse',
+        member('AgentResponse', Exports)),
+    assert_true('has ToolCall',
+        member('ToolCall', Exports)),
+    assert_true('has CoroBackend',
+        member('CoroBackend', Exports)),
+    assert_true('excludes optional ClaudeAPIBackend',
+        \+ member('ClaudeAPIBackend', Exports)).
+
+test_security_profile_field_facts :-
+    format("~nsecurity_profile_field facts:~n"),
+    assert_true('name field exists',
+        agent_loop_module:security_profile_field(name, 'str', required, _)),
+    assert_true('path_validation has layer',
+        (agent_loop_module:security_profile_field(path_validation, _, _, Props),
+         member(layer(1), Props))),
+    aggregate_all(count, agent_loop_module:security_profile_field(_, _, _, _), Count),
+    assert_true('at least 15 fields', Count >= 15).
+
+test_emit_security_profile_fields :-
+    format("~nemit_security_profile_fields:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_security_profile_fields(S, [target(python)]),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('has name: str',
+        sub_atom(Output, _, _, _, 'name: str')),
+    assert_true('has path_validation: bool',
+        sub_atom(Output, _, _, _, 'path_validation: bool')),
+    assert_true('has Layer 1 comment',
+        sub_atom(Output, _, _, _, '# Layer 1')),
+    assert_true('has audit_logging',
+        sub_atom(Output, _, _, _, 'audit_logging')).
+
+test_generator_fragments :-
+    format("~ngenerator_fragments:~n"),
+    agent_loop_components:generator_fragments(tools, ToolFrags),
+    assert_true('tools has fragments', is_list(ToolFrags)),
+    assert_true('tools non-empty', ToolFrags \= []),
+    assert_true('tools includes handler',
+        member(tools_handler_class_body, ToolFrags)).
+
+test_derive_fragment_imports :-
+    format("~nderive_fragment_imports:~n"),
+    agent_loop_components:derive_fragment_imports(tools, Derived),
+    assert_true('derived non-empty', Derived \= []),
+    assert_true('derived has re', member(bare(re), Derived)),
+    assert_true('derived has backends.base',
+        member(from('backends.base', _), Derived)).
+
+test_validate_generator_imports :-
+    format("~nvalidate_generator_imports:~n"),
+    agent_loop_components:validate_generator_imports(tools, Warnings),
+    assert_true('warnings is list', is_list(Warnings)).
+
+test_emit_config_section :-
+    format("~nemit_config_section:~n"),
+    %% Python target
+    new_memory_file(MF1), open_memory_file(MF1, write, S1),
+    agent_loop_components:emit_config_section(S1, api_key_env_vars, [target(python)]),
+    close(S1), memory_file_to_atom(MF1, PyOut), free_memory_file(MF1),
+    assert_true('python has claude key',
+        sub_atom(PyOut, _, _, _, 'claude')),
+    %% Prolog target
+    new_memory_file(MF2), open_memory_file(MF2, write, S2),
+    agent_loop_components:emit_config_section(S2, api_key_env_vars, [target(prolog)]),
+    close(S2), memory_file_to_atom(MF2, PlOut), free_memory_file(MF2),
+    assert_true('prolog has api_key_env_var fact',
+        sub_atom(PlOut, _, _, _, 'api_key_env_var')),
+    assert_true('prolog has ANTHROPIC_API_KEY',
+        sub_atom(PlOut, _, _, _, 'ANTHROPIC_API_KEY')),
+    %% api_key_files section
+    new_memory_file(MF3), open_memory_file(MF3, write, S3),
+    agent_loop_components:emit_config_section(S3, api_key_files, [target(prolog)]),
+    close(S3), memory_file_to_atom(MF3, PlFiles), free_memory_file(MF3),
+    assert_true('prolog has api_key_file fact',
+        sub_atom(PlFiles, _, _, _, 'api_key_file')).
+
+test_backends_init_export_roundtrip :-
+    format("~nbackends_init export roundtrip:~n"),
+    agent_loop_components:generator_export_specs(backends_init, Exports),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_export_specs(S, Exports),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('has __all__ block',
+        sub_atom(Output, _, _, _, '__all__')),
+    assert_true('has AgentBackend in output',
+        sub_atom(Output, _, _, _, 'AgentBackend')),
+    assert_true('has CoroBackend in output',
+        sub_atom(Output, _, _, _, 'CoroBackend')).

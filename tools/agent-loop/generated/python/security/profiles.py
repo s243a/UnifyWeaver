@@ -44,12 +44,9 @@ class SecurityProfile:
     # Layer 7: Anomaly detection (future)
     anomaly_detection: bool = False
 
-    # Safe commands — subset of allowed_commands that skip confirmation
-    # (read-only / harmless commands the user doesn't need to approve)
+    # Safe commands — subset that skip confirmation
     safe_commands: list[str] = field(default_factory=list)
-
-    # Resource limits
-    max_file_read_size: int | None = None   # bytes, None = unlimited
+    max_file_read_size: int | None = None  # bytes, None = unlimited
     max_file_write_size: int | None = None
 
 
@@ -118,23 +115,23 @@ def get_builtin_profiles() -> dict[str, SecurityProfile]:
             path_validation=True,
             command_blocklist=True,
             blocked_commands=list(_GUARDED_EXTRA_BLOCKS),
-            safe_commands=list(_PARANOID_SAFE),
             command_proxying='enabled',
             audit_logging='detailed',
             network_isolation='localhost_only',
+            safe_commands=list(_PARANOID_SAFE),
         ),
         'paranoid': SecurityProfile(
             name='paranoid',
             description='Maximum security for chaotic/untrusted agents',
             path_validation=True,
             command_blocklist=True,
-            allowed_commands_only=True,
             allowed_commands=list(_PARANOID_ALLOWED),
-            safe_commands=list(_PARANOID_SAFE),
+            allowed_commands_only=True,
             command_proxying='strict',
             audit_logging='forensic',
             network_isolation='blocked',
             anomaly_detection=True,
+            safe_commands=list(_PARANOID_SAFE),
             max_file_read_size=1048576,
             max_file_write_size=10485760,
         ),
