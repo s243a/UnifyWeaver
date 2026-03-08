@@ -136,6 +136,16 @@ run_tests :-
     test_validate_generator_imports,
     test_emit_config_section,
     test_backends_init_export_roundtrip,
+    test_regex_list_variable_facts,
+    test_regex_list_combined_facts,
+    test_regex_list_in_field_value,
+    test_generator_fragments_security,
+    test_generator_fragments_aliases,
+    test_generator_fragments_agent_loop_main,
+    test_emit_security_profile_fields_prolog,
+    test_emit_prolog_module_header,
+    test_emit_prolog_declarations,
+    test_config_section_wiring,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2376,3 +2386,153 @@ test_backends_init_export_roundtrip :-
         sub_atom(Output, _, _, _, 'AgentBackend')),
     assert_true('has CoroBackend in output',
         sub_atom(Output, _, _, _, 'CoroBackend')).
+
+%% ============================================================================
+%% Wire-Generalize Tests
+%% ============================================================================
+
+test_regex_list_variable_facts :-
+    format("~nregex_list_variable facts:~n"),
+    assert_true('guarded_extra_blocks mapped',
+        agent_loop_module:regex_list_variable(guarded_extra_blocks, '_GUARDED_EXTRA_BLOCKS')),
+    assert_true('paranoid_safe mapped',
+        agent_loop_module:regex_list_variable(paranoid_safe, '_PARANOID_SAFE')),
+    assert_true('paranoid_confirm mapped',
+        agent_loop_module:regex_list_variable(paranoid_confirm, '_PARANOID_CONFIRM')),
+    assert_true('paranoid_allowed mapped',
+        agent_loop_module:regex_list_variable(paranoid_allowed, '_PARANOID_ALLOWED')),
+    aggregate_all(count, agent_loop_module:regex_list_variable(_, _), Count),
+    assert_true('exactly 4 facts', Count =:= 4).
+
+test_regex_list_combined_facts :-
+    format("~nregex_list_combined facts:~n"),
+    assert_true('paranoid_allowed is combined',
+        agent_loop_module:regex_list_combined('_PARANOID_ALLOWED', '_PARANOID_SAFE', '_PARANOID_CONFIRM')),
+    aggregate_all(count, agent_loop_module:regex_list_combined(_, _, _), CCount),
+    assert_true('exactly 1 combined fact', CCount =:= 1).
+
+test_regex_list_in_field_value :-
+    format("~nregex_list_in_field_value:~n"),
+    %% Test that emit_profile_field_value uses regex_list_variable lookup
+    new_memory_file(MF1), open_memory_file(MF1, write, S1),
+    agent_loop_module:emit_profile_field_value(S1, blocked_commands, 'list[str]', guarded_extra_blocks),
+    close(S1), memory_file_to_atom(MF1, Out1), free_memory_file(MF1),
+    assert_true('guarded maps to _GUARDED_EXTRA_BLOCKS',
+        sub_atom(Out1, _, _, _, '_GUARDED_EXTRA_BLOCKS')),
+    new_memory_file(MF2), open_memory_file(MF2, write, S2),
+    agent_loop_module:emit_profile_field_value(S2, allowed_commands, 'list[str]', paranoid_allowed),
+    close(S2), memory_file_to_atom(MF2, Out2), free_memory_file(MF2),
+    assert_true('paranoid_allowed maps to _PARANOID_ALLOWED',
+        sub_atom(Out2, _, _, _, '_PARANOID_ALLOWED')),
+    new_memory_file(MF3), open_memory_file(MF3, write, S3),
+    agent_loop_module:emit_profile_field_value(S3, test_field, 'list[str]', unknown_list),
+    close(S3), memory_file_to_atom(MF3, Out3), free_memory_file(MF3),
+    assert_true('unknown falls through',
+        sub_atom(Out3, _, _, _, 'unknown_list')).
+
+test_generator_fragments_security :-
+    format("~ngenerator_fragments security:~n"),
+    assert_true('security_audit has fragments',
+        agent_loop_components:generator_fragments(security_audit, _)),
+    assert_true('security_proxy has fragments',
+        agent_loop_components:generator_fragments(security_proxy, _)),
+    assert_true('security_path_proxy has fragments',
+        agent_loop_components:generator_fragments(security_path_proxy, _)),
+    %% Verify all fragment names are real py_fragment/2 facts
+    agent_loop_components:generator_fragments(security_proot, PrFrags),
+    assert_true('security_proot fragments are real py_fragments',
+        forall(member(F, PrFrags), agent_loop_module:py_fragment(F, _))).
+
+test_generator_fragments_aliases :-
+    format("~ngenerator_fragments aliases:~n"),
+    agent_loop_components:generator_fragments(aliases, AFrags),
+    assert_true('aliases has 2 fragments', length(AFrags, 2)),
+    assert_true('aliases has header', member(aliases_class_header, AFrags)),
+    assert_true('aliases has footer', member(aliases_class_footer, AFrags)).
+
+test_generator_fragments_agent_loop_main :-
+    format("~ngenerator_fragments agent_loop_main:~n"),
+    agent_loop_components:generator_fragments(agent_loop_main, MainFrags),
+    length(MainFrags, MainLen),
+    assert_true('agent_loop_main has >= 15 fragments', MainLen >= 15),
+    assert_true('has handler_backend_command',
+        member(handler_backend_command, MainFrags)),
+    %% Verify all are real py_fragment/2 facts
+    assert_true('all main fragments are real py_fragments',
+        forall(member(F, MainFrags), agent_loop_module:py_fragment(F, _))).
+
+test_emit_security_profile_fields_prolog :-
+    format("~nemit_security_profile_fields prolog:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_security_profile_fields(S, [target(prolog)]),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('prolog has security_profile_field(name',
+        sub_atom(Output, _, _, _, 'security_profile_field(name')),
+    assert_true('prolog has path_validation',
+        sub_atom(Output, _, _, _, 'path_validation')),
+    assert_true('no Python name: str in prolog output',
+        \+ sub_atom(Output, _, _, _, 'name: str')),
+    %% Count facts matches source
+    aggregate_all(count, agent_loop_module:security_profile_field(_, _, _, _), SrcCount),
+    findall(1, sub_atom(Output, _, _, _, 'security_profile_field('), Ones),
+    length(Ones, OutCount),
+    assert_true('prolog fact count matches source', SrcCount =:= OutCount).
+
+test_emit_prolog_module_header :-
+    format("~nemit_prolog_module_header:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_prolog_module_header(S, test_mod, [
+        exports([foo/1, bar/2, baz/3]),
+        use_modules([library(lists)])
+    ]),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('has module declaration',
+        sub_atom(Output, _, _, _, ':- module(test_mod')),
+    assert_true('has foo/1 export',
+        sub_atom(Output, _, _, _, 'foo/1')),
+    assert_true('last export has no comma (baz/3 then newline)',
+        sub_atom(Output, _, _, _, '    baz/3\n')),
+    assert_true('has use_module',
+        sub_atom(Output, _, _, _, ':- use_module(library(lists))')).
+
+test_emit_prolog_declarations :-
+    format("~nemit_prolog_declarations:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_prolog_declarations(S, [
+        det([check_foo/2, check_bar/1]),
+        dynamic([current_state/1])
+    ]),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('has det directive',
+        sub_atom(Output, _, _, _, ':- det(check_foo/2)')),
+    assert_true('has dynamic directive',
+        sub_atom(Output, _, _, _, ':- dynamic current_state/1')),
+    assert_true('has check_bar det',
+        sub_atom(Output, _, _, _, ':- det(check_bar/1)')).
+
+test_config_section_wiring :-
+    format("~nconfig_section_wiring:~n"),
+    %% Verify emit_config_section(python) produces same as direct _py call
+    new_memory_file(MF1), open_memory_file(MF1, write, S1),
+    agent_loop_components:emit_api_key_env_vars_py(S1, [target(python)]),
+    close(S1), memory_file_to_atom(MF1, Direct), free_memory_file(MF1),
+    new_memory_file(MF2), open_memory_file(MF2, write, S2),
+    agent_loop_components:emit_config_section(S2, api_key_env_vars, [target(python)]),
+    close(S2), memory_file_to_atom(MF2, Via), free_memory_file(MF2),
+    assert_true('api_key_env_vars: section matches direct', Direct == Via),
+    %% api_key_files
+    new_memory_file(MF3), open_memory_file(MF3, write, S3),
+    agent_loop_components:emit_api_key_files_py(S3, [target(python)]),
+    close(S3), memory_file_to_atom(MF3, Direct2), free_memory_file(MF3),
+    new_memory_file(MF4), open_memory_file(MF4, write, S4),
+    agent_loop_components:emit_config_section(S4, api_key_files, [target(python)]),
+    close(S4), memory_file_to_atom(MF4, Via2), free_memory_file(MF4),
+    assert_true('api_key_files: section matches direct', Direct2 == Via2),
+    %% default_presets
+    new_memory_file(MF5), open_memory_file(MF5, write, S5),
+    agent_loop_components:emit_default_presets_py(S5, [target(python)]),
+    close(S5), memory_file_to_atom(MF5, Direct3), free_memory_file(MF5),
+    new_memory_file(MF6), open_memory_file(MF6, write, S6),
+    agent_loop_components:emit_config_section(S6, default_presets, [target(python)]),
+    close(S6), memory_file_to_atom(MF6, Via3), free_memory_file(MF6),
+    assert_true('default_presets: section matches direct', Direct3 == Via3).

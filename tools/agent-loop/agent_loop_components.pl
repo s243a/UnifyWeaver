@@ -69,7 +69,9 @@
     generator_fragments/2,
     derive_fragment_imports/2,
     validate_generator_imports/2,
-    emit_config_section/3
+    emit_config_section/3,
+    emit_prolog_module_header/3,
+    emit_prolog_declarations/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -1421,13 +1423,22 @@ emit_export_specs(S, Exports) :-
 %% ============================================================================
 
 %% emit_security_profile_fields(+Stream, +Options)
-%% Emit Python dataclass fields from security_profile_field/4 facts.
-%% Groups fields by layer, emitting blank lines and comment headers between groups.
-emit_security_profile_fields(S, _Options) :-
+%% Target-polymorphic emission of security profile field schema.
+%% Python: dataclass fields with type annotations, defaults, and layer comments.
+%% Prolog: security_profile_field/4 facts.
+emit_security_profile_fields(S, Options) :-
+    extract_target(Options, Target),
     findall(field(Name, Type, Default, Props),
         agent_loop_module:security_profile_field(Name, Type, Default, Props),
         Fields),
-    emit_profile_fields_loop(S, Fields, none).
+    (Target == python ->
+        emit_profile_fields_loop(S, Fields, none)
+    ;
+        maplist([field(Name, Type, Default, Props)]>>(
+            format(S, "security_profile_field(~q, ~q, ~q, ~q).~n",
+                   [Name, Type, Default, Props])
+        ), Fields)
+    ).
 
 emit_profile_fields_loop(_, [], _).
 emit_profile_fields_loop(S, [field(Name, Type, Default, Props)|Rest], PrevLayer) :-
@@ -1495,6 +1506,20 @@ py_fragment_metadata(agent_loop_imports, [
     category(agent_loop), target(python),
     imports([bare(os), bare(sys), bare(json)])
 ]).
+py_fragment_metadata(security_proxy_module, [
+    category(security), target(python),
+    imports([bare(os), bare(re), bare(shlex), from(dataclasses, [dataclass, field])])
+]).
+py_fragment_metadata(security_path_proxy_module, [
+    category(security), target(python),
+    imports([bare(os), bare(stat), from(pathlib, ['Path']), from(dataclasses, [dataclass, field])])
+]).
+py_fragment_metadata(security_proot_sandbox_module, [
+    category(security), target(python),
+    imports([bare(os), bare(shlex), bare(shutil), from(dataclasses, [dataclass, field]), from(pathlib, ['Path'])])
+]).
+py_fragment_metadata(aliases_class_header, [category(aliases), target(python), imports([])]).
+py_fragment_metadata(aliases_class_footer, [category(aliases), target(python), imports([])]).
 
 %% fragment_imports(+FragmentName, -ImportSpecs)
 %% Get the import specs for a named fragment.
@@ -1518,6 +1543,22 @@ generator_fragments(tools, [tools_handler_class_body, tools_security_config,
                             tools_validate_path, tools_is_command_blocked]).
 generator_fragments(config, [config_resolve_api_key_header, config_load_config]).
 generator_fragments(context, [context_manager_class, context_helpers]).
+generator_fragments(security_audit, [security_audit_module]).
+generator_fragments(security_proxy, [security_proxy_module]).
+generator_fragments(security_path_proxy, [security_path_proxy_module]).
+generator_fragments(security_proot, [security_proot_sandbox_module]).
+generator_fragments(aliases, [aliases_class_header, aliases_class_footer]).
+generator_fragments(agent_loop_main, [
+    handler_iterations_command, handler_backend_command,
+    handler_save_command, handler_load_command,
+    handler_sessions_command, handler_format_command,
+    handler_export_command, handler_cost_command,
+    handler_search_command, handler_stream_command,
+    handler_aliases_command, handler_templates_command,
+    handler_history_command, handler_undo_command,
+    handler_delete_command, handler_edit_command,
+    handler_replay_command
+]).
 
 %% derive_fragment_imports(+Generator, -DerivedImports)
 %% Collects all import specs from a generator's fragments and deduplicates.
@@ -1571,6 +1612,46 @@ emit_config_section(S, default_presets, Options) :-
         findall(N-B-P, agent_loop_module:default_agent_preset(N, B, P), Presets),
         maplist([N-B-P]>>(format(S, "default_agent_preset(~q, ~q, ~q).~n", [N, B, P])), Presets)
     ).
+
+%% ============================================================================
+%% Prolog Module Header Emission
+%% ============================================================================
+
+%% emit_prolog_module_header(+Stream, +Module, +Options)
+%% Emit a Prolog module declaration with exports and use_module directives.
+%% Options: exports(List), use_modules(List)
+emit_prolog_module_header(S, Module, Options) :-
+    (member(exports(Exports), Options) ->
+        format(S, ':- module(~w, [~n', [Module]),
+        length(Exports, Len),
+        emit_module_export_list(S, Exports, 1, Len),
+        write(S, ']).\n\n')
+    ; true),
+    (member(use_modules(UseMods), Options) ->
+        maplist([UM]>>(format(S, ':- use_module(~w).~n', [UM])), UseMods),
+        nl(S)
+    ; true).
+
+emit_module_export_list(_, [], _, _).
+emit_module_export_list(S, [E], I, I) :-
+    format(S, '    ~w~n', [E]).
+emit_module_export_list(S, [E|Rest], Pos, Len) :-
+    Rest \= [],
+    format(S, '    ~w,~n', [E]),
+    Pos1 is Pos + 1,
+    emit_module_export_list(S, Rest, Pos1, Len).
+
+%% emit_prolog_declarations(+Stream, +Options)
+%% Emit Prolog declaration directives (det, dynamic).
+%% Options: det(List), dynamic(List)
+emit_prolog_declarations(S, Options) :-
+    (member(det(Dets), Options) ->
+        maplist([D]>>(format(S, ':- det(~w).~n', [D])), Dets),
+        nl(S)
+    ; true),
+    (member(dynamic(Dyns), Options) ->
+        maplist([D]>>(format(S, ':- dynamic ~w.~n', [D])), Dyns)
+    ; true).
 
 %% ============================================================================
 %% Unified Component Emission
