@@ -153,10 +153,11 @@ r_op_map(or, '|').
 %  Generates an R pipeline (e.g. using native |> or dplyr %>%).
 compile_r_pipeline(Predicates, Options, RCode) :-
     (member(pipeline_name(PipelineName), Options) -> true ; PipelineName = 'pipeline'),
+    (member(pipeline_mode(Mode), Options) -> true ; Mode = sequential),
     
     r_pipeline_header(HeaderCode),
     generate_r_stage_functions(Predicates, StageFunctions),
-    generate_r_pipeline_connector(Predicates, PipelineName, ConnectorCode),
+    generate_r_pipeline_connector(Predicates, PipelineName, Mode, ConnectorCode),
     
     format(string(RCode), '~s~n~n~s~n~n~s',
            [HeaderCode, StageFunctions, ConnectorCode]).
@@ -185,15 +186,62 @@ generate_r_stage_functions([Pred|Rest], Code) :-
     generate_r_stage_functions(Rest, RestCode),
     (RestCode = "" -> Code = StageCode ; format(string(Code), '~s~n~n~s', [StageCode, RestCode])).
 
-generate_r_pipeline_connector(Predicates, PipelineName, Code) :-
+generate_r_pipeline_connector(Predicates, PipelineName, sequential, Code) :-
     maplist(get_pred_name, Predicates, StageNames),
     atomic_list_concat(StageNames, ' |>\n    ', PipelineStr),
     format(string(Code),
-'~w <- function(data) {
+'# Sequential pipeline connector: ~w
+~w <- function(data) {
     data |>
     ~w
 }
-', [PipelineName, PipelineStr]).
+', [PipelineName, PipelineName, PipelineStr]).
+
+generate_r_pipeline_connector(Predicates, PipelineName, generator, Code) :-
+    maplist(get_pred_name, Predicates, StageNames),
+    atomic_list_concat(StageNames, ' |>\n            ', PipelineStr),
+    format(string(Code),
+'# Fixpoint pipeline connector: ~w
+# Iterates until no new rows are produced.
+~w <- function(data) {
+    # Initialize seen set with hash representation of rows
+    seen <- new.env(hash=TRUE, parent=emptyenv())
+    
+    # helper to hash rows
+    hash_row <- function(row) {
+        digest::digest(row) # requires digest package
+    }
+    
+    # Initial setup
+    records <- data
+    output_records <- data
+    for (i in seq_len(nrow(records))) {
+        seen[[hash_row(records[i,])]] <- TRUE
+    }
+    
+    changed <- TRUE
+    while (changed) {
+        changed <- FALSE
+        current_records <- records
+        
+        for (i in seq_len(nrow(current_records))) {
+            row <- current_records[i, , drop=FALSE]
+            # Run pipeline stages on the current row
+            new_row <- row |>
+            ~w
+            
+            key <- hash_row(new_row)
+            if (is.null(seen[[key]])) {
+                seen[[key]] <- TRUE
+                records <- rbind(records, new_row)
+                output_records <- rbind(output_records, new_row)
+                changed <- TRUE
+            }
+        }
+    }
+    return(output_records)
+}
+', [PipelineName, PipelineName, PipelineStr]).
 
 get_pred_name(Pred/_Arity, Pred).
 
@@ -206,8 +254,15 @@ test_r_pipeline :-
     asserta((user:filter_stage(In, Out) :- filter(In, >(age, 18), Out))),
     asserta((user:sort_stage(In, Out) :- sort_by(In, age, Out))),
     asserta((user:group_stage(In, Out) :- group_by(In, role, Out))),
-    compile_r_pipeline([filter_stage/2, sort_stage/2, group_stage/2], [pipeline_name(data_processor)], Code),
-    format('~n=== R Pipeline Test ===~n~s~n', [Code]),
+    
+    format('~n=== R Sequential Pipeline Test ===~n'),
+    compile_r_pipeline([filter_stage/2, sort_stage/2, group_stage/2], [pipeline_name(data_processor), pipeline_mode(sequential)], CodeSeq),
+    format('~s~n', [CodeSeq]),
+    
+    format('~n=== R Fixpoint Generator Pipeline Test ===~n'),
+    compile_r_pipeline([filter_stage/2, sort_stage/2, group_stage/2], [pipeline_name(data_processor_gen), pipeline_mode(generator)], CodeGen),
+    format('~s~n', [CodeGen]),
+    
     retractall(user:filter_stage(_, _)),
     retractall(user:sort_stage(_, _)),
     retractall(user:group_stage(_, _)).
