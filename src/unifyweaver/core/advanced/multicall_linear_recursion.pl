@@ -108,8 +108,40 @@ compile_multicall_linear_recursion(Pred/Arity, Options, BashCode) :-
     ;   MemoEnabled = true
     ),
 
-    % Generate bash code
-    generate_multicall_bash(PredStr, BaseClauses, RecClauses, MemoEnabled, BashCode).
+    % Determine target
+    (   member(target(Target), Options) -> true
+    ;   Target = bash
+    ),
+    format('  Target: ~w~n', [Target]),
+
+    % Generate code
+    (   Target == r ->
+        generate_multicall_r(PredStr, BaseClauses, RecClauses, MemoEnabled, Code)
+    ;   Target == bash ->
+        generate_multicall_bash(PredStr, BaseClauses, RecClauses, MemoEnabled, Code)
+    ;   format('Error: Unsupported target ~w for multicall linear recursion~n', [Target]),
+        fail
+    ).
+
+%% generate_multicall_r(+PredStr, +BaseClauses, +RecClauses, +MemoEnabled, -RCode)
+generate_multicall_r(PredStr, _BaseClauses, _RecClauses, MemoEnabled, RCode) :-
+    (   MemoEnabled = true ->
+        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())'
+    ;   MemoDecl = '# Memoization disabled'
+    ),
+    format(string(MemoDeclFormatted), MemoDecl, [PredStr]),
+
+    TemplateLines = [
+        "# {{pred}}/2 - multicall linear recursive pattern (R)",
+        "{{memo_decl}}",
+        "",
+        "{{pred}} <- function(n, expected=NULL) {",
+        "    warning(\"Multicall linear recursion not fully implemented in R\")",
+        "    return(NULL)",
+        "}"
+    ],
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr, memo_decl=MemoDeclFormatted], RCode).
 
 %% is_recursive_for_pred(+Pred, +Clause)
 is_recursive_for_pred(Pred, clause(_, Body)) :-

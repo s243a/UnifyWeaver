@@ -42,10 +42,16 @@ compile_direct_multi_call(Pred/Arity, Options, BashCode) :-
         fail
     ).
 
-%% compile_direct_binary_recursion(+Pred, +Options, -BashCode)
+%% compile_direct_binary_recursion(+Pred, +Options, -Code)
 %  Compile arity-2 predicate with direct recursion
-compile_direct_binary_recursion(Pred, _Options, BashCode) :-
+compile_direct_binary_recursion(Pred, Options, Code) :-
     atom_string(Pred, PredStr),
+    
+    % Determine target
+    (   member(target(Target), Options) -> true
+    ;   Target = bash
+    ),
+    format('  Target: ~w~n', [Target]),
 
     % Get clauses
     functor(Head, Pred, 2),
@@ -54,6 +60,29 @@ compile_direct_binary_recursion(Pred, _Options, BashCode) :-
     % Separate base and recursive cases
     partition(is_recursive_clause(Pred), Clauses, [RecClause|_], BaseClauses),
 
+    (   Target == r ->
+        generate_direct_binary_r(PredStr, BaseClauses, RecClause, Code)
+    ;   Target == bash ->
+        generate_direct_binary_bash(PredStr, BaseClauses, RecClause, Code)
+    ;   format('Error: Unsupported target ~w for direct multicall recursion~n', [Target]),
+        fail
+    ).
+
+%% generate_direct_binary_r(+PredStr, +BaseClauses, +RecClause, -RCode)
+generate_direct_binary_r(PredStr, _BaseClauses, _RecClause, RCode) :-
+    TemplateLines = [
+        "# {{pred}}/2 - direct multicall recursive pattern (R)",
+        "",
+        "{{pred}} <- function(n, expected=NULL) {",
+        "    warning(\"Direct multicall recursion not fully implemented in R\")",
+        "    return(NULL)",
+        "}"
+    ],
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr], RCode).
+
+%% generate_direct_binary_bash(+PredStr, +BaseClauses, +RecClause, -BashCode)
+generate_direct_binary_bash(PredStr, BaseClauses, RecClause, BashCode) :-
     % Extract base cases
     extract_base_cases(BaseClauses, PredStr, BaseCasesCode),
 
