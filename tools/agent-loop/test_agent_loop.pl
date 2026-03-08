@@ -146,6 +146,16 @@ run_tests :-
     test_emit_prolog_module_header,
     test_emit_prolog_declarations,
     test_config_section_wiring,
+    test_prolog_fragment_count,
+    test_write_prolog_roundtrip,
+    test_write_prolog_error,
+    test_prolog_module_skeleton_exports,
+    test_prolog_module_skeleton_comment,
+    test_prolog_fragment_escaping,
+    test_write_prolog_substitutions,
+    test_prolog_fragment_metadata,
+    test_generator_prolog_fragments,
+    test_cost_py_fragments,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2536,3 +2546,229 @@ test_config_section_wiring :-
     agent_loop_components:emit_config_section(S6, default_presets, [target(python)]),
     close(S6), memory_file_to_atom(MF6, Via3), free_memory_file(MF6),
     assert_true('default_presets: section matches direct', Direct3 == Via3).
+
+%% ============================================================================
+%% Tests for prolog_fragment/2 + write_prolog/2 + emit_prolog_module_skeleton/3
+%% ============================================================================
+
+test_prolog_fragment_count :-
+    format("~nprolog_fragment_count:~n"),
+    findall(N, agent_loop_module:prolog_fragment(N, _), Names),
+    length(Names, Count),
+    assert_true('at least 10 prolog_fragments', Count >= 10),
+    assert_true('cost_tracker_impl exists',
+        memberchk(cost_tracker_impl, Names)),
+    assert_true('config_parse_cli exists',
+        memberchk(config_parse_cli, Names)),
+    assert_true('config_load_config exists',
+        memberchk(config_load_config, Names)),
+    assert_true('config_resolve_api_key exists',
+        memberchk(config_resolve_api_key, Names)),
+    assert_true('commands_resolve exists',
+        memberchk(commands_resolve, Names)),
+    assert_true('commands_handle_slash exists',
+        memberchk(commands_handle_slash, Names)),
+    assert_true('tools_execute_dispatch exists',
+        memberchk(tools_execute_dispatch, Names)),
+    assert_true('tools_schema exists',
+        memberchk(tools_schema, Names)),
+    assert_true('tools_describe exists',
+        memberchk(tools_describe, Names)),
+    assert_true('tools_confirm exists',
+        memberchk(tools_confirm, Names)).
+
+test_write_prolog_roundtrip :-
+    format("~nwrite_prolog_roundtrip:~n"),
+    %% Write cost_tracker_impl to memory and verify content
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_module:write_prolog(S, cost_tracker_impl),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('cost_tracker has cost_tracker_init',
+        sub_atom(Output, _, _, _, 'cost_tracker_init(ID)')),
+    assert_true('cost_tracker has cost_tracker_add',
+        sub_atom(Output, _, _, _, 'cost_tracker_add(ID, Model')),
+    assert_true('cost_tracker has dynamic decl',
+        sub_atom(Output, _, _, _, ':- dynamic cost_state/3')),
+    assert_true('cost_tracker has format call',
+        sub_atom(Output, _, _, _, 'format("  [cost: $~4f')),
+    %% Write tools_schema to memory
+    new_memory_file(MF2), open_memory_file(MF2, write, S2),
+    agent_loop_module:write_prolog(S2, tools_schema),
+    close(S2), memory_file_to_atom(MF2, Out2), free_memory_file(MF2),
+    assert_true('tools_schema has build_tool_input_schema',
+        sub_atom(Out2, _, _, _, 'build_tool_input_schema(ToolName')),
+    assert_true('tools_schema has build_required',
+        sub_atom(Out2, _, _, _, 'build_required')).
+
+test_write_prolog_error :-
+    format("~nwrite_prolog_error:~n"),
+    %% Verify unknown fragment throws
+    (catch(
+        (new_memory_file(MF), open_memory_file(MF, write, S),
+         agent_loop_module:write_prolog(S, nonexistent_fragment_xyz),
+         close(S), free_memory_file(MF)),
+        error(existence_error(prolog_fragment, nonexistent_fragment_xyz), _),
+        Caught = true
+    ) -> true ; Caught = false),
+    assert_true('unknown prolog_fragment throws existence_error', Caught == true).
+
+test_prolog_module_skeleton_exports :-
+    format("~nprolog_module_skeleton_exports:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_prolog_module_skeleton(S, test_mod, [
+        exports([foo/2, bar/3]),
+        det([foo/2])
+    ]),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('skeleton has module decl',
+        sub_atom(Output, _, _, _, ':- module(test_mod')),
+    assert_true('skeleton has foo/2 export',
+        sub_atom(Output, _, _, _, 'foo/2')),
+    assert_true('skeleton has bar/3 export',
+        sub_atom(Output, _, _, _, 'bar/3')),
+    assert_true('skeleton has det(foo/2)',
+        sub_atom(Output, _, _, _, ':- det(foo/2)')).
+
+test_prolog_module_skeleton_comment :-
+    format("~nprolog_module_skeleton_comment:~n"),
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_components:emit_prolog_module_skeleton(S, cmod, [
+        exports([x/1]),
+        comment('This is a test comment')
+    ]),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('skeleton has comment',
+        sub_atom(Output, _, _, _, '%% This is a test comment')).
+
+test_prolog_fragment_escaping :-
+    format("~nprolog_fragment_escaping:~n"),
+    %% Verify config_parse_cli preserves single quotes in output
+    new_memory_file(MF), open_memory_file(MF, write, S),
+    agent_loop_module:write_prolog(S, config_parse_cli),
+    close(S), memory_file_to_atom(MF, Output), free_memory_file(MF),
+    assert_true('config_parse_cli has quoted --',
+        sub_atom(Output, _, _, _, 'atom_concat(\'--\'')),
+    assert_true('config_parse_cli has empty atom',
+        sub_atom(Output, _, _, _, 'Help = \'\'')),
+    %% Verify commands_handle_slash preserves / quote
+    new_memory_file(MF2), open_memory_file(MF2, write, S2),
+    agent_loop_module:write_prolog(S2, commands_handle_slash),
+    close(S2), memory_file_to_atom(MF2, Out2), free_memory_file(MF2),
+    assert_true('commands_handle_slash has quoted /',
+        sub_atom(Out2, _, _, _, 'atom_concat(\'/\'')),
+    %% Verify config_resolve_api_key preserves backslash-equals
+    new_memory_file(MF3), open_memory_file(MF3, write, S3),
+    agent_loop_module:write_prolog(S3, config_resolve_api_key),
+    close(S3), memory_file_to_atom(MF3, Out3), free_memory_file(MF3),
+    assert_true('config_resolve has backslash-eq',
+        sub_atom(Out3, _, _, _, '\\=')),
+    %% Verify tools_confirm preserves quoted tilde-w
+    new_memory_file(MF4), open_memory_file(MF4, write, S4),
+    agent_loop_module:write_prolog(S4, tools_confirm),
+    close(S4), memory_file_to_atom(MF4, Out4), free_memory_file(MF4),
+    assert_true('tools_confirm has Tool quote',
+        sub_atom(Out4, _, _, _, 'Tool \'~w\'')).
+
+test_write_prolog_substitutions :-
+    format("~nwrite_prolog_substitutions:~n"),
+    %% write_prolog/3 uses {{Key}} placeholder substitution (same as write_py/3)
+    %% Verify no-match substitution leaves content unchanged
+    new_memory_file(MF1), open_memory_file(MF1, write, S1),
+    agent_loop_module:write_prolog(S1, cost_tracker_impl),
+    close(S1), memory_file_to_atom(MF1, Orig), free_memory_file(MF1),
+    new_memory_file(MF2), open_memory_file(MF2, write, S2),
+    agent_loop_module:write_prolog(S2, cost_tracker_impl, ['no_match'='value']),
+    close(S2), memory_file_to_atom(MF2, WithSub), free_memory_file(MF2),
+    assert_true('no-match substitution preserves content', Orig == WithSub),
+    %% Verify write_prolog/3 callable (predicate exists)
+    assert_true('write_prolog/3 is callable',
+        predicate_property(agent_loop_module:write_prolog(_, _, _), defined)).
+
+test_prolog_fragment_metadata :-
+    format("~nprolog_fragment_metadata:~n"),
+    %% All 10 fragments have metadata
+    findall(N, agent_loop_components:prolog_fragment_metadata(N, _), MNames),
+    length(MNames, MCount),
+    assert_true('10 metadata entries', MCount =:= 10),
+    %% Category lookups work
+    agent_loop_components:prolog_fragment_category(cost_tracker_impl, CostCat),
+    assert_true('cost_tracker_impl category is costs', CostCat == costs),
+    agent_loop_components:prolog_fragment_category(config_parse_cli, CfgCat),
+    assert_true('config_parse_cli category is config', CfgCat == config),
+    agent_loop_components:prolog_fragment_category(tools_execute_dispatch, ToolCat),
+    assert_true('tools_execute_dispatch category is tools', ToolCat == tools),
+    %% Use-module lookups work
+    agent_loop_components:prolog_fragment_use_modules(tools_execute_dispatch, ToolUMs),
+    assert_true('tools_execute_dispatch has library(process)',
+        memberchk(library(process), ToolUMs)),
+    agent_loop_components:prolog_fragment_use_modules(cost_tracker_impl, CostUMs),
+    assert_true('cost_tracker_impl has no use_modules', CostUMs == []).
+
+test_generator_prolog_fragments :-
+    format("~ngenerator_prolog_fragments:~n"),
+    findall(G, agent_loop_components:generator_prolog_fragments(G, _), Gens),
+    length(Gens, GCount),
+    assert_true('4 generators registered', GCount =:= 4),
+    assert_true('costs generator registered', memberchk(costs, Gens)),
+    assert_true('config generator registered', memberchk(config, Gens)),
+    assert_true('commands generator registered', memberchk(commands, Gens)),
+    assert_true('tools generator registered', memberchk(tools, Gens)),
+    %% Fragment count per generator
+    agent_loop_components:generator_prolog_fragments(costs, CostFs),
+    length(CostFs, CF), assert_true('costs has 1 fragment', CF =:= 1),
+    agent_loop_components:generator_prolog_fragments(config, CfgFs),
+    length(CfgFs, CfgF), assert_true('config has 3 fragments', CfgF =:= 3),
+    agent_loop_components:generator_prolog_fragments(tools, ToolFs),
+    length(ToolFs, TF), assert_true('tools has 4 fragments', TF =:= 4),
+    %% All fragment names resolve to actual prolog_fragment/2 facts
+    findall(FN, (
+        agent_loop_components:generator_prolog_fragments(_, Frags),
+        member(FN, Frags)
+    ), AllFragNames),
+    findall(FN, (
+        member(FN, AllFragNames),
+        agent_loop_module:prolog_fragment(FN, _)
+    ), Resolved),
+    length(AllFragNames, ACount), length(Resolved, RCount),
+    assert_true('all fragment names resolve', ACount =:= RCount).
+
+test_cost_py_fragments :-
+    format("~ncost_py_fragments:~n"),
+    %% All 4 cost py_fragments exist
+    assert_true('cost_usage_record exists',
+        agent_loop_module:py_fragment(cost_usage_record, _)),
+    assert_true('cost_tracker_class_def exists',
+        agent_loop_module:py_fragment(cost_tracker_class_def, _)),
+    assert_true('cost_tracker_methods exists',
+        agent_loop_module:py_fragment(cost_tracker_methods, _)),
+    assert_true('cost_openrouter exists',
+        agent_loop_module:py_fragment(cost_openrouter, _)),
+    %% Content checks — key signatures present
+    agent_loop_module:py_fragment(cost_usage_record, UR),
+    assert_true('usage_record has @dataclass', sub_atom(UR, _, _, _, '@dataclass')),
+    assert_true('usage_record has UsageRecord', sub_atom(UR, _, _, _, 'class UsageRecord')),
+    agent_loop_module:py_fragment(cost_tracker_class_def, CD),
+    assert_true('class_def has CostTracker', sub_atom(CD, _, _, _, 'class CostTracker')),
+    assert_true('class_def has DEFAULT_PRICING', sub_atom(CD, _, _, _, 'DEFAULT_PRICING')),
+    agent_loop_module:py_fragment(cost_tracker_methods, TM),
+    assert_true('methods has record_usage', sub_atom(TM, _, _, _, 'def record_usage')),
+    assert_true('methods has get_summary', sub_atom(TM, _, _, _, 'def get_summary')),
+    assert_true('methods has format_status', sub_atom(TM, _, _, _, 'def format_status')),
+    assert_true('methods has ensure_pricing', sub_atom(TM, _, _, _, 'def ensure_pricing')),
+    agent_loop_module:py_fragment(cost_openrouter, OR),
+    assert_true('openrouter has fetch function', sub_atom(OR, _, _, _, 'def fetch_openrouter_pricing')),
+    assert_true('openrouter has cache load', sub_atom(OR, _, _, _, 'def _load_openrouter_cache')),
+    assert_true('openrouter has cache save', sub_atom(OR, _, _, _, 'def _save_openrouter_cache')),
+    %% Metadata entries exist
+    assert_true('cost_usage_record metadata',
+        agent_loop_components:py_fragment_metadata(cost_usage_record, _)),
+    assert_true('cost_openrouter metadata',
+        agent_loop_components:py_fragment_metadata(cost_openrouter, _)),
+    %% generator_fragments(costs, ...) exists and has 4 entries
+    agent_loop_components:generator_fragments(costs, CostFrags),
+    length(CostFrags, CFL),
+    assert_true('costs generator has 4 fragments', CFL =:= 4),
+    %% All cost fragment names resolve to py_fragment/2
+    findall(F, (member(F, CostFrags), agent_loop_module:py_fragment(F, _)), ResCost),
+    length(ResCost, RCL),
+    assert_true('all cost fragments resolve', RCL =:= CFL).
