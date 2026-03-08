@@ -7162,7 +7162,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (IsSingleConcreteGroupedPairRequest(targetsBySource, sourcesByTarget))
                 {
-                    var probeCount = Math.Max(1, parameters.Count);
+                    var probeCount = ComputeSingleGroupedPairProbeNormalizationCount(parameters, inputPositions, closure.GroupIndices);
                     var seedEntry = targetsBySource.First();
                     var sourceKey = seedEntry.Key.Row;
                     var target = seedEntry.Value.First();
@@ -9623,6 +9623,91 @@ namespace UnifyWeaver.QueryRuntime
             return Math.Max(missedPairs.Count, distinctProbeKeys);
         }
 
+        private static int ComputeSinglePairProbeNormalizationCount(IReadOnlyList<object[]> parameters)
+        {
+            if (parameters.Count == 0)
+            {
+                return 1;
+            }
+
+            var seenPairs = new HashSet<RowWrapper>(StructuralRowWrapperComparer);
+            foreach (var paramTuple in parameters)
+            {
+                if (paramTuple is null || paramTuple.Length < 2)
+                {
+                    continue;
+                }
+
+                var source = paramTuple[0];
+                var target = paramTuple[1];
+                if (!IsConcretePairTarget(target))
+                {
+                    continue;
+                }
+
+                seenPairs.Add(new RowWrapper(new object[] { source!, target! }));
+            }
+
+            return Math.Max(1, seenPairs.Count);
+        }
+
+        private static int ComputeSingleGroupedPairProbeNormalizationCount(
+            IReadOnlyList<object[]> parameters,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<int> groupIndices)
+        {
+            if (parameters.Count == 0)
+            {
+                return 1;
+            }
+
+            var groupCount = groupIndices.Count;
+            var seenPairs = new HashSet<RowWrapper>(StructuralRowWrapperComparer);
+
+            foreach (var paramTuple in parameters)
+            {
+                if (paramTuple is null || paramTuple.Length == 0)
+                {
+                    continue;
+                }
+
+                if (!TryGetParameterValue(paramTuple, inputPositions, 0, out var source))
+                {
+                    continue;
+                }
+
+                if (!TryGetParameterValue(paramTuple, inputPositions, 1, out var target) ||
+                    !IsConcretePairTarget(target))
+                {
+                    continue;
+                }
+
+                var pairKey = new object[groupCount + 2];
+                var completeKey = true;
+                for (var i = 0; i < groupCount; i++)
+                {
+                    if (!TryGetParameterValue(paramTuple, inputPositions, groupIndices[i], out var groupValue))
+                    {
+                        completeKey = false;
+                        break;
+                    }
+
+                    pairKey[i] = groupValue!;
+                }
+
+                if (!completeKey)
+                {
+                    continue;
+                }
+
+                pairKey[groupCount] = source!;
+                pairKey[groupCount + 1] = target!;
+                seenPairs.Add(new RowWrapper(pairKey));
+            }
+
+            return Math.Max(1, seenPairs.Count);
+        }
+
         private static bool TryGetParameterValue(
             object[] tuple,
             IReadOnlyList<int> inputPositions,
@@ -10290,7 +10375,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (IsSingleConcretePairRequest(bySource, byTarget))
                 {
-                    var probeCount = Math.Max(1, parameters.Count);
+                    var probeCount = ComputeSinglePairProbeNormalizationCount(parameters);
                     var source = bySource.First().Key;
                     var target = bySource.First().Value.First();
                     var edges = GetFactsList(closure.EdgeRelation, context);
