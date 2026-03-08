@@ -173,6 +173,9 @@ register_builtin_targets :-
     register_target(awk, shell, [streaming, pipes, regex, aggregation, text_processing]),
     register_target(perl, shell, [streaming, pipes, regex, scripting, text_processing]),
 
+    % R family
+    register_target(r, r, [streaming, pipes, data_science, statistical, vectorization]),
+
     % Python family
     register_target(python, python, [streaming, pipes, libraries, ml, data_science]),
     register_target(ironpython, dotnet, [streaming, dotnet_interop, scripting]),
@@ -250,6 +253,9 @@ register_target_modules :-
     
     % Python
     target_module(python, python_target),
+
+    % R
+    target_module(r, r_target),
 
     % Ruby
     target_module(ruby, ruby_target),
