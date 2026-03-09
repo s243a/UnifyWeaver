@@ -608,6 +608,748 @@ tree_recursion:compile_tree_pattern(r, generic, Pred, Arity, _UseMemo, RCode) :-
 ', [PredStr, Arity, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr]).
 
 % ============================================================================
+% TAIL RECURSION - R target delegation (multifile)
+% ============================================================================
+
+:- use_module('../core/advanced/tail_recursion').
+:- multifile tail_recursion:compile_tail_pattern/9.
+
+tail_recursion:compile_tail_pattern(r, PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, _ExitAfterResult, RCode) :-
+    (   Arity =:= 3 ->
+        tail_ternary_loop_r(PredStr, AccPos, StepOp, RCode)
+    ;   Arity =:= 2 ->
+        tail_binary_loop_r(PredStr, RCode)
+    ;   format('Warning: tail recursion in R with arity ~w not yet supported~n', [Arity]),
+        fail
+    ).
+
+%% step_op_to_r(+StepOp, -RCode)
+step_op_to_r(arithmetic(Expr), RCode) :-
+    expr_to_r(Expr, RExpr),
+    format(atom(RCode), 'current_acc <- ~w', [RExpr]).
+step_op_to_r(unknown, 'current_acc <- current_acc + 1').
+
+%% expr_to_r(+PrologExpr, -RExpr)
+expr_to_r(_ + Const, RExpr) :- integer(Const), !, format(atom(RExpr), 'current_acc + ~w', [Const]).
+expr_to_r(_ + _, 'current_acc + item') :- !.
+expr_to_r(_ - _, 'current_acc - item') :- !.
+expr_to_r(_ * _, 'current_acc * item') :- !.
+expr_to_r(_, 'current_acc + 1').
+
+%% tail_ternary_loop_r(+PredStr, +AccPos, +StepOp, -RCode)
+tail_ternary_loop_r(PredStr, _AccPos, StepOp, RCode) :-
+    step_op_to_r(StepOp, RStepOp),
+    TemplateLines = [
+        "# {{pred}} - tail recursive accumulator pattern (R)",
+        "{{pred}} <- function(input, acc) {",
+        "    items <- input",
+        "    if (is.character(input)) {",
+        "       # parse string input if necessary",
+        "       items <- unlist(strsplit(gsub(\"\\\\[|\\\\]\", \"\", input), \",\"))",
+        "       nums <- suppressWarnings(as.numeric(items))",
+        "       if (all(!is.na(nums))) items <- nums",
+        "    }",
+        "    current_acc <- acc",
+        "    for (item in items) {",
+        "        {{step_op}}",
+        "    }",
+        "    return(current_acc)",
+        "}",
+        "{{pred}}_eval <- function(input) {",
+        "    return({{pred}}(input, 0))",
+        "}"
+    ],
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr, step_op=RStepOp], RCode).
+
+%% tail_binary_loop_r(+PredStr, -RCode)
+tail_binary_loop_r(PredStr, RCode) :-
+    TemplateLines = [
+        "# {{pred}} - tail recursive binary pattern (R)",
+        "{{pred}} <- function(input, expected=NULL) {",
+        "    count <- 0",
+        "    items <- input",
+        "    while (length(items) > 0) {",
+        "        count <- count + 1",
+        "        items <- items[-1]",
+        "    }",
+        "    if (!is.null(expected)) {",
+        "        return(count == expected)",
+        "    }",
+        "    return(count)",
+        "}"
+    ],
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr], RCode).
+
+% ============================================================================
+% MULTICALL LINEAR RECURSION - R target delegation (multifile)
+% ============================================================================
+
+:- use_module('../core/advanced/multicall_linear_recursion').
+:- multifile multicall_linear_recursion:compile_multicall_pattern/6.
+
+multicall_linear_recursion:compile_multicall_pattern(r, PredStr, BaseClauses, RecClauses, MemoEnabled, RCode) :-
+    % Generate memo declaration
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '~w_memo <- new.env(hash=TRUE, parent=emptyenv())', [PredStr])
+    ;   MemoDecl = '# Memoization disabled'
+    ),
+
+    % Generate base case if-blocks
+    findall(BaseCaseCode, (
+        member(clause(BHead, _), BaseClauses),
+        BHead =.. [_P, BInput, BOutput],
+        format(string(BaseCaseCode), '    if (n == ~w) return(~w)', [BInput, BOutput])
+    ), BaseCaseCodes),
+    atomic_list_concat(BaseCaseCodes, '\n', BaseCaseStr),
+
+    % Generate memo check (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoCheck),
+'    key <- as.character(n)
+    if (!is.null(~w_memo[[key]])) return(~w_memo[[key]])', [PredStr, PredStr])
+    ;   MemoCheck = ''
+    ),
+
+    % Extract recursive calls count and aggregation from RecClauses
+    RecClauses = [clause(RecHead, RecBody)|_],
+    RecHead =.. [Pred, _InputVar, _OutputVar],
+    findall(Call, (extract_goal_from_body(RecBody, Call), functor(Call, Pred, 2)), RecCalls),
+    find_aggregation_expr(RecBody, AggExpr),
+    length(RecCalls, NumCalls),
+
+    % Generate recursive call lines
+    multicall_recursive_calls_r(PredStr, NumCalls, RecCallsCode),
+
+    % Generate aggregation
+    multicall_aggregation_r(AggExpr, NumCalls, AggCode),
+
+    % Generate memo store (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoStore), '    ~w_memo[[key]] <<- result', [PredStr])
+    ;   MemoStore = ''
+    ),
+
+    % Assemble
+    format(string(RCode),
+'#!/usr/bin/env Rscript
+# ~w - multi-call linear recursion with memoization (R)
+# Pattern: Multiple independent recursive calls (e.g., fibonacci)
+
+~w
+
+~w <- function(n) {
+~w
+
+~w
+
+    # Recursive calls
+~w
+
+    # Aggregate results
+~w
+
+~w
+    return(result)
+}
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) >= 1) cat(~w(as.integer(args[1])), "\\n")
+}
+', [PredStr, MemoDecl, PredStr, BaseCaseStr, MemoCheck,
+    RecCallsCode, AggCode, MemoStore, PredStr]).
+
+%% multicall_recursive_calls_r(+PredStr, +NumCalls, -Code)
+multicall_recursive_calls_r(PredStr, 2, Code) :-
+    format(string(Code), '    result1 <- ~w(n - 1)\n    result2 <- ~w(n - 2)', [PredStr, PredStr]).
+multicall_recursive_calls_r(PredStr, 3, Code) :-
+    format(string(Code), '    result1 <- ~w(n - 1)\n    result2 <- ~w(n - 2)\n    result3 <- ~w(n - 3)', [PredStr, PredStr, PredStr]).
+
+%% multicall_aggregation_r(+Expr, +NumCalls, -Code)
+multicall_aggregation_r(_ + _, 2, Code) :-
+    format(string(Code), '    result <- result1 + result2', []).
+multicall_aggregation_r(_ * _, 2, Code) :-
+    format(string(Code), '    result <- result1 * result2', []).
+multicall_aggregation_r(_ + _ + _, 3, Code) :-
+    format(string(Code), '    result <- result1 + result2 + result3', []).
+
+% ============================================================================
+% DIRECT MULTI-CALL RECURSION - R target delegation (multifile)
+% ============================================================================
+
+:- use_module('../core/advanced/direct_multi_call_recursion').
+:- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
+
+direct_multi_call_recursion:compile_direct_multicall_pattern(r, PredStr, BaseClauses, RecClause, RCode) :-
+    % Extract base cases for R
+    direct_extract_base_cases_r(BaseClauses, BaseCasesCode),
+
+    % Extract recursive case structure
+    RecClause = clause(RecHead, RecBody),
+    RecHead =.. [Pred, _InputVar, _OutputVar],
+    extract_body_components(RecBody, Pred, Computations, RecCalls, Aggregation),
+
+    % Generate R code for each part
+    direct_computations_r(Computations, ComputationsCode),
+    direct_recursive_calls_r(RecCalls, PredStr, RecCallsCode),
+    direct_aggregation_r(Aggregation, AggregationCode),
+
+    % Assemble
+    format(string(RCode),
+'#!/usr/bin/env Rscript
+# ~w - direct recursive with memoization (multi-call pattern, R)
+# Generated by direct_multi_call_recursion compiler
+
+~w_memo <- new.env(hash=TRUE, parent=emptyenv())
+
+~w <- function(input) {
+    # Check memo
+    key <- as.character(input)
+    if (!is.null(~w_memo[[key]])) return(~w_memo[[key]])
+
+~w
+
+    # Computations
+~w
+
+    # Recursive calls
+~w
+
+    # Aggregate
+~w
+
+    # Memoize
+    ~w_memo[[key]] <<- result
+    return(result)
+}
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) >= 1) cat(~w(as.integer(args[1])), "\\n")
+}
+', [PredStr, PredStr, PredStr, PredStr, PredStr,
+    BaseCasesCode, ComputationsCode, RecCallsCode, AggregationCode,
+    PredStr, PredStr]).
+
+%% direct_extract_base_cases_r(+BaseClauses, -RCode)
+direct_extract_base_cases_r(BaseClauses, RCode) :-
+    findall(BaseCode, (
+        member(clause(Head, _Body), BaseClauses),
+        Head =.. [_Pred, BaseInput, BaseOutput],
+        format(string(BaseCode),
+'    # Base case: ~w -> ~w
+    if (input == ~w) { ~w_memo[[key]] <<- ~w; return(~w) }',
+            [BaseInput, BaseOutput, BaseInput, '_direct', BaseOutput, BaseOutput])
+    ), BaseCodes),
+    atomic_list_concat(BaseCodes, '\n', RCode).
+
+%% direct_computations_r(+Computations, -RCode)
+direct_computations_r(Computations, RCode) :-
+    findall(Code, (
+        member(Var is Expr, Computations),
+        direct_var_to_r_name(Var, VarName),
+        direct_translate_expr_to_r(Expr, RExpr),
+        format(string(Code), '    ~w <- ~w', [VarName, RExpr])
+    ), Codes),
+    atomic_list_concat(Codes, '\n', RCode).
+
+%% direct_recursive_calls_r(+RecCalls, +PredStr, -RCode)
+direct_recursive_calls_r(RecCalls, PredStr, RCode) :-
+    findall(Code, (
+        member(RecCall, RecCalls),
+        RecCall =.. [_Pred, ArgVar, ResultVar],
+        direct_var_to_r_name(ArgVar, ArgName),
+        direct_var_to_r_name(ResultVar, ResName),
+        format(string(Code), '    ~w <- ~w(~w)', [ResName, PredStr, ArgName])
+    ), Codes),
+    atomic_list_concat(Codes, '\n', RCode).
+
+%% direct_aggregation_r(+Aggregation, -RCode)
+direct_aggregation_r(_Result is Expr, RCode) :-
+    direct_translate_aggregation_expr_r(Expr, RExpr),
+    format(string(RCode), '    result <- ~w', [RExpr]).
+
+direct_translate_aggregation_expr_r(A + B, RExpr) :-
+    direct_var_to_r_name(A, AName),
+    direct_var_to_r_name(B, BName),
+    format(string(RExpr), '~w + ~w', [AName, BName]).
+direct_translate_aggregation_expr_r(A + B + C, RExpr) :-
+    direct_var_to_r_name(A, AName),
+    direct_var_to_r_name(B, BName),
+    direct_var_to_r_name(C, CName),
+    format(string(RExpr), '~w + ~w + ~w', [AName, BName, CName]).
+direct_translate_aggregation_expr_r(A * B, RExpr) :-
+    direct_var_to_r_name(A, AName),
+    direct_var_to_r_name(B, BName),
+    format(string(RExpr), '~w * ~w', [AName, BName]).
+
+%% direct_var_to_r_name(+Var, -RName)
+direct_var_to_r_name(Var, RName) :-
+    (   var(Var) ->
+        term_string(Var, VarStr),
+        atom_string(VarAtom, VarStr),
+        downcase_atom(VarAtom, RName)
+    ;   atom(Var) ->
+        downcase_atom(Var, RName)
+    ;   term_string(Var, VarStr),
+        atom_string(VarAtom, VarStr),
+        downcase_atom(VarAtom, RName)
+    ).
+
+%% direct_translate_expr_to_r(+Expr, -RExpr)
+direct_translate_expr_to_r(N - K, RExpr) :- var(N), integer(K), !,
+    format(string(RExpr), 'input - ~w', [K]).
+direct_translate_expr_to_r(N + K, RExpr) :- var(N), integer(K), !,
+    format(string(RExpr), 'input + ~w', [K]).
+direct_translate_expr_to_r(Expr, 'input') :- var(Expr), !.
+
+% ============================================================================
+% LINEAR RECURSION - R target delegation (multifile)
+% ============================================================================
+
+:- use_module('../core/advanced/linear_recursion').
+:- multifile linear_recursion:compile_linear_pattern/8.
+
+linear_recursion:compile_linear_pattern(r, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode) :-
+    (   Arity =:= 2 ->
+        linear_fold_based_r(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode)
+    ;   linear_generic_r(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode)
+    ).
+
+%% linear_fold_based_r(+PredStr, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -RCode)
+linear_fold_based_r(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode) :-
+    extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
+    detect_input_type(BaseInput, InputType),
+    extract_fold_operation(RecClauses, FoldExpr),
+    (   InputType = numeric ->
+        linear_numeric_fold_r(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, RCode)
+    ;   InputType = list ->
+        linear_list_fold_r(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, RCode)
+    ;   linear_generic_r(PredStr, 2, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode)
+    ).
+
+%% linear_numeric_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
+linear_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(linear_recursion:is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
+
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [_Pred, InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [_RecPred, _RecInput, AccVar],
+    find_last_is_expression(RBody, _ is ActualFoldExpr),
+
+    translate_fold_expr(ActualFoldExpr, InputVar, AccVar, RFoldOp),
+
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '# Memoization table (~w strategy)~n~w_memo <- new.env(hash=TRUE, parent=emptyenv())~n', [MemoStrategy, PredStr]),
+        format(string(MemoCheckCode), '    # Check memo~n    key <- as.character(n)~n    if (!is.null(~w_memo[[key]])) {~n        cached <- ~w_memo[[key]]~n        if (!is.null(expected)) {~n            if (cached == expected) return(TRUE) else return(FALSE)~n        } else {~n            return(cached)~n        }~n    }~n', [PredStr, PredStr]),
+        format(string(MemoStoreCode), '    # Memoize~n    ~w_memo[[key]] <- result~n', [PredStr])
+    ;   MemoDecl = '# Memoization disabled\n',
+        MemoCheckCode = '',
+        MemoStoreCode = ''
+    ),
+
+    format(string(RCode), '# ~w - fold-based linear recursion (numeric, R)
+
+~w
+
+~w_op <- function(current, acc) {
+    return(~w)
+}
+
+~w <- function(n, expected=NULL) {
+~w
+    if (n == ~w) {
+        result <- ~w
+~w
+        if (!is.null(expected)) {
+            if (result == expected) return(TRUE) else return(FALSE)
+        } else {
+            return(result)
+        }
+    }
+
+    # Recursive case using Reduce
+    range_vals <- seq(n, 1, by=-1)
+    result <- Reduce(~w_op, range_vals, init=~w)
+
+~w
+    if (!is.null(expected)) {
+        if (result == expected) return(TRUE) else return(FALSE)
+    } else {
+        return(result)
+    }
+}
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode]).
+
+%% linear_list_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
+linear_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(linear_recursion:is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
+
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [_Pred, _InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [_RecPred, _RecInput, AccVar],
+    find_last_is_expression(RBody, _ is ActualFoldExpr),
+
+    translate_fold_expr(ActualFoldExpr, _DummyInput, AccVar, RFoldOp),
+
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '# Memoization table (~w strategy)~n~w_memo <- new.env(hash=TRUE, parent=emptyenv())~n', [MemoStrategy, PredStr]),
+        format(string(MemoCheckCode), '    # Check memo~n    key <- if (length(lst) == 0) "__empty__" else paste(lst, collapse=",")~n    if (!is.null(~w_memo[[key]])) {~n        cached <- ~w_memo[[key]]~n        if (!is.null(expected)) {~n            if (cached == expected) return(TRUE) else return(FALSE)~n        } else {~n            return(cached)~n        }~n    }~n', [PredStr, PredStr]),
+        format(string(MemoStoreCode), '    # Memoize~n    ~w_memo[[key]] <- result~n', [PredStr])
+    ;   MemoDecl = '# Memoization disabled\n',
+        MemoCheckCode = '',
+        MemoStoreCode = ''
+    ),
+
+    format(string(RCode), '# ~w - fold-based linear recursion (list, R)
+
+~w
+
+~w_op <- function(acc, current) {
+    return(~w)
+}
+
+~w <- function(lst_input, expected=NULL) {
+    lst <- lst_input
+    if (is.character(lst)) {
+        lst <- unlist(strsplit(gsub("\\\\[|\\\\]", "", lst), ","))
+        if(all(!is.na(suppressWarnings(as.numeric(lst))))) lst <- as.numeric(lst)
+    }
+
+~w
+    if (length(lst) == 0 || (length(lst) == 1 && lst[1] == "~w")) {
+        result <- ~w
+~w
+        if (!is.null(expected)) {
+            if (result == expected) return(TRUE) else return(FALSE)
+        } else {
+            return(result)
+        }
+    }
+
+    # Recursive case using Reduce
+    result <- Reduce(~w_op, lst, accumulate=FALSE, init=~w)
+
+~w
+    if (!is.null(expected)) {
+        if (result == expected) return(TRUE) else return(FALSE)
+    } else {
+        return(result)
+    }
+}
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode]).
+
+%% linear_generic_r(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -RCode)
+linear_generic_r(PredStr, Arity, _BaseClauses, _RecClauses, MemoEnabled, _MemoStrategy, RCode) :-
+    (   MemoEnabled = true ->
+        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())',
+        format(string(MemoDeclFormatted), MemoDecl, [PredStr])
+    ;   MemoDeclFormatted = '# Memoization disabled'
+    ),
+    TemplateLines = [
+        "# {{pred}}/{{arity}} - linear recursive pattern (generic R)",
+        "{{memo_decl}}",
+        "{{pred}} <- function(...) {",
+        "    args <- list(...)",
+        "    key <- paste(args, collapse=\"-\")",
+        "    if (!is.null({{{pred}}_memo[[key]]})) {",
+        "        return({{{pred}}_memo[[key]]})",
+        "    }",
+        "    warning(\"Generic linear recursion - not yet implemented in R\")",
+        "    return(NULL)",
+        "}"
+    ],
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr, arity=Arity, memo_decl=MemoDeclFormatted], RCode).
+
+% ============================================================================
+% MUTUAL RECURSION - R target delegation (multifile)
+% ============================================================================
+
+:- use_module('../core/advanced/mutual_recursion').
+:- multifile mutual_recursion:compile_mutual_pattern/5.
+
+mutual_recursion:compile_mutual_pattern(r, Predicates, MemoEnabled, MemoStrategy, RCode) :-
+    findall(PredStr,
+        (   member(Pred/_Arity, Predicates),
+            atom_string(Pred, PredStr)
+        ),
+        PredStrs),
+    atomic_list_concat(PredStrs, '_', GroupName),
+
+    % Generate R header
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '~w_memo <- new.env(hash=TRUE, parent=emptyenv())', [GroupName])
+    ;   MemoDecl = '# Shared memoization disabled'
+    ),
+    format(string(HeaderCode),
+'#!/usr/bin/env Rscript
+# Mutually recursive group: ~w
+# Constraints: memo=~w, strategy=~w
+
+~w
+', [GroupName, MemoEnabled, MemoStrategy, MemoDecl]),
+
+    % Generate function for each predicate
+    findall(FuncCode,
+        (   member(Pred/Arity, Predicates),
+            mutual_function_r(Pred, Arity, GroupName, Predicates, MemoEnabled, FuncCode)
+        ),
+        FuncCodes),
+    atomic_list_concat(FuncCodes, '\n\n', FunctionsCode),
+
+    % Generate main dispatch
+    mutual_main_dispatch_r(Predicates, DispatchCode),
+
+    % Combine
+    atomic_list_concat([HeaderCode, FunctionsCode, '\n\n', DispatchCode], RCode).
+
+%% mutual_function_r(+Pred, +Arity, +GroupName, +AllPredicates, +MemoEnabled, -FuncCode)
+mutual_function_r(Pred, Arity, GroupName, AllPredicates, MemoEnabled, FuncCode) :-
+    atom_string(Pred, PredStr),
+
+    % Get clauses
+    functor(Head, Pred, Arity),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+
+    % Separate base and recursive cases
+    partition(mutual_recursion:is_mutual_recursive_clause(AllPredicates), Clauses, RecClauses, BaseClauses),
+
+    % Generate base case code
+    mutual_base_cases_r(GroupName, BaseClauses, MemoEnabled, BaseCode),
+
+    % Generate recursive case code
+    mutual_recursive_cases_r(GroupName, RecClauses, MemoEnabled, RecCode),
+
+    % Memo check
+    (   MemoEnabled = true ->
+        format(string(MemoCheck),
+'    key <- paste0("~w:", arg1)
+    if (!is.null(~w_memo[[key]])) return(~w_memo[[key]])', [PredStr, GroupName, GroupName])
+    ;   format(string(MemoCheck), '    # Memoization disabled', [])
+    ),
+
+    format(string(FuncCode),
+'# ~w/~w - part of mutual recursion group
+~w <- function(arg1) {
+~w
+
+~w
+
+~w
+
+    # No match found
+    return(FALSE)
+}
+', [PredStr, Arity, PredStr, MemoCheck, BaseCode, RecCode]).
+
+%% mutual_base_cases_r(+GroupName, +BaseClauses, +MemoEnabled, -BaseCode)
+mutual_base_cases_r(_GroupName, [], _MemoEnabled, '    # 0 base case(s)') :- !.
+mutual_base_cases_r(GroupName, BaseClauses, MemoEnabled, BaseCode) :-
+    length(BaseClauses, NumBase),
+    format(string(Header), '    # ~w base case(s)', [NumBase]),
+    findall(Code,
+        (   member(Clause, BaseClauses),
+            mutual_base_case_r(GroupName, Clause, MemoEnabled, Code)
+        ),
+        BaseCodes),
+    atomic_list_concat([Header|BaseCodes], '\n', BaseCode).
+
+%% mutual_base_case_r(+GroupName, +Clause, +MemoEnabled, -Code)
+mutual_base_case_r(GroupName, clause(Head, true), MemoEnabled, Code) :-
+    Head =.. [_Pred, Value],
+    (   MemoEnabled = true ->
+        format(string(MemoStore), ' ~w_memo[[key]] <<- TRUE;', [GroupName])
+    ;   MemoStore = ''
+    ),
+    format(string(Code),
+'    if (arg1 == ~w) {~w return(TRUE) }',
+        [Value, MemoStore]).
+
+%% mutual_recursive_cases_r(+GroupName, +RecClauses, +MemoEnabled, -RecCode)
+mutual_recursive_cases_r(_GroupName, [], _MemoEnabled, '    # 0 recursive case(s)') :- !.
+mutual_recursive_cases_r(GroupName, RecClauses, MemoEnabled, RecCode) :-
+    length(RecClauses, NumRec),
+    format(string(Header), '    # ~w recursive case(s)', [NumRec]),
+    findall(Code,
+        (   member(Clause, RecClauses),
+            mutual_recursive_case_r(GroupName, Clause, MemoEnabled, Code)
+        ),
+        RecCodes),
+    atomic_list_concat([Header|RecCodes], '\n', RecCode).
+
+%% mutual_recursive_case_r(+GroupName, +Clause, +MemoEnabled, -Code)
+mutual_recursive_case_r(GroupName, clause(Head, Body), MemoEnabled, Code) :-
+    Head =.. [_Pred, HeadVar],
+    mutual_recursion:parse_recursive_body(Body, HeadVar, Conditions, Computations, RecCall),
+
+    % Generate condition
+    (   Conditions = [] ->
+        CondStr = 'TRUE'
+    ;   maplist(mutual_condition_r(HeadVar), Conditions, CondCodes),
+        atomic_list_concat(CondCodes, ' && ', CondStr)
+    ),
+
+    % Generate computations
+    maplist(mutual_computation_r(HeadVar), Computations, CompCodes),
+    (   CompCodes = [] -> CompCode = ''
+    ;   atomic_list_concat(CompCodes, '\n        ', CompCode)
+    ),
+
+    % Generate recursive call
+    (   RecCall = none ->
+        RecCode = ''
+    ;   mutual_rec_call_r(HeadVar, RecCall, GroupName, MemoEnabled, RecCode)
+    ),
+
+    format(string(Code),
+'    if (~w) {
+        ~w
+        ~w
+    }', [CondStr, CompCode, RecCode]).
+
+%% mutual_condition_r(+HeadVar, +Goal, -Code)
+mutual_condition_r(HeadVar, Goal, Code) :-
+    Goal =.. [Op, A, B],
+    mutual_term_r(HeadVar, A, TermA),
+    mutual_term_r(HeadVar, B, TermB),
+    mutual_comparison_op(Op, ROp),
+    format(string(Code), '~w ~w ~w', [TermA, ROp, TermB]).
+
+mutual_comparison_op(>, '>').
+mutual_comparison_op(<, '<').
+mutual_comparison_op(>=, '>=').
+mutual_comparison_op(=<, '<=').
+mutual_comparison_op(=:=, '==').
+mutual_comparison_op(==, '==').
+
+%% mutual_computation_r(+HeadVar, +Goal, -Code)
+mutual_computation_r(HeadVar, VarOut is Expr, Code) :-
+    mutual_expr_r(HeadVar, Expr, RExpr),
+    mutual_var_to_r_safe(VarOut, VarOutR),
+    format(string(Code), '~w <- ~w', [VarOutR, RExpr]).
+
+%% mutual_rec_call_r(+HeadVar, +RecCall, +GroupName, +MemoEnabled, -Code)
+mutual_rec_call_r(HeadVar, RecCall, GroupName, MemoEnabled, Code) :-
+    RecCall =.. [Pred|Args],
+    atom_string(Pred, PredStr),
+    maplist(mutual_call_arg_r(HeadVar), Args, RArgs),
+    atomic_list_concat(RArgs, ', ', ArgsStr),
+    (   MemoEnabled = true ->
+        format(string(MemoStore), ' ~w_memo[[key]] <<- TRUE;', [GroupName])
+    ;   MemoStore = ''
+    ),
+    format(string(Code),
+'rec_result <- ~w(~w)
+        if (isTRUE(rec_result)) {~w return(TRUE) } else { return(FALSE) }',
+        [PredStr, ArgsStr, MemoStore]).
+
+%% mutual_term_r(+HeadVar, +Term, -RTerm)
+mutual_term_r(HeadVar, Term, 'arg1') :-
+    Term == HeadVar, !.
+mutual_term_r(_HeadVar, Term, RTerm) :-
+    var(Term), !,
+    mutual_var_to_r_safe(Term, RTerm).
+mutual_term_r(_HeadVar, Term, RTerm) :-
+    atomic(Term),
+    format(string(RTerm), '~w', [Term]).
+
+%% mutual_expr_r(+HeadVar, +Expr, -RExpr)
+mutual_expr_r(HeadVar, Var, 'arg1') :-
+    Var == HeadVar, !.
+mutual_expr_r(_HeadVar, Var, RExpr) :-
+    var(Var), !,
+    mutual_var_to_r_safe(Var, RExpr).
+mutual_expr_r(_HeadVar, Atom, RExpr) :-
+    atomic(Atom), !,
+    format(string(RExpr), '~w', [Atom]).
+mutual_expr_r(HeadVar, A + B, RExpr) :-
+    !,
+    (   (number(B), B < 0) ->
+        mutual_expr_r(HeadVar, A, RA),
+        Pos is -B,
+        format(string(RExpr), '~w - ~w', [RA, Pos])
+    ;   mutual_expr_r(HeadVar, A, RA),
+        mutual_expr_r(HeadVar, B, RB),
+        format(string(RExpr), '~w + ~w', [RA, RB])
+    ).
+mutual_expr_r(HeadVar, A - B, RExpr) :-
+    !,
+    mutual_expr_r(HeadVar, A, RA),
+    mutual_expr_r(HeadVar, B, RB),
+    format(string(RExpr), '~w - ~w', [RA, RB]).
+mutual_expr_r(HeadVar, A * B, RExpr) :-
+    !,
+    mutual_expr_r(HeadVar, A, RA),
+    mutual_expr_r(HeadVar, B, RB),
+    format(string(RExpr), '~w * ~w', [RA, RB]).
+
+%% mutual_call_arg_r(+HeadVar, +Arg, -RArg)
+mutual_call_arg_r(HeadVar, Var, 'arg1') :-
+    Var == HeadVar, !.
+mutual_call_arg_r(_HeadVar, Var, RArg) :-
+    var(Var), !,
+    mutual_var_to_r_safe(Var, RArg).
+mutual_call_arg_r(_HeadVar, Atom, RArg) :-
+    atomic(Atom), !,
+    format(string(RArg), '~w', [Atom]).
+
+%% mutual_var_to_r_safe(+Var, -RName)
+%  Convert a Prolog variable to a valid R identifier.
+%  R doesn't allow identifiers like _21562 (underscore + digits).
+%  Prefix with 'v' to make them safe.
+mutual_var_to_r_safe(Var, RName) :-
+    format(atom(VarAtom), '~w', [Var]),
+    atom_string(VarAtom, VarStr),
+    string_lower(VarStr, VarLower),
+    atom_string(VarLowerAtom, VarLower),
+    (   sub_atom(VarLowerAtom, 0, 1, _, '_') ->
+        atom_concat(v, VarLowerAtom, SafeAtom),
+        atom_string(SafeAtom, RName)
+    ;   RName = VarLower
+    ).
+
+%% mutual_main_dispatch_r(+Predicates, -DispatchCode)
+mutual_main_dispatch_r(Predicates, DispatchCode) :-
+    findall(CaseCode,
+        (   member(Pred/Arity, Predicates),
+            atom_string(Pred, PredStr),
+            (   Arity > 0 ->
+                format(string(CaseCode), '        "~w" = cat(~w(as.numeric(args[2])), "\\n")', [PredStr, PredStr])
+            ;   format(string(CaseCode), '        "~w" = cat(~w(), "\\n")', [PredStr, PredStr])
+            )
+        ),
+        CaseCodes),
+    atomic_list_concat(CaseCodes, ',\n', CasesStr),
+
+    format(string(DispatchCode),
+'# Main dispatch
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) < 1) {
+        cat("Usage: Rscript <script> <function_name> [args...]\\n", file=stderr())
+        quit(status=1)
+    }
+    switch(args[1],
+~w,
+        stop(paste("Unknown function:", args[1]))
+    )
+}
+', [CasesStr]).
+
+% ============================================================================
 % TESTING
 % ============================================================================
 
