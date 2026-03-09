@@ -657,6 +657,15 @@ tail_ternary_loop_r(PredStr, _AccPos, StepOp, RCode) :-
         "}",
         "{{pred}}_eval <- function(input) {",
         "    return({{pred}}(input, 0))",
+        "}",
+        "",
+        "# Run when script executed directly",
+        "if (!interactive()) {",
+        "    args <- commandArgs(TRUE)",
+        "    if (length(args) >= 1) {",
+        "        items <- as.numeric(unlist(strsplit(args[1], \",\")))",
+        "        cat({{pred}}_eval(items), \"\\n\")",
+        "    }",
         "}"
     ],
     atomic_list_concat(TemplateLines, '\n', Template),
@@ -677,6 +686,15 @@ tail_binary_loop_r(PredStr, RCode) :-
         "        return(count == expected)",
         "    }",
         "    return(count)",
+        "}",
+        "",
+        "# Run when script executed directly",
+        "if (!interactive()) {",
+        "    args <- commandArgs(TRUE)",
+        "    if (length(args) >= 1) {",
+        "        items <- as.numeric(unlist(strsplit(args[1], \",\")))",
+        "        cat({{pred}}(items), \"\\n\")",
+        "    }",
         "}"
     ],
     atomic_list_concat(TemplateLines, '\n', Template),
@@ -987,7 +1005,13 @@ linear_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, Me
         return(result)
     }
 }
-', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode]).
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) >= 1) cat(~w(as.integer(args[1])), "\\n")
+}
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode, PredStr]).
 
 %% linear_list_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
 linear_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-
@@ -1049,7 +1073,16 @@ linear_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoS
         return(result)
     }
 }
-', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode]).
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) >= 1) {
+        items <- as.numeric(unlist(strsplit(args[1], ",")))
+        cat(~w(items), "\\n")
+    }
+}
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode, PredStr]).
 
 %% linear_generic_r(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -RCode)
 linear_generic_r(PredStr, Arity, _BaseClauses, _RecClauses, MemoEnabled, _MemoStrategy, RCode) :-
