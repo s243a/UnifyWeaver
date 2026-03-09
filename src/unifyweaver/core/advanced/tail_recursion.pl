@@ -16,6 +16,10 @@
 :- use_module('../constraint_analyzer').
 :- use_module('pattern_matchers').
 
+%% compile_tail_pattern/9 is multifile - targets register their own clauses.
+%% compile_tail_pattern(+Target, +PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -Code)
+:- multifile compile_tail_pattern/9.
+
 %% can_compile_tail_recursion(+Pred/Arity)
 %  Check if predicate can be compiled as tail recursion
 can_compile_tail_recursion(Pred/Arity) :-
@@ -60,91 +64,23 @@ compile_tail_recursion(Pred/Arity, Options, Code) :-
     extract_accumulator_pattern(Pred/Arity, Pattern),
     Pattern = pattern(_InitValue, StepOp, _UnifyType),
 
-    % Generate code based on pattern and target
+    % Generate code based on pattern and target - delegate to multifile
     atom_string(Pred, PredStr),
-    (   Target == r ->
-        generate_tail_recursion_r(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, Code)
-    ;   Target == bash ->
-        generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, Code)
-    ;   format('Error: Unsupported target ~w for tail recursion~n', [Target]),
+    (   compile_tail_pattern(Target, PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, Code) ->
+        true
+    ;   format('Error: No tail recursion support for target ~w~n', [Target]),
         fail
     ).
 
-%% generate_tail_recursion_r(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -RCode)
-generate_tail_recursion_r(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, RCode) :-
-    % Determine which pattern to use based on arity
-    (   Arity =:= 3 ->
-        generate_ternary_tail_loop_r(PredStr, AccPos, StepOp, ExitAfterResult, RCode)
-    ;   Arity =:= 2 ->
-        generate_binary_tail_loop_r(PredStr, ExitAfterResult, RCode)
-    ;   % Unsupported arity
-        format('Warning: tail recursion in R with arity ~w not yet supported~n', [Arity]),
-        fail
-    ).
+%% ============================================
+%% BASH CODE GENERATORS (registered as multifile)
+%% ============================================
 
-%% step_op_to_r(+StepOp, -RCode)
-step_op_to_r(arithmetic(Expr), RCode) :-
-    expr_to_r(Expr, RExpr),
-    format(atom(RCode), 'current_acc <- ~w', [RExpr]).
-step_op_to_r(unknown, 'current_acc <- current_acc + 1').  % Fallback
+compile_tail_pattern(bash, PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, BashCode) :-
+    generate_tail_recursion_bash(PredStr, Arity, AccPos, StepOp, ExitAfterResult, BashCode).
 
-%% expr_to_r(+PrologExpr, -RExpr)
-expr_to_r(_ + Const, RExpr) :- integer(Const), !, format(atom(RExpr), 'current_acc + ~w', [Const]).
-expr_to_r(_ + _, 'current_acc + item') :- !.
-expr_to_r(_ - _, 'current_acc - item') :- !.
-expr_to_r(_ * _, 'current_acc * item') :- !.
-expr_to_r(_, 'current_acc + 1').  % Fallback
-
-%% generate_ternary_tail_loop_r(+PredStr, +AccPos, +StepOp, +ExitAfterResult, -RCode)
-generate_ternary_tail_loop_r(PredStr, _AccPos, StepOp, _ExitAfterResult, RCode) :-
-    step_op_to_r(StepOp, RStepOp),
-    TemplateLines = [
-        "# {{pred}} - tail recursive accumulator pattern (R)",
-        "{{pred}} <- function(input, acc) {",
-        "    items <- input",
-        "    if (is.character(input)) {",
-        "       # parse string input if necessary",
-        "       items <- unlist(strsplit(gsub(\"\\\\[|\\\\]\", \"\", input), \",\"))",
-        "       nums <- suppressWarnings(as.numeric(items))",
-        "       if (all(!is.na(nums))) items <- nums",
-        "    }",
-        "    current_acc <- acc",
-        "    for (item in items) {",
-        "        {{step_op}}",
-        "    }",
-        "    return(current_acc)",
-        "}",
-        "{{pred}}_eval <- function(input) {",
-        "    return({{pred}}(input, 0))",
-        "}"
-    ],
-
-    atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, step_op=RStepOp], RCode).
-
-%% generate_binary_tail_loop_r(+PredStr, +ExitAfterResult, -RCode)
-generate_binary_tail_loop_r(PredStr, ExitAfterResult, RCode) :-
-    TemplateLines = [
-        "# {{pred}} - tail recursive binary pattern (R)",
-        "{{pred}} <- function(input, expected=NULL) {",
-        "    count <- 0",
-        "    items <- input",
-        "    while (length(items) > 0) {",
-        "        count <- count + 1",
-        "        items <- items[-1]",
-        "    }",
-        "    if (!is.null(expected)) {",
-        "        return(count == expected)",
-        "    }",
-        "    return(count)",
-        "}"
-    ],
-
-    atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr], RCode).
-
-%% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
-generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, BashCode) :-
+%% generate_tail_recursion_bash(+PredStr, +Arity, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
+generate_tail_recursion_bash(PredStr, Arity, AccPos, StepOp, ExitAfterResult, BashCode) :-
     % Determine which pattern to use based on arity
     (   Arity =:= 3 ->
         % Standard accumulator pattern: pred(Input, Accumulator, Result)

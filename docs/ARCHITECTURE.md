@@ -11,22 +11,32 @@ UnifyWeaver compiles Prolog predicates into efficient bash scripts, treating Pro
 ## Module Organization
 
 ```
-src/unifyweaver/core/
-├── template_system.pl
-├── stream_compiler.pl
-├── recursive_compiler.pl
-├── constraint_analyzer.pl
-├── optimizer.pl
-├── firewall.pl
-├── preferences.pl
-└── advanced/
-    ├── advanced_recursive_compiler.pl
-    ├── call_graph.pl
-    ├── scc_detection.pl
-    ├── pattern_matchers.pl
-    ├── tail_recursion.pl
-    ├── linear_recursion.pl
-    └── mutual_recursion.pl
+src/unifyweaver/
+├── core/
+│   ├── template_system.pl
+│   ├── stream_compiler.pl
+│   ├── recursive_compiler.pl
+│   ├── constraint_analyzer.pl
+│   ├── optimizer.pl
+│   ├── firewall.pl
+│   ├── preferences.pl
+│   └── advanced/
+│       ├── advanced_recursive_compiler.pl
+│       ├── call_graph.pl
+│       ├── scc_detection.pl
+│       ├── pattern_matchers.pl
+│       ├── tail_recursion.pl
+│       ├── linear_recursion.pl
+│       ├── tree_recursion.pl
+│       ├── mutual_recursion.pl
+│       ├── multicall_linear_recursion.pl
+│       └── direct_multi_call_recursion.pl
+└── targets/
+    ├── r_target.pl
+    ├── go_target.pl
+    ├── rust_target.pl
+    ├── python_target.pl
+    └── csharp_target.pl
 ```
 
 ### template_system.pl
@@ -116,9 +126,9 @@ Orchestrates the compilation of complex recursion patterns. It uses a priority-b
 └────────────────┬─────────────────┘
                  │
                  ▼
-        ┌────────────────┐
-        │   Bash Script  │
-        └────────────────┘
+        ┌──────────────────────────────┐
+        │  Target Code (bash/R/etc.)   │
+        └──────────────────────────────┘
 ```
 
 1.  **Prolog Predicate:** The process starts with the Prolog predicate you want to compile (e.g., `ancestor/2`).
@@ -249,6 +259,19 @@ Bash generation logic separated from Prolog analysis logic.
 ### 5. Composition
 Generated bash functions can be sourced and composed in larger scripts.
 
+### 6. Multifile Target Delegation
+Each advanced recursion module declares a multifile predicate for code generation (e.g., `compile_tree_pattern/6`, `compile_tail_pattern/9`). The core module contains only pattern detection and the bash code generator clause. Target plugins (e.g., `r_target.pl`) register their own clauses for the multifile predicate, keeping target-specific code out of the core. This pattern allows adding new targets without modifying core modules.
+
+```prolog
+% In core module (e.g., tree_recursion.pl):
+:- multifile compile_tree_pattern/6.
+compile_tree_pattern(bash, ...) :- generate_bash_code(...).
+
+% In target plugin (e.g., r_target.pl):
+:- multifile tree_recursion:compile_tree_pattern/6.
+tree_recursion:compile_tree_pattern(r, ...) :- generate_r_code(...).
+```
+
 ## Testing
 
 Each core module includes built-in tests:
@@ -263,11 +286,14 @@ Tests generate example scripts in `output/` directory that can be executed direc
 
 ## Future Extensions
 
-### Planned
-- External template file support (currently templates are auto-generated)
+### Implemented
 - Mutual recursion via SCC detection
 - Tail recursion optimization to loops
-- Multiple backend support (Python, JavaScript)
+- Multiple backend support (R, Go, Rust, Python, C#) via multifile target delegation
+- Tree recursion, multi-call linear recursion, and direct multi-call recursion patterns
+
+### Planned
+- External template file support (currently templates are auto-generated)
 
 ### Under Consideration
 - Static analysis for optimization hints
