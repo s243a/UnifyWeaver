@@ -96,13 +96,8 @@ expr_to_r(_ * _, 'current_acc * item') :- !.
 expr_to_r(_, 'current_acc + 1').  % Fallback
 
 %% generate_ternary_tail_loop_r(+PredStr, +AccPos, +StepOp, +ExitAfterResult, -RCode)
-generate_ternary_tail_loop_r(PredStr, _AccPos, StepOp, ExitAfterResult, RCode) :-
+generate_ternary_tail_loop_r(PredStr, _AccPos, StepOp, _ExitAfterResult, RCode) :-
     step_op_to_r(StepOp, RStepOp),
-    (   ExitAfterResult = true ->
-        ExitStatement = "        return(current_acc)  # Unique constraint: only one result"
-    ;   ExitStatement = ""
-    ),
-
     TemplateLines = [
         "# {{pred}} - tail recursive accumulator pattern (R)",
         "{{pred}} <- function(input, acc) {",
@@ -110,12 +105,12 @@ generate_ternary_tail_loop_r(PredStr, _AccPos, StepOp, ExitAfterResult, RCode) :
         "    if (is.character(input)) {",
         "       # parse string input if necessary",
         "       items <- unlist(strsplit(gsub(\"\\\\[|\\\\]\", \"\", input), \",\"))",
-        "       items <- as.numeric(items)",
+        "       nums <- suppressWarnings(as.numeric(items))",
+        "       if (all(!is.na(nums))) items <- nums",
         "    }",
         "    current_acc <- acc",
         "    for (item in items) {",
         "        {{step_op}}",
-        "{{exit_statement}}",
         "    }",
         "    return(current_acc)",
         "}",
@@ -125,15 +120,10 @@ generate_ternary_tail_loop_r(PredStr, _AccPos, StepOp, ExitAfterResult, RCode) :
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, step_op=RStepOp, exit_statement=ExitStatement], RCode).
+    render_template(Template, [pred=PredStr, step_op=RStepOp], RCode).
 
 %% generate_binary_tail_loop_r(+PredStr, +ExitAfterResult, -RCode)
 generate_binary_tail_loop_r(PredStr, ExitAfterResult, RCode) :-
-    (   ExitAfterResult = true ->
-        ExitStatement = "    return(count)  # Unique constraint: only one result"
-    ;   ExitStatement = ""
-    ),
-
     TemplateLines = [
         "# {{pred}} - tail recursive binary pattern (R)",
         "{{pred}} <- function(input, expected=NULL) {",
@@ -147,12 +137,11 @@ generate_binary_tail_loop_r(PredStr, ExitAfterResult, RCode) :-
         "        return(count == expected)",
         "    }",
         "    return(count)",
-        "{{exit_statement}}",
         "}"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, exit_statement=ExitStatement], RCode).
+    render_template(Template, [pred=PredStr], RCode).
 
 %% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
 generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, BashCode) :-

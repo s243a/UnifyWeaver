@@ -24,7 +24,7 @@ validate_config(Config) :-
     is_list(Config).
 
 % Initialize component
-init_component(Name, Config) :-
+init_component(_Name, _Config) :-
     % Here we could set some dynamic flags for the r_target
     % to generate data.table specific syntax
     true.

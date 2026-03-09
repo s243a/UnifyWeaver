@@ -103,14 +103,20 @@ is_tree_recursive_case(_Head, Body, Pred) :-
     Count >= 2.
 
 %% ============================================
-%% CODE GENERATION
+%% CODE GENERATION (target-delegating)
 %% ============================================
 
-%% compile_tree_recursion(+Pred/Arity, +Options, -BashCode)
-%  Generate code for tree recursive predicate
+%% compile_tree_pattern/6 is multifile - targets register their own clauses.
+%% compile_tree_pattern(+Target, +Pattern, +Pred, +Arity, +UseMemo, -Code)
+%%   Pattern is one of: fibonacci, binary_tree, generic
+:- multifile compile_tree_pattern/6.
+
+%% compile_tree_recursion(+Pred/Arity, +Options, -Code)
+%  Generate code for tree recursive predicate.
+%  Delegates code generation to the target via compile_tree_pattern/6.
 %  Options:
 %    - memoization(true/false) - Use memoization table (default: false for v1.0)
-%    - tree_format(list/nested) - Tree representation (default: list)
+%    - target(Target) - Target language (default: bash)
 compile_tree_recursion(Pred/Arity, Options, Code) :-
     % Check if memoization is requested
     (   member(memoization(true), Options) ->
@@ -124,27 +130,18 @@ compile_tree_recursion(Pred/Arity, Options, Code) :-
     ),
     format('  Target: ~w~n', [Target]),
 
-    % Get predicate information
-    atom_string(Pred, PredStr),
-
     % Detect pattern type
-    (   Target == r ->
-        (   is_fibonacci_pattern(Pred/Arity) ->
-            generate_fibonacci_code_r(PredStr, UseMemo, Code)
-        ;   is_binary_tree_pattern(Pred/Arity) ->
-            generate_binary_tree_code_r(Pred, Arity, UseMemo, Code)
-        ;   % Generic tree recursion
-            generate_generic_tree_code_r(Pred, Arity, UseMemo, Code)
-        )
-    ;   Target == bash ->
-        (   is_fibonacci_pattern(Pred/Arity) ->
-            generate_fibonacci_code(PredStr, UseMemo, Code)
-        ;   is_binary_tree_pattern(Pred/Arity) ->
-            generate_binary_tree_code(Pred, Arity, UseMemo, Code)
-        ;   % Generic tree recursion
-            generate_generic_tree_code(Pred, Arity, UseMemo, Code)
-        )
-    ;   format('Error: Unsupported target ~w for tree recursion~n', [Target]),
+    (   is_fibonacci_pattern(Pred/Arity) ->
+        Pattern = fibonacci
+    ;   is_binary_tree_pattern(Pred/Arity) ->
+        Pattern = binary_tree
+    ;   Pattern = generic
+    ),
+
+    % Delegate to target
+    (   compile_tree_pattern(Target, Pattern, Pred, Arity, UseMemo, Code) ->
+        true
+    ;   format('Error: No tree recursion support for target ~w (pattern: ~w)~n', [Target, Pattern]),
         fail
     ).
 
@@ -190,95 +187,16 @@ is_list_tree_argument([_V, _L, _R], Body, Pred) :-
 is_list_tree_argument([_|_], _, _) :- !.  % Could be tree structure
 
 %% ============================================
-%% CODE GENERATORS
+%% BASH CODE GENERATORS (registered as multifile)
 %% ============================================
 
-%% generate_fibonacci_code_r(+PredStr, +UseMemo, -RCode)
-generate_fibonacci_code_r(PredStr, UseMemo, RCode) :-
-    (   UseMemo = true ->
-        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())'
-    ;   MemoDecl = '# Memoization disabled'
-    ),
-    (   UseMemo = true ->
-        format(string(MemoDeclFormatted), MemoDecl, [PredStr])
-    ;   MemoDeclFormatted = MemoDecl
-    ),
-
-    TemplateLines = [
-        "# {{pred}}/2 - tree recursive pattern (Fibonacci-like in R)",
-        "{{memo_decl}}",
-        "",
-        "{{pred}} <- function(n, expected=NULL) {",
-        "    if (n == 0) return(0)",
-        "    if (n == 1) return(1)",
-        "",
-        "    # Check memo",
-        "    key <- as.character(n)",
-        "    if (!is.null({{{pred}}_memo[[key]]})) {",
-        "        result <- {{{pred}}_memo[[key]]}",
-        "    } else {",
-        "        # Recursive calls",
-        "        result <- {{pred}}(n - 1) + {{pred}}(n - 2)",
-        "        {{{pred}}_memo[[key]]} <- result",
-        "    }",
-        "",
-        "    if (!is.null(expected)) {",
-        "        return(result == expected)",
-        "    }",
-        "    return(result)",
-        "}"
-    ],
-    atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, memo_decl=MemoDeclFormatted], RCode).
-
-%% generate_binary_tree_code_r(+Pred, +Arity, +UseMemo, -RCode)
-generate_binary_tree_code_r(Pred, Arity, UseMemo, RCode) :-
+compile_tree_pattern(bash, fibonacci, Pred, _Arity, UseMemo, Code) :-
     atom_string(Pred, PredStr),
-    (   UseMemo = true ->
-        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())'
-    ;   MemoDecl = '# Memoization disabled'
-    ),
-    (   UseMemo = true ->
-        format(string(MemoDeclFormatted), MemoDecl, [PredStr])
-    ;   MemoDeclFormatted = MemoDecl
-    ),
-
-    TemplateLines = [
-        "# {{pred}}/{{arity}} - binary tree recursive pattern (R)",
-        "{{memo_decl}}",
-        "",
-        "{{pred}} <- function(tree) {",
-        "    # A stub for processing tree recursion in R",
-        "    warning(\"Binary tree recursion not fully implemented in R\")",
-        "    return(NULL)",
-        "}"
-    ],
-    atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, arity=Arity, memo_decl=MemoDeclFormatted], RCode).
-
-%% generate_generic_tree_code_r(+Pred, +Arity, +UseMemo, -RCode)
-generate_generic_tree_code_r(Pred, Arity, UseMemo, RCode) :-
-    atom_string(Pred, PredStr),
-    (   UseMemo = true ->
-        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())'
-    ;   MemoDecl = '# Memoization disabled'
-    ),
-    (   UseMemo = true ->
-        format(string(MemoDeclFormatted), MemoDecl, [PredStr])
-    ;   MemoDeclFormatted = MemoDecl
-    ),
-
-    TemplateLines = [
-        "# {{pred}}/{{arity}} - generic tree recursive pattern (R)",
-        "{{memo_decl}}",
-        "",
-        "{{pred}} <- function(...) {",
-        "    warning(\"Generic tree recursion not fully implemented in R\")",
-        "    return(NULL)",
-        "}"
-    ],
-    atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, arity=Arity, memo_decl=MemoDeclFormatted], RCode).
+    generate_fibonacci_code(PredStr, UseMemo, Code).
+compile_tree_pattern(bash, binary_tree, Pred, Arity, UseMemo, Code) :-
+    generate_binary_tree_code(Pred, Arity, UseMemo, Code).
+compile_tree_pattern(bash, generic, Pred, Arity, UseMemo, Code) :-
+    generate_generic_tree_code(Pred, Arity, UseMemo, Code).
 
 %% generate_fibonacci_code(+PredStr, +UseMemo, -BashCode)
 %  Generate bash code for fibonacci-like predicates

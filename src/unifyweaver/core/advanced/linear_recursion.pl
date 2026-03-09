@@ -423,7 +423,7 @@ generate_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, 
     # Recursive case using Reduce
     range_vals <- seq(n, 1, by=-1)
     # The fold left operation equivalent in R
-    result <- Reduce(~w_op, range_vals, init=1)
+    result <- Reduce(~w_op, range_vals, init=~w)
 
 ~w
     if (!is.null(expected)) {
@@ -432,7 +432,7 @@ generate_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, 
         return(result)
     }
 }
-', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, MemoStoreCode]).
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode]).
 
 %% generate_list_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
 generate_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-
@@ -451,7 +451,7 @@ generate_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, Mem
 
     (   MemoEnabled = true ->
         format(string(MemoDecl), '# Memoization table (~w strategy)~n~w_memo <- new.env(hash=TRUE, parent=emptyenv())~n', [MemoStrategy, PredStr]),
-        format(string(MemoCheckCode), '    # Check memo~n    key <- paste(lst, collapse=",")~n    if (!is.null(~w_memo[[key]])) {~n        cached <- ~w_memo[[key]]~n        if (!is.null(expected)) {~n            if (cached == expected) return(TRUE) else return(FALSE)~n        } else {~n            return(cached)~n        }~n    }~n', [PredStr, PredStr]),
+        format(string(MemoCheckCode), '    # Check memo~n    key <- if (length(lst) == 0) "__empty__" else paste(lst, collapse=",")~n    if (!is.null(~w_memo[[key]])) {~n        cached <- ~w_memo[[key]]~n        if (!is.null(expected)) {~n            if (cached == expected) return(TRUE) else return(FALSE)~n        } else {~n            return(cached)~n        }~n    }~n', [PredStr, PredStr]),
         format(string(MemoStoreCode), '    # Memoize~n    ~w_memo[[key]] <- result~n', [PredStr])
     ;   MemoDecl = '# Memoization disabled\n',
         MemoCheckCode = '',
@@ -486,7 +486,7 @@ generate_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, Mem
     }
 
     # Recursive case using Reduce
-    result <- Reduce(~w_op, lst, init=~w, right=TRUE)
+    result <- Reduce(~w_op, lst, accumulate=FALSE, init=~w)
 
 ~w
     if (!is.null(expected)) {
@@ -500,10 +500,10 @@ generate_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, Mem
 %% generate_generic_linear_recursion_r(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -RCode)
 generate_generic_linear_recursion_r(PredStr, Arity, _BaseClauses, _RecClauses, MemoEnabled, _MemoStrategy, RCode) :-
     (   MemoEnabled = true ->
-        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())'
-    ;   MemoDecl = '# Memoization disabled'
+        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())',
+        format(string(MemoDeclFormatted), MemoDecl, [PredStr])
+    ;   MemoDeclFormatted = '# Memoization disabled'
     ),
-    format(string(MemoDeclFormatted), MemoDecl, [PredStr]),
     
     TemplateLines = [
         "# {{pred}}/{{arity}} - linear recursive pattern (generic R)",
