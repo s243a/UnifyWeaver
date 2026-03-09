@@ -27,7 +27,7 @@ can_compile_tail_recursion(Pred/Arity) :-
 %  Currently tail recursive predicates return single values (not sets),
 %  so deduplication constraints don't apply. Options are reserved for
 %  future use (e.g., output language selection).
-compile_tail_recursion(Pred/Arity, Options, BashCode) :-
+compile_tail_recursion(Pred/Arity, Options, Code) :-
     format('  Compiling tail recursion: ~w/~w~n', [Pred, Arity]),
 
     % Query constraints (for logging and future use)
@@ -37,6 +37,12 @@ compile_tail_recursion(Pred/Arity, Options, BashCode) :-
     % Merge runtime options with constraints
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
+    
+    % Determine target (default to bash)
+    (   member(target(Target), AllOptions) -> true
+    ;   Target = bash
+    ),
+    format('  Target: ~w~n', [Target]),
 
     % Apply unique constraint optimization
     % Tail recursive predicates with unique(true) can exit after first result
@@ -54,9 +60,88 @@ compile_tail_recursion(Pred/Arity, Options, BashCode) :-
     extract_accumulator_pattern(Pred/Arity, Pattern),
     Pattern = pattern(_InitValue, StepOp, _UnifyType),
 
-    % Generate bash code based on pattern
+    % Generate code based on pattern and target
     atom_string(Pred, PredStr),
-    generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, BashCode).
+    (   Target == r ->
+        generate_tail_recursion_r(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, Code)
+    ;   Target == bash ->
+        generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, Code)
+    ;   format('Error: Unsupported target ~w for tail recursion~n', [Target]),
+        fail
+    ).
+
+%% generate_tail_recursion_r(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -RCode)
+generate_tail_recursion_r(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, RCode) :-
+    % Determine which pattern to use based on arity
+    (   Arity =:= 3 ->
+        generate_ternary_tail_loop_r(PredStr, AccPos, StepOp, ExitAfterResult, RCode)
+    ;   Arity =:= 2 ->
+        generate_binary_tail_loop_r(PredStr, ExitAfterResult, RCode)
+    ;   % Unsupported arity
+        format('Warning: tail recursion in R with arity ~w not yet supported~n', [Arity]),
+        fail
+    ).
+
+%% step_op_to_r(+StepOp, -RCode)
+step_op_to_r(arithmetic(Expr), RCode) :-
+    expr_to_r(Expr, RExpr),
+    format(atom(RCode), 'current_acc <- ~w', [RExpr]).
+step_op_to_r(unknown, 'current_acc <- current_acc + 1').  % Fallback
+
+%% expr_to_r(+PrologExpr, -RExpr)
+expr_to_r(_ + Const, RExpr) :- integer(Const), !, format(atom(RExpr), 'current_acc + ~w', [Const]).
+expr_to_r(_ + _, 'current_acc + item') :- !.
+expr_to_r(_ - _, 'current_acc - item') :- !.
+expr_to_r(_ * _, 'current_acc * item') :- !.
+expr_to_r(_, 'current_acc + 1').  % Fallback
+
+%% generate_ternary_tail_loop_r(+PredStr, +AccPos, +StepOp, +ExitAfterResult, -RCode)
+generate_ternary_tail_loop_r(PredStr, _AccPos, StepOp, _ExitAfterResult, RCode) :-
+    step_op_to_r(StepOp, RStepOp),
+    TemplateLines = [
+        "# {{pred}} - tail recursive accumulator pattern (R)",
+        "{{pred}} <- function(input, acc) {",
+        "    items <- input",
+        "    if (is.character(input)) {",
+        "       # parse string input if necessary",
+        "       items <- unlist(strsplit(gsub(\"\\\\[|\\\\]\", \"\", input), \",\"))",
+        "       nums <- suppressWarnings(as.numeric(items))",
+        "       if (all(!is.na(nums))) items <- nums",
+        "    }",
+        "    current_acc <- acc",
+        "    for (item in items) {",
+        "        {{step_op}}",
+        "    }",
+        "    return(current_acc)",
+        "}",
+        "{{pred}}_eval <- function(input) {",
+        "    return({{pred}}(input, 0))",
+        "}"
+    ],
+
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr, step_op=RStepOp], RCode).
+
+%% generate_binary_tail_loop_r(+PredStr, +ExitAfterResult, -RCode)
+generate_binary_tail_loop_r(PredStr, ExitAfterResult, RCode) :-
+    TemplateLines = [
+        "# {{pred}} - tail recursive binary pattern (R)",
+        "{{pred}} <- function(input, expected=NULL) {",
+        "    count <- 0",
+        "    items <- input",
+        "    while (length(items) > 0) {",
+        "        count <- count + 1",
+        "        items <- items[-1]",
+        "    }",
+        "    if (!is.null(expected)) {",
+        "        return(count == expected)",
+        "    }",
+        "    return(count)",
+        "}"
+    ],
+
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr], RCode).
 
 %% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
 generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, BashCode) :-
@@ -225,9 +310,12 @@ test_tail_recursion :-
 
     (   can_compile_tail_recursion(count_items/3) ->
         writeln('  ✓ Pattern detected'),
-        compile_tail_recursion(count_items/3, [], Code1),
+        compile_tail_recursion(count_items/3, [target(bash)], Code1),
         write_bash_file('output/advanced/count_items.sh', Code1),
-        writeln('  ✓ Compiled to output/advanced/count_items.sh')
+        writeln('  ✓ Compiled to output/advanced/count_items.sh (bash)'),
+        compile_tail_recursion(count_items/3, [target(r)], Code1R),
+        write_bash_file('output/advanced/count_items.R', Code1R),
+        writeln('  ✓ Compiled to output/advanced/count_items.R (r)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 
@@ -238,9 +326,12 @@ test_tail_recursion :-
 
     (   can_compile_tail_recursion(sum_list/3) ->
         writeln('  ✓ Pattern detected'),
-        compile_tail_recursion(sum_list/3, [], Code2),
+        compile_tail_recursion(sum_list/3, [target(bash)], Code2),
         write_bash_file('output/advanced/sum_list.sh', Code2),
-        writeln('  ✓ Compiled to output/advanced/sum_list.sh')
+        writeln('  ✓ Compiled to output/advanced/sum_list.sh (bash)'),
+        compile_tail_recursion(sum_list/3, [target(r)], Code2R),
+        write_bash_file('output/advanced/sum_list.R', Code2R),
+        writeln('  ✓ Compiled to output/advanced/sum_list.R (r)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 

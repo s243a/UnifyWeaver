@@ -17,6 +17,7 @@ This document tracks which bindings are implemented for each target language.
 | Target | Bindings | Categories |
 |--------|----------|------------|
 | **Python** | 106 | 9 (Built-ins, String, List, Dict, I/O, Regex, Math, Collections, Itertools) |
+| **R** | 58 | 7 (Built-ins, Math, String, Type Conversion, Vector/List, File I/O, DataFrame/Pipelines) |
 | **PowerShell** | 68 | 4 (Cmdlets, Automation, .NET, C# Hosting) |
 | **Jython** | 66 | 5+ (Python-compatible + Java I/O, Collections, Regex, Strings) |
 | **Clojure** | 64 | 5 (Core, Collections, Sequences, Strings, Threading Macros) |
@@ -35,20 +36,20 @@ This document tracks which bindings are implemented for each target language.
 
 ## Core Operations
 
-| Binding | Python | PowerShell | Go | C# | Rust | AWK | Notes |
-|---------|:------:|:----------:|:--:|:--:|:----:|:---:|-------|
-| `abs/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | Absolute value |
-| `sqrt/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Square root |
-| `to_string/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | Convert to string |
-| `to_int/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Convert to integer |
-| `to_float/2` | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | Convert to float |
-| `to_bool/2` | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ | Convert to boolean |
-| `length/2` | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | Get length/count |
-| `type_of/2` | ✓ | ✗ | Get type |
-| `is_instance/2` | ✓ | ✗ | Type check |
-| `is_type/2` | ✗ | ✓ | Type check (-is) |
-| `object_id/2` | ✓ | ✗ | Get unique identifier |
-| `round/2` | ✗ | ✓ | Round number |
+| Binding | Python | PowerShell | Go | C# | Rust | AWK | R | Notes |
+|---------|:------:|:----------:|:--:|:--:|:----:|:---:|:--:|-------|
+| `abs/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | Absolute value |
+| `sqrt/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Square root |
+| `to_string/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | Convert to string |
+| `to_int/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Convert to integer (as.integer) |
+| `to_float/2` | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | ✓ | Convert to float (as.numeric) |
+| `to_bool/2` | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | Convert to boolean (as.logical) |
+| `length/2` | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | Get length/count |
+| `type_of/2` | ✓ | ✗ | ✗ | Get type |
+| `is_instance/2` | ✓ | ✗ | ✗ | Type check |
+| `is_type/2` | ✗ | ✓ | ✗ | Type check (-is) |
+| `object_id/2` | ✓ | ✗ | ✗ | Get unique identifier |
+| `round/2` | ✗ | ✓ | ✓ | Round number |
 
 ---
 

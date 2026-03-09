@@ -31,7 +31,7 @@ can_compile_linear_recursion(Pred/Arity) :-
 %  - unique(false): Allow duplicate memoization (though unusual for linear recursion)
 %  - ordered(true): Use hash-based memoization (faster lookup, preserves order)
 %  - ordered(false): Use standard memoization (default)
-compile_linear_recursion(Pred/Arity, Options, BashCode) :-
+compile_linear_recursion(Pred/Arity, Options, Code) :-
     format('  Compiling linear recursion: ~w/~w~n', [Pred, Arity]),
 
     % Query constraints
@@ -59,14 +59,26 @@ compile_linear_recursion(Pred/Arity, Options, BashCode) :-
     atom_string(Pred, PredStr),
     functor(Head, Pred, Arity),
 
+    % Determine target (default to bash)
+    (   member(target(Target), AllOptions) -> true
+    ;   Target = bash
+    ),
+    format('  Target: ~w~n', [Target]),
+
     % Get clauses - use user:clause to access predicates from any module (including test predicates)
     findall(clause(Head, Body), user:clause(Head, Body), Clauses),
 
     % Separate base and recursive cases
     partition(is_recursive_clause(Pred), Clauses, RecClauses, BaseClauses),
 
-    % Generate bash code with constraint info
-    generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, BashCode).
+    % Generate code based on constraint info and target
+    (   Target == r ->
+        generate_linear_recursion_r(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, Code)
+    ;   Target == bash ->
+        generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, Code)
+    ;   format('Error: Unsupported target ~w for linear recursion~n', [Target]),
+        fail
+    ).
 
 %% is_recursive_clause(+Pred, +Clause)
 is_recursive_clause(Pred, clause(_Head, Body)) :-
@@ -160,6 +172,15 @@ find_recursive_call((_A, B), RecCall) :-
 %% ============================================
 %% FOLD-BASED CODE GENERATION (Phase 3 & 4)
 %% ============================================
+
+%% generate_linear_recursion_r(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -RCode)
+generate_linear_recursion_r(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode) :-
+    % For arity 2, use fold-based approach
+    (   Arity =:= 2 ->
+        generate_fold_based_recursion_r(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode)
+    ;   % Other arities - use generic memoization
+        generate_generic_linear_recursion_r(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode)
+    ).
 
 %% generate_linear_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -BashCode)
 generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, BashCode) :-
@@ -336,6 +357,169 @@ translate_term(Number, _InputVar, _AccVar, BashTerm) :-
     format(string(BashTerm), '~w', [Number]).
 translate_term(Atom, _InputVar, _AccVar, BashTerm) :-
     format(string(BashTerm), '~w', [Atom]).
+
+%% generate_fold_based_recursion_r(+PredStr, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -RCode)
+generate_fold_based_recursion_r(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode) :-
+    % Extract pattern information
+    extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
+    detect_input_type(BaseInput, InputType),
+    extract_fold_operation(RecClauses, FoldExpr),
+
+    % Generate based on input type
+    (   InputType = numeric ->
+        generate_numeric_fold_r(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, RCode)
+    ;   InputType = list ->
+        generate_list_fold_r(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, RCode)
+    ;   % Fallback
+        generate_generic_linear_recursion_r(PredStr, 2, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode)
+    ).
+
+%% generate_numeric_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
+generate_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
+
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [_Pred, InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [_RecPred, _RecInput, AccVar],
+    find_last_is_expression(RBody, _ is ActualFoldExpr),
+
+    % Translate fold expression
+    translate_fold_expr(ActualFoldExpr, InputVar, AccVar, RFoldOp),
+
+    % Generate memo declaration
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '# Memoization table (~w strategy)~n~w_memo <- new.env(hash=TRUE, parent=emptyenv())~n', [MemoStrategy, PredStr]),
+        format(string(MemoCheckCode), '    # Check memo~n    key <- as.character(n)~n    if (!is.null(~w_memo[[key]])) {~n        cached <- ~w_memo[[key]]~n        if (!is.null(expected)) {~n            if (cached == expected) return(TRUE) else return(FALSE)~n        } else {~n            return(cached)~n        }~n    }~n', [PredStr, PredStr]),
+        format(string(MemoStoreCode), '    # Memoize~n    ~w_memo[[key]] <- result~n', [PredStr])
+    ;   MemoDecl = '# Memoization disabled\n',
+        MemoCheckCode = '',
+        MemoStoreCode = ''
+    ),
+
+    format(string(RCode), '# ~w - fold-based linear recursion (numeric, R)
+
+~w
+
+~w_op <- function(current, acc) {
+    return(~w)
+}
+
+~w <- function(n, expected=NULL) {
+~w
+    if (n == ~w) {
+        result <- ~w
+~w
+        if (!is.null(expected)) {
+            if (result == expected) return(TRUE) else return(FALSE)
+        } else {
+            return(result)
+        }
+    }
+
+    # Recursive case using Reduce
+    range_vals <- seq(n, 1, by=-1)
+    # The fold left operation equivalent in R
+    result <- Reduce(~w_op, range_vals, init=~w)
+
+~w
+    if (!is.null(expected)) {
+        if (result == expected) return(TRUE) else return(FALSE)
+    } else {
+        return(result)
+    }
+}
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode]).
+
+%% generate_list_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
+generate_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
+
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [_Pred, _InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [_RecPred, _RecInput, AccVar],
+    find_last_is_expression(RBody, _ is ActualFoldExpr),
+
+    translate_fold_expr(ActualFoldExpr, _DummyInput, AccVar, RFoldOp),
+
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '# Memoization table (~w strategy)~n~w_memo <- new.env(hash=TRUE, parent=emptyenv())~n', [MemoStrategy, PredStr]),
+        format(string(MemoCheckCode), '    # Check memo~n    key <- if (length(lst) == 0) "__empty__" else paste(lst, collapse=",")~n    if (!is.null(~w_memo[[key]])) {~n        cached <- ~w_memo[[key]]~n        if (!is.null(expected)) {~n            if (cached == expected) return(TRUE) else return(FALSE)~n        } else {~n            return(cached)~n        }~n    }~n', [PredStr, PredStr]),
+        format(string(MemoStoreCode), '    # Memoize~n    ~w_memo[[key]] <- result~n', [PredStr])
+    ;   MemoDecl = '# Memoization disabled\n',
+        MemoCheckCode = '',
+        MemoStoreCode = ''
+    ),
+
+    format(string(RCode), '# ~w - fold-based linear recursion (list, R)
+
+~w
+
+~w_op <- function(acc, current) {
+    return(~w)
+}
+
+~w <- function(lst_input, expected=NULL) {
+    lst <- lst_input
+    if (is.character(lst)) {
+        # parse string input if necessary
+        lst <- unlist(strsplit(gsub("\\\\[|\\\\]", "", lst), ","))
+        if(all(!is.na(suppressWarnings(as.numeric(lst))))) lst <- as.numeric(lst)
+    }
+
+~w
+    if (length(lst) == 0 || (length(lst) == 1 && lst[1] == "~w")) {
+        result <- ~w
+~w
+        if (!is.null(expected)) {
+            if (result == expected) return(TRUE) else return(FALSE)
+        } else {
+            return(result)
+        }
+    }
+
+    # Recursive case using Reduce
+    result <- Reduce(~w_op, lst, accumulate=FALSE, init=~w)
+
+~w
+    if (!is.null(expected)) {
+        if (result == expected) return(TRUE) else return(FALSE)
+    } else {
+        return(result)
+    }
+}
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode]).
+
+%% generate_generic_linear_recursion_r(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -RCode)
+generate_generic_linear_recursion_r(PredStr, Arity, _BaseClauses, _RecClauses, MemoEnabled, _MemoStrategy, RCode) :-
+    (   MemoEnabled = true ->
+        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())',
+        format(string(MemoDeclFormatted), MemoDecl, [PredStr])
+    ;   MemoDeclFormatted = '# Memoization disabled'
+    ),
+    
+    TemplateLines = [
+        "# {{pred}}/{{arity}} - linear recursive pattern (generic R)",
+        "{{memo_decl}}",
+        "{{pred}} <- function(...) {",
+        "    args <- list(...)",
+        "    key <- paste(args, collapse=\"-\")",
+        "    if (!is.null({{{pred}}_memo[[key]]})) {",
+        "        return({{{pred}}_memo[[key]]})",
+        "    }",
+        "    warning(\"Generic linear recursion - not yet implemented in R\")",
+        "    return(NULL)",
+        "}"
+    ],
+    atomic_list_concat(TemplateLines, '\n', Template),
+    render_template(Template, [pred=PredStr, arity=Arity, memo_decl=MemoDeclFormatted], RCode).
 
 %% generate_list_fold(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -BashCode)
 %  Generate fold-based code for list linear recursion (e.g., list_length)
@@ -610,9 +794,12 @@ test_linear_recursion :-
 
     (   can_compile_linear_recursion(list_length/2) ->
         writeln('  ✓ Pattern detected'),
-        compile_linear_recursion(list_length/2, [], Code1),
+        compile_linear_recursion(list_length/2, [target(bash)], Code1),
         write_bash_file('output/advanced/list_length.sh', Code1),
-        writeln('  ✓ Compiled to output/advanced/list_length.sh')
+        writeln('  ✓ Compiled to output/advanced/list_length.sh (bash)'),
+        compile_linear_recursion(list_length/2, [target(r)], Code1R),
+        write_bash_file('output/advanced/list_length.R', Code1R),
+        writeln('  ✓ Compiled to output/advanced/list_length.R (r)')
     ;   writeln('  ✗ FAIL - should detect linear recursion')
     ),
 
@@ -623,9 +810,12 @@ test_linear_recursion :-
 
     (   can_compile_linear_recursion(factorial/2) ->
         writeln('  ✓ Pattern detected'),
-        compile_linear_recursion(factorial/2, [], Code2),
+        compile_linear_recursion(factorial/2, [target(bash)], Code2),
         write_bash_file('output/advanced/factorial.sh', Code2),
-        writeln('  ✓ Compiled to output/advanced/factorial.sh')
+        writeln('  ✓ Compiled to output/advanced/factorial.sh (bash)'),
+        compile_linear_recursion(factorial/2, [target(r)], Code2R),
+        write_bash_file('output/advanced/factorial.R', Code2R),
+        writeln('  ✓ Compiled to output/advanced/factorial.R (r)')
     ;   writeln('  ⚠ Pattern not detected (expected for factorial)')
     ),
 

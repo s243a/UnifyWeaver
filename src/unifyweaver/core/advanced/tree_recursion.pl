@@ -16,6 +16,7 @@
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
 :- use_module(pattern_matchers).
+:- use_module('../template_system').
 
 %% ============================================
 %% PATTERN DETECTION
@@ -102,31 +103,46 @@ is_tree_recursive_case(_Head, Body, Pred) :-
     Count >= 2.
 
 %% ============================================
-%% CODE GENERATION
+%% CODE GENERATION (target-delegating)
 %% ============================================
 
-%% compile_tree_recursion(+Pred/Arity, +Options, -BashCode)
-%  Generate bash code for tree recursive predicate
+%% compile_tree_pattern/6 is multifile - targets register their own clauses.
+%% compile_tree_pattern(+Target, +Pattern, +Pred, +Arity, +UseMemo, -Code)
+%%   Pattern is one of: fibonacci, binary_tree, generic
+:- multifile compile_tree_pattern/6.
+
+%% compile_tree_recursion(+Pred/Arity, +Options, -Code)
+%  Generate code for tree recursive predicate.
+%  Delegates code generation to the target via compile_tree_pattern/6.
 %  Options:
 %    - memoization(true/false) - Use memoization table (default: false for v1.0)
-%    - tree_format(list/nested) - Tree representation (default: list)
-compile_tree_recursion(Pred/Arity, Options, BashCode) :-
+%    - target(Target) - Target language (default: bash)
+compile_tree_recursion(Pred/Arity, Options, Code) :-
     % Check if memoization is requested
     (   member(memoization(true), Options) ->
         UseMemo = true
     ;   UseMemo = false
     ),
 
-    % Get predicate information
-    atom_string(Pred, PredStr),
+    % Determine target
+    (   member(target(Target), Options) -> true
+    ;   Target = bash
+    ),
+    format('  Target: ~w~n', [Target]),
 
     % Detect pattern type
     (   is_fibonacci_pattern(Pred/Arity) ->
-        generate_fibonacci_code(PredStr, UseMemo, BashCode)
+        Pattern = fibonacci
     ;   is_binary_tree_pattern(Pred/Arity) ->
-        generate_binary_tree_code(Pred, Arity, UseMemo, BashCode)
-    ;   % Generic tree recursion
-        generate_generic_tree_code(Pred, Arity, UseMemo, BashCode)
+        Pattern = binary_tree
+    ;   Pattern = generic
+    ),
+
+    % Delegate to target
+    (   compile_tree_pattern(Target, Pattern, Pred, Arity, UseMemo, Code) ->
+        true
+    ;   format('Error: No tree recursion support for target ~w (pattern: ~w)~n', [Target, Pattern]),
+        fail
     ).
 
 %% ============================================
@@ -171,8 +187,16 @@ is_list_tree_argument([_V, _L, _R], Body, Pred) :-
 is_list_tree_argument([_|_], _, _) :- !.  % Could be tree structure
 
 %% ============================================
-%% CODE GENERATORS
+%% BASH CODE GENERATORS (registered as multifile)
 %% ============================================
+
+compile_tree_pattern(bash, fibonacci, Pred, _Arity, UseMemo, Code) :-
+    atom_string(Pred, PredStr),
+    generate_fibonacci_code(PredStr, UseMemo, Code).
+compile_tree_pattern(bash, binary_tree, Pred, Arity, UseMemo, Code) :-
+    generate_binary_tree_code(Pred, Arity, UseMemo, Code).
+compile_tree_pattern(bash, generic, Pred, Arity, UseMemo, Code) :-
+    generate_generic_tree_code(Pred, Arity, UseMemo, Code).
 
 %% generate_fibonacci_code(+PredStr, +UseMemo, -BashCode)
 %  Generate bash code for fibonacci-like predicates
@@ -296,9 +320,12 @@ test_tree_recursion :-
     writeln('Test 2: Compile tree_sum'),
     (   can_compile_tree_recursion(tree_sum/2) ->
         writeln('  ✓ Pattern is compilable'),
-        compile_tree_recursion(tree_sum/2, [], Code1),
+        compile_tree_recursion(tree_sum/2, [target(bash)], Code1),
         write_bash_file('output/advanced/tree_sum.sh', Code1),
-        writeln('  ✓ Generated output/advanced/tree_sum.sh')
+        writeln('  ✓ Generated output/advanced/tree_sum.sh (bash)'),
+        compile_tree_recursion(tree_sum/2, [target(r)], Code1R),
+        write_bash_file('output/advanced/tree_sum.R', Code1R),
+        writeln('  ✓ Generated output/advanced/tree_sum.R (r)')
     ;   writeln('  ✗ FAIL - cannot compile tree_sum'),
         fail
     ),

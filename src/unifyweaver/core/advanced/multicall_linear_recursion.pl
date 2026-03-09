@@ -89,7 +89,7 @@ can_compile_multicall_linear(Pred/Arity) :-
 %% compile_multicall_linear_recursion(+Pred/Arity, +Options, -BashCode)
 %  Compile multi-call linear recursion with memoization
 %  Works for predicates like fibonacci that make multiple independent calls
-compile_multicall_linear_recursion(Pred/Arity, Options, BashCode) :-
+compile_multicall_linear_recursion(Pred/Arity, Options, Code) :-
     format('  Compiling multi-call linear recursion: ~w/~w~n', [Pred, Arity]),
 
     atom_string(Pred, PredStr),
@@ -108,8 +108,108 @@ compile_multicall_linear_recursion(Pred/Arity, Options, BashCode) :-
     ;   MemoEnabled = true
     ),
 
-    % Generate bash code
-    generate_multicall_bash(PredStr, BaseClauses, RecClauses, MemoEnabled, BashCode).
+    % Determine target
+    (   member(target(Target), Options) -> true
+    ;   Target = bash
+    ),
+    format('  Target: ~w~n', [Target]),
+
+    % Generate code
+    (   Target == r ->
+        generate_multicall_r(PredStr, BaseClauses, RecClauses, MemoEnabled, Code)
+    ;   Target == bash ->
+        generate_multicall_bash(PredStr, BaseClauses, RecClauses, MemoEnabled, Code)
+    ;   format('Error: Unsupported target ~w for multicall linear recursion~n', [Target]),
+        fail
+    ).
+
+%% generate_multicall_r(+PredStr, +BaseClauses, +RecClauses, +MemoEnabled, -RCode)
+generate_multicall_r(PredStr, BaseClauses, RecClauses, MemoEnabled, RCode) :-
+    % Generate memo declaration
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '~w_memo <- new.env(hash=TRUE, parent=emptyenv())', [PredStr])
+    ;   MemoDecl = '# Memoization disabled'
+    ),
+
+    % Generate base case if-blocks
+    findall(BaseCaseCode, (
+        member(clause(BHead, _), BaseClauses),
+        BHead =.. [_P, BInput, BOutput],
+        format(string(BaseCaseCode), '    if (n == ~w) return(~w)', [BInput, BOutput])
+    ), BaseCaseCodes),
+    atomic_list_concat(BaseCaseCodes, '\n', BaseCaseStr),
+
+    % Generate memo check (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoCheck),
+'    key <- as.character(n)
+    if (!is.null(~w_memo[[key]])) return(~w_memo[[key]])', [PredStr, PredStr])
+    ;   MemoCheck = ''
+    ),
+
+    % Extract recursive calls count and aggregation from RecClauses
+    RecClauses = [clause(RecHead, RecBody)|_],
+    RecHead =.. [Pred, _InputVar, _OutputVar],
+    findall(Call, (extract_goal_from_body(RecBody, Call), functor(Call, Pred, 2)), RecCalls),
+    find_aggregation_expr(RecBody, AggExpr),
+    length(RecCalls, NumCalls),
+
+    % Generate recursive call lines
+    generate_recursive_calls_r(PredStr, NumCalls, RecCallsCode),
+
+    % Generate aggregation
+    generate_aggregation_r(AggExpr, NumCalls, AggCode),
+
+    % Generate memo store (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoStore), '    ~w_memo[[key]] <<- result', [PredStr])
+    ;   MemoStore = ''
+    ),
+
+    % Assemble
+    format(string(RCode),
+'#!/usr/bin/env Rscript
+# ~w - multi-call linear recursion with memoization (R)
+# Pattern: Multiple independent recursive calls (e.g., fibonacci)
+
+~w
+
+~w <- function(n) {
+~w
+
+~w
+
+    # Recursive calls
+~w
+
+    # Aggregate results
+~w
+
+~w
+    return(result)
+}
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) >= 1) cat(~w(as.integer(args[1])), "\\n")
+}
+', [PredStr, MemoDecl, PredStr, BaseCaseStr, MemoCheck,
+    RecCallsCode, AggCode, MemoStore, PredStr]).
+
+%% generate_recursive_calls_r(+PredStr, +NumCalls, -Code)
+generate_recursive_calls_r(PredStr, 2, Code) :-
+    format(string(Code), '    result1 <- ~w(n - 1)\n    result2 <- ~w(n - 2)', [PredStr, PredStr]).
+generate_recursive_calls_r(PredStr, 3, Code) :-
+    format(string(Code), '    result1 <- ~w(n - 1)\n    result2 <- ~w(n - 2)\n    result3 <- ~w(n - 3)', [PredStr, PredStr, PredStr]).
+
+%% generate_aggregation_r(+Expr, +NumCalls, -Code)
+generate_aggregation_r(_ + _, 2, Code) :-
+    format(string(Code), '    result <- result1 + result2', []).
+generate_aggregation_r(_ * _, 2, Code) :-
+    format(string(Code), '    result <- result1 * result2', []).
+generate_aggregation_r(_ + _ + _, 3, Code) :-
+    format(string(Code), '    result <- result1 + result2 + result3', []).
 
 %% is_recursive_for_pred(+Pred, +Clause)
 is_recursive_for_pred(Pred, clause(_, Body)) :-
