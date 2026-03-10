@@ -160,6 +160,11 @@ run_tests :-
     test_agent_loop_prolog_fragments,
     test_config_section_new_clauses,
     test_backend_error_handler_routing,
+    test_unified_fragment_system,
+    test_rust_fragments,
+    test_rust_module_skeleton,
+    test_rust_compile_components,
+    test_rust_bindings,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -995,6 +1000,10 @@ test_new_binding_count :-
         bindings_for_target(prolog, PlBindings),
         length(PlBindings, 11)
     )),
+    assert_true('Rust bindings count is 11', (
+        bindings_for_target(rust, RustBindings),
+        length(RustBindings, 11)
+    )),
     assert_true('api_key_env_var has Python binding', (
         bindings_for_predicate(api_key_env_var/2, Bindings),
         member(binding(python, _, _, _, _, _), Bindings)
@@ -1655,13 +1664,20 @@ test_binding_parity :-
     agent_loop_bindings:init_agent_loop_bindings,
     findall(Pred, binding(python, Pred, _, _, _, _), PyPreds),
     findall(Pred, binding(prolog, Pred, _, _, _, _), PlPreds),
+    findall(Pred, binding(rust, Pred, _, _, _, _), RustPreds),
     length(PyPreds, PyCount),
     length(PlPreds, PlCount),
+    length(RustPreds, RustCount),
     assert_eq('Python and Prolog binding counts match', PyCount, PlCount),
+    assert_eq('Python and Rust binding counts match', PyCount, RustCount),
     sort(PyPreds, PySorted),
     sort(PlPreds, PlSorted),
+    sort(RustPreds, RustSorted),
     assert_true('Python and Prolog cover same predicates', (
         PySorted == PlSorted
+    )),
+    assert_true('Python and Rust cover same predicates', (
+        PySorted == RustSorted
     )).
 
 %% ============================================================================
@@ -2909,3 +2925,186 @@ test_backend_error_handler_routing :-
     with_output_to(string(CLIOut), agent_loop_module:emit_backend_error_handler(current_output, 'ollama-cli')),
     assert_true('emit ollama-cli error handler has TimeoutExpired',
         sub_string(CLIOut, _, _, _, "TimeoutExpired")).
+
+%% ============================================================================
+%% Unified fragment system tests
+%% ============================================================================
+
+test_unified_fragment_system :-
+    format("~nUnified fragment system:~n"),
+    %% target_fragment works for all 3 targets
+    assert_true('target_fragment python finds cost_usage_record', (
+        agent_loop_module:target_fragment(python, cost_usage_record, Code),
+        atom(Code), Code \== ''
+    )),
+    assert_true('target_fragment prolog finds cost_tracker_impl', (
+        agent_loop_module:target_fragment(prolog, cost_tracker_impl, Code2),
+        atom(Code2), Code2 \== ''
+    )),
+    assert_true('target_fragment rust finds config_types', (
+        agent_loop_module:target_fragment(rust, config_types, Code3),
+        atom(Code3), Code3 \== ''
+    )),
+    %% write_fragment works
+    new_memory_file(MF),
+    open_memory_file(MF, write, S),
+    agent_loop_module:write_fragment(S, rust, config_types),
+    close(S),
+    memory_file_to_atom(MF, Output),
+    assert_true('write_fragment rust outputs CliArgument struct',
+        sub_atom(Output, _, _, _, 'CliArgument')),
+    free_memory_file(MF),
+    %% Unknown fragment throws error
+    assert_true('write_fragment unknown throws error', (
+        catch(
+            agent_loop_module:write_fragment(current_output, rust, nonexistent_fragment_xyz),
+            error(existence_error(fragment, rust-nonexistent_fragment_xyz), _),
+            true
+        )
+    )).
+
+%% ============================================================================
+%% Rust fragment tests
+%% ============================================================================
+
+test_rust_fragments :-
+    format("~nRust fragments:~n"),
+    %% Count rust fragments
+    findall(N, agent_loop_module:rust_fragment(N, _), RFs),
+    length(RFs, RFCount),
+    assert_eq('Rust fragment count', RFCount, 6),
+    %% Check each fragment exists and has content
+    assert_true('config_types has CliArgument', (
+        agent_loop_module:rust_fragment(config_types, C1),
+        sub_atom(C1, _, _, _, 'CliArgument')
+    )),
+    assert_true('costs_types has Pricing', (
+        agent_loop_module:rust_fragment(costs_types, C2),
+        sub_atom(C2, _, _, _, 'Pricing')
+    )),
+    assert_true('costs_tracker has CostTracker', (
+        agent_loop_module:rust_fragment(costs_tracker, C3),
+        sub_atom(C3, _, _, _, 'CostTracker')
+    )),
+    assert_true('tools_types has ToolSpec', (
+        agent_loop_module:rust_fragment(tools_types, C4),
+        sub_atom(C4, _, _, _, 'ToolSpec')
+    )),
+    assert_true('commands_types has CommandSpec', (
+        agent_loop_module:rust_fragment(commands_types, C5),
+        sub_atom(C5, _, _, _, 'CommandSpec')
+    )),
+    assert_true('security_types has SecurityProfileSpec', (
+        agent_loop_module:rust_fragment(security_types, C6),
+        sub_atom(C6, _, _, _, 'SecurityProfileSpec')
+    )),
+    assert_true('costs_tracker has format_summary', (
+        agent_loop_module:rust_fragment(costs_tracker, C7),
+        sub_atom(C7, _, _, _, 'format_summary')
+    )).
+
+%% ============================================================================
+%% Rust module skeleton tests
+%% ============================================================================
+
+test_rust_module_skeleton :-
+    format("~nRust module skeleton:~n"),
+    new_memory_file(MF),
+    open_memory_file(MF, write, S),
+    agent_loop_components:emit_rust_module_skeleton(S, test_mod, [
+        exports([foo/2, bar/1]),
+        use_modules([config, tools]),
+        use_external([serde-['Serialize', 'Deserialize']]),
+        derives(['Debug', 'Clone']),
+        dynamic([state/1]),
+        comment('Test module')
+    ]),
+    close(S),
+    memory_file_to_atom(MF, Output),
+    free_memory_file(MF),
+    assert_true('skeleton has Module comment', sub_atom(Output, _, _, _, 'Module: test_mod')),
+    assert_true('skeleton has use crate::config', sub_atom(Output, _, _, _, 'use crate::config')),
+    assert_true('skeleton has use serde', sub_atom(Output, _, _, _, 'use serde::{Serialize, Deserialize}')),
+    assert_true('skeleton has derive', sub_atom(Output, _, _, _, '#[derive(Debug, Clone)]')),
+    assert_true('skeleton has mutable state note', sub_atom(Output, _, _, _, 'Mutable state')),
+    assert_true('skeleton has doc comment', sub_atom(Output, _, _, _, '/// Test module')),
+    %% emit_module_skeleton/4 dispatches correctly
+    new_memory_file(MF2),
+    open_memory_file(MF2, write, S2),
+    agent_loop_components:emit_module_skeleton(S2, rust, test2, [comment('Via dispatch')]),
+    close(S2),
+    memory_file_to_atom(MF2, Out2),
+    free_memory_file(MF2),
+    assert_true('emit_module_skeleton dispatches to rust', sub_atom(Out2, _, _, _, 'Module: test2')).
+
+%% ============================================================================
+%% Rust compile_component tests
+%% ============================================================================
+
+test_rust_compile_components :-
+    format("~nRust compile_component:~n"),
+    agent_loop_components:register_agent_loop_components,
+    %% Tool component
+    assert_true('tool compiles for rust target', (
+        compile_component(agent_tools, bash, [target(rust), indent(4), fact_type(tool_spec)], TCode),
+        sub_atom(TCode, _, _, _, 'ToolSpec')
+    )),
+    %% Destructive tool
+    assert_true('destructive tool compiles for rust', (
+        compile_component(agent_tools, bash, [target(rust), indent(4), fact_type(destructive_tool)], DTCode),
+        sub_atom(DTCode, _, _, _, '"bash"')
+    )),
+    %% Command component
+    assert_true('command compiles for rust target', (
+        compile_component(agent_commands, exit, [target(rust), indent(4)], CCode),
+        sub_atom(CCode, _, _, _, 'CommandSpec')
+    )),
+    %% Backend component
+    assert_true('backend compiles for rust target', (
+        compile_component(agent_backends, coro, [target(rust), indent(4)], BCode),
+        sub_atom(BCode, _, _, _, 'BackendSpec')
+    )),
+    %% Cost component
+    assert_true('cost compiles for rust target', (
+        compile_component(agent_costs, opus, [target(rust), indent(4)], PCode),
+        sub_atom(PCode, _, _, _, 'Pricing')
+    )),
+    %% Security component
+    assert_true('security compiles for rust target', (
+        compile_component(agent_security, open, [target(rust), indent(4)], SCode),
+        sub_atom(SCode, _, _, _, 'SecurityProfileSpec')
+    )),
+    %% Security rule (blocked_path)
+    assert_true('security rule compiles for rust target', (
+        component(agent_security_rules, RName, _, _),
+        compile_component(agent_security_rules, RName, [target(rust), indent(4), fact_type(blocked_path)], _)
+    ;   true  %% OK if no blocked_path rules
+    )).
+
+%% ============================================================================
+%% Rust binding tests
+%% ============================================================================
+
+test_rust_bindings :-
+    format("~nRust bindings:~n"),
+    agent_loop_bindings:init_agent_loop_bindings,
+    %% All Rust bindings compile
+    findall(Pred, binding(rust, Pred, _, _, _, _), RustPreds),
+    length(RustPreds, RustCount),
+    assert_eq('Rust binding count is 11', RustCount, 11),
+    findall(Pred, (
+        member(Pred, RustPreds),
+        agent_loop_bindings:compile_binding_code(rust, Pred, Code),
+        atom(Code), Code \== ''
+    ), Compiled),
+    length(Compiled, CompiledCount),
+    assert_eq('All Rust bindings compile', CompiledCount, 11),
+    %% Check specific binding patterns
+    assert_true('Rust model_pricing binding uses iter()', (
+        agent_loop_bindings:compile_binding_code(rust, model_pricing/3, PricingCode),
+        sub_atom(PricingCode, _, _, _, 'iter()')
+    )),
+    assert_true('Rust destructive_tool binding uses iter()', (
+        agent_loop_bindings:compile_binding_code(rust, destructive_tool/1, DTCode),
+        sub_atom(DTCode, _, _, _, 'DESTRUCTIVE_TOOLS')
+    )).

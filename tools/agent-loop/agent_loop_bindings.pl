@@ -228,13 +228,88 @@ register_prolog_bindings :-
         [pure, deterministic]).
 
 %% ============================================================================
+%% Rust Target Bindings
+%% ============================================================================
+%%
+%% Rust bindings map predicates to Rust data structures and lookup patterns.
+%% Patterns: hashmap_lookup, static_array, phf_lookup, struct_field
+
+register_rust_bindings :-
+    declare_binding(rust, tool_handler/2,
+        'TOOL_HANDLERS',
+        [name-atom],
+        [handler-function],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, slash_command/4,
+        'SLASH_COMMANDS',
+        [name-atom],
+        [match_type-atom, options-list, help_text-string],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, backend_factory/2,
+        'BACKEND_SPECS',
+        [name-atom],
+        [spec-struct],
+        [effect(io), nondeterministic, pattern(static_array)]),
+
+    declare_binding(rust, audit_profile_level/2,
+        'AUDIT_LEVELS',
+        [profile-atom],
+        [level-atom],
+        [pure, deterministic, total, pattern(static_array)]),
+
+    declare_binding(rust, security_profile/2,
+        'SECURITY_PROFILES',
+        [name-atom],
+        [config-struct],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, api_key_env_var/2,
+        'API_KEY_ENV_VARS',
+        [backend-atom],
+        [env_var-string],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, api_key_file/2,
+        'API_KEY_FILE_PATHS',
+        [backend-atom],
+        [file_path-string],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, model_pricing/3,
+        'PRICING',
+        [model-atom],
+        [input_cost-float, output_cost-float],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, config_search_path/2,
+        'CONFIG_SEARCH_PATHS',
+        [path_type-atom],
+        [path-string],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, default_agent_preset/3,
+        'DEFAULT_PRESETS',
+        [name-atom],
+        [backend-atom, overrides-list],
+        [pure, deterministic, pattern(static_array)]),
+
+    declare_binding(rust, destructive_tool/1,
+        'DESTRUCTIVE_TOOLS',
+        [tool_name-atom],
+        [],
+        [pure, deterministic, pattern(static_array)]).
+
+%% ============================================================================
 %% Master Registration
 %% ============================================================================
 
 init_agent_loop_bindings :-
     register_agent_loop_effects,
     register_python_bindings,
-    register_prolog_bindings.
+    register_prolog_bindings,
+    register_rust_bindings.
 
 %% ============================================================================
 %% Binding Consumers — Code Generation from Bindings
@@ -322,6 +397,31 @@ format_binding_code(prolog, _Pred, TargetName, Inputs, Outputs, _Options, Code) 
     append(INames, ONames, AllArgs),
     atomic_list_concat(AllArgs, ', ', ArgStr),
     format(atom(Code), '~w(~w)', [TargetName, ArgStr]).
+
+%% Rust code generation
+format_binding_code(rust, _Pred, TargetName, Inputs, Outputs, Options, Code) :-
+    (member(pattern(static_array), Options) ->
+        %% Static array lookup: TARGET.iter().find(|(k, _)| *k == key)
+        Inputs = [InputName-_|_],
+        (Outputs = [OutputName-_|_] ->
+            format(atom(Code), 'let ~w = ~w.iter().find(|(k, _)| *k == ~w)', [OutputName, TargetName, InputName])
+        ;
+            format(atom(Code), '~w.iter().any(|x| x == ~w)', [TargetName, InputName])
+        )
+    ; member(pattern(hashmap_lookup), Options) ->
+        Inputs = [InputName-_|_],
+        Outputs = [OutputName-_|_],
+        format(atom(Code), 'let ~w = ~w.get(~w)', [OutputName, TargetName, InputName])
+    ;
+        %% Default: function call
+        maplist([N-_,N]>>true, Inputs, INames),
+        atomic_list_concat(INames, ', ', ArgStr),
+        (Outputs = [OutputName-_|_] ->
+            format(atom(Code), 'let ~w = ~w(~w)', [OutputName, TargetName, ArgStr])
+        ;
+            format(atom(Code), '~w(~w)', [TargetName, ArgStr])
+        )
+    ).
 
 %% format_chained_methods(+Methods, -ChainStr)
 %% Build a method chain string from a list of method specs.

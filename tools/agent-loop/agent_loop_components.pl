@@ -76,7 +76,18 @@
     prolog_fragment_metadata/2,
     generator_prolog_fragments/2,
     prolog_fragment_category/2,
-    prolog_fragment_use_modules/2
+    prolog_fragment_use_modules/2,
+    %% Unified fragment/skeleton system
+    emit_module_skeleton/4,
+    emit_rust_module_skeleton/3,
+    fragment_metadata/3,
+    rust_fragment_metadata/2,
+    %% Rust target emission helpers
+    emit_rust_cost_facts/2,
+    emit_rust_tool_facts/2,
+    emit_rust_command_facts/2,
+    emit_rust_security_facts/2,
+    emit_rust_config_data/2
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -134,6 +145,16 @@ agent_tool_type:compile_component(Name, Config, Options, Code) :-
             ;   atom_string(H, HStr)),
             length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
             format(atom(Code), "~w'~w': ~w,", [Indent, Name, HStr])
+        )
+    ; member(target(rust), Options) ->
+        (member(fact_type(tool_spec), Options) ->
+            compile_tool_spec_rust(Name, Config, Options, Code)
+        ; member(fact_type(destructive_tool), Options) ->
+            compile_destructive_tool_rust(Name, Config, Options, Code)
+        ;
+            member(handler(H), Config),
+            indent_atom(Options, Indent),
+            format(atom(Code), '~w("~w", ~w),', [Indent, Name, H])
         )
     ;
         member(handler(H), Config),
@@ -198,6 +219,22 @@ compile_destructive_tool_python(Name, Config, Options, Code) :-
     length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
     format(atom(Code), '~w"~w",', [Indent, Name]).
 
+%% compile_tool_spec_rust(+Name, +Config, +Options, -Code)
+%% Emit a Rust ToolSpec struct literal.
+compile_tool_spec_rust(Name, Config, Options, Code) :-
+    member(tool_spec_props(Props), Config),
+    Props \= [],
+    member(description(Desc), Props),
+    indent_atom(Options, Indent),
+    format(atom(Code), '~wToolSpec { name: "~w", description: "~w" },', [Indent, Name, Desc]).
+
+%% compile_destructive_tool_rust(+Name, +Config, +Options, -Code)
+%% Emit a Rust &str entry for destructive tools array.
+compile_destructive_tool_rust(Name, Config, Options, Code) :-
+    member(destructive(true), Config),
+    indent_atom(Options, Indent),
+    format(atom(Code), '~w"~w",', [Indent, Name]).
+
 %% --- Slash command type ---
 
 :- module_transparent agent_command_type:type_info/1.
@@ -232,6 +269,12 @@ agent_command_type:compile_component(Name, Config, Options, Code) :-
         length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
         format(atom(Code), "~w'~w': {'match': '~w', 'options': ~q, 'help': ~q},",
                [Indent, Name, MT, Opts, HT])
+    ; member(target(rust), Options) ->
+        member(match_type(MT), Config),
+        member(help_text(HT), Config),
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w("~w", CommandSpec { match_type: "~w", help: "~w" }),',
+               [Indent, Name, MT, HT])
     ;
         compile_command_fact(slash_command, Name, Config, Code)
     ).
@@ -287,6 +330,12 @@ agent_backend_type:compile_component(Name, Config, Options, Code) :-
             format(atom(Code), "~w'~w': {'class': '~w', 'resolve': '~w'},",
                    [Indent, Name, ClassName, ResolveType])
         )
+    ; member(target(rust), Options) ->
+        member(class_name(ClassName), Config),
+        member(resolve_type(ResolveType), Config),
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w("~w", BackendSpec { class_name: "~w", resolve_type: "~w" }),',
+               [Indent, Name, ClassName, ResolveType])
     ;
         compile_backend_fact(backend_factory, Name, Config, Code)
     ).
@@ -323,6 +372,12 @@ agent_security_type:compile_component(Name, Config, Options, Code) :-
         (member(path_validation(PV), Config) -> true ; PV = false),
         (member(command_validation(CV), Config) -> true ; CV = false),
         format(atom(Code), "~w'~w': {'path_validation': ~w, 'command_validation': ~w},",
+               [Indent, Name, PV, CV])
+    ; member(target(rust), Options) ->
+        (member(path_validation(PV), Config) -> true ; PV = false),
+        (member(command_validation(CV), Config) -> true ; CV = false),
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w("~w", SecurityProfileSpec { path_validation: ~w, command_validation: ~w }),',
                [Indent, Name, PV, CV])
     ; member(target(prolog), Options) ->
         with_output_to(atom(Code), (
@@ -363,6 +418,9 @@ agent_cost_type:compile_component(_Name, Config, Options, Code) :-
     member(model_string(Model), Config),
     (member(target(python), Options) ->
         format(atom(Code), '    "~w": {"input": ~w, "output": ~w},', [Model, In, Out])
+    ; member(target(rust), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w("~w", Pricing { input: ~w, output: ~w }),', [Indent, Model, In, Out])
     ; member(target(prolog), Options) ->
         format(atom(Code), "model_pricing(~q, ~w, ~w).", [Model, In, Out])
     ;
@@ -399,6 +457,9 @@ compile_security_rule(blocked_path, Name, _, Options, Code) :-
     (member(target(python), Options) ->
         indent_atom(Options, Indent),
         format(atom(Code), "~w'~w',", [Indent, Name])
+    ; member(target(rust), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w"~w",', [Indent, Name])
     ;
         format(atom(Code), "blocked_path(~q).", [Name])
     ).
@@ -407,6 +468,9 @@ compile_security_rule(blocked_path_prefix, Name, _, Options, Code) :-
     (member(target(python), Options) ->
         indent_atom(Options, Indent),
         format(atom(Code), "~w'~w',", [Indent, Name])
+    ; member(target(rust), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w"~w",', [Indent, Name])
     ;
         format(atom(Code), "blocked_path_prefix(~q).", [Name])
     ).
@@ -415,6 +479,9 @@ compile_security_rule(blocked_home_pattern, Name, _, Options, Code) :-
     (member(target(python), Options) ->
         indent_atom(Options, Indent),
         format(atom(Code), "~w'~w',", [Indent, Name])
+    ; member(target(rust), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w"~w",', [Indent, Name])
     ;
         format(atom(Code), "blocked_home_pattern(~q).", [Name])
     ).
@@ -425,6 +492,9 @@ compile_security_rule(blocked_command_pattern, _, Config, Options, Code) :-
     (member(target(python), Options) ->
         indent_atom(Options, Indent),
         format(atom(Code), "~w(r'~w', \"~w\"),", [Indent, Regex, Desc])
+    ; member(target(rust), Options) ->
+        indent_atom(Options, Indent),
+        format(atom(Code), '~w(r"~w", "~w"),', [Indent, Regex, Desc])
     ;
         format(atom(Code), "blocked_command_pattern(~q, ~q).", [Regex, Desc])
     ).
@@ -739,6 +809,174 @@ emit_cost_facts(S, Options) :-
     ;
         emit_from_components(S, agent_costs, model_pricing/3, Target, entries, Options)
     ).
+
+%% =============================================================================
+%% Rust Target — Component Emission Helpers
+%% =============================================================================
+
+%% emit_rust_cost_facts(+Stream, +Options)
+%% Emit Rust pricing table entries via component registry.
+emit_rust_cost_facts(S, _Options) :-
+    write(S, 'pub static PRICING: &[(&str, Pricing)] = &[\n'),
+    findall(Name, component(agent_costs, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(agent_costs, Name, [target(rust), indent(4)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    write(S, '];\n\n').
+
+%% emit_rust_tool_facts(+Stream, +Options)
+%% Emit Rust tool specifications via component registry.
+emit_rust_tool_facts(S, _Options) :-
+    %% Tool specs
+    write(S, 'pub static TOOL_SPECS: &[ToolSpec] = &[\n'),
+    findall(Name, component(agent_tools, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(agent_tools, Name, [target(rust), indent(4), fact_type(tool_spec)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    write(S, '];\n\n'),
+    %% Destructive tools
+    write(S, 'pub static DESTRUCTIVE_TOOLS: &[&str] = &[\n'),
+    maplist([Name]>>(
+        (compile_component(agent_tools, Name, [target(rust), indent(4), fact_type(destructive_tool)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    write(S, '];\n\n').
+
+%% emit_rust_command_facts(+Stream, +Options)
+%% Emit Rust slash command entries via component registry.
+emit_rust_command_facts(S, _Options) :-
+    write(S, 'pub static SLASH_COMMANDS: &[(&str, CommandSpec)] = &[\n'),
+    findall(Name, component(agent_commands, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(agent_commands, Name, [target(rust), indent(4)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    write(S, '];\n\n').
+
+%% emit_rust_security_facts(+Stream, +Options)
+%% Emit Rust security profile and rule entries.
+emit_rust_security_facts(S, _Options) :-
+    %% Security profiles
+    write(S, 'pub static SECURITY_PROFILES: &[(&str, SecurityProfileSpec)] = &[\n'),
+    findall(Name, component(agent_security, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(agent_security, Name, [target(rust), indent(4)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    write(S, '];\n\n'),
+    %% Blocked paths
+    write(S, 'pub static BLOCKED_PATHS: &[&str] = &[\n'),
+    findall(RName, component(agent_security_rules, RName, _, _), RuleNames),
+    maplist([RName]>>(
+        (compile_component(agent_security_rules, RName,
+            [target(rust), indent(4), fact_type(blocked_path)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), RuleNames),
+    write(S, '];\n\n'),
+    %% Blocked path prefixes
+    write(S, 'pub static BLOCKED_PATH_PREFIXES: &[&str] = &[\n'),
+    maplist([RName]>>(
+        (compile_component(agent_security_rules, RName,
+            [target(rust), indent(4), fact_type(blocked_path_prefix)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), RuleNames),
+    write(S, '];\n\n'),
+    %% Blocked home patterns
+    write(S, 'pub static BLOCKED_HOME_PATTERNS: &[&str] = &[\n'),
+    maplist([RName]>>(
+        (compile_component(agent_security_rules, RName,
+            [target(rust), indent(4), fact_type(blocked_home_pattern)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), RuleNames),
+    write(S, '];\n\n'),
+    %% Blocked command patterns
+    write(S, 'pub static BLOCKED_COMMAND_PATTERNS: &[(&str, &str)] = &[\n'),
+    maplist([RName]>>(
+        (compile_component(agent_security_rules, RName,
+            [target(rust), indent(4), fact_type(blocked_command_pattern)], Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), RuleNames),
+    write(S, '];\n\n').
+
+%% emit_rust_config_data(+Stream, +Options)
+%% Emit all config fact tables as Rust static arrays.
+emit_rust_config_data(S, _Options) :-
+    %% CLI arguments
+    write(S, 'pub static CLI_ARGS: &[CliArgument] = &[\n'),
+    findall(Name-Opts, agent_loop_module:cli_argument(Name, Opts), CLIArgs),
+    maplist([Name-Opts]>>(
+        (member(long(Long), Opts) -> true ; Long = ''),
+        (member(short(Short), Opts) -> true ; Short = ''),
+        (member(default(Def), Opts) ->
+            (Def == none -> DefStr = '' ; term_to_atom(Def, DefStr))
+        ; DefStr = ''),
+        (member(help(Help), Opts) -> true ; Help = ''),
+        format(S, '    CliArgument { name: "~w", long_flag: "~w", short_flag: "~w", default_value: "~w", help: "~w" },~n',
+               [Name, Long, Short, DefStr, Help])
+    ), CLIArgs),
+    write(S, '];\n\n'),
+    %% Agent config fields
+    write(S, 'pub static CONFIG_FIELDS: &[AgentConfigField] = &[\n'),
+    findall(acf(N,T,D,C), agent_loop_module:agent_config_field(N,T,D,C), ACFs),
+    maplist([acf(N,T,D,C)]>>(
+        (D == none -> DStr = ''
+        ; atom(D) -> atom_string(D, DS), agent_loop_module:replace_all_sub(DS, "\"", "\\\"", DStr)
+        ; term_to_atom(D, DA), atom_string(DA, DS2), agent_loop_module:replace_all_sub(DS2, "\"", "\\\"", DStr)
+        ),
+        format(S, '    AgentConfigField { name: "~w", type_annotation: "~w", default_value: "~w", comment: "~w" },~n',
+               [N, T, DStr, C])
+    ), ACFs),
+    write(S, '];\n\n'),
+    %% API key env vars
+    write(S, 'pub static API_KEY_ENV_VARS: &[ApiKeyMapping] = &[\n'),
+    findall(B-V, agent_loop_module:api_key_env_var(B, V), AKEVs),
+    maplist([B-V]>>(
+        format(S, '    ApiKeyMapping { backend: "~w", env_var: "~w" },~n', [B, V])
+    ), AKEVs),
+    write(S, '];\n\n'),
+    %% API key file paths
+    write(S, 'pub static API_KEY_FILE_PATHS: &[ApiKeyFilePath] = &[\n'),
+    findall(B-P, agent_loop_module:api_key_file(B, P), AKFPs),
+    maplist([B-P]>>(
+        format(S, '    ApiKeyFilePath { backend: "~w", file_path: "~w" },~n', [B, P])
+    ), AKFPs),
+    write(S, '];\n\n'),
+    %% Config search paths
+    write(S, 'pub static CONFIG_SEARCH_PATHS: &[ConfigSearchPath] = &[\n'),
+    findall(P-Prio, agent_loop_module:config_search_path(P, Prio), CSPs),
+    maplist([P-Prio]>>(
+        format(S, '    ConfigSearchPath { path: "~w", priority: "~w" },~n', [P, Prio])
+    ), CSPs),
+    write(S, '];\n\n'),
+    %% Default presets
+    write(S, 'pub static DEFAULT_PRESETS: &[DefaultPreset] = &[\n'),
+    findall(dp(N,B,O), agent_loop_module:default_agent_preset(N, B, O), DPs),
+    maplist([dp(N,B,O)]>>(
+        term_to_atom(O, OStr),
+        atom_string(OStr, OString),
+        agent_loop_module:replace_all_sub(OString, "\"", "\\\"", OEscaped),
+        format(S, '    DefaultPreset { name: "~w", backend: "~w", overrides: "~w" },~n',
+               [N, B, OEscaped])
+    ), DPs),
+    write(S, '];\n\n'),
+    %% Audit levels
+    write(S, 'pub static AUDIT_LEVELS: &[AuditLevel] = &[\n'),
+    findall(P-L, agent_loop_module:audit_profile_level(P, L), ALs),
+    maplist([P-L]>>(
+        format(S, '    AuditLevel { profile: "~w", level: "~w" },~n', [P, L])
+    ), ALs),
+    write(S, '];\n\n').
 
 %% emit_backend_init_imports(+Stream, +Options)
 %% Emit Python import lines for non-optional backends.
@@ -1689,6 +1927,18 @@ prolog_fragment_metadata(agent_loop_context, [
     category(agent_loop), target(prolog), use_modules([])
 ]).
 
+%% rust_fragment_metadata(+FragmentName, +Properties)
+%% Metadata annotations for rust_fragment/2 facts.
+:- discontiguous rust_fragment_metadata/2.
+
+%% =============================================================================
+%% Unified Fragment Metadata — fragment_metadata/3
+%% =============================================================================
+%% Provides target-polymorphic access to all fragment metadata.
+
+fragment_metadata(prolog, Name, Meta) :- prolog_fragment_metadata(Name, Meta).
+fragment_metadata(rust, Name, Meta) :- rust_fragment_metadata(Name, Meta).
+
 %% prolog_fragment_category(+Name, -Category)
 prolog_fragment_category(Name, Category) :-
     prolog_fragment_metadata(Name, Props),
@@ -1857,6 +2107,21 @@ emit_prolog_declarations(S, Options) :-
     ; true).
 
 %% emit_prolog_module_skeleton(+Stream, +Module, +Directives)
+%% =============================================================================
+%% Unified Module Skeleton — emit_module_skeleton/4
+%% =============================================================================
+%% Target-dispatching wrapper over target-specific skeleton emitters.
+
+emit_module_skeleton(S, prolog, Module, Directives) :- !,
+    emit_prolog_module_skeleton(S, Module, Directives).
+emit_module_skeleton(S, rust, Module, Directives) :- !,
+    emit_rust_module_skeleton(S, Module, Directives).
+emit_module_skeleton(_, Target, _, _) :-
+    format(atom(Msg), 'No skeleton emitter for target: ~w', [Target]),
+    throw(error(domain_error(target, Target), context(emit_module_skeleton/4, Msg))).
+
+%% --- Prolog skeleton ---
+
 %% One-call module setup from an ordered list of directives.
 %% The order of directives in the list determines the output order.
 %% Supported directives:
@@ -1907,6 +2172,69 @@ emit_one_skeleton_directive(S, _, table(Ts, Comment)) :- !,
 emit_one_skeleton_directive(S, _, comment(Text)) :- !,
     format(S, '%% ~w~n~n', [Text]).
 
+%% --- Rust skeleton ---
+%%
+%% Emits Rust module header from the same directive DSL.
+%% Supported directives:
+%%   exports(List)           — // Public API: ... doc comment
+%%   use_modules(List)       — use crate::module; per item
+%%   use_external(List)      — use dep::{...}; per item
+%%   dynamic(List)           — // Mutable state: ... comment
+%%   derives(List)           — #[derive(D1, D2, ...)]
+%%   comment(Text)           — /// Text
+%%   dependencies(DepOpts)   — // Dependencies: ... comment
+
+emit_rust_module_skeleton(S, Module, Directives) :-
+    format(S, '// Module: ~w~n', [Module]),
+    format(S, '// Auto-generated by UnifyWeaver — do not edit manually.~n~n', []),
+    emit_rust_skeleton_directives(S, Module, Directives).
+
+emit_rust_skeleton_directives(_, _, []).
+emit_rust_skeleton_directives(S, Module, [D|Rest]) :-
+    emit_one_rust_directive(S, Module, D),
+    emit_rust_skeleton_directives(S, Module, Rest).
+
+emit_one_rust_directive(S, _, exports(Exports)) :- !,
+    write(S, '// Public API:\n'),
+    maplist([E]>>(
+        (E = Name/_ -> true ; Name = E),
+        format(S, '//   - ~w~n', [Name])
+    ), Exports),
+    nl(S).
+emit_one_rust_directive(S, _, use_modules(Mods)) :- !,
+    maplist([M]>>(format(S, 'use crate::~w;~n', [M])), Mods),
+    nl(S).
+emit_one_rust_directive(S, _, use_external(Exts)) :- !,
+    maplist([Ext]>>(
+        (Ext = Crate-Items ->
+            atomic_list_concat(Items, ', ', ItemsStr),
+            format(S, 'use ~w::{~w};~n', [Crate, ItemsStr])
+        ;
+            format(S, 'use ~w;~n', [Ext])
+        )
+    ), Exts),
+    nl(S).
+emit_one_rust_directive(S, _, derives(Ds)) :- !,
+    atomic_list_concat(Ds, ', ', DsStr),
+    format(S, '#[derive(~w)]~n', [DsStr]).
+emit_one_rust_directive(S, _, dynamic(Dyns)) :- !,
+    write(S, '// Mutable state (requires Mutex/RwLock):\n'),
+    maplist([D]>>(
+        (D = Name/_ -> true ; Name = D),
+        format(S, '//   - ~w~n', [Name])
+    ), Dyns),
+    nl(S).
+emit_one_rust_directive(S, _, comment(Text)) :- !,
+    format(S, '/// ~w~n', [Text]).
+emit_one_rust_directive(S, _, dependencies(DepOpts)) :- !,
+    write(S, '// Dependencies:\n'),
+    (member(module(M), DepOpts) ->
+        format(S, '//   module: ~w~n', [M])
+    ; true),
+    nl(S).
+%% Ignore directives not applicable to Rust (det, discontiguous, table, etc.)
+emit_one_rust_directive(_, _, _).
+
 %% ============================================================================
 %% Unified Component Emission
 %% ============================================================================
@@ -1950,23 +2278,29 @@ resolve_collection_name(_, Target, Pred, _, Name) :-
 %% Build the options list passed to compile_component.
 compile_options(entries, Target, Options, [target(Target)|Options]) :- !.
 compile_options(facts, _Target, Options, [target(prolog)|Options]) :- !.
+compile_options(rust_entries, _Target, Options, [target(rust)|Options]) :- !.
+compile_options(rust_array, _Target, Options, [target(rust)|Options]) :- !.
 compile_options(_, Target, Options, [target(Target)|Options]).
 
 %% emit_open_delimiter(+Stream, +Format, +Indent, +Name)
 %% Write the opening delimiter for a collection.
 emit_open_delimiter(_, entries, _, _) :- !.
 emit_open_delimiter(_, facts, _, _) :- !.
+emit_open_delimiter(_, rust_entries, _, _) :- !.
 emit_open_delimiter(S, dict, Indent, Name) :- format(S, '~w~w = {~n', [Indent, Name]).
 emit_open_delimiter(S, set, Indent, Name) :- format(S, '~w~w = {~n', [Indent, Name]).
 emit_open_delimiter(S, list, Indent, Name) :- format(S, '~w~w = [~n', [Indent, Name]).
+emit_open_delimiter(S, rust_array, Indent, _) :- format(S, '~w&[~n', [Indent]).
 
 %% emit_close_delimiter(+Stream, +Format, +Indent)
 %% Write the closing delimiter for a collection.
 emit_close_delimiter(_, entries, _) :- !.
 emit_close_delimiter(_, facts, _) :- !.
+emit_close_delimiter(_, rust_entries, _) :- !.
 emit_close_delimiter(S, dict, Indent) :- format(S, '~w}~n', [Indent]).
 emit_close_delimiter(S, set, Indent) :- format(S, '~w}~n', [Indent]).
 emit_close_delimiter(S, list, Indent) :- format(S, '~w]~n', [Indent]).
+emit_close_delimiter(S, rust_array, Indent) :- format(S, '~w];~n', [Indent]).
 
 %% compute_indent(+Options, -Indent)
 %% Compute the indentation string from outer_indent option.
