@@ -37,14 +37,14 @@ UnifyWeaver supports multiple compilation strategies depending on the target and
 
 Different targets support different recursion patterns. Choose based on your needs:
 
-| Pattern | Bash | C# Query | Go | Rust | Python | SQL | AWK | Prolog |
-|---------|:----:|:--------:|:--:|:----:|:------:|:---:|:---:|:------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
-| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
-| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
-| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Pattern | Bash | C# Query | Go | Rust | Python | SQL | PowerShell | AWK | Prolog |
+|---------|:----:|:--------:|:--:|:----:|:------:|:---:|:----------:|:---:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ### Functional Language Targets
 
