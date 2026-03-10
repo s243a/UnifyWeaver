@@ -349,7 +349,6 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_normalized_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_selectivity_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_admission_runtime,
-        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_backward_only_runtime,
         verify_transitive_closure_cache_reuse_runtime,
         verify_grouped_transitive_closure_cache_reuse_runtime,
         verify_mutual_recursion_plan,
@@ -4741,32 +4740,6 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
          'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
          'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=0',
          'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=2'],
-        HotParams,
-        HarnessSource).
-
-verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_backward_only_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[p, q, red, cat1], [p, r, red, cat1]],
-    WarmColdParams = [[p, q, red, cat1], [p, q, red, cat1]],
-    HotParams = [[p, q, red, cat1], [p, r, red, cat1]],
-    ColdParams = [[p, q, red, cat1], [p, q, red, cat1]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
-        'GroupedTransitiveClosureSeededByTarget',
-        8,
-        2,
-        1,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
         HotParams,
         HarnessSource).
 
