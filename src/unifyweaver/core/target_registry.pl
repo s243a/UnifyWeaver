@@ -211,6 +211,9 @@ register_builtin_targets :-
     % Functional family
     register_target(haskell, functional, [compiled, types, lazy, pattern_matching]),
 
+    % BEAM family
+    register_target(elixir, beam, [compiled, streaming, functional, actors, pattern_matching]),
+
     % Low-level family
     register_target(llvm, lowlevel, [compiled, native, optimization]),
     register_target(wasm, lowlevel, [browser, sandboxed, portable]),
@@ -265,6 +268,9 @@ register_target_modules :-
     
     % Functional
     target_module(haskell, haskell_target),
+    
+    % BEAM
+    target_module(elixir, elixir_target),
     
     % Low-level
     target_module(llvm, llvm_target),
