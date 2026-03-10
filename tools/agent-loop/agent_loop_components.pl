@@ -1614,6 +1614,80 @@ prolog_fragment_metadata(tools_describe, [
 prolog_fragment_metadata(tools_confirm, [
     category(tools), target(prolog), use_modules([])
 ]).
+prolog_fragment_metadata(backends_create_backend, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_retry_config, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_format_api_error, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_retry_call, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_send_request, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_send_request_raw_api, [
+    category(backends), target(prolog),
+    use_modules([library(http/http_open), library(json)])
+]).
+prolog_fragment_metadata(backends_send_request_raw_cli, [
+    category(backends), target(prolog), use_modules([library(process)])
+]).
+prolog_fragment_metadata(backends_extract_response, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_streaming_dispatch, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_streaming_ndjson, [
+    category(backends), target(prolog),
+    use_modules([library(http/http_open), library(json)])
+]).
+prolog_fragment_metadata(backends_streaming_openai, [
+    category(backends), target(prolog),
+    use_modules([library(http/http_open), library(json)])
+]).
+prolog_fragment_metadata(backends_streaming_anthropic, [
+    category(backends), target(prolog),
+    use_modules([library(http/http_open), library(json)])
+]).
+prolog_fragment_metadata(backends_tc_delta, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(backends_sse_parser, [
+    category(backends), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_init_state, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_entry, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_repl_core, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_process_input, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_response, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_actions, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_helpers, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
+prolog_fragment_metadata(agent_loop_export_search, [
+    category(agent_loop), target(prolog),
+    use_modules([library(json), library(filesex)])
+]).
+prolog_fragment_metadata(agent_loop_context, [
+    category(agent_loop), target(prolog), use_modules([])
+]).
 
 %% prolog_fragment_category(+Name, -Category)
 prolog_fragment_category(Name, Category) :-
@@ -1633,6 +1707,18 @@ generator_prolog_fragments(config, [config_parse_cli, config_load_config,
 generator_prolog_fragments(commands, [commands_resolve, commands_handle_slash]).
 generator_prolog_fragments(tools, [tools_execute_dispatch, tools_schema,
                                    tools_describe, tools_confirm]).
+generator_prolog_fragments(backends, [backends_create_backend, backends_retry_config,
+                                      backends_format_api_error, backends_retry_call,
+                                      backends_send_request, backends_send_request_raw_api,
+                                      backends_send_request_raw_cli, backends_extract_response,
+                                      backends_streaming_dispatch, backends_streaming_ndjson,
+                                      backends_streaming_openai, backends_streaming_anthropic,
+                                      backends_tc_delta, backends_sse_parser]).
+generator_prolog_fragments(agent_loop, [agent_loop_init_state, agent_loop_entry,
+                                        agent_loop_repl_core, agent_loop_process_input,
+                                        agent_loop_response, agent_loop_actions,
+                                        agent_loop_helpers, agent_loop_export_search,
+                                        agent_loop_context]).
 
 %% derive_fragment_imports(+Generator, -DerivedImports)
 %% Collects all import specs from a generator's fragments and deduplicates.
@@ -1685,6 +1771,49 @@ emit_config_section(S, default_presets, Options) :-
     ;
         findall(N-B-P, agent_loop_module:default_agent_preset(N, B, P), Presets),
         maplist([N-B-P]>>(format(S, "default_agent_preset(~q, ~q, ~q).~n", [N, B, P])), Presets)
+    ).
+
+emit_config_section(S, agent_config_fields, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        emit_agent_config_fields(S, Options)
+    ;
+        findall(acf(N,T,D,C), agent_loop_module:agent_config_field(N,T,D,C), ACFs),
+        maplist([acf(N,T,D,C)]>>(
+            format(S, "agent_config_field(~q, ~q, ~q, ~q).~n", [N,T,D,C])
+        ), ACFs)
+    ).
+emit_config_section(S, audit_levels, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        emit_audit_levels(S, Options)
+    ;
+        findall(P-L, agent_loop_module:audit_profile_level(P, L), Pairs),
+        maplist([P-L]>>(format(S, "audit_profile_level(~q, ~q).~n", [P, L])), Pairs)
+    ).
+emit_config_section(S, streaming_capable, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        findall(Type, agent_loop_module:streaming_capable(Type), Types),
+        maplist([Type]>>(format(S, "    '~w',~n", [Type])), Types)
+    ;
+        emit_streaming_capable_facts(S, Options)
+    ).
+emit_config_section(S, security_profiles, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        emit_security_profile_entries(S, Options)
+    ;
+        findall(N-P, agent_loop_module:security_profile(N, P), Profiles),
+        maplist([N-P]>>(format(S, "security_profile(~q, ~q).~n", [N, P])), Profiles)
+    ).
+emit_config_section(S, cli_arguments, Options) :-
+    extract_target(Options, Target),
+    (Target == python ->
+        emit_argparse_group_args(S, Options)
+    ;
+        findall(N-P, agent_loop_module:cli_argument(N, P), Args),
+        maplist([N-P]>>(format(S, "cli_argument(~q, ~q).~n", [N, P])), Args)
     ).
 
 %% ============================================================================
