@@ -107,4 +107,30 @@ test('elixir mutual recursion empty predicate list') :-
     sub_atom(Code, _, _, _, 'No predicates found'),
     !.
 
+% --- Mix project generation tests ---
+
+test('mix.exs generation with pipeline deps') :-
+    elixir_target:generate_mix_exs('my_pipe', [pipeline_input(true)], Code),
+    sub_atom(Code, _, _, _, 'defmodule MyPipe.MixProject'),
+    sub_atom(Code, _, _, _, 'app: :my_pipe'),
+    sub_atom(Code, _, _, _, '{:jason,'),
+    !.
+
+test('mix.exs generation without deps') :-
+    elixir_target:generate_mix_exs('simple_app', [], Code),
+    sub_atom(Code, _, _, _, 'defmodule SimpleApp.MixProject'),
+    \+ sub_atom(Code, _, _, _, 'jason'),
+    !.
+
+test('full mix project file list') :-
+    elixir_target:generate_mix_project(my_test_proj, [], Files),
+    member(file('mix.exs', _), Files),
+    member(file('config/config.exs', _), Files),
+    member(file('lib/my_test_proj.ex', _), Files),
+    member(file('test/test_helper.exs', _), Files),
+    member(file('test/my_test_proj_test.exs', _), Files),
+    member(file('.formatter.exs', _), Files),
+    member(file('.gitignore', _), Files),
+    !.
+
 :- end_tests(elixir_target).

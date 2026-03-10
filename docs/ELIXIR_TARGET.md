@@ -15,6 +15,7 @@ The Elixir target translates Prolog predicates into Elixir modules and scripts, 
 | Pipeline mode (JSONL) | ✅ Stream + Jason |
 | Generator mode (lazy) | ✅ Stream.unfold |
 | Bindings | ✅ arithmetic, comparison, string, I/O |
+| Mix project scaffolding | ✅ auto-dependency detection |
 
 ## Prerequisites
 - Elixir ≥ 1.14
@@ -29,6 +30,41 @@ swipl -g "compile_incremental(my_pred/2, elixir, [], Code), writeln(Code)" -t ha
 # Run a generated pipeline
 elixir generated_pipeline.exs --run < data.jsonl
 ```
+
+## Mix Project Generation
+
+For projects that need dependency management (especially pipeline mode
+which requires Jason), generate a complete Mix project:
+
+```prolog
+% Generate project with auto-detected Jason dependency
+?- write_mix_project(my_pipeline, [pipeline_input(true)], '/tmp/output').
+% Creates: /tmp/output/my_pipeline/{mix.exs, lib/, test/, config/, ...}
+
+% Generate project with explicit deps
+?- write_mix_project(my_app, [deps([jason, req])], '/tmp/output').
+
+% Just generate the mix.exs content
+?- generate_mix_exs('my_app', [pipeline_input(true)], Code).
+```
+
+The generated project includes:
+- `mix.exs` — project definition with auto-detected dependencies
+- `lib/<project>.ex` — placeholder module with correct CamelCase name
+- `test/test_helper.exs` + `test/<project>_test.exs` — ExUnit test scaffold
+- `config/config.exs` — logger configuration
+- `.formatter.exs`, `.gitignore`, `README.md`
+
+### Dependency Auto-Detection
+
+| Option | Auto-Added Dep |
+|--------|---------------|
+| `pipeline_input(true)` | `jason ~> 1.4` |
+| `generator_mode(true)` | `jason ~> 1.4` |
+| `deps([plug, req])` | explicit deps with known versions |
+
+Known dependency versions: jason ~> 1.4, plug ~> 1.14, plug_cowboy ~> 2.6,
+ecto ~> 3.10, req ~> 0.4. Unknown deps default to ~> 0.1.
 
 ## Generated Code Structure
 
@@ -107,6 +143,6 @@ threaded through body translation so that variables referenced in the
 body resolve to the correct Elixir identifiers.
 
 ## Files
-- `src/unifyweaver/targets/elixir_target.pl` — code generation
+- `src/unifyweaver/targets/elixir_target.pl` — code generation + Mix project scaffolding
 - `src/unifyweaver/bindings/elixir_bindings.pl` — built-in operation mappings
-- `tests/test_elixir_target.pl` — unit tests (9 cases)
+- `tests/test_elixir_target.pl` — unit tests (16 cases)
