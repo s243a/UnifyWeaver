@@ -13,7 +13,8 @@
     compile_rules_to_elixir/3,
     compile_mutual_recursion_elixir/3,
     write_elixir_module/2,
-    init_elixir_target/0
+    init_elixir_target/0,
+    snake_to_camel/2
 ]).
 
 :- use_module(library(lists)).
@@ -68,7 +69,7 @@ compile_rules_to_elixir(Pred/Arity, Options, Code) :-
 
 compile_facts_to_elixir(Pred, Arity, ElixirCode) :-
     atom_string(Pred, PredStr),
-    upcase_atom_first(Pred, PredCap),
+    snake_to_camel(Pred, PredCap),
     functor(Head, Pred, Arity),
     
     findall(Args, (user:clause(Head, true), Head =.. [_|Args]), AllFacts),
@@ -121,14 +122,14 @@ format_elixir_fact_entry(Args, Entry) :-
 
 compile_simple_mode_elixir(Pred, Arity, _Options, ElixirCode) :-
     atom_string(Pred, PredStr),
-    upcase_atom_first(Pred, PredCap),
+    snake_to_camel(Pred, PredCap),
     
     functor(Head, Pred, Arity),
     findall((Head, Body), user:clause(Head, Body), Clauses),
     
     (   Clauses == []
     ->  FuncBody = "  def process(_), do: nil"
-    ;   generate_simple_clauses_elixir(PredStr, Clauses, FuncBody)
+    ;   generate_simple_clauses_elixir(PredStr, Arity, Clauses, FuncBody)
     ),
     
     format(string(ElixirCode),
@@ -140,20 +141,68 @@ defmodule Generated.~w do
 end
 ', [PredStr, Arity, PredCap, FuncBody]).
 
-generate_simple_clauses_elixir(Name, Clauses, Code) :-
+%% generate_simple_clauses_elixir(+Name, +Arity, +Clauses, -Code)
+%  Generates multi-clause def with pattern-matched heads.
+%  Ground args become literal matches; variable args become Elixir variables.
+generate_simple_clauses_elixir(Name, Arity, Clauses, Code) :-
+    % Generate standard parameter names for the function
+    numlist(1, Arity, Indices),
+    findall(ArgName, (
+        member(I, Indices),
+        format(atom(ArgName), 'arg~w', [I])
+    ), StdArgNames),
+    
     findall(ClauseCode, (
         member((Head, Body), Clauses),
-        Head =.. [_|Args],
-        length(Args, Arity),
-        (   Arity == 0
-        ->  ArgsStr = ""
-        ;   findall(V, (member(A,Args), var_to_elixir(A,V)), Vars),
-            atomic_list_concat(Vars, ', ', ArgsStr)
-        ),
-        translate_body_elixir(Body, BodyCode),
-        format(string(ClauseCode), "  def ~w(~w) do\n    try do\n~w\n      {:ok, [~w]}\n    catch\n      :fail -> :fail\n    end\n  end", [Name, ArgsStr, BodyCode, ArgsStr])
+        Head =.. [_|HeadArgs],
+        generate_clause_head_elixir(Name, HeadArgs, StdArgNames, HeadStr, Guards, VarMap),
+        translate_body_elixir(Body, VarMap, BodyCode),
+        format_clause_elixir(HeadStr, Guards, BodyCode, StdArgNames, ClauseCode)
     ), Codes),
     atomic_list_concat(Codes, '\n\n', Code).
+
+%% generate_clause_head_elixir(+Name, +HeadArgs, +StdArgNames, -HeadStr, -Guards, -VarMap)
+%  Build a pattern-matched function head from clause arguments.
+generate_clause_head_elixir(Name, HeadArgs, StdArgNames, HeadStr, Guards, VarMap) :-
+    map_head_args_elixir(HeadArgs, StdArgNames, PatternArgs, GuardList, VarPairs),
+    exclude(==(""), GuardList, Guards),
+    flatten(VarPairs, VarMap),
+    atomic_list_concat(PatternArgs, ', ', ArgsStr),
+    format(string(HeadStr), "~w(~w)", [Name, ArgsStr]).
+
+%% map_head_args_elixir(+HeadArgs, +StdNames, -Patterns, -Guards, -VarPairs)
+map_head_args_elixir([], [], [], [], []).
+map_head_args_elixir([Arg|Args], [Std|Stds], [Pat|Pats], [Guard|Guards], [VP|VPs]) :-
+    format_head_arg_elixir(Arg, Std, Pat, Guard, VP),
+    map_head_args_elixir(Args, Stds, Pats, Guards, VPs).
+
+%% format_head_arg_elixir(+HeadArg, +StdName, -Pattern, -Guard, -VarPair)
+%  For each head arg: ground → literal match, var → named param.
+format_head_arg_elixir(Arg, StdName, Pattern, "", [Arg-StdName]) :-
+    var(Arg), !,
+    Pattern = StdName.
+format_head_arg_elixir(Arg, _StdName, Pattern, "", []) :-
+    number(Arg), !,
+    format(atom(Pattern), "~w", [Arg]).
+format_head_arg_elixir(Arg, _StdName, Pattern, "", []) :-
+    atom(Arg), !,
+    format(atom(Pattern), "\"~w\"", [Arg]).
+format_head_arg_elixir(Arg, _StdName, Pattern, "", []) :-
+    format(atom(Pattern), "~w", [Arg]).
+
+%% format_clause_elixir(+HeadStr, +Guards, +BodyCode, +ArgNames, -Code)
+format_clause_elixir(HeadStr, [], BodyCode, ArgNames, Code) :-
+    atomic_list_concat(ArgNames, ', ', ResultArgs),
+    format(string(Code),
+"  def ~w do\n    try do\n~w\n      {:ok, [~w]}\n    catch\n      :fail -> :fail\n    end\n  end",
+        [HeadStr, BodyCode, ResultArgs]).
+format_clause_elixir(HeadStr, Guards, BodyCode, ArgNames, Code) :-
+    Guards \= [],
+    atomic_list_concat(Guards, ' and ', GuardStr),
+    atomic_list_concat(ArgNames, ', ', ResultArgs),
+    format(string(Code),
+"  def ~w when ~w do\n    try do\n~w\n      {:ok, [~w]}\n    catch\n      :fail -> :fail\n    end\n  end",
+        [HeadStr, GuardStr, BodyCode, ResultArgs]).
 
 %% ============================================
 %% PIPELINE MODE
@@ -161,7 +210,7 @@ generate_simple_clauses_elixir(Name, Clauses, Code) :-
 
 compile_pipeline_mode_elixir(Pred, Arity, _Options, ElixirCode) :-
     atom_string(Pred, PredStr),
-    upcase_atom_first(Pred, PredCap),
+    snake_to_camel(Pred, PredCap),
     
     functor(Head, Pred, Arity),
     findall((Head, Body), user:clause(Head, Body), Clauses),
@@ -205,7 +254,8 @@ generate_pipeline_clauses_elixir(Clauses, Code) :-
     Clauses = [(Head, _)|_],
     functor(Head, Name, _),
     (   is_recursive_predicate_elixir(Name, Clauses)
-    ->  partition(is_recursive_clause_elixir(Name), Clauses, RecClauses, BaseClauses),
+    ->  include(is_base_clause_elixir(Name), Clauses, BaseClauses),
+        exclude(is_base_clause_elixir(Name), Clauses, RecClauses),
         compile_recursive_elixir(Name, BaseClauses, RecClauses, Code)
     ;   findall(ClauseCode, (
             member((H, B), Clauses),
@@ -214,12 +264,17 @@ generate_pipeline_clauses_elixir(Clauses, Code) :-
         atomic_list_concat(Codes, '\n\n', Code)
     ).
 
+%% is_base_clause_elixir(+Name, +Clause)
+%  A base clause does NOT contain a recursive call.
+is_base_clause_elixir(Name, (_, Body)) :-
+    \+ contains_recursive_call_elixir(Body, Name).
+
 translate_pipeline_clause_elixir(Head, Body, Code) :-
     Head =.. [_Pred|_Args],
     % For pipeline, input is 'record' map
     (   Body == true
     ->  BodyCode = "    record"
-    ;   translate_body_elixir(Body, TransBody),
+    ;   translate_body_elixir(Body, [], TransBody),
         format(string(BodyCode), "    try do\n~w\n      record\n    catch\n      :fail -> nil\n    end", [TransBody])
     ),
     Code = BodyCode.
@@ -230,8 +285,7 @@ translate_pipeline_clause_elixir(Head, Body, Code) :-
 
 compile_generator_mode_elixir(Pred, Arity, Options, ElixirCode) :-
     compile_pipeline_mode_elixir(Pred, Arity, Options, PipelineCode),
-    % Tweak pipeline to create generator for simplicity
-    upcase_atom_first(Pred, PredCap),
+    snake_to_camel(Pred, PredCap),
     format(string(ElixirCode),
 '~w
 # Wrapper for Generator
@@ -251,102 +305,140 @@ end
 %% MUTUAL RECURSION
 %% ============================================
 
+%% compile_mutual_recursion_elixir(+PredList, +Options, -Code)
+%  Collects clauses for each predicate in PredList and generates
+%  a single defmodule containing all mutually-recursive functions.
 compile_mutual_recursion_elixir(PredList, _Options, Code) :-
+    (   is_list(PredList)
+    ->  generate_mutual_module_elixir(PredList, FuncDefs)
+    ;   % Single Pred/Arity passed — wrap in list
+        generate_mutual_module_elixir([PredList], FuncDefs)
+    ),
     format(string(Code),
 '# Generated by UnifyWeaver Elixir Target
-# Mutual Recursion module for ~w
+# Mutual Recursion module
 
 defmodule Generated.MutualGroup do
-  # mutually recursive defs will go here
+~w
 end
-', [PredList]).
+', [FuncDefs]).
+
+%% generate_mutual_module_elixir(+PredArityList, -FuncDefs)
+%  For each Pred/Arity, collect user clauses and generate def clauses.
+generate_mutual_module_elixir(PredArityList, FuncDefs) :-
+    findall(FuncCode, (
+        member(Pred/Arity, PredArityList),
+        atom_string(Pred, PredStr),
+        functor(Head, Pred, Arity),
+        findall((Head, Body), user:clause(Head, Body), Clauses),
+        (   Clauses \== []
+        ->  generate_simple_clauses_elixir(PredStr, Arity, Clauses, FuncCode)
+        ;   format(string(FuncCode),
+                "  # ~w/~w: no clauses found\n  def ~w(_), do: raise \"not implemented\"",
+                [PredStr, Arity, PredStr])
+        )
+    ), FuncCodes),
+    (   FuncCodes == []
+    ->  FuncDefs = "  # No predicates found"
+    ;   atomic_list_concat(FuncCodes, '\n\n', FuncDefs)
+    ).
 
 %% ============================================
 %% BODY TRANSLATION
 %% ============================================
 
-translate_body_elixir((Goal, Rest), Code) :-
+%% translate_body_elixir(+Body, +VarMap, -Code)
+%  VarMap maps Prolog vars to Elixir arg names from head pattern matching.
+translate_body_elixir((Goal, Rest), VarMap, Code) :-
     !,
-    translate_goal_elixir(Goal, Code1),
-    translate_body_elixir(Rest, Code2),
+    translate_goal_elixir(Goal, VarMap, Code1),
+    translate_body_elixir(Rest, VarMap, Code2),
     format(string(Code), "~w\n~w", [Code1, Code2]).
-translate_body_elixir(Goal, Code) :-
-    translate_goal_elixir(Goal, Code).
+translate_body_elixir(Goal, VarMap, Code) :-
+    translate_goal_elixir(Goal, VarMap, Code).
 
-translate_goal_elixir(>(X, Y), Code) :-
-    !, expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+translate_goal_elixir(>(X, Y), VM, Code) :-
+    !, expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
     format(string(Code), "      if not (~w > ~w), do: throw(:fail)", [CX, CY]).
 
-translate_goal_elixir(<(X, Y), Code) :-
-    !, expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+translate_goal_elixir(<(X, Y), VM, Code) :-
+    !, expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
     format(string(Code), "      if not (~w < ~w), do: throw(:fail)", [CX, CY]).
 
-translate_goal_elixir(>=(X, Y), Code) :-
-    !, expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+translate_goal_elixir(>=(X, Y), VM, Code) :-
+    !, expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
     format(string(Code), "      if not (~w >= ~w), do: throw(:fail)", [CX, CY]).
 
-translate_goal_elixir(=<(X, Y), Code) :-
-    !, expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+translate_goal_elixir(=<(X, Y), VM, Code) :-
+    !, expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
     format(string(Code), "      if not (~w <= ~w), do: throw(:fail)", [CX, CY]).
 
-translate_goal_elixir(=:=(X, Y), Code) :-
-    !, expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+translate_goal_elixir(=:=(X, Y), VM, Code) :-
+    !, expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
     format(string(Code), "      if not (~w === ~w), do: throw(:fail)", [CX, CY]).
 
-translate_goal_elixir(=\\=(X, Y), Code) :-
-    !, expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+translate_goal_elixir(=\=(X, Y), VM, Code) :-
+    !, expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
     format(string(Code), "      if not (~w !== ~w), do: throw(:fail)", [CX, CY]).
 
-translate_goal_elixir(is(Var, Expr), Code) :-
+translate_goal_elixir(is(Var, Expr), VM, Code) :-
     !,
-    var_to_elixir(Var, EVar),
-    expr_to_elixir(Expr, EExpr),
+    var_to_elixir(Var, VM, EVar),
+    expr_to_elixir(Expr, VM, EExpr),
     format(string(Code), "      ~w = ~w", [EVar, EExpr]).
 
-translate_goal_elixir(true, "      # true") :- !.
+translate_goal_elixir(true, _VM, "      # true") :- !.
 
-translate_goal_elixir(Goal, Code) :-
+translate_goal_elixir(Goal, _VM, Code) :-
     format(string(Code), "      # TODO: translate ~w", [Goal]).
 
 %% ============================================
 %% EXPRESSIONS AND VARIABLES
 %% ============================================
 
-var_to_elixir(Var, ElixirVar) :-
-    (   var(Var)
+%% var_to_elixir(+Var, +VarMap, -ElixirVar)
+%  Translate a Prolog variable to an Elixir variable name.
+%  Uses VarMap from head pattern matching when available.
+var_to_elixir(Var, VarMap, ElixirVar) :-
+    (   var(Var), lookup_varmap(Var, VarMap, Name)
+    ->  ElixirVar = Name
+    ;   var(Var)
     ->  term_to_atom(Var, VarAtom),
         format(atom(ElixirVar), "v_~w", [VarAtom])
     ;   Var = '$VAR'(N)
     ->  format(atom(ElixirVar), "v_~w", [N])
     ;   atom(Var)
-    ->  % lowercase the first char so Elixir treats it as a variable, not a module
-        atom_string(Var, VarStr),
-        string_lower(VarStr, LowerStr),
-        atom_string(ElixirVar, LowerStr)
+    ->  % Use downcase_atom for portability (works on all SWI-Prolog builds)
+        downcase_atom(Var, ElixirVar)
     ;   term_to_atom(Var, ElixirVar)
     ).
 
-expr_to_elixir(Expr, ElixirExpr) :-
+%% lookup_varmap(+Var, +VarMap, -Name)
+lookup_varmap(Var, [V-Name|_], Name) :- Var == V, !.
+lookup_varmap(Var, [_|Rest], Name) :- lookup_varmap(Var, Rest, Name).
+
+%% expr_to_elixir(+Expr, +VarMap, -ElixirExpr)
+expr_to_elixir(Expr, VM, ElixirExpr) :-
     (   number(Expr)
     ->  format(atom(ElixirExpr), "~w", [Expr])
     ;   var(Expr)
-    ->  var_to_elixir(Expr, ElixirExpr)
+    ->  var_to_elixir(Expr, VM, ElixirExpr)
     ;   Expr = '$VAR'(N)
     ->  format(atom(ElixirExpr), "v_~w", [N])
     ;   Expr = X + Y
-    ->  expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+    ->  expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
         format(atom(ElixirExpr), "(~w + ~w)", [CX, CY])
     ;   Expr = X - Y
-    ->  expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+    ->  expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
         format(atom(ElixirExpr), "(~w - ~w)", [CX, CY])
     ;   Expr = X * Y
-    ->  expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+    ->  expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
         format(atom(ElixirExpr), "(~w * ~w)", [CX, CY])
     ;   Expr = X / Y
-    ->  expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+    ->  expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
         format(atom(ElixirExpr), "div(~w, ~w)", [CX, CY])
     ;   Expr = X mod Y
-    ->  expr_to_elixir(X, CX), expr_to_elixir(Y, CY),
+    ->  expr_to_elixir(X, VM, CX), expr_to_elixir(Y, VM, CY),
         format(atom(ElixirExpr), "rem(~w, ~w)", [CX, CY])
     ;   atom(Expr)
     ->  format(atom(ElixirExpr), "\"~w\"", [Expr])
@@ -359,9 +451,6 @@ expr_to_elixir(Expr, ElixirExpr) :-
 
 is_recursive_predicate_elixir(Name, Clauses) :-
     member((_, Body), Clauses),
-    contains_recursive_call_elixir(Body, Name).
-
-is_recursive_clause_elixir(Name, (_, Body)) :-
     contains_recursive_call_elixir(Body, Name).
 
 contains_recursive_call_elixir(Body, Name) :-
@@ -415,13 +504,91 @@ generate_base_condition_elixir(Head, Condition) :-
 %% UTILS
 %% ============================================
 
-upcase_atom_first(Atom, CapAtom) :-
-    atom_chars(Atom, [H|T]),
+%% snake_to_camel(+SnakeAtom, -CamelAtom)
+%  Convert snake_case atom to CamelCase atom for Elixir module names.
+%  e.g. elix_greet -> ElixGreet, my_parent -> MyParent
+snake_to_camel(Atom, CamelAtom) :-
+    atom_string(Atom, Str),
+    split_string(Str, "_", "", Parts),
+    maplist(capitalize_part, Parts, CapParts),
+    atomics_to_string(CapParts, CamelStr),
+    atom_string(CamelAtom, CamelStr).
+
+%% capitalize_part(+Part, -Capitalized)
+capitalize_part("", "") :- !.
+capitalize_part(Part, Capitalized) :-
+    string_chars(Part, [H|T]),
     upcase_atom(H, HU),
-    atom_chars(CapAtom, [HU|T]).
+    atom_chars(Upper, [HU]),
+    atom_string(Upper, UpperStr),
+    string_chars(Rest, T),
+    string_concat(UpperStr, Rest, Capitalized).
+
+%% atomics_to_string(+List, -String)
+atomics_to_string([], "").
+atomics_to_string([H|T], Result) :-
+    atomics_to_string(T, Rest),
+    string_concat(H, Rest, Result).
+
+%% upcase_atom_first(+Atom, -CapAtom) - kept for backward compat
+upcase_atom_first(Atom, CapAtom) :-
+    snake_to_camel(Atom, CapAtom).
 
 write_elixir_module(ElixirCode, FilePath) :-
-    open(FilePath, write, Stream),
-    write(Stream, ElixirCode),
-    close(Stream),
+    setup_call_cleanup(
+        open(FilePath, write, Stream, [encoding(utf8)]),
+        format(Stream, '~w', [ElixirCode]),
+        close(Stream)
+    ),
     format('Written Elixir program to: ~w~n', [FilePath]).
+
+%% ============================================
+%% MULTIFILE DISPATCH - Tail Recursion
+%% ============================================
+
+:- use_module('../core/advanced/tail_recursion').
+:- multifile tail_recursion:compile_tail_pattern/9.
+
+tail_recursion:compile_tail_pattern(elixir, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, _StepOp, _ExitAfterResult, ElixirCode) :-
+    numlist(1, Arity, Indices),
+    findall(ArgName, (member(I, Indices), format(atom(ArgName), 'arg~w', [I])), ArgNames),
+    atomic_list_concat(ArgNames, ', ', ArgList),
+    format(string(ElixirCode),
+'# ~w - tail recursive pattern (Elixir, BEAM native TCO)
+defmodule Generated.~w do
+  def ~w(~w) do
+    # BEAM provides native tail-call optimization.
+    # Override this template with actual base/recursive cases.
+    {~w}
+  end
+end
+', [PredStr, PredStr, PredStr, ArgList, ArgList]).
+
+%% ============================================
+%% MULTIFILE DISPATCH - Linear Recursion
+%% ============================================
+
+:- use_module('../core/advanced/linear_recursion').
+:- multifile linear_recursion:compile_linear_pattern/8.
+
+linear_recursion:compile_linear_pattern(elixir, PredStr, _Arity, _BaseClauses, _RecClauses, _BaseValues, _StepOp, ElixirCode) :-
+    format(string(ElixirCode),
+'# ~w - linear recursive pattern (Elixir)
+defmodule Generated.~w do
+  def ~w(0), do: 0
+  def ~w(1), do: 1
+  def ~w(n) when n > 1 do
+    ~w(n - 1) + ~w(n - 2)
+  end
+end
+', [PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr]).
+
+%% ============================================
+%% MULTIFILE DISPATCH - Mutual Recursion
+%% ============================================
+
+:- use_module('../core/advanced/mutual_recursion').
+:- multifile mutual_recursion:compile_mutual_pattern/5.
+
+mutual_recursion:compile_mutual_pattern(elixir, Predicates, _MemoEnabled, _MemoStrategy, ElixirCode) :-
+    compile_mutual_recursion_elixir(Predicates, [], ElixirCode).

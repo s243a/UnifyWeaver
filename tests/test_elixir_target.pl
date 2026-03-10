@@ -25,6 +25,14 @@ test('elixir facts export') :-
     sub_atom(Code, _, _, _, '@facts'),
     sub_atom(Code, _, _, _, '{"tom", "bob"}'),
     sub_atom(Code, _, _, _, 'def stream, do: Stream.map(@facts'),
+    % Module name should be CamelCase: Myparent
+    sub_atom(Code, _, _, _, 'defmodule Generated.Myparent'),
+    !.
+
+test('snake_to_camel conversion') :-
+    elixir_target:snake_to_camel(elix_greet, 'ElixGreet'),
+    elixir_target:snake_to_camel(my_parent, 'MyParent'),
+    elixir_target:snake_to_camel(hello, 'Hello'),
     !.
 
 test('elixir simple rule compilation') :-
@@ -32,14 +40,30 @@ test('elixir simple rule compilation') :-
     elixir_target:compile_rules_to_elixir(elix_greet/2, [], Code),
     % Function name exists in generated code
     sub_atom(Code, _, _, _, 'def elix_greet('),
-    % Module wrapper present
-    sub_atom(Code, _, _, _, 'defmodule Generated.Elix_greet'),
+    % Module name should be CamelCase
+    sub_atom(Code, _, _, _, 'defmodule Generated.ElixGreet'),
     retractall(user:elix_greet(_, _)),
     !.
 
-test('elixir mutual recursion compilation wrapper') :-
-    elixir_target:compile_mutual_recursion_elixir([even/1, odd/1], [], Code),
+test('elixir simple rule with ground args') :-
+    assertz((user:elix_check(hello, _X) :- true)),
+    assertz((user:elix_check(world, _Y) :- true)),
+    elixir_target:compile_rules_to_elixir(elix_check/2, [], Code),
+    % Should have pattern-matched "hello" literal in function head
+    sub_atom(Code, _, _, _, '"hello"'),
+    sub_atom(Code, _, _, _, '"world"'),
+    retractall(user:elix_check(_, _)),
+    !.
+
+test('elixir mutual recursion compilation') :-
+    assertz((user:elix_even(0) :- true)),
+    assertz((user:elix_odd(1) :- true)),
+    elixir_target:compile_mutual_recursion_elixir([elix_even/1, elix_odd/1], [], Code),
     sub_atom(Code, _, _, _, 'MutualGroup'),
+    sub_atom(Code, _, _, _, 'def elix_even('),
+    sub_atom(Code, _, _, _, 'def elix_odd('),
+    retractall(user:elix_even(_)),
+    retractall(user:elix_odd(_)),
     !.
 
 test('elixir pipeline output') :-
