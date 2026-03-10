@@ -61,14 +61,16 @@ Targets for functional / FP-oriented languages with pattern matching and immutab
 
 ### JVM & OOP Targets
 
-| Pattern | Java | Kotlin | Jython |
-|---------|:----:|:------:|:------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ |
-| **Tree Recursion** | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | ✅ | ✅ |
-| **Aggregations** | ✅ | ✅ | ✅ |
+| Pattern | Java | Kotlin | Scala | Clojure | Jython |
+|---------|:----:|:------:|:-----:|:-------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+Scala and Clojure also appear in the Functional table above.
 
 ### Compiler & Runtime Targets
 
@@ -80,6 +82,34 @@ Targets for functional / FP-oriented languages with pattern matching and immutab
 | **Transitive Closure** | ✅ | — | — | ✅ |
 | **Mutual Recursion** | ✅ | — | — | ✅ |
 | **Aggregations** | — | — | ✅ | ✅ |
+
+### Scripting & Native Targets
+
+| Pattern | C | C++ | Ruby | Perl |
+|---------|:-:|:---:|:----:|:----:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | — | — |
+| **Mutual Recursion** | ✅ | ✅ | — | — |
+| **Aggregations** | — | — | — | — |
+
+### Python Family Targets
+
+All Python variants share the core `python_target` recursion support and add specialized compilation:
+
+| Variant | Runtime | Specialty | Standalone Binary |
+|---------|---------|-----------|:-----------------:|
+| **CPython** | CPython 3.x | Full-featured, generators, streaming JSONL | — |
+| **Jython** | JVM | Java interop, JVM libraries | — |
+| **IronPython** | .NET/CLR | C# interop, in-process .NET hosting | — |
+| **Cython** | C extension | `cdef` typed functions, C-speed inner loops | — |
+| **MypyC** | Compiled | Strict type annotations → native extensions | — |
+| **Numba** | LLVM JIT | `@jit`/`@njit` decorators, vectorized, parallel | — |
+| **Codon** | LLVM AOT | Static subset of Python, `@par` parallel loops | ✅ |
+| **Nuitka** | C compiled | Full Python → standalone executable, webapp mode | ✅ |
+| **Pyodide** | WASM | Browser-side Python via WebAssembly, `packages([numpy])` | — |
+| **Fuzzy** | CPython | Fuzzy string matching, semantic search integration | — |
 
 **Key:**
 - ✅ Full support with optimizations (BFS, loops, memoization, semi-naive)
