@@ -85,4 +85,26 @@ test('elixir generator output') :-
 test('elixir bindings initialization') :-
     elixir_bindings:init_elixir_bindings.
 
+% --- Negative / edge-case tests ---
+
+test('elixir empty predicate generates fallback') :-
+    % A predicate with no clauses should still produce valid code
+    elixir_target:compile_simple_mode_elixir(no_clauses, 1, [], Code),
+    sub_atom(Code, _, _, _, 'def process(_), do: nil'),
+    sub_atom(Code, _, _, _, 'defmodule Generated.NoClauses'),
+    !.
+
+test('snake_to_camel single char') :-
+    elixir_target:snake_to_camel(x, 'X'),
+    !.
+
+test('snake_to_camel multiple underscores') :-
+    elixir_target:snake_to_camel(a_b_c_d, 'ABCD'),
+    !.
+
+test('elixir mutual recursion empty predicate list') :-
+    elixir_target:compile_mutual_recursion_elixir([], [], Code),
+    sub_atom(Code, _, _, _, 'No predicates found'),
+    !.
+
 :- end_tests(elixir_target).

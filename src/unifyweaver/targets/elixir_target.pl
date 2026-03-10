@@ -561,7 +561,11 @@ tail_recursion:compile_tail_pattern(elixir, PredStr, Arity, _BaseClauses, _RecCl
     ->  StepStr = "acc + item"
     ;   StepOp = arithmetic(_ * _)
     ->  StepStr = "acc * item"
-    ;   StepStr = "acc + 1"
+    ;   StepOp = arithmetic(_ - _)
+    ->  StepStr = "acc - item"
+    ;   % Unknown step op — warn and use a placeholder
+        print_message(warning, format('[Elixir Target] Unknown step operation ~w for ~w — defaulting to acc + 1. Review generated code.', [StepOp, PredStr])),
+        StepStr = "acc + 1  # WARNING: unknown step op, review this"
     ),
     format(string(ElixirCode),
 '# ~w - tail recursive pattern (Elixir, BEAM native TCO)

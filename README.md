@@ -50,14 +50,14 @@ Different targets support different recursion patterns. Choose based on your nee
 
 Additional language targets for native compilation, FFI, and functional programming:
 
-| Pattern | LLVM | WASM | Haskell | TypeScript | VB.NET | F# | Java | Jython | Kotlin |
-|---------|:----:|:----:|:-------:|:----------:|:------:|:--:|:----:|:------:|:------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Pattern | LLVM | WASM | Haskell | TypeScript | VB.NET | F# | Java | Jython | Kotlin | Elixir |
+|---------|:----:|:----:|:-------:|:----------:|:------:|:--:|:----:|:------:|:------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| **Transitive Closure** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 **Key:**
 - ✅ Full support with optimizations (BFS, loops, memoization, semi-naive)
@@ -73,6 +73,7 @@ Additional language targets for native compilation, FFI, and functional programm
 | Database views and analytics | **SQL** |
 | Python ecosystem integration | **Python** |
 | Windows/.NET orchestration | **PowerShell** |
+| BEAM VM with OTP concurrency | **Elixir** |
 | Lightweight text processing | **AWK** |
 | Prolog dialect transpilation | **Prolog** |
 
@@ -170,6 +171,17 @@ Prolog-to-Prolog transpilation for dialect compatibility.
 - SWI-Prolog and GNU Prolog support
 - Native binary compilation via gplc
 - Executable script generation
+
+### Elixir Target (v0.1)
+BEAM VM compilation with native pattern matching and tail-call optimization.
+- Multi-clause `def` with pattern-matched function heads
+- `snake_to_camel/2` for idiomatic CamelCase module names
+- Pipeline mode with `Stream` + Jason JSONL processing
+- Generator mode via `Stream.unfold/2`
+- Transitive closure via BFS with `Map` + `MapSet`
+- **Binding System** — Arithmetic, comparison, string, I/O mappings
+
+**Docs:** [Elixir Target Guide](docs/ELIXIR_TARGET.md)
 
 ---
 
