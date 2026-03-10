@@ -54,6 +54,28 @@ pip install pyyaml
 pip install rich
 ```
 
+## Generation Targets
+
+The agent loop is generated from declarative Prolog facts into multiple targets:
+
+| Target | Output | Status |
+|--------|--------|--------|
+| Python | `generated/python/` (15+ modules) | Full agent loop |
+| Prolog | `generated/prolog/` (8 modules) | Full agent loop |
+| Rust | `generated/rust/` (7 files) | Data layer |
+
+### Declarative Infrastructure
+
+| Metric | Count |
+|--------|-------|
+| `py_fragment/2` facts | 82 |
+| `prolog_fragment/2` facts | 33 |
+| `rust_fragment/2` facts | 6 |
+| `emit_config_section/3` clauses | 8 |
+| `compile_component/4` targets | 3 (python, prolog, rust) |
+| `declare_binding` per target | 11 |
+| Total tests | 584 (498 unit + 27 Prolog + 59 Python) |
+
 ## Backends
 
 | Backend | Command | Requirements |
