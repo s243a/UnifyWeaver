@@ -803,7 +803,7 @@ multicall_aggregation_r(_ + _ + _, 3, Code) :-
 
 direct_multi_call_recursion:compile_direct_multicall_pattern(r, PredStr, BaseClauses, RecClause, RCode) :-
     % Extract base cases for R
-    direct_extract_base_cases_r(BaseClauses, BaseCasesCode),
+    direct_extract_base_cases_r(BaseClauses, PredStr, BaseCasesCode),
 
     % Extract recursive case structure
     RecClause = clause(RecHead, RecBody),
@@ -853,15 +853,15 @@ if (!interactive()) {
     BaseCasesCode, ComputationsCode, RecCallsCode, AggregationCode,
     PredStr, PredStr]).
 
-%% direct_extract_base_cases_r(+BaseClauses, -RCode)
-direct_extract_base_cases_r(BaseClauses, RCode) :-
+%% direct_extract_base_cases_r(+BaseClauses, +PredStr, -RCode)
+direct_extract_base_cases_r(BaseClauses, PredStr, RCode) :-
     findall(BaseCode, (
         member(clause(Head, _Body), BaseClauses),
         Head =.. [_Pred, BaseInput, BaseOutput],
         format(string(BaseCode),
 '    # Base case: ~w -> ~w
     if (input == ~w) { ~w_memo[[key]] <<- ~w; return(~w) }',
-            [BaseInput, BaseOutput, BaseInput, '_direct', BaseOutput, BaseOutput])
+            [BaseInput, BaseOutput, BaseInput, PredStr, BaseOutput, BaseOutput])
     ), BaseCodes),
     atomic_list_concat(BaseCodes, '\n', RCode).
 
@@ -906,21 +906,40 @@ direct_translate_aggregation_expr_r(A * B, RExpr) :-
     format(string(RExpr), '~w * ~w', [AName, BName]).
 
 %% direct_var_to_r_name(+Var, -RName)
+%  Convert Prolog variable to valid R identifier.
+%  R identifiers must start with a letter or dot-not-followed-by-digit.
+%  Prolog internal var names like _G12345 become v12345 in R.
 direct_var_to_r_name(Var, RName) :-
     (   var(Var) ->
         term_string(Var, VarStr),
         atom_string(VarAtom, VarStr),
-        downcase_atom(VarAtom, RName)
+        downcase_atom(VarAtom, LowerName),
+        ensure_r_identifier(LowerName, RName)
     ;   atom(Var) ->
-        downcase_atom(Var, RName)
+        downcase_atom(Var, LowerName),
+        ensure_r_identifier(LowerName, RName)
     ;   term_string(Var, VarStr),
         atom_string(VarAtom, VarStr),
-        downcase_atom(VarAtom, RName)
+        downcase_atom(VarAtom, LowerName),
+        ensure_r_identifier(LowerName, RName)
+    ).
+
+%% ensure_r_identifier(+Name, -ValidName)
+%  Prefix with 'v' if name starts with underscore or digit (invalid in R)
+ensure_r_identifier(Name, ValidName) :-
+    atom_chars(Name, [First|Rest]),
+    (   (First = '_' ; char_type(First, digit)) ->
+        atom_chars(ValidName, [v|Rest])
+    ;   ValidName = Name
     ).
 
 %% direct_translate_expr_to_r(+Expr, -RExpr)
 direct_translate_expr_to_r(N - K, RExpr) :- var(N), integer(K), !,
     format(string(RExpr), 'input - ~w', [K]).
+% SWI-Prolog stores N-K as N+(-K) in clause database
+direct_translate_expr_to_r(N + K, RExpr) :- var(N), integer(K), K < 0, !,
+    AbsK is abs(K),
+    format(string(RExpr), 'input - ~w', [AbsK]).
 direct_translate_expr_to_r(N + K, RExpr) :- var(N), integer(K), !,
     format(string(RExpr), 'input + ~w', [K]).
 direct_translate_expr_to_r(Expr, 'input') :- var(Expr), !.

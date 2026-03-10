@@ -21,13 +21,32 @@
 %% compile_direct_multicall_pattern(+Target, +PredStr, +BaseClauses, +RecClause, -Code)
 :- multifile compile_direct_multicall_pattern/5.
 
+%% get_recursive_call_count(+Pred/Arity, -MaxCount)
+%  Count max recursive calls per clause for a predicate
+get_recursive_call_count(Pred/Arity, MaxCount) :-
+    functor(Head, Pred, Arity),
+    findall(Count,
+        (user:clause(Head, Body),
+         contains_call_to(Body, Pred),
+         count_recursive_calls(Body, Pred, Count)),
+        Counts),
+    (Counts = [] -> MaxCount = 0 ; max_list(Counts, MaxCount)).
+
+%% get_multi_call_info(+Pred/Arity, -Info)
+%  Gather multi-call analysis info. Only Count is currently used.
+get_multi_call_info(Pred/Arity, multi_call(Count, true, true, true)) :-
+    get_recursive_call_count(Pred/Arity, Count).
+
 %% can_compile_direct_multi_call(+Pred/Arity)
 %  Check if predicate can be compiled as direct multi-call recursion
 can_compile_direct_multi_call(Pred/Arity) :-
-    % Must be linear recursive streamable (includes multi-call check)
-    is_linear_recursive_streamable(Pred/Arity),
-    % Must have 2+ recursive calls
-    get_recursive_call_count(Pred/Arity, Count),
+    Arity =:= 2,
+    functor(Head, Pred, Arity),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    % Must have at least one recursive clause with 2+ calls
+    member(clause(_, RecBody), Clauses),
+    contains_call_to(RecBody, Pred),
+    count_recursive_calls(RecBody, Pred, Count),
     Count >= 2.
 
 %% compile_direct_multi_call(+Pred/Arity, +Options, -BashCode)
@@ -85,6 +104,7 @@ generate_direct_binary_bash(PredStr, BaseClauses, RecClause, BashCode) :-
     extract_base_cases(BaseClauses, PredStr, BaseCasesCode),
 
     % Extract recursive case structure
+    atom_string(Pred, PredStr),
     extract_recursive_case(RecClause, Pred, PredStr, RecursiveCaseCode),
 
     % Generate bash code
@@ -187,11 +207,32 @@ extract_recursive_case(clause(Head, Body), Pred, PredStr, BashCode) :-
 
 %% extract_body_components(+Body, +Pred, -Computations, -RecCalls, -Aggregation)
 %  Parse body into: argument computations, recursive calls, result aggregation
+%  The aggregation is the `_ is _` goal whose expression references output
+%  variables from recursive calls (e.g., F is F1 + F2 where F1, F2 are
+%  bound by fib(N1, F1), fib(N2, F2)).
 extract_body_components(Body, Pred, Computations, RecCalls, Aggregation) :-
     extract_goals_ordered(Body, Goals),
-    partition(is_computation, Goals, Computations, Rest1),
-    partition(is_recursive_call(Pred), Rest1, RecCalls, Rest2),
-    (   Rest2 = [Aggregation|_] -> true ; Aggregation = true).
+    % First identify recursive calls
+    partition(is_recursive_call(Pred), Goals, RecCalls, NonRecGoals),
+    % Separate is-goals from conditions/guards
+    partition(is_computation, NonRecGoals, IsGoals, _Conditions),
+    % Among is-goals, find the aggregation: the one whose expression
+    % references an output variable from a recursive call (by identity).
+    % NOTE: We check directly against RecCalls rather than using findall,
+    % because findall copies variables and breaks identity (==) checks.
+    (   select(AggGoal, IsGoals, CompGoals),
+        AggGoal = (_ is AggExpr),
+        term_variables(AggExpr, ExprVars),
+        member(EV, ExprVars),
+        member(Call, RecCalls),
+        Call =.. [_|CallArgs],
+        last(CallArgs, OutVar),
+        EV == OutVar
+    ->  Aggregation = AggGoal,
+        Computations = CompGoals
+    ;   Computations = IsGoals,
+        Aggregation = true
+    ).
 
 is_computation(_ is _).
 
@@ -243,6 +284,12 @@ translate_expr_to_bash(N - 2, '$(($input - 2))') :- var(N), !.
 translate_expr_to_bash(N - 3, '$(($input - 3))') :- var(N), !.
 translate_expr_to_bash(N - K, BashExpr) :- var(N), integer(K), !,
     format(string(BashExpr), '$(($input - ~w))', [K]).
+% SWI-Prolog stores N-K as N+(-K) in clause database, so handle N+K too
+translate_expr_to_bash(N + K, BashExpr) :- var(N), integer(K), K < 0, !,
+    AbsK is abs(K),
+    format(string(BashExpr), '$(($input - ~w))', [AbsK]).
+translate_expr_to_bash(N + K, BashExpr) :- var(N), integer(K), !,
+    format(string(BashExpr), '$(($input + ~w))', [K]).
 translate_expr_to_bash(Expr, '$(($input))') :- var(Expr), !.
 
 %% generate_recursive_calls_bash(+RecCalls, +PredStr, -BashCode)
@@ -278,10 +325,53 @@ translate_aggregation_expr(A + B + C, BashExpr) :-
 test_direct_multi_call :-
     format('~n=== Testing Direct Multi-Call Compilation ===~n', []),
 
-    % Test fibonacci
-    (   can_compile_direct_multi_call(fib/2) ->
-        format('✓ fib/2 can use direct multi-call~n', [])
-    ;   format('✗ fib/2 cannot use direct multi-call~n', [])
+    % Setup output directory
+    (   exists_directory('output/advanced') -> true
+    ;   make_directory('output/advanced')
+    ),
+
+    % Clear test predicates
+    catch(abolish(test_dfib/2), _, true),
+
+    % Define fibonacci
+    assertz(user:test_dfib(0, 0)),
+    assertz(user:test_dfib(1, 1)),
+    assertz(user:(test_dfib(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        test_dfib(N1, F1),
+        test_dfib(N2, F2),
+        F is F1 + F2
+    )),
+
+    % Test 1: Detection
+    writeln('Test 1: Detect fibonacci as direct multi-call'),
+    (   can_compile_direct_multi_call(test_dfib/2) ->
+        writeln('  ✓ PASS - fibonacci detected')
+    ;   writeln('  ✗ FAIL - should detect fibonacci')
+    ),
+
+    % Test 2: Bash compilation
+    writeln('Test 2: Compile fibonacci to bash'),
+    (   compile_direct_multi_call(test_dfib/2, [target(bash)], BashCode) ->
+        write_output_file('output/advanced/fib_direct.sh', BashCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.sh (bash)')
+    ;   writeln('  ✗ FAIL - bash compilation failed')
+    ),
+
+    % Test 3: R compilation
+    writeln('Test 3: Compile fibonacci to R'),
+    (   compile_direct_multi_call(test_dfib/2, [target(r)], RCode) ->
+        write_output_file('output/advanced/fib_direct.R', RCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.R (r)')
+    ;   writeln('  ✗ FAIL - R compilation failed')
     ),
 
     format('~n=== Tests Complete ===~n', []).
+
+%% Helper to write output files
+write_output_file(Path, Content) :-
+    open(Path, write, Stream),
+    write(Stream, Content),
+    close(Stream).
