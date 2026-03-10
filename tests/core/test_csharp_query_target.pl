@@ -34,6 +34,8 @@
 :- dynamic user:test_group_probe_dir_backward_reach/4.
 :- dynamic user:test_group_probe_dir_mixed_edge/4.
 :- dynamic user:test_group_probe_dir_mixed_reach/4.
+:- dynamic user:test_group_probe_dir_mixed_bytarget_edge/4.
+:- dynamic user:test_group_probe_dir_mixed_bytarget_reach/4.
 :- dynamic user:test_cat/1.
 :- dynamic user:test_catmix/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
@@ -349,6 +351,7 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_normalized_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_selectivity_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_admission_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_positive_runtime,
         verify_transitive_closure_cache_reuse_runtime,
         verify_grouped_transitive_closure_cache_reuse_runtime,
         verify_mutual_recursion_plan,
@@ -753,6 +756,23 @@ setup_test_data :-
     assertz(user:(test_group_probe_dir_mixed_reach(X, Z, L, Cat) :-
         test_group_probe_dir_mixed_edge(X, Y, L, Cat),
         test_group_probe_dir_mixed_reach(Y, Z, L, Cat)
+    )),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(a, m, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(m, z, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(x, z, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(h, g, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(g, p, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(p, q, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(p, r, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(u, t, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_edge(u, v, red, cat1)),
+    assertz(user:mode(test_group_probe_dir_mixed_bytarget_reach(+, +, +, +))),
+    assertz(user:(test_group_probe_dir_mixed_bytarget_reach(X, Y, L, Cat) :-
+        test_group_probe_dir_mixed_bytarget_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_group_probe_dir_mixed_bytarget_reach(X, Z, L, Cat) :-
+        test_group_probe_dir_mixed_bytarget_edge(X, Y, L, Cat),
+        test_group_probe_dir_mixed_bytarget_reach(Y, Z, L, Cat)
     )),
     assertz(user:test_cat(cat1)),
     assertz(user:test_catmix(catmix)),
@@ -1187,6 +1207,9 @@ cleanup_test_data :-
     retractall(user:test_group_probe_dir_mixed_edge(_, _, _, _)),
     retractall(user:test_group_probe_dir_mixed_reach(_, _, _, _)),
     retractall(user:mode(test_group_probe_dir_mixed_reach(_, _, _, _))),
+    retractall(user:test_group_probe_dir_mixed_bytarget_edge(_, _, _, _)),
+    retractall(user:test_group_probe_dir_mixed_bytarget_reach(_, _, _, _)),
+    retractall(user:mode(test_group_probe_dir_mixed_bytarget_reach(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_recursive_label_path_cat_asym(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_medium_selective(_, _, _, _)),
@@ -4740,6 +4763,31 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
          'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
          'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=0',
          'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=2'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_positive_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    WarmColdParams = [[x, z, red, cat1], [u, t, red, cat1]],
+    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ColdParams = [[x, z, red, cat1], [u, t, red, cat1]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosureSeededByTarget',
+        8,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
+         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
+         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
         HotParams,
         HarnessSource).
 
