@@ -46,18 +46,40 @@ Different targets support different recursion patterns. Choose based on your nee
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-### Extended Targets
+### Functional Language Targets
 
-Additional language targets for native compilation, FFI, and functional programming:
+Targets for functional / FP-oriented languages with pattern matching and immutability:
 
-| Pattern | LLVM | WASM | Haskell | TypeScript | VB.NET | F# | Java | Jython | Kotlin | Elixir |
-|---------|:----:|:----:|:-------:|:----------:|:------:|:--:|:----:|:------:|:------:|:------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| **Transitive Closure** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Pattern | Haskell | F# | Scala | Clojure | Elixir |
+|---------|:-------:|:--:|:-----:|:-------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | — |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | — | ✅ | ✅ | ✅ | — |
+
+### JVM & OOP Targets
+
+| Pattern | Java | Kotlin | Jython |
+|---------|:----:|:------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ |
+
+### Compiler & Runtime Targets
+
+| Pattern | LLVM | WASM | TypeScript | VB.NET |
+|---------|:----:|:----:|:----------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | — | — | ✅ | ✅ |
+| **Transitive Closure** | ✅ | — | — | ✅ |
+| **Mutual Recursion** | ✅ | — | — | ✅ |
+| **Aggregations** | — | — | ✅ | ✅ |
 
 **Key:**
 - ✅ Full support with optimizations (BFS, loops, memoization, semi-naive)
