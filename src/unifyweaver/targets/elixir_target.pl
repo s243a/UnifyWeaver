@@ -155,15 +155,16 @@ generate_simple_clauses_elixir(Name, Arity, Clauses, Code) :-
     findall(ClauseCode, (
         member((Head, Body), Clauses),
         Head =.. [_|HeadArgs],
-        generate_clause_head_elixir(Name, HeadArgs, StdArgNames, HeadStr, Guards, VarMap),
+        generate_clause_head_elixir(Name, HeadArgs, StdArgNames, HeadStr, Guards, VarMap, PatternArgs),
         translate_body_elixir(Body, VarMap, BodyCode),
-        format_clause_elixir(HeadStr, Guards, BodyCode, StdArgNames, ClauseCode)
+        format_clause_elixir(HeadStr, Guards, BodyCode, PatternArgs, ClauseCode)
     ), Codes),
     atomic_list_concat(Codes, '\n\n', Code).
 
-%% generate_clause_head_elixir(+Name, +HeadArgs, +StdArgNames, -HeadStr, -Guards, -VarMap)
+%% generate_clause_head_elixir(+Name, +HeadArgs, +StdArgNames, -HeadStr, -Guards, -VarMap, -PatternArgs)
 %  Build a pattern-matched function head from clause arguments.
-generate_clause_head_elixir(Name, HeadArgs, StdArgNames, HeadStr, Guards, VarMap) :-
+%  PatternArgs are the actual in-scope identifiers/literals for the result tuple.
+generate_clause_head_elixir(Name, HeadArgs, StdArgNames, HeadStr, Guards, VarMap, PatternArgs) :-
     map_head_args_elixir(HeadArgs, StdArgNames, PatternArgs, GuardList, VarPairs),
     exclude(==(""), GuardList, Guards),
     flatten(VarPairs, VarMap),

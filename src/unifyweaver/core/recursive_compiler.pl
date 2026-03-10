@@ -744,7 +744,6 @@ compile_transitive_closure(elixir, Pred, _Arity, BasePred, _Options, GeneratedCo
 # Predicate: ~w/2 (transitive closure of ~w)
 
 defmodule Generated.~wQuery do
-  @base_relation %{}
 
   def add_fact(rel, from, to) do
     Map.update(rel, from, [to], &([to | &1]))
