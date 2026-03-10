@@ -463,11 +463,13 @@ The generator also produces 8 Prolog files in `generated/prolog/`. Prolog genera
 
 | Abstraction | Purpose | Facts/Predicates |
 |-------------|---------|-----------------|
-| `prolog_fragment/2` | Named Prolog code blocks | 10 fragments across 4 generators |
+| `prolog_fragment/2` | Named Prolog code blocks | 33 fragments across 6 generators |
 | `write_prolog/2` | Emit a named fragment to stream | Parallel to `write_py/2` |
 | `emit_prolog_module_skeleton/3` | Module header + directives | Supports `exports`, `det`, `dynamic`, `discontiguous`, `table`, `use_modules`, `comment` |
 | `prolog_fragment_metadata/2` | Fragment annotations (category, target, use_modules) | Parallel to `py_fragment_metadata/2` |
-| `generator_prolog_fragments/2` | Maps generators to their fragment names | 4 generators: costs, config, commands, tools |
+| `generator_prolog_fragments/2` | Maps generators to their fragment names | 6 generators: costs, config, commands, tools, backends, agent_loop |
+| `emit_config_section/3` | Target-polymorphic config emission | 8 sections (Python dict or Prolog facts) |
+| `backend_error_handler/2` | Routes backends to error handler fragments | 8 routing facts (cli, urllib, sdk) |
 
 Example: `generate_prolog_costs` assembles costs.pl from a skeleton + 1 fragment, replacing ~40 write calls:
 

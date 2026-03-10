@@ -156,6 +156,10 @@ run_tests :-
     test_prolog_fragment_metadata,
     test_generator_prolog_fragments,
     test_cost_py_fragments,
+    test_backends_prolog_fragments,
+    test_agent_loop_prolog_fragments,
+    test_config_section_new_clauses,
+    test_backend_error_handler_routing,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2686,10 +2690,10 @@ test_write_prolog_substitutions :-
 
 test_prolog_fragment_metadata :-
     format("~nprolog_fragment_metadata:~n"),
-    %% All 10 fragments have metadata
+    %% All 33 fragments have metadata (10 original + 14 backends + 9 agent_loop)
     findall(N, agent_loop_components:prolog_fragment_metadata(N, _), MNames),
     length(MNames, MCount),
-    assert_true('10 metadata entries', MCount =:= 10),
+    assert_true('33 metadata entries', MCount =:= 33),
     %% Category lookups work
     agent_loop_components:prolog_fragment_category(cost_tracker_impl, CostCat),
     assert_true('cost_tracker_impl category is costs', CostCat == costs),
@@ -2708,11 +2712,13 @@ test_generator_prolog_fragments :-
     format("~ngenerator_prolog_fragments:~n"),
     findall(G, agent_loop_components:generator_prolog_fragments(G, _), Gens),
     length(Gens, GCount),
-    assert_true('4 generators registered', GCount =:= 4),
+    assert_true('6 generators registered', GCount =:= 6),
     assert_true('costs generator registered', memberchk(costs, Gens)),
     assert_true('config generator registered', memberchk(config, Gens)),
     assert_true('commands generator registered', memberchk(commands, Gens)),
     assert_true('tools generator registered', memberchk(tools, Gens)),
+    assert_true('backends generator registered', memberchk(backends, Gens)),
+    assert_true('agent_loop generator registered', memberchk(agent_loop, Gens)),
     %% Fragment count per generator
     agent_loop_components:generator_prolog_fragments(costs, CostFs),
     length(CostFs, CF), assert_true('costs has 1 fragment', CF =:= 1),
@@ -2720,6 +2726,10 @@ test_generator_prolog_fragments :-
     length(CfgFs, CfgF), assert_true('config has 3 fragments', CfgF =:= 3),
     agent_loop_components:generator_prolog_fragments(tools, ToolFs),
     length(ToolFs, TF), assert_true('tools has 4 fragments', TF =:= 4),
+    agent_loop_components:generator_prolog_fragments(backends, BackFs),
+    length(BackFs, BF), assert_true('backends has 14 fragments', BF =:= 14),
+    agent_loop_components:generator_prolog_fragments(agent_loop, ALFs),
+    length(ALFs, ALF), assert_true('agent_loop has 9 fragments', ALF =:= 9),
     %% All fragment names resolve to actual prolog_fragment/2 facts
     findall(FN, (
         agent_loop_components:generator_prolog_fragments(_, Frags),
@@ -2772,3 +2782,130 @@ test_cost_py_fragments :-
     findall(F, (member(F, CostFrags), agent_loop_module:py_fragment(F, _)), ResCost),
     length(ResCost, RCL),
     assert_true('all cost fragments resolve', RCL =:= CFL).
+
+test_backends_prolog_fragments :-
+    format("~nbackends_prolog_fragments:~n"),
+    %% All 14 backends fragments exist
+    assert_true('backends_create_backend exists',
+        agent_loop_module:prolog_fragment(backends_create_backend, _)),
+    assert_true('backends_retry_config exists',
+        agent_loop_module:prolog_fragment(backends_retry_config, _)),
+    assert_true('backends_streaming_anthropic exists',
+        agent_loop_module:prolog_fragment(backends_streaming_anthropic, _)),
+    assert_true('backends_sse_parser exists',
+        agent_loop_module:prolog_fragment(backends_sse_parser, _)),
+    %% Content checks
+    agent_loop_module:prolog_fragment(backends_create_backend, CB),
+    assert_true('create_backend has backend_factory',
+        sub_atom(CB, _, _, _, 'backend_factory')),
+    agent_loop_module:prolog_fragment(backends_send_request_raw_api, API),
+    assert_true('api fragment has Content-Type',
+        sub_atom(API, _, _, _, 'Content-Type')),
+    agent_loop_module:prolog_fragment(backends_streaming_anthropic, Anth),
+    assert_true('anthropic fragment has x-api-key',
+        sub_atom(Anth, _, _, _, 'x-api-key')),
+    assert_true('anthropic fragment has 2023-06-01',
+        sub_atom(Anth, _, _, _, '2023-06-01')),
+    %% Escaping verification — single quotes doubled in atoms
+    agent_loop_module:prolog_fragment(backends_send_request_raw_api, APIFrag),
+    assert_true('api fragment single quotes escaped',
+        sub_atom(APIFrag, _, _, _, 'Content-Type')),
+    %% Fragment count
+    findall(N, (agent_loop_module:prolog_fragment(N, _), sub_atom(N, 0, _, _, backends_)), BNames),
+    length(BNames, BCount),
+    assert_true('14 backends fragments', BCount =:= 14).
+
+test_agent_loop_prolog_fragments :-
+    format("~nagent_loop_prolog_fragments:~n"),
+    %% All 9 agent_loop fragments exist
+    assert_true('agent_loop_init_state exists',
+        agent_loop_module:prolog_fragment(agent_loop_init_state, _)),
+    assert_true('agent_loop_entry exists',
+        agent_loop_module:prolog_fragment(agent_loop_entry, _)),
+    assert_true('agent_loop_repl_core exists',
+        agent_loop_module:prolog_fragment(agent_loop_repl_core, _)),
+    assert_true('agent_loop_actions exists',
+        agent_loop_module:prolog_fragment(agent_loop_actions, _)),
+    assert_true('agent_loop_context exists',
+        agent_loop_module:prolog_fragment(agent_loop_context, _)),
+    %% Content checks
+    agent_loop_module:prolog_fragment(agent_loop_init_state, Init),
+    assert_true('init_state has NO_COLOR',
+        sub_atom(Init, _, _, _, 'NO_COLOR')),
+    assert_true('init_state has ansi_code',
+        sub_atom(Init, _, _, _, 'ansi_code')),
+    assert_true('init_state has chars_per_token',
+        sub_atom(Init, _, _, _, 'chars_per_token')),
+    agent_loop_module:prolog_fragment(agent_loop_actions, Actions),
+    assert_true('actions has handle_action',
+        sub_atom(Actions, _, _, _, 'handle_action')),
+    assert_true('actions has _handle_backend_command',
+        sub_atom(Actions, _, _, _, '_handle_backend_command')),
+    agent_loop_module:prolog_fragment(agent_loop_context, Ctx),
+    assert_true('context has trim_context',
+        sub_atom(Ctx, _, _, _, 'trim_context')),
+    assert_true('context has estimate_tokens',
+        sub_atom(Ctx, _, _, _, 'estimate_tokens')),
+    %% Fragment count
+    findall(N, (agent_loop_module:prolog_fragment(N, _), sub_atom(N, 0, _, _, agent_loop_)), ALNames),
+    length(ALNames, ALCount),
+    assert_true('9 agent_loop fragments', ALCount =:= 9).
+
+test_config_section_new_clauses :-
+    format("~nconfig_section_new_clauses:~n"),
+    %% All 8 config sections exist (3 original + 5 new)
+    findall(S, (
+        member(S, [api_key_env_vars, api_key_files, default_presets,
+                   agent_config_fields, audit_levels, streaming_capable,
+                   security_profiles, cli_arguments]),
+        with_output_to(string(_), agent_loop_components:emit_config_section(current_output, S, [target(prolog)]))
+    ), Working),
+    length(Working, WCount),
+    assert_true('8 config sections work for prolog', WCount =:= 8),
+    %% agent_config_fields emits facts
+    with_output_to(string(ACFOut), agent_loop_components:emit_config_section(current_output, agent_config_fields, [target(prolog)])),
+    assert_true('agent_config_fields has agent_config_field',
+        sub_string(ACFOut, _, _, _, "agent_config_field")),
+    %% audit_levels emits facts
+    with_output_to(string(AuditOut), agent_loop_components:emit_config_section(current_output, audit_levels, [target(prolog)])),
+    assert_true('audit_levels has audit_profile_level',
+        sub_string(AuditOut, _, _, _, "audit_profile_level")),
+    assert_true('audit_levels has open',
+        sub_string(AuditOut, _, _, _, "open")),
+    %% streaming_capable emits facts
+    with_output_to(string(SCOut), agent_loop_components:emit_config_section(current_output, streaming_capable, [target(prolog)])),
+    assert_true('streaming_capable has streaming_capable',
+        sub_string(SCOut, _, _, _, "streaming_capable")),
+    %% security_profiles emits facts
+    with_output_to(string(SPOut), agent_loop_components:emit_config_section(current_output, security_profiles, [target(prolog)])),
+    assert_true('security_profiles has security_profile',
+        sub_string(SPOut, _, _, _, "security_profile")),
+    %% cli_arguments emits facts
+    with_output_to(string(CLIOut), agent_loop_components:emit_config_section(current_output, cli_arguments, [target(prolog)])),
+    assert_true('cli_arguments has cli_argument',
+        sub_string(CLIOut, _, _, _, "cli_argument")).
+
+test_backend_error_handler_routing :-
+    format("~nbackend_error_handler_routing:~n"),
+    %% All 8 backends have routing entries
+    findall(B, agent_loop_module:backend_error_handler(B, _), Backends),
+    length(Backends, BCount),
+    assert_true('8 backends routed', BCount =:= 8),
+    %% Specific routing checks
+    agent_loop_module:backend_error_handler('ollama-cli', OllamaSpec),
+    assert_true('ollama-cli routes to cli', OllamaSpec == cli),
+    agent_loop_module:backend_error_handler(claude, ClaudeSpec),
+    assert_true('claude routes to sdk(anthropic)', ClaudeSpec == sdk(anthropic)),
+    agent_loop_module:backend_error_handler(openai, OpenAISpec),
+    assert_true('openai routes to sdk(openai)', OpenAISpec == sdk(openai)),
+    agent_loop_module:backend_error_handler('ollama-api', OllamaAPISpec),
+    assert_true('ollama-api routes to urllib', OllamaAPISpec == urllib),
+    agent_loop_module:backend_error_handler(openrouter, ORSpec),
+    assert_true('openrouter routes to urllib', ORSpec == urllib),
+    %% emit_backend_error_handler produces output
+    with_output_to(string(ErrOut), agent_loop_module:emit_backend_error_handler(current_output, claude)),
+    assert_true('emit claude error handler has APIError',
+        sub_string(ErrOut, _, _, _, "APIError")),
+    with_output_to(string(CLIOut), agent_loop_module:emit_backend_error_handler(current_output, 'ollama-cli')),
+    assert_true('emit ollama-cli error handler has TimeoutExpired',
+        sub_string(CLIOut, _, _, _, "TimeoutExpired")).

@@ -1058,6 +1058,30 @@ streaming_capable(api_local).
 streaming_capable(api).
 streaming_capable(openrouter).
 
+%% backend_error_handler(+BackendName, +HandlerSpec)
+%% Routes each Python backend to its error handler fragment.
+%% HandlerSpec: cli | urllib | sdk(SdkName)
+backend_error_handler('ollama-cli', cli).
+backend_error_handler('ollama-api', urllib).
+backend_error_handler(gemini, cli).
+backend_error_handler('claude-code', cli).
+backend_error_handler(claude, sdk(anthropic)).
+backend_error_handler(openai, sdk(openai)).
+backend_error_handler(coro, cli).
+backend_error_handler(openrouter, urllib).
+
+%% emit_backend_error_handler(+Stream, +BackendName)
+%% Writes the appropriate error handler py_fragment for a backend.
+emit_backend_error_handler(S, BackendName) :-
+    backend_error_handler(BackendName, Spec),
+    (Spec = cli ->
+        write_py(S, error_handler_cli)
+    ; Spec = urllib ->
+        write_py(S, error_handler_urllib)
+    ; Spec = sdk(SdkName) ->
+        write_py(S, error_handler_api_sdk, [sdk=SdkName])
+    ).
+
 %% =============================================================================
 %% Code Generation — Target Directories & Path Helpers
 %% =============================================================================
@@ -1311,528 +1335,23 @@ generate_prolog_backends :-
     ]),
     %% Emit backend facts via component registry
     agent_loop_components:emit_backend_facts(S, [target(prolog)]),
-    %% Generate create_backend
-    write(S, '%% Create a backend configuration from factory specs\n'),
-    write(S, 'create_backend(Name, Options, Backend) :-\n'),
-    write(S, '    (backend_factory(Name, Spec) ->\n'),
-    write(S, '        Backend = backend{name: Name, spec: Spec, options: Options}\n'),
-    write(S, '    ; format(atom(Err), "Unknown backend: ~w", [Name]),\n'),
-    write(S, '      throw(error(Err))).\n\n'),
-    %% Retry configuration
-    write(S, '%% retry_config(MaxAttempts, BaseDelay, MaxDelay)\n'),
-    write(S, 'retry_config(3, 1.0, 30.0).\n\n'),
-    write(S, '%% is_retryable(+Error) — errors worth retrying\n'),
-    write(S, 'is_retryable(error(existence_error(url, _), _)).\n'),
-    write(S, 'is_retryable(error(socket_error(_), _)).\n'),
-    write(S, 'is_retryable(error(timeout_error, _)).\n'),
-    write(S, 'is_retryable(error(_, context(_, status(429, _)))).\n'),
-    write(S, 'is_retryable(error(_, context(_, status(500, _)))).\n'),
-    write(S, 'is_retryable(error(_, context(_, status(502, _)))).\n'),
-    write(S, 'is_retryable(error(_, context(_, status(503, _)))).\n\n'),
-    %% Human-readable error messages
-    write(S, '%% format_api_error(+Error, -Message) — human-readable error description\n'),
-    write(S, 'format_api_error(error(_, context(_, status(429, _))), "Rate limited (429). Will retry.") :- !.\n'),
-    write(S, 'format_api_error(error(_, context(_, status(500, _))), "Internal server error (500)") :- !.\n'),
-    write(S, 'format_api_error(error(_, context(_, status(502, _))), "Bad gateway (502)") :- !.\n'),
-    write(S, 'format_api_error(error(_, context(_, status(503, _))), "Service unavailable (503)") :- !.\n'),
-    write(S, 'format_api_error(error(existence_error(url, URL), _), Msg) :-\n'),
-    write(S, '    !, format(atom(Msg), "Connection failed: ~w", [URL]).\n'),
-    write(S, 'format_api_error(error(socket_error(E), _), Msg) :-\n'),
-    write(S, '    !, format(atom(Msg), "Socket error: ~w", [E]).\n'),
-    write(S, 'format_api_error(error(timeout_error, _), "Request timed out") :- !.\n'),
-    write(S, 'format_api_error(Error, Msg) :-\n'),
-    write(S, '    format(atom(Msg), "Request error: ~w", [Error]).\n\n'),
-    write(S, '%% retry_call(+Goal, +Options) — retry with exponential backoff + jitter\n'),
-    write(S, 'retry_call(Goal, Options) :-\n'),
-    write(S, '    retry_config(DefaultMax, DefaultBase, DefaultMaxD),\n'),
-    write(S, '    (member(max_attempts(Max), Options) -> true ; Max = DefaultMax),\n'),
-    write(S, '    (member(base_delay(Base), Options) -> true ; Base = DefaultBase),\n'),
-    write(S, '    (member(max_delay(MaxD), Options) -> true ; MaxD = DefaultMaxD),\n'),
-    write(S, '    retry_call_(Goal, 1, Max, Base, MaxD).\n\n'),
-    write(S, 'retry_call_(Goal, Attempt, Max, Base, MaxD) :-\n'),
-    write(S, '    catch(\n'),
-    write(S, '        call(Goal),\n'),
-    write(S, '        Error,\n'),
-    write(S, '        (   Attempt < Max,\n'),
-    write(S, '            is_retryable(Error) ->\n'),
-    write(S, '            Delay is min(MaxD, Base * (2 ^ (Attempt - 1))),\n'),
-    write(S, '            random(Jitter),\n'),
-    write(S, '            ActualDelay is Delay * (0.5 + Jitter),\n'),
-    write(S, '            (format_api_error(Error, ErrMsg) -> true ; ErrMsg = "unknown"),\n'),
-    write(S, '            format("[~w — Retry ~w/~w in ~2fs]~n", [ErrMsg, Attempt, Max, ActualDelay]),\n'),
-    write(S, '            sleep(ActualDelay),\n'),
-    write(S, '            NextAttempt is Attempt + 1,\n'),
-    write(S, '            retry_call_(Goal, NextAttempt, Max, Base, MaxD)\n'),
-    write(S, '        ;   throw(Error)\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n\n'),
-    %% Generate send_request with retry wrapper
-    write(S, '%% Send a request to a backend (with retry) and normalize the response\n'),
-    write(S, 'send_request(Backend, Messages, Tools, Response) :-\n'),
-    write(S, '    retry_call(\n'),
-    write(S, '        send_request_inner(Backend, Messages, Tools, Response),\n'),
-    write(S, '        []).\n\n'),
-    write(S, 'send_request_inner(Backend, Messages, Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    member(resolve_type(Type), Spec),\n'),
-    write(S, '    catch(\n'),
-    write(S, '        (send_request_raw(Type, Backend, Messages, Tools, RawResponse),\n'),
-    write(S, '         extract_response(RawResponse, Response)),\n'),
-    write(S, '        Error,\n'),
-    write(S, '        (format_api_error(Error, ErrMsg),\n'),
-    write(S, '         format("[Error] ~w~n", [ErrMsg]),\n'),
-    write(S, '         Response = _{content: ErrMsg, tool_calls: [], usage: _{input_tokens: 0, output_tokens: 0}})).\n\n'),
-    %% API backend
-    write(S, '%% API backend: HTTP JSON request\n'),
-    write(S, 'send_request_raw(api, Backend, Messages, Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    member(endpoint(URL), Spec),\n'),
-    write(S, '    member(model(Model), Spec),\n'),
-    write(S, '    get_dict(options, Backend, Opts),\n'),
-    write(S, '    (member(api_key(Key), Opts) -> true ; Key = none),\n'),
-    write(S, '    (member(auth_header(AuthH), Spec) -> true ; AuthH = "Authorization"),\n'),
-    write(S, '    (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),\n'),
-    write(S, '    atom_concat(AuthP, Key, AuthVal),\n'),
-    write(S, '    Body = json(_{model: Model, messages: Messages, tools: Tools}),\n'),
-    write(S, '    setup_call_cleanup(\n'),
-    write(S, '        http_open(URL, In, [\n'),
-    write(S, '            method(post),\n'),
-    write(S, '            request_header(AuthH=AuthVal),\n'),
-    write(S, '            request_header(''Content-Type''=''application/json''),\n'),
-    write(S, '            post(Body)\n'),
-    write(S, '        ]),\n'),
-    write(S, '        json_read_dict(In, Response),\n'),
-    write(S, '        close(In)).\n'),
-    write(S, 'send_request_raw(openrouter, B, M, T, R) :- send_request_raw(api, B, M, T, R).\n'),
-    write(S, 'send_request_raw(api_local, B, M, T, R) :- send_request_raw(api, B, M, T, R).\n\n'),
-    %% CLI backend
-    write(S, '%% CLI backend: subprocess\n'),
-    write(S, 'send_request_raw(cli, Backend, Messages, _Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    member(command(Cmd), Spec),\n'),
-    write(S, '    member(args(BaseArgs), Spec),\n'),
-    write(S, '    last(Messages, LastMsg),\n'),
-    write(S, '    get_dict(content, LastMsg, Prompt),\n'),
-    write(S, '    append(BaseArgs, [Prompt], AllArgs),\n'),
-    write(S, '    setup_call_cleanup(\n'),
-    write(S, '        process_create(path(Cmd), AllArgs,\n'),
-    write(S, '            [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),\n'),
-    write(S, '        (read_string(Out, _, StdOut),\n'),
-    write(S, '         read_string(Err, _, StdErr),\n'),
-    write(S, '         process_wait(PID, Status)),\n'),
-    write(S, '        (close(Out), close(Err))),\n'),
-    write(S, '    (Status = exit(0) ->\n'),
-    write(S, '        Response = _{content: StdOut, tool_calls: []}\n'),
-    write(S, '    ; format(atom(ErrMsg), "Backend exited with ~w: ~w", [Status, StdErr]),\n'),
-    write(S, '        Response = _{content: ErrMsg, tool_calls: []}).\n\n'),
-    %% Response extraction / normalization
-    write(S, '%% Extract and normalize API response to _{content, tool_calls, usage}\n'),
-    write(S, 'extract_response(Raw, Normalized) :-\n'),
-    write(S, '    extract_usage(Raw, Usage),\n'),
-    write(S, '    (get_dict(choices, Raw, Choices) ->\n'),
-    write(S, '        %% OpenAI/OpenRouter format\n'),
-    write(S, '        Choices = [FirstChoice|_],\n'),
-    write(S, '        get_dict(message, FirstChoice, Msg),\n'),
-    write(S, '        (get_dict(content, Msg, Content0) -> true ; Content0 = ""),\n'),
-    write(S, '        (Content0 = null -> Content = "" ; Content = Content0),\n'),
-    write(S, '        (get_dict(tool_calls, Msg, TCs) ->\n'),
-    write(S, '            maplist(normalize_openai_tc, TCs, ToolCalls)\n'),
-    write(S, '        ; ToolCalls = []),\n'),
-    write(S, '        Normalized = _{content: Content, tool_calls: ToolCalls, usage: Usage}\n'),
-    write(S, '    ; get_dict(content, Raw, ContentList), is_list(ContentList) ->\n'),
-    write(S, '        %% Anthropic format — content is a list of blocks\n'),
-    write(S, '        extract_anthropic(ContentList, Content, ToolCalls),\n'),
-    write(S, '        Normalized = _{content: Content, tool_calls: ToolCalls, usage: Usage}\n'),
-    write(S, '    ; %% Already normalized (e.g., CLI backend)\n'),
-    write(S, '        (get_dict(content, Raw, _) -> Normalized = Raw.put(usage, Usage)\n'),
-    write(S, '        ; Normalized = Raw.put(usage, Usage))).\n\n'),
-    write(S, '%% Normalize OpenAI tool call format\n'),
-    write(S, 'normalize_openai_tc(TC, Normalized) :-\n'),
-    write(S, '    get_dict(id, TC, Id),\n'),
-    write(S, '    get_dict(function, TC, Func),\n'),
-    write(S, '    get_dict(name, Func, Name),\n'),
-    write(S, '    get_dict(arguments, Func, ArgsJson),\n'),
-    write(S, '    (is_dict(ArgsJson) -> Args = ArgsJson\n'),
-    write(S, '    ; atom_to_term(ArgsJson, Args, _)),\n'),
-    write(S, '    Normalized = _{id: Id, name: Name, arguments: Args}.\n\n'),
-    write(S, '%% Extract Anthropic content blocks\n'),
-    write(S, 'extract_anthropic(Blocks, Content, ToolCalls) :-\n'),
-    write(S, '    findall(Text, (\n'),
-    write(S, '        member(B, Blocks), get_dict(type, B, "text"),\n'),
-    write(S, '        get_dict(text, B, Text)\n'),
-    write(S, '    ), Texts),\n'),
-    write(S, '    atomic_list_concat(Texts, Content),\n'),
-    write(S, '    findall(TC, (\n'),
-    write(S, '        member(B, Blocks), get_dict(type, B, "tool_use"),\n'),
-    write(S, '        get_dict(id, B, Id), get_dict(name, B, Name),\n'),
-    write(S, '        get_dict(input, B, Input),\n'),
-    write(S, '        TC = _{id: Id, name: Name, arguments: Input}\n'),
-    write(S, '    ), ToolCalls).\n\n'),
-    %% Usage extraction (handles OpenAI and Anthropic naming)
-    write(S, '%% Extract usage/token counts from API response\n'),
-    write(S, 'extract_usage(Raw, Usage) :-\n'),
-    write(S, '    (get_dict(usage, Raw, U) ->\n'),
-    write(S, '        (get_dict(prompt_tokens, U, InTok) -> true\n'),
-    write(S, '        ; get_dict(input_tokens, U, InTok) -> true\n'),
-    write(S, '        ; InTok = 0),\n'),
-    write(S, '        (get_dict(completion_tokens, U, OutTok) -> true\n'),
-    write(S, '        ; get_dict(output_tokens, U, OutTok) -> true\n'),
-    write(S, '        ; OutTok = 0),\n'),
-    write(S, '        Usage = _{input_tokens: InTok, output_tokens: OutTok}\n'),
-    write(S, '    ;\n'),
-    write(S, '        Usage = _{input_tokens: 0, output_tokens: 0}\n'),
-    write(S, '    ).\n\n'),
+    %% Backend implementation via prolog_fragment
+    write_prolog(S, backends_create_backend),
+    write_prolog(S, backends_retry_config),
+    write_prolog(S, backends_format_api_error),
+    write_prolog(S, backends_retry_call),
+    write_prolog(S, backends_send_request),
+    write_prolog(S, backends_send_request_raw_api),
+    write_prolog(S, backends_send_request_raw_cli),
+    write_prolog(S, backends_extract_response),
     %% Streaming capability facts
     agent_loop_components:emit_streaming_capable_facts(S, [target(prolog)]),
-    %% Streaming request dispatch
-    write(S, '%% Send a streaming request (falls back to send_request if unsupported)\n'),
-    write(S, 'send_request_streaming(Backend, Messages, Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    member(resolve_type(Type), Spec),\n'),
-    write(S, '    (streaming_capable(Type) ->\n'),
-    write(S, '        send_request_streaming_raw(Type, Backend, Messages, Tools, Response)\n'),
-    write(S, '    ;\n'),
-    write(S, '        send_request(Backend, Messages, Tools, Response)\n'),
-    write(S, '    ).\n\n'),
-    %% Ollama NDJSON streaming
-    write(S, '%% Streaming for api_local (Ollama): NDJSON format\n'),
-    write(S, '%% Each line is a JSON object: {"message":{"content":"token"},"done":false}\n'),
-    write(S, 'send_request_streaming_raw(api_local, Backend, Messages, _Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    member(endpoint(BaseURL), Spec),\n'),
-    write(S, '    get_dict(options, Backend, Opts),\n'),
-    write(S, '    (member(model(Model), Opts) -> true\n'),
-    write(S, '    ; member(model(Model), Spec) -> true\n'),
-    write(S, '    ; Model = "llama3"),\n'),
-    write(S, '    Body = json(_{model: Model, messages: Messages, stream: true}),\n'),
-    write(S, '    setup_call_cleanup(\n'),
-    write(S, '        http_open(BaseURL, In, [\n'),
-    write(S, '            method(post),\n'),
-    write(S, '            request_header(\'Content-Type\'=\'application/json\'),\n'),
-    write(S, '            post(Body)\n'),
-    write(S, '        ]),\n'),
-    write(S, '        read_ndjson_stream(In, Content, Usage),\n'),
-    write(S, '        close(In)),\n'),
-    write(S, '    Response = _{content: Content, tool_calls: [], usage: Usage}.\n\n'),
-    %% NDJSON stream reader with usage tracking
-    write(S, '%% Read NDJSON stream line by line, printing tokens as they arrive\n'),
-    write(S, 'read_ndjson_stream(In, Content, Usage) :-\n'),
-    write(S, '    read_ndjson_stream(In, [], 0, 0, Content, Usage).\n\n'),
-    write(S, 'read_ndjson_stream(In, Acc, InToks, OutToks, Content, Usage) :-\n'),
-    write(S, '    (at_end_of_stream(In) ->\n'),
-    write(S, '        reverse(Acc, Tokens),\n'),
-    write(S, '        atomic_list_concat(Tokens, Content),\n'),
-    write(S, '        Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '    ;\n'),
-    write(S, '        read_line_to_string(In, Line),\n'),
-    write(S, '        (Line = end_of_file ->\n'),
-    write(S, '            reverse(Acc, Tokens),\n'),
-    write(S, '            atomic_list_concat(Tokens, Content),\n'),
-    write(S, '            Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '        ;\n'),
-    write(S, '            catch(\n'),
-    write(S, '                (open_string(Line, StrIn),\n'),
-    write(S, '                 json_read_dict(StrIn, Dict),\n'),
-    write(S, '                 close(StrIn)),\n'),
-    write(S, '                _, (Dict = _{done: false})),\n'),
-    write(S, '            %% Check for usage in final chunk\n'),
-    write(S, '            (get_dict(done, Dict, true) ->\n'),
-    write(S, '                (get_dict(prompt_eval_count, Dict, PEC) -> NewIn = PEC ; NewIn = InToks),\n'),
-    write(S, '                (get_dict(eval_count, Dict, EC) -> NewOut = EC ; NewOut = OutToks),\n'),
-    write(S, '                reverse(Acc, Tokens2),\n'),
-    write(S, '                atomic_list_concat(Tokens2, Content),\n'),
-    write(S, '                Usage = _{input_tokens: NewIn, output_tokens: NewOut}\n'),
-    write(S, '            ;\n'),
-    write(S, '                (get_dict(message, Dict, Msg), get_dict(content, Msg, Token) -> true ; Token = ""),\n'),
-    write(S, '                (Token \\= "" ->\n'),
-    write(S, '                    write(Token), flush_output,\n'),
-    write(S, '                    read_ndjson_stream(In, [Token|Acc], InToks, OutToks, Content, Usage)\n'),
-    write(S, '                ;\n'),
-    write(S, '                    read_ndjson_stream(In, Acc, InToks, OutToks, Content, Usage)\n'),
-    write(S, '                )\n'),
-    write(S, '            )\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n\n'),
-    %% SSE streaming for API backends — dispatch between OpenAI and Anthropic
-    write(S, '%% SSE streaming for API backends — dispatches by auth type\n'),
-    write(S, 'send_request_streaming_raw(api, Backend, Messages, Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    (member(auth_header("x-api-key"), Spec) ->\n'),
-    write(S, '        send_request_streaming_anthropic(Backend, Messages, Tools, Response)\n'),
-    write(S, '    ;\n'),
-    write(S, '        send_request_streaming_openai(Backend, Messages, Tools, Response)\n'),
-    write(S, '    ).\n\n'),
-    write(S, '%% OpenRouter delegates to api SSE\n'),
-    write(S, 'send_request_streaming_raw(openrouter, B, M, T, R) :-\n'),
-    write(S, '    send_request_streaming_raw(api, B, M, T, R).\n\n'),
-    %% OpenAI SSE implementation
-    write(S, '%% OpenAI-format SSE streaming\n'),
-    write(S, 'send_request_streaming_openai(Backend, Messages, Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    member(endpoint(URL), Spec),\n'),
-    write(S, '    member(model(Model), Spec),\n'),
-    write(S, '    get_dict(options, Backend, Opts),\n'),
-    write(S, '    (member(api_key(Key), Opts) -> true ; Key = none),\n'),
-    write(S, '    (member(auth_header(AuthH), Spec) -> true ; AuthH = "Authorization"),\n'),
-    write(S, '    (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),\n'),
-    write(S, '    atom_concat(AuthP, Key, AuthVal),\n'),
-    write(S, '    Body = json(_{model: Model, messages: Messages, tools: Tools,\n'),
-    write(S, '                  stream: true, stream_options: _{include_usage: true}}),\n'),
-    write(S, '    setup_call_cleanup(\n'),
-    write(S, '        http_open(URL, In, [\n'),
-    write(S, '            method(post),\n'),
-    write(S, '            request_header(AuthH=AuthVal),\n'),
-    write(S, '            request_header(\'Content-Type\'=\'application/json\'),\n'),
-    write(S, '            post(Body)\n'),
-    write(S, '        ]),\n'),
-    write(S, '        read_sse_stream(In, Content, ToolCalls, Usage),\n'),
-    write(S, '        close(In)),\n'),
-    write(S, '    Response = _{content: Content, tool_calls: ToolCalls, usage: Usage}.\n\n'),
-    %% Anthropic SSE implementation
-    write(S, '%% Anthropic-format SSE streaming\n'),
-    write(S, 'send_request_streaming_anthropic(Backend, Messages, Tools, Response) :-\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    member(endpoint(URL), Spec),\n'),
-    write(S, '    member(model(Model), Spec),\n'),
-    write(S, '    get_dict(options, Backend, Opts),\n'),
-    write(S, '    (member(api_key(Key), Opts) -> true ; Key = none),\n'),
-    write(S, '    %% Extract system prompt from messages\n'),
-    write(S, '    (Messages = [SysMsg|RestMsgs],\n'),
-    write(S, '     get_dict(role, SysMsg, "system"),\n'),
-    write(S, '     get_dict(content, SysMsg, SysContent) ->\n'),
-    write(S, '        System = SysContent, UserMsgs = RestMsgs\n'),
-    write(S, '    ;\n'),
-    write(S, '        System = "", UserMsgs = Messages),\n'),
-    write(S, '    %% Build tool definitions for Anthropic format\n'),
-    write(S, '    (Tools \\= [] ->\n'),
-    write(S, '        maplist([T, AT]>>(\n'),
-    write(S, '            get_dict(name, T, TN),\n'),
-    write(S, '            get_dict(description, T, TD),\n'),
-    write(S, '            (get_dict(input_schema, T, TIS) -> true ; TIS = _{type: "object", properties: _{}}),\n'),
-    write(S, '            AT = _{name: TN, description: TD, input_schema: TIS}\n'),
-    write(S, '        ), Tools, AnthTools),\n'),
-    write(S, '        Body0 = _{model: Model, messages: UserMsgs, tools: AnthTools,\n'),
-    write(S, '                   max_tokens: 4096, stream: true}\n'),
-    write(S, '    ;\n'),
-    write(S, '        Body0 = _{model: Model, messages: UserMsgs,\n'),
-    write(S, '                   max_tokens: 4096, stream: true}),\n'),
-    write(S, '    (System \\= "" -> Body = Body0.put(system, System) ; Body = Body0),\n'),
-    write(S, '    setup_call_cleanup(\n'),
-    write(S, '        http_open(URL, In, [\n'),
-    write(S, '            method(post),\n'),
-    write(S, '            request_header(\'x-api-key\'=Key),\n'),
-    write(S, '            request_header(\'anthropic-version\'=\'2023-06-01\'),\n'),
-    write(S, '            request_header(\'Content-Type\'=\'application/json\'),\n'),
-    write(S, '            post(json(Body))\n'),
-    write(S, '        ]),\n'),
-    write(S, '        read_anthropic_sse_stream(In, Content, ToolCalls, Usage),\n'),
-    write(S, '        close(In)),\n'),
-    write(S, '    Response = _{content: Content, tool_calls: ToolCalls, usage: Usage}.\n\n'),
-    %% Anthropic SSE stream parser
-    write(S, '%% Anthropic SSE stream parser\n'),
-    write(S, 'read_anthropic_sse_stream(In, Content, ToolCalls, Usage) :-\n'),
-    write(S, '    read_anthropic_sse_stream(In, [], [], 0, 0, [], Content, ToolCalls, Usage).\n\n'),
-    write(S, 'read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                          Content, ToolCalls, Usage) :-\n'),
-    write(S, '    (at_end_of_stream(In) ->\n'),
-    write(S, '        reverse(TokAcc, Tokens),\n'),
-    write(S, '        atomic_list_concat(Tokens, Content),\n'),
-    write(S, '        reverse(TCAcc, ToolCalls),\n'),
-    write(S, '        Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '    ;\n'),
-    write(S, '        read_line_to_string(In, Line),\n'),
-    write(S, '        (Line = end_of_file ->\n'),
-    write(S, '            reverse(TokAcc, Tokens),\n'),
-    write(S, '            atomic_list_concat(Tokens, Content),\n'),
-    write(S, '            reverse(TCAcc, ToolCalls),\n'),
-    write(S, '            Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '        ; sub_string(Line, 0, 6, _, "data: ") ->\n'),
-    write(S, '            sub_string(Line, 6, _, 0, Payload),\n'),
-    write(S, '            catch(\n'),
-    write(S, '                (open_string(Payload, StrIn),\n'),
-    write(S, '                 json_read_dict(StrIn, Evt),\n'),
-    write(S, '                 close(StrIn)),\n'),
-    write(S, '                _, (Evt = null)),\n'),
-    write(S, '            (Evt \\= null ->\n'),
-    write(S, '                handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                                       Content, ToolCalls, Usage)\n'),
-    write(S, '            ;\n'),
-    write(S, '                read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                                          Content, ToolCalls, Usage)\n'),
-    write(S, '            )\n'),
-    write(S, '        ;\n'),
-    write(S, '            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n\n'),
-    %% Anthropic event handler with tool use support
-    write(S, '%% Handle individual Anthropic SSE events\n'),
-    write(S, 'handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                       Content, ToolCalls, Usage) :-\n'),
-    write(S, '    get_dict(type, Evt, Type),\n'),
-    write(S, '    (Type = "message_start" ->\n'),
-    write(S, '        (get_dict(message, Evt, Msg),\n'),
-    write(S, '         get_dict(usage, Msg, MUsage),\n'),
-    write(S, '         get_dict(input_tokens, MUsage, NewInToks) -> true\n'),
-    write(S, '        ; NewInToks = InToks),\n'),
-    write(S, '        read_anthropic_sse_stream(In, TokAcc, TCAcc, NewInToks, OutToks, CurTool,\n'),
-    write(S, '                                  Content, ToolCalls, Usage)\n'),
-    write(S, '    ; Type = "content_block_start" ->\n'),
-    write(S, '        get_dict(content_block, Evt, CB),\n'),
-    write(S, '        (get_dict(type, CB, "tool_use") ->\n'),
-    write(S, '            get_dict(id, CB, TId),\n'),
-    write(S, '            get_dict(name, CB, TName),\n'),
-    write(S, '            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks,\n'),
-    write(S, '                                      tool_state(TId, TName, []),\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        ;\n'),
-    write(S, '            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        )\n'),
-    write(S, '    ; Type = "content_block_delta" ->\n'),
-    write(S, '        get_dict(delta, Evt, Delta),\n'),
-    write(S, '        get_dict(type, Delta, DType),\n'),
-    write(S, '        (DType = "text_delta" ->\n'),
-    write(S, '            get_dict(text, Delta, Token),\n'),
-    write(S, '            write(Token), flush_output,\n'),
-    write(S, '            read_anthropic_sse_stream(In, [Token|TokAcc], TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        ; DType = "input_json_delta" ->\n'),
-    write(S, '            get_dict(partial_json, Delta, Fragment),\n'),
-    write(S, '            (CurTool = tool_state(CTId, CTName, CTFrags) ->\n'),
-    write(S, '                NewCurTool = tool_state(CTId, CTName, [Fragment|CTFrags])\n'),
-    write(S, '            ; NewCurTool = CurTool),\n'),
-    write(S, '            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, NewCurTool,\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        ;\n'),
-    write(S, '            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        )\n'),
-    write(S, '    ; Type = "content_block_stop" ->\n'),
-    write(S, '        (CurTool = tool_state(CSId, CSName, CSFrags) ->\n'),
-    write(S, '            reverse(CSFrags, FragsOrdered),\n'),
-    write(S, '            atomic_list_concat(FragsOrdered, JsonStr),\n'),
-    write(S, '            (JsonStr = "" -> Args = _{}\n'),
-    write(S, '            ; catch(\n'),
-    write(S, '                (open_string(JsonStr, JIn), json_read_dict(JIn, Args), close(JIn)),\n'),
-    write(S, '                _, Args = _{})),\n'),
-    write(S, '            TC = _{id: CSId, name: CSName, arguments: Args},\n'),
-    write(S, '            read_anthropic_sse_stream(In, TokAcc, [TC|TCAcc], InToks, OutToks, [],\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        ;\n'),
-    write(S, '            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],\n'),
-    write(S, '                                      Content, ToolCalls, Usage)\n'),
-    write(S, '        )\n'),
-    write(S, '    ; Type = "message_delta" ->\n'),
-    write(S, '        (get_dict(usage, Evt, DUsage),\n'),
-    write(S, '         get_dict(output_tokens, DUsage, NewOutToks) -> true\n'),
-    write(S, '        ; NewOutToks = OutToks),\n'),
-    write(S, '        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, NewOutToks, CurTool,\n'),
-    write(S, '                                  Content, ToolCalls, Usage)\n'),
-    write(S, '    ; Type = "message_stop" ->\n'),
-    write(S, '        reverse(TokAcc, Tokens),\n'),
-    write(S, '        atomic_list_concat(Tokens, Content),\n'),
-    write(S, '        reverse(TCAcc, ToolCalls),\n'),
-    write(S, '        Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '    ;\n'),
-    write(S, '        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,\n'),
-    write(S, '                                  Content, ToolCalls, Usage)\n'),
-    write(S, '    ).\n\n'),
-    %% OpenAI tool call delta accumulation helpers
-    write(S, '%% Accumulate OpenAI tool call deltas by index\n'),
-    write(S, 'accumulate_tc_delta(DeltaTC, Acc, NewAcc) :-\n'),
-    write(S, '    get_dict(index, DeltaTC, Idx),\n'),
-    write(S, '    (get_dict(function, DeltaTC, Func) -> true ; Func = _{}),\n'),
-    write(S, '    (get_dict(id, DeltaTC, Id0) -> true ; Id0 = none),\n'),
-    write(S, '    (get_dict(name, Func, Name0) -> true ; Name0 = none),\n'),
-    write(S, '    (get_dict(arguments, Func, ArgFrag) -> true ; ArgFrag = ""),\n'),
-    write(S, '    length(Acc, CurLen),\n'),
-    write(S, '    (Idx < CurLen ->\n'),
-    write(S, '        nth0(Idx, Acc, tc_state(ExId, ExName, ExFrags)),\n'),
-    write(S, '        (Id0 \\= none -> NId = Id0 ; NId = ExId),\n'),
-    write(S, '        (Name0 \\= none -> NName = Name0 ; NName = ExName),\n'),
-    write(S, '        (ArgFrag \\= "" -> NFrags = [ArgFrag|ExFrags] ; NFrags = ExFrags),\n'),
-    write(S, '        replace_nth0(Idx, Acc, tc_state(NId, NName, NFrags), NewAcc)\n'),
-    write(S, '    ;\n'),
-    write(S, '        (Id0 \\= none -> FId = Id0 ; FId = ""),\n'),
-    write(S, '        (Name0 \\= none -> FName = Name0 ; FName = ""),\n'),
-    write(S, '        (ArgFrag \\= "" -> Frags0 = [ArgFrag] ; Frags0 = []),\n'),
-    write(S, '        append(Acc, [tc_state(FId, FName, Frags0)], NewAcc)\n'),
-    write(S, '    ).\n\n'),
-    write(S, 'replace_nth0(0, [_|Rest], Elem, [Elem|Rest]) :- !.\n'),
-    write(S, 'replace_nth0(N, [H|Rest], Elem, [H|Result]) :-\n'),
-    write(S, '    N > 0, N1 is N - 1,\n'),
-    write(S, '    replace_nth0(N1, Rest, Elem, Result).\n\n'),
-    write(S, '%% Finalize tool call accumulators into normalized dicts\n'),
-    write(S, 'finalize_tc_acc([], []) :- !.\n'),
-    write(S, 'finalize_tc_acc([tc_state(_,_,_)|_] = Acc, ToolCalls) :- !,\n'),
-    write(S, '    maplist(finalize_one_tc, Acc, ToolCalls).\n'),
-    write(S, 'finalize_tc_acc(Acc, ToolCalls) :- reverse(Acc, ToolCalls).\n\n'),
-    write(S, 'finalize_one_tc(tc_state(Id, Name, RevFrags), TC) :-\n'),
-    write(S, '    reverse(RevFrags, Frags),\n'),
-    write(S, '    atomic_list_concat(Frags, JsonStr),\n'),
-    write(S, '    (JsonStr = "" -> Args = _{}\n'),
-    write(S, '    ; catch(\n'),
-    write(S, '        (open_string(JsonStr, JIn), json_read_dict(JIn, Args), close(JIn)),\n'),
-    write(S, '        _, Args = _{})),\n'),
-    write(S, '    TC = _{id: Id, name: Name, arguments: Args}.\n\n'),
-    %% OpenAI SSE stream parser with usage + tool calls
-    write(S, '%% SSE stream parser — reads "data: <json>" lines\n'),
-    write(S, 'read_sse_stream(In, Content, ToolCalls, Usage) :-\n'),
-    write(S, '    read_sse_stream(In, [], [], 0, 0, Content, ToolCalls, Usage).\n\n'),
-    write(S, 'read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage) :-\n'),
-    write(S, '    (at_end_of_stream(In) ->\n'),
-    write(S, '        reverse(TokenAcc, Tokens),\n'),
-    write(S, '        atomic_list_concat(Tokens, Content),\n'),
-    write(S, '        finalize_tc_acc(TCAcc, ToolCalls),\n'),
-    write(S, '        Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '    ;\n'),
-    write(S, '        read_line_to_string(In, Line),\n'),
-    write(S, '        (Line = end_of_file ->\n'),
-    write(S, '            reverse(TokenAcc, Tokens),\n'),
-    write(S, '            atomic_list_concat(Tokens, Content),\n'),
-    write(S, '            finalize_tc_acc(TCAcc, ToolCalls),\n'),
-    write(S, '            Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '        ; sub_string(Line, 0, 6, _, "data: ") ->\n'),
-    write(S, '            sub_string(Line, 6, _, 0, Payload),\n'),
-    write(S, '            (Payload = "[DONE]" ->\n'),
-    write(S, '                reverse(TokenAcc, Tokens),\n'),
-    write(S, '                atomic_list_concat(Tokens, Content),\n'),
-    write(S, '                finalize_tc_acc(TCAcc, ToolCalls),\n'),
-    write(S, '                Usage = _{input_tokens: InToks, output_tokens: OutToks}\n'),
-    write(S, '            ;\n'),
-    write(S, '                catch(\n'),
-    write(S, '                    (open_string(Payload, StrIn),\n'),
-    write(S, '                     json_read_dict(StrIn, Chunk),\n'),
-    write(S, '                     close(StrIn)),\n'),
-    write(S, '                    _, (Chunk = null)),\n'),
-    write(S, '                %% Check for usage in chunk\n'),
-    write(S, '                (Chunk \\= null, get_dict(usage, Chunk, CUsage) ->\n'),
-    write(S, '                    (get_dict(prompt_tokens, CUsage, NIn) -> true ; NIn = InToks),\n'),
-    write(S, '                    (get_dict(completion_tokens, CUsage, NOut) -> true ; NOut = OutToks),\n'),
-    write(S, '                    read_sse_stream(In, TokenAcc, TCAcc, NIn, NOut, Content, ToolCalls, Usage)\n'),
-    write(S, '                ; Chunk \\= null,\n'),
-    write(S, '                  get_dict(choices, Chunk, Choices),\n'),
-    write(S, '                  Choices = [Choice|_],\n'),
-    write(S, '                  get_dict(delta, Choice, Delta) ->\n'),
-    write(S, '                    (get_dict(content, Delta, Token), Token \\= null ->\n'),
-    write(S, '                        write(Token), flush_output,\n'),
-    write(S, '                        read_sse_stream(In, [Token|TokenAcc], TCAcc, InToks, OutToks, Content, ToolCalls, Usage)\n'),
-    write(S, '                    ; get_dict(tool_calls, Delta, DeltaTCs) ->\n'),
-    write(S, '                        foldl(accumulate_tc_delta, DeltaTCs, TCAcc, NewTCAcc),\n'),
-    write(S, '                        read_sse_stream(In, TokenAcc, NewTCAcc, InToks, OutToks, Content, ToolCalls, Usage)\n'),
-    write(S, '                    ;\n'),
-    write(S, '                        read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)\n'),
-    write(S, '                    )\n'),
-    write(S, '                ;\n'),
-    write(S, '                    read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)\n'),
-    write(S, '                )\n'),
-    write(S, '            )\n'),
-    write(S, '        ;\n'),
-    write(S, '            %% Skip non-data lines\n'),
-    write(S, '            read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
+    write_prolog(S, backends_streaming_dispatch),
+    write_prolog(S, backends_streaming_ndjson),
+    write_prolog(S, backends_streaming_openai),
+    write_prolog(S, backends_streaming_anthropic),
+    write_prolog(S, backends_tc_delta),
+    write_prolog(S, backends_sse_parser),
     close(S),
     format('  Generated prolog/backends.pl~n', []).
 
@@ -1844,738 +1363,24 @@ generate_prolog_agent_loop :-
     output_path(prolog, 'agent_loop.pl', Path),
     open(Path, write, S),
     write_prolog_header(S, agent_loop, 'Main agent loop REPL'),
-    write(S, ':- module(agent_loop, [\n'),
-    write(S, '    agent_loop/1,\n'),
-    write(S, '    agent_loop/0\n'),
-    write(S, ']).\n\n'),
-    write(S, ':- use_module(config).\n'),
-    write(S, ':- use_module(tools).\n'),
-    write(S, ':- use_module(backends).\n'),
-    write(S, ':- use_module(commands).\n'),
-    write(S, ':- use_module(security).\n'),
-    write(S, ':- use_module(costs).\n'),
-    write(S, ':- use_module(library(json)).\n'),
-    write(S, ':- use_module(library(filesex)).\n\n'),
-    write(S, ':- dynamic conversation/1.\n'),
-    write(S, ':- dynamic conversation_undo/1.\n'),
-    write(S, ':- dynamic max_iterations/1.\n'),
-    write(S, ':- dynamic current_backend/1.\n'),
-    write(S, ':- dynamic current_format/1.\n'),
-    write(S, ':- dynamic streaming/1.\n'),
-    write(S, ':- dynamic context_max_tokens/1.\n'),
-    write(S, ':- dynamic context_max_messages/1.\n'),
-    write(S, 'conversation([]).\n'),
-    write(S, 'max_iterations(0).\n'),
-    write(S, 'current_format(plain).\n'),
-    write(S, 'streaming(false).\n'),
-    write(S, 'context_max_tokens(100000).\n'),
-    write(S, 'context_max_messages(50).\n'),
-    write(S, ':- dynamic chars_per_token/1.\n'),
-    write(S, 'chars_per_token(4.0).\n'),
-    write(S, ':- dynamic ansi_enabled/1.\n'),
-    write(S, 'ansi_enabled(true).\n'),
-    write(S, ':- initialization((getenv(\'NO_COLOR\', _) -> retractall(ansi_enabled(_)), assert(ansi_enabled(false)) ; true)).\n'),
-    write(S, 'ansi_code(reset,   "\\033[0m").\n'),
-    write(S, 'ansi_code(bold,    "\\033[1m").\n'),
-    write(S, 'ansi_code(dim,     "\\033[2m").\n'),
-    write(S, 'ansi_code(red,     "\\033[31m").\n'),
-    write(S, 'ansi_code(green,   "\\033[32m").\n'),
-    write(S, 'ansi_code(yellow,  "\\033[33m").\n'),
-    write(S, 'ansi_code(cyan,    "\\033[36m").\n'),
-    write(S, 'ansi_format(Style, Fmt, Args) :-\n'),
-    write(S, '    (ansi_enabled(true), ansi_code(Style, Code), ansi_code(reset, Reset) ->\n'),
-    write(S, '        atom_string(CodeA, Code), atom_string(ResetA, Reset),\n'),
-    write(S, '        atomic_list_concat([CodeA, Fmt, ResetA], FullFmt),\n'),
-    write(S, '        format(FullFmt, Args)\n'),
-    write(S, '    ; format(Fmt, Args)).\n\n'),
-    %% Determinism annotations for single-clause rules
-    write(S, ':- det(sessions_dir/1).\n'),
-    write(S, ':- det(agent_loop/0).\n'),
-    write(S, ':- det(agent_loop/1).\n'),
-    write(S, ':- det(read_input_smart/1).\n'),
-    write(S, ':- det(process_input/2).\n'),
-    write(S, ':- det(handle_response/4).\n'),
-    write(S, ':- det(handle_tool_calls/4).\n\n'),
-    write(S, 'sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).\n\n'),
-    %% Main entry
-    write(S, '%% Entry point with default options\n'),
-    write(S, 'agent_loop :- agent_loop([]).\n\n'),
-    write(S, '%% Entry point with CLI args\n'),
-    write(S, 'agent_loop(Args) :-\n'),
-    write(S, '    parse_cli_args(Args, Options),\n'),
-    write(S, '    (member(backend(BName), Options), BName \\= none ->\n'),
-    write(S, '        true\n'),
-    write(S, '    ; BName = coro),\n'),
-    write(S, '    create_backend(BName, Options, Backend),\n'),
-    write(S, '    retractall(current_backend(_)),\n'),
-    write(S, '    assert(current_backend(Backend)),\n'),
-    write(S, '    (member(security_profile(Prof), Options), Prof \\= none ->\n'),
-    write(S, '        set_security_profile(Prof)\n'),
-    write(S, '    ; true),\n'),
-    write(S, '    cost_tracker_init(main),\n'),
-    write(S, '    ansi_format(bold, "uwsal — Prolog agent loop (backend: ~w)~n", [BName]),\n'),
-    write(S, '    ansi_format(dim, "Type /help for commands, /exit to quit.~n", []),\n'),
-    write(S, '    repl_loop.\n\n'),
-    %% REPL loop
-    write(S, '%% Main read-eval-print loop\n'),
-    write(S, 'repl_loop :-\n'),
-    write(S, '    current_backend(Backend),\n'),
-    write(S, '    write("> "),\n'),
-    write(S, '    flush_output,\n'),
-    write(S, '    read_input_smart(Input),\n'),
-    write(S, '    (Input = "/exit" -> write("Goodbye."), nl\n'),
-    write(S, '    ; Input = "" -> repl_loop\n'),
-    write(S, '    ; process_input(Input, Backend) -> repl_loop\n'),
-    write(S, '    ; repl_loop).\n\n'),
-    %% Multi-line input support
-    write(S, '%% Smart input reader with multi-line support\n'),
-    write(S, 'read_input_smart(Input) :-\n'),
-    write(S, '    read_line_to_string(user_input, Line),\n'),
-    write(S, '    (Line = end_of_file -> Input = "/exit"\n'),
-    write(S, '    ; is_multiline_trigger(Line) ->\n'),
-    write(S, '        get_multiline_delimiter(Line, Delim),\n'),
-    write(S, '        read_multiline(Delim, [Line], Input)\n'),
-    write(S, '    ; atom_string(Input, Line)\n'),
-    write(S, '    ).\n\n'),
-    write(S, 'is_multiline_trigger(Line) :-\n'),
-    write(S, '    (sub_string(Line, 0, 3, _, "```")\n'),
-    write(S, '    ; sub_string(Line, 0, 3, _, "<<<")\n'),
-    write(S, '    ; string_concat(_, "\\\\", Line)\n'),
-    write(S, '    ).\n\n'),
-    write(S, 'get_multiline_delimiter(Line, Delim) :-\n'),
-    write(S, '    (sub_string(Line, 0, 3, _, "```") -> Delim = "```"\n'),
-    write(S, '    ; sub_string(Line, 0, 3, _, "<<<") -> Delim = "<<<"\n'),
-    write(S, '    ; Delim = continuation\n'),
-    write(S, '    ).\n\n'),
-    write(S, 'read_multiline(continuation, Acc, Input) :-\n'),
-    write(S, '    last(Acc, LastLine),\n'),
-    write(S, '    (string_concat(_, "\\\\", LastLine) ->\n'),
-    write(S, '        read_line_to_string(user_input, Next),\n'),
-    write(S, '        (Next = end_of_file ->\n'),
-    write(S, '            atomic_list_concat(Acc, "\\n", Input)\n'),
-    write(S, '        ;\n'),
-    write(S, '            append(Acc, [Next], Acc2),\n'),
-    write(S, '            read_multiline(continuation, Acc2, Input)\n'),
-    write(S, '        )\n'),
-    write(S, '    ;\n'),
-    write(S, '        atomic_list_concat(Acc, "\\n", Input)\n'),
-    write(S, '    ).\n'),
-    write(S, 'read_multiline(Delim, Acc, Input) :-\n'),
-    write(S, '    Delim \\= continuation,\n'),
-    write(S, '    read_line_to_string(user_input, Next),\n'),
-    write(S, '    (Next = end_of_file ->\n'),
-    write(S, '        atomic_list_concat(Acc, "\\n", Input)\n'),
-    write(S, '    ; Next = Delim ->\n'),
-    write(S, '        append(Acc, [Next], AllLines),\n'),
-    write(S, '        atomic_list_concat(AllLines, "\\n", Input)\n'),
-    write(S, '    ;\n'),
-    write(S, '        append(Acc, [Next], Acc2),\n'),
-    write(S, '        read_multiline(Delim, Acc2, Input)\n'),
-    write(S, '    ).\n\n'),
-    %% Process input
-    write(S, '%% Process user input: slash command or LLM request\n'),
-    write(S, 'process_input(Input, Backend) :-\n'),
-    write(S, '    (sub_string(Input, 0, 1, _, "/") ->\n'),
-    write(S, '        %% Slash command — split into command and args\n'),
-    write(S, '        (sub_string(Input, SpaceIdx, 1, _, " ") ->\n'),
-    write(S, '            sub_string(Input, 0, SpaceIdx, _, CmdPart),\n'),
-    write(S, '            AfterSpace is SpaceIdx + 1,\n'),
-    write(S, '            sub_string(Input, AfterSpace, _, 0, ArgsPart)\n'),
-    write(S, '        ;\n'),
-    write(S, '            CmdPart = Input, ArgsPart = ""\n'),
-    write(S, '        ),\n'),
-    write(S, '        atom_string(CmdAtom, CmdPart),\n'),
-    write(S, '        atom_string(ArgsAtom, ArgsPart),\n'),
-    write(S, '        handle_slash_command(CmdAtom, ArgsAtom, Action),\n'),
-    write(S, '        handle_action(Action, Backend)\n'),
-    write(S, '    ;\n'),
-    write(S, '        %% LLM request\n'),
-    write(S, '        conversation(History),\n'),
-    write(S, '        UserMsg = _{role: "user", content: Input},\n'),
-    write(S, '        append(History, [UserMsg], Messages0),\n'),
-    write(S, '        trim_context(Messages0, Messages),\n'),
-    write(S, '        %% Build tool specs\n'),
-    write(S, '        findall(ToolSpec, (\n'),
-    write(S, '            tool_spec(TName, TProps),\n'),
-    write(S, '            member(description(TDesc), TProps),\n'),
-    write(S, '            build_tool_input_schema(TName, TSchema),\n'),
-    write(S, '            ToolSpec = _{name: TName, description: TDesc, input_schema: TSchema}\n'),
-    write(S, '        ), ToolSpecs),\n'),
-    write(S, '        %% Check if streaming is enabled and backend supports it\n'),
-    write(S, '        get_dict(spec, Backend, BSpec),\n'),
-    write(S, '        member(resolve_type(RT), BSpec),\n'),
-    write(S, '        (streaming(true), streaming_capable(RT) ->\n'),
-    write(S, '            write("Assistant: "), flush_output,\n'),
-    write(S, '            send_request_streaming(Backend, Messages, ToolSpecs, Response),\n'),
-    write(S, '            nl, Streamed = true\n'),
-    write(S, '        ;\n'),
-    write(S, '            send_request(Backend, Messages, ToolSpecs, Response),\n'),
-    write(S, '            Streamed = false\n'),
-    write(S, '        ),\n'),
-    write(S, '        handle_response(Backend, Response, Messages, Streamed)\n'),
-    write(S, '    ).\n\n'),
-    %% Handle response
-    write(S, '%% Handle LLM response, including tool calls\n'),
-    write(S, 'handle_response(Backend, Response, Messages, Streamed) :-\n'),
-    write(S, '    (Streamed = false, get_dict(content, Response, Content), Content \\= "" ->\n'),
-    write(S, '        write(Content), nl\n'),
-    write(S, '    ; true),\n'),
-    write(S, '    %% Track cost if usage data available\n'),
-    write(S, '    (get_dict(usage, Response, Usage),\n'),
-    write(S, '     get_dict(input_tokens, Usage, InTok),\n'),
-    write(S, '     get_dict(output_tokens, Usage, OutTok),\n'),
-    write(S, '     (InTok > 0 ; OutTok > 0) ->\n'),
-    write(S, '        get_dict(spec, Backend, BSpec),\n'),
-    write(S, '        (member(model(Model), BSpec) -> true ; Model = "unknown"),\n'),
-    write(S, '        cost_tracker_add(main, Model, InTok, OutTok),\n'),
-    write(S, '        %% Calibrate token estimation from actual usage\n'),
-    write(S, '        (InTok > 0 ->\n'),
-    write(S, '            foldl([M,A,T]>>(get_dict(content,M,MC) -> atom_length(MC,L), T is A+L ; T=A),\n'),
-    write(S, '                  Messages, 0, TotalChars),\n'),
-    write(S, '            update_token_calibration(TotalChars, InTok)\n'),
-    write(S, '        ; true)\n'),
-    write(S, '    ; true),\n'),
-    write(S, '    (get_dict(tool_calls, Response, ToolCalls), ToolCalls \\= [] ->\n'),
-    write(S, '        handle_tool_calls(Backend, ToolCalls, Messages, Response)\n'),
-    write(S, '    ;\n'),
-    write(S, '        (get_dict(content, Response, Content2) -> true ; Content2 = ""),\n'),
-    write(S, '        AsstMsg = _{role: "assistant", content: Content2},\n'),
-    write(S, '        append(Messages, [AsstMsg], NewMsgs),\n'),
-    write(S, '        retractall(conversation(_)),\n'),
-    write(S, '        assert(conversation(NewMsgs))\n'),
-    write(S, '    ).\n\n'),
-    %% Handle tool calls with iteration tracking
-    write(S, '%% Execute tool calls and continue conversation\n'),
-    write(S, 'handle_tool_calls(Backend, ToolCalls, Messages, _) :-\n'),
-    write(S, '    handle_tool_calls(Backend, ToolCalls, Messages, _, 1).\n\n'),
-    write(S, 'handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-\n'),
-    write(S, '    %% Check iteration limit\n'),
-    write(S, '    max_iterations(MaxIter),\n'),
-    write(S, '    (MaxIter > 0, Iteration > MaxIter ->\n'),
-    write(S, '        ansi_format(yellow, "~n[Paused after ~w iterations. Send a message to continue.]~n", [MaxIter]),\n'),
-    write(S, '        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},\n'),
-    write(S, '        append(Messages, [AsstMsg], NewMsgs),\n'),
-    write(S, '        retractall(conversation(_)),\n'),
-    write(S, '        assert(conversation(NewMsgs))\n'),
-    write(S, '    ;\n'),
-    write(S, '        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},\n'),
-    write(S, '        append(Messages, [AsstMsg], Msgs1),\n'),
-    write(S, '        execute_tool_calls(Backend, ToolCalls, ToolResults),\n'),
-    write(S, '        append(Msgs1, ToolResults, Msgs2),\n'),
-    write(S, '        findall(TS, (tool_spec(TN, TP), member(description(TD), TP),\n'),
-    write(S, '            build_tool_input_schema(TN, TSch),\n'),
-    write(S, '            TS = _{name: TN, description: TD, input_schema: TSch}), TSList),\n'),
-    write(S, '        send_request(Backend, Msgs2, TSList, NextResponse),\n'),
-    write(S, '        %% Track cost for tool-loop response\n'),
-    write(S, '        (get_dict(usage, NextResponse, NUsage),\n'),
-    write(S, '         get_dict(input_tokens, NUsage, NInTok),\n'),
-    write(S, '         get_dict(output_tokens, NUsage, NOutTok),\n'),
-    write(S, '         (NInTok > 0 ; NOutTok > 0) ->\n'),
-    write(S, '            get_dict(spec, Backend, BSpec2),\n'),
-    write(S, '            (member(model(NModel), BSpec2) -> true ; NModel = "unknown"),\n'),
-    write(S, '            cost_tracker_add(main, NModel, NInTok, NOutTok)\n'),
-    write(S, '        ; true),\n'),
-    write(S, '        (get_dict(tool_calls, NextResponse, NextTCs), NextTCs \\= [] ->\n'),
-    write(S, '            NextIter is Iteration + 1,\n'),
-    write(S, '            handle_tool_calls(Backend, NextTCs, Msgs2, NextResponse, NextIter)\n'),
-    write(S, '        ;\n'),
-    write(S, '            handle_response(Backend, NextResponse, Msgs2, false)\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n\n'),
-    write(S, '%% Execute a list of tool calls, collecting results\n'),
-    write(S, 'execute_tool_calls(_Backend, [], []).\n'),
-    write(S, 'execute_tool_calls(Backend, [TC|Rest], [Result|Results]) :-\n'),
-    write(S, '    get_dict(name, TC, ToolName),\n'),
-    write(S, '    get_dict(arguments, TC, Params),\n'),
-    write(S, '    atom_string(ToolAtom, ToolName),\n'),
-    write(S, '    describe_tool_call(Backend, ToolAtom, Params, Desc),\n'),
-    write(S, '    ansi_format(cyan, "[tool] ~w~n", [Desc]),\n'),
-    write(S, '    (confirm_destructive(ToolAtom, true) ->\n'),
-    write(S, '        execute_tool(ToolAtom, Params, ToolResult),\n'),
-    write(S, '        (ToolResult = ok(Output) -> Content = Output ; ToolResult = error(Err) -> Content = Err),\n'),
-    write(S, '        (get_dict(id, TC, TCID) -> true ; TCID = ""),\n'),
-    write(S, '        Result = _{role: "tool", content: Content, tool_call_id: TCID}\n'),
-    write(S, '    ;\n'),
-    write(S, '        Result = _{role: "tool", content: "Execution denied by user", tool_call_id: ""}\n'),
-    write(S, '    ),\n'),
-    write(S, '    execute_tool_calls(Backend, Rest, Results).\n\n'),
-    %% Handle action
-    write(S, '%% Handle slash command actions\n'),
-    write(S, 'handle_action(exit, _) :- write("Goodbye."), nl, halt.\n'),
-    write(S, 'handle_action(clear, _) :-\n'),
-    write(S, '    retractall(conversation(_)),\n'),
-    write(S, '    assert(conversation([])),\n'),
-    write(S, '    write("Context cleared."), nl.\n'),
-    write(S, 'handle_action(help, _) :-\n'),
-    write(S, '    ansi_format(bold, "Available commands:~n", []),\n'),
-    write(S, '    findall(Group-Cmds, slash_command_group(Group, Cmds), Groups),\n'),
-    write(S, '    maplist([Group-Cmds]>>(\n'),
-    write(S, '        ansi_format(bold, "~n  ~w:~n", [Group]),\n'),
-    write(S, '        maplist([CmdName]>>(\n'),
-    write(S, '            slash_command(CmdName, _, Opts, Help),\n'),
-    write(S, '            (member(help_display(Disp), Opts) -> true ; format(atom(Disp), "/~w", [CmdName])),\n'),
-    write(S, '            format("    ~w~t~30| ~w~n", [Disp, Help])\n'),
-    write(S, '        ), Cmds)\n'),
-    write(S, '    ), Groups).\n'),
-    write(S, 'handle_action(status, Backend) :-\n'),
-    write(S, '    get_dict(name, Backend, BName),\n'),
-    write(S, '    conversation(Msgs),\n'),
-    write(S, '    length(Msgs, MsgCount),\n'),
-    write(S, '    cost_tracker_format(main, CostStr),\n'),
-    write(S, '    format("Backend: ~w~nMessages: ~w~nCosts: ~w~n", [BName, MsgCount, CostStr]).\n'),
-    %% /cost command
-    write(S, 'handle_action(call_handler(\'_handle_cost_command\', _), _) :-\n'),
-    write(S, '    cost_tracker_format(main, CostStr),\n'),
-    write(S, '    write(CostStr), nl.\n'),
-    %% /backend command — display current or switch
-    write(S, 'handle_action(call_handler(\'_handle_backend_command\', Args), Backend) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        get_dict(name, Backend, BName),\n'),
-    write(S, '        format("Current backend: ~w~n", [BName]),\n'),
-    write(S, '        write("Available backends:"), nl,\n'),
-    write(S, '        findall(N, backend_factory(N, _), Ns),\n'),
-    write(S, '        maplist([N]>>(format("  ~w~n", [N])), Ns)\n'),
-    write(S, '    ;\n'),
-    write(S, '        atom_string(TargetName, Args),\n'),
-    write(S, '        (backend_factory(TargetName, _) ->\n'),
-    write(S, '            create_backend(TargetName, [], NewBackend),\n'),
-    write(S, '            retractall(current_backend(_)),\n'),
-    write(S, '            assert(current_backend(NewBackend)),\n'),
-    write(S, '            format("Switched to backend: ~w~n", [TargetName])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("Unknown backend: ~w~nAvailable: ", [TargetName]),\n'),
-    write(S, '            findall(N, backend_factory(N, _), Names),\n'),
-    write(S, '            atomic_list_concat(Names, \', \', NamesStr),\n'),
-    write(S, '            write(NamesStr), nl\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /iterations command
-    write(S, 'handle_action(call_handler(\'_handle_iterations_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        max_iterations(N),\n'),
-    write(S, '        (N =:= 0 -> write("Max iterations: unlimited")\n'),
-    write(S, '        ; format("Max iterations: ~w", [N])), nl\n'),
-    write(S, '    ;\n'),
-    write(S, '        atom_number(Args, N),\n'),
-    write(S, '        retractall(max_iterations(_)),\n'),
-    write(S, '        assert(max_iterations(N)),\n'),
-    write(S, '        (N =:= 0 -> write("Max iterations: unlimited")\n'),
-    write(S, '        ; format("Max iterations set to ~w", [N])), nl\n'),
-    write(S, '    ).\n'),
-    %% /stream command — toggle streaming mode
-    write(S, 'handle_action(call_handler(\'_handle_stream_command\', _), _) :-\n'),
-    write(S, '    streaming(Current),\n'),
-    write(S, '    (Current = true -> New = false ; New = true),\n'),
-    write(S, '    retractall(streaming(_)),\n'),
-    write(S, '    assert(streaming(New)),\n'),
-    write(S, '    (New = true -> Status = enabled ; Status = disabled),\n'),
-    write(S, '    format("[Streaming ~w]~n", [Status]).\n'),
-    %% /model command — show or switch model
-    write(S, 'handle_action(call_handler(\'_handle_model_command\', Args), _) :-\n'),
-    write(S, '    current_backend(Backend),\n'),
-    write(S, '    get_dict(spec, Backend, Spec),\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        (member(model(M), Spec) -> format("Current model: ~w~n", [M])\n'),
-    write(S, '        ; write("No model set in current backend"), nl)\n'),
-    write(S, '    ;\n'),
-    write(S, '        atom_string(_, Args),\n'),
-    write(S, '        (select(model(_), Spec, Rest) ->\n'),
-    write(S, '            NewSpec = [model(Args)|Rest]\n'),
-    write(S, '        ;\n'),
-    write(S, '            NewSpec = [model(Args)|Spec]\n'),
-    write(S, '        ),\n'),
-    write(S, '        put_dict(spec, Backend, NewSpec, NewBackend),\n'),
-    write(S, '        retractall(current_backend(_)),\n'),
-    write(S, '        assert(current_backend(NewBackend)),\n'),
-    write(S, '        format("Model switched to: ~w~n", [Args])\n'),
-    write(S, '    ).\n'),
-    %% /tokens command — show context token estimate
-    write(S, 'handle_action(call_handler(\'_handle_tokens_command\', _), _) :-\n'),
-    write(S, '    conversation(Msgs),\n'),
-    write(S, '    length(Msgs, NMsgs),\n'),
-    write(S, '    chars_per_token(CPT),\n'),
-    write(S, '    foldl([M,A,T]>>(get_dict(content,M,C) -> atom_length(C,L), T is A+L ; T=A),\n'),
-    write(S, '          Msgs, 0, TotalChars),\n'),
-    write(S, '    Tokens is round(TotalChars / CPT),\n'),
-    write(S, '    context_max_tokens(Limit),\n'),
-    write(S, '    format("Context: ~w tokens (est.) / ~w limit (~w messages, ~1f chars/token)~n",\n'),
-    write(S, '           [Tokens, Limit, NMsgs, CPT]).\n'),
-    %% /aliases command
-    write(S, 'handle_action(call_handler(\'_handle_aliases_command\', _), _) :-\n'),
-    write(S, '    write("Command aliases:"), nl,\n'),
-    write(S, '    findall(Alias-Target, command_alias(Alias, Target), AliasPairs),\n'),
-    write(S, '    maplist([Alias-Target]>>(\n'),
-    write(S, '        format("  /~w -> /~w~n", [Alias, Target])\n'),
-    write(S, '    ), AliasPairs).\n'),
-    %% /history command
-    write(S, 'handle_action(call_handler(\'_handle_history_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" -> N = 10 ; atom_number(Args, N)),\n'),
-    write(S, '    conversation(Msgs),\n'),
-    write(S, '    length(Msgs, Len),\n'),
-    write(S, '    Start is max(0, Len - N),\n'),
-    write(S, '    format("~nLast ~w messages (~w total):~n", [N, Len]),\n'),
-    write(S, '    show_messages(Msgs, Start, 0).\n'),
-    %% /delete command — remove messages by index or range
-    write(S, 'handle_action(call_handler(\'_handle_delete_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        write("Usage: /delete <index> or /delete <start>-<end>"), nl\n'),
-    write(S, '    ;\n'),
-    write(S, '        conversation(Msgs),\n'),
-    write(S, '        %% Save undo state\n'),
-    write(S, '        retractall(conversation_undo(_)),\n'),
-    write(S, '        assert(conversation_undo(Msgs)),\n'),
-    write(S, '        (sub_string(Args, DashIdx, 1, _, "-") ->\n'),
-    write(S, '            sub_string(Args, 0, DashIdx, _, StartStr),\n'),
-    write(S, '            AfterDash is DashIdx + 1,\n'),
-    write(S, '            sub_string(Args, AfterDash, _, 0, EndStr),\n'),
-    write(S, '            atom_number(StartStr, Start),\n'),
-    write(S, '            atom_number(EndStr, End)\n'),
-    write(S, '        ;\n'),
-    write(S, '            atom_number(Args, Start),\n'),
-    write(S, '            End = Start\n'),
-    write(S, '        ),\n'),
-    write(S, '        length(Msgs, Len),\n'),
-    write(S, '        (Start >= 0, End < Len, Start =< End ->\n'),
-    write(S, '            delete_range(Msgs, Start, End, 0, NewMsgs),\n'),
-    write(S, '            retractall(conversation(_)),\n'),
-    write(S, '            assert(conversation(NewMsgs)),\n'),
-    write(S, '            Deleted is End - Start + 1,\n'),
-    write(S, '            format("Deleted ~w message(s).~n", [Deleted])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("Invalid range. Messages: 0-~w~n", [Len])\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /undo command
-    write(S, 'handle_action(call_handler(\'_handle_undo_command\', _), _) :-\n'),
-    write(S, '    (conversation_undo(OldMsgs) ->\n'),
-    write(S, '        conversation(Current),\n'),
-    write(S, '        retractall(conversation(_)),\n'),
-    write(S, '        assert(conversation(OldMsgs)),\n'),
-    write(S, '        retractall(conversation_undo(_)),\n'),
-    write(S, '        assert(conversation_undo(Current)),\n'),
-    write(S, '        length(OldMsgs, Len),\n'),
-    write(S, '        format("Restored conversation (~w messages). /undo again to swap back.~n", [Len])\n'),
-    write(S, '    ;\n'),
-    write(S, '        write("Nothing to undo."), nl\n'),
-    write(S, '    ).\n'),
-    %% /edit command — replace message content at index
-    write(S, 'handle_action(call_handler(\'_handle_edit_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        write("Usage: /edit <index> <new content>"), nl\n'),
-    write(S, '    ;\n'),
-    write(S, '        (sub_string(Args, SpIdx, 1, _, " ") ->\n'),
-    write(S, '            sub_string(Args, 0, SpIdx, _, IdxStr),\n'),
-    write(S, '            AfterSp is SpIdx + 1,\n'),
-    write(S, '            sub_string(Args, AfterSp, _, 0, NewContent)\n'),
-    write(S, '        ;\n'),
-    write(S, '            write("Usage: /edit <index> <new content>"), nl, fail\n'),
-    write(S, '        ),\n'),
-    write(S, '        atom_number(IdxStr, Idx),\n'),
-    write(S, '        conversation(Msgs),\n'),
-    write(S, '        length(Msgs, Len),\n'),
-    write(S, '        (Idx >= 0, Idx < Len ->\n'),
-    write(S, '            retractall(conversation_undo(_)),\n'),
-    write(S, '            assert(conversation_undo(Msgs)),\n'),
-    write(S, '            replace_at(Msgs, Idx, NewContent, 0, NewMsgs),\n'),
-    write(S, '            retractall(conversation(_)),\n'),
-    write(S, '            assert(conversation(NewMsgs)),\n'),
-    write(S, '            format("Edited message ~w.~n", [Idx])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("Invalid index. Messages: 0-~w~n", [Len])\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /replay command — re-send message at index
-    write(S, 'handle_action(call_handler(\'_handle_replay_command\', Args), Backend) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        write("Usage: /replay <index>"), nl\n'),
-    write(S, '    ;\n'),
-    write(S, '        atom_number(Args, Idx),\n'),
-    write(S, '        conversation(Msgs),\n'),
-    write(S, '        length(Msgs, Len),\n'),
-    write(S, '        (Idx >= 0, Idx < Len ->\n'),
-    write(S, '            nth0(Idx, Msgs, Msg),\n'),
-    write(S, '            get_dict(content, Msg, Content),\n'),
-    write(S, '            format("Replaying message ~w: ~w~n", [Idx, Content]),\n'),
-    write(S, '            process_input(Content, Backend)\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("Invalid index. Messages: 0-~w~n", [Len])\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /save command — save conversation to session file
-    write(S, 'handle_action(call_handler(\'_handle_save_command\', Args), Backend) :-\n'),
-    write(S, '    conversation(Msgs),\n'),
-    write(S, '    get_dict(name, Backend, BName),\n'),
-    write(S, '    length(Msgs, MsgCount),\n'),
-    write(S, '    get_time(Now), stamp_date_time(Now, DT, local),\n'),
-    write(S, '    format_time(atom(SessionId), "%Y%m%d_%H%M%S", DT),\n'),
-    write(S, '    (Args = "" -> Name = SessionId ; atom_string(Name, Args)),\n'),
-    write(S, '    sessions_dir(SDir),\n'),
-    write(S, '    make_directory_path(SDir),\n'),
-    write(S, '    format(atom(FileName), "~w/~w.json", [SDir, SessionId]),\n'),
-    write(S, '    SessionData = _{metadata: _{id: SessionId, name: Name, backend: BName, message_count: MsgCount}, messages: Msgs},\n'),
-    write(S, '    setup_call_cleanup(\n'),
-    write(S, '        open(FileName, write, Out),\n'),
-    write(S, '        json_write_dict(Out, SessionData, []),\n'),
-    write(S, '        close(Out)),\n'),
-    write(S, '    format("Saved session: ~w (~w messages)~n", [SessionId, MsgCount]).\n'),
-    %% /load command — load session from file
-    write(S, 'handle_action(call_handler(\'_handle_load_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        write("Usage: /load <session_id>"), nl\n'),
-    write(S, '    ;\n'),
-    write(S, '        atom_string(SessionId, Args),\n'),
-    write(S, '        sessions_dir(SDir),\n'),
-    write(S, '        format(atom(FileName), "~w/~w.json", [SDir, SessionId]),\n'),
-    write(S, '        (exists_file(FileName) ->\n'),
-    write(S, '            setup_call_cleanup(\n'),
-    write(S, '                open(FileName, read, In),\n'),
-    write(S, '                json_read_dict(In, Data),\n'),
-    write(S, '                close(In)),\n'),
-    write(S, '            get_dict(messages, Data, Msgs),\n'),
-    write(S, '            retractall(conversation(_)),\n'),
-    write(S, '            assert(conversation(Msgs)),\n'),
-    write(S, '            length(Msgs, Len),\n'),
-    write(S, '            (get_dict(metadata, Data, Meta), get_dict(name, Meta, Name) -> true ; Name = SessionId),\n'),
-    write(S, '            format("Loaded session: ~w (~w messages)~n", [Name, Len])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("Session not found: ~w~n", [SessionId])\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /sessions command — list saved sessions
-    write(S, 'handle_action(call_handler(\'_handle_sessions_command\', _), _) :-\n'),
-    write(S, '    sessions_dir(SDir),\n'),
-    write(S, '    (exists_directory(SDir) ->\n'),
-    write(S, '        directory_files(SDir, AllFiles),\n'),
-    write(S, '        include(json_file, AllFiles, JsonFiles),\n'),
-    write(S, '        (JsonFiles = [] ->\n'),
-    write(S, '            write("No saved sessions."), nl\n'),
-    write(S, '        ;\n'),
-    write(S, '            write("Saved sessions:"), nl,\n'),
-    write(S, '            maplist([F]>>(\n'),
-    write(S, '                format(atom(FullPath), "~w/~w", [SDir, F]),\n'),
-    write(S, '                catch((\n'),
-    write(S, '                    setup_call_cleanup(\n'),
-    write(S, '                        open(FullPath, read, In),\n'),
-    write(S, '                        json_read_dict(In, Data),\n'),
-    write(S, '                        close(In)),\n'),
-    write(S, '                    get_dict(metadata, Data, Meta),\n'),
-    write(S, '                    get_dict(id, Meta, Id),\n'),
-    write(S, '                    get_dict(name, Meta, Name),\n'),
-    write(S, '                    get_dict(message_count, Meta, MC),\n'),
-    write(S, '                    format("  ~w: ~w (~w msgs)~n", [Id, Name, MC])\n'),
-    write(S, '                ), _, (\n'),
-    write(S, '                    file_name_extension(Base, _, F),\n'),
-    write(S, '                    format("  ~w: (unreadable)~n", [Base])\n'),
-    write(S, '                ))\n'),
-    write(S, '            ), JsonFiles)\n'),
-    write(S, '        )\n'),
-    write(S, '    ; write("No saved sessions."), nl).\n'),
-    %% /format command — get/set context format
-    write(S, 'handle_action(call_handler(\'_handle_format_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        current_format(Fmt),\n'),
-    write(S, '        format("Current format: ~w~nAvailable: plain, markdown, json, xml~n", [Fmt])\n'),
-    write(S, '    ;\n'),
-    write(S, '        atom_string(NewFmt, Args),\n'),
-    write(S, '        (member(NewFmt, [plain, markdown, json, xml]) ->\n'),
-    write(S, '            retractall(current_format(_)),\n'),
-    write(S, '            assert(current_format(NewFmt)),\n'),
-    write(S, '            format("Format set to: ~w~n", [NewFmt])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("Unknown format: ~w~nAvailable: plain, markdown, json, xml~n", [NewFmt])\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /export command — export conversation to file
-    write(S, 'handle_action(call_handler(\'_handle_export_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        write("Usage: /export <path> (.md, .html, .json, .txt)"), nl\n'),
-    write(S, '    ;\n'),
-    write(S, '        atom_string(FilePath, Args),\n'),
-    write(S, '        conversation(Msgs),\n'),
-    write(S, '        length(Msgs, Len),\n'),
-    write(S, '        file_name_extension(_, Ext, FilePath),\n'),
-    write(S, '        (export_conversation(Ext, Msgs, Content) ->\n'),
-    write(S, '            setup_call_cleanup(\n'),
-    write(S, '                open(FilePath, write, Out),\n'),
-    write(S, '                write(Out, Content),\n'),
-    write(S, '                close(Out)),\n'),
-    write(S, '            format("Exported ~w messages to ~w~n", [Len, FilePath])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("Unsupported format: .~w (use .md, .html, .json, .txt)~n", [Ext])\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /search command — search across saved sessions
-    write(S, 'handle_action(call_handler(\'_handle_search_command\', Args), _) :-\n'),
-    write(S, '    (Args = "" ->\n'),
-    write(S, '        write("Usage: /search <query>"), nl\n'),
-    write(S, '    ;\n'),
-    write(S, '        sessions_dir(SDir),\n'),
-    write(S, '        (exists_directory(SDir) ->\n'),
-    write(S, '            directory_files(SDir, AllFiles),\n'),
-    write(S, '            include(json_file, AllFiles, JsonFiles),\n'),
-    write(S, '            atom_string(Query, Args),\n'),
-    write(S, '            format("Search results for \'~w\':~n", [Query]),\n'),
-    write(S, '            search_sessions(SDir, JsonFiles, Query, 0, Found),\n'),
-    write(S, '            (Found =:= 0 -> format("  No results for: ~w~n", [Query]) ; true)\n'),
-    write(S, '        ;\n'),
-    write(S, '            write("No sessions directory found."), nl\n'),
-    write(S, '        )\n'),
-    write(S, '    ).\n'),
-    %% /templates command (stub)
-    write(S, 'handle_action(call_handler(\'_handle_templates_command\', _), _) :-\n'),
-    write(S, '    write("No templates loaded."), nl.\n'),
-    %% Catch-all for unimplemented handlers
-    write(S, 'handle_action(not_a_command, _) :- write("Unknown command."), nl.\n'),
-    write(S, 'handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).\n'),
-    write(S, 'handle_action(call_handler(Handler, _Args), _) :-\n'),
-    write(S, '    format("Handler ~w not yet implemented in Prolog target.~n", [Handler]).\n\n'),
-    %% Helper for /history
-    write(S, '%% Show conversation messages from index Start\n'),
-    write(S, 'show_messages([], _, _).\n'),
-    write(S, 'show_messages([Msg|Rest], Start, Idx) :-\n'),
-    write(S, '    (Idx >= Start ->\n'),
-    write(S, '        get_dict(role, Msg, Role),\n'),
-    write(S, '        get_dict(content, Msg, Content),\n'),
-    write(S, '        (atom_length(Content, CLen), CLen > 80 ->\n'),
-    write(S, '            sub_atom(Content, 0, 80, _, Preview),\n'),
-    write(S, '            format("  [~w] ~w: ~w...~n", [Idx, Role, Preview])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("  [~w] ~w: ~w~n", [Idx, Role, Content])\n'),
-    write(S, '        )\n'),
-    write(S, '    ; true),\n'),
-    write(S, '    NextIdx is Idx + 1,\n'),
-    write(S, '    show_messages(Rest, Start, NextIdx).\n\n'),
-    %% Helper: delete messages in range [Start, End] by index
-    write(S, '%% Delete messages in index range [Start, End]\n'),
-    write(S, 'delete_range([], _, _, _, []).\n'),
-    write(S, 'delete_range([_|Rest], Start, End, Idx, Result) :-\n'),
-    write(S, '    Idx >= Start, Idx =< End, !,\n'),
-    write(S, '    NextIdx is Idx + 1,\n'),
-    write(S, '    delete_range(Rest, Start, End, NextIdx, Result).\n'),
-    write(S, 'delete_range([H|Rest], Start, End, Idx, [H|Result]) :-\n'),
-    write(S, '    NextIdx is Idx + 1,\n'),
-    write(S, '    delete_range(Rest, Start, End, NextIdx, Result).\n\n'),
-    %% Helper: replace message content at index
-    write(S, '%% Replace content of message at index Idx\n'),
-    write(S, 'replace_at([], _, _, _, []).\n'),
-    write(S, 'replace_at([Msg|Rest], Target, NewContent, Idx, [NewMsg|Result]) :-\n'),
-    write(S, '    Idx =:= Target, !,\n'),
-    write(S, '    put_dict(content, Msg, NewContent, NewMsg),\n'),
-    write(S, '    NextIdx is Idx + 1,\n'),
-    write(S, '    replace_at(Rest, Target, NewContent, NextIdx, Result).\n'),
-    write(S, 'replace_at([H|Rest], Target, NewContent, Idx, [H|Result]) :-\n'),
-    write(S, '    NextIdx is Idx + 1,\n'),
-    write(S, '    replace_at(Rest, Target, NewContent, NextIdx, Result).\n\n'),
-    %% Helper: filter JSON files
-    write(S, '%% Filter for .json files\n'),
-    write(S, 'json_file(F) :- file_name_extension(_, json, F).\n\n'),
-    %% Export conversation helpers
-    write(S, '%% Export conversation to different formats\n'),
-    write(S, 'export_conversation(json, Msgs, Content) :-\n'),
-    write(S, '    with_output_to(string(Content), json_write_dict(current_output, Msgs, [])).\n'),
-    write(S, 'export_conversation(md, Msgs, Content) :-\n'),
-    write(S, '    with_output_to(string(Content), (\n'),
-    write(S, '        write("# Conversation\\n\\n"),\n'),
-    write(S, '        maplist([Msg]>>(\n'),
-    write(S, '            get_dict(role, Msg, Role),\n'),
-    write(S, '            get_dict(content, Msg, C),\n'),
-    write(S, '            (Role = "user" -> write("**You:**") ; write("**Assistant:**")),\n'),
-    write(S, '            nl, nl, write(C), nl, nl\n'),
-    write(S, '        ), Msgs)\n'),
-    write(S, '    )).\n'),
-    write(S, 'export_conversation(txt, Msgs, Content) :-\n'),
-    write(S, '    with_output_to(string(Content), (\n'),
-    write(S, '        maplist([Msg]>>(\n'),
-    write(S, '            get_dict(role, Msg, Role),\n'),
-    write(S, '            get_dict(content, Msg, C),\n'),
-    write(S, '            format("~w: ~w~n~n", [Role, C])\n'),
-    write(S, '        ), Msgs)\n'),
-    write(S, '    )).\n'),
-    write(S, 'export_conversation(html, Msgs, Content) :-\n'),
-    write(S, '    with_output_to(string(Content), (\n'),
-    write(S, '        write("<html><body>\\n"),\n'),
-    write(S, '        maplist([Msg]>>(\n'),
-    write(S, '            get_dict(role, Msg, Role),\n'),
-    write(S, '            get_dict(content, Msg, C),\n'),
-    write(S, '            format("<div class=\\"~w\\"><b>~w:</b><p>~w</p></div>\\n", [Role, Role, C])\n'),
-    write(S, '        ), Msgs),\n'),
-    write(S, '        write("</body></html>\\n")\n'),
-    write(S, '    )).\n\n'),
-    %% Session search helpers
-    write(S, '%% Search across saved session files\n'),
-    write(S, 'search_sessions(_, [], _, Found, Found).\n'),
-    write(S, 'search_sessions(SDir, [F|Rest], Query, Acc, Found) :-\n'),
-    write(S, '    format(atom(Path), "~w/~w", [SDir, F]),\n'),
-    write(S, '    catch((\n'),
-    write(S, '        setup_call_cleanup(open(Path, read, In), json_read_dict(In, Data), close(In)),\n'),
-    write(S, '        get_dict(messages, Data, Msgs),\n'),
-    write(S, '        get_dict(metadata, Data, Meta),\n'),
-    write(S, '        get_dict(id, Meta, SessId),\n'),
-    write(S, '        search_messages(SessId, Msgs, Query, Acc, Acc1)\n'),
-    write(S, '    ), _, Acc1 = Acc),\n'),
-    write(S, '    search_sessions(SDir, Rest, Query, Acc1, Found).\n\n'),
-    write(S, 'search_messages(_, [], _, Acc, Acc).\n'),
-    write(S, 'search_messages(SessId, [Msg|Rest], Query, Acc, Found) :-\n'),
-    write(S, '    get_dict(content, Msg, Content),\n'),
-    write(S, '    get_dict(role, Msg, Role),\n'),
-    write(S, '    (sub_string(Content, _, _, _, Query) ->\n'),
-    write(S, '        (Role = "user" -> RLabel = "You" ; RLabel = "Asst"),\n'),
-    write(S, '        (string_length(Content, CL), CL > 60 ->\n'),
-    write(S, '            sub_string(Content, 0, 60, _, Snippet),\n'),
-    write(S, '            format("  [~w] ~w: ~w...~n", [SessId, RLabel, Snippet])\n'),
-    write(S, '        ;\n'),
-    write(S, '            format("  [~w] ~w: ~w~n", [SessId, RLabel, Content])\n'),
-    write(S, '        ),\n'),
-    write(S, '        Acc1 is Acc + 1\n'),
-    write(S, '    ; Acc1 = Acc),\n'),
-    write(S, '    search_messages(SessId, Rest, Query, Acc1, Found).\n\n'),
-    %% Token calibration
-    write(S, '%% update_token_calibration(+CharCount, +TokenCount) — adjust chars_per_token ratio\n'),
-    write(S, 'update_token_calibration(CharCount, TokenCount) :-\n'),
-    write(S, '    (TokenCount > 0, CharCount > 0 ->\n'),
-    write(S, '        chars_per_token(OldRatio),\n'),
-    write(S, '        Observed is CharCount / TokenCount,\n'),
-    write(S, '        NewRatio is 0.9 * OldRatio + 0.1 * Observed,\n'),
-    write(S, '        retractall(chars_per_token(_)),\n'),
-    write(S, '        assert(chars_per_token(NewRatio))\n'),
-    write(S, '    ; true).\n\n'),
-    %% Context sliding
-    write(S, '%% Context sliding — trim messages by count and estimated tokens\n'),
-    write(S, '%% Preserves leading system message if present\n'),
-    write(S, 'trim_context(Messages, Trimmed) :-\n'),
-    write(S, '    (Messages = [SysMsg|Rest], get_dict(role, SysMsg, "system") ->\n'),
-    write(S, '        HasSys = true, Body = Rest\n'),
-    write(S, '    ;   HasSys = false, Body = Messages),\n'),
-    write(S, '    context_max_messages(MaxMsgs),\n'),
-    write(S, '    (HasSys = true -> EffMax is MaxMsgs - 1 ; EffMax = MaxMsgs),\n'),
-    write(S, '    length(Body, Len),\n'),
-    write(S, '    (Len > EffMax ->\n'),
-    write(S, '        Drop is Len - EffMax,\n'),
-    write(S, '        length(Prefix, Drop),\n'),
-    write(S, '        append(Prefix, Kept, Body)\n'),
-    write(S, '    ;   Kept = Body),\n'),
-    write(S, '    context_max_tokens(MaxTokens),\n'),
-    write(S, '    (HasSys = true ->\n'),
-    write(S, '        msg_tokens(SysMsg, 0, SysTok),\n'),
-    write(S, '        Budget is MaxTokens - SysTok,\n'),
-    write(S, '        trim_by_tokens(Kept, Budget, TrimmedBody),\n'),
-    write(S, '        Trimmed = [SysMsg|TrimmedBody]\n'),
-    write(S, '    ;   trim_by_tokens(Kept, MaxTokens, Trimmed)).\n\n'),
-    write(S, 'trim_by_tokens(Msgs, MaxTokens, Trimmed) :-\n'),
-    write(S, '    estimate_tokens(Msgs, Total),\n'),
-    write(S, '    (Total > MaxTokens ->\n'),
-    write(S, '        Msgs = [_|Rest],\n'),
-    write(S, '        trim_by_tokens(Rest, MaxTokens, Trimmed)\n'),
-    write(S, '    ; Trimmed = Msgs).\n\n'),
-    write(S, 'estimate_tokens(Msgs, Total) :-\n'),
-    write(S, '    foldl(msg_tokens, Msgs, 0, Total).\n\n'),
-    write(S, 'msg_tokens(Msg, Acc, Total) :-\n'),
-    write(S, '    (get_dict(content, Msg, Content) ->\n'),
-    write(S, '        atom_length(Content, Len),\n'),
-    write(S, '        chars_per_token(CPT),\n'),
-    write(S, '        Tokens is round(Len / CPT)\n'),
-    write(S, '    ; Tokens = 0),\n'),
-    write(S, '    Total is Acc + Tokens.\n'),
+    agent_loop_components:emit_prolog_module_skeleton(S, agent_loop, [
+        exports([agent_loop/1, agent_loop/0]),
+        use_modules([config, tools, backends, commands, security, costs,
+                     library(json), library(filesex)]),
+        dynamic([conversation/1, conversation_undo/1, max_iterations/1,
+                 current_backend/1, current_format/1, streaming/1,
+                 context_max_tokens/1, context_max_messages/1])
+    ]),
+    %% Agent loop implementation via prolog_fragment
+    write_prolog(S, agent_loop_init_state),
+    write_prolog(S, agent_loop_entry),
+    write_prolog(S, agent_loop_repl_core),
+    write_prolog(S, agent_loop_process_input),
+    write_prolog(S, agent_loop_response),
+    write_prolog(S, agent_loop_actions),
+    write_prolog(S, agent_loop_helpers),
+    write_prolog(S, agent_loop_export_search),
+    write_prolog(S, agent_loop_context),
     close(S),
     format('  Generated prolog/agent_loop.pl~n', []).
 
@@ -4433,6 +3238,1293 @@ confirm_destructive(ToolName, Approved) :-
         (member(Response, ["y", "Y", "yes"]) -> Approved = true ; Approved = false)
     ; Approved = true).
 ').
+
+%% --- Prolog Fragments: backends ---
+
+prolog_fragment(backends_create_backend, '%% Create a backend configuration from factory specs
+create_backend(Name, Options, Backend) :-
+    (backend_factory(Name, Spec) ->
+        Backend = backend{name: Name, spec: Spec, options: Options}
+    ; format(atom(Err), "Unknown backend: ~w", [Name]),
+      throw(error(Err))).
+
+').
+
+prolog_fragment(backends_retry_config, '%% retry_config(MaxAttempts, BaseDelay, MaxDelay)
+retry_config(3, 1.0, 30.0).
+
+%% is_retryable(+Error) — errors worth retrying
+is_retryable(error(existence_error(url, _), _)).
+is_retryable(error(socket_error(_), _)).
+is_retryable(error(timeout_error, _)).
+is_retryable(error(_, context(_, status(429, _)))).
+is_retryable(error(_, context(_, status(500, _)))).
+is_retryable(error(_, context(_, status(502, _)))).
+is_retryable(error(_, context(_, status(503, _)))).
+
+').
+
+prolog_fragment(backends_format_api_error, '%% format_api_error(+Error, -Message) — human-readable error description
+format_api_error(error(_, context(_, status(429, _))), "Rate limited (429). Will retry.") :- !.
+format_api_error(error(_, context(_, status(500, _))), "Internal server error (500)") :- !.
+format_api_error(error(_, context(_, status(502, _))), "Bad gateway (502)") :- !.
+format_api_error(error(_, context(_, status(503, _))), "Service unavailable (503)") :- !.
+format_api_error(error(existence_error(url, URL), _), Msg) :-
+    !, format(atom(Msg), "Connection failed: ~w", [URL]).
+format_api_error(error(socket_error(E), _), Msg) :-
+    !, format(atom(Msg), "Socket error: ~w", [E]).
+format_api_error(error(timeout_error, _), "Request timed out") :- !.
+format_api_error(Error, Msg) :-
+    format(atom(Msg), "Request error: ~w", [Error]).
+
+').
+
+prolog_fragment(backends_retry_call, '%% retry_call(+Goal, +Options) — retry with exponential backoff + jitter
+retry_call(Goal, Options) :-
+    retry_config(DefaultMax, DefaultBase, DefaultMaxD),
+    (member(max_attempts(Max), Options) -> true ; Max = DefaultMax),
+    (member(base_delay(Base), Options) -> true ; Base = DefaultBase),
+    (member(max_delay(MaxD), Options) -> true ; MaxD = DefaultMaxD),
+    retry_call_(Goal, 1, Max, Base, MaxD).
+
+retry_call_(Goal, Attempt, Max, Base, MaxD) :-
+    catch(
+        call(Goal),
+        Error,
+        (   Attempt < Max,
+            is_retryable(Error) ->
+            Delay is min(MaxD, Base * (2 ^ (Attempt - 1))),
+            random(Jitter),
+            ActualDelay is Delay * (0.5 + Jitter),
+            (format_api_error(Error, ErrMsg) -> true ; ErrMsg = "unknown"),
+            format("[~w — Retry ~w/~w in ~2fs]~n", [ErrMsg, Attempt, Max, ActualDelay]),
+            sleep(ActualDelay),
+            NextAttempt is Attempt + 1,
+            retry_call_(Goal, NextAttempt, Max, Base, MaxD)
+        ;   throw(Error)
+        )
+    ).
+
+').
+
+prolog_fragment(backends_send_request, '%% Send a request to a backend (with retry) and normalize the response
+send_request(Backend, Messages, Tools, Response) :-
+    retry_call(
+        send_request_inner(Backend, Messages, Tools, Response),
+        []).
+
+send_request_inner(Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(resolve_type(Type), Spec),
+    catch(
+        (send_request_raw(Type, Backend, Messages, Tools, RawResponse),
+         extract_response(RawResponse, Response)),
+        Error,
+        (format_api_error(Error, ErrMsg),
+         format("[Error] ~w~n", [ErrMsg]),
+         Response = _{content: ErrMsg, tool_calls: [], usage: _{input_tokens: 0, output_tokens: 0}})).
+
+').
+
+prolog_fragment(backends_send_request_raw_api, '%% API backend: HTTP JSON request
+send_request_raw(api, Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(endpoint(URL), Spec),
+    member(model(Model), Spec),
+    get_dict(options, Backend, Opts),
+    (member(api_key(Key), Opts) -> true ; Key = none),
+    (member(auth_header(AuthH), Spec) -> true ; AuthH = "Authorization"),
+    (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),
+    atom_concat(AuthP, Key, AuthVal),
+    Body = json(_{model: Model, messages: Messages, tools: Tools}),
+    setup_call_cleanup(
+        http_open(URL, In, [
+            method(post),
+            request_header(AuthH=AuthVal),
+            request_header(''Content-Type''=''application/json''),
+            post(Body)
+        ]),
+        json_read_dict(In, Response),
+        close(In)).
+send_request_raw(openrouter, B, M, T, R) :- send_request_raw(api, B, M, T, R).
+send_request_raw(api_local, B, M, T, R) :- send_request_raw(api, B, M, T, R).
+
+').
+
+prolog_fragment(backends_send_request_raw_cli, '%% CLI backend: subprocess
+send_request_raw(cli, Backend, Messages, _Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(command(Cmd), Spec),
+    member(args(BaseArgs), Spec),
+    last(Messages, LastMsg),
+    get_dict(content, LastMsg, Prompt),
+    append(BaseArgs, [Prompt], AllArgs),
+    setup_call_cleanup(
+        process_create(path(Cmd), AllArgs,
+            [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),
+        (read_string(Out, _, StdOut),
+         read_string(Err, _, StdErr),
+         process_wait(PID, Status)),
+        (close(Out), close(Err))),
+    (Status = exit(0) ->
+        Response = _{content: StdOut, tool_calls: []}
+    ; format(atom(ErrMsg), "Backend exited with ~w: ~w", [Status, StdErr]),
+        Response = _{content: ErrMsg, tool_calls: []}).
+
+').
+
+prolog_fragment(backends_extract_response, '%% Extract and normalize API response to _{content, tool_calls, usage}
+extract_response(Raw, Normalized) :-
+    extract_usage(Raw, Usage),
+    (get_dict(choices, Raw, Choices) ->
+        %% OpenAI/OpenRouter format
+        Choices = [FirstChoice|_],
+        get_dict(message, FirstChoice, Msg),
+        (get_dict(content, Msg, Content0) -> true ; Content0 = ""),
+        (Content0 = null -> Content = "" ; Content = Content0),
+        (get_dict(tool_calls, Msg, TCs) ->
+            maplist(normalize_openai_tc, TCs, ToolCalls)
+        ; ToolCalls = []),
+        Normalized = _{content: Content, tool_calls: ToolCalls, usage: Usage}
+    ; get_dict(content, Raw, ContentList), is_list(ContentList) ->
+        %% Anthropic format — content is a list of blocks
+        extract_anthropic(ContentList, Content, ToolCalls),
+        Normalized = _{content: Content, tool_calls: ToolCalls, usage: Usage}
+    ; %% Already normalized (e.g., CLI backend)
+        (get_dict(content, Raw, _) -> Normalized = Raw.put(usage, Usage)
+        ; Normalized = Raw.put(usage, Usage))).
+
+%% Normalize OpenAI tool call format
+normalize_openai_tc(TC, Normalized) :-
+    get_dict(id, TC, Id),
+    get_dict(function, TC, Func),
+    get_dict(name, Func, Name),
+    get_dict(arguments, Func, ArgsJson),
+    (is_dict(ArgsJson) -> Args = ArgsJson
+    ; atom_to_term(ArgsJson, Args, _)),
+    Normalized = _{id: Id, name: Name, arguments: Args}.
+
+%% Extract Anthropic content blocks
+extract_anthropic(Blocks, Content, ToolCalls) :-
+    findall(Text, (
+        member(B, Blocks), get_dict(type, B, "text"),
+        get_dict(text, B, Text)
+    ), Texts),
+    atomic_list_concat(Texts, Content),
+    findall(TC, (
+        member(B, Blocks), get_dict(type, B, "tool_use"),
+        get_dict(id, B, Id), get_dict(name, B, Name),
+        get_dict(input, B, Input),
+        TC = _{id: Id, name: Name, arguments: Input}
+    ), ToolCalls).
+
+%% Extract usage/token counts from API response
+extract_usage(Raw, Usage) :-
+    (get_dict(usage, Raw, U) ->
+        (get_dict(prompt_tokens, U, InTok) -> true
+        ; get_dict(input_tokens, U, InTok) -> true
+        ; InTok = 0),
+        (get_dict(completion_tokens, U, OutTok) -> true
+        ; get_dict(output_tokens, U, OutTok) -> true
+        ; OutTok = 0),
+        Usage = _{input_tokens: InTok, output_tokens: OutTok}
+    ;
+        Usage = _{input_tokens: 0, output_tokens: 0}
+    ).
+
+').
+
+prolog_fragment(backends_streaming_dispatch, '%% Send a streaming request (falls back to send_request if unsupported)
+send_request_streaming(Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(resolve_type(Type), Spec),
+    (streaming_capable(Type) ->
+        send_request_streaming_raw(Type, Backend, Messages, Tools, Response)
+    ;
+        send_request(Backend, Messages, Tools, Response)
+    ).
+
+').
+
+prolog_fragment(backends_streaming_ndjson, '%% Streaming for api_local (Ollama): NDJSON format
+%% Each line is a JSON object: {"message":{"content":"token"},"done":false}
+send_request_streaming_raw(api_local, Backend, Messages, _Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(endpoint(BaseURL), Spec),
+    get_dict(options, Backend, Opts),
+    (member(model(Model), Opts) -> true
+    ; member(model(Model), Spec) -> true
+    ; Model = "llama3"),
+    Body = json(_{model: Model, messages: Messages, stream: true}),
+    setup_call_cleanup(
+        http_open(BaseURL, In, [
+            method(post),
+            request_header(''Content-Type''=''application/json''),
+            post(Body)
+        ]),
+        read_ndjson_stream(In, Content, Usage),
+        close(In)),
+    Response = _{content: Content, tool_calls: [], usage: Usage}.
+
+%% Read NDJSON stream line by line, printing tokens as they arrive
+read_ndjson_stream(In, Content, Usage) :-
+    read_ndjson_stream(In, [], 0, 0, Content, Usage).
+
+read_ndjson_stream(In, Acc, InToks, OutToks, Content, Usage) :-
+    (at_end_of_stream(In) ->
+        reverse(Acc, Tokens),
+        atomic_list_concat(Tokens, Content),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
+    ;
+        read_line_to_string(In, Line),
+        (Line = end_of_file ->
+            reverse(Acc, Tokens),
+            atomic_list_concat(Tokens, Content),
+            Usage = _{input_tokens: InToks, output_tokens: OutToks}
+        ;
+            catch(
+                (open_string(Line, StrIn),
+                 json_read_dict(StrIn, Dict),
+                 close(StrIn)),
+                _, (Dict = _{done: false})),
+            %% Check for usage in final chunk
+            (get_dict(done, Dict, true) ->
+                (get_dict(prompt_eval_count, Dict, PEC) -> NewIn = PEC ; NewIn = InToks),
+                (get_dict(eval_count, Dict, EC) -> NewOut = EC ; NewOut = OutToks),
+                reverse(Acc, Tokens2),
+                atomic_list_concat(Tokens2, Content),
+                Usage = _{input_tokens: NewIn, output_tokens: NewOut}
+            ;
+                (get_dict(message, Dict, Msg), get_dict(content, Msg, Token) -> true ; Token = ""),
+                (Token \\= "" ->
+                    write(Token), flush_output,
+                    read_ndjson_stream(In, [Token|Acc], InToks, OutToks, Content, Usage)
+                ;
+                    read_ndjson_stream(In, Acc, InToks, OutToks, Content, Usage)
+                )
+            )
+        )
+    ).
+
+').
+
+prolog_fragment(backends_streaming_openai, '%% SSE streaming for API backends — dispatches by auth type
+send_request_streaming_raw(api, Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    (member(auth_header("x-api-key"), Spec) ->
+        send_request_streaming_anthropic(Backend, Messages, Tools, Response)
+    ;
+        send_request_streaming_openai(Backend, Messages, Tools, Response)
+    ).
+
+%% OpenRouter delegates to api SSE
+send_request_streaming_raw(openrouter, B, M, T, R) :-
+    send_request_streaming_raw(api, B, M, T, R).
+
+%% OpenAI-format SSE streaming
+send_request_streaming_openai(Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(endpoint(URL), Spec),
+    member(model(Model), Spec),
+    get_dict(options, Backend, Opts),
+    (member(api_key(Key), Opts) -> true ; Key = none),
+    (member(auth_header(AuthH), Spec) -> true ; AuthH = "Authorization"),
+    (member(auth_prefix(AuthP), Spec) -> true ; AuthP = "Bearer "),
+    atom_concat(AuthP, Key, AuthVal),
+    Body = json(_{model: Model, messages: Messages, tools: Tools,
+                  stream: true, stream_options: _{include_usage: true}}),
+    setup_call_cleanup(
+        http_open(URL, In, [
+            method(post),
+            request_header(AuthH=AuthVal),
+            request_header(''Content-Type''=''application/json''),
+            post(Body)
+        ]),
+        read_sse_stream(In, Content, ToolCalls, Usage),
+        close(In)),
+    Response = _{content: Content, tool_calls: ToolCalls, usage: Usage}.
+
+').
+
+prolog_fragment(backends_streaming_anthropic, '%% Anthropic-format SSE streaming
+send_request_streaming_anthropic(Backend, Messages, Tools, Response) :-
+    get_dict(spec, Backend, Spec),
+    member(endpoint(URL), Spec),
+    member(model(Model), Spec),
+    get_dict(options, Backend, Opts),
+    (member(api_key(Key), Opts) -> true ; Key = none),
+    %% Extract system prompt from messages
+    (Messages = [SysMsg|RestMsgs],
+     get_dict(role, SysMsg, "system"),
+     get_dict(content, SysMsg, SysContent) ->
+        System = SysContent, UserMsgs = RestMsgs
+    ;
+        System = "", UserMsgs = Messages),
+    %% Build tool definitions for Anthropic format
+    (Tools \\= [] ->
+        maplist([T, AT]>>(
+            get_dict(name, T, TN),
+            get_dict(description, T, TD),
+            (get_dict(input_schema, T, TIS) -> true ; TIS = _{type: "object", properties: _{}}),
+            AT = _{name: TN, description: TD, input_schema: TIS}
+        ), Tools, AnthTools),
+        Body0 = _{model: Model, messages: UserMsgs, tools: AnthTools,
+                   max_tokens: 4096, stream: true}
+    ;
+        Body0 = _{model: Model, messages: UserMsgs,
+                   max_tokens: 4096, stream: true}),
+    (System \\= "" -> Body = Body0.put(system, System) ; Body = Body0),
+    setup_call_cleanup(
+        http_open(URL, In, [
+            method(post),
+            request_header(''x-api-key''=Key),
+            request_header(''anthropic-version''=''2023-06-01''),
+            request_header(''Content-Type''=''application/json''),
+            post(json(Body))
+        ]),
+        read_anthropic_sse_stream(In, Content, ToolCalls, Usage),
+        close(In)),
+    Response = _{content: Content, tool_calls: ToolCalls, usage: Usage}.
+
+%% Anthropic SSE stream parser
+read_anthropic_sse_stream(In, Content, ToolCalls, Usage) :-
+    read_anthropic_sse_stream(In, [], [], 0, 0, [], Content, ToolCalls, Usage).
+
+read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                          Content, ToolCalls, Usage) :-
+    (at_end_of_stream(In) ->
+        reverse(TokAcc, Tokens),
+        atomic_list_concat(Tokens, Content),
+        reverse(TCAcc, ToolCalls),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
+    ;
+        read_line_to_string(In, Line),
+        (Line = end_of_file ->
+            reverse(TokAcc, Tokens),
+            atomic_list_concat(Tokens, Content),
+            reverse(TCAcc, ToolCalls),
+            Usage = _{input_tokens: InToks, output_tokens: OutToks}
+        ; sub_string(Line, 0, 6, _, "data: ") ->
+            sub_string(Line, 6, _, 0, Payload),
+            catch(
+                (open_string(Payload, StrIn),
+                 json_read_dict(StrIn, Evt),
+                 close(StrIn)),
+                _, (Evt = null)),
+            (Evt \\= null ->
+                handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                       Content, ToolCalls, Usage)
+            ;
+                read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                          Content, ToolCalls, Usage)
+            )
+        ;
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                      Content, ToolCalls, Usage)
+        )
+    ).
+
+%% Handle individual Anthropic SSE events
+handle_anthropic_event(Evt, In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                       Content, ToolCalls, Usage) :-
+    get_dict(type, Evt, Type),
+    (Type = "message_start" ->
+        (get_dict(message, Evt, Msg),
+         get_dict(usage, Msg, MUsage),
+         get_dict(input_tokens, MUsage, NewInToks) -> true
+        ; NewInToks = InToks),
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, NewInToks, OutToks, CurTool,
+                                  Content, ToolCalls, Usage)
+    ; Type = "content_block_start" ->
+        get_dict(content_block, Evt, CB),
+        (get_dict(type, CB, "tool_use") ->
+            get_dict(id, CB, TId),
+            get_dict(name, CB, TName),
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks,
+                                      tool_state(TId, TName, []),
+                                      Content, ToolCalls, Usage)
+        ;
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                      Content, ToolCalls, Usage)
+        )
+    ; Type = "content_block_delta" ->
+        get_dict(delta, Evt, Delta),
+        get_dict(type, Delta, DType),
+        (DType = "text_delta" ->
+            get_dict(text, Delta, Token),
+            write(Token), flush_output,
+            read_anthropic_sse_stream(In, [Token|TokAcc], TCAcc, InToks, OutToks, CurTool,
+                                      Content, ToolCalls, Usage)
+        ; DType = "input_json_delta" ->
+            get_dict(partial_json, Delta, Fragment),
+            (CurTool = tool_state(CTId, CTName, CTFrags) ->
+                NewCurTool = tool_state(CTId, CTName, [Fragment|CTFrags])
+            ; NewCurTool = CurTool),
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, NewCurTool,
+                                      Content, ToolCalls, Usage)
+        ;
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                      Content, ToolCalls, Usage)
+        )
+    ; Type = "content_block_stop" ->
+        (CurTool = tool_state(CSId, CSName, CSFrags) ->
+            reverse(CSFrags, FragsOrdered),
+            atomic_list_concat(FragsOrdered, JsonStr),
+            (JsonStr = "" -> Args = _{}
+            ; catch(
+                (open_string(JsonStr, JIn), json_read_dict(JIn, Args), close(JIn)),
+                _, Args = _{})),
+            TC = _{id: CSId, name: CSName, arguments: Args},
+            read_anthropic_sse_stream(In, TokAcc, [TC|TCAcc], InToks, OutToks, [],
+                                      Content, ToolCalls, Usage)
+        ;
+            read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, [],
+                                      Content, ToolCalls, Usage)
+        )
+    ; Type = "message_delta" ->
+        (get_dict(usage, Evt, DUsage),
+         get_dict(output_tokens, DUsage, NewOutToks) -> true
+        ; NewOutToks = OutToks),
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, NewOutToks, CurTool,
+                                  Content, ToolCalls, Usage)
+    ; Type = "message_stop" ->
+        reverse(TokAcc, Tokens),
+        atomic_list_concat(Tokens, Content),
+        reverse(TCAcc, ToolCalls),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
+    ;
+        read_anthropic_sse_stream(In, TokAcc, TCAcc, InToks, OutToks, CurTool,
+                                  Content, ToolCalls, Usage)
+    ).
+
+').
+
+prolog_fragment(backends_tc_delta, '%% Accumulate OpenAI tool call deltas by index
+accumulate_tc_delta(DeltaTC, Acc, NewAcc) :-
+    get_dict(index, DeltaTC, Idx),
+    (get_dict(function, DeltaTC, Func) -> true ; Func = _{}),
+    (get_dict(id, DeltaTC, Id0) -> true ; Id0 = none),
+    (get_dict(name, Func, Name0) -> true ; Name0 = none),
+    (get_dict(arguments, Func, ArgFrag) -> true ; ArgFrag = ""),
+    length(Acc, CurLen),
+    (Idx < CurLen ->
+        nth0(Idx, Acc, tc_state(ExId, ExName, ExFrags)),
+        (Id0 \\= none -> NId = Id0 ; NId = ExId),
+        (Name0 \\= none -> NName = Name0 ; NName = ExName),
+        (ArgFrag \\= "" -> NFrags = [ArgFrag|ExFrags] ; NFrags = ExFrags),
+        replace_nth0(Idx, Acc, tc_state(NId, NName, NFrags), NewAcc)
+    ;
+        (Id0 \\= none -> FId = Id0 ; FId = ""),
+        (Name0 \\= none -> FName = Name0 ; FName = ""),
+        (ArgFrag \\= "" -> Frags0 = [ArgFrag] ; Frags0 = []),
+        append(Acc, [tc_state(FId, FName, Frags0)], NewAcc)
+    ).
+
+replace_nth0(0, [_|Rest], Elem, [Elem|Rest]) :- !.
+replace_nth0(N, [H|Rest], Elem, [H|Result]) :-
+    N > 0, N1 is N - 1,
+    replace_nth0(N1, Rest, Elem, Result).
+
+%% Finalize tool call accumulators into normalized dicts
+finalize_tc_acc([], []) :- !.
+finalize_tc_acc([tc_state(_,_,_)|_] = Acc, ToolCalls) :- !,
+    maplist(finalize_one_tc, Acc, ToolCalls).
+finalize_tc_acc(Acc, ToolCalls) :- reverse(Acc, ToolCalls).
+
+finalize_one_tc(tc_state(Id, Name, RevFrags), TC) :-
+    reverse(RevFrags, Frags),
+    atomic_list_concat(Frags, JsonStr),
+    (JsonStr = "" -> Args = _{}
+    ; catch(
+        (open_string(JsonStr, JIn), json_read_dict(JIn, Args), close(JIn)),
+        _, Args = _{})),
+    TC = _{id: Id, name: Name, arguments: Args}.
+
+').
+
+prolog_fragment(backends_sse_parser, '%% SSE stream parser — reads "data: <json>" lines
+read_sse_stream(In, Content, ToolCalls, Usage) :-
+    read_sse_stream(In, [], [], 0, 0, Content, ToolCalls, Usage).
+
+read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage) :-
+    (at_end_of_stream(In) ->
+        reverse(TokenAcc, Tokens),
+        atomic_list_concat(Tokens, Content),
+        finalize_tc_acc(TCAcc, ToolCalls),
+        Usage = _{input_tokens: InToks, output_tokens: OutToks}
+    ;
+        read_line_to_string(In, Line),
+        (Line = end_of_file ->
+            reverse(TokenAcc, Tokens),
+            atomic_list_concat(Tokens, Content),
+            finalize_tc_acc(TCAcc, ToolCalls),
+            Usage = _{input_tokens: InToks, output_tokens: OutToks}
+        ; sub_string(Line, 0, 6, _, "data: ") ->
+            sub_string(Line, 6, _, 0, Payload),
+            (Payload = "[DONE]" ->
+                reverse(TokenAcc, Tokens),
+                atomic_list_concat(Tokens, Content),
+                finalize_tc_acc(TCAcc, ToolCalls),
+                Usage = _{input_tokens: InToks, output_tokens: OutToks}
+            ;
+                catch(
+                    (open_string(Payload, StrIn),
+                     json_read_dict(StrIn, Chunk),
+                     close(StrIn)),
+                    _, (Chunk = null)),
+                %% Check for usage in chunk
+                (Chunk \\= null, get_dict(usage, Chunk, CUsage) ->
+                    (get_dict(prompt_tokens, CUsage, NIn) -> true ; NIn = InToks),
+                    (get_dict(completion_tokens, CUsage, NOut) -> true ; NOut = OutToks),
+                    read_sse_stream(In, TokenAcc, TCAcc, NIn, NOut, Content, ToolCalls, Usage)
+                ; Chunk \\= null,
+                  get_dict(choices, Chunk, Choices),
+                  Choices = [Choice|_],
+                  get_dict(delta, Choice, Delta) ->
+                    (get_dict(content, Delta, Token), Token \\= null ->
+                        write(Token), flush_output,
+                        read_sse_stream(In, [Token|TokenAcc], TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
+                    ; get_dict(tool_calls, Delta, DeltaTCs) ->
+                        foldl(accumulate_tc_delta, DeltaTCs, TCAcc, NewTCAcc),
+                        read_sse_stream(In, TokenAcc, NewTCAcc, InToks, OutToks, Content, ToolCalls, Usage)
+                    ;
+                        read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
+                    )
+                ;
+                    read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
+                )
+            )
+        ;
+            %% Skip non-data lines
+            read_sse_stream(In, TokenAcc, TCAcc, InToks, OutToks, Content, ToolCalls, Usage)
+        )
+    ).
+').
+
+%% --- Prolog Fragments: agent_loop ---
+
+prolog_fragment(agent_loop_init_state, 'conversation([]).
+max_iterations(0).
+current_format(plain).
+streaming(false).
+context_max_tokens(100000).
+context_max_messages(50).
+:- dynamic chars_per_token/1.
+chars_per_token(4.0).
+:- dynamic ansi_enabled/1.
+ansi_enabled(true).
+:- initialization((getenv(''NO_COLOR'', _) -> retractall(ansi_enabled(_)), assert(ansi_enabled(false)) ; true)).
+ansi_code(reset,   "\\033[0m").
+ansi_code(bold,    "\\033[1m").
+ansi_code(dim,     "\\033[2m").
+ansi_code(red,     "\\033[31m").
+ansi_code(green,   "\\033[32m").
+ansi_code(yellow,  "\\033[33m").
+ansi_code(cyan,    "\\033[36m").
+ansi_format(Style, Fmt, Args) :-
+    (ansi_enabled(true), ansi_code(Style, Code), ansi_code(reset, Reset) ->
+        atom_string(CodeA, Code), atom_string(ResetA, Reset),
+        atomic_list_concat([CodeA, Fmt, ResetA], FullFmt),
+        format(FullFmt, Args)
+    ; format(Fmt, Args)).
+
+:- det(sessions_dir/1).
+:- det(agent_loop/0).
+:- det(agent_loop/1).
+:- det(read_input_smart/1).
+:- det(process_input/2).
+:- det(handle_response/4).
+:- det(handle_tool_calls/4).
+
+sessions_dir(Dir) :- expand_file_name("~/.agent-loop/sessions", [Dir]).
+
+').
+
+prolog_fragment(agent_loop_entry, '%% Entry point with default options
+agent_loop :- agent_loop([]).
+
+%% Entry point with CLI args
+agent_loop(Args) :-
+    parse_cli_args(Args, Options),
+    (member(backend(BName), Options), BName \\= none ->
+        true
+    ; BName = coro),
+    create_backend(BName, Options, Backend),
+    retractall(current_backend(_)),
+    assert(current_backend(Backend)),
+    (member(security_profile(Prof), Options), Prof \\= none ->
+        set_security_profile(Prof)
+    ; true),
+    cost_tracker_init(main),
+    ansi_format(bold, "uwsal — Prolog agent loop (backend: ~w)~n", [BName]),
+    ansi_format(dim, "Type /help for commands, /exit to quit.~n", []),
+    repl_loop.
+
+').
+
+prolog_fragment(agent_loop_repl_core, '%% Main read-eval-print loop
+repl_loop :-
+    current_backend(Backend),
+    write("> "),
+    flush_output,
+    read_input_smart(Input),
+    (Input = "/exit" -> write("Goodbye."), nl
+    ; Input = "" -> repl_loop
+    ; process_input(Input, Backend) -> repl_loop
+    ; repl_loop).
+
+%% Smart input reader with multi-line support
+read_input_smart(Input) :-
+    read_line_to_string(user_input, Line),
+    (Line = end_of_file -> Input = "/exit"
+    ; is_multiline_trigger(Line) ->
+        get_multiline_delimiter(Line, Delim),
+        read_multiline(Delim, [Line], Input)
+    ; atom_string(Input, Line)
+    ).
+
+is_multiline_trigger(Line) :-
+    (sub_string(Line, 0, 3, _, "```")
+    ; sub_string(Line, 0, 3, _, "<<<")
+    ; string_concat(_, "\\\\", Line)
+    ).
+
+get_multiline_delimiter(Line, Delim) :-
+    (sub_string(Line, 0, 3, _, "```") -> Delim = "```"
+    ; sub_string(Line, 0, 3, _, "<<<") -> Delim = "<<<"
+    ; Delim = continuation
+    ).
+
+read_multiline(continuation, Acc, Input) :-
+    last(Acc, LastLine),
+    (string_concat(_, "\\\\", LastLine) ->
+        read_line_to_string(user_input, Next),
+        (Next = end_of_file ->
+            atomic_list_concat(Acc, "\\n", Input)
+        ;
+            append(Acc, [Next], Acc2),
+            read_multiline(continuation, Acc2, Input)
+        )
+    ;
+        atomic_list_concat(Acc, "\\n", Input)
+    ).
+read_multiline(Delim, Acc, Input) :-
+    Delim \\= continuation,
+    read_line_to_string(user_input, Next),
+    (Next = end_of_file ->
+        atomic_list_concat(Acc, "\\n", Input)
+    ; Next = Delim ->
+        append(Acc, [Next], AllLines),
+        atomic_list_concat(AllLines, "\\n", Input)
+    ;
+        append(Acc, [Next], Acc2),
+        read_multiline(Delim, Acc2, Input)
+    ).
+
+').
+
+prolog_fragment(agent_loop_process_input, '%% Process user input: slash command or LLM request
+process_input(Input, Backend) :-
+    (sub_string(Input, 0, 1, _, "/") ->
+        %% Slash command — split into command and args
+        (sub_string(Input, SpaceIdx, 1, _, " ") ->
+            sub_string(Input, 0, SpaceIdx, _, CmdPart),
+            AfterSpace is SpaceIdx + 1,
+            sub_string(Input, AfterSpace, _, 0, ArgsPart)
+        ;
+            CmdPart = Input, ArgsPart = ""
+        ),
+        atom_string(CmdAtom, CmdPart),
+        atom_string(ArgsAtom, ArgsPart),
+        handle_slash_command(CmdAtom, ArgsAtom, Action),
+        handle_action(Action, Backend)
+    ;
+        %% LLM request
+        conversation(History),
+        UserMsg = _{role: "user", content: Input},
+        append(History, [UserMsg], Messages0),
+        trim_context(Messages0, Messages),
+        %% Build tool specs
+        findall(ToolSpec, (
+            tool_spec(TName, TProps),
+            member(description(TDesc), TProps),
+            build_tool_input_schema(TName, TSchema),
+            ToolSpec = _{name: TName, description: TDesc, input_schema: TSchema}
+        ), ToolSpecs),
+        %% Check if streaming is enabled and backend supports it
+        get_dict(spec, Backend, BSpec),
+        member(resolve_type(RT), BSpec),
+        (streaming(true), streaming_capable(RT) ->
+            write("Assistant: "), flush_output,
+            send_request_streaming(Backend, Messages, ToolSpecs, Response),
+            nl, Streamed = true
+        ;
+            send_request(Backend, Messages, ToolSpecs, Response),
+            Streamed = false
+        ),
+        handle_response(Backend, Response, Messages, Streamed)
+    ).
+
+').
+
+prolog_fragment(agent_loop_response, '%% Handle LLM response, including tool calls
+handle_response(Backend, Response, Messages, Streamed) :-
+    (Streamed = false, get_dict(content, Response, Content), Content \\= "" ->
+        write(Content), nl
+    ; true),
+    %% Track cost if usage data available
+    (get_dict(usage, Response, Usage),
+     get_dict(input_tokens, Usage, InTok),
+     get_dict(output_tokens, Usage, OutTok),
+     (InTok > 0 ; OutTok > 0) ->
+        get_dict(spec, Backend, BSpec),
+        (member(model(Model), BSpec) -> true ; Model = "unknown"),
+        cost_tracker_add(main, Model, InTok, OutTok),
+        %% Calibrate token estimation from actual usage
+        (InTok > 0 ->
+            foldl([M,A,T]>>(get_dict(content,M,MC) -> atom_length(MC,L), T is A+L ; T=A),
+                  Messages, 0, TotalChars),
+            update_token_calibration(TotalChars, InTok)
+        ; true)
+    ; true),
+    (get_dict(tool_calls, Response, ToolCalls), ToolCalls \\= [] ->
+        handle_tool_calls(Backend, ToolCalls, Messages, Response)
+    ;
+        (get_dict(content, Response, Content2) -> true ; Content2 = ""),
+        AsstMsg = _{role: "assistant", content: Content2},
+        append(Messages, [AsstMsg], NewMsgs),
+        retractall(conversation(_)),
+        assert(conversation(NewMsgs))
+    ).
+
+%% Execute tool calls and continue conversation
+handle_tool_calls(Backend, ToolCalls, Messages, _) :-
+    handle_tool_calls(Backend, ToolCalls, Messages, _, 1).
+
+handle_tool_calls(Backend, ToolCalls, Messages, _AsstResponse, Iteration) :-
+    %% Check iteration limit
+    max_iterations(MaxIter),
+    (MaxIter > 0, Iteration > MaxIter ->
+        ansi_format(yellow, "~n[Paused after ~w iterations. Send a message to continue.]~n", [MaxIter]),
+        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},
+        append(Messages, [AsstMsg], NewMsgs),
+        retractall(conversation(_)),
+        assert(conversation(NewMsgs))
+    ;
+        AsstMsg = _{role: "assistant", content: "", tool_calls: ToolCalls},
+        append(Messages, [AsstMsg], Msgs1),
+        execute_tool_calls(Backend, ToolCalls, ToolResults),
+        append(Msgs1, ToolResults, Msgs2),
+        findall(TS, (tool_spec(TN, TP), member(description(TD), TP),
+            build_tool_input_schema(TN, TSch),
+            TS = _{name: TN, description: TD, input_schema: TSch}), TSList),
+        send_request(Backend, Msgs2, TSList, NextResponse),
+        %% Track cost for tool-loop response
+        (get_dict(usage, NextResponse, NUsage),
+         get_dict(input_tokens, NUsage, NInTok),
+         get_dict(output_tokens, NUsage, NOutTok),
+         (NInTok > 0 ; NOutTok > 0) ->
+            get_dict(spec, Backend, BSpec2),
+            (member(model(NModel), BSpec2) -> true ; NModel = "unknown"),
+            cost_tracker_add(main, NModel, NInTok, NOutTok)
+        ; true),
+        (get_dict(tool_calls, NextResponse, NextTCs), NextTCs \\= [] ->
+            NextIter is Iteration + 1,
+            handle_tool_calls(Backend, NextTCs, Msgs2, NextResponse, NextIter)
+        ;
+            handle_response(Backend, NextResponse, Msgs2, false)
+        )
+    ).
+
+%% Execute a list of tool calls, collecting results
+execute_tool_calls(_Backend, [], []).
+execute_tool_calls(Backend, [TC|Rest], [Result|Results]) :-
+    get_dict(name, TC, ToolName),
+    get_dict(arguments, TC, Params),
+    atom_string(ToolAtom, ToolName),
+    describe_tool_call(Backend, ToolAtom, Params, Desc),
+    ansi_format(cyan, "[tool] ~w~n", [Desc]),
+    (confirm_destructive(ToolAtom, true) ->
+        execute_tool(ToolAtom, Params, ToolResult),
+        (ToolResult = ok(Output) -> Content = Output ; ToolResult = error(Err) -> Content = Err),
+        (get_dict(id, TC, TCID) -> true ; TCID = ""),
+        Result = _{role: "tool", content: Content, tool_call_id: TCID}
+    ;
+        Result = _{role: "tool", content: "Execution denied by user", tool_call_id: ""}
+    ),
+    execute_tool_calls(Backend, Rest, Results).
+
+').
+
+prolog_fragment(agent_loop_actions, '%% Handle slash command actions
+handle_action(exit, _) :- write("Goodbye."), nl, halt.
+handle_action(clear, _) :-
+    retractall(conversation(_)),
+    assert(conversation([])),
+    write("Context cleared."), nl.
+handle_action(help, _) :-
+    ansi_format(bold, "Available commands:~n", []),
+    findall(Group-Cmds, slash_command_group(Group, Cmds), Groups),
+    maplist([Group-Cmds]>>(
+        ansi_format(bold, "~n  ~w:~n", [Group]),
+        maplist([CmdName]>>(
+            slash_command(CmdName, _, Opts, Help),
+            (member(help_display(Disp), Opts) -> true ; format(atom(Disp), "/~w", [CmdName])),
+            format("    ~w~t~30| ~w~n", [Disp, Help])
+        ), Cmds)
+    ), Groups).
+handle_action(status, Backend) :-
+    get_dict(name, Backend, BName),
+    conversation(Msgs),
+    length(Msgs, MsgCount),
+    cost_tracker_format(main, CostStr),
+    format("Backend: ~w~nMessages: ~w~nCosts: ~w~n", [BName, MsgCount, CostStr]).
+handle_action(call_handler(''_handle_cost_command'', _), _) :-
+    cost_tracker_format(main, CostStr),
+    write(CostStr), nl.
+handle_action(call_handler(''_handle_backend_command'', Args), Backend) :-
+    (Args = "" ->
+        get_dict(name, Backend, BName),
+        format("Current backend: ~w~n", [BName]),
+        write("Available backends:"), nl,
+        findall(N, backend_factory(N, _), Ns),
+        maplist([N]>>(format("  ~w~n", [N])), Ns)
+    ;
+        atom_string(TargetName, Args),
+        (backend_factory(TargetName, _) ->
+            create_backend(TargetName, [], NewBackend),
+            retractall(current_backend(_)),
+            assert(current_backend(NewBackend)),
+            format("Switched to backend: ~w~n", [TargetName])
+        ;
+            format("Unknown backend: ~w~nAvailable: ", [TargetName]),
+            findall(N, backend_factory(N, _), Names),
+            atomic_list_concat(Names, '', '', NamesStr),
+            write(NamesStr), nl
+        )
+    ).
+handle_action(call_handler(''_handle_iterations_command'', Args), _) :-
+    (Args = "" ->
+        max_iterations(N),
+        (N =:= 0 -> write("Max iterations: unlimited")
+        ; format("Max iterations: ~w", [N])), nl
+    ;
+        atom_number(Args, N),
+        retractall(max_iterations(_)),
+        assert(max_iterations(N)),
+        (N =:= 0 -> write("Max iterations: unlimited")
+        ; format("Max iterations set to ~w", [N])), nl
+    ).
+handle_action(call_handler(''_handle_stream_command'', _), _) :-
+    streaming(Current),
+    (Current = true -> New = false ; New = true),
+    retractall(streaming(_)),
+    assert(streaming(New)),
+    (New = true -> Status = enabled ; Status = disabled),
+    format("[Streaming ~w]~n", [Status]).
+handle_action(call_handler(''_handle_model_command'', Args), _) :-
+    current_backend(Backend),
+    get_dict(spec, Backend, Spec),
+    (Args = "" ->
+        (member(model(M), Spec) -> format("Current model: ~w~n", [M])
+        ; write("No model set in current backend"), nl)
+    ;
+        atom_string(_, Args),
+        (select(model(_), Spec, Rest) ->
+            NewSpec = [model(Args)|Rest]
+        ;
+            NewSpec = [model(Args)|Spec]
+        ),
+        put_dict(spec, Backend, NewSpec, NewBackend),
+        retractall(current_backend(_)),
+        assert(current_backend(NewBackend)),
+        format("Model switched to: ~w~n", [Args])
+    ).
+handle_action(call_handler(''_handle_tokens_command'', _), _) :-
+    conversation(Msgs),
+    length(Msgs, NMsgs),
+    chars_per_token(CPT),
+    foldl([M,A,T]>>(get_dict(content,M,C) -> atom_length(C,L), T is A+L ; T=A),
+          Msgs, 0, TotalChars),
+    Tokens is round(TotalChars / CPT),
+    context_max_tokens(Limit),
+    format("Context: ~w tokens (est.) / ~w limit (~w messages, ~1f chars/token)~n",
+           [Tokens, Limit, NMsgs, CPT]).
+handle_action(call_handler(''_handle_aliases_command'', _), _) :-
+    write("Command aliases:"), nl,
+    findall(Alias-Target, command_alias(Alias, Target), AliasPairs),
+    maplist([Alias-Target]>>(
+        format("  /~w -> /~w~n", [Alias, Target])
+    ), AliasPairs).
+handle_action(call_handler(''_handle_history_command'', Args), _) :-
+    (Args = "" -> N = 10 ; atom_number(Args, N)),
+    conversation(Msgs),
+    length(Msgs, Len),
+    Start is max(0, Len - N),
+    format("~nLast ~w messages (~w total):~n", [N, Len]),
+    show_messages(Msgs, Start, 0).
+handle_action(call_handler(''_handle_delete_command'', Args), _) :-
+    (Args = "" ->
+        write("Usage: /delete <index> or /delete <start>-<end>"), nl
+    ;
+        conversation(Msgs),
+        %% Save undo state
+        retractall(conversation_undo(_)),
+        assert(conversation_undo(Msgs)),
+        (sub_string(Args, DashIdx, 1, _, "-") ->
+            sub_string(Args, 0, DashIdx, _, StartStr),
+            AfterDash is DashIdx + 1,
+            sub_string(Args, AfterDash, _, 0, EndStr),
+            atom_number(StartStr, Start),
+            atom_number(EndStr, End)
+        ;
+            atom_number(Args, Start),
+            End = Start
+        ),
+        length(Msgs, Len),
+        (Start >= 0, End < Len, Start =< End ->
+            delete_range(Msgs, Start, End, 0, NewMsgs),
+            retractall(conversation(_)),
+            assert(conversation(NewMsgs)),
+            Deleted is End - Start + 1,
+            format("Deleted ~w message(s).~n", [Deleted])
+        ;
+            format("Invalid range. Messages: 0-~w~n", [Len])
+        )
+    ).
+handle_action(call_handler(''_handle_undo_command'', _), _) :-
+    (conversation_undo(OldMsgs) ->
+        conversation(Current),
+        retractall(conversation(_)),
+        assert(conversation(OldMsgs)),
+        retractall(conversation_undo(_)),
+        assert(conversation_undo(Current)),
+        length(OldMsgs, Len),
+        format("Restored conversation (~w messages). /undo again to swap back.~n", [Len])
+    ;
+        write("Nothing to undo."), nl
+    ).
+handle_action(call_handler(''_handle_edit_command'', Args), _) :-
+    (Args = "" ->
+        write("Usage: /edit <index> <new content>"), nl
+    ;
+        (sub_string(Args, SpIdx, 1, _, " ") ->
+            sub_string(Args, 0, SpIdx, _, IdxStr),
+            AfterSp is SpIdx + 1,
+            sub_string(Args, AfterSp, _, 0, NewContent)
+        ;
+            write("Usage: /edit <index> <new content>"), nl, fail
+        ),
+        atom_number(IdxStr, Idx),
+        conversation(Msgs),
+        length(Msgs, Len),
+        (Idx >= 0, Idx < Len ->
+            retractall(conversation_undo(_)),
+            assert(conversation_undo(Msgs)),
+            replace_at(Msgs, Idx, NewContent, 0, NewMsgs),
+            retractall(conversation(_)),
+            assert(conversation(NewMsgs)),
+            format("Edited message ~w.~n", [Idx])
+        ;
+            format("Invalid index. Messages: 0-~w~n", [Len])
+        )
+    ).
+handle_action(call_handler(''_handle_replay_command'', Args), Backend) :-
+    (Args = "" ->
+        write("Usage: /replay <index>"), nl
+    ;
+        atom_number(Args, Idx),
+        conversation(Msgs),
+        length(Msgs, Len),
+        (Idx >= 0, Idx < Len ->
+            nth0(Idx, Msgs, Msg),
+            get_dict(content, Msg, Content),
+            format("Replaying message ~w: ~w~n", [Idx, Content]),
+            process_input(Content, Backend)
+        ;
+            format("Invalid index. Messages: 0-~w~n", [Len])
+        )
+    ).
+handle_action(call_handler(''_handle_save_command'', Args), Backend) :-
+    conversation(Msgs),
+    get_dict(name, Backend, BName),
+    length(Msgs, MsgCount),
+    get_time(Now), stamp_date_time(Now, DT, local),
+    format_time(atom(SessionId), "%Y%m%d_%H%M%S", DT),
+    (Args = "" -> Name = SessionId ; atom_string(Name, Args)),
+    sessions_dir(SDir),
+    make_directory_path(SDir),
+    format(atom(FileName), "~w/~w.json", [SDir, SessionId]),
+    SessionData = _{metadata: _{id: SessionId, name: Name, backend: BName, message_count: MsgCount}, messages: Msgs},
+    setup_call_cleanup(
+        open(FileName, write, Out),
+        json_write_dict(Out, SessionData, []),
+        close(Out)),
+    format("Saved session: ~w (~w messages)~n", [SessionId, MsgCount]).
+handle_action(call_handler(''_handle_load_command'', Args), _) :-
+    (Args = "" ->
+        write("Usage: /load <session_id>"), nl
+    ;
+        atom_string(SessionId, Args),
+        sessions_dir(SDir),
+        format(atom(FileName), "~w/~w.json", [SDir, SessionId]),
+        (exists_file(FileName) ->
+            setup_call_cleanup(
+                open(FileName, read, In),
+                json_read_dict(In, Data),
+                close(In)),
+            get_dict(messages, Data, Msgs),
+            retractall(conversation(_)),
+            assert(conversation(Msgs)),
+            length(Msgs, Len),
+            (get_dict(metadata, Data, Meta), get_dict(name, Meta, Name) -> true ; Name = SessionId),
+            format("Loaded session: ~w (~w messages)~n", [Name, Len])
+        ;
+            format("Session not found: ~w~n", [SessionId])
+        )
+    ).
+handle_action(call_handler(''_handle_sessions_command'', _), _) :-
+    sessions_dir(SDir),
+    (exists_directory(SDir) ->
+        directory_files(SDir, AllFiles),
+        include(json_file, AllFiles, JsonFiles),
+        (JsonFiles = [] ->
+            write("No saved sessions."), nl
+        ;
+            write("Saved sessions:"), nl,
+            maplist([F]>>(
+                format(atom(FullPath), "~w/~w", [SDir, F]),
+                catch((
+                    setup_call_cleanup(
+                        open(FullPath, read, In),
+                        json_read_dict(In, Data),
+                        close(In)),
+                    get_dict(metadata, Data, Meta),
+                    get_dict(id, Meta, Id),
+                    get_dict(name, Meta, Name),
+                    get_dict(message_count, Meta, MC),
+                    format("  ~w: ~w (~w msgs)~n", [Id, Name, MC])
+                ), _, (
+                    file_name_extension(Base, _, F),
+                    format("  ~w: (unreadable)~n", [Base])
+                ))
+            ), JsonFiles)
+        )
+    ; write("No saved sessions."), nl).
+handle_action(call_handler(''_handle_format_command'', Args), _) :-
+    (Args = "" ->
+        current_format(Fmt),
+        format("Current format: ~w~nAvailable: plain, markdown, json, xml~n", [Fmt])
+    ;
+        atom_string(NewFmt, Args),
+        (member(NewFmt, [plain, markdown, json, xml]) ->
+            retractall(current_format(_)),
+            assert(current_format(NewFmt)),
+            format("Format set to: ~w~n", [NewFmt])
+        ;
+            format("Unknown format: ~w~nAvailable: plain, markdown, json, xml~n", [NewFmt])
+        )
+    ).
+handle_action(call_handler(''_handle_export_command'', Args), _) :-
+    (Args = "" ->
+        write("Usage: /export <path> (.md, .html, .json, .txt)"), nl
+    ;
+        atom_string(FilePath, Args),
+        conversation(Msgs),
+        length(Msgs, Len),
+        file_name_extension(_, Ext, FilePath),
+        (export_conversation(Ext, Msgs, Content) ->
+            setup_call_cleanup(
+                open(FilePath, write, Out),
+                write(Out, Content),
+                close(Out)),
+            format("Exported ~w messages to ~w~n", [Len, FilePath])
+        ;
+            format("Unsupported format: .~w (use .md, .html, .json, .txt)~n", [Ext])
+        )
+    ).
+handle_action(call_handler(''_handle_search_command'', Args), _) :-
+    (Args = "" ->
+        write("Usage: /search <query>"), nl
+    ;
+        sessions_dir(SDir),
+        (exists_directory(SDir) ->
+            directory_files(SDir, AllFiles),
+            include(json_file, AllFiles, JsonFiles),
+            atom_string(Query, Args),
+            format("Search results for ''~w'':~n", [Query]),
+            search_sessions(SDir, JsonFiles, Query, 0, Found),
+            (Found =:= 0 -> format("  No results for: ~w~n", [Query]) ; true)
+        ;
+            write("No sessions directory found."), nl
+        )
+    ).
+handle_action(call_handler(''_handle_templates_command'', _), _) :-
+    write("No templates loaded."), nl.
+handle_action(not_a_command, _) :- write("Unknown command."), nl.
+handle_action(unknown(Cmd), _) :- format("Unknown command: /~w~n", [Cmd]).
+handle_action(call_handler(Handler, _Args), _) :-
+    format("Handler ~w not yet implemented in Prolog target.~n", [Handler]).
+
+').
+
+prolog_fragment(agent_loop_helpers, '%% Show conversation messages from index Start
+show_messages([], _, _).
+show_messages([Msg|Rest], Start, Idx) :-
+    (Idx >= Start ->
+        get_dict(role, Msg, Role),
+        get_dict(content, Msg, Content),
+        (atom_length(Content, CLen), CLen > 80 ->
+            sub_atom(Content, 0, 80, _, Preview),
+            format("  [~w] ~w: ~w...~n", [Idx, Role, Preview])
+        ;
+            format("  [~w] ~w: ~w~n", [Idx, Role, Content])
+        )
+    ; true),
+    NextIdx is Idx + 1,
+    show_messages(Rest, Start, NextIdx).
+
+%% Delete messages in index range [Start, End]
+delete_range([], _, _, _, []).
+delete_range([_|Rest], Start, End, Idx, Result) :-
+    Idx >= Start, Idx =< End, !,
+    NextIdx is Idx + 1,
+    delete_range(Rest, Start, End, NextIdx, Result).
+delete_range([H|Rest], Start, End, Idx, [H|Result]) :-
+    NextIdx is Idx + 1,
+    delete_range(Rest, Start, End, NextIdx, Result).
+
+%% Replace content of message at index Idx
+replace_at([], _, _, _, []).
+replace_at([Msg|Rest], Target, NewContent, Idx, [NewMsg|Result]) :-
+    Idx =:= Target, !,
+    put_dict(content, Msg, NewContent, NewMsg),
+    NextIdx is Idx + 1,
+    replace_at(Rest, Target, NewContent, NextIdx, Result).
+replace_at([H|Rest], Target, NewContent, Idx, [H|Result]) :-
+    NextIdx is Idx + 1,
+    replace_at(Rest, Target, NewContent, NextIdx, Result).
+
+%% Filter for .json files
+json_file(F) :- file_name_extension(_, json, F).
+
+').
+
+prolog_fragment(agent_loop_export_search, '%% Export conversation to different formats
+export_conversation(json, Msgs, Content) :-
+    with_output_to(string(Content), json_write_dict(current_output, Msgs, [])).
+export_conversation(md, Msgs, Content) :-
+    with_output_to(string(Content), (
+        write("# Conversation\\n\\n"),
+        maplist([Msg]>>(
+            get_dict(role, Msg, Role),
+            get_dict(content, Msg, C),
+            (Role = "user" -> write("**You:**") ; write("**Assistant:**")),
+            nl, nl, write(C), nl, nl
+        ), Msgs)
+    )).
+export_conversation(txt, Msgs, Content) :-
+    with_output_to(string(Content), (
+        maplist([Msg]>>(
+            get_dict(role, Msg, Role),
+            get_dict(content, Msg, C),
+            format("~w: ~w~n~n", [Role, C])
+        ), Msgs)
+    )).
+export_conversation(html, Msgs, Content) :-
+    with_output_to(string(Content), (
+        write("<html><body>\\n"),
+        maplist([Msg]>>(
+            get_dict(role, Msg, Role),
+            get_dict(content, Msg, C),
+            format("<div class=\\"~w\\"><b>~w:</b><p>~w</p></div>\\n", [Role, Role, C])
+        ), Msgs),
+        write("</body></html>\\n")
+    )).
+
+%% Search across saved session files
+search_sessions(_, [], _, Found, Found).
+search_sessions(SDir, [F|Rest], Query, Acc, Found) :-
+    format(atom(Path), "~w/~w", [SDir, F]),
+    catch((
+        setup_call_cleanup(open(Path, read, In), json_read_dict(In, Data), close(In)),
+        get_dict(messages, Data, Msgs),
+        get_dict(metadata, Data, Meta),
+        get_dict(id, Meta, SessId),
+        search_messages(SessId, Msgs, Query, Acc, Acc1)
+    ), _, Acc1 = Acc),
+    search_sessions(SDir, Rest, Query, Acc1, Found).
+
+search_messages(_, [], _, Acc, Acc).
+search_messages(SessId, [Msg|Rest], Query, Acc, Found) :-
+    get_dict(content, Msg, Content),
+    get_dict(role, Msg, Role),
+    (sub_string(Content, _, _, _, Query) ->
+        (Role = "user" -> RLabel = "You" ; RLabel = "Asst"),
+        (string_length(Content, CL), CL > 60 ->
+            sub_string(Content, 0, 60, _, Snippet),
+            format("  [~w] ~w: ~w...~n", [SessId, RLabel, Snippet])
+        ;
+            format("  [~w] ~w: ~w~n", [SessId, RLabel, Content])
+        ),
+        Acc1 is Acc + 1
+    ; Acc1 = Acc),
+    search_messages(SessId, Rest, Query, Acc1, Found).
+
+').
+
+prolog_fragment(agent_loop_context, '%% update_token_calibration(+CharCount, +TokenCount) — adjust chars_per_token ratio
+update_token_calibration(CharCount, TokenCount) :-
+    (TokenCount > 0, CharCount > 0 ->
+        chars_per_token(OldRatio),
+        Observed is CharCount / TokenCount,
+        NewRatio is 0.9 * OldRatio + 0.1 * Observed,
+        retractall(chars_per_token(_)),
+        assert(chars_per_token(NewRatio))
+    ; true).
+
+%% Context sliding — trim messages by count and estimated tokens
+%% Preserves leading system message if present
+trim_context(Messages, Trimmed) :-
+    (Messages = [SysMsg|Rest], get_dict(role, SysMsg, "system") ->
+        HasSys = true, Body = Rest
+    ;   HasSys = false, Body = Messages),
+    context_max_messages(MaxMsgs),
+    (HasSys = true -> EffMax is MaxMsgs - 1 ; EffMax = MaxMsgs),
+    length(Body, Len),
+    (Len > EffMax ->
+        Drop is Len - EffMax,
+        length(Prefix, Drop),
+        append(Prefix, Kept, Body)
+    ;   Kept = Body),
+    context_max_tokens(MaxTokens),
+    (HasSys = true ->
+        msg_tokens(SysMsg, 0, SysTok),
+        Budget is MaxTokens - SysTok,
+        trim_by_tokens(Kept, Budget, TrimmedBody),
+        Trimmed = [SysMsg|TrimmedBody]
+    ;   trim_by_tokens(Kept, MaxTokens, Trimmed)).
+
+trim_by_tokens(Msgs, MaxTokens, Trimmed) :-
+    estimate_tokens(Msgs, Total),
+    (Total > MaxTokens ->
+        Msgs = [_|Rest],
+        trim_by_tokens(Rest, MaxTokens, Trimmed)
+    ; Trimmed = Msgs).
+
+estimate_tokens(Msgs, Total) :-
+    foldl(msg_tokens, Msgs, 0, Total).
+
+msg_tokens(Msg, Acc, Total) :-
+    (get_dict(content, Msg, Content) ->
+        atom_length(Content, Len),
+        chars_per_token(CPT),
+        Tokens is round(Len / CPT)
+    ; Tokens = 0),
+    Total is Acc + Tokens.
+').
+
+
 
 %% --- Fragment: _format_prompt (shared by 5 CLI backends) ---
 
