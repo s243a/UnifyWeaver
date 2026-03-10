@@ -550,20 +550,35 @@ write_elixir_module(ElixirCode, FilePath) :-
 :- use_module('../core/advanced/tail_recursion').
 :- multifile tail_recursion:compile_tail_pattern/9.
 
-tail_recursion:compile_tail_pattern(elixir, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, _StepOp, _ExitAfterResult, ElixirCode) :-
+tail_recursion:compile_tail_pattern(elixir, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, StepOp, _ExitAfterResult, ElixirCode) :-
+    atom_string(PredAtom, PredStr),
+    snake_to_camel(PredAtom, PredCap),
     numlist(1, Arity, Indices),
     findall(ArgName, (member(I, Indices), format(atom(ArgName), 'arg~w', [I])), ArgNames),
     atomic_list_concat(ArgNames, ', ', ArgList),
+    % Determine step operation for the accumulator
+    (   StepOp = arithmetic(_ + _)
+    ->  StepStr = "acc + item"
+    ;   StepOp = arithmetic(_ * _)
+    ->  StepStr = "acc * item"
+    ;   StepStr = "acc + 1"
+    ),
     format(string(ElixirCode),
 '# ~w - tail recursive pattern (Elixir, BEAM native TCO)
 defmodule Generated.~w do
   def ~w(~w) do
     # BEAM provides native tail-call optimization.
-    # Override this template with actual base/recursive cases.
+    # This is a template — customize base case and step.
     {~w}
   end
+
+  @doc "Tail-recursive helper with accumulator"
+  def ~w_acc([], acc), do: acc
+  def ~w_acc([item | rest], acc) do
+    ~w_acc(rest, ~w)
+  end
 end
-', [PredStr, PredStr, PredStr, ArgList, ArgList]).
+', [PredStr, PredCap, PredStr, ArgList, ArgList, PredStr, PredStr, PredStr, StepStr]).
 
 %% ============================================
 %% MULTIFILE DISPATCH - Linear Recursion
@@ -573,6 +588,8 @@ end
 :- multifile linear_recursion:compile_linear_pattern/8.
 
 linear_recursion:compile_linear_pattern(elixir, PredStr, _Arity, _BaseClauses, _RecClauses, _BaseValues, _StepOp, ElixirCode) :-
+    atom_string(PredAtom, PredStr),
+    snake_to_camel(PredAtom, PredCap),
     format(string(ElixirCode),
 '# ~w - linear recursive pattern (Elixir)
 defmodule Generated.~w do
@@ -582,7 +599,7 @@ defmodule Generated.~w do
     ~w(n - 1) + ~w(n - 2)
   end
 end
-', [PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr]).
+', [PredStr, PredCap, PredStr, PredStr, PredStr, PredStr, PredStr]).
 
 %% ============================================
 %% MULTIFILE DISPATCH - Mutual Recursion
