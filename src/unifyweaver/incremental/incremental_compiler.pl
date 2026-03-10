@@ -188,6 +188,7 @@ target_compiler(ruby, ruby_target, compile_predicate_to_ruby).
 target_compiler(clojure, clojure_target, compile_predicate_to_clojure).
 target_compiler(fsharp, fsharp_target, compile_predicate_to_fsharp).
 target_compiler(vbnet, vbnet_target, compile_predicate_to_vbnet).
+target_compiler(elixir, elixir_target, compile_predicate_to_elixir).
 
 % ============================================================================
 % CACHE MANAGEMENT
