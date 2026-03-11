@@ -163,25 +163,25 @@ impl AgentBackend for ApiBackend {
 pub fn create_backend(config: &AgentConfig) -> Box<dyn AgentBackend> {
     match config.backend.as_str() {
         "coro" => Box::new(CliBackend::new("coro", "claude", &[], config.model.clone())),
-        "claude_code" => Box::new(CliBackend::new("claude_code", "claude", &[], Some("sonnet".to_string()))),
+        "claude-code" => Box::new(CliBackend::new("claude-code", "claude", &[], Some("sonnet".to_string()))),
         "gemini" => Box::new(CliBackend::new("gemini", "gemini", &[], Some("gemini-2.5-flash".to_string()))),
-        "claude_api" => {
+        "claude" => {
             let key = std::env::var("ANTHROPIC_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("claude_api", "https://api.anthropic.com/v1/messages", key, &model))
+            Box::new(ApiBackend::new("claude", "https://api.anthropic.com/v1/messages", key, &model))
         }
-        "openai_api" => {
+        "openai" => {
             let key = std::env::var("OPENAI_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("openai_api", "https://api.openai.com/v1/chat/completions", key, &model))
+            Box::new(ApiBackend::new("openai", "https://api.openai.com/v1/chat/completions", key, &model))
         }
-        "ollama_api" => Box::new(ApiBackend::new("ollama_api", "http://localhost:11434/api/chat", None, &config.model.clone().unwrap_or_default())),
-        "ollama_cli" => Box::new(CliBackend::new("ollama_cli", "ollama", &[], Some("llama3".to_string()))),
-        "openrouter_api" => {
+        "openrouter" => {
             let key = std::env::var("OPENROUTER_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("openrouter_api", "https://openrouter.ai/api/v1/chat/completions", key, &model))
+            Box::new(ApiBackend::new("openrouter", "https://openrouter.ai/api/v1/chat/completions", key, &model))
         }
+        "ollama-api" => Box::new(ApiBackend::new("ollama-api", "http://localhost:11434/api/chat", None, &config.model.clone().unwrap_or_default())),
+        "ollama-cli" => Box::new(CliBackend::new("ollama-cli", "ollama", &[], Some("llama3".to_string()))),
         _ => panic!("Unknown backend: {}", config.backend),
     }
 }

@@ -1166,6 +1166,8 @@ generate_all(rust) :-
     generate_rust_context,
     generate_rust_backends,
     generate_rust_tool_handler,
+    %% Phase 3 — CLI + sessions
+    generate_rust_sessions,
     generate_rust_main,
     write('Rust target done.'), nl.
 
@@ -1479,6 +1481,7 @@ generate_rust_lib :-
     write(S, 'pub mod context;\n'),
     write(S, 'pub mod backends;\n'),
     write(S, 'pub mod tool_handler;\n'),
+    write(S, 'pub mod sessions;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
 
@@ -1492,6 +1495,8 @@ generate_rust_config :-
     ]),
     write_rust(S, config_types),
     agent_loop_components:emit_rust_config_data(S, [target(rust)]),
+    %% Streaming capable backends (not in emit_rust_config_data)
+    agent_loop_components:emit_config_section(S, streaming_capable, [target(rust)]),
     close(S),
     format('  Generated rust/src/config.rs~n', []).
 
@@ -1653,44 +1658,53 @@ generate_rust_backends :-
     close(S),
     format('  Generated rust/src/backends.rs~n', []).
 
+%% resolve_factory_backend(+FactoryName, -AgentProps)
+%% Bridge backend_factory/2 → agent_backend/2 via class_name match.
+resolve_factory_backend(FactoryName, AgentProps) :-
+    backend_factory(FactoryName, FProps),
+    member(class_name(ClassName), FProps),
+    agent_backend(_, AgentProps),
+    member(class_name(ClassName), AgentProps), !.
+
 %% generate_rust_backend_factory(+Stream)
-%% Emit create_backend function from agent_backend/2 facts.
+%% Emit create_backend function using backend_factory/2 names (hyphens)
+%% via backend_factory_order/1 for consistent CLI naming.
 generate_rust_backend_factory(S) :-
+    backend_factory_order(Order),
     write(S, '/// Create a backend from configuration.\n'),
     write(S, 'pub fn create_backend(config: &AgentConfig) -> Box<dyn AgentBackend> {\n'),
     write(S, '    match config.backend.as_str() {\n'),
-    findall(BN, agent_backend(BN, _), BackendNames),
-    maplist([BN]>>(
-        agent_backend(BN, Props),
+    maplist([FN]>>(
+        resolve_factory_backend(FN, Props),
         (member(type(cli), Props) ->
-            (member(command(Cmd), Props) -> true ; Cmd = BN),
+            (member(command(Cmd), Props) -> true ; atom_string(FN, Cmd)),
             (member(default_model(Model), Props) ->
-                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], Some("~w".to_string()))),~n', [BN, BN, Cmd, Model])
+                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], Some("~w".to_string()))),~n', [FN, FN, Cmd, Model])
             ;
-                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], config.model.clone())),~n', [BN, BN, Cmd])
+                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], config.model.clone())),~n', [FN, FN, Cmd])
             )
         ; member(type(api), Props) ->
             (member(endpoint(EP), Props) -> true ; EP = ''),
             (member(auth_env(AuthEnv), Props) ->
-                format(S, '        "~w" => {~n', [BN]),
+                format(S, '        "~w" => {~n', [FN]),
                 format(S, '            let key = std::env::var("~w").ok().or(config.api_key.clone());~n', [AuthEnv]),
                 (member(default_model(DefModel), Props) ->
                     format(S, '            let model = config.model.clone().unwrap_or("~w".to_string());~n', [DefModel])
                 ;
                     format(S, '            let model = config.model.clone().unwrap_or_default();~n', [])
                 ),
-                format(S, '            Box::new(ApiBackend::new("~w", "~w", key, &model))~n', [BN, EP]),
+                format(S, '            Box::new(ApiBackend::new("~w", "~w", key, &model))~n', [FN, EP]),
                 format(S, '        }~n', [])
             ;
                 (member(default_model(DefModel2), Props) ->
-                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or("~w".to_string()))),~n', [BN, BN, EP, DefModel2])
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or("~w".to_string()))),~n', [FN, FN, EP, DefModel2])
                 ;
-                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or_default())),~n', [BN, BN, EP])
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or_default())),~n', [FN, FN, EP])
                 )
             )
         ; true  %% skip unknown types
         )
-    ), BackendNames),
+    ), Order),
     write(S, '        _ => panic!("Unknown backend: {}", config.backend),\n'),
     write(S, '    }\n'),
     write(S, '}\n\n').
@@ -1707,6 +1721,14 @@ generate_rust_tool_handler :-
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
 
+generate_rust_sessions :-
+    output_path(rust, 'sessions.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, sessions, 'Session persistence — save, load, list, delete'),
+    write_rust(S, sessions_module),
+    close(S),
+    format('  Generated rust/src/sessions.rs~n', []).
+
 generate_rust_main :-
     output_path(rust, 'main.rs', Path),
     open(Path, write, S),
@@ -1716,10 +1738,59 @@ generate_rust_main :-
     write(S, 'use agent_loop::context::*;\n'),
     write(S, 'use agent_loop::costs::*;\n'),
     write(S, 'use agent_loop::tool_handler::*;\n'),
-    write(S, 'use agent_loop::commands::*;\n\n'),
-    %% Data-driven command dispatch function
-    generate_rust_command_dispatch(S),
+    write(S, 'use agent_loop::commands::*;\n'),
+    write(S, 'use agent_loop::sessions::*;\n\n'),
+    %% Data-driven command dispatch function (with session support)
+    generate_rust_command_dispatch_with_sessions(S),
     write(S, 'fn main() {\n'),
+    %% Clap argument parsing
+    write(S, '    let matches = clap::Command::new("uwsal")\n'),
+    write(S, '        .about("UnifyWeaver Agent Loop")\n'),
+    write(S, '        .version(env!("CARGO_PKG_VERSION"))\n'),
+    generate_rust_clap_args(S),
+    write(S, '        .get_matches();\n\n'),
+    %% Build config from matches
+    generate_rust_cli_config_build(S),
+    %% Session manager setup
+    write(S, '    let sessions_dir = matches.get_one::<String>("sessions_dir").map(|s| s.as_str());\n'),
+    write(S, '    let session_manager = SessionManager::new(sessions_dir);\n\n'),
+    %% Handle pre-loop actions (--list-sessions, --session, --search, --prompt)
+    write(S, '    // Handle --list-sessions\n'),
+    write(S, '    if matches.get_flag("list_sessions") {\n'),
+    write(S, '        let sessions = session_manager.list();\n'),
+    write(S, '        if sessions.is_empty() {\n'),
+    write(S, '            println!("No saved sessions.");\n'),
+    write(S, '        } else {\n'),
+    write(S, '            for s in &sessions {\n'),
+    write(S, '                println!("{} | {} | {} | {} msgs", s.id, s.name, s.backend, s.message_count);\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        return;\n'),
+    write(S, '    }\n\n'),
+    %% Handle --search
+    write(S, '    // Handle --search\n'),
+    write(S, '    if let Some(query) = matches.get_one::<String>("search_arg") {\n'),
+    write(S, '        let sessions = session_manager.list();\n'),
+    write(S, '        let query_lower = query.to_lowercase();\n'),
+    write(S, '        for s in &sessions {\n'),
+    write(S, '            if s.name.to_lowercase().contains(&query_lower) || s.id.contains(&query_lower) {\n'),
+    write(S, '                println!("{} | {} | {}", s.id, s.name, s.backend);\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        return;\n'),
+    write(S, '    }\n\n'),
+    %% Handle --session (load at startup)
+    write(S, '    // Handle --session (load at startup)\n'),
+    write(S, '    let mut initial_context: Vec<Message> = Vec::new();\n'),
+    write(S, '    if let Some(session_id) = matches.get_one::<String>("session") {\n'),
+    write(S, '        if let Some(session) = session_manager.load(session_id) {\n'),
+    write(S, '            initial_context = session.messages;\n'),
+    write(S, '            println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);\n'),
+    write(S, '        } else {\n'),
+    write(S, '            eprintln!("Session not found: {}", session_id);\n'),
+    write(S, '        }\n'),
+    write(S, '    }\n\n'),
+    %% Main loop (expects `config`, `session_manager`, and `initial_context` to be defined)
     write_rust(S, main_loop),
     write(S, '}\n'),
     close(S),
@@ -1728,12 +1799,29 @@ generate_rust_main :-
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.
 generate_rust_command_dispatch(S) :-
+    generate_rust_command_dispatch_with_sessions(S).
+
+%% generate_rust_command_dispatch_with_sessions(+Stream)
+%% Emit command handler with session management support.
+generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '/// Handle a slash command. Returns true if the command was handled.\n'),
-    write(S, 'fn handle_command(input: &str, context: &mut ContextManager, cost_tracker: &CostTracker) -> bool {\n'),
+    write(S, 'fn handle_command(\n'),
+    write(S, '    input: &str,\n'),
+    write(S, '    context: &mut ContextManager,\n'),
+    write(S, '    cost_tracker: &CostTracker,\n'),
+    write(S, '    session_manager: &SessionManager,\n'),
+    write(S, '    backend_name: &str,\n'),
+    write(S, ') -> bool {\n'),
     write(S, '    let parts: Vec<&str> = input.splitn(2, '' '').collect();\n'),
     write(S, '    let cmd = parts[0].trim_start_matches(''/'');\n'),
+    write(S, '    let _arg = if parts.len() > 1 { parts[1].trim() } else { "" };\n'),
     write(S, '    match cmd {\n'),
     write(S, '        "exit" | "quit" => {\n'),
+    write(S, '            // Auto-save on exit\n'),
+    write(S, '            if context.len() > 0 {\n'),
+    write(S, '                let id = session_manager.save(context.get_messages(), backend_name, None);\n'),
+    write(S, '                println!("Session saved: {}", id);\n'),
+    write(S, '            }\n'),
     write(S, '            println!("Goodbye!");\n'),
     write(S, '            std::process::exit(0);\n'),
     write(S, '        }\n'),
@@ -1749,10 +1837,51 @@ generate_rust_command_dispatch(S) :-
     write(S, '            for (name, spec) in SLASH_COMMANDS.iter() {\n'),
     write(S, '                println!("  /{:<15} {}", name, spec.help);\n'),
     write(S, '            }\n'),
+    write(S, '            println!("  /{:<15} {}", "save [name]", "Save current session");\n'),
+    write(S, '            println!("  /{:<15} {}", "load <id>", "Load a saved session");\n'),
+    write(S, '            println!("  /{:<15} {}", "sessions", "List saved sessions");\n'),
+    write(S, '            println!("  /{:<15} {}", "delete <id>", "Delete a saved session");\n'),
     write(S, '        }\n'),
     write(S, '        "status" => {\n'),
     write(S, '            println!("Context: {} messages", context.len());\n'),
     write(S, '            println!("{}", cost_tracker.format_summary());\n'),
+    write(S, '        }\n'),
+    write(S, '        "save" => {\n'),
+    write(S, '            let name = if _arg.is_empty() { None } else { Some(_arg) };\n'),
+    write(S, '            let id = session_manager.save(context.get_messages(), backend_name, name);\n'),
+    write(S, '            println!("Session saved: {}", id);\n'),
+    write(S, '        }\n'),
+    write(S, '        "load" => {\n'),
+    write(S, '            if _arg.is_empty() {\n'),
+    write(S, '                println!("Usage: /load <session-id>");\n'),
+    write(S, '            } else if let Some(session) = session_manager.load(_arg) {\n'),
+    write(S, '                context.clear();\n'),
+    write(S, '                for msg in &session.messages {\n'),
+    write(S, '                    context.add_message(&msg.role, &msg.content);\n'),
+    write(S, '                }\n'),
+    write(S, '                println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Session not found: {}", _arg);\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "sessions" => {\n'),
+    write(S, '            let sessions = session_manager.list();\n'),
+    write(S, '            if sessions.is_empty() {\n'),
+    write(S, '                println!("No saved sessions.");\n'),
+    write(S, '            } else {\n'),
+    write(S, '                for s in &sessions {\n'),
+    write(S, '                    println!("{} | {} | {} | {} msgs", s.id, s.name, s.backend, s.message_count);\n'),
+    write(S, '                }\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "delete" => {\n'),
+    write(S, '            if _arg.is_empty() {\n'),
+    write(S, '                println!("Usage: /delete <session-id>");\n'),
+    write(S, '            } else if session_manager.delete(_arg) {\n'),
+    write(S, '                println!("Session deleted: {}", _arg);\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Session not found: {}", _arg);\n'),
+    write(S, '            }\n'),
     write(S, '        }\n'),
     write(S, '        _ => {\n'),
     write(S, '            println!("Unknown command: /{}", cmd);\n'),
@@ -1761,6 +1890,114 @@ generate_rust_command_dispatch(S) :-
     write(S, '    }\n'),
     write(S, '    true\n'),
     write(S, '}\n\n').
+
+%% generate_rust_clap_args(+Stream)
+%% Emit clap Arg::new() calls from cli_argument/2 facts.
+generate_rust_clap_args(S) :-
+    findall(Name-Props, cli_argument(Name, Props), Args),
+    maplist([Name-Props]>>(
+        atom_string(Name, NameStr),
+        format(S, '        .arg(clap::Arg::new("~w")', [NameStr]),
+        %% Long flag (strip -- prefix)
+        (member(long(Long), Props) ->
+            (member(positional(true), Props) ->
+                true  %% positional args don't get .long()
+            ;
+                atom_string(Long, LongStr),
+                (sub_string(LongStr, 0, 2, _, "--") ->
+                    sub_string(LongStr, 2, _, 0, LongName)
+                ;
+                    LongName = LongStr
+                ),
+                format(S, '~n            .long("~w")', [LongName])
+            )
+        ; true
+        ),
+        %% Short flag (strip - prefix)
+        (member(short(Short), Props) ->
+            atom_string(Short, ShortStr),
+            (sub_string(ShortStr, 0, 1, _, "-") ->
+                sub_string(ShortStr, 1, 1, 0, ShortChar)
+            ;
+                ShortChar = ShortStr
+            ),
+            format(S, '~n            .short(''~w'')', [ShortChar])
+        ; true
+        ),
+        %% Help text
+        (member(help(Help), Props) ->
+            format(S, '~n            .help("~w")', [Help])
+        ; true
+        ),
+        %% Default value (skip none)
+        (member(default(Def), Props), Def \= none, Def \= [] ->
+            term_to_atom(Def, DefAtom),
+            format(S, '~n            .default_value("~w")', [DefAtom])
+        ; true
+        ),
+        %% Choices
+        (member(choices(Choices), Props) ->
+            format(S, '~n            .value_parser([', []),
+            rust_emit_choices_list(S, Choices),
+            write(S, '])')
+        ; true
+        ),
+        %% Action: store_true
+        (member(action(store_true), Props) ->
+            write(S, '\n            .action(clap::ArgAction::SetTrue)')
+        ; true
+        ),
+        %% Nargs
+        (member(nargs(Nargs), Props) ->
+            (Nargs == '*' ->
+                write(S, '\n            .num_args(0..)')
+            ; Nargs == '?' ->
+                write(S, '\n            .num_args(0..=1)')
+            ; true
+            )
+        ; true
+        ),
+        %% Type: int
+        (member(type(int), Props) ->
+            write(S, '\n            .value_parser(clap::value_parser!(i64))')
+        ; true
+        ),
+        %% Action: append
+        (member(action(append), Props) ->
+            write(S, '\n            .action(clap::ArgAction::Append)')
+        ; true
+        ),
+        write(S, ')\n')
+    ), Args).
+
+%% Helper: emit comma-separated quoted choice list
+rust_emit_choices_list(_, []).
+rust_emit_choices_list(S, [C]) :- !,
+    format(S, '"~w"', [C]).
+rust_emit_choices_list(S, [C|Rest]) :-
+    format(S, '"~w", ', [C]),
+    rust_emit_choices_list(S, Rest).
+
+%% generate_rust_cli_config_build(+Stream)
+%% Emit code to build AgentConfig from clap matches.
+generate_rust_cli_config_build(S) :-
+    write(S, '    let mut config = AgentConfig::default();\n'),
+    %% String overrides (str fields)
+    maplist([Field-ArgName]>>(
+        format(S, '    if let Some(v) = matches.get_one::<String>("~w") { config.~w = v.clone(); }~n', [ArgName, Field])
+    ), [backend-backend]),
+    %% Optional string overrides (str | None fields)
+    maplist([Field-ArgName]>>(
+        format(S, '    if let Some(v) = matches.get_one::<String>("~w") { config.~w = Some(v.clone()); }~n', [ArgName, Field])
+    ), [model-model, api_key-api_key, system_prompt-system_prompt]),
+    %% Bool flag overrides
+    write(S, '    if matches.get_flag("auto_tools") { config.auto_tools = true; }\n'),
+    write(S, '    if matches.get_flag("no_tokens") { config.show_tokens = false; }\n'),
+    %% Int overrides
+    maplist([Field-ArgName]>>(
+        format(S, '    if let Some(&v) = matches.get_one::<i64>("~w") { config.~w = v; }~n', [ArgName, Field])
+    ), [max_iterations-max_iterations, max_context_tokens-max_tokens]),
+    write(S, '\n').
 
 %% Generate a single module by name
 generate_module(backends_init)      :- generate_backends_init.
@@ -3654,6 +3891,10 @@ impl ContextManager {
         &self.messages
     }
 
+    pub fn get_messages(&self) -> &[Message] {
+        &self.messages
+    }
+
     pub fn clear(&mut self) {
         self.messages.clear();
     }
@@ -4067,12 +4308,184 @@ impl ToolHandler {
 
 ').
 
+%% --- Fragment: sessions_module (sessions.rs) ---
+
+rust_fragment(sessions_module, '
+use std::path::{Path, PathBuf};
+use std::fs;
+use serde::{Serialize, Deserialize};
+use crate::types::Message;
+
+/// Session metadata for listing/display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMetadata {
+    pub id: String,
+    pub name: String,
+    pub created: String,
+    pub modified: String,
+    pub backend: String,
+    pub message_count: usize,
+}
+
+/// Persisted session with messages and metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedSession {
+    pub metadata: SessionMetadata,
+    pub messages: Vec<Message>,
+}
+
+/// Session manager for save/load/list/delete of conversation sessions.
+pub struct SessionManager {
+    pub sessions_dir: PathBuf,
+}
+
+impl SessionManager {
+    pub fn new(dir: Option<&str>) -> Self {
+        let sessions_dir = match dir {
+            Some(d) => PathBuf::from(d),
+            None => {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".agent-loop").join("sessions")
+            }
+        };
+        if !sessions_dir.exists() {
+            let _ = fs::create_dir_all(&sessions_dir);
+        }
+        SessionManager { sessions_dir }
+    }
+
+    /// Save a session. Returns the session ID.
+    pub fn save(&self, messages: &[Message], backend: &str, name: Option<&str>) -> String {
+        let id = format!("{}", chrono_simple_id());
+        let now = now_iso8601();
+        let session_name = name.unwrap_or("unnamed").to_string();
+        let meta = SessionMetadata {
+            id: id.clone(),
+            name: session_name,
+            created: now.clone(),
+            modified: now,
+            backend: backend.to_string(),
+            message_count: messages.len(),
+        };
+        let session = PersistedSession {
+            metadata: meta,
+            messages: messages.to_vec(),
+        };
+        let path = self.sessions_dir.join(format!("{}.json", id));
+        if let Ok(json) = serde_json::to_string_pretty(&session) {
+            let _ = fs::write(&path, json);
+        }
+        id
+    }
+
+    /// Load a session by ID. Returns messages and metadata.
+    pub fn load(&self, id: &str) -> Option<PersistedSession> {
+        let path = self.sessions_dir.join(format!("{}.json", id));
+        if !path.exists() {
+            // Try prefix match
+            if let Some(full_path) = self.find_by_prefix(id) {
+                return self.load_file(&full_path);
+            }
+            return None;
+        }
+        self.load_file(&path)
+    }
+
+    fn load_file(&self, path: &Path) -> Option<PersistedSession> {
+        let content = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn find_by_prefix(&self, prefix: &str) -> Option<PathBuf> {
+        let entries = fs::read_dir(&self.sessions_dir).ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(prefix) && name.ends_with(".json") {
+                return Some(entry.path());
+            }
+        }
+        None
+    }
+
+    /// List all saved sessions sorted by modification time.
+    pub fn list(&self) -> Vec<SessionMetadata> {
+        let mut sessions = Vec::new();
+        if let Ok(entries) = fs::read_dir(&self.sessions_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |e| e == "json") {
+                    if let Some(session) = self.load_file(&path) {
+                        sessions.push(session.metadata);
+                    }
+                }
+            }
+        }
+        sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+        sessions
+    }
+
+    /// Delete a session by ID. Returns true if deleted.
+    pub fn delete(&self, id: &str) -> bool {
+        let path = self.sessions_dir.join(format!("{}.json", id));
+        if path.exists() {
+            return fs::remove_file(&path).is_ok();
+        }
+        if let Some(full_path) = self.find_by_prefix(id) {
+            return fs::remove_file(&full_path).is_ok();
+        }
+        false
+    }
+}
+
+/// Simple timestamp-based session ID.
+fn chrono_simple_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    format!("{:x}{:04x}", dur.as_secs(), dur.subsec_millis())
+}
+
+/// ISO 8601 timestamp.
+fn now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = dur.as_secs();
+    // Simple UTC timestamp
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+    // Approximate date calculation (not leap-second accurate, good enough for IDs)
+    let mut year = 1970u64;
+    let mut remaining_days = days;
+    loop {
+        let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+        if remaining_days < days_in_year { break; }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0u64;
+    for &md in &month_days {
+        if remaining_days < md { break; }
+        remaining_days -= md;
+        month += 1;
+    }
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month + 1, remaining_days + 1, hours, minutes, seconds)
+}
+').
+
 rust_fragment(main_loop, '
-    let config = AgentConfig::default();
     let backend = create_backend(&config);
     let mut context = ContextManager::new(config.max_messages as usize);
     let mut cost_tracker = CostTracker::new();
     let tool_handler = ToolHandler::new(config.auto_tools);
+
+    // Restore initial context from --session if any
+    for msg in &initial_context {
+        context.add_message(&msg.role, &msg.content);
+    }
 
     let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize readline");
 
@@ -4089,7 +4502,7 @@ rust_fragment(main_loop, '
 
                 // Handle slash commands
                 if input.starts_with(''/'' ) {
-                    let handled = handle_command(input, &mut context, &cost_tracker);
+                    let handled = handle_command(input, &mut context, &cost_tracker, &session_manager, backend.name());
                     if handled { continue; }
                 }
 
@@ -4133,6 +4546,11 @@ rust_fragment(main_loop, '
             }
             Err(rustyline::error::ReadlineError::Interrupted) |
             Err(rustyline::error::ReadlineError::Eof) => {
+                // Auto-save on exit
+                if context.len() > 0 {
+                    let id = session_manager.save(context.get_messages(), backend.name(), None);
+                    println!("Session saved: {}", id);
+                }
                 println!("Goodbye!");
                 break;
             }

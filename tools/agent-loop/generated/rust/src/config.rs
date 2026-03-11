@@ -166,3 +166,9 @@ pub static AUDIT_LEVELS: &[AuditLevel] = &[
     AuditLevel { profile: "paranoid", level: "forensic" },
 ];
 
+pub static STREAMING_CAPABLE: &[&str] = &[
+    "api_local",
+    "api",
+    "openrouter",
+];
+

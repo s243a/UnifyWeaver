@@ -1968,11 +1968,18 @@ validate_generator_imports(Generator, Warnings) :-
 %% ============================================================================
 
 %% emit_config_section(+Stream, +Section, +Options)
-%% Unified config section emission — delegates to Python-specific or Prolog target.
+%% Unified config section emission — delegates to Python, Rust, or Prolog target.
 emit_config_section(S, api_key_env_vars, Options) :-
     extract_target(Options, Target),
     (Target == python ->
         emit_api_key_env_vars_py(S, Options)
+    ; Target == rust ->
+        write(S, 'pub static API_KEY_ENV_VARS: &[ApiKeyMapping] = &[\n'),
+        findall(B-V, agent_loop_module:api_key_env_var(B, V), Pairs),
+        maplist([B-V]>>(
+            format(S, '    ApiKeyMapping { backend: "~w", env_var: "~w" },~n', [B, V])
+        ), Pairs),
+        write(S, '];\n\n')
     ;
         findall(B-V, agent_loop_module:api_key_env_var(B, V), Pairs),
         maplist([B-V]>>(format(S, "api_key_env_var(~q, ~q).~n", [B, V])), Pairs)
@@ -1981,6 +1988,13 @@ emit_config_section(S, api_key_files, Options) :-
     extract_target(Options, Target),
     (Target == python ->
         emit_api_key_files_py(S, Options)
+    ; Target == rust ->
+        write(S, 'pub static API_KEY_FILE_PATHS: &[ApiKeyFilePath] = &[\n'),
+        findall(B-P, agent_loop_module:api_key_file(B, P), Pairs),
+        maplist([B-P]>>(
+            format(S, '    ApiKeyFilePath { backend: "~w", file_path: "~w" },~n', [B, P])
+        ), Pairs),
+        write(S, '];\n\n')
     ;
         findall(B-F, agent_loop_module:api_key_file(B, F), Pairs),
         maplist([B-F]>>(format(S, "api_key_file(~q, ~q).~n", [B, F])), Pairs)
@@ -1989,6 +2003,17 @@ emit_config_section(S, default_presets, Options) :-
     extract_target(Options, Target),
     (Target == python ->
         emit_default_presets_py(S, Options)
+    ; Target == rust ->
+        write(S, 'pub static DEFAULT_PRESETS: &[DefaultPreset] = &[\n'),
+        findall(dp(N,B,O), agent_loop_module:default_agent_preset(N, B, O), DPs),
+        maplist([dp(N,B,O)]>>(
+            term_to_atom(O, OStr),
+            atom_string(OStr, OString),
+            agent_loop_module:replace_all_sub(OString, "\"", "\\\"", OEscaped),
+            format(S, '    DefaultPreset { name: "~w", backend: "~w", overrides: "~w" },~n',
+                   [N, B, OEscaped])
+        ), DPs),
+        write(S, '];\n\n')
     ;
         findall(N-B-P, agent_loop_module:default_agent_preset(N, B, P), Presets),
         maplist([N-B-P]>>(format(S, "default_agent_preset(~q, ~q, ~q).~n", [N, B, P])), Presets)
@@ -1998,6 +2023,18 @@ emit_config_section(S, agent_config_fields, Options) :-
     extract_target(Options, Target),
     (Target == python ->
         emit_agent_config_fields(S, Options)
+    ; Target == rust ->
+        write(S, 'pub static CONFIG_FIELDS: &[AgentConfigField] = &[\n'),
+        findall(acf(N,T,D,C), agent_loop_module:agent_config_field(N,T,D,C), ACFs),
+        maplist([acf(N,T,D,C)]>>(
+            (D == none -> DStr = ''
+            ; atom(D) -> atom_string(D, DS), agent_loop_module:replace_all_sub(DS, "\"", "\\\"", DStr)
+            ; term_to_atom(D, DA), atom_string(DA, DS2), agent_loop_module:replace_all_sub(DS2, "\"", "\\\"", DStr)
+            ),
+            format(S, '    AgentConfigField { name: "~w", type_annotation: "~w", default_value: "~w", comment: "~w" },~n',
+                   [N, T, DStr, C])
+        ), ACFs),
+        write(S, '];\n\n')
     ;
         findall(acf(N,T,D,C), agent_loop_module:agent_config_field(N,T,D,C), ACFs),
         maplist([acf(N,T,D,C)]>>(
@@ -2008,6 +2045,13 @@ emit_config_section(S, audit_levels, Options) :-
     extract_target(Options, Target),
     (Target == python ->
         emit_audit_levels(S, Options)
+    ; Target == rust ->
+        write(S, 'pub static AUDIT_LEVELS: &[AuditLevel] = &[\n'),
+        findall(P-L, agent_loop_module:audit_profile_level(P, L), Pairs),
+        maplist([P-L]>>(
+            format(S, '    AuditLevel { profile: "~w", level: "~w" },~n', [P, L])
+        ), Pairs),
+        write(S, '];\n\n')
     ;
         findall(P-L, agent_loop_module:audit_profile_level(P, L), Pairs),
         maplist([P-L]>>(format(S, "audit_profile_level(~q, ~q).~n", [P, L])), Pairs)
@@ -2017,6 +2061,11 @@ emit_config_section(S, streaming_capable, Options) :-
     (Target == python ->
         findall(Type, agent_loop_module:streaming_capable(Type), Types),
         maplist([Type]>>(format(S, "    '~w',~n", [Type])), Types)
+    ; Target == rust ->
+        write(S, 'pub static STREAMING_CAPABLE: &[&str] = &[\n'),
+        findall(Type, agent_loop_module:streaming_capable(Type), Types),
+        maplist([Type]>>(format(S, '    "~w",~n', [Type])), Types),
+        write(S, '];\n\n')
     ;
         emit_streaming_capable_facts(S, Options)
     ).
@@ -2024,6 +2073,8 @@ emit_config_section(S, security_profiles, Options) :-
     extract_target(Options, Target),
     (Target == python ->
         emit_security_profile_entries(S, Options)
+    ; Target == rust ->
+        emit_rust_security_facts(S, Options)
     ;
         findall(N-P, agent_loop_module:security_profile(N, P), Profiles),
         maplist([N-P]>>(format(S, "security_profile(~q, ~q).~n", [N, P])), Profiles)
@@ -2032,6 +2083,20 @@ emit_config_section(S, cli_arguments, Options) :-
     extract_target(Options, Target),
     (Target == python ->
         emit_argparse_group_args(S, Options)
+    ; Target == rust ->
+        write(S, 'pub static CLI_ARGS: &[CliArgument] = &[\n'),
+        findall(Name-Opts, agent_loop_module:cli_argument(Name, Opts), CLIArgs),
+        maplist([Name-Opts]>>(
+            (member(long(Long), Opts) -> true ; Long = ''),
+            (member(short(Short), Opts) -> true ; Short = ''),
+            (member(default(Def), Opts) ->
+                (Def == none -> DefStr = '' ; term_to_atom(Def, DefStr))
+            ; DefStr = ''),
+            (member(help(Help), Opts) -> true ; Help = ''),
+            format(S, '    CliArgument { name: "~w", long_flag: "~w", short_flag: "~w", default_value: "~w", help: "~w" },~n',
+                   [Name, Long, Short, DefStr, Help])
+        ), CLIArgs),
+        write(S, '];\n\n')
     ;
         findall(N-P, agent_loop_module:cli_argument(N, P), Args),
         maplist([N-P]>>(format(S, "cli_argument(~q, ~q).~n", [N, P])), Args)
