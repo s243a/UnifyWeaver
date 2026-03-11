@@ -185,6 +185,14 @@ run_tests :-
     test_rust_backend_api_streaming,
     test_rust_phase4_generation,
     test_rust_config_search_paths_section,
+    %% Phase 5
+    test_rust_command_validation_fix,
+    test_rust_security_wiring,
+    test_rust_security_profile_conditional,
+    test_rust_approval_mode,
+    test_rust_yaml_config,
+    test_rust_security_regex_lists,
+    test_rust_phase5_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3676,4 +3684,114 @@ test_rust_config_search_paths_section :-
     )),
     assert_true('has fallback priority', (
         sub_string(Out, _, _, _, "fallback")
+    )).
+
+%% =============================================================================
+%% Phase 5 Tests — Security wiring + YAML config
+%% =============================================================================
+
+test_rust_command_validation_fix :-
+    format("~nCommand validation fix:~n"),
+    agent_loop_module:output_path(rust, 'security.rs', SecPath),
+    read_file_to_string(SecPath, SecContent, []),
+    assert_true('cautious has command_validation true', (
+        sub_string(SecContent, _, _, _, "\"cautious\", SecurityProfileSpec { path_validation: true, command_validation: true }")
+    )),
+    assert_true('open has command_validation false', (
+        sub_string(SecContent, _, _, _, "\"open\", SecurityProfileSpec { path_validation: false, command_validation: false }")
+    )).
+
+test_rust_security_wiring :-
+    format("~nSecurity wiring:~n"),
+    agent_loop_module:rust_fragment(tool_handler_struct, THS),
+    atom_string(THS, THSS),
+    assert_true('ToolHandler has security_profile field', (
+        sub_string(THSS, _, _, _, "pub security_profile: String")
+    )),
+    assert_true('ToolHandler has approval_mode field', (
+        sub_string(THSS, _, _, _, "pub approval_mode: String")
+    )),
+    assert_true('ToolHandler::new accepts 3 params', (
+        sub_string(THSS, _, _, _, "pub fn new(auto_approve: bool, security_profile: String, approval_mode: String)")
+    )),
+    assert_true('ToolHandler has get_profile_spec', (
+        sub_string(THSS, _, _, _, "fn get_profile_spec")
+    )).
+
+test_rust_security_profile_conditional :-
+    format("~nSecurity profile conditional:~n"),
+    agent_loop_module:rust_fragment(tool_handler_validation, THV),
+    atom_string(THV, THVS),
+    assert_true('check_path_allowed takes &self', (
+        sub_string(THVS, _, _, _, "pub fn check_path_allowed(&self, path: &str)")
+    )),
+    assert_true('is_command_blocked takes &self', (
+        sub_string(THVS, _, _, _, "pub fn is_command_blocked(&self, command: &str)")
+    )),
+    assert_true('checks paranoid profile', (
+        sub_string(THVS, _, _, _, "\"paranoid\"")
+    )).
+
+test_rust_approval_mode :-
+    format("~nApproval mode:~n"),
+    agent_loop_module:rust_fragment(tool_handler_validation, THV2),
+    atom_string(THV2, THV2S),
+    assert_true('has check_approval method', (
+        sub_string(THV2S, _, _, _, "pub fn check_approval")
+    )),
+    assert_true('plan mode blocks writes', (
+        sub_string(THV2S, _, _, _, "\"plan\"")
+    )),
+    agent_loop_module:rust_fragment(tool_handler_dispatch, THD),
+    atom_string(THD, THDS),
+    assert_true('execute calls check_approval', (
+        sub_string(THDS, _, _, _, "self.check_approval")
+    )).
+
+test_rust_yaml_config :-
+    format("~nYAML config support:~n"),
+    agent_loop_module:rust_fragment(config_loader_cascade, CLC),
+    atom_string(CLC, CLCS),
+    assert_true('load_config_file handles yaml', (
+        sub_string(CLCS, _, _, _, "serde_yaml::from_str")
+    )),
+    agent_loop_module:output_path(rust, '../Cargo.toml', CargoPath),
+    read_file_to_string(CargoPath, CargoContent, []),
+    assert_true('Cargo.toml has serde_yaml', (
+        sub_string(CargoContent, _, _, _, "serde_yaml")
+    )),
+    agent_loop_module:output_path(rust, 'config_loader.rs', CLPath),
+    read_file_to_string(CLPath, CLContent, []),
+    assert_true('config_loader has generate_example_config_yaml', (
+        sub_string(CLContent, _, _, _, "generate_example_config_yaml")
+    )).
+
+test_rust_security_regex_lists :-
+    format("~nSecurity regex lists:~n"),
+    agent_loop_module:output_path(rust, 'security.rs', SecPath2),
+    read_file_to_string(SecPath2, SecContent2, []),
+    assert_true('security.rs has GUARDED_EXTRA_BLOCKS', (
+        sub_string(SecContent2, _, _, _, "GUARDED_EXTRA_BLOCKS")
+    )),
+    assert_true('security.rs has PARANOID_SAFE', (
+        sub_string(SecContent2, _, _, _, "PARANOID_SAFE")
+    )),
+    assert_true('security.rs has PARANOID_CONFIRM', (
+        sub_string(SecContent2, _, _, _, "PARANOID_CONFIRM")
+    )).
+
+test_rust_phase5_generation :-
+    format("~nRust phase 5 generation:~n"),
+    agent_loop_module:output_path(rust, 'types.rs', TypesPath),
+    read_file_to_string(TypesPath, TypesContent, []),
+    assert_true('AgentConfig has security_profile', (
+        sub_string(TypesContent, _, _, _, "pub security_profile: String")
+    )),
+    assert_true('AgentConfig has approval_mode', (
+        sub_string(TypesContent, _, _, _, "pub approval_mode: String")
+    )),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath5),
+    read_file_to_string(MainPath5, MainContent5, []),
+    assert_true('main.rs has ToolHandler with 3 args', (
+        sub_string(MainContent5, _, _, _, "config.security_profile.clone()")
     )).

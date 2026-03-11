@@ -480,6 +480,8 @@ agent_config_field(max_iterations,      'int',            '0',       "0 = unlimi
 agent_config_field(timeout,             'int',            '300',     "").
 agent_config_field(show_tokens,         'bool',           'True',    "").
 agent_config_field(stream,              'bool',           'False',   "Enable streaming output for API backends").
+agent_config_field(security_profile,    'str',            '"cautious"', "Security profile (open/cautious/guarded/paranoid)").
+agent_config_field(approval_mode,       'str',            '"yolo"',  "Tool approval mode (default/auto_edit/yolo/plan)").
 agent_config_field(extra,               'dict',           'field(default_factory=dict)', "").
 
 %% config_field_json_default(FieldName, JsonDefault)
@@ -1468,6 +1470,7 @@ generate_rust_cargo_toml :-
     write(S, 'regex = "1"\n'),
     write(S, 'reqwest = { version = "0.12", features = ["json", "blocking"] }\n'),
     write(S, 'rustyline = "14"\n'),
+    write(S, 'serde_yaml = "0.9"\n'),
     close(S),
     format('  Generated rust/Cargo.toml~n', []).
 
@@ -1552,8 +1555,42 @@ generate_rust_security :-
     ]),
     write_rust(S, security_types),
     agent_loop_components:emit_rust_security_facts(S, [target(rust)]),
+    emit_rust_regex_lists(S),
     close(S),
     format('  Generated rust/src/security.rs~n', []).
+
+%% emit_rust_regex_lists(+Stream)
+%% Emit regex_list/2 facts as Rust static &[&str] arrays into security.rs.
+emit_rust_regex_lists(S) :-
+    write(S, '\n'),
+    forall(
+        (regex_list_variable(ListName, _PV), regex_list(ListName, Patterns)),
+        emit_rust_regex_list(S, ListName, Patterns)
+    ).
+
+%% emit_rust_regex_list(+Stream, +ListName, +Patterns)
+emit_rust_regex_list(S, ListName, Patterns) :-
+    upcase_atom(ListName, Upper),
+    format(S, 'pub static ~w: &[&str] = &[~n', [Upper]),
+    forall(
+        member(Pat, Patterns),
+        ( strip_python_raw_prefix(Pat, RustPat),
+          format(S, '    r~w,~n', [RustPat]) )
+    ),
+    write(S, '];\n\n').
+
+%% strip_python_raw_prefix(+PythonPattern, -RustPattern)
+%% Converts Python r'^foo' to "^foo" for Rust regex.
+strip_python_raw_prefix(Pat, RustPat) :-
+    atom_string(Pat, PatS),
+    ( sub_string(PatS, 0, 2, _, "r'") ->
+        sub_string(PatS, 2, _, 1, Inner),
+        format(atom(RustPat), '"~w"', [Inner])
+    ; sub_string(PatS, 0, 2, _, "r\"") ->
+        sub_string(PatS, 1, _, 0, RustPat)
+    ;
+        RustPat = Pat
+    ).
 
 %% =============================================================================
 %% Rust Phase 2 — Imperative Layer Generators
@@ -1735,6 +1772,7 @@ generate_rust_config_loader :-
     write_rust(S, config_loader_list_agents),
     %% Generate example config from example_agent_config/3 facts
     generate_rust_example_config(S),
+    generate_rust_example_config_yaml(S),
     close(S),
     format('  Generated rust/src/config_loader.rs~n', []).
 
@@ -1796,6 +1834,18 @@ rust_format_config_val(Val, FmtStr) :-
         format(atom(FmtStr), '[~w]', [Inner])
     ; format(atom(FmtStr), '\\\"~w\\\"', [Val])
     ).
+
+%% generate_rust_example_config_yaml(+Stream)
+%% Emit generate_example_config_yaml() that reuses generate_example_config()
+%% and converts JSON → YAML via serde.
+generate_rust_example_config_yaml(S) :-
+    write(S, '\nfn generate_example_config_yaml() -> String {\n'),
+    write(S, '    let json_str = generate_example_config();\n'),
+    write(S, '    match serde_json::from_str::<serde_json::Value>(&json_str) {\n'),
+    write(S, '        Ok(val) => serde_yaml::to_string(&val).unwrap_or(json_str),\n'),
+    write(S, '        Err(_) => json_str,\n'),
+    write(S, '    }\n'),
+    write(S, '}\n').
 
 generate_rust_sessions :-
     output_path(rust, 'sessions.rs', Path),
@@ -2098,6 +2148,11 @@ generate_rust_cli_config_build(S) :-
     write(S, '    if matches.get_flag("auto_tools") { config.auto_tools = true; }\n'),
     write(S, '    if matches.get_flag("no_tokens") { config.show_tokens = false; }\n'),
     write(S, '    if matches.get_flag("stream_arg") { config.stream = true; }\n'),
+    write(S, '    if matches.get_flag("no_security") { config.security_profile = "open".to_string(); }\n'),
+    %% String overrides for security/approval
+    maplist([Field-ArgName]>>(
+        format(S, '    if let Some(v) = matches.get_one::<String>("~w") { config.~w = v.clone(); }~n', [ArgName, Field])
+    ), [security_profile-security_profile, approval_mode-approval_mode]),
     %% Int overrides
     maplist([Field-ArgName]>>(
         format(S, '    if let Some(&v) = matches.get_one::<i64>("~w") { config.~w = v; }~n', [ArgName, Field])
@@ -4202,15 +4257,26 @@ impl AgentBackend for ApiBackend {
 ').
 
 rust_fragment(tool_handler_struct, '
+use crate::security::SecurityProfileSpec;
 
 /// Handles tool execution with security validation.
 pub struct ToolHandler {
     pub auto_approve: bool,
+    pub security_profile: String,
+    pub approval_mode: String,
 }
 
 impl ToolHandler {
-    pub fn new(auto_approve: bool) -> Self {
-        Self { auto_approve }
+    pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
+        Self { auto_approve, security_profile, approval_mode }
+    }
+
+    /// Look up the SecurityProfileSpec for the current profile.
+    fn get_profile_spec(&self) -> Option<&''static SecurityProfileSpec> {
+        use crate::security::SECURITY_PROFILES;
+        SECURITY_PROFILES.iter()
+            .find(|(name, _)| *name == self.security_profile)
+            .map(|(_, spec)| spec)
     }
 }
 
@@ -4219,8 +4285,16 @@ impl ToolHandler {
 rust_fragment(tool_handler_validation, '
 impl ToolHandler {
     /// Check if a path is allowed by security rules.
-    pub fn check_path_allowed(path: &str) -> bool {
+    /// Respects security_profile: "open" skips all checks.
+    pub fn check_path_allowed(&self, path: &str) -> bool {
         use crate::security::*;
+
+        // Open profile skips all path checks
+        if let Some(spec) = self.get_profile_spec() {
+            if !spec.path_validation {
+                return true;
+            }
+        }
 
         // Check exact blocked paths
         for blocked in BLOCKED_PATHS.iter() {
@@ -4251,17 +4325,87 @@ impl ToolHandler {
     }
 
     /// Check if a command matches any blocked patterns.
-    pub fn is_command_blocked(command: &str) -> Option<&''static str> {
-        use crate::security::BLOCKED_COMMAND_PATTERNS;
+    /// Respects security_profile: "open" skips checks, "guarded" adds extra blocks,
+    /// "paranoid" uses allowlist-only mode.
+    pub fn is_command_blocked(&self, command: &str) -> Option<String> {
+        use crate::security::*;
 
+        // Open profile skips all command checks
+        if let Some(spec) = self.get_profile_spec() {
+            if !spec.command_validation {
+                return None;
+            }
+        }
+
+        // Paranoid mode: allowlist-only (safe + confirm patterns)
+        if self.security_profile == "paranoid" {
+            let is_safe = PARANOID_SAFE.iter().any(|pat| {
+                regex::Regex::new(pat).map(|re| re.is_match(command)).unwrap_or(false)
+            });
+            let is_confirm = PARANOID_CONFIRM.iter().any(|pat| {
+                regex::Regex::new(pat).map(|re| re.is_match(command)).unwrap_or(false)
+            });
+            if !is_safe && !is_confirm {
+                return Some("Command not in paranoid allowlist".to_string());
+            }
+            return None;
+        }
+
+        // Standard blocked command patterns (cautious + guarded)
         for (pattern, description) in BLOCKED_COMMAND_PATTERNS.iter() {
             if let Ok(re) = regex::Regex::new(pattern) {
                 if re.is_match(command) {
-                    return Some(description);
+                    return Some(description.to_string());
                 }
             }
         }
+
+        // Guarded mode: additional blocked patterns
+        if self.security_profile == "guarded" {
+            for pattern in GUARDED_EXTRA_BLOCKS.iter() {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if re.is_match(command) {
+                        return Some(format!("Blocked by guarded profile: {}", pattern));
+                    }
+                }
+            }
+        }
+
         None
+    }
+
+    /// Check if a tool requires approval based on approval_mode.
+    /// Returns true if the tool is approved to execute, false if blocked.
+    pub fn check_approval(&self, tool_name: &str) -> bool {
+        match self.approval_mode.as_str() {
+            "yolo" => true,
+            "plan" => {
+                // Plan mode: only read is allowed
+                matches!(tool_name, "read")
+            }
+            "auto_edit" => {
+                // Auto-approve read and edit, block bash and write
+                matches!(tool_name, "read" | "edit" | "write")
+            }
+            "default" => {
+                if self.auto_approve {
+                    return true;
+                }
+                // Read is always auto-approved
+                if tool_name == "read" {
+                    return true;
+                }
+                // For other tools, prompt user
+                eprint!("  Allow {} tool? [y/N] ", tool_name);
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    input.trim().eq_ignore_ascii_case("y")
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        }
     }
 }
 
@@ -4271,6 +4415,15 @@ rust_fragment(tool_handler_dispatch, '
 impl ToolHandler {
     /// Execute a tool call and return the result.
     pub fn execute(&self, tool_call: &ToolCall) -> ToolResult {
+        // Check approval mode before executing
+        if !self.check_approval(&tool_call.name) {
+            return ToolResult {
+                success: false,
+                output: format!("Tool ''{}'' blocked by approval mode ''{}''", tool_call.name, self.approval_mode),
+                tool_name: tool_call.name.clone(),
+            };
+        }
+
         match tool_call.name.as_str() {
             "bash" => self.handle_bash(&tool_call.arguments),
             "read" => self.handle_read(&tool_call.arguments),
@@ -4289,7 +4442,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if let Some(reason) = Self::is_command_blocked(command) {
+        if let Some(reason) = self.is_command_blocked(command) {
             return ToolResult {
                 success: false,
                 output: format!("Command blocked: {}", reason),
@@ -4327,7 +4480,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if !Self::check_path_allowed(path) {
+        if !self.check_path_allowed(path) {
             return ToolResult {
                 success: false,
                 output: format!("Path blocked: {}", path),
@@ -4357,7 +4510,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if !Self::check_path_allowed(path) {
+        if !self.check_path_allowed(path) {
             return ToolResult {
                 success: false,
                 output: format!("Path blocked: {}", path),
@@ -4390,7 +4543,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if !Self::check_path_allowed(path) {
+        if !self.check_path_allowed(path) {
             return ToolResult {
                 success: false,
                 output: format!("Path blocked: {}", path),
@@ -4767,10 +4920,15 @@ pub fn find_config_file(cli_config: Option<&str>, no_fallback: bool) -> Option<S
     None
 }
 
-/// Load and parse a config file (JSON format).
+/// Load and parse a config file (JSON or YAML format).
+/// Format is detected by file extension: .yaml/.yml → YAML, otherwise JSON.
 pub fn load_config_file(path: &str) -> Option<ConfigFile> {
     let content = std::fs::read_to_string(path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let json: serde_json::Value = if path.ends_with(".yaml") || path.ends_with(".yml") {
+        serde_yaml::from_str(&content).ok()?
+    } else {
+        serde_json::from_str(&content).ok()?
+    };
 
     let mut cf = ConfigFile::default();
 
@@ -5006,9 +5164,13 @@ pub fn list_agents(config_file: Option<&ConfigFile>) {
     }
 }
 
-/// Generate an example config file.
+/// Generate an example config file (JSON or YAML based on extension).
 pub fn init_config(path: &str) -> std::io::Result<()> {
-    let content = generate_example_config();
+    let content = if path.ends_with(".yaml") || path.ends_with(".yml") {
+        generate_example_config_yaml()
+    } else {
+        generate_example_config()
+    };
     std::fs::write(path, content)?;
     println!("Created example config: {}", path);
     Ok(())
@@ -5019,7 +5181,7 @@ rust_fragment(main_loop, '
     let backend = create_backend(&config);
     let mut context = ContextManager::new(config.max_messages as usize);
     let mut cost_tracker = CostTracker::new();
-    let tool_handler = ToolHandler::new(config.auto_tools);
+    let tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
 
     // Restore initial context from --session if any
     for msg in &initial_context {

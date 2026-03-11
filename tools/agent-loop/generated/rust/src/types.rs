@@ -92,6 +92,10 @@ pub struct AgentConfig {
     pub show_tokens: bool,
     /// Enable streaming output for API backends
     pub stream: bool,
+    /// Security profile (open/cautious/guarded/paranoid)
+    pub security_profile: String,
+    /// Tool approval mode (default/auto_edit/yolo/plan)
+    pub approval_mode: String,
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
@@ -117,6 +121,8 @@ impl Default for AgentConfig {
             timeout: 300,
             show_tokens: true,
             stream: false,
+            security_profile: "cautious".to_string(),
+            approval_mode: "yolo".to_string(),
             extra: std::collections::HashMap::new(),
         }
     }

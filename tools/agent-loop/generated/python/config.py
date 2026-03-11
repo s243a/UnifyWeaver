@@ -104,6 +104,8 @@ class AgentConfig:
     timeout: int = 300
     show_tokens: bool = True
     stream: bool = False  # Enable streaming output for API backends
+    security_profile: str = "cautious"  # Security profile (open/cautious/guarded/paranoid)
+    approval_mode: str = "yolo"  # Tool approval mode (default/auto_edit/yolo/plan)
     extra: dict = field(default_factory=dict)
 
 
@@ -155,6 +157,8 @@ def _load_agent_config(name: str, data: dict) -> AgentConfig:
         timeout=data.get('timeout', 300),
         show_tokens=data.get('show_tokens', True),
         stream=data.get('stream', False),
+        security_profile=data.get('security_profile', "cautious"),
+        approval_mode=data.get('approval_mode', "yolo"),
         extra=data.get('extra', {})
     )
 

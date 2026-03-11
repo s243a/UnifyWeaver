@@ -18,9 +18,9 @@ pub struct SecurityProfileSpec {
 
 pub static SECURITY_PROFILES: &[(&str, SecurityProfileSpec)] = &[
     ("open", SecurityProfileSpec { path_validation: false, command_validation: false }),
-    ("cautious", SecurityProfileSpec { path_validation: true, command_validation: false }),
-    ("guarded", SecurityProfileSpec { path_validation: true, command_validation: false }),
-    ("paranoid", SecurityProfileSpec { path_validation: true, command_validation: false }),
+    ("cautious", SecurityProfileSpec { path_validation: true, command_validation: true }),
+    ("guarded", SecurityProfileSpec { path_validation: true, command_validation: true }),
+    ("paranoid", SecurityProfileSpec { path_validation: true, command_validation: true }),
 ];
 
 pub static BLOCKED_PATHS: &[&str] = &[
@@ -55,5 +55,40 @@ pub static BLOCKED_COMMAND_PATTERNS: &[(&str, &str)] = &[
     (r"\bchmod\s+777\b", "world-writable permissions"),
     (r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;", "fork bomb"),
     (r"\b>\s*/etc/", "overwrite system config"),
+];
+
+
+pub static GUARDED_EXTRA_BLOCKS: &[&str] = &[
+    r"^sudo\s",
+    r"\bbase64\b.*\|\s*(bash|sh)",
+    r"\beval\s",
+    r"\bnohup\s",
+    r"\bdisown\s",
+    r"&\s*$",
+    r"\bpython[23]?\s+-c\s.*os\.system",
+    r"\bpython[23]?\s+-c\s.*subprocess",
+    r"\bpython[23]?\s+-c\s.*__import__",
+    r"\bnode\s+-e\s.*child_process",
+];
+
+pub static PARANOID_SAFE: &[&str] = &[
+    r"^ls(\s|$)",
+    r"^cat\s",
+    r"^head\s",
+    r"^tail\s",
+    r"^grep\s",
+    r"^echo\s",
+    r"^pwd$",
+    r"^cd\s",
+    r"^wc\s",
+    r"^sort\s",
+    r"^diff\s",
+    r"^git\s+(status|log|diff|show|branch)",
+];
+
+pub static PARANOID_CONFIRM: &[&str] = &[
+    r"^find\s+(?!.*(-exec|-execdir|-delete|-ok)\b)[^;|&]*$",
+    r"^python3\s+[^-].*\.py$",
+    r"^node\s+[^-].*\.js$",
 ];
 

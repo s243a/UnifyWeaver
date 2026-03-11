@@ -374,12 +374,12 @@ agent_security_type:compile_component(Name, Config, Options, Code) :-
         (member(indent(N), Options) -> true ; N = 4),
         length(Spaces, N), maplist(=(0' ), Spaces), atom_chars(Indent, Spaces),
         (member(path_validation(PV), Config) -> true ; PV = false),
-        (member(command_validation(CV), Config) -> true ; CV = false),
+        (member(command_blocklist(CV), Config) -> true ; CV = false),
         format(atom(Code), "~w'~w': {'path_validation': ~w, 'command_validation': ~w},",
                [Indent, Name, PV, CV])
     ; member(target(rust), Options) ->
         (member(path_validation(PV), Config) -> true ; PV = false),
-        (member(command_validation(CV), Config) -> true ; CV = false),
+        (member(command_blocklist(CV), Config) -> true ; CV = false),
         indent_atom(Options, Indent),
         format(atom(Code), '~w("~w", SecurityProfileSpec { path_validation: ~w, command_validation: ~w }),',
                [Indent, Name, PV, CV])
