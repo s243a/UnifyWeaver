@@ -130,7 +130,7 @@ compile_goals_nested([], HeadArgs, _Counter, Bindings, Code) :- !,
     format(string(Code), '    callback(~w)', [ArgsStr]).
 compile_goals_nested([Goal|Rest], HeadArgs, Counter, Bindings, Code) :-
     (   Goal = (_ is _) ->
-        % Arithmetic: skip for now in CPS mode
+        % TODO: compile arithmetic bindings in CPS mode (currently skipped)
         compile_goals_nested(Rest, HeadArgs, Counter, Bindings, Code)
     ;   Goal =.. [GoalPred|GoalArgs],
         length(GoalArgs, GoalArity),
@@ -265,7 +265,7 @@ compile_base_case_delta(Body, HeadArgs, _Arity, Counter, Code) :-
 compile_base_goals_for_delta([], HeadArgs, _Counter, Bindings, Code) :- !,
     maplist(resolve_head_arg(Bindings), HeadArgs, ResolvedArgs),
     atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
-    key_expr_from_list(ResolvedArgs, KeyExpr),
+    key_expr_from_args(ResolvedArgs, KeyExpr),
     format(string(Code),
 '        local key = ~w
         if not seen[key] then
@@ -274,6 +274,7 @@ compile_base_goals_for_delta([], HeadArgs, _Counter, Bindings, Code) :- !,
         end', [KeyExpr, ArgsStr]).
 compile_base_goals_for_delta([Goal|Rest], HeadArgs, Counter, Bindings, Code) :-
     (   Goal = (_ is _) ->
+        % TODO: compile arithmetic bindings in delta mode (currently skipped)
         compile_base_goals_for_delta(Rest, HeadArgs, Counter, Bindings, Code)
     ;   Goal =.. [GoalPred|GoalArgs],
         length(GoalArgs, GoalArity),
@@ -345,7 +346,7 @@ bind_to_item_positions([Arg|Rest], Pos, Bindings) :-
 compile_expansion_goals([], HeadArgs, _Counter, Bindings, Code) :- !,
     maplist(resolve_expansion_arg(Bindings), HeadArgs, ResolvedArgs),
     atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
-    key_expr_from_list(ResolvedArgs, KeyExpr),
+    key_expr_from_args(ResolvedArgs, KeyExpr),
     format(string(Code),
 '        local key = ~w
         if not seen[key] then
@@ -402,20 +403,6 @@ key_expr_from_args(ArgStrs, KeyExpr) :-
         format(string(Part), 'tostring(~w)', [A])
     ), Parts),
     atomic_list_concat(Parts, ' .. "\\0" .. ', KeyExpr).
-
-key_expr_from_list(ArgList, KeyExpr) :-
-    findall(Part, (
-        member(A, ArgList),
-        format(string(Part), 'tostring(~w)', [A])
-    ), Parts),
-    atomic_list_concat(Parts, ' .. "\\0" .. ', KeyExpr).
-
-% Variable resolution helpers (kept for binding-based compilation)
-resolve_val(VarMap, Var, Val) :- var(Var), lookup_binding(Var, VarMap, Name), !, format(string(Val), '~w', [Name]).
-resolve_val(_, Val, StrVal) :- format(string(StrVal), '~w', [Val]).
-
-ensure_var(VarMap, Var, Name, VarMap) :- lookup_binding(Var, VarMap, Name), !.
-ensure_var(VarMap, Var, Name, [Var-Name|VarMap]) :- gensym(v, Name).
 
 
 % ============================================================================
@@ -474,7 +461,7 @@ local function ~w(data)
 end
 ', [PipelineName, PipelineName, NestedCall]).
 
-generate_lua_pipeline_connector(Predicates, PipelineName, generator, Code) :-
+generate_lua_pipeline_connector(Predicates, PipelineName, fixpoint, Code) :-
     maplist(get_pred_name, Predicates, StageNames),
     generate_nested_calls(StageNames, "row", NestedCall),
     format(string(Code),
@@ -559,11 +546,11 @@ end
 
 tree_recursion:compile_tree_pattern(lua, binary_tree, Pred, Arity, _UseMemo, LuaCode) :-
     atom_string(Pred, PredStr),
-    format(string(LuaCode), '-- ~w/~w - binary tree recursion (Lua)\n-- Not fully implemented', [PredStr, Arity]).
+    format(string(LuaCode), '-- ~w/~w - binary tree recursion (Lua)\n-- TODO: implement binary tree pattern', [PredStr, Arity]).
 
 tree_recursion:compile_tree_pattern(lua, generic, Pred, Arity, _UseMemo, LuaCode) :-
     atom_string(Pred, PredStr),
-    format(string(LuaCode), '-- ~w/~w - generic tree recursion (Lua)\n-- Not fully implemented', [PredStr, Arity]).
+    format(string(LuaCode), '-- ~w/~w - generic tree recursion (Lua)\n-- TODO: implement generic tree pattern', [PredStr, Arity]).
 
 :- multifile tail_recursion:compile_tail_pattern/9.
 tail_recursion:compile_tail_pattern(lua, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, StepOp, _ExitAfterResult, LuaCode) :-
@@ -613,11 +600,11 @@ end
 
 :- multifile multicall_linear_recursion:compile_multicall_pattern/6.
 multicall_linear_recursion:compile_multicall_pattern(lua, PredStr, _BaseClauses, _RecClauses, _MemoEnabled, LuaCode) :-
-    format(string(LuaCode), '-- ~w/2 - multicall linear recursion (Lua)\n-- Not fully implemented', [PredStr]).
+    format(string(LuaCode), '-- ~w/2 - multicall linear recursion (Lua)\n-- TODO: implement multicall linear pattern', [PredStr]).
 
 :- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
 direct_multi_call_recursion:compile_direct_multicall_pattern(lua, PredStr, _BaseClauses, _RecClause, LuaCode) :-
-    format(string(LuaCode), '-- ~w/2 - direct multicall recursion (Lua)\n-- Not fully implemented', [PredStr]).
+    format(string(LuaCode), '-- ~w/2 - direct multicall recursion (Lua)\n-- TODO: implement direct multicall pattern', [PredStr]).
 
 :- multifile linear_recursion:compile_linear_pattern/8.
 linear_recursion:compile_linear_pattern(lua, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, _MemoStrategy, LuaCode) :-
@@ -901,7 +888,7 @@ test_lua_pipeline :-
     asserta((user:step2(In, Out) :- true)),
     compile_lua_pipeline([step1/2, step2/2], [pipeline_name(my_lua_pipe), pipeline_mode(sequential)], CodeSeq),
     format('~n=== Lua Sequential Pipeline Test ===~n~s~n', [CodeSeq]),
-    compile_lua_pipeline([step1/2, step2/2], [pipeline_name(my_lua_pipe_gen), pipeline_mode(generator)], CodeGen),
-    format('~n=== Lua Generator Pipeline Test ===~n~s~n', [CodeGen]),
+    compile_lua_pipeline([step1/2, step2/2], [pipeline_name(my_lua_pipe_gen), pipeline_mode(fixpoint)], CodeGen),
+    format('~n=== Lua Fixpoint Pipeline Test ===~n~s~n', [CodeGen]),
     retractall(user:step1(_, _)),
     retractall(user:step2(_, _)).

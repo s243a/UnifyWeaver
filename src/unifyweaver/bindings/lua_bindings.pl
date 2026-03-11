@@ -98,7 +98,7 @@ register_builtin_bindings :-
 
     declare_binding(lua, pcall/3, 'pcall',
         [function, any], [any],
-        [effect(error), deterministic, total]),
+        [effect(error), deterministic, total, note(variadic)]),
 
     % -------------------------------------------
     % Module system
@@ -161,6 +161,10 @@ register_math_bindings :-
 
     declare_binding(lua, log/2, 'math.log',
         [number], [number],
+        [pure, deterministic, total]),
+
+    declare_binding(lua, log/3, 'math.log',
+        [number, number], [number],
         [pure, deterministic, total]),
 
     declare_binding(lua, sin/2, 'math.sin',
