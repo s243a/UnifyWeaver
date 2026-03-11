@@ -183,6 +183,9 @@ register_builtin_targets :-
     % Ruby family
     register_target(ruby, ruby, [streaming, blocks, metaprogramming, gems, scripting]),
 
+    % Lua family
+    register_target(lua, lua, [scripting, fast, embedded, tables, coroutines]),
+
     % .NET family - can share process
     register_target(csharp, dotnet, [compiled, streaming, linq, async]),
     register_target(csharp_native, dotnet, [compiled, streaming, linq, procedural, recursion]),
@@ -262,6 +265,9 @@ register_target_modules :-
 
     % Ruby
     target_module(ruby, ruby_target),
+
+    % Lua
+    target_module(lua, lua_target),
 
     % JavaScript (to be implemented)
     target_module(typescript, typescript_target),
