@@ -648,7 +648,19 @@ test_linear_recursion :-
         writeln('  ✓ Compiled to output/advanced/list_length.R (r)'),
         compile_linear_recursion(list_length/2, [target(lua)], Code1L),
         write_bash_file('output/advanced/list_length.lua', Code1L),
-        writeln('  ✓ Compiled to output/advanced/list_length.lua (lua)')
+        writeln('  ✓ Compiled to output/advanced/list_length.lua (lua)'),
+        compile_linear_recursion(list_length/2, [target(c)], Code1C),
+        write_bash_file('output/advanced/list_length.c', Code1C),
+        writeln('  ✓ Compiled to output/advanced/list_length.c (c)'),
+        compile_linear_recursion(list_length/2, [target(haskell)], Code1H),
+        write_bash_file('output/advanced/list_length.hs', Code1H),
+        writeln('  ✓ Compiled to output/advanced/list_length.hs (haskell)'),
+        compile_linear_recursion(list_length/2, [target(java)], Code1J),
+        write_bash_file('output/advanced/list_length.java', Code1J),
+        writeln('  ✓ Compiled to output/advanced/list_length.java (java)'),
+        compile_linear_recursion(list_length/2, [target(elixir)], Code1E),
+        write_bash_file('output/advanced/list_length.exs', Code1E),
+        writeln('  ✓ Compiled to output/advanced/list_length.exs (elixir)')
     ;   writeln('  ✗ FAIL - should detect linear recursion')
     ),
 
@@ -667,7 +679,19 @@ test_linear_recursion :-
         writeln('  ✓ Compiled to output/advanced/factorial.R (r)'),
         compile_linear_recursion(factorial/2, [target(lua)], Code2L),
         write_bash_file('output/advanced/factorial.lua', Code2L),
-        writeln('  ✓ Compiled to output/advanced/factorial.lua (lua)')
+        writeln('  ✓ Compiled to output/advanced/factorial.lua (lua)'),
+        compile_linear_recursion(factorial/2, [target(c)], Code2C),
+        write_bash_file('output/advanced/factorial.c', Code2C),
+        writeln('  ✓ Compiled to output/advanced/factorial.c (c)'),
+        compile_linear_recursion(factorial/2, [target(haskell)], Code2H),
+        write_bash_file('output/advanced/factorial.hs', Code2H),
+        writeln('  ✓ Compiled to output/advanced/factorial.hs (haskell)'),
+        compile_linear_recursion(factorial/2, [target(java)], Code2J),
+        write_bash_file('output/advanced/factorial.java', Code2J),
+        writeln('  ✓ Compiled to output/advanced/factorial.java (java)'),
+        compile_linear_recursion(factorial/2, [target(elixir)], Code2E),
+        write_bash_file('output/advanced/factorial.exs', Code2E),
+        writeln('  ✓ Compiled to output/advanced/factorial.exs (elixir)')
     ;   writeln('  ⚠ Pattern not detected (expected for factorial)')
     ),
 

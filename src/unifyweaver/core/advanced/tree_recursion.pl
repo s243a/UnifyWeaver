@@ -343,6 +343,37 @@ test_tree_recursion :-
     ;   writeln('  ⚠ SKIP - tree_height not detected (expected - may need max/2 support)')
     ),
 
+    % Test 4: Fibonacci tree pattern (two recursive calls)
+    writeln('Test 4: Compile fibonacci as tree recursion'),
+    catch(abolish(test_tree_fib/2), _, true),
+    assertz(user:test_tree_fib(0, 0)),
+    assertz(user:test_tree_fib(1, 1)),
+    assertz(user:(test_tree_fib(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        test_tree_fib(N1, F1),
+        test_tree_fib(N2, F2),
+        F is F1 + F2
+    )),
+
+    (   is_tree_recursive(test_tree_fib/2) ->
+        writeln('  ✓ PASS - fibonacci detected as tree recursive'),
+        (   can_compile_tree_recursion(test_tree_fib/2) ->
+            compile_tree_recursion(test_tree_fib/2, [target(bash)], FibCode1),
+            write_bash_file('output/advanced/tree_fib.sh', FibCode1),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.sh (bash)'),
+            compile_tree_recursion(test_tree_fib/2, [target(r)], FibCode1R),
+            write_bash_file('output/advanced/tree_fib.R', FibCode1R),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.R (r)'),
+            compile_tree_recursion(test_tree_fib/2, [target(lua)], FibCode1L),
+            write_bash_file('output/advanced/tree_fib.lua', FibCode1L),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.lua (lua)')
+        ;   writeln('  ✗ FAIL - cannot compile fibonacci tree pattern')
+        )
+    ;   writeln('  ✗ FAIL - fibonacci not detected as tree recursive')
+    ),
+
     writeln(''),
     writeln('✓ Tree recursion tests complete!').
 

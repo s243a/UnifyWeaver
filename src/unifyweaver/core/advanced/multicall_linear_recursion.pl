@@ -244,6 +244,11 @@ generate_aggregation(_ * _, 2, Code) :-
 test_multicall_linear :-
     writeln('=== MULTI-CALL LINEAR RECURSION TESTS ==='),
 
+    % Setup output directory
+    (   exists_directory('output/advanced') -> true
+    ;   make_directory('output/advanced')
+    ),
+
     % Define fibonacci
     abolish_if_exists(test_fib/2),
     assertz(user:test_fib(0, 0)),
@@ -257,14 +262,45 @@ test_multicall_linear :-
         F is F1 + F2
     )),
 
-    % Test pattern detection
+    % Test 1: Pattern detection
     writeln('Test 1: Detect fibonacci as multi-call linear'),
     (   is_multicall_linear_recursive(test_fib/2) ->
         writeln('  ✓ PASS - fibonacci detected')
     ;   writeln('  ✗ FAIL - should detect fibonacci')
     ),
 
+    % Test 2: Compile to bash
+    writeln('Test 2: Compile fibonacci (multi-call linear) to bash'),
+    (   can_compile_multicall_linear(test_fib/2),
+        compile_multicall_linear_recursion(test_fib/2, [target(bash)], MCBashCode) ->
+        write_output_file('output/advanced/fib_multicall.sh', MCBashCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.sh (bash)')
+    ;   writeln('  ✗ FAIL - bash compilation failed')
+    ),
+
+    % Test 3: Compile to R
+    writeln('Test 3: Compile fibonacci (multi-call linear) to R'),
+    (   compile_multicall_linear_recursion(test_fib/2, [target(r)], MCRCode) ->
+        write_output_file('output/advanced/fib_multicall.R', MCRCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.R (r)')
+    ;   writeln('  ✗ FAIL - R compilation failed')
+    ),
+
+    % Test 4: Compile to Lua
+    writeln('Test 4: Compile fibonacci (multi-call linear) to Lua'),
+    (   compile_multicall_linear_recursion(test_fib/2, [target(lua)], MCLuaCode) ->
+        write_output_file('output/advanced/fib_multicall.lua', MCLuaCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.lua (lua)')
+    ;   writeln('  ✗ FAIL - Lua compilation failed')
+    ),
+
     writeln('=== TESTS COMPLETE ===').
+
+%% Helper to write output files
+write_output_file(Path, Content) :-
+    open(Path, write, Stream),
+    write(Stream, Content),
+    close(Stream).
 
 abolish_if_exists(Pred/Arity) :-
     (   current_predicate(Pred/Arity) ->

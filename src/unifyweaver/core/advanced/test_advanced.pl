@@ -21,7 +21,19 @@
 :- use_module('tree_recursion').
 :- use_module('mutual_recursion').
 :- use_module('advanced_recursive_compiler').
+:- use_module('multicall_linear_recursion').
+:- use_module('direct_multi_call_recursion').
 :- use_module('test_runner_generator').
+
+% Load target modules to register their multifile dispatch clauses.
+% Import only [] to avoid predicate name conflicts between targets.
+:- use_module('../../targets/r_target', []).
+:- use_module('../../targets/lua_target', []).
+:- use_module('../../targets/c_target', []).
+:- use_module('../../targets/haskell_target', []).
+:- use_module('../../targets/java_target', []).
+:- use_module('../../targets/elixir_target', []).
+:- use_module('../../targets/fsharp_target', []).
 
 %% Main test runner
 test_all_advanced :-
@@ -39,6 +51,8 @@ test_all_advanced :-
     run_module_test('Linear Recursion Compiler', test_linear_recursion),
     run_module_test('Tree Recursion Compiler', test_tree_recursion),
     run_module_test('Mutual Recursion Compiler', test_mutual_recursion),
+    run_module_test('Multi-Call Linear Recursion', test_multicall_linear),
+    run_module_test('Direct Multi-Call Recursion', test_direct_multi_call),
     run_module_test('Advanced Compiler Integration', test_advanced_compiler),
 
     % Generate test runner for compiled scripts

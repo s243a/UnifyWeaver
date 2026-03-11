@@ -254,7 +254,19 @@ test_tail_recursion :-
         writeln('  ✓ Compiled to output/advanced/count_items.R (r)'),
         compile_tail_recursion(count_items/3, [target(lua)], Code1L),
         write_bash_file('output/advanced/count_items.lua', Code1L),
-        writeln('  ✓ Compiled to output/advanced/count_items.lua (lua)')
+        writeln('  ✓ Compiled to output/advanced/count_items.lua (lua)'),
+        compile_tail_recursion(count_items/3, [target(c)], Code1C),
+        write_bash_file('output/advanced/count_items.c', Code1C),
+        writeln('  ✓ Compiled to output/advanced/count_items.c (c)'),
+        compile_tail_recursion(count_items/3, [target(haskell)], Code1H),
+        write_bash_file('output/advanced/count_items.hs', Code1H),
+        writeln('  ✓ Compiled to output/advanced/count_items.hs (haskell)'),
+        compile_tail_recursion(count_items/3, [target(java)], Code1J),
+        write_bash_file('output/advanced/count_items.java', Code1J),
+        writeln('  ✓ Compiled to output/advanced/count_items.java (java)'),
+        compile_tail_recursion(count_items/3, [target(elixir)], Code1E),
+        write_bash_file('output/advanced/count_items.exs', Code1E),
+        writeln('  ✓ Compiled to output/advanced/count_items.exs (elixir)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 
@@ -273,7 +285,19 @@ test_tail_recursion :-
         writeln('  ✓ Compiled to output/advanced/sum_list.R (r)'),
         compile_tail_recursion(sum_list/3, [target(lua)], Code2L),
         write_bash_file('output/advanced/sum_list.lua', Code2L),
-        writeln('  ✓ Compiled to output/advanced/sum_list.lua (lua)')
+        writeln('  ✓ Compiled to output/advanced/sum_list.lua (lua)'),
+        compile_tail_recursion(sum_list/3, [target(c)], Code2C),
+        write_bash_file('output/advanced/sum_list.c', Code2C),
+        writeln('  ✓ Compiled to output/advanced/sum_list.c (c)'),
+        compile_tail_recursion(sum_list/3, [target(haskell)], Code2H),
+        write_bash_file('output/advanced/sum_list.hs', Code2H),
+        writeln('  ✓ Compiled to output/advanced/sum_list.hs (haskell)'),
+        compile_tail_recursion(sum_list/3, [target(java)], Code2J),
+        write_bash_file('output/advanced/sum_list.java', Code2J),
+        writeln('  ✓ Compiled to output/advanced/sum_list.java (java)'),
+        compile_tail_recursion(sum_list/3, [target(elixir)], Code2E),
+        write_bash_file('output/advanced/sum_list.exs', Code2E),
+        writeln('  ✓ Compiled to output/advanced/sum_list.exs (elixir)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 

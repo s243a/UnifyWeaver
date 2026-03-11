@@ -11,7 +11,8 @@
 :- module(direct_multi_call_recursion, [
     compile_direct_multi_call/3,    % +Pred/Arity, +Options, -Code
     can_compile_direct_multi_call/1, % +Pred/Arity
-    extract_body_components/5       % +Body, +Pred, -Computations, -RecCalls, -Aggregation (shared)
+    extract_body_components/5,      % +Body, +Pred, -Computations, -RecCalls, -Aggregation (shared)
+    test_direct_multi_call/0        % Test predicate
 ]).
 
 :- use_module(library(lists)).
@@ -366,6 +367,14 @@ test_direct_multi_call :-
         write_output_file('output/advanced/fib_direct.R', RCode),
         writeln('  ✓ Compiled to output/advanced/fib_direct.R (r)')
     ;   writeln('  ✗ FAIL - R compilation failed')
+    ),
+
+    % Test 4: Lua compilation
+    writeln('Test 4: Compile fibonacci to Lua'),
+    (   compile_direct_multi_call(test_dfib/2, [target(lua)], LuaCode) ->
+        write_output_file('output/advanced/fib_direct.lua', LuaCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.lua (lua)')
+    ;   writeln('  ✗ FAIL - Lua compilation failed')
     ),
 
     format('~n=== Tests Complete ===~n', []).
