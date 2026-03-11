@@ -1,10 +1,18 @@
 [package]
 name = "agent-loop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "UnifyWeaver Agent Loop — generated data layer"
+description = "UnifyWeaver Agent Loop — data + imperative layer"
+
+[[bin]]
+name = "uwsal"
+path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 once_cell = "1"
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+rustyline = "14"
