@@ -6,23 +6,42 @@ use std::process::{Command, Stdio};
 use crate::types::*;
 
 
+use crate::security::SecurityProfileSpec;
 
 /// Handles tool execution with security validation.
 pub struct ToolHandler {
     pub auto_approve: bool,
+    pub security_profile: String,
+    pub approval_mode: String,
 }
 
 impl ToolHandler {
-    pub fn new(auto_approve: bool) -> Self {
-        Self { auto_approve }
+    pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
+        Self { auto_approve, security_profile, approval_mode }
+    }
+
+    /// Look up the SecurityProfileSpec for the current profile.
+    fn get_profile_spec(&self) -> Option<&'static SecurityProfileSpec> {
+        use crate::security::SECURITY_PROFILES;
+        SECURITY_PROFILES.iter()
+            .find(|(name, _)| *name == self.security_profile)
+            .map(|(_, spec)| spec)
     }
 }
 
 
 impl ToolHandler {
     /// Check if a path is allowed by security rules.
-    pub fn check_path_allowed(path: &str) -> bool {
+    /// Respects security_profile: "open" skips all checks.
+    pub fn check_path_allowed(&self, path: &str) -> bool {
         use crate::security::*;
+
+        // Open profile skips all path checks
+        if let Some(spec) = self.get_profile_spec() {
+            if !spec.path_validation {
+                return true;
+            }
+        }
 
         // Check exact blocked paths
         for blocked in BLOCKED_PATHS.iter() {
@@ -53,17 +72,87 @@ impl ToolHandler {
     }
 
     /// Check if a command matches any blocked patterns.
-    pub fn is_command_blocked(command: &str) -> Option<&'static str> {
-        use crate::security::BLOCKED_COMMAND_PATTERNS;
+    /// Respects security_profile: "open" skips checks, "guarded" adds extra blocks,
+    /// "paranoid" uses allowlist-only mode.
+    pub fn is_command_blocked(&self, command: &str) -> Option<String> {
+        use crate::security::*;
 
+        // Open profile skips all command checks
+        if let Some(spec) = self.get_profile_spec() {
+            if !spec.command_validation {
+                return None;
+            }
+        }
+
+        // Paranoid mode: allowlist-only (safe + confirm patterns)
+        if self.security_profile == "paranoid" {
+            let is_safe = PARANOID_SAFE.iter().any(|pat| {
+                regex::Regex::new(pat).map(|re| re.is_match(command)).unwrap_or(false)
+            });
+            let is_confirm = PARANOID_CONFIRM.iter().any(|pat| {
+                regex::Regex::new(pat).map(|re| re.is_match(command)).unwrap_or(false)
+            });
+            if !is_safe && !is_confirm {
+                return Some("Command not in paranoid allowlist".to_string());
+            }
+            return None;
+        }
+
+        // Standard blocked command patterns (cautious + guarded)
         for (pattern, description) in BLOCKED_COMMAND_PATTERNS.iter() {
             if let Ok(re) = regex::Regex::new(pattern) {
                 if re.is_match(command) {
-                    return Some(description);
+                    return Some(description.to_string());
                 }
             }
         }
+
+        // Guarded mode: additional blocked patterns
+        if self.security_profile == "guarded" {
+            for pattern in GUARDED_EXTRA_BLOCKS.iter() {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if re.is_match(command) {
+                        return Some(format!("Blocked by guarded profile: {}", pattern));
+                    }
+                }
+            }
+        }
+
         None
+    }
+
+    /// Check if a tool requires approval based on approval_mode.
+    /// Returns true if the tool is approved to execute, false if blocked.
+    pub fn check_approval(&self, tool_name: &str) -> bool {
+        match self.approval_mode.as_str() {
+            "yolo" => true,
+            "plan" => {
+                // Plan mode: only read is allowed
+                matches!(tool_name, "read")
+            }
+            "auto_edit" => {
+                // Auto-approve read and edit, block bash and write
+                matches!(tool_name, "read" | "edit" | "write")
+            }
+            "default" => {
+                if self.auto_approve {
+                    return true;
+                }
+                // Read is always auto-approved
+                if tool_name == "read" {
+                    return true;
+                }
+                // For other tools, prompt user
+                eprint!("  Allow {} tool? [y/N] ", tool_name);
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    input.trim().eq_ignore_ascii_case("y")
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        }
     }
 }
 
@@ -71,6 +160,15 @@ impl ToolHandler {
 impl ToolHandler {
     /// Execute a tool call and return the result.
     pub fn execute(&self, tool_call: &ToolCall) -> ToolResult {
+        // Check approval mode before executing
+        if !self.check_approval(&tool_call.name) {
+            return ToolResult {
+                success: false,
+                output: format!("Tool '{}' blocked by approval mode '{}'", tool_call.name, self.approval_mode),
+                tool_name: tool_call.name.clone(),
+            };
+        }
+
         match tool_call.name.as_str() {
             "bash" => self.handle_bash(&tool_call.arguments),
             "read" => self.handle_read(&tool_call.arguments),
@@ -89,7 +187,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if let Some(reason) = Self::is_command_blocked(command) {
+        if let Some(reason) = self.is_command_blocked(command) {
             return ToolResult {
                 success: false,
                 output: format!("Command blocked: {}", reason),
@@ -128,7 +226,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if !Self::check_path_allowed(path) {
+        if !self.check_path_allowed(path) {
             return ToolResult {
                 success: false,
                 output: format!("Path blocked: {}", path),
@@ -158,7 +256,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if !Self::check_path_allowed(path) {
+        if !self.check_path_allowed(path) {
             return ToolResult {
                 success: false,
                 output: format!("Path blocked: {}", path),
@@ -191,7 +289,7 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        if !Self::check_path_allowed(path) {
+        if !self.check_path_allowed(path) {
             return ToolResult {
                 success: false,
                 output: format!("Path blocked: {}", path),

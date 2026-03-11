@@ -286,6 +286,9 @@ fn main() {
     if matches.get_flag("auto_tools") { config.auto_tools = true; }
     if matches.get_flag("no_tokens") { config.show_tokens = false; }
     if matches.get_flag("stream_arg") { config.stream = true; }
+    if matches.get_flag("no_security") { config.security_profile = "open".to_string(); }
+    if let Some(v) = matches.get_one::<String>("security_profile") { config.security_profile = v.clone(); }
+    if let Some(v) = matches.get_one::<String>("approval_mode") { config.approval_mode = v.clone(); }
     if let Some(&v) = matches.get_one::<i64>("max_iterations") { config.max_iterations = v; }
     if let Some(&v) = matches.get_one::<i64>("max_tokens") { config.max_context_tokens = v; }
 
@@ -335,7 +338,7 @@ fn main() {
     let backend = create_backend(&config);
     let mut context = ContextManager::new(config.max_messages as usize);
     let mut cost_tracker = CostTracker::new();
-    let tool_handler = ToolHandler::new(config.auto_tools);
+    let tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
 
     // Restore initial context from --session if any
     for msg in &initial_context {

@@ -86,10 +86,15 @@ pub fn find_config_file(cli_config: Option<&str>, no_fallback: bool) -> Option<S
     None
 }
 
-/// Load and parse a config file (JSON format).
+/// Load and parse a config file (JSON or YAML format).
+/// Format is detected by file extension: .yaml/.yml → YAML, otherwise JSON.
 pub fn load_config_file(path: &str) -> Option<ConfigFile> {
     let content = std::fs::read_to_string(path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let json: serde_json::Value = if path.ends_with(".yaml") || path.ends_with(".yml") {
+        serde_yaml::from_str(&content).ok()?
+    } else {
+        serde_json::from_str(&content).ok()?
+    };
 
     let mut cf = ConfigFile::default();
 
@@ -319,9 +324,13 @@ pub fn list_agents(config_file: Option<&ConfigFile>) {
     }
 }
 
-/// Generate an example config file.
+/// Generate an example config file (JSON or YAML based on extension).
 pub fn init_config(path: &str) -> std::io::Result<()> {
-    let content = generate_example_config();
+    let content = if path.ends_with(".yaml") || path.ends_with(".yml") {
+        generate_example_config_yaml()
+    } else {
+        generate_example_config()
+    };
     std::fs::write(path, content)?;
     println!("Created example config: {}", path);
     Ok(())
@@ -390,4 +399,12 @@ fn generate_example_config() -> String {
     s.push_str("  }\n");
     s.push_str("}\n");
     s
+}
+
+fn generate_example_config_yaml() -> String {
+    let json_str = generate_example_config();
+    match serde_json::from_str::<serde_json::Value>(&json_str) {
+        Ok(val) => serde_yaml::to_string(&val).unwrap_or(json_str),
+        Err(_) => json_str,
+    }
 }

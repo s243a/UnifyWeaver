@@ -125,6 +125,8 @@ pub static CONFIG_FIELDS: &[AgentConfigField] = &[
     AgentConfigField { name: "timeout", type_annotation: "int", default_value: "300", comment: "" },
     AgentConfigField { name: "show_tokens", type_annotation: "bool", default_value: "True", comment: "" },
     AgentConfigField { name: "stream", type_annotation: "bool", default_value: "False", comment: "Enable streaming output for API backends" },
+    AgentConfigField { name: "security_profile", type_annotation: "str", default_value: "\"cautious\"", comment: "Security profile (open/cautious/guarded/paranoid)" },
+    AgentConfigField { name: "approval_mode", type_annotation: "str", default_value: "\"yolo\"", comment: "Tool approval mode (default/auto_edit/yolo/plan)" },
     AgentConfigField { name: "extra", type_annotation: "dict", default_value: "field(default_factory=dict)", comment: "" },
 ];
 
