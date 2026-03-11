@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (13 files) | Data + imperative + CLI layer |
+| Rust | `generated/rust/` (14 files) | Data + imperative + CLI + config loading + streaming |
 
 ### Declarative Infrastructure
 
@@ -70,12 +70,12 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|-------|
 | `py_fragment/2` facts | 82 |
 | `prolog_fragment/2` facts | 33 |
-| `rust_fragment/2` facts | 16 |
+| `rust_fragment/2` facts | 22 |
 | `rust_data_table/5` specs | 9 |
-| `emit_config_section/3` clauses | 8 (python + prolog + rust) |
+| `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 576 (498+78 unit + 27 Prolog + 59 Python) |
+| Total tests | 608 (530+78 unit + 27 Prolog + 59 Python) |
 
 ## Backends
 
@@ -491,7 +491,7 @@ The generator also produces 8 Prolog files in `generated/prolog/`. Prolog genera
 | `emit_prolog_module_skeleton/3` | Module header + directives | Supports `exports`, `det`, `dynamic`, `discontiguous`, `table`, `use_modules`, `comment` |
 | `prolog_fragment_metadata/2` | Fragment annotations (category, target, use_modules) | Parallel to `py_fragment_metadata/2` |
 | `generator_prolog_fragments/2` | Maps generators to their fragment names | 6 generators: costs, config, commands, tools, backends, agent_loop |
-| `emit_config_section/3` | Target-polymorphic config emission | 8 sections (Python, Prolog, Rust) |
+| `emit_config_section/3` | Target-polymorphic config emission | 11 sections (Python, Prolog, Rust) |
 | `backend_error_handler/2` | Routes backends to error handler fragments | 8 routing facts (cli, urllib, sdk) |
 
 Example: `generate_prolog_costs` assembles costs.pl from a skeleton + 1 fragment, replacing ~40 write calls:

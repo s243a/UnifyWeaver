@@ -90,6 +90,8 @@ pub struct AgentConfig {
     pub max_iterations: i64,
     pub timeout: i64,
     pub show_tokens: bool,
+    /// Enable streaming output for API backends
+    pub stream: bool,
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
@@ -114,6 +116,7 @@ impl Default for AgentConfig {
             max_iterations: 0,
             timeout: 300,
             show_tokens: true,
+            stream: false,
             extra: std::collections::HashMap::new(),
         }
     }

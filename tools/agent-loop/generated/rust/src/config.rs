@@ -124,6 +124,7 @@ pub static CONFIG_FIELDS: &[AgentConfigField] = &[
     AgentConfigField { name: "max_iterations", type_annotation: "int", default_value: "0", comment: "0 = unlimited, N = pause after N tool iterations" },
     AgentConfigField { name: "timeout", type_annotation: "int", default_value: "300", comment: "" },
     AgentConfigField { name: "show_tokens", type_annotation: "bool", default_value: "True", comment: "" },
+    AgentConfigField { name: "stream", type_annotation: "bool", default_value: "False", comment: "Enable streaming output for API backends" },
     AgentConfigField { name: "extra", type_annotation: "dict", default_value: "field(default_factory=dict)", comment: "" },
 ];
 
@@ -144,6 +145,15 @@ pub static CONFIG_SEARCH_PATHS: &[ConfigSearchPath] = &[
     ConfigSearchPath { path: "~/uwsal.json", priority: "required" },
     ConfigSearchPath { path: "coro.json", priority: "fallback" },
     ConfigSearchPath { path: "~/coro.json", priority: "fallback" },
+];
+
+pub static CONFIG_DIR_FILE_NAMES: &[&str] = &[
+    "agents.yaml",
+    "agents.yml",
+    "agents.json",
+    ".agents.yaml",
+    ".agents.yml",
+    ".agents.json",
 ];
 
 pub static DEFAULT_PRESETS: &[DefaultPreset] = &[
@@ -170,5 +180,28 @@ pub static STREAMING_CAPABLE: &[&str] = &[
     "api_local",
     "api",
     "openrouter",
+];
+
+/// CLI override rule: (cli_flag, config_field, behavior)
+#[derive(Debug, Clone)]
+pub struct CliOverride {
+    pub cli_flag: &'static str,
+    pub config_field: &'static str,
+    pub behavior: &'static str,
+}
+
+pub static CLI_OVERRIDES: &[CliOverride] = &[
+    CliOverride { cli_flag: "backend", config_field: "backend", behavior: "backend_special" },
+    CliOverride { cli_flag: "command", config_field: "command", behavior: "simple" },
+    CliOverride { cli_flag: "model", config_field: "model", behavior: "simple" },
+    CliOverride { cli_flag: "host", config_field: "host", behavior: "simple" },
+    CliOverride { cli_flag: "port", config_field: "port", behavior: "simple" },
+    CliOverride { cli_flag: "api_key", config_field: "api_key", behavior: "simple" },
+    CliOverride { cli_flag: "context_mode", config_field: "context_mode", behavior: "simple" },
+    CliOverride { cli_flag: "auto_tools", config_field: "auto_tools", behavior: "set_true" },
+    CliOverride { cli_flag: "no_tools", config_field: "tools", behavior: "clear_list" },
+    CliOverride { cli_flag: "system_prompt", config_field: "system_prompt", behavior: "simple" },
+    CliOverride { cli_flag: "max_iterations", config_field: "max_iterations", behavior: "not_none_check" },
+    CliOverride { cli_flag: "max_tokens", config_field: "max_context_tokens", behavior: "not_none_check" },
 ];
 
