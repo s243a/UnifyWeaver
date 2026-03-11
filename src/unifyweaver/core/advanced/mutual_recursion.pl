@@ -678,7 +678,10 @@ test_mutual_recursion :-
         writeln('  ✓ Compiled to output/advanced/even_odd.sh (bash)'),
         compile_mutual_recursion(Predicates1, [target(r)], Code1R),
         write_bash_file('output/advanced/even_odd.R', Code1R),
-        writeln('  ✓ Compiled to output/advanced/even_odd.R (r)')
+        writeln('  ✓ Compiled to output/advanced/even_odd.R (r)'),
+        compile_mutual_recursion(Predicates1, [target(lua)], Code1L),
+        write_bash_file('output/advanced/even_odd.lua', Code1L),
+        writeln('  ✓ Compiled to output/advanced/even_odd.lua (lua)')
     ;   writeln('  ✗ FAIL - should detect mutual recursion')
     ),
 

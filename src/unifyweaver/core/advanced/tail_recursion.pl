@@ -251,7 +251,10 @@ test_tail_recursion :-
         writeln('  ✓ Compiled to output/advanced/count_items.sh (bash)'),
         compile_tail_recursion(count_items/3, [target(r)], Code1R),
         write_bash_file('output/advanced/count_items.R', Code1R),
-        writeln('  ✓ Compiled to output/advanced/count_items.R (r)')
+        writeln('  ✓ Compiled to output/advanced/count_items.R (r)'),
+        compile_tail_recursion(count_items/3, [target(lua)], Code1L),
+        write_bash_file('output/advanced/count_items.lua', Code1L),
+        writeln('  ✓ Compiled to output/advanced/count_items.lua (lua)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 
@@ -267,7 +270,10 @@ test_tail_recursion :-
         writeln('  ✓ Compiled to output/advanced/sum_list.sh (bash)'),
         compile_tail_recursion(sum_list/3, [target(r)], Code2R),
         write_bash_file('output/advanced/sum_list.R', Code2R),
-        writeln('  ✓ Compiled to output/advanced/sum_list.R (r)')
+        writeln('  ✓ Compiled to output/advanced/sum_list.R (r)'),
+        compile_tail_recursion(sum_list/3, [target(lua)], Code2L),
+        write_bash_file('output/advanced/sum_list.lua', Code2L),
+        writeln('  ✓ Compiled to output/advanced/sum_list.lua (lua)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 

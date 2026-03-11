@@ -325,7 +325,10 @@ test_tree_recursion :-
         writeln('  ✓ Generated output/advanced/tree_sum.sh (bash)'),
         compile_tree_recursion(tree_sum/2, [target(r)], Code1R),
         write_bash_file('output/advanced/tree_sum.R', Code1R),
-        writeln('  ✓ Generated output/advanced/tree_sum.R (r)')
+        writeln('  ✓ Generated output/advanced/tree_sum.R (r)'),
+        compile_tree_recursion(tree_sum/2, [target(lua)], Code1L),
+        write_bash_file('output/advanced/tree_sum.lua', Code1L),
+        writeln('  ✓ Generated output/advanced/tree_sum.lua (lua)')
     ;   writeln('  ✗ FAIL - cannot compile tree_sum'),
         fail
     ),
