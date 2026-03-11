@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (7 files) | Data layer |
+| Rust | `generated/rust/` (12 files) | Data + imperative layer |
 
 ### Declarative Infrastructure
 
@@ -70,11 +70,12 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|-------|
 | `py_fragment/2` facts | 82 |
 | `prolog_fragment/2` facts | 33 |
-| `rust_fragment/2` facts | 6 |
+| `rust_fragment/2` facts | 15 |
+| `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 8 |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 584 (498 unit + 27 Prolog + 59 Python) |
+| Total tests | 545 (498+47 unit + 27 Prolog + 59 Python) |
 
 ## Backends
 

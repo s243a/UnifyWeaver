@@ -87,7 +87,11 @@
     emit_rust_tool_facts/2,
     emit_rust_command_facts/2,
     emit_rust_security_facts/2,
-    emit_rust_config_data/2
+    emit_rust_config_data/2,
+    %% Generalized data table emission
+    rust_data_table/5,
+    emit_rust_data_table/3,
+    emit_rust_data_tables/3
 ]).
 
 :- reexport('../../src/unifyweaver/core/component_registry', [
@@ -811,103 +815,70 @@ emit_cost_facts(S, Options) :-
     ).
 
 %% =============================================================================
-%% Rust Target — Component Emission Helpers
+%% Rust Target — Declarative Data Table Specifications
+%% =============================================================================
+
+%% rust_data_table(+TableName, +Category, +ElementType, +FactType, +Options)
+%% Declarative specification for Rust static array tables backed by the
+%% component registry. Each fact maps to a `pub static NAME: &[Type] = &[...];`
+%% block in generated Rust code.
+rust_data_table('PRICING', agent_costs, '(&str, Pricing)', none, []).
+rust_data_table('TOOL_SPECS', agent_tools, 'ToolSpec', tool_spec, []).
+rust_data_table('DESTRUCTIVE_TOOLS', agent_tools, '&str', destructive_tool, []).
+rust_data_table('SLASH_COMMANDS', agent_commands, '(&str, CommandSpec)', none, []).
+rust_data_table('SECURITY_PROFILES', agent_security, '(&str, SecurityProfileSpec)', none, []).
+rust_data_table('BLOCKED_PATHS', agent_security_rules, '&str', blocked_path, []).
+rust_data_table('BLOCKED_PATH_PREFIXES', agent_security_rules, '&str', blocked_path_prefix, []).
+rust_data_table('BLOCKED_HOME_PATTERNS', agent_security_rules, '&str', blocked_home_pattern, []).
+rust_data_table('BLOCKED_COMMAND_PATTERNS', agent_security_rules, '(&str, &str)', blocked_command_pattern, []).
+
+%% emit_rust_data_table(+Stream, +TableName, +Options)
+%% Emit a single Rust static array from its declarative specification.
+emit_rust_data_table(S, TableName, Options) :-
+    rust_data_table(TableName, Category, ElemType, FactType, TableOpts),
+    format(S, 'pub static ~w: &[~w] = &[~n', [TableName, ElemType]),
+    (FactType == none ->
+        BaseOpts = [target(rust), indent(4)]
+    ;
+        BaseOpts = [target(rust), indent(4), fact_type(FactType)]
+    ),
+    append(BaseOpts, TableOpts, CompileOpts0),
+    append(CompileOpts0, Options, CompileOpts),
+    findall(Name, component(Category, Name, _, _), Names),
+    maplist([Name]>>(
+        (compile_component(Category, Name, CompileOpts, Code) ->
+            write(S, Code), nl(S)
+        ; true)
+    ), Names),
+    write(S, '];\n\n').
+
+%% emit_rust_data_tables(+Stream, +TableNames, +Options)
+%% Emit multiple Rust static arrays.
+emit_rust_data_tables(S, TableNames, Options) :-
+    maplist([TN]>>(emit_rust_data_table(S, TN, Options)), TableNames).
+
+%% =============================================================================
+%% Rust Target — Component Emission Helpers (thin wrappers)
 %% =============================================================================
 
 %% emit_rust_cost_facts(+Stream, +Options)
-%% Emit Rust pricing table entries via component registry.
 emit_rust_cost_facts(S, _Options) :-
-    write(S, 'pub static PRICING: &[(&str, Pricing)] = &[\n'),
-    findall(Name, component(agent_costs, Name, _, _), Names),
-    maplist([Name]>>(
-        (compile_component(agent_costs, Name, [target(rust), indent(4)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), Names),
-    write(S, '];\n\n').
+    emit_rust_data_table(S, 'PRICING', []).
 
 %% emit_rust_tool_facts(+Stream, +Options)
-%% Emit Rust tool specifications via component registry.
 emit_rust_tool_facts(S, _Options) :-
-    %% Tool specs
-    write(S, 'pub static TOOL_SPECS: &[ToolSpec] = &[\n'),
-    findall(Name, component(agent_tools, Name, _, _), Names),
-    maplist([Name]>>(
-        (compile_component(agent_tools, Name, [target(rust), indent(4), fact_type(tool_spec)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), Names),
-    write(S, '];\n\n'),
-    %% Destructive tools
-    write(S, 'pub static DESTRUCTIVE_TOOLS: &[&str] = &[\n'),
-    maplist([Name]>>(
-        (compile_component(agent_tools, Name, [target(rust), indent(4), fact_type(destructive_tool)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), Names),
-    write(S, '];\n\n').
+    emit_rust_data_tables(S, ['TOOL_SPECS', 'DESTRUCTIVE_TOOLS'], []).
 
 %% emit_rust_command_facts(+Stream, +Options)
-%% Emit Rust slash command entries via component registry.
 emit_rust_command_facts(S, _Options) :-
-    write(S, 'pub static SLASH_COMMANDS: &[(&str, CommandSpec)] = &[\n'),
-    findall(Name, component(agent_commands, Name, _, _), Names),
-    maplist([Name]>>(
-        (compile_component(agent_commands, Name, [target(rust), indent(4)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), Names),
-    write(S, '];\n\n').
+    emit_rust_data_table(S, 'SLASH_COMMANDS', []).
 
 %% emit_rust_security_facts(+Stream, +Options)
-%% Emit Rust security profile and rule entries.
 emit_rust_security_facts(S, _Options) :-
-    %% Security profiles
-    write(S, 'pub static SECURITY_PROFILES: &[(&str, SecurityProfileSpec)] = &[\n'),
-    findall(Name, component(agent_security, Name, _, _), Names),
-    maplist([Name]>>(
-        (compile_component(agent_security, Name, [target(rust), indent(4)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), Names),
-    write(S, '];\n\n'),
-    %% Blocked paths
-    write(S, 'pub static BLOCKED_PATHS: &[&str] = &[\n'),
-    findall(RName, component(agent_security_rules, RName, _, _), RuleNames),
-    maplist([RName]>>(
-        (compile_component(agent_security_rules, RName,
-            [target(rust), indent(4), fact_type(blocked_path)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), RuleNames),
-    write(S, '];\n\n'),
-    %% Blocked path prefixes
-    write(S, 'pub static BLOCKED_PATH_PREFIXES: &[&str] = &[\n'),
-    maplist([RName]>>(
-        (compile_component(agent_security_rules, RName,
-            [target(rust), indent(4), fact_type(blocked_path_prefix)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), RuleNames),
-    write(S, '];\n\n'),
-    %% Blocked home patterns
-    write(S, 'pub static BLOCKED_HOME_PATTERNS: &[&str] = &[\n'),
-    maplist([RName]>>(
-        (compile_component(agent_security_rules, RName,
-            [target(rust), indent(4), fact_type(blocked_home_pattern)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), RuleNames),
-    write(S, '];\n\n'),
-    %% Blocked command patterns
-    write(S, 'pub static BLOCKED_COMMAND_PATTERNS: &[(&str, &str)] = &[\n'),
-    maplist([RName]>>(
-        (compile_component(agent_security_rules, RName,
-            [target(rust), indent(4), fact_type(blocked_command_pattern)], Code) ->
-            write(S, Code), nl(S)
-        ; true)
-    ), RuleNames),
-    write(S, '];\n\n').
+    emit_rust_data_tables(S, [
+        'SECURITY_PROFILES', 'BLOCKED_PATHS', 'BLOCKED_PATH_PREFIXES',
+        'BLOCKED_HOME_PATTERNS', 'BLOCKED_COMMAND_PATTERNS'
+    ], []).
 
 %% emit_rust_config_data(+Stream, +Options)
 %% Emit all config fact tables as Rust static arrays.

@@ -165,6 +165,11 @@ run_tests :-
     test_rust_module_skeleton,
     test_rust_compile_components,
     test_rust_bindings,
+    test_rust_data_table_specs,
+    test_rust_imperative_fragments,
+    test_rust_type_mapping,
+    test_rust_backend_factory,
+    test_rust_phase2_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2972,7 +2977,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 6),
+    assert_eq('Rust fragment count', RFCount, 15),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -3107,4 +3112,227 @@ test_rust_bindings :-
     assert_true('Rust destructive_tool binding uses iter()', (
         agent_loop_bindings:compile_binding_code(rust, destructive_tool/1, DTCode),
         sub_atom(DTCode, _, _, _, 'DESTRUCTIVE_TOOLS')
+    )).
+
+%% =============================================================================
+%% Rust Phase 2 — Data Table Specs
+%% =============================================================================
+
+test_rust_data_table_specs :-
+    format("~nRust data table specs:~n"),
+    findall(N, agent_loop_components:rust_data_table(N, _, _, _, _), Tables),
+    length(Tables, TC),
+    assert_eq('rust_data_table count', TC, 9),
+    %% Check specific tables exist
+    assert_true('PRICING table spec exists', (
+        agent_loop_components:rust_data_table('PRICING', agent_costs, _, _, _)
+    )),
+    assert_true('TOOL_SPECS table spec exists', (
+        agent_loop_components:rust_data_table('TOOL_SPECS', agent_tools, _, tool_spec, _)
+    )),
+    assert_true('SLASH_COMMANDS table spec exists', (
+        agent_loop_components:rust_data_table('SLASH_COMMANDS', agent_commands, _, _, _)
+    )),
+    assert_true('SECURITY_PROFILES table spec exists', (
+        agent_loop_components:rust_data_table('SECURITY_PROFILES', agent_security, _, _, _)
+    )),
+    assert_true('BLOCKED_COMMAND_PATTERNS table spec exists', (
+        agent_loop_components:rust_data_table('BLOCKED_COMMAND_PATTERNS', agent_security_rules, _, blocked_command_pattern, _)
+    )),
+    %% Test generic emitter produces correct output
+    agent_loop_components:register_agent_loop_components,
+    new_memory_file(MF),
+    open_memory_file(MF, write, MS),
+    agent_loop_components:emit_rust_data_table(MS, 'PRICING', []),
+    close(MS),
+    memory_file_to_atom(MF, PricingOut),
+    free_memory_file(MF),
+    assert_true('emit_rust_data_table produces pub static', (
+        sub_atom(PricingOut, _, _, _, 'pub static PRICING')
+    )),
+    assert_true('emit_rust_data_table produces closing bracket', (
+        sub_atom(PricingOut, _, _, _, '];')
+    )),
+    assert_true('emit_rust_data_table contains Pricing struct', (
+        sub_atom(PricingOut, _, _, _, 'Pricing {')
+    )).
+
+%% =============================================================================
+%% Rust Phase 2 — Imperative Fragments
+%% =============================================================================
+
+test_rust_imperative_fragments :-
+    format("~nRust imperative fragments:~n"),
+    %% types_core
+    assert_true('types_core has ToolCall', (
+        agent_loop_module:rust_fragment(types_core, C1),
+        sub_atom(C1, _, _, _, 'ToolCall')
+    )),
+    assert_true('types_core has AgentResponse', (
+        agent_loop_module:rust_fragment(types_core, C2),
+        sub_atom(C2, _, _, _, 'AgentResponse')
+    )),
+    assert_true('types_core has ToolResult', (
+        agent_loop_module:rust_fragment(types_core, C3),
+        sub_atom(C3, _, _, _, 'ToolResult')
+    )),
+    assert_true('types_core has Message', (
+        agent_loop_module:rust_fragment(types_core, C4),
+        sub_atom(C4, _, _, _, 'Message')
+    )),
+    %% context_manager
+    assert_true('context_manager has ContextManager', (
+        agent_loop_module:rust_fragment(context_manager, C5),
+        sub_atom(C5, _, _, _, 'ContextManager')
+    )),
+    assert_true('context_manager has add_message', (
+        agent_loop_module:rust_fragment(context_manager, C6),
+        sub_atom(C6, _, _, _, 'add_message')
+    )),
+    %% backend_trait
+    assert_true('backend_trait has AgentBackend', (
+        agent_loop_module:rust_fragment(backend_trait, C7),
+        sub_atom(C7, _, _, _, 'AgentBackend')
+    )),
+    assert_true('backend_trait has send_message', (
+        agent_loop_module:rust_fragment(backend_trait, C8),
+        sub_atom(C8, _, _, _, 'send_message')
+    )),
+    %% backend impls
+    assert_true('backend_cli_impl has CliBackend', (
+        agent_loop_module:rust_fragment(backend_cli_impl, C9),
+        sub_atom(C9, _, _, _, 'CliBackend')
+    )),
+    assert_true('backend_api_impl has ApiBackend', (
+        agent_loop_module:rust_fragment(backend_api_impl, C10),
+        sub_atom(C10, _, _, _, 'ApiBackend')
+    )),
+    assert_true('backend_api_impl has reqwest', (
+        agent_loop_module:rust_fragment(backend_api_impl, C11),
+        sub_atom(C11, _, _, _, 'reqwest')
+    )),
+    %% tool_handler
+    assert_true('tool_handler_struct has ToolHandler', (
+        agent_loop_module:rust_fragment(tool_handler_struct, C12),
+        sub_atom(C12, _, _, _, 'ToolHandler')
+    )),
+    assert_true('tool_handler_validation has check_path_allowed', (
+        agent_loop_module:rust_fragment(tool_handler_validation, C13),
+        sub_atom(C13, _, _, _, 'check_path_allowed')
+    )),
+    assert_true('tool_handler_dispatch has handle_bash', (
+        agent_loop_module:rust_fragment(tool_handler_dispatch, C14),
+        sub_atom(C14, _, _, _, 'handle_bash')
+    )),
+    %% main_loop
+    assert_true('main_loop has rustyline', (
+        agent_loop_module:rust_fragment(main_loop, C15),
+        sub_atom(C15, _, _, _, 'rustyline')
+    )).
+
+%% =============================================================================
+%% Rust Phase 2 — Type Mapping
+%% =============================================================================
+
+test_rust_type_mapping :-
+    format("~nRust type mapping:~n"),
+    assert_true('str maps to String', (
+        agent_loop_module:rust_type_mapping('str', 'String')
+    )),
+    assert_true('str | None maps to Option<String>', (
+        agent_loop_module:rust_type_mapping('str | None', 'Option<String>')
+    )),
+    assert_true('int maps to i64', (
+        agent_loop_module:rust_type_mapping('int', 'i64')
+    )),
+    assert_true('bool maps to bool', (
+        agent_loop_module:rust_type_mapping('bool', 'bool')
+    )),
+    assert_true('list[str] maps to Vec<String>', (
+        agent_loop_module:rust_type_mapping('list[str]', 'Vec<String>')
+    )),
+    %% Verify all agent_config_field types have mappings
+    findall(T, (
+        agent_loop_module:agent_config_field(_, T, _, _),
+        agent_loop_module:rust_type_mapping(T, _)
+    ), MappedTypes),
+    findall(T, agent_loop_module:agent_config_field(_, T, _, _), AllTypes),
+    length(MappedTypes, MC),
+    length(AllTypes, AC),
+    assert_eq('All config field types have rust mappings', MC, AC).
+
+%% =============================================================================
+%% Rust Phase 2 — Backend Factory Generation
+%% =============================================================================
+
+test_rust_backend_factory :-
+    format("~nRust backend factory:~n"),
+    %% Generate to memory and check content
+    new_memory_file(MF),
+    open_memory_file(MF, write, MS),
+    agent_loop_module:generate_rust_backend_factory(MS),
+    close(MS),
+    memory_file_to_atom(MF, FactoryCode),
+    free_memory_file(MF),
+    assert_true('Factory has create_backend function', (
+        sub_atom(FactoryCode, _, _, _, 'create_backend')
+    )),
+    assert_true('Factory handles coro backend', (
+        sub_atom(FactoryCode, _, _, _, '"coro"')
+    )),
+    assert_true('Factory handles claude backend', (
+        sub_atom(FactoryCode, _, _, _, '"claude"')
+    )),
+    assert_true('Factory handles openai backend', (
+        sub_atom(FactoryCode, _, _, _, '"openai_api"')
+    )),
+    assert_true('Factory handles ollama backend', (
+        sub_atom(FactoryCode, _, _, _, '"ollama_api"')
+    )),
+    assert_true('Factory has CliBackend::new', (
+        sub_atom(FactoryCode, _, _, _, 'CliBackend::new')
+    )),
+    assert_true('Factory has ApiBackend::new', (
+        sub_atom(FactoryCode, _, _, _, 'ApiBackend::new')
+    )),
+    assert_true('Factory has panic for unknown', (
+        sub_atom(FactoryCode, _, _, _, 'panic!')
+    )).
+
+%% =============================================================================
+%% Rust Phase 2 — Generated Files Verification
+%% =============================================================================
+
+test_rust_phase2_generation :-
+    format("~nRust phase 2 generation:~n"),
+    %% Verify all expected files exist
+    assert_true('types.rs exists', (
+        agent_loop_module:output_path(rust, 'types.rs', P1), exists_file(P1)
+    )),
+    assert_true('context.rs exists', (
+        agent_loop_module:output_path(rust, 'context.rs', P2), exists_file(P2)
+    )),
+    assert_true('backends.rs exists', (
+        agent_loop_module:output_path(rust, 'backends.rs', P3), exists_file(P3)
+    )),
+    assert_true('tool_handler.rs exists', (
+        agent_loop_module:output_path(rust, 'tool_handler.rs', P4), exists_file(P4)
+    )),
+    assert_true('main.rs exists', (
+        agent_loop_module:output_path(rust, 'main.rs', P5), exists_file(P5)
+    )),
+    %% Check lib.rs has all module declarations
+    agent_loop_module:output_path(rust, 'lib.rs', LibPath),
+    read_file_to_string(LibPath, LibContent, []),
+    assert_true('lib.rs has types module', (
+        sub_string(LibContent, _, _, _, "pub mod types;")
+    )),
+    assert_true('lib.rs has context module', (
+        sub_string(LibContent, _, _, _, "pub mod context;")
+    )),
+    assert_true('lib.rs has backends module', (
+        sub_string(LibContent, _, _, _, "pub mod backends;")
+    )),
+    assert_true('lib.rs has tool_handler module', (
+        sub_string(LibContent, _, _, _, "pub mod tool_handler;")
     )).

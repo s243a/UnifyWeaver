@@ -1153,6 +1153,7 @@ generate_all(rust) :-
     agent_loop_components:register_agent_loop_components,
     output_path(rust, '', RustSrc),
     make_directory_path(RustSrc),
+    %% Phase 1 — data layer
     generate_rust_cargo_toml,
     generate_rust_lib,
     generate_rust_config,
@@ -1160,6 +1161,12 @@ generate_all(rust) :-
     generate_rust_tools,
     generate_rust_commands,
     generate_rust_security,
+    %% Phase 2 — imperative layer
+    generate_rust_types,
+    generate_rust_context,
+    generate_rust_backends,
+    generate_rust_tool_handler,
+    generate_rust_main,
     write('Rust target done.'), nl.
 
 %% =============================================================================
@@ -1442,13 +1449,20 @@ generate_rust_cargo_toml :-
     open(Path, write, S),
     write(S, '[package]\n'),
     write(S, 'name = "agent-loop"\n'),
-    write(S, 'version = "0.1.0"\n'),
+    write(S, 'version = "0.2.0"\n'),
     write(S, 'edition = "2021"\n'),
-    write(S, 'description = "UnifyWeaver Agent Loop — generated data layer"\n\n'),
+    write(S, 'description = "UnifyWeaver Agent Loop — data + imperative layer"\n\n'),
+    write(S, '[[bin]]\n'),
+    write(S, 'name = "uwsal"\n'),
+    write(S, 'path = "src/main.rs"\n\n'),
     write(S, '[dependencies]\n'),
     write(S, 'serde = { version = "1", features = ["derive"] }\n'),
     write(S, 'serde_json = "1"\n'),
     write(S, 'once_cell = "1"\n'),
+    write(S, 'clap = { version = "4", features = ["derive"] }\n'),
+    write(S, 'regex = "1"\n'),
+    write(S, 'reqwest = { version = "0.12", features = ["json", "blocking"] }\n'),
+    write(S, 'rustyline = "14"\n'),
     close(S),
     format('  Generated rust/Cargo.toml~n', []).
 
@@ -1461,6 +1475,10 @@ generate_rust_lib :-
     write(S, 'pub mod tools;\n'),
     write(S, 'pub mod commands;\n'),
     write(S, 'pub mod security;\n'),
+    write(S, 'pub mod types;\n'),
+    write(S, 'pub mod context;\n'),
+    write(S, 'pub mod backends;\n'),
+    write(S, 'pub mod tool_handler;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
 
@@ -1529,6 +1547,220 @@ generate_rust_security :-
     agent_loop_components:emit_rust_security_facts(S, [target(rust)]),
     close(S),
     format('  Generated rust/src/security.rs~n', []).
+
+%% =============================================================================
+%% Rust Phase 2 — Imperative Layer Generators
+%% =============================================================================
+
+%% rust_type_mapping(+PythonType, -RustType)
+%% Maps Python type annotations from agent_config_field/4 to Rust types.
+rust_type_mapping('str', 'String').
+rust_type_mapping('str | None', 'Option<String>').
+rust_type_mapping('int', 'i64').
+rust_type_mapping('int | None', 'Option<i64>').
+rust_type_mapping('bool', 'bool').
+rust_type_mapping('list[str]', 'Vec<String>').
+rust_type_mapping('dict', 'std::collections::HashMap<String, serde_json::Value>').
+
+generate_rust_types :-
+    output_path(rust, 'types.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, types, 'Core runtime types'),
+    agent_loop_components:emit_module_skeleton(S, rust, types, [
+        use_external([serde-['Serialize', 'Deserialize']]),
+        comment('Core types — ToolCall, AgentResponse, AgentConfig, ToolResult, Message')
+    ]),
+    write_rust(S, types_core),
+    %% Data-driven AgentConfig struct from agent_config_field/4
+    generate_rust_agent_config(S),
+    close(S),
+    format('  Generated rust/src/types.rs~n', []).
+
+%% generate_rust_agent_config(+Stream)
+%% Emit AgentConfig struct from agent_config_field/4 facts.
+generate_rust_agent_config(S) :-
+    write(S, '/// Agent configuration.\n'),
+    write(S, '#[derive(Debug, Clone)]\n'),
+    write(S, 'pub struct AgentConfig {\n'),
+    findall(acf(N,T,D,C), agent_config_field(N,T,D,C), Fields),
+    maplist([acf(N,T,_D,C)]>>(
+        (rust_type_mapping(T, RustType) -> true ; RustType = 'String'),
+        (C \= "" ->
+            format(S, '    /// ~w~n', [C])
+        ; true),
+        format(S, '    pub ~w: ~w,~n', [N, RustType])
+    ), Fields),
+    write(S, '}\n\n'),
+    %% Generate Default impl
+    write(S, 'impl Default for AgentConfig {\n'),
+    write(S, '    fn default() -> Self {\n'),
+    write(S, '        Self {\n'),
+    maplist([acf(N,T,D,_C)]>>(
+        rust_default_value(T, D, RustDefault),
+        format(S, '            ~w: ~w,~n', [N, RustDefault])
+    ), Fields),
+    write(S, '        }\n'),
+    write(S, '    }\n'),
+    write(S, '}\n\n').
+
+%% rust_default_value(+PythonType, +PrologDefault, -RustDefault)
+%% Convert Prolog default values to Rust default expressions.
+rust_default_value(_, none, 'Default::default()') :- !.
+rust_default_value(_, 'None', 'None') :- !.
+rust_default_value('bool', 'True', 'true') :- !.
+rust_default_value('bool', 'False', 'false') :- !.
+rust_default_value('int', Val, Val) :- number(Val), !.
+rust_default_value('int', ValAtom, ValStr) :-
+    atom(ValAtom), atom_number(ValAtom, _), !,
+    atom_string(ValAtom, ValStr).
+rust_default_value('str', Val, Quoted) :-
+    atom(Val), !,
+    atom_string(Val, S),
+    (sub_string(S, 0, 1, _, "\"") ->
+        %% Already quoted like "continue" → strip quotes, re-wrap as Rust String
+        sub_string(S, 1, _, 1, Inner),
+        format(atom(Quoted), '"~w".to_string()', [Inner])
+    ;
+        format(atom(Quoted), '"~w".to_string()', [S])
+    ).
+rust_default_value('list[str]', _, 'Vec::new()') :- !.
+rust_default_value('dict', _, 'std::collections::HashMap::new()') :- !.
+rust_default_value(_, _, 'Default::default()').
+
+generate_rust_context :-
+    output_path(rust, 'context.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, context, 'Conversation context management'),
+    agent_loop_components:emit_module_skeleton(S, rust, context, [
+        comment('Context manager — message history, sliding window')
+    ]),
+    write(S, 'use crate::types::*;\n\n'),
+    write_rust(S, context_manager),
+    close(S),
+    format('  Generated rust/src/context.rs~n', []).
+
+generate_rust_backends :-
+    output_path(rust, 'backends.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, backends, 'Backend trait and implementations'),
+    write(S, 'use std::process::{Command, Stdio};\n'),
+    write(S, 'use crate::types::*;\n\n'),
+    write_rust(S, backend_trait),
+    write_rust(S, backend_cli_impl),
+    write_rust(S, backend_api_impl),
+    %% Data-driven backend factory
+    generate_rust_backend_factory(S),
+    close(S),
+    format('  Generated rust/src/backends.rs~n', []).
+
+%% generate_rust_backend_factory(+Stream)
+%% Emit create_backend function from agent_backend/2 facts.
+generate_rust_backend_factory(S) :-
+    write(S, '/// Create a backend from configuration.\n'),
+    write(S, 'pub fn create_backend(config: &AgentConfig) -> Box<dyn AgentBackend> {\n'),
+    write(S, '    match config.backend.as_str() {\n'),
+    findall(BN, agent_backend(BN, _), BackendNames),
+    maplist([BN]>>(
+        agent_backend(BN, Props),
+        (member(type(cli), Props) ->
+            (member(command(Cmd), Props) -> true ; Cmd = BN),
+            (member(default_model(Model), Props) ->
+                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], Some("~w".to_string()))),~n', [BN, BN, Cmd, Model])
+            ;
+                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], config.model.clone())),~n', [BN, BN, Cmd])
+            )
+        ; member(type(api), Props) ->
+            (member(endpoint(EP), Props) -> true ; EP = ''),
+            (member(auth_env(AuthEnv), Props) ->
+                format(S, '        "~w" => {~n', [BN]),
+                format(S, '            let key = std::env::var("~w").ok().or(config.api_key.clone());~n', [AuthEnv]),
+                (member(default_model(DefModel), Props) ->
+                    format(S, '            let model = config.model.clone().unwrap_or("~w".to_string());~n', [DefModel])
+                ;
+                    format(S, '            let model = config.model.clone().unwrap_or_default();~n', [])
+                ),
+                format(S, '            Box::new(ApiBackend::new("~w", "~w", key, &model))~n', [BN, EP]),
+                format(S, '        }~n', [])
+            ;
+                (member(default_model(DefModel2), Props) ->
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or("~w".to_string()))),~n', [BN, BN, EP, DefModel2])
+                ;
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or_default())),~n', [BN, BN, EP])
+                )
+            )
+        ; true  %% skip unknown types
+        )
+    ), BackendNames),
+    write(S, '        _ => panic!("Unknown backend: {}", config.backend),\n'),
+    write(S, '    }\n'),
+    write(S, '}\n\n').
+
+generate_rust_tool_handler :-
+    output_path(rust, 'tool_handler.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, tool_handler, 'Tool execution and security validation'),
+    write(S, 'use std::process::{Command, Stdio};\n'),
+    write(S, 'use crate::types::*;\n\n'),
+    write_rust(S, tool_handler_struct),
+    write_rust(S, tool_handler_validation),
+    write_rust(S, tool_handler_dispatch),
+    close(S),
+    format('  Generated rust/src/tool_handler.rs~n', []).
+
+generate_rust_main :-
+    output_path(rust, 'main.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, main, 'CLI entry point and agent loop'),
+    write(S, 'use agent_loop::types::*;\n'),
+    write(S, 'use agent_loop::backends::*;\n'),
+    write(S, 'use agent_loop::context::*;\n'),
+    write(S, 'use agent_loop::costs::*;\n'),
+    write(S, 'use agent_loop::tool_handler::*;\n'),
+    write(S, 'use agent_loop::commands::*;\n\n'),
+    %% Data-driven command dispatch function
+    generate_rust_command_dispatch(S),
+    write(S, 'fn main() {\n'),
+    write_rust(S, main_loop),
+    write(S, '}\n'),
+    close(S),
+    format('  Generated rust/src/main.rs~n', []).
+
+%% generate_rust_command_dispatch(+Stream)
+%% Emit command handler function from slash_command/4 facts.
+generate_rust_command_dispatch(S) :-
+    write(S, '/// Handle a slash command. Returns true if the command was handled.\n'),
+    write(S, 'fn handle_command(input: &str, context: &mut ContextManager, cost_tracker: &CostTracker) -> bool {\n'),
+    write(S, '    let parts: Vec<&str> = input.splitn(2, '' '').collect();\n'),
+    write(S, '    let cmd = parts[0].trim_start_matches(''/'');\n'),
+    write(S, '    match cmd {\n'),
+    write(S, '        "exit" | "quit" => {\n'),
+    write(S, '            println!("Goodbye!");\n'),
+    write(S, '            std::process::exit(0);\n'),
+    write(S, '        }\n'),
+    write(S, '        "clear" => {\n'),
+    write(S, '            context.clear();\n'),
+    write(S, '            println!("Context cleared.");\n'),
+    write(S, '        }\n'),
+    write(S, '        "cost" | "costs" => {\n'),
+    write(S, '            println!("{}", cost_tracker.format_summary());\n'),
+    write(S, '        }\n'),
+    write(S, '        "help" => {\n'),
+    write(S, '            println!("Available commands:");\n'),
+    write(S, '            for (name, spec) in SLASH_COMMANDS.iter() {\n'),
+    write(S, '                println!("  /{:<15} {}", name, spec.help);\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "status" => {\n'),
+    write(S, '            println!("Context: {} messages", context.len());\n'),
+    write(S, '            println!("{}", cost_tracker.format_summary());\n'),
+    write(S, '        }\n'),
+    write(S, '        _ => {\n'),
+    write(S, '            println!("Unknown command: /{}", cmd);\n'),
+    write(S, '            return false;\n'),
+    write(S, '        }\n'),
+    write(S, '    }\n'),
+    write(S, '    true\n'),
+    write(S, '}\n\n').
 
 %% Generate a single module by name
 generate_module(backends_init)      :- generate_backends_init.
@@ -3313,6 +3545,603 @@ pub struct SecurityProfileSpec {
     pub command_validation: bool,
 }
 
+').
+
+%% --- Rust Phase 2: Imperative layer fragments ---
+
+rust_fragment(types_core, '
+use std::collections::HashMap;
+
+/// Represents a tool call from the agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub name: String,
+    pub arguments: HashMap<String, serde_json::Value>,
+    pub id: String,
+}
+
+/// Response from an agent backend.
+#[derive(Debug, Clone)]
+pub struct AgentResponse {
+    pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub model: String,
+}
+
+impl Default for AgentResponse {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            tool_calls: Vec::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            model: String::new(),
+        }
+    }
+}
+
+/// Result of executing a tool.
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub success: bool,
+    pub output: String,
+    pub tool_name: String,
+}
+
+/// A message in the conversation context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+').
+
+rust_fragment(context_manager, '
+
+/// Manages conversation history for the agent loop.
+#[derive(Debug, Default)]
+pub struct ContextManager {
+    pub messages: Vec<Message>,
+    pub max_messages: usize,
+}
+
+impl ContextManager {
+    pub fn new(max_messages: usize) -> Self {
+        Self {
+            messages: Vec::new(),
+            max_messages,
+        }
+    }
+
+    pub fn add_message(&mut self, role: &str, content: &str) {
+        self.messages.push(Message {
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        self.trim();
+    }
+
+    pub fn add_tool_call_message(&mut self, content: &str, tool_calls: Vec<ToolCall>) {
+        self.messages.push(Message {
+            role: "assistant".to_string(),
+            content: content.to_string(),
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+        });
+        self.trim();
+    }
+
+    pub fn add_tool_result(&mut self, tool_call_id: &str, output: &str) {
+        self.messages.push(Message {
+            role: "tool".to_string(),
+            content: output.to_string(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+        });
+        self.trim();
+    }
+
+    pub fn get_context(&self) -> &[Message] {
+        &self.messages
+    }
+
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    fn trim(&mut self) {
+        if self.max_messages > 0 && self.messages.len() > self.max_messages {
+            let excess = self.messages.len() - self.max_messages;
+            self.messages.drain(..excess);
+        }
+    }
+}
+
+').
+
+rust_fragment(backend_trait, '
+
+/// Abstract interface for agent backends.
+pub trait AgentBackend {
+    /// Send a message with context and return the response.
+    fn send_message(&self, message: &str, context: &[Message]) -> AgentResponse;
+
+    /// Return the backend name.
+    fn name(&self) -> &str;
+
+    /// Whether this backend supports streaming output.
+    fn supports_streaming(&self) -> bool { false }
+}
+
+').
+
+rust_fragment(backend_cli_impl, '
+
+/// CLI-based backend that shells out to a command.
+pub struct CliBackend {
+    pub backend_name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub model: Option<String>,
+}
+
+impl CliBackend {
+    pub fn new(name: &str, command: &str, args: &[&str], model: Option<String>) -> Self {
+        Self {
+            backend_name: name.to_string(),
+            command: command.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            model,
+        }
+    }
+}
+
+impl AgentBackend for CliBackend {
+    fn send_message(&self, message: &str, _context: &[Message]) -> AgentResponse {
+        let mut cmd = Command::new(&self.command);
+        for arg in &self.args {
+            cmd.arg(arg);
+        }
+        if let Some(ref model) = self.model {
+            cmd.arg(model);
+        }
+        cmd.arg(message);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        match cmd.output() {
+            Ok(output) => {
+                let content = String::from_utf8_lossy(&output.stdout).to_string();
+                AgentResponse {
+                    content,
+                    model: self.backend_name.clone(),
+                    ..Default::default()
+                }
+            }
+            Err(e) => AgentResponse {
+                content: format!("Error running {}: {}", self.command, e),
+                model: self.backend_name.clone(),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn name(&self) -> &str { &self.backend_name }
+}
+
+').
+
+rust_fragment(backend_api_impl, '
+
+/// API-based backend that sends HTTP requests.
+pub struct ApiBackend {
+    pub backend_name: String,
+    pub endpoint: String,
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
+impl ApiBackend {
+    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str) -> Self {
+        Self {
+            backend_name: name.to_string(),
+            endpoint: endpoint.to_string(),
+            api_key,
+            model: model.to_string(),
+        }
+    }
+
+    fn build_messages(&self, message: &str, context: &[Message]) -> Vec<serde_json::Value> {
+        let mut messages: Vec<serde_json::Value> = context.iter().map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
+        }).collect();
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": message,
+        }));
+        messages
+    }
+}
+
+impl AgentBackend for ApiBackend {
+    fn send_message(&self, message: &str, context: &[Message]) -> AgentResponse {
+        let client = reqwest::blocking::Client::new();
+        let messages = self.build_messages(message, context);
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": messages,
+        });
+
+        let mut req = client.post(&self.endpoint)
+            .header("Content-Type", "application/json");
+        if let Some(ref key) = self.api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        match req.json(&body).send() {
+            Ok(resp) => {
+                match resp.json::<serde_json::Value>() {
+                    Ok(json) => {
+                        let content = json["choices"][0]["message"]["content"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string();
+                        let input_tokens = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+                        let output_tokens = json["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+                        AgentResponse {
+                            content,
+                            input_tokens,
+                            output_tokens,
+                            model: self.model.clone(),
+                            ..Default::default()
+                        }
+                    }
+                    Err(e) => AgentResponse {
+                        content: format!("JSON parse error: {}", e),
+                        model: self.model.clone(),
+                        ..Default::default()
+                    },
+                }
+            }
+            Err(e) => AgentResponse {
+                content: format!("HTTP error: {}", e),
+                model: self.model.clone(),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn name(&self) -> &str { &self.backend_name }
+    fn supports_streaming(&self) -> bool { true }
+}
+
+').
+
+rust_fragment(tool_handler_struct, '
+
+/// Handles tool execution with security validation.
+pub struct ToolHandler {
+    pub auto_approve: bool,
+}
+
+impl ToolHandler {
+    pub fn new(auto_approve: bool) -> Self {
+        Self { auto_approve }
+    }
+}
+
+').
+
+rust_fragment(tool_handler_validation, '
+impl ToolHandler {
+    /// Check if a path is allowed by security rules.
+    pub fn check_path_allowed(path: &str) -> bool {
+        use crate::security::*;
+
+        // Check exact blocked paths
+        for blocked in BLOCKED_PATHS.iter() {
+            if path == *blocked {
+                return false;
+            }
+        }
+
+        // Check blocked prefixes
+        for prefix in BLOCKED_PATH_PREFIXES.iter() {
+            if path.starts_with(prefix) {
+                return false;
+            }
+        }
+
+        // Check home directory patterns
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = home.to_string_lossy();
+            for pattern in BLOCKED_HOME_PATTERNS.iter() {
+                let blocked_path = format!("{}/{}", home, pattern);
+                if path.starts_with(&blocked_path) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Check if a command matches any blocked patterns.
+    pub fn is_command_blocked(command: &str) -> Option<&''static str> {
+        use crate::security::BLOCKED_COMMAND_PATTERNS;
+
+        for (pattern, description) in BLOCKED_COMMAND_PATTERNS.iter() {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if re.is_match(command) {
+                    return Some(description);
+                }
+            }
+        }
+        None
+    }
+}
+
+').
+
+rust_fragment(tool_handler_dispatch, '
+impl ToolHandler {
+    /// Execute a tool call and return the result.
+    pub fn execute(&self, tool_call: &ToolCall) -> ToolResult {
+        match tool_call.name.as_str() {
+            "bash" => self.handle_bash(&tool_call.arguments),
+            "read" => self.handle_read(&tool_call.arguments),
+            "write" => self.handle_write(&tool_call.arguments),
+            "edit" => self.handle_edit(&tool_call.arguments),
+            _ => ToolResult {
+                success: false,
+                output: format!("Unknown tool: {}", tool_call.name),
+                tool_name: tool_call.name.clone(),
+            },
+        }
+    }
+
+    fn handle_bash(&self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
+        let command = args.get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if let Some(reason) = Self::is_command_blocked(command) {
+            return ToolResult {
+                success: false,
+                output: format!("Command blocked: {}", reason),
+                tool_name: "bash".to_string(),
+            };
+        }
+
+        match Command::new("bash").arg("-c").arg(command)
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).output()
+        {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let combined = if stderr.is_empty() {
+                    stdout.to_string()
+                } else {
+                    format!("{}\n{}", stdout, stderr)
+                };
+                ToolResult {
+                    success: output.status.success(),
+                    output: combined,
+                    tool_name: "bash".to_string(),
+                }
+            }
+            Err(e) => ToolResult {
+                success: false,
+                output: format!("Error: {}", e),
+                tool_name: "bash".to_string(),
+            },
+        }
+    }
+
+    fn handle_read(&self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
+        let path = args.get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if !Self::check_path_allowed(path) {
+            return ToolResult {
+                success: false,
+                output: format!("Path blocked: {}", path),
+                tool_name: "read".to_string(),
+            };
+        }
+
+        match std::fs::read_to_string(path) {
+            Ok(content) => ToolResult {
+                success: true,
+                output: content,
+                tool_name: "read".to_string(),
+            },
+            Err(e) => ToolResult {
+                success: false,
+                output: format!("Error reading {}: {}", path, e),
+                tool_name: "read".to_string(),
+            },
+        }
+    }
+
+    fn handle_write(&self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
+        let path = args.get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let content = args.get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if !Self::check_path_allowed(path) {
+            return ToolResult {
+                success: false,
+                output: format!("Path blocked: {}", path),
+                tool_name: "write".to_string(),
+            };
+        }
+
+        match std::fs::write(path, content) {
+            Ok(()) => ToolResult {
+                success: true,
+                output: format!("Wrote {} bytes to {}", content.len(), path),
+                tool_name: "write".to_string(),
+            },
+            Err(e) => ToolResult {
+                success: false,
+                output: format!("Error writing {}: {}", path, e),
+                tool_name: "write".to_string(),
+            },
+        }
+    }
+
+    fn handle_edit(&self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
+        let path = args.get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let old_string = args.get("old_string")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let new_string = args.get("new_string")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if !Self::check_path_allowed(path) {
+            return ToolResult {
+                success: false,
+                output: format!("Path blocked: {}", path),
+                tool_name: "edit".to_string(),
+            };
+        }
+
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                if !content.contains(old_string) {
+                    return ToolResult {
+                        success: false,
+                        output: "old_string not found in file".to_string(),
+                        tool_name: "edit".to_string(),
+                    };
+                }
+                let new_content = content.replacen(old_string, new_string, 1);
+                match std::fs::write(path, &new_content) {
+                    Ok(()) => ToolResult {
+                        success: true,
+                        output: format!("Edited {}", path),
+                        tool_name: "edit".to_string(),
+                    },
+                    Err(e) => ToolResult {
+                        success: false,
+                        output: format!("Error writing {}: {}", path, e),
+                        tool_name: "edit".to_string(),
+                    },
+                }
+            }
+            Err(e) => ToolResult {
+                success: false,
+                output: format!("Error reading {}: {}", path, e),
+                tool_name: "edit".to_string(),
+            },
+        }
+    }
+}
+
+').
+
+rust_fragment(main_loop, '
+    let config = AgentConfig::default();
+    let backend = create_backend(&config);
+    let mut context = ContextManager::new(config.max_messages as usize);
+    let mut cost_tracker = CostTracker::new();
+    let tool_handler = ToolHandler::new(config.auto_tools);
+
+    let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize readline");
+
+    println!("UnifyWeaver Agent Loop ({})", backend.name());
+    println!("Type /help for commands, /exit to quit.\\n");
+
+    loop {
+        let readline = rl.readline(">>> ");
+        match readline {
+            Ok(line) => {
+                let input = line.trim();
+                if input.is_empty() { continue; }
+                let _ = rl.add_history_entry(input);
+
+                // Handle slash commands
+                if input.starts_with(''/'' ) {
+                    let handled = handle_command(input, &mut context, &cost_tracker);
+                    if handled { continue; }
+                }
+
+                // Process message
+                context.add_message("user", input);
+                let mut iterations = 0;
+                let max_iter = config.max_iterations;
+
+                loop {
+                    let response = backend.send_message(input, context.get_context());
+
+                    if !response.content.is_empty() {
+                        println!("\\n{}", response.content);
+                    }
+                    cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);
+
+                    if response.tool_calls.is_empty() {
+                        context.add_message("assistant", &response.content);
+                        break;
+                    }
+
+                    // Handle tool calls
+                    context.add_tool_call_message(&response.content, response.tool_calls.clone());
+                    for tc in &response.tool_calls {
+                        println!("  [tool: {}]", tc.name);
+                        let result = tool_handler.execute(tc);
+                        println!("  {}", if result.success { "OK" } else { "FAIL" });
+                        context.add_tool_result(&tc.id, &result.output);
+                    }
+
+                    iterations += 1;
+                    if max_iter > 0 && iterations >= max_iter as usize {
+                        println!("  [iteration limit reached]");
+                        break;
+                    }
+                }
+
+                if config.show_tokens {
+                    println!("  {}", cost_tracker.format_summary());
+                }
+            }
+            Err(rustyline::error::ReadlineError::Interrupted) |
+            Err(rustyline::error::ReadlineError::Eof) => {
+                println!("Goodbye!");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                break;
+            }
+        }
+    }
 ').
 
 %% --- Fragment: cost_tracker_impl (costs.pl) ---
