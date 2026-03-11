@@ -568,7 +568,7 @@ mutual_recursion:compile_mutual_pattern(fsharp, Predicates, MemoEnabled, MemoStr
         format(string(MemoDecl),
 'open System.Collections.Generic
 
-let private memo = Dictionary<string, bool>()')
+let private memo = Dictionary<string, bool>()', [])
     ;   MemoDecl = '// Shared memoization disabled'
     ),
     format(string(HeaderCode),

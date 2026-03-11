@@ -15,8 +15,10 @@ The `advanced/` module extends UnifyWeaver's basic recursion support with sophis
 **Priority-Based Compilation**: Try simpler patterns before complex ones
 1. **Tail recursion** → Compile to iterative loops
 2. **Linear recursion** → Compile with memoization (handles 1+ independent calls)
-3. **Tree recursion** → Compile structural decomposition patterns
-4. **Mutual recursion** → Detect via SCC, compile with shared memo tables
+3. **Multi-call linear** → Multiple independent recursive calls (e.g., fibonacci)
+4. **Direct multi-call** → Direct recursive calls with memoization
+5. **Tree recursion** → Compile structural decomposition patterns
+6. **Mutual recursion** → Detect via SCC, compile with shared memo tables
 
 **Separation of Concerns**: Advanced patterns isolated from basic compiler
 - Basic recursion (transitive closures) stays in `recursive_compiler.pl`
@@ -27,15 +29,18 @@ The `advanced/` module extends UnifyWeaver's basic recursion support with sophis
 
 ```
 src/unifyweaver/core/advanced/
-├── advanced_recursive_compiler.pl   # Orchestrator (main entry point)
-├── call_graph.pl                   # Build predicate dependency graphs
-├── scc_detection.pl                # Tarjan's SCC algorithm
-├── pattern_matchers.pl             # Pattern detection utilities
-├── tail_recursion.pl               # Tail recursion → loop compiler
-├── linear_recursion.pl             # Linear recursion → memoized compiler
-├── tree_recursion.pl               # Tree recursion → structural compiler
-├── mutual_recursion.pl             # Mutual recursion → joint memo compiler
-└── test_advanced.pl                # Comprehensive test suite
+├── advanced_recursive_compiler.pl     # Orchestrator (main entry point)
+├── call_graph.pl                     # Build predicate dependency graphs
+├── scc_detection.pl                  # Tarjan's SCC algorithm
+├── pattern_matchers.pl               # Pattern detection utilities
+├── tail_recursion.pl                 # Tail recursion → loop compiler
+├── linear_recursion.pl               # Linear recursion → memoized compiler
+├── tree_recursion.pl                 # Tree recursion → structural compiler
+├── mutual_recursion.pl               # Mutual recursion → joint memo compiler
+├── multicall_linear_recursion.pl     # Multi-call linear (e.g., fibonacci)
+├── direct_multi_call_recursion.pl    # Direct multi-call with memoization
+├── test_advanced.pl                  # Test orchestrator (loads targets)
+└── test_runner_generator.pl          # Generates bash test runner scripts
 ```
 
 ## Pattern Detection
@@ -625,16 +630,38 @@ test_my_predicate :-
 ?- test_pattern_matchers.
 ?- test_tail_recursion.
 ?- test_linear_recursion.
+?- test_tree_recursion.
 ?- test_mutual_recursion.
+?- test_multicall_linear.
+?- test_direct_multi_call.
 ?- test_advanced_compiler.
 ```
 
+### Multi-Target Test Coverage
+
+The test orchestrator (`test_advanced.pl`) loads 7 target modules and tests compilation across them:
+
+| Pattern | bash | r | lua | c | haskell | java | elixir | fsharp |
+|---------|:----:|:-:|:---:|:-:|:-------:|:----:|:------:|:------:|
+| Tail recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Linear recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Tree recursion | ✅ | ✅ | ✅ | — | — | — | — | — |
+| Mutual recursion | ✅ | ✅ | ✅ | — | — | — | ✅ | ✅ |
+| Multi-call linear | ✅ | ✅ | ✅ | — | — | — | — | — |
+| Direct multi-call | ✅ | ✅ | ✅ | — | — | — | — | — |
+
 ### Generated Files
 
-Tests generate bash scripts in `output/advanced/`:
-- `count_items.sh` - Tail recursion example
-- `list_length.sh` - Linear recursion example
-- `even_odd.sh` - Mutual recursion example
+Tests generate output in `output/advanced/` across multiple target languages:
+- `count_items.{sh,R,lua,c,hs,java,exs}` - Tail recursion
+- `sum_list.{sh,R,lua,c,hs,java,exs}` - Tail recursion (arithmetic)
+- `list_length.{sh,R,lua,c,hs,java,exs}` - Linear recursion
+- `factorial.{sh,R,lua,c,hs,java,exs}` - Linear recursion (multiplicative)
+- `tree_sum.{sh,R,lua}` - Tree recursion (binary tree)
+- `tree_fib.{sh,R,lua}` - Tree recursion (fibonacci)
+- `even_odd.{sh,R,lua,exs,fs}` - Mutual recursion
+- `fib_multicall.{sh,R,lua}` - Multi-call linear
+- `fib_direct.{sh,R,lua}` - Direct multi-call
 
 ## Future Work
 
@@ -819,4 +846,4 @@ assertz(user:(is_even(N) :- ...)).
 
 ---
 
-*Last updated: 2025-10-11*
+*Last updated: 2026-03-11*
