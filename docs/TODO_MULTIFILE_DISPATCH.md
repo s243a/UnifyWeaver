@@ -4,8 +4,8 @@
 
 The multifile dispatch pattern allows recursion analysis modules (`core/advanced/tail_recursion.pl`,
 `linear_recursion.pl`, `mutual_recursion.pl`) to call target-specific code generators without
-coupling. Currently, only **Elixir** and **R** implement this pattern. All other targets use
-either their own recursion functions or rely solely on `recursive_compiler.pl` for transitive closure.
+coupling. **All 13 targets** now implement this pattern for tail and linear recursion.
+Elixir, R, and F# also support mutual recursion dispatch.
 
 ## Current State
 
@@ -13,69 +13,38 @@ either their own recursion functions or rely solely on `recursive_compiler.pl` f
 |--------|:------------:|:--------------:|:--------------:|:-----------------:|:-----------------:|
 | **Elixir** | ✅ | ✅ | ✅ | ✅ (recursive_compiler) | ✅ |
 | **R** | ✅ | ✅ | ✅ | — | ✅ |
-| **Haskell** | — | — | — | ✅ (target_info) | ✅ (compile_recursion_to_haskell) |
-| **F#** | — | — | — | — | ✅ (compile_tail/linear/mutual_recursion_fsharp) |
-| **Scala** | — | — | — | ✅ (recursive_compiler) | — |
-| **Clojure** | — | — | — | ✅ (recursive_compiler) | — |
-| **Kotlin** | — | — | — | ✅ (recursive_compiler) | — |
-| **Java** | — | — | — | ✅ (recursive_compiler) | — |
-| **Jython** | — | — | — | ✅ (recursive_compiler) | — |
-| **C** | — | — | — | ✅ (recursive_compiler) | — |
-| **C++** | — | — | — | ✅ (recursive_compiler) | — |
-| **Ruby** | — | — | — | — | ✅ (can_compile_tail/linear) |
-| **Perl** | — | — | — | — | ✅ (can_compile_tail/linear) |
+| **F#** | ✅ | ✅ | ✅ | — | ✅ (compile_tail/linear/mutual_recursion_fsharp) |
+| **Haskell** | ✅ | ✅ | — | ✅ (target_info) | ✅ (compile_recursion_to_haskell) |
+| **Scala** | ✅ | ✅ | — | ✅ (recursive_compiler) | — |
+| **Clojure** | ✅ | ✅ | — | ✅ (recursive_compiler) | — |
+| **Kotlin** | ✅ | ✅ | — | ✅ (recursive_compiler) | — |
+| **Java** | ✅ | ✅ | — | ✅ (recursive_compiler) | — |
+| **Jython** | ✅ | ✅ | — | ✅ (recursive_compiler) | — |
+| **C** | ✅ | ✅ | — | ✅ (recursive_compiler) | — |
+| **C++** | ✅ | ✅ | — | ✅ (recursive_compiler) | — |
+| **Ruby** | ✅ | ✅ | — | — | ✅ (can_compile_tail/linear) |
+| **Perl** | ✅ | ✅ | — | — | ✅ (can_compile_tail/linear) |
 
 ## Tasks
 
-### High Priority
+### Completed (all targets)
 
-- [ ] **Scala**: Add multifile dispatch clauses for tail, linear, and mutual recursion
-  - Has transitive closure in recursive_compiler.pl already
-  - No multifile registration for compile_tail_pattern/9, compile_linear_pattern/8, compile_mutual_pattern/5
-  - Would benefit from Scala 3 match types and tail recursion annotation
+- [x] **Scala**: Tail (`@tailrec` annotation), Linear (`foldLeft` + `mutable.Map` memoization)
+- [x] **Clojure**: Tail (`loop/recur`), Linear (`reduce` + `atom` memoization)
+- [x] **Kotlin**: Tail (`tailrec fun`), Linear (`fold` + `mutableMapOf` with `getOrPut`)
+- [x] **Haskell**: Tail (`BangPatterns` + strict `!acc`), Linear (`foldl` for numeric)
+- [x] **F#**: Tail (`let rec loop`), Linear (`Dictionary<int,int>` memo), Mutual (`let rec ... and ...`)
+- [x] **Ruby**: Tail (`each` loop), Linear (`reduce` + `@memo` hash)
+- [x] **Perl**: Tail (`for` loop), Linear (`List::Util::reduce` + `%memo` hash)
+- [x] **C**: Tail (`for` loop), Linear (static array memoization)
+- [x] **C++**: Tail (range-based `for`), Linear (`std::unordered_map` memoization)
+- [x] **Java**: Tail (`for-each` loop), Linear (`HashMap<Integer,Integer>` memoization)
+- [x] **Jython**: Tail (`for` loop), Linear (`reduce` + `dict` memoization, Python 2/3 compatible)
 
-- [ ] **Clojure**: Add multifile dispatch clauses for tail, linear, and mutual recursion
-  - Has transitive closure in recursive_compiler.pl already
-  - Should generate `loop/recur` for tail recursion (Clojure doesn't have TCO without it)
-  - Mutual recursion should use `declare` + `defn` pattern
+### Remaining Work
 
-- [ ] **Kotlin**: Add multifile dispatch clauses for tail, linear, and mutual recursion
-  - Has transitive closure in recursive_compiler.pl already
-  - Should use `tailrec` annotation for tail recursion
-  - Could use sealed classes for mutual recursion
-
-### Medium Priority
-
-- [ ] **Haskell**: Register multifile dispatch clauses
-  - Already has `compile_recursion_to_haskell/3` but uses its own dispatch, not multifile
-  - Should register with tail_recursion, linear_recursion, mutual_recursion modules
-  - Would use `BangPatterns` for tail recursion
-
-- [ ] **F#**: Register multifile dispatch clauses
-  - Already has `compile_tail_recursion_fsharp/3` etc. but not registered as multifile
-  - Should register with the core/advanced modules for consistency
-
-- [ ] **Ruby**: Add transitive closure and mutual recursion
-  - Has tail/linear recursion detection but no transitive closure in recursive_compiler.pl
-  - No mutual recursion support
-
-- [ ] **Perl**: Add transitive closure and mutual recursion
-  - Same situation as Ruby
-  - Perl's hash-based data structures are well-suited for BFS transitive closure
-
-### Low Priority
-
-- [ ] **C/C++**: Add multifile dispatch clauses
-  - Already have transitive closure in recursive_compiler.pl
-  - No multifile registration for tail/linear/mutual
-  - C would need iterative rewrites (no TCO guarantee without compiler flags)
-
-- [ ] **Java**: Add multifile dispatch clauses
-  - Has transitive closure only
-  - Should use while-loops for tail recursion (JVM doesn't guarantee TCO)
-
-- [ ] **Jython**: Add multifile dispatch clauses
-  - Same as Java but generating Python syntax for JVM execution
+- [ ] Add mutual recursion dispatch to remaining targets (currently only Elixir, R, and F#)
+- [ ] Add tree recursion dispatch pattern
 
 ## Missing Features by Target
 
@@ -118,10 +87,9 @@ This allows `tail_recursion.pl` to stay target-agnostic while each target regist
 its own clause. The analyzer calls `compile_tail_pattern(Target, ...)` and the
 correct target-specific clause fires via Prolog's multifile dispatch.
 
-Targets that predate this pattern (Haskell, F#, Ruby, Perl) have their own
-recursion functions that work but aren't integrated with the core analysis pipeline.
-Migrating them would improve consistency and allow the analyzer to automatically
-select the right recursion strategy.
+All 13 targets now register multifile clauses for tail and linear recursion.
+Targets that predate this pattern (Haskell, F#, Ruby, Perl) retain their own
+recursion functions alongside the new multifile dispatch clauses.
 
 ## Python Family
 
