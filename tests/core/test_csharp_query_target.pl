@@ -114,6 +114,8 @@
 :- dynamic user:test_probe_dir_backward_reach/2.
 :- dynamic user:test_probe_dir_mixed_edge/2.
 :- dynamic user:test_probe_dir_mixed_reach/2.
+:- dynamic user:test_probe_dir_mixed_bytarget_edge/2.
+:- dynamic user:test_probe_dir_mixed_bytarget_reach/2.
 :- dynamic user:test_admission_edge/2.
 :- dynamic user:test_admission_reach_pair/2.
 :- dynamic user:test_admission_group_edge/4.
@@ -336,6 +338,7 @@ test_csharp_query_target :-
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_seed_cache_admission_duplicate_heavy_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_normalized_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_selectivity_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_positive_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_admission_duplicate_heavy_runtime,
@@ -1021,6 +1024,21 @@ setup_test_data :-
         test_probe_dir_mixed_edge(X, Y),
         test_probe_dir_mixed_reach(Y, Z)
     )),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(a, m)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(m, z)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(x, z)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(h, g)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(g, p)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(p, q)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(p, r)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(u, t)),
+    assertz(user:test_probe_dir_mixed_bytarget_edge(u, v)),
+    assertz(user:mode(test_probe_dir_mixed_bytarget_reach(+, +))),
+    assertz(user:(test_probe_dir_mixed_bytarget_reach(X, Y) :- test_probe_dir_mixed_bytarget_edge(X, Y))),
+    assertz(user:(test_probe_dir_mixed_bytarget_reach(X, Z) :-
+        test_probe_dir_mixed_bytarget_edge(X, Y),
+        test_probe_dir_mixed_bytarget_reach(Y, Z)
+    )),
     assertz(user:test_admission_edge(a, b)),
     assertz(user:test_admission_edge(a, c)),
     assertz(user:test_admission_edge(a, d)),
@@ -1255,6 +1273,9 @@ cleanup_test_data :-
     retractall(user:test_probe_dir_mixed_edge(_, _)),
     retractall(user:test_probe_dir_mixed_reach(_, _)),
     retractall(user:mode(test_probe_dir_mixed_reach(_, _))),
+    retractall(user:test_probe_dir_mixed_bytarget_edge(_, _)),
+    retractall(user:test_probe_dir_mixed_bytarget_reach(_, _)),
+    retractall(user:mode(test_probe_dir_mixed_bytarget_reach(_, _))),
     retractall(user:test_admission_edge(_, _)),
     retractall(user:test_admission_reach_pair(_, _)),
     retractall(user:mode(test_admission_reach_pair(_, _))),
@@ -4354,6 +4375,31 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admissi
          'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
          'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=0',
          'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=4'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_positive_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_bytarget_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmHotParams = [[a, z], [p, q]],
+    WarmColdParams = [[x, z], [u, t]],
+    HotParams = [[a, z], [p, q]],
+    ColdParams = [[x, z], [u, t]],
+    harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeededByTarget',
+        8,
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
+         'CACHE_ADMISSIONS:TransitiveClosureSeededByTarget=1',
+         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeededByTarget=1'],
         HotParams,
         HarnessSource).
 
