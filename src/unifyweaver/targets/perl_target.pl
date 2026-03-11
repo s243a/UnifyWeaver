@@ -1321,24 +1321,28 @@ print ~w($ARGV[0]), "\\n" if @ARGV;
 ', [PredStr, Arity, MemoDecl, PredStr, MemoCheck, PredStr, MemoStore, PredStr]).
 
 %% translate_fold_expr_perl(+PrologExpr, +InputVar, +AccVar, -PerlExpr)
+%  Used in linear recursion (reduce context) where Perl's $a/$b are the
+%  special accumulator variables. Tail recursion uses expr_to_perl instead,
+%  which maps to $acc/$item for the loop context.
 translate_fold_expr_perl(A * B, InputVar, AccVar, Expr) :-
-    translate_perl_term(A, InputVar, AccVar, AT),
-    translate_perl_term(B, InputVar, AccVar, BT),
+    translate_perl_reduce_term(A, InputVar, AccVar, AT),
+    translate_perl_reduce_term(B, InputVar, AccVar, BT),
     format(string(Expr), '~w * ~w', [AT, BT]).
 translate_fold_expr_perl(A + B, InputVar, AccVar, Expr) :-
-    translate_perl_term(A, InputVar, AccVar, AT),
-    translate_perl_term(B, InputVar, AccVar, BT),
+    translate_perl_reduce_term(A, InputVar, AccVar, AT),
+    translate_perl_reduce_term(B, InputVar, AccVar, BT),
     format(string(Expr), '~w + ~w', [AT, BT]).
 translate_fold_expr_perl(A - B, InputVar, AccVar, Expr) :-
-    translate_perl_term(A, InputVar, AccVar, AT),
-    translate_perl_term(B, InputVar, AccVar, BT),
+    translate_perl_reduce_term(A, InputVar, AccVar, AT),
+    translate_perl_reduce_term(B, InputVar, AccVar, BT),
     format(string(Expr), '~w - ~w', [AT, BT]).
 translate_fold_expr_perl(Term, InputVar, AccVar, Expr) :-
-    translate_perl_term(Term, InputVar, AccVar, Expr).
+    translate_perl_reduce_term(Term, InputVar, AccVar, Expr).
 
-translate_perl_term(Term, InputVar, _AccVar, '$a') :- Term == InputVar, !.
-translate_perl_term(Term, _InputVar, AccVar, '$b') :- Term == AccVar, !.
-translate_perl_term(Number, _, _, PerlTerm) :- integer(Number), !,
+% Maps Prolog variables to Perl's reduce special vars ($a=accumulator, $b=current)
+translate_perl_reduce_term(Term, InputVar, _AccVar, '$a') :- Term == InputVar, !.
+translate_perl_reduce_term(Term, _InputVar, AccVar, '$b') :- Term == AccVar, !.
+translate_perl_reduce_term(Number, _, _, PerlTerm) :- integer(Number), !,
     format(string(PerlTerm), '~w', [Number]).
-translate_perl_term(Atom, _, _, PerlTerm) :-
+translate_perl_reduce_term(Atom, _, _, PerlTerm) :-
     format(string(PerlTerm), '~w', [Atom]).

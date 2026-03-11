@@ -611,6 +611,8 @@ expr_to_haskell(_, 'acc + 1').
 :- use_module('../core/advanced/linear_recursion').
 :- multifile linear_recursion:compile_linear_pattern/8.
 
+% Note: MemoEnabled intentionally unused — Haskell's lazy evaluation and GHC's
+% common subexpression elimination provide implicit memoization for most cases.
 linear_recursion:compile_linear_pattern(haskell, PredStr, Arity, BaseClauses, RecClauses, _MemoEnabled, _MemoStrategy, Code) :-
     (   Arity =:= 2 ->
         linear_fold_haskell(PredStr, BaseClauses, RecClauses, Code)
