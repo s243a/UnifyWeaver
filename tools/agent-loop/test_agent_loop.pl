@@ -170,6 +170,12 @@ run_tests :-
     test_rust_type_mapping,
     test_rust_backend_factory,
     test_rust_phase2_generation,
+    test_rust_backend_factory_names,
+    test_rust_clap_generation,
+    test_rust_sessions_fragment,
+    test_emit_config_section_rust,
+    test_rust_streaming_capable,
+    test_rust_phase3_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2977,7 +2983,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 15),
+    assert_eq('Rust fragment count', RFCount, 16),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -3284,10 +3290,10 @@ test_rust_backend_factory :-
         sub_atom(FactoryCode, _, _, _, '"claude"')
     )),
     assert_true('Factory handles openai backend', (
-        sub_atom(FactoryCode, _, _, _, '"openai_api"')
+        sub_atom(FactoryCode, _, _, _, '"openai"')
     )),
     assert_true('Factory handles ollama backend', (
-        sub_atom(FactoryCode, _, _, _, '"ollama_api"')
+        sub_atom(FactoryCode, _, _, _, '"ollama-api"')
     )),
     assert_true('Factory has CliBackend::new', (
         sub_atom(FactoryCode, _, _, _, 'CliBackend::new')
@@ -3335,4 +3341,171 @@ test_rust_phase2_generation :-
     )),
     assert_true('lib.rs has tool_handler module', (
         sub_string(LibContent, _, _, _, "pub mod tool_handler;")
+    )).
+
+%% =============================================================================
+%% Rust Phase 3 — Backend Factory Names
+%% =============================================================================
+
+test_rust_backend_factory_names :-
+    format("~nRust backend factory names (hyphens):~n"),
+    new_memory_file(MF),
+    open_memory_file(MF, write, MS),
+    agent_loop_module:generate_rust_backend_factory(MS),
+    close(MS),
+    memory_file_to_atom(MF, FC),
+    free_memory_file(MF),
+    assert_true('Factory uses claude-code (hyphen)', (
+        sub_atom(FC, _, _, _, '"claude-code"')
+    )),
+    assert_true('Factory uses ollama-api (hyphen)', (
+        sub_atom(FC, _, _, _, '"ollama-api"')
+    )),
+    assert_true('Factory uses ollama-cli (hyphen)', (
+        sub_atom(FC, _, _, _, '"ollama-cli"')
+    )),
+    assert_true('Factory does NOT use claude_code (underscore)', (
+        \+ sub_atom(FC, _, _, _, '"claude_code"')
+    )),
+    assert_true('Factory follows backend_factory_order', (
+        agent_loop_module:backend_factory_order(Order),
+        length(Order, N), N > 0
+    )).
+
+%% =============================================================================
+%% Rust Phase 3 — Clap Generation
+%% =============================================================================
+
+test_rust_clap_generation :-
+    format("~nRust clap generation:~n"),
+    new_memory_file(MF),
+    open_memory_file(MF, write, MS),
+    agent_loop_module:generate_rust_clap_args(MS),
+    close(MS),
+    memory_file_to_atom(MF, CC),
+    free_memory_file(MF),
+    assert_true('Clap has Arg::new("backend")', (
+        sub_atom(CC, _, _, _, 'Arg::new("backend")')
+    )),
+    assert_true('Clap has .long("backend")', (
+        sub_atom(CC, _, _, _, '.long("backend")')
+    )),
+    assert_true('Clap has .short(''b'')', (
+        sub_atom(CC, _, _, _, '.short(')
+    )),
+    assert_true('Clap has .help for backend', (
+        sub_atom(CC, _, _, _, '.help("Backend to use')
+    )),
+    assert_true('Clap has value_parser for choices', (
+        sub_atom(CC, _, _, _, '.value_parser([')
+    )),
+    assert_true('Clap has SetTrue for store_true args', (
+        sub_atom(CC, _, _, _, 'ArgAction::SetTrue')
+    )).
+
+%% =============================================================================
+%% Rust Phase 3 — Sessions Fragment
+%% =============================================================================
+
+test_rust_sessions_fragment :-
+    format("~nRust sessions fragment:~n"),
+    assert_true('sessions_module fragment exists', (
+        agent_loop_module:rust_fragment(sessions_module, SC1),
+        atom_length(SC1, Len1), Len1 > 100
+    )),
+    assert_true('sessions_module has SessionManager', (
+        agent_loop_module:rust_fragment(sessions_module, SC2),
+        sub_atom(SC2, _, _, _, 'SessionManager')
+    )),
+    assert_true('sessions_module has save method', (
+        agent_loop_module:rust_fragment(sessions_module, SC3),
+        sub_atom(SC3, _, _, _, 'fn save')
+    )),
+    assert_true('sessions_module has load method', (
+        agent_loop_module:rust_fragment(sessions_module, SC4),
+        sub_atom(SC4, _, _, _, 'fn load')
+    )),
+    assert_true('sessions_module has list method', (
+        agent_loop_module:rust_fragment(sessions_module, SC5),
+        sub_atom(SC5, _, _, _, 'fn list')
+    )),
+    assert_true('sessions_module has delete method', (
+        agent_loop_module:rust_fragment(sessions_module, SC6),
+        sub_atom(SC6, _, _, _, 'fn delete')
+    )).
+
+%% =============================================================================
+%% Rust Phase 3 — emit_config_section Rust branches
+%% =============================================================================
+
+test_emit_config_section_rust :-
+    format("~nRust config section emission:~n"),
+    %% Test each section emits for rust target
+    maplist([Section-Expected]>>(
+        new_memory_file(MF),
+        open_memory_file(MF, write, MS),
+        agent_loop_components:emit_config_section(MS, Section, [target(rust)]),
+        close(MS),
+        memory_file_to_atom(MF, Output),
+        free_memory_file(MF),
+        format(atom(Label), 'emit_config_section(~w, rust) has ~w', [Section, Expected]),
+        assert_true(Label, sub_atom(Output, _, _, _, Expected))
+    ), [
+        api_key_env_vars-'API_KEY_ENV_VARS',
+        api_key_files-'API_KEY_FILE_PATHS',
+        default_presets-'DEFAULT_PRESETS',
+        agent_config_fields-'CONFIG_FIELDS',
+        audit_levels-'AUDIT_LEVELS',
+        streaming_capable-'STREAMING_CAPABLE',
+        cli_arguments-'CLI_ARGS'
+    ]).
+
+%% =============================================================================
+%% Rust Phase 3 — Streaming Capable
+%% =============================================================================
+
+test_rust_streaming_capable :-
+    format("~nRust streaming capable:~n"),
+    new_memory_file(MF),
+    open_memory_file(MF, write, MS),
+    agent_loop_components:emit_config_section(MS, streaming_capable, [target(rust)]),
+    close(MS),
+    memory_file_to_atom(MF, SC),
+    free_memory_file(MF),
+    assert_true('streaming_capable has STREAMING_CAPABLE', (
+        sub_atom(SC, _, _, _, 'STREAMING_CAPABLE')
+    )),
+    assert_true('streaming_capable has api_local', (
+        sub_atom(SC, _, _, _, '"api_local"')
+    )).
+
+%% =============================================================================
+%% Rust Phase 3 — Generated Files Verification
+%% =============================================================================
+
+test_rust_phase3_generation :-
+    format("~nRust phase 3 generation:~n"),
+    assert_true('sessions.rs exists', (
+        agent_loop_module:output_path(rust, 'sessions.rs', P1), exists_file(P1)
+    )),
+    agent_loop_module:output_path(rust, 'lib.rs', LibPath),
+    read_file_to_string(LibPath, LibContent, []),
+    assert_true('lib.rs has sessions module', (
+        sub_string(LibContent, _, _, _, "pub mod sessions;")
+    )),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs has clap::Command', (
+        sub_string(MainContent, _, _, _, "clap::Command::new")
+    )),
+    assert_true('main.rs has session_manager', (
+        sub_string(MainContent, _, _, _, "session_manager")
+    )),
+    assert_true('main.rs has --list-sessions handler', (
+        sub_string(MainContent, _, _, _, "list_sessions")
+    )),
+    agent_loop_module:output_path(rust, 'config.rs', CfgPath),
+    read_file_to_string(CfgPath, CfgContent, []),
+    assert_true('config.rs has STREAMING_CAPABLE', (
+        sub_string(CfgContent, _, _, _, "STREAMING_CAPABLE")
     )).

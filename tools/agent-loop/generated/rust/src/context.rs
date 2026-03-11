@@ -59,6 +59,10 @@ impl ContextManager {
         &self.messages
     }
 
+    pub fn get_messages(&self) -> &[Message] {
+        &self.messages
+    }
+
     pub fn clear(&mut self) {
         self.messages.clear();
     }

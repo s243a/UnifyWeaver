@@ -8,13 +8,26 @@ use agent_loop::context::*;
 use agent_loop::costs::*;
 use agent_loop::tool_handler::*;
 use agent_loop::commands::*;
+use agent_loop::sessions::*;
 
 /// Handle a slash command. Returns true if the command was handled.
-fn handle_command(input: &str, context: &mut ContextManager, cost_tracker: &CostTracker) -> bool {
+fn handle_command(
+    input: &str,
+    context: &mut ContextManager,
+    cost_tracker: &CostTracker,
+    session_manager: &SessionManager,
+    backend_name: &str,
+) -> bool {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
     let cmd = parts[0].trim_start_matches('/');
+    let _arg = if parts.len() > 1 { parts[1].trim() } else { "" };
     match cmd {
         "exit" | "quit" => {
+            // Auto-save on exit
+            if context.len() > 0 {
+                let id = session_manager.save(context.get_messages(), backend_name, None);
+                println!("Session saved: {}", id);
+            }
             println!("Goodbye!");
             std::process::exit(0);
         }
@@ -30,10 +43,51 @@ fn handle_command(input: &str, context: &mut ContextManager, cost_tracker: &Cost
             for (name, spec) in SLASH_COMMANDS.iter() {
                 println!("  /{:<15} {}", name, spec.help);
             }
+            println!("  /{:<15} {}", "save [name]", "Save current session");
+            println!("  /{:<15} {}", "load <id>", "Load a saved session");
+            println!("  /{:<15} {}", "sessions", "List saved sessions");
+            println!("  /{:<15} {}", "delete <id>", "Delete a saved session");
         }
         "status" => {
             println!("Context: {} messages", context.len());
             println!("{}", cost_tracker.format_summary());
+        }
+        "save" => {
+            let name = if _arg.is_empty() { None } else { Some(_arg) };
+            let id = session_manager.save(context.get_messages(), backend_name, name);
+            println!("Session saved: {}", id);
+        }
+        "load" => {
+            if _arg.is_empty() {
+                println!("Usage: /load <session-id>");
+            } else if let Some(session) = session_manager.load(_arg) {
+                context.clear();
+                for msg in &session.messages {
+                    context.add_message(&msg.role, &msg.content);
+                }
+                println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);
+            } else {
+                println!("Session not found: {}", _arg);
+            }
+        }
+        "sessions" => {
+            let sessions = session_manager.list();
+            if sessions.is_empty() {
+                println!("No saved sessions.");
+            } else {
+                for s in &sessions {
+                    println!("{} | {} | {} | {} msgs", s.id, s.name, s.backend, s.message_count);
+                }
+            }
+        }
+        "delete" => {
+            if _arg.is_empty() {
+                println!("Usage: /delete <session-id>");
+            } else if session_manager.delete(_arg) {
+                println!("Session deleted: {}", _arg);
+            } else {
+                println!("Session not found: {}", _arg);
+            }
         }
         _ => {
             println!("Unknown command: /{}", cmd);
@@ -44,12 +98,220 @@ fn handle_command(input: &str, context: &mut ContextManager, cost_tracker: &Cost
 }
 
 fn main() {
+    let matches = clap::Command::new("uwsal")
+        .about("UnifyWeaver Agent Loop")
+        .version(env!("CARGO_PKG_VERSION"))
+        .arg(clap::Arg::new("agent")
+            .long("agent")
+            .short('a')
+            .help("Agent variant from config file (e.g., yolo, claude-opus, ollama)"))
+        .arg(clap::Arg::new("config")
+            .long("config")
+            .short('C')
+            .help("Path to config file (agents.yaml or agents.json)"))
+        .arg(clap::Arg::new("list_agents")
+            .long("list-agents")
+            .help("List available agent variants from config")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("init_config")
+            .long("init-config")
+            .help("Create example config file at PATH"))
+        .arg(clap::Arg::new("backend")
+            .long("backend")
+            .short('b')
+            .help("Backend to use (overrides --agent config)")
+            .value_parser(["coro", "claude", "claude-code", "gemini", "openai", "openrouter", "ollama-api", "ollama-cli"]))
+        .arg(clap::Arg::new("command")
+            .long("command")
+            .short('c')
+            .help("Command for CLI backends"))
+        .arg(clap::Arg::new("model")
+            .long("model")
+            .short('m')
+            .help("Model to use"))
+        .arg(clap::Arg::new("host")
+            .long("host")
+            .help("Host for network backends (ollama-api)"))
+        .arg(clap::Arg::new("port")
+            .long("port")
+            .help("Port for network backends (ollama-api)")
+            .value_parser(clap::value_parser!(i64)))
+        .arg(clap::Arg::new("api_key")
+            .long("api-key")
+            .help("API key (overrides env vars and config files)"))
+        .arg(clap::Arg::new("no_tokens")
+            .long("no-tokens")
+            .help("Hide token usage information")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("context_mode")
+            .long("context-mode")
+            .help("Context behavior mode")
+            .value_parser(["continue", "fresh", "sliding"]))
+        .arg(clap::Arg::new("max_chars")
+            .long("max-chars")
+            .help("Max characters in context (0 = unlimited)")
+            .default_value("0")
+            .value_parser(clap::value_parser!(i64)))
+        .arg(clap::Arg::new("max_words")
+            .long("max-words")
+            .help("Max words in context (0 = unlimited)")
+            .default_value("0")
+            .value_parser(clap::value_parser!(i64)))
+        .arg(clap::Arg::new("max_tokens")
+            .long("max-tokens")
+            .help("Max tokens in context (default: 100000, uses estimation)")
+            .value_parser(clap::value_parser!(i64)))
+        .arg(clap::Arg::new("auto_tools")
+            .long("auto-tools")
+            .help("Auto-execute tools without confirmation")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("no_tools")
+            .long("no-tools")
+            .help("Disable tool execution")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("sandbox")
+            .long("sandbox")
+            .help("Run in sandbox mode (gemini: requires docker/podman)")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("approval_mode")
+            .long("approval-mode")
+            .help("Tool approval mode (default: yolo). default=prompt, auto_edit=auto-approve edits, yolo=auto-approve all, plan=read-only")
+            .default_value("yolo")
+            .value_parser(["default", "auto_edit", "yolo", "plan"]))
+        .arg(clap::Arg::new("allowed_tools")
+            .long("allowed-tools")
+            .help("Specific tools allowed without confirmation")
+            .num_args(0..))
+        .arg(clap::Arg::new("system_prompt")
+            .long("system-prompt")
+            .help("System prompt to use"))
+        .arg(clap::Arg::new("no_fallback")
+            .long("no-fallback")
+            .help("Skip coro.json fallback for commands and config (uwsal.json still checked)")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("max_iterations")
+            .long("max-iterations")
+            .short('i')
+            .help("Max tool iterations before pausing (0 = unlimited)")
+            .value_parser(clap::value_parser!(i64)))
+        .arg(clap::Arg::new("security_profile")
+            .long("security-profile")
+            .help("Security profile (default: cautious). open=no checks, cautious=path+command validation, guarded=proxy+audit+extra blocks, paranoid=allowlist-only")
+            .value_parser(["open", "cautious", "guarded", "paranoid"]))
+        .arg(clap::Arg::new("no_security")
+            .long("no-security")
+            .help("Disable all security checks (alias for --security-profile open)")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("path_proxy")
+            .long("path-proxy")
+            .help("Enable PATH-based command proxying (wrapper scripts in ~/.agent-loop/bin/)")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("proot")
+            .long("proot")
+            .help("Enable proot filesystem sandboxing (requires: pkg install proot)")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("proot_allow_dir")
+            .long("proot-allow-dir")
+            .help("Additional directory to bind into proot sandbox (repeatable)")
+            .action(clap::ArgAction::Append))
+        .arg(clap::Arg::new("session")
+            .long("session")
+            .short('s')
+            .help("Load a saved session by ID"))
+        .arg(clap::Arg::new("list_sessions")
+            .long("list-sessions")
+            .help("List saved sessions")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("sessions_dir")
+            .long("sessions-dir")
+            .help("Directory for session files (default: ~/.agent-loop/sessions)"))
+        .arg(clap::Arg::new("context_format")
+            .long("context-format")
+            .help("Format for context when sent to backend")
+            .value_parser(["plain", "markdown", "json", "xml"]))
+        .arg(clap::Arg::new("stream_arg")
+            .long("stream")
+            .help("Enable streaming output for API backends")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("no_cost_tracking")
+            .long("no-cost-tracking")
+            .help("Disable cost tracking")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("search_arg")
+            .long("search")
+            .help("Search across saved sessions and exit"))
+        .arg(clap::Arg::new("fancy")
+            .long("fancy")
+            .help("Enable ncurses display mode with spinner (uses tput)")
+            .action(clap::ArgAction::SetTrue))
+        .arg(clap::Arg::new("prompt_interactive")
+            .long("prompt-interactive")
+            .short('I')
+            .help("Start interactive mode with an initial prompt"))
+        .arg(clap::Arg::new("prompt")
+            .help("Single prompt to run (non-interactive mode)")
+            .num_args(0..=1))
+        .get_matches();
 
-    let config = AgentConfig::default();
+    let mut config = AgentConfig::default();
+    if let Some(v) = matches.get_one::<String>("backend") { config.backend = v.clone(); }
+    if let Some(v) = matches.get_one::<String>("model") { config.model = Some(v.clone()); }
+    if let Some(v) = matches.get_one::<String>("api_key") { config.api_key = Some(v.clone()); }
+    if let Some(v) = matches.get_one::<String>("system_prompt") { config.system_prompt = Some(v.clone()); }
+    if matches.get_flag("auto_tools") { config.auto_tools = true; }
+    if matches.get_flag("no_tokens") { config.show_tokens = false; }
+    if let Some(&v) = matches.get_one::<i64>("max_iterations") { config.max_iterations = v; }
+    if let Some(&v) = matches.get_one::<i64>("max_tokens") { config.max_context_tokens = v; }
+
+    let sessions_dir = matches.get_one::<String>("sessions_dir").map(|s| s.as_str());
+    let session_manager = SessionManager::new(sessions_dir);
+
+    // Handle --list-sessions
+    if matches.get_flag("list_sessions") {
+        let sessions = session_manager.list();
+        if sessions.is_empty() {
+            println!("No saved sessions.");
+        } else {
+            for s in &sessions {
+                println!("{} | {} | {} | {} msgs", s.id, s.name, s.backend, s.message_count);
+            }
+        }
+        return;
+    }
+
+    // Handle --search
+    if let Some(query) = matches.get_one::<String>("search_arg") {
+        let sessions = session_manager.list();
+        let query_lower = query.to_lowercase();
+        for s in &sessions {
+            if s.name.to_lowercase().contains(&query_lower) || s.id.contains(&query_lower) {
+                println!("{} | {} | {}", s.id, s.name, s.backend);
+            }
+        }
+        return;
+    }
+
+    // Handle --session (load at startup)
+    let mut initial_context: Vec<Message> = Vec::new();
+    if let Some(session_id) = matches.get_one::<String>("session") {
+        if let Some(session) = session_manager.load(session_id) {
+            initial_context = session.messages;
+            println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);
+        } else {
+            eprintln!("Session not found: {}", session_id);
+        }
+    }
+
+
     let backend = create_backend(&config);
     let mut context = ContextManager::new(config.max_messages as usize);
     let mut cost_tracker = CostTracker::new();
     let tool_handler = ToolHandler::new(config.auto_tools);
+
+    // Restore initial context from --session if any
+    for msg in &initial_context {
+        context.add_message(&msg.role, &msg.content);
+    }
 
     let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize readline");
 
@@ -66,7 +328,7 @@ fn main() {
 
                 // Handle slash commands
                 if input.starts_with('/' ) {
-                    let handled = handle_command(input, &mut context, &cost_tracker);
+                    let handled = handle_command(input, &mut context, &cost_tracker, &session_manager, backend.name());
                     if handled { continue; }
                 }
 
@@ -110,6 +372,11 @@ fn main() {
             }
             Err(rustyline::error::ReadlineError::Interrupted) |
             Err(rustyline::error::ReadlineError::Eof) => {
+                // Auto-save on exit
+                if context.len() > 0 {
+                    let id = session_manager.save(context.get_messages(), backend.name(), None);
+                    println!("Session saved: {}", id);
+                }
                 println!("Goodbye!");
                 break;
             }
