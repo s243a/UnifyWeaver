@@ -73,6 +73,85 @@ impl AgentBackend for CliBackend {
 }
 
 
+use std::io::{BufRead, Write};
+
+/// Parse a single SSE event line.
+/// Returns the data payload if the line starts with "data: ", or None.
+pub fn parse_sse_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed == "data: [DONE]" {
+        return None;
+    }
+    if let Some(data) = trimmed.strip_prefix("data: ") {
+        Some(data.to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract content delta from an SSE JSON payload.
+/// Supports OpenAI/OpenRouter format (choices[0].delta.content)
+/// and Anthropic format (delta.text).
+pub fn extract_content_delta(json_str: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    // OpenAI / OpenRouter format
+    if let Some(content) = json.get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("delta"))
+        .and_then(|d| d.get("content"))
+        .and_then(|c| c.as_str()) {
+        return Some(content.to_string());
+    }
+    // Anthropic format
+    if let Some(text) = json.get("delta")
+        .and_then(|d| d.get("text"))
+        .and_then(|t| t.as_str()) {
+        return Some(text.to_string());
+    }
+    None
+}
+
+/// Send a streaming request and print output progressively.
+/// Returns the complete accumulated response content and token usage.
+pub fn send_streaming(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    api_key: Option<&str>,
+    body: serde_json::Value,
+) -> (String, u64, u64) {
+    let mut req = client.post(endpoint)
+        .header("Content-Type", "application/json");
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+
+    match req.json(&body).send() {
+        Ok(resp) => {
+            let mut full_content = String::new();
+            let reader = std::io::BufReader::new(resp);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        if let Some(data) = parse_sse_line(&line) {
+                            if let Some(delta) = extract_content_delta(&data) {
+                                print!("{}", delta);
+                                let _ = std::io::stdout().flush();
+                                full_content.push_str(&delta);
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            println!();
+            (full_content, 0, 0)
+        }
+        Err(e) => {
+            (format!("Streaming error: {}", e), 0, 0)
+        }
+    }
+}
+
 
 /// API-based backend that sends HTTP requests.
 pub struct ApiBackend {
@@ -80,15 +159,17 @@ pub struct ApiBackend {
     pub endpoint: String,
     pub api_key: Option<String>,
     pub model: String,
+    pub stream: bool,
 }
 
 impl ApiBackend {
-    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str) -> Self {
+    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool) -> Self {
         Self {
             backend_name: name.to_string(),
             endpoint: endpoint.to_string(),
             api_key,
             model: model.to_string(),
+            stream,
         }
     }
 
@@ -111,10 +192,27 @@ impl AgentBackend for ApiBackend {
     fn send_message(&self, message: &str, context: &[Message]) -> AgentResponse {
         let client = reqwest::blocking::Client::new();
         let messages = self.build_messages(message, context);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": messages,
         });
+
+        if self.stream {
+            body["stream"] = serde_json::json!(true);
+            let (content, input_tokens, output_tokens) = send_streaming(
+                &client,
+                &self.endpoint,
+                self.api_key.as_deref(),
+                body,
+            );
+            return AgentResponse {
+                content,
+                input_tokens,
+                output_tokens,
+                model: self.model.clone(),
+                ..Default::default()
+            };
+        }
 
         let mut req = client.post(&self.endpoint)
             .header("Content-Type", "application/json");
@@ -168,19 +266,19 @@ pub fn create_backend(config: &AgentConfig) -> Box<dyn AgentBackend> {
         "claude" => {
             let key = std::env::var("ANTHROPIC_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("claude", "https://api.anthropic.com/v1/messages", key, &model))
+            Box::new(ApiBackend::new("claude", "https://api.anthropic.com/v1/messages", key, &model, config.stream))
         }
         "openai" => {
             let key = std::env::var("OPENAI_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("openai", "https://api.openai.com/v1/chat/completions", key, &model))
+            Box::new(ApiBackend::new("openai", "https://api.openai.com/v1/chat/completions", key, &model, config.stream))
         }
         "openrouter" => {
             let key = std::env::var("OPENROUTER_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("openrouter", "https://openrouter.ai/api/v1/chat/completions", key, &model))
+            Box::new(ApiBackend::new("openrouter", "https://openrouter.ai/api/v1/chat/completions", key, &model, config.stream))
         }
-        "ollama-api" => Box::new(ApiBackend::new("ollama-api", "http://localhost:11434/api/chat", None, &config.model.clone().unwrap_or_default())),
+        "ollama-api" => Box::new(ApiBackend::new("ollama-api", "http://localhost:11434/api/chat", None, &config.model.clone().unwrap_or_default(), config.stream)),
         "ollama-cli" => Box::new(CliBackend::new("ollama-cli", "ollama", &[], Some("llama3".to_string()))),
         _ => panic!("Unknown backend: {}", config.backend),
     }

@@ -101,6 +101,7 @@ agent_config_field(skills, 'list[str]', 'field(default_factory=list)', "Paths to
 agent_config_field(max_iterations, int, '0', "0 = unlimited, N = pause after N tool iterations").
 agent_config_field(timeout, int, '300', "").
 agent_config_field(show_tokens, bool, 'True', "").
+agent_config_field(stream, bool, 'False', "Enable streaming output for API backends").
 agent_config_field(extra, dict, 'field(default_factory=dict)', "").
 
 %% default_agent_preset(+PresetName, +Backend, +Overrides)

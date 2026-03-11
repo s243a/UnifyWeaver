@@ -882,72 +882,18 @@ emit_rust_security_facts(S, _Options) :-
 
 %% emit_rust_config_data(+Stream, +Options)
 %% Emit all config fact tables as Rust static arrays.
-emit_rust_config_data(S, _Options) :-
-    %% CLI arguments
-    write(S, 'pub static CLI_ARGS: &[CliArgument] = &[\n'),
-    findall(Name-Opts, agent_loop_module:cli_argument(Name, Opts), CLIArgs),
-    maplist([Name-Opts]>>(
-        (member(long(Long), Opts) -> true ; Long = ''),
-        (member(short(Short), Opts) -> true ; Short = ''),
-        (member(default(Def), Opts) ->
-            (Def == none -> DefStr = '' ; term_to_atom(Def, DefStr))
-        ; DefStr = ''),
-        (member(help(Help), Opts) -> true ; Help = ''),
-        format(S, '    CliArgument { name: "~w", long_flag: "~w", short_flag: "~w", default_value: "~w", help: "~w" },~n',
-               [Name, Long, Short, DefStr, Help])
-    ), CLIArgs),
-    write(S, '];\n\n'),
-    %% Agent config fields
-    write(S, 'pub static CONFIG_FIELDS: &[AgentConfigField] = &[\n'),
-    findall(acf(N,T,D,C), agent_loop_module:agent_config_field(N,T,D,C), ACFs),
-    maplist([acf(N,T,D,C)]>>(
-        (D == none -> DStr = ''
-        ; atom(D) -> atom_string(D, DS), agent_loop_module:replace_all_sub(DS, "\"", "\\\"", DStr)
-        ; term_to_atom(D, DA), atom_string(DA, DS2), agent_loop_module:replace_all_sub(DS2, "\"", "\\\"", DStr)
-        ),
-        format(S, '    AgentConfigField { name: "~w", type_annotation: "~w", default_value: "~w", comment: "~w" },~n',
-               [N, T, DStr, C])
-    ), ACFs),
-    write(S, '];\n\n'),
-    %% API key env vars
-    write(S, 'pub static API_KEY_ENV_VARS: &[ApiKeyMapping] = &[\n'),
-    findall(B-V, agent_loop_module:api_key_env_var(B, V), AKEVs),
-    maplist([B-V]>>(
-        format(S, '    ApiKeyMapping { backend: "~w", env_var: "~w" },~n', [B, V])
-    ), AKEVs),
-    write(S, '];\n\n'),
-    %% API key file paths
-    write(S, 'pub static API_KEY_FILE_PATHS: &[ApiKeyFilePath] = &[\n'),
-    findall(B-P, agent_loop_module:api_key_file(B, P), AKFPs),
-    maplist([B-P]>>(
-        format(S, '    ApiKeyFilePath { backend: "~w", file_path: "~w" },~n', [B, P])
-    ), AKFPs),
-    write(S, '];\n\n'),
-    %% Config search paths
-    write(S, 'pub static CONFIG_SEARCH_PATHS: &[ConfigSearchPath] = &[\n'),
-    findall(P-Prio, agent_loop_module:config_search_path(P, Prio), CSPs),
-    maplist([P-Prio]>>(
-        format(S, '    ConfigSearchPath { path: "~w", priority: "~w" },~n', [P, Prio])
-    ), CSPs),
-    write(S, '];\n\n'),
-    %% Default presets
-    write(S, 'pub static DEFAULT_PRESETS: &[DefaultPreset] = &[\n'),
-    findall(dp(N,B,O), agent_loop_module:default_agent_preset(N, B, O), DPs),
-    maplist([dp(N,B,O)]>>(
-        term_to_atom(O, OStr),
-        atom_string(OStr, OString),
-        agent_loop_module:replace_all_sub(OString, "\"", "\\\"", OEscaped),
-        format(S, '    DefaultPreset { name: "~w", backend: "~w", overrides: "~w" },~n',
-               [N, B, OEscaped])
-    ), DPs),
-    write(S, '];\n\n'),
-    %% Audit levels
-    write(S, 'pub static AUDIT_LEVELS: &[AuditLevel] = &[\n'),
-    findall(P-L, agent_loop_module:audit_profile_level(P, L), ALs),
-    maplist([P-L]>>(
-        format(S, '    AuditLevel { profile: "~w", level: "~w" },~n', [P, L])
-    ), ALs),
-    write(S, '];\n\n').
+%% Delegates to emit_config_section/3 for each section.
+emit_rust_config_data(S, Options) :-
+    emit_config_section(S, cli_arguments, Options),
+    emit_config_section(S, agent_config_fields, Options),
+    emit_config_section(S, api_key_env_vars, Options),
+    emit_config_section(S, api_key_files, Options),
+    emit_config_section(S, config_search_paths, Options),
+    emit_config_section(S, config_dir_file_names, Options),
+    emit_config_section(S, default_presets, Options),
+    emit_config_section(S, audit_levels, Options),
+    emit_config_section(S, streaming_capable, Options),
+    emit_config_section(S, cli_overrides, Options).
 
 %% emit_backend_init_imports(+Stream, +Options)
 %% Emit Python import lines for non-optional backends.
@@ -2100,6 +2046,51 @@ emit_config_section(S, cli_arguments, Options) :-
     ;
         findall(N-P, agent_loop_module:cli_argument(N, P), Args),
         maplist([N-P]>>(format(S, "cli_argument(~q, ~q).~n", [N, P])), Args)
+    ).
+emit_config_section(S, config_search_paths, Options) :-
+    extract_target(Options, Target),
+    (Target == rust ->
+        write(S, 'pub static CONFIG_SEARCH_PATHS: &[ConfigSearchPath] = &[\n'),
+        findall(P-Prio, agent_loop_module:config_search_path(P, Prio), CSPs),
+        maplist([P-Prio]>>(
+            format(S, '    ConfigSearchPath { path: "~w", priority: "~w" },~n', [P, Prio])
+        ), CSPs),
+        write(S, '];\n\n')
+    ;
+        findall(P-Prio, agent_loop_module:config_search_path(P, Prio), CSPs),
+        maplist([P-Prio]>>(format(S, "config_search_path(~q, ~q).~n", [P, Prio])), CSPs)
+    ).
+emit_config_section(S, config_dir_file_names, Options) :-
+    extract_target(Options, Target),
+    (Target == rust ->
+        write(S, 'pub static CONFIG_DIR_FILE_NAMES: &[&str] = &[\n'),
+        findall(F, agent_loop_module:config_dir_file_name(F), Fs),
+        maplist([F]>>(format(S, '    "~w",~n', [F])), Fs),
+        write(S, '];\n\n')
+    ;
+        findall(F, agent_loop_module:config_dir_file_name(F), Fs),
+        maplist([F]>>(format(S, "config_dir_file_name(~q).~n", [F])), Fs)
+    ).
+emit_config_section(S, cli_overrides, Options) :-
+    extract_target(Options, Target),
+    (Target == rust ->
+        write(S, '/// CLI override rule: (cli_flag, config_field, behavior)\n'),
+        write(S, '#[derive(Debug, Clone)]\n'),
+        write(S, 'pub struct CliOverride {\n'),
+        write(S, '    pub cli_flag: &\'static str,\n'),
+        write(S, '    pub config_field: &\'static str,\n'),
+        write(S, '    pub behavior: &\'static str,\n'),
+        write(S, '}\n\n'),
+        write(S, 'pub static CLI_OVERRIDES: &[CliOverride] = &[\n'),
+        findall(co(F,C,B), agent_loop_module:cli_override(F, C, B), COs),
+        maplist([co(F,C,B)]>>(
+            format(S, '    CliOverride { cli_flag: "~w", config_field: "~w", behavior: "~w" },~n',
+                   [F, C, B])
+        ), COs),
+        write(S, '];\n\n')
+    ;
+        findall(co(F,C,B), agent_loop_module:cli_override(F, C, B), COs),
+        maplist([co(F,C,B)]>>(format(S, "cli_override(~q, ~q, ~q).~n", [F, C, B])), COs)
     ).
 
 %% ============================================================================

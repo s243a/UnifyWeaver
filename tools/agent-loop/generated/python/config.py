@@ -103,6 +103,7 @@ class AgentConfig:
     max_iterations: int = 0  # 0 = unlimited, N = pause after N tool iterations
     timeout: int = 300
     show_tokens: bool = True
+    stream: bool = False  # Enable streaming output for API backends
     extra: dict = field(default_factory=dict)
 
 
@@ -153,6 +154,7 @@ def _load_agent_config(name: str, data: dict) -> AgentConfig:
         max_iterations=data.get('max_iterations', 0),
         timeout=data.get('timeout', 300),
         show_tokens=data.get('show_tokens', True),
+        stream=data.get('stream', False),
         extra=data.get('extra', {})
     )
 

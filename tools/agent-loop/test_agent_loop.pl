@@ -176,6 +176,15 @@ run_tests :-
     test_emit_config_section_rust,
     test_rust_streaming_capable,
     test_rust_phase3_generation,
+    %% Phase 4 tests
+    test_rust_config_data_refactored,
+    test_rust_config_loader_fragments,
+    test_rust_config_dir_file_names,
+    test_rust_cli_overrides_section,
+    test_rust_streaming_handler,
+    test_rust_backend_api_streaming,
+    test_rust_phase4_generation,
+    test_rust_config_search_paths_section,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -2983,7 +2992,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 16),
+    assert_eq('Rust fragment count', RFCount, 22),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -3508,4 +3517,163 @@ test_rust_phase3_generation :-
     read_file_to_string(CfgPath, CfgContent, []),
     assert_true('config.rs has STREAMING_CAPABLE', (
         sub_string(CfgContent, _, _, _, "STREAMING_CAPABLE")
+    )).
+
+%% ============================================================================
+%% Phase 4 Tests — Config loading, streaming, emit_rust_config_data refactor
+%% ============================================================================
+
+test_rust_config_data_refactored :-
+    format("~nRefactored emit_rust_config_data:~n"),
+    agent_loop_module:output_path(rust, 'config.rs', CfgPath),
+    read_file_to_string(CfgPath, CfgContent, []),
+    assert_true('config.rs has CLI_ARGS', (
+        sub_string(CfgContent, _, _, _, "CLI_ARGS")
+    )),
+    assert_true('config.rs has CONFIG_FIELDS', (
+        sub_string(CfgContent, _, _, _, "CONFIG_FIELDS")
+    )),
+    assert_true('config.rs has API_KEY_ENV_VARS', (
+        sub_string(CfgContent, _, _, _, "API_KEY_ENV_VARS")
+    )),
+    assert_true('config.rs has API_KEY_FILE_PATHS', (
+        sub_string(CfgContent, _, _, _, "API_KEY_FILE_PATHS")
+    )),
+    assert_true('config.rs has CONFIG_SEARCH_PATHS', (
+        sub_string(CfgContent, _, _, _, "CONFIG_SEARCH_PATHS")
+    )),
+    assert_true('config.rs has DEFAULT_PRESETS', (
+        sub_string(CfgContent, _, _, _, "DEFAULT_PRESETS")
+    )),
+    assert_true('config.rs has AUDIT_LEVELS', (
+        sub_string(CfgContent, _, _, _, "AUDIT_LEVELS")
+    )).
+
+test_rust_config_loader_fragments :-
+    format("~nConfig loader fragments:~n"),
+    assert_true('config_loader_types exists', (
+        agent_loop_module:rust_fragment(config_loader_types, C1),
+        atom_string(C1, CS1),
+        sub_string(CS1, _, _, _, "ConfigFile")
+    )),
+    assert_true('config_loader_cascade exists', (
+        agent_loop_module:rust_fragment(config_loader_cascade, C2),
+        atom_string(C2, CS2),
+        sub_string(CS2, _, _, _, "find_config_file")
+    )),
+    assert_true('config_loader_agent_resolve exists', (
+        agent_loop_module:rust_fragment(config_loader_agent_resolve, C3),
+        atom_string(C3, CS3),
+        sub_string(CS3, _, _, _, "resolve_agent")
+    )),
+    assert_true('config_loader_api_key_resolve exists', (
+        agent_loop_module:rust_fragment(config_loader_api_key_resolve, C4),
+        atom_string(C4, CS4),
+        sub_string(CS4, _, _, _, "resolve_api_key")
+    )),
+    assert_true('config_loader_list_agents exists', (
+        agent_loop_module:rust_fragment(config_loader_list_agents, C5),
+        atom_string(C5, CS5),
+        sub_string(CS5, _, _, _, "list_agents")
+    )).
+
+test_rust_config_dir_file_names :-
+    format("~nConfig dir file names section:~n"),
+    new_memory_file(MemFile),
+    open_memory_file(MemFile, write, S),
+    agent_loop_components:emit_config_section(S, config_dir_file_names, [target(rust)]),
+    close(S),
+    memory_file_to_string(MemFile, Out),
+    assert_true('has CONFIG_DIR_FILE_NAMES', (
+        sub_string(Out, _, _, _, "CONFIG_DIR_FILE_NAMES")
+    )),
+    assert_true('has agents.yaml', (
+        sub_string(Out, _, _, _, "agents.yaml")
+    )),
+    assert_true('has agents.json', (
+        sub_string(Out, _, _, _, "agents.json")
+    )).
+
+test_rust_cli_overrides_section :-
+    format("~nCLI overrides section:~n"),
+    new_memory_file(MemFile),
+    open_memory_file(MemFile, write, S),
+    agent_loop_components:emit_config_section(S, cli_overrides, [target(rust)]),
+    close(S),
+    memory_file_to_string(MemFile, Out),
+    assert_true('has CLI_OVERRIDES', (
+        sub_string(Out, _, _, _, "CLI_OVERRIDES")
+    )),
+    assert_true('has CliOverride struct', (
+        sub_string(Out, _, _, _, "pub struct CliOverride")
+    )).
+
+test_rust_streaming_handler :-
+    format("~nStreaming handler fragment:~n"),
+    assert_true('streaming_handler exists', (
+        agent_loop_module:rust_fragment(streaming_handler, C),
+        sub_atom(C, _, _, _, 'parse_sse_line')
+    )),
+    assert_true('streaming_handler has extract_content_delta', (
+        agent_loop_module:rust_fragment(streaming_handler, C),
+        sub_atom(C, _, _, _, 'extract_content_delta')
+    )),
+    assert_true('streaming_handler has send_streaming', (
+        agent_loop_module:rust_fragment(streaming_handler, C),
+        sub_atom(C, _, _, _, 'send_streaming')
+    )).
+
+test_rust_backend_api_streaming :-
+    format("~nBackend API streaming:~n"),
+    agent_loop_module:rust_fragment(backend_api_impl, C),
+    assert_true('ApiBackend has stream field', (
+        sub_atom(C, _, _, _, 'pub stream: bool')
+    )),
+    assert_true('ApiBackend calls send_streaming', (
+        sub_atom(C, _, _, _, 'send_streaming')
+    )).
+
+test_rust_phase4_generation :-
+    format("~nRust phase 4 generation:~n"),
+    assert_true('config_loader.rs exists', (
+        agent_loop_module:output_path(rust, 'config_loader.rs', P1), exists_file(P1)
+    )),
+    agent_loop_module:output_path(rust, 'lib.rs', LibPath),
+    read_file_to_string(LibPath, LibContent, []),
+    assert_true('lib.rs has config_loader module', (
+        sub_string(LibContent, _, _, _, "pub mod config_loader;")
+    )),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs has find_config_file', (
+        sub_string(MainContent, _, _, _, "find_config_file")
+    )),
+    assert_true('main.rs has resolve_agent', (
+        sub_string(MainContent, _, _, _, "resolve_agent")
+    )),
+    assert_true('main.rs has resolve_api_key', (
+        sub_string(MainContent, _, _, _, "resolve_api_key")
+    )),
+    assert_true('main.rs has stream flag', (
+        sub_string(MainContent, _, _, _, "stream_arg")
+    )).
+
+test_rust_config_search_paths_section :-
+    format("~nConfig search paths section:~n"),
+    new_memory_file(MemFile),
+    open_memory_file(MemFile, write, S),
+    agent_loop_components:emit_config_section(S, config_search_paths, [target(rust)]),
+    close(S),
+    memory_file_to_string(MemFile, Out),
+    assert_true('has CONFIG_SEARCH_PATHS', (
+        sub_string(Out, _, _, _, "CONFIG_SEARCH_PATHS")
+    )),
+    assert_true('has uwsal.json', (
+        sub_string(Out, _, _, _, "uwsal.json")
+    )),
+    assert_true('has required priority', (
+        sub_string(Out, _, _, _, "required")
+    )),
+    assert_true('has fallback priority', (
+        sub_string(Out, _, _, _, "fallback")
     )).

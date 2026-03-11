@@ -479,6 +479,7 @@ agent_config_field(skills,              'list[str]',      'field(default_factory
 agent_config_field(max_iterations,      'int',            '0',       "0 = unlimited, N = pause after N tool iterations").
 agent_config_field(timeout,             'int',            '300',     "").
 agent_config_field(show_tokens,         'bool',           'True',    "").
+agent_config_field(stream,              'bool',           'False',   "Enable streaming output for API backends").
 agent_config_field(extra,               'dict',           'field(default_factory=dict)', "").
 
 %% config_field_json_default(FieldName, JsonDefault)
@@ -1168,6 +1169,8 @@ generate_all(rust) :-
     generate_rust_tool_handler,
     %% Phase 3 — CLI + sessions
     generate_rust_sessions,
+    %% Phase 4 — config loading + streaming
+    generate_rust_config_loader,
     generate_rust_main,
     write('Rust target done.'), nl.
 
@@ -1482,6 +1485,7 @@ generate_rust_lib :-
     write(S, 'pub mod backends;\n'),
     write(S, 'pub mod tool_handler;\n'),
     write(S, 'pub mod sessions;\n'),
+    write(S, 'pub mod config_loader;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
 
@@ -1495,8 +1499,6 @@ generate_rust_config :-
     ]),
     write_rust(S, config_types),
     agent_loop_components:emit_rust_config_data(S, [target(rust)]),
-    %% Streaming capable backends (not in emit_rust_config_data)
-    agent_loop_components:emit_config_section(S, streaming_capable, [target(rust)]),
     close(S),
     format('  Generated rust/src/config.rs~n', []).
 
@@ -1652,6 +1654,7 @@ generate_rust_backends :-
     write(S, 'use crate::types::*;\n\n'),
     write_rust(S, backend_trait),
     write_rust(S, backend_cli_impl),
+    write_rust(S, streaming_handler),
     write_rust(S, backend_api_impl),
     %% Data-driven backend factory
     generate_rust_backend_factory(S),
@@ -1693,13 +1696,13 @@ generate_rust_backend_factory(S) :-
                 ;
                     format(S, '            let model = config.model.clone().unwrap_or_default();~n', [])
                 ),
-                format(S, '            Box::new(ApiBackend::new("~w", "~w", key, &model))~n', [FN, EP]),
+                format(S, '            Box::new(ApiBackend::new("~w", "~w", key, &model, config.stream))~n', [FN, EP]),
                 format(S, '        }~n', [])
             ;
                 (member(default_model(DefModel2), Props) ->
-                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or("~w".to_string()))),~n', [FN, FN, EP, DefModel2])
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or("~w".to_string()), config.stream)),~n', [FN, FN, EP, DefModel2])
                 ;
-                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or_default())),~n', [FN, FN, EP])
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or_default(), config.stream)),~n', [FN, FN, EP])
                 )
             )
         ; true  %% skip unknown types
@@ -1721,6 +1724,79 @@ generate_rust_tool_handler :-
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
 
+generate_rust_config_loader :-
+    output_path(rust, 'config_loader.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, config_loader, 'Config file loading, agent resolution, API key lookup'),
+    write_rust(S, config_loader_types),
+    write_rust(S, config_loader_cascade),
+    write_rust(S, config_loader_agent_resolve),
+    write_rust(S, config_loader_api_key_resolve),
+    write_rust(S, config_loader_list_agents),
+    %% Generate example config from example_agent_config/3 facts
+    generate_rust_example_config(S),
+    close(S),
+    format('  Generated rust/src/config_loader.rs~n', []).
+
+%% generate_rust_example_config(+Stream)
+%% Emit generate_example_config() function from example_agent_config/3 facts.
+generate_rust_example_config(S) :-
+    write(S, '\nfn generate_example_config() -> String {\n'),
+    write(S, '    let mut s = String::new();\n'),
+    write(S, '    s.push_str(\"{\\n\");\n'),
+    write(S, '    s.push_str(\"  \\\"agents\\\": {\\n\");\n'),
+    findall(Name-Backend-Opts, example_agent_config(Name, Backend, Opts), Examples),
+    length(Examples, Len),
+    rust_emit_example_agents(S, Examples, 1, Len),
+    write(S, '    s.push_str(\"  }\\n\");\n'),
+    write(S, '    s.push_str(\"}\\n\");\n'),
+    write(S, '    s\n'),
+    write(S, '}\n').
+
+rust_emit_example_agents(_, [], _, _).
+rust_emit_example_agents(S, [Name-Backend-Opts|Rest], Idx, Total) :-
+    format(S, '    s.push_str(\"    \\\"~w\\\": {\\n\");\n', [Name]),
+    format(S, '    s.push_str(\"      \\\"backend\\\": \\\"~w\\\"', [Backend]),
+    (Opts == [] ->
+        (Idx < Total ->
+            write(S, '\\n\");\n')
+        ;
+            write(S, '\\n\");\n')
+        )
+    ;
+        write(S, ',\\n\");\n'),
+        rust_emit_example_opts(S, Opts)
+    ),
+    (Idx < Total ->
+        write(S, '    s.push_str(\"    },\\n\");\n')
+    ;
+        write(S, '    s.push_str(\"    }\\n\");\n')
+    ),
+    Idx2 is Idx + 1,
+    rust_emit_example_agents(S, Rest, Idx2, Total).
+
+rust_emit_example_opts(_, []).
+rust_emit_example_opts(S, [Key=Val]) :- !,
+    rust_format_config_val(Val, FmtVal),
+    format(S, '    s.push_str(\"      \\\"~w\\\": ~w\\n\");\n', [Key, FmtVal]).
+rust_emit_example_opts(S, [Key=Val|Rest]) :-
+    rust_format_config_val(Val, FmtVal),
+    format(S, '    s.push_str(\"      \\\"~w\\\": ~w,\\n\");\n', [Key, FmtVal]),
+    rust_emit_example_opts(S, Rest).
+
+rust_format_config_val(Val, FmtStr) :-
+    (Val == true -> FmtStr = 'true'
+    ; Val == false -> FmtStr = 'false'
+    ; number(Val) -> term_to_atom(Val, FmtStr)
+    ; is_list(Val) ->
+        maplist([V, Quoted]>>(
+            format(atom(Quoted), '\\\"~w\\\"', [V])
+        ), Val, QuotedList),
+        atomic_list_concat(QuotedList, ', ', Inner),
+        format(atom(FmtStr), '[~w]', [Inner])
+    ; format(atom(FmtStr), '\\\"~w\\\"', [Val])
+    ).
+
 generate_rust_sessions :-
     output_path(rust, 'sessions.rs', Path),
     open(Path, write, S),
@@ -1739,7 +1815,8 @@ generate_rust_main :-
     write(S, 'use agent_loop::costs::*;\n'),
     write(S, 'use agent_loop::tool_handler::*;\n'),
     write(S, 'use agent_loop::commands::*;\n'),
-    write(S, 'use agent_loop::sessions::*;\n\n'),
+    write(S, 'use agent_loop::sessions::*;\n'),
+    write(S, 'use agent_loop::config_loader::*;\n\n'),
     %% Data-driven command dispatch function (with session support)
     generate_rust_command_dispatch_with_sessions(S),
     write(S, 'fn main() {\n'),
@@ -1749,8 +1826,36 @@ generate_rust_main :-
     write(S, '        .version(env!("CARGO_PKG_VERSION"))\n'),
     generate_rust_clap_args(S),
     write(S, '        .get_matches();\n\n'),
-    %% Build config from matches
+    %% Config file loading + agent resolution
+    write(S, '    // Load config file\n'),
+    write(S, '    let no_fallback = matches.get_flag("no_fallback");\n'),
+    write(S, '    let cli_config = matches.get_one::<String>("config").map(|s| s.as_str());\n'),
+    write(S, '    let config_path = find_config_file(cli_config, no_fallback);\n'),
+    write(S, '    let config_file = config_path.as_deref().and_then(|p| load_config_file(p));\n\n'),
+    %% Handle --init-config (early return)
+    write(S, '    // Handle --init-config\n'),
+    write(S, '    if let Some(path) = matches.get_one::<String>("init_config") {\n'),
+    write(S, '        if let Err(e) = init_config(path) {\n'),
+    write(S, '            eprintln!("Error creating config: {}", e);\n'),
+    write(S, '        }\n'),
+    write(S, '        return;\n'),
+    write(S, '    }\n\n'),
+    %% Handle --list-agents (early return)
+    write(S, '    // Handle --list-agents\n'),
+    write(S, '    if matches.get_flag("list_agents") {\n'),
+    write(S, '        list_agents(config_file.as_ref());\n'),
+    write(S, '        return;\n'),
+    write(S, '    }\n\n'),
+    %% Resolve agent variant
+    write(S, '    // Resolve agent variant\n'),
+    write(S, '    let agent_name = matches.get_one::<String>("agent").map(|s| s.as_str());\n'),
+    write(S, '    let mut config = resolve_agent(agent_name, config_file.as_ref());\n\n'),
+    %% Apply CLI overrides on top
+    write(S, '    // Apply CLI overrides on top of agent config\n'),
     generate_rust_cli_config_build(S),
+    %% Resolve API key
+    write(S, '    // Resolve API key\n'),
+    write(S, '    resolve_api_key(&mut config, config_file.as_ref());\n\n'),
     %% Session manager setup
     write(S, '    let sessions_dir = matches.get_one::<String>("sessions_dir").map(|s| s.as_str());\n'),
     write(S, '    let session_manager = SessionManager::new(sessions_dir);\n\n'),
@@ -1981,7 +2086,6 @@ rust_emit_choices_list(S, [C|Rest]) :-
 %% generate_rust_cli_config_build(+Stream)
 %% Emit code to build AgentConfig from clap matches.
 generate_rust_cli_config_build(S) :-
-    write(S, '    let mut config = AgentConfig::default();\n'),
     %% String overrides (str fields)
     maplist([Field-ArgName]>>(
         format(S, '    if let Some(v) = matches.get_one::<String>("~w") { config.~w = v.clone(); }~n', [ArgName, Field])
@@ -1993,6 +2097,7 @@ generate_rust_cli_config_build(S) :-
     %% Bool flag overrides
     write(S, '    if matches.get_flag("auto_tools") { config.auto_tools = true; }\n'),
     write(S, '    if matches.get_flag("no_tokens") { config.show_tokens = false; }\n'),
+    write(S, '    if matches.get_flag("stream_arg") { config.stream = true; }\n'),
     %% Int overrides
     maplist([Field-ArgName]>>(
         format(S, '    if let Some(&v) = matches.get_one::<i64>("~w") { config.~w = v; }~n', [ArgName, Field])
@@ -3996,15 +4101,17 @@ pub struct ApiBackend {
     pub endpoint: String,
     pub api_key: Option<String>,
     pub model: String,
+    pub stream: bool,
 }
 
 impl ApiBackend {
-    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str) -> Self {
+    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool) -> Self {
         Self {
             backend_name: name.to_string(),
             endpoint: endpoint.to_string(),
             api_key,
             model: model.to_string(),
+            stream,
         }
     }
 
@@ -4027,10 +4134,27 @@ impl AgentBackend for ApiBackend {
     fn send_message(&self, message: &str, context: &[Message]) -> AgentResponse {
         let client = reqwest::blocking::Client::new();
         let messages = self.build_messages(message, context);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": messages,
         });
+
+        if self.stream {
+            body["stream"] = serde_json::json!(true);
+            let (content, input_tokens, output_tokens) = send_streaming(
+                &client,
+                &self.endpoint,
+                self.api_key.as_deref(),
+                body,
+            );
+            return AgentResponse {
+                content,
+                input_tokens,
+                output_tokens,
+                model: self.model.clone(),
+                ..Default::default()
+            };
+        }
 
         let mut req = client.post(&self.endpoint)
             .header("Content-Type", "application/json");
@@ -4473,6 +4597,421 @@ fn now_iso8601() -> String {
         month += 1;
     }
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month + 1, remaining_days + 1, hours, minutes, seconds)
+}
+').
+
+rust_fragment(streaming_handler, '
+use std::io::{BufRead, Write};
+
+/// Parse a single SSE event line.
+/// Returns the data payload if the line starts with "data: ", or None.
+pub fn parse_sse_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed == "data: [DONE]" {
+        return None;
+    }
+    if let Some(data) = trimmed.strip_prefix("data: ") {
+        Some(data.to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract content delta from an SSE JSON payload.
+/// Supports OpenAI/OpenRouter format (choices[0].delta.content)
+/// and Anthropic format (delta.text).
+pub fn extract_content_delta(json_str: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    // OpenAI / OpenRouter format
+    if let Some(content) = json.get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("delta"))
+        .and_then(|d| d.get("content"))
+        .and_then(|c| c.as_str()) {
+        return Some(content.to_string());
+    }
+    // Anthropic format
+    if let Some(text) = json.get("delta")
+        .and_then(|d| d.get("text"))
+        .and_then(|t| t.as_str()) {
+        return Some(text.to_string());
+    }
+    None
+}
+
+/// Send a streaming request and print output progressively.
+/// Returns the complete accumulated response content and token usage.
+pub fn send_streaming(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    api_key: Option<&str>,
+    body: serde_json::Value,
+) -> (String, u64, u64) {
+    let mut req = client.post(endpoint)
+        .header("Content-Type", "application/json");
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+
+    match req.json(&body).send() {
+        Ok(resp) => {
+            let mut full_content = String::new();
+            let reader = std::io::BufReader::new(resp);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        if let Some(data) = parse_sse_line(&line) {
+                            if let Some(delta) = extract_content_delta(&data) {
+                                print!("{}", delta);
+                                let _ = std::io::stdout().flush();
+                                full_content.push_str(&delta);
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            println!();
+            (full_content, 0, 0)
+        }
+        Err(e) => {
+            (format!("Streaming error: {}", e), 0, 0)
+        }
+    }
+}
+').
+
+rust_fragment(config_loader_types, '
+use std::collections::HashMap;
+use crate::config::*;
+use crate::types::AgentConfig;
+
+/// Represents a loaded configuration file (agents.yaml/json).
+#[derive(Debug, Clone, Default)]
+pub struct ConfigFile {
+    /// Default backend for all agents
+    pub default_backend: Option<String>,
+    /// API keys section (backend_name -> key)
+    pub keys: HashMap<String, String>,
+    /// Named agent variants
+    pub agents: HashMap<String, AgentVariant>,
+}
+
+/// A named agent variant from config file.
+#[derive(Debug, Clone, Default)]
+pub struct AgentVariant {
+    pub backend: Option<String>,
+    pub model: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<i64>,
+    pub api_key: Option<String>,
+    pub command: Option<String>,
+    pub system_prompt: Option<String>,
+    pub agent_md: Option<String>,
+    pub tools: Option<Vec<String>>,
+    pub auto_tools: Option<bool>,
+    pub context_mode: Option<String>,
+    pub max_context_tokens: Option<i64>,
+    pub max_messages: Option<i64>,
+    pub skills: Option<Vec<String>>,
+    pub max_iterations: Option<i64>,
+    pub timeout: Option<i64>,
+    pub extra: Option<HashMap<String, serde_json::Value>>,
+}
+').
+
+rust_fragment(config_loader_cascade, '
+/// Expand ~ to home directory.
+pub fn expand_home(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{}{}", home, &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
+/// Find a config file by searching CONFIG_SEARCH_PATHS and CONFIG_DIR_FILE_NAMES.
+/// Returns the path if found.
+pub fn find_config_file(cli_config: Option<&str>, no_fallback: bool) -> Option<String> {
+    // CLI --config overrides everything
+    if let Some(path) = cli_config {
+        let expanded = expand_home(path);
+        if std::path::Path::new(&expanded).exists() {
+            return Some(expanded);
+        }
+        eprintln!("Config file not found: {}", path);
+        return None;
+    }
+    // Search config_search_path entries
+    for csp in CONFIG_SEARCH_PATHS {
+        if no_fallback && csp.priority == "fallback" {
+            continue;
+        }
+        let expanded = expand_home(csp.path);
+        if std::path::Path::new(&expanded).exists() {
+            return Some(expanded);
+        }
+        // Check for config dir files next to each search path
+        let parent = std::path::Path::new(&expanded)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+        for fname in CONFIG_DIR_FILE_NAMES {
+            let candidate = format!("{}/{}", parent, fname);
+            if std::path::Path::new(&candidate).exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Load and parse a config file (JSON format).
+pub fn load_config_file(path: &str) -> Option<ConfigFile> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let mut cf = ConfigFile::default();
+
+    // Parse default backend
+    cf.default_backend = json.get("default_backend")
+        .or_else(|| json.get("backend"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Parse keys
+    if let Some(keys_obj) = json.get("keys").and_then(|v| v.as_object()) {
+        for (k, v) in keys_obj {
+            if let Some(val) = v.as_str() {
+                cf.keys.insert(k.clone(), val.to_string());
+            }
+        }
+    }
+
+    // Parse agents
+    if let Some(agents_obj) = json.get("agents").and_then(|v| v.as_object()) {
+        for (name, agent_val) in agents_obj {
+            let variant = parse_agent_variant(agent_val);
+            cf.agents.insert(name.clone(), variant);
+        }
+    }
+
+    Some(cf)
+}
+
+fn parse_agent_variant(val: &serde_json::Value) -> AgentVariant {
+    let mut v = AgentVariant::default();
+    v.backend = val.get("backend").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.model = val.get("model").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.host = val.get("host").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.port = val.get("port").and_then(|x| x.as_i64());
+    v.api_key = val.get("api_key").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.command = val.get("command").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.system_prompt = val.get("system_prompt").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.agent_md = val.get("agent_md").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.auto_tools = val.get("auto_tools").and_then(|x| x.as_bool());
+    v.context_mode = val.get("context_mode").and_then(|x| x.as_str()).map(|s| s.to_string());
+    v.max_context_tokens = val.get("max_context_tokens").and_then(|x| x.as_i64());
+    v.max_messages = val.get("max_messages").and_then(|x| x.as_i64());
+    v.max_iterations = val.get("max_iterations").and_then(|x| x.as_i64());
+    v.timeout = val.get("timeout").and_then(|x| x.as_i64());
+    if let Some(arr) = val.get("tools").and_then(|x| x.as_array()) {
+        v.tools = Some(arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+    }
+    if let Some(arr) = val.get("skills").and_then(|x| x.as_array()) {
+        v.skills = Some(arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+    }
+    v
+}
+').
+
+rust_fragment(config_loader_agent_resolve, '
+/// Resolve an agent variant to an AgentConfig.
+/// Priority: config file agent → default preset → default config.
+pub fn resolve_agent(
+    agent_name: Option<&str>,
+    config_file: Option<&ConfigFile>,
+) -> AgentConfig {
+    let mut config = AgentConfig::default();
+
+    if let Some(name) = agent_name {
+        // Try config file first
+        if let Some(cf) = config_file {
+            if let Some(variant) = cf.agents.get(name) {
+                apply_variant_to_config(&mut config, variant, cf);
+                config.name = name.to_string();
+                return config;
+            }
+        }
+        // Try default presets
+        if let Some(preset) = DEFAULT_PRESETS.iter().find(|p| p.name == name) {
+            config.backend = preset.backend.to_string();
+            config.name = name.to_string();
+            parse_preset_overrides(&mut config, preset.overrides);
+            return config;
+        }
+        eprintln!("Warning: agent ''{}'' not found, using default", name);
+    } else if let Some(cf) = config_file {
+        // Apply default_backend from config file
+        if let Some(ref db) = cf.default_backend {
+            config.backend = db.clone();
+        }
+    }
+
+    config
+}
+
+fn apply_variant_to_config(config: &mut AgentConfig, variant: &AgentVariant, cf: &ConfigFile) {
+    if let Some(ref v) = variant.backend { config.backend = v.clone(); }
+    if let Some(ref v) = variant.model { config.model = Some(v.clone()); }
+    if let Some(ref v) = variant.host { config.host = Some(v.clone()); }
+    if let Some(ref v) = variant.port { config.port = Some(*v); }
+    if let Some(ref v) = variant.api_key { config.api_key = Some(v.clone()); }
+    if let Some(ref v) = variant.command { config.command = Some(v.clone()); }
+    if let Some(ref v) = variant.system_prompt { config.system_prompt = Some(v.clone()); }
+    if let Some(ref v) = variant.agent_md { config.agent_md = Some(v.clone()); }
+    if let Some(ref v) = variant.tools { config.tools = v.clone(); }
+    if let Some(v) = variant.auto_tools { config.auto_tools = v; }
+    if let Some(ref v) = variant.context_mode { config.context_mode = v.clone(); }
+    if let Some(v) = variant.max_context_tokens { config.max_context_tokens = v; }
+    if let Some(v) = variant.max_messages { config.max_messages = v; }
+    if let Some(v) = variant.max_iterations { config.max_iterations = v; }
+    if let Some(v) = variant.timeout { config.timeout = v; }
+    if let Some(ref v) = variant.skills { config.skills = v.clone(); }
+    // Apply default_backend from config file if variant has no backend
+    if variant.backend.is_none() {
+        if let Some(ref db) = cf.default_backend {
+            config.backend = db.clone();
+        }
+    }
+}
+
+fn parse_preset_overrides(config: &mut AgentConfig, overrides_str: &str) {
+    // Format: [key=value,key=value,...]
+    let inner = overrides_str.trim_start_matches(\'[\').trim_end_matches(\']\');
+    for pair in inner.split(\',\') {
+        let pair = pair.trim();
+        if let Some(eq_pos) = pair.find(\'=\') {
+            let key = pair[..eq_pos].trim();
+            let val = pair[eq_pos+1..].trim().trim_matches(\'\\\"\').trim_matches(\'\\\'\');
+            match key {
+                "model" => config.model = Some(val.to_string()),
+                "host" => config.host = Some(val.to_string()),
+                "command" => config.command = Some(val.to_string()),
+                "system_prompt" => config.system_prompt = Some(val.to_string()),
+                "auto_tools" => config.auto_tools = val == "true",
+                "context_mode" => config.context_mode = val.to_string(),
+                "port" => if let Ok(p) = val.parse() { config.port = Some(p); },
+                "max_iterations" => if let Ok(n) = val.parse() { config.max_iterations = n; },
+                "max_context_tokens" => if let Ok(n) = val.parse() { config.max_context_tokens = n; },
+                _ => {}
+            }
+        }
+    }
+}
+').
+
+rust_fragment(config_loader_api_key_resolve, '
+/// Resolve API key from multiple sources.
+/// Priority: CLI → env var → config file keys → key file on disk.
+pub fn resolve_api_key(config: &mut AgentConfig, config_file: Option<&ConfigFile>) {
+    // Already set from CLI
+    if config.api_key.is_some() {
+        // Check if it is an env var reference ($VAR_NAME)
+        if let Some(ref key) = config.api_key.clone() {
+            if key.starts_with(\'$\') {
+                let var_name = &key[1..];
+                if let Ok(val) = std::env::var(var_name) {
+                    config.api_key = Some(val);
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
+    // Try env vars from API_KEY_ENV_VARS
+    for mapping in API_KEY_ENV_VARS {
+        if mapping.backend == config.backend {
+            if let Ok(val) = std::env::var(mapping.env_var) {
+                config.api_key = Some(val);
+                return;
+            }
+        }
+    }
+
+    // Try config file keys section
+    if let Some(cf) = config_file {
+        if let Some(key) = cf.keys.get(&config.backend) {
+            if key.starts_with(\'$\') {
+                let var_name = &key[1..];
+                if let Ok(val) = std::env::var(var_name) {
+                    config.api_key = Some(val);
+                    return;
+                }
+            } else {
+                config.api_key = Some(key.clone());
+                return;
+            }
+        }
+    }
+
+    // Try key files on disk
+    for file_path in API_KEY_FILE_PATHS {
+        if file_path.backend == config.backend {
+            let expanded = expand_home(file_path.file_path);
+            if let Ok(content) = std::fs::read_to_string(&expanded) {
+                let trimmed = content.trim().to_string();
+                if !trimmed.is_empty() {
+                    config.api_key = Some(trimmed);
+                    return;
+                }
+            }
+        }
+    }
+}
+').
+
+rust_fragment(config_loader_list_agents, '
+/// List available agents from config file and default presets.
+pub fn list_agents(config_file: Option<&ConfigFile>) {
+    println!("Available agents:");
+    println!();
+
+    // Config file agents
+    if let Some(cf) = config_file {
+        if !cf.agents.is_empty() {
+            println!("  From config file:");
+            let mut names: Vec<&String> = cf.agents.keys().collect();
+            names.sort();
+            for name in names {
+                let variant = &cf.agents[name];
+                let backend = variant.backend.as_deref().unwrap_or("(default)");
+                let model = variant.model.as_deref().unwrap_or("");
+                if model.is_empty() {
+                    println!("    {:<20} backend={}", name, backend);
+                } else {
+                    println!("    {:<20} backend={}, model={}", name, backend, model);
+                }
+            }
+            println!();
+        }
+    }
+
+    // Default presets
+    println!("  Built-in presets:");
+    for preset in DEFAULT_PRESETS {
+        println!("    {:<20} backend={} {}", preset.name, preset.backend, preset.overrides);
+    }
+}
+
+/// Generate an example config file.
+pub fn init_config(path: &str) -> std::io::Result<()> {
+    let content = generate_example_config();
+    std::fs::write(path, content)?;
+    println!("Created example config: {}", path);
+    Ok(())
 }
 ').
 

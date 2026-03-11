@@ -9,6 +9,7 @@ use agent_loop::costs::*;
 use agent_loop::tool_handler::*;
 use agent_loop::commands::*;
 use agent_loop::sessions::*;
+use agent_loop::config_loader::*;
 
 /// Handle a slash command. Returns true if the command was handled.
 fn handle_command(
@@ -253,15 +254,43 @@ fn main() {
             .num_args(0..=1))
         .get_matches();
 
-    let mut config = AgentConfig::default();
+    // Load config file
+    let no_fallback = matches.get_flag("no_fallback");
+    let cli_config = matches.get_one::<String>("config").map(|s| s.as_str());
+    let config_path = find_config_file(cli_config, no_fallback);
+    let config_file = config_path.as_deref().and_then(|p| load_config_file(p));
+
+    // Handle --init-config
+    if let Some(path) = matches.get_one::<String>("init_config") {
+        if let Err(e) = init_config(path) {
+            eprintln!("Error creating config: {}", e);
+        }
+        return;
+    }
+
+    // Handle --list-agents
+    if matches.get_flag("list_agents") {
+        list_agents(config_file.as_ref());
+        return;
+    }
+
+    // Resolve agent variant
+    let agent_name = matches.get_one::<String>("agent").map(|s| s.as_str());
+    let mut config = resolve_agent(agent_name, config_file.as_ref());
+
+    // Apply CLI overrides on top of agent config
     if let Some(v) = matches.get_one::<String>("backend") { config.backend = v.clone(); }
     if let Some(v) = matches.get_one::<String>("model") { config.model = Some(v.clone()); }
     if let Some(v) = matches.get_one::<String>("api_key") { config.api_key = Some(v.clone()); }
     if let Some(v) = matches.get_one::<String>("system_prompt") { config.system_prompt = Some(v.clone()); }
     if matches.get_flag("auto_tools") { config.auto_tools = true; }
     if matches.get_flag("no_tokens") { config.show_tokens = false; }
+    if matches.get_flag("stream_arg") { config.stream = true; }
     if let Some(&v) = matches.get_one::<i64>("max_iterations") { config.max_iterations = v; }
     if let Some(&v) = matches.get_one::<i64>("max_tokens") { config.max_context_tokens = v; }
+
+    // Resolve API key
+    resolve_api_key(&mut config, config_file.as_ref());
 
     let sessions_dir = matches.get_one::<String>("sessions_dir").map(|s| s.as_str());
     let session_manager = SessionManager::new(sessions_dir);
