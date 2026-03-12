@@ -982,6 +982,7 @@ backend_factory(gemini, [
     import_from(backends),
     default_command(gemini),
     default_model('gemini-3-flash-preview'),
+    model_validator(validate_gemini_model),
     cli_args(["--model"]),
     constructor_args([
         arg(command, cmd),
@@ -1731,7 +1732,16 @@ generate_rust_backend_factory(S) :-
                 ArgsLit = '&[]'
             ),
             (member(default_model(Model), Props) ->
-                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", ~w, Some("~w".to_string()))),~n', [FN, FN, Cmd, ArgsLit, Model])
+                %% Check for model_validator (e.g. gemini version constraints)
+                (member(model_validator(Validator), FProps) ->
+                    format(S, '        "~w" => {~n', [FN]),
+                    format(S, '            let m = config.model.clone().unwrap_or("~w".to_string());~n', [Model]),
+                    format(S, '            let validated = ~w(&m, "~w");~n', [Validator, Model]),
+                    format(S, '            Box::new(CliBackend::new("~w", "~w", ~w, Some(validated)))~n', [FN, Cmd, ArgsLit]),
+                    format(S, '        }~n', [])
+                ;
+                    format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", ~w, config.model.clone().or(Some("~w".to_string())))),~n', [FN, FN, Cmd, ArgsLit, Model])
+                )
             ;
                 format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", ~w, config.model.clone())),~n', [FN, FN, Cmd, ArgsLit])
             )
@@ -3938,33 +3948,41 @@ pub struct ToolSpec {
     pub parameters: &''static [ToolParam],
 }
 
+use std::sync::OnceLock;
+
+/// Cached tool schemas — built once from static TOOL_SPECS.
+static TOOL_SCHEMAS_CACHE: OnceLock<Vec<serde_json::Value>> = OnceLock::new();
+
 /// Generate JSON tool schemas for API requests (OpenAI/Anthropic format).
-pub fn tool_schemas_json() -> Vec<serde_json::Value> {
-    TOOL_SPECS.iter().map(|spec| {
-        let mut properties = serde_json::Map::new();
-        let mut required = Vec::new();
-        for p in spec.parameters {
-            properties.insert(p.name.to_string(), serde_json::json!({
-                "type": p.param_type,
-                "description": p.description,
-            }));
-            if p.required {
-                required.push(serde_json::Value::String(p.name.to_string()));
-            }
-        }
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": spec.name,
-                "description": spec.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
+/// Cached via OnceLock since TOOL_SPECS is static.
+pub fn tool_schemas_json() -> &''static Vec<serde_json::Value> {
+    TOOL_SCHEMAS_CACHE.get_or_init(|| {
+        TOOL_SPECS.iter().map(|spec| {
+            let mut properties = serde_json::Map::new();
+            let mut required = Vec::new();
+            for p in spec.parameters {
+                properties.insert(p.name.to_string(), serde_json::json!({
+                    "type": p.param_type,
+                    "description": p.description,
+                }));
+                if p.required {
+                    required.push(serde_json::Value::String(p.name.to_string()));
                 }
             }
-        })
-    }).collect()
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    }
+                }
+            })
+        }).collect()
+    })
 }
 
 ').
@@ -4145,9 +4163,23 @@ impl ContextManager {
         self.messages.is_empty()
     }
 
-    /// Total character count across all messages.
+    /// Character count for a single message, including tool call estimates.
+    fn message_char_count(m: &Message) -> usize {
+        let mut n = m.content.len();
+        if let Some(ref tcs) = m.tool_calls {
+            for tc in tcs {
+                n += 100; // base overhead: name + id + JSON structure
+                for v in tc.arguments.values() {
+                    n += v.to_string().len();
+                }
+            }
+        }
+        n
+    }
+
+    /// Total character count across all messages (includes tool call estimates).
     pub fn char_count(&self) -> usize {
-        self.messages.iter().map(|m| m.content.len()).sum()
+        self.messages.iter().map(Self::message_char_count).sum()
     }
 
     /// Total word count across all messages.
@@ -4163,29 +4195,47 @@ impl ContextManager {
     }
 
     /// Trim messages to stay within all configured limits.
+    /// Uses drain(..k) instead of remove(0) for O(n) performance.
     pub fn trim_if_needed(&mut self) {
         // Message count limit (sliding window)
         if self.max_messages > 0 && self.messages.len() > self.max_messages {
             let excess = self.messages.len() - self.max_messages;
             self.messages.drain(..excess);
         }
-        // Token limit
-        if self.max_context_tokens > 0 {
-            while self.messages.len() > 1 && self.estimate_tokens() > self.max_context_tokens as usize {
-                self.messages.remove(0);
+        // Token limit — compute cutpoint then drain once
+        if self.max_context_tokens > 0 && self.estimate_tokens() > self.max_context_tokens as usize {
+            let limit = self.max_context_tokens as usize;
+            let mut k = 0;
+            while k < self.messages.len().saturating_sub(1) {
+                let remaining: usize = self.messages[k..].iter().map(Self::message_char_count).sum();
+                if remaining / 4 <= limit { break; }
+                k += 1;
             }
+            if k > 0 { self.messages.drain(..k); }
         }
         // Character limit
-        if self.max_chars > 0 {
-            while self.messages.len() > 1 && self.char_count() > self.max_chars as usize {
-                self.messages.remove(0);
+        if self.max_chars > 0 && self.char_count() > self.max_chars as usize {
+            let limit = self.max_chars as usize;
+            let mut k = 0;
+            let mut drop_chars = 0usize;
+            let total = self.char_count();
+            while k < self.messages.len().saturating_sub(1) && total - drop_chars > limit {
+                drop_chars += Self::message_char_count(&self.messages[k]);
+                k += 1;
             }
+            if k > 0 { self.messages.drain(..k); }
         }
         // Word limit
-        if self.max_words > 0 {
-            while self.messages.len() > 1 && self.word_count() > self.max_words as usize {
-                self.messages.remove(0);
+        if self.max_words > 0 && self.word_count() > self.max_words as usize {
+            let limit = self.max_words as usize;
+            let mut k = 0;
+            let mut drop_words = 0usize;
+            let total = self.word_count();
+            while k < self.messages.len().saturating_sub(1) && total - drop_words > limit {
+                drop_words += self.messages[k].content.split_whitespace().count();
+                k += 1;
             }
+            if k > 0 { self.messages.drain(..k); }
         }
     }
 }
@@ -4209,6 +4259,42 @@ pub trait AgentBackend {
 ').
 
 rust_fragment(backend_cli_impl, '
+
+/// Extract a numeric version from a gemini model name (e.g. "gemini-3-flash-preview" -> 3.0).
+fn extract_gemini_version(model: &str) -> Option<f64> {
+    for part in model.split(''-'') {
+        if let Ok(v) = part.parse::<f64>() {
+            return Some(v);
+        }
+        // Handle versions like "2.5" embedded in hyphenated segments
+        if part.contains(''.'') {
+            if let Ok(v) = part.parse::<f64>() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Validate a gemini model meets minimum version requirements.
+/// Flash models require version >= 3, Pro models require version >= 2.5.
+fn validate_gemini_model(model: &str, default: &str) -> String {
+    if model.contains("flash") {
+        if let Some(ver) = extract_gemini_version(model) {
+            if ver >= 3.0 { return model.to_string(); }
+        }
+        eprintln!("Warning: gemini flash requires version >= 3, using {}", default);
+        return default.to_string();
+    }
+    if model.contains("pro") {
+        if let Some(ver) = extract_gemini_version(model) {
+            if ver >= 2.5 { return model.to_string(); }
+        }
+        eprintln!("Warning: gemini pro requires version >= 2.5, using {}", default);
+        return default.to_string();
+    }
+    model.to_string()
+}
 
 /// CLI-based backend that shells out to a command.
 pub struct CliBackend {
@@ -4245,7 +4331,17 @@ impl AgentBackend for CliBackend {
 
         match cmd.output() {
             Ok(output) => {
-                let content = String::from_utf8_lossy(&output.stdout).to_string();
+                let mut content = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr_text = String::from_utf8_lossy(&output.stderr);
+                if !stderr_text.is_empty() {
+                    if content.trim().is_empty() {
+                        // No stdout — surface stderr as the response (error case)
+                        content = format!("stderr: {}", stderr_text);
+                    } else {
+                        // Both present — log stderr as diagnostic
+                        eprintln!("[{}] stderr: {}", self.backend_name, stderr_text.trim());
+                    }
+                }
                 AgentResponse {
                     content,
                     model: self.backend_name.clone(),
@@ -5043,6 +5139,9 @@ pub fn send_streaming(
                 }
             }
             println!();
+            // TODO: SSE stream chunks typically don''t include usage metadata.
+            // Some APIs (OpenAI, Anthropic) send usage in the final chunk —
+            // parse stream_options.include_usage when available.
             (full_content, 0, 0)
         }
         Err(e) => {

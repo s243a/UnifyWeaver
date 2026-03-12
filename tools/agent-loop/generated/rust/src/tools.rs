@@ -24,33 +24,41 @@ pub struct ToolSpec {
     pub parameters: &'static [ToolParam],
 }
 
+use std::sync::OnceLock;
+
+/// Cached tool schemas — built once from static TOOL_SPECS.
+static TOOL_SCHEMAS_CACHE: OnceLock<Vec<serde_json::Value>> = OnceLock::new();
+
 /// Generate JSON tool schemas for API requests (OpenAI/Anthropic format).
-pub fn tool_schemas_json() -> Vec<serde_json::Value> {
-    TOOL_SPECS.iter().map(|spec| {
-        let mut properties = serde_json::Map::new();
-        let mut required = Vec::new();
-        for p in spec.parameters {
-            properties.insert(p.name.to_string(), serde_json::json!({
-                "type": p.param_type,
-                "description": p.description,
-            }));
-            if p.required {
-                required.push(serde_json::Value::String(p.name.to_string()));
-            }
-        }
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": spec.name,
-                "description": spec.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
+/// Cached via OnceLock since TOOL_SPECS is static.
+pub fn tool_schemas_json() -> &'static Vec<serde_json::Value> {
+    TOOL_SCHEMAS_CACHE.get_or_init(|| {
+        TOOL_SPECS.iter().map(|spec| {
+            let mut properties = serde_json::Map::new();
+            let mut required = Vec::new();
+            for p in spec.parameters {
+                properties.insert(p.name.to_string(), serde_json::json!({
+                    "type": p.param_type,
+                    "description": p.description,
+                }));
+                if p.required {
+                    required.push(serde_json::Value::String(p.name.to_string()));
                 }
             }
-        })
-    }).collect()
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    }
+                }
+            })
+        }).collect()
+    })
 }
 
 pub static TOOL_SPECS: &[ToolSpec] = &[
