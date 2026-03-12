@@ -409,6 +409,14 @@ test_direct_multi_call :-
     ;   writeln('  ✗ FAIL - Elixir compilation failed')
     ),
 
+    % Test 9: F# compilation
+    writeln('Test 9: Compile fibonacci to F#'),
+    (   compile_direct_multi_call(test_dfib/2, [target(fsharp)], FsCode) ->
+        write_output_file('output/advanced/fib_direct.fs', FsCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.fs (fsharp)')
+    ;   writeln('  ✗ FAIL - F# compilation failed')
+    ),
+
     format('~n=== Tests Complete ===~n', []).
 
 %% Helper to write output files
