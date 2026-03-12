@@ -3909,4 +3909,15 @@ test_rust_phase6_generation :-
     )),
     assert_true('main.rs wires max_chars CLI override', (
         sub_string(MainContent6, _, _, _, "config.max_chars")
+    )),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath6),
+    read_file_to_string(BackendsPath6, BackendsContent6, []),
+    assert_true('CliBackend removes CLAUDECODE env var', (
+        sub_string(BackendsContent6, _, _, _, "env_remove(\"CLAUDECODE\")")
+    )),
+    assert_true('claude-code uses --print arg', (
+        sub_string(BackendsContent6, _, _, _, "\"--print\"")
+    )),
+    assert_true('main.rs has single-prompt mode', (
+        sub_string(MainContent6, _, _, _, "get_one::<String>(\"prompt\")")
     )).

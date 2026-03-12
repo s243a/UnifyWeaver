@@ -50,6 +50,8 @@ impl AgentBackend for CliBackend {
             cmd.arg(model);
         }
         cmd.arg(message);
+        // Remove CLAUDECODE env var to allow nested Claude Code invocations
+        cmd.env_remove("CLAUDECODE");
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         match cmd.output() {

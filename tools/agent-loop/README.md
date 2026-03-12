@@ -75,7 +75,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 651 (573+78 unit + 27 Prolog + 59 Python) |
+| Total tests | 654 (576+78 unit + 27 Prolog + 59 Python) |
 
 ## Backends
 
