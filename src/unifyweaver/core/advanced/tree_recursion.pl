@@ -368,7 +368,19 @@ test_tree_recursion :-
             writeln('  ✓ Compiled to output/advanced/tree_fib.R (r)'),
             compile_tree_recursion(test_tree_fib/2, [target(lua)], FibCode1L),
             write_bash_file('output/advanced/tree_fib.lua', FibCode1L),
-            writeln('  ✓ Compiled to output/advanced/tree_fib.lua (lua)')
+            writeln('  ✓ Compiled to output/advanced/tree_fib.lua (lua)'),
+            compile_tree_recursion(test_tree_fib/2, [target(c)], FibCode1C),
+            write_bash_file('output/advanced/tree_fib.c', FibCode1C),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.c (c)'),
+            compile_tree_recursion(test_tree_fib/2, [target(haskell)], FibCode1H),
+            write_bash_file('output/advanced/tree_fib.hs', FibCode1H),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.hs (haskell)'),
+            compile_tree_recursion(test_tree_fib/2, [target(java)], FibCode1J),
+            write_bash_file('output/advanced/tree_fib.java', FibCode1J),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.java (java)'),
+            compile_tree_recursion(test_tree_fib/2, [target(elixir)], FibCode1E),
+            write_bash_file('output/advanced/tree_fib.exs', FibCode1E),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.exs (elixir)')
         ;   writeln('  ✗ FAIL - cannot compile fibonacci tree pattern')
         )
     ;   writeln('  ✗ FAIL - fibonacci not detected as tree recursive')

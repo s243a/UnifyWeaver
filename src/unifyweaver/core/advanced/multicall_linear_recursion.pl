@@ -294,6 +294,38 @@ test_multicall_linear :-
     ;   writeln('  ✗ FAIL - Lua compilation failed')
     ),
 
+    % Test 5: Compile to C
+    writeln('Test 5: Compile fibonacci (multi-call linear) to C'),
+    (   compile_multicall_linear_recursion(test_fib/2, [target(c)], MCCCode) ->
+        write_output_file('output/advanced/fib_multicall.c', MCCCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.c (c)')
+    ;   writeln('  ✗ FAIL - C compilation failed')
+    ),
+
+    % Test 6: Compile to Haskell
+    writeln('Test 6: Compile fibonacci (multi-call linear) to Haskell'),
+    (   compile_multicall_linear_recursion(test_fib/2, [target(haskell)], MCHsCode) ->
+        write_output_file('output/advanced/fib_multicall.hs', MCHsCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.hs (haskell)')
+    ;   writeln('  ✗ FAIL - Haskell compilation failed')
+    ),
+
+    % Test 7: Compile to Java
+    writeln('Test 7: Compile fibonacci (multi-call linear) to Java'),
+    (   compile_multicall_linear_recursion(test_fib/2, [target(java)], MCJavaCode) ->
+        write_output_file('output/advanced/fib_multicall.java', MCJavaCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.java (java)')
+    ;   writeln('  ✗ FAIL - Java compilation failed')
+    ),
+
+    % Test 8: Compile to Elixir
+    writeln('Test 8: Compile fibonacci (multi-call linear) to Elixir'),
+    (   compile_multicall_linear_recursion(test_fib/2, [target(elixir)], MCExCode) ->
+        write_output_file('output/advanced/fib_multicall.exs', MCExCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.exs (elixir)')
+    ;   writeln('  ✗ FAIL - Elixir compilation failed')
+    ),
+
     writeln('=== TESTS COMPLETE ===').
 
 %% Helper to write output files
