@@ -224,13 +224,27 @@ compile_destructive_tool_python(Name, Config, Options, Code) :-
     format(atom(Code), '~w"~w",', [Indent, Name]).
 
 %% compile_tool_spec_rust(+Name, +Config, +Options, -Code)
-%% Emit a Rust ToolSpec struct literal.
+%% Emit a Rust ToolSpec struct literal with full parameter schemas.
 compile_tool_spec_rust(Name, Config, Options, Code) :-
     member(tool_spec_props(Props), Config),
     Props \= [],
     member(description(Desc), Props),
     indent_atom(Options, Indent),
-    format(atom(Code), '~wToolSpec { name: "~w", description: "~w" },', [Indent, Name, Desc]).
+    %% Extract parameters (or empty list if none)
+    (member(parameters(Params), Props) -> true ; Params = []),
+    %% Build parameter array entries
+    findall(ParamStr, (
+        member(param(PName, PType, PReq, PDesc), Params),
+        (PReq == required -> ReqStr = 'true' ; ReqStr = 'false'),
+        format(atom(ParamStr), 'ToolParam { name: "~w", param_type: "~w", required: ~w, description: "~w" }', [PName, PType, ReqStr, PDesc])
+    ), ParamStrs),
+    (ParamStrs == [] ->
+        ParamArray = '&[]'
+    ;
+        atomic_list_concat(ParamStrs, ', ', ParamInner),
+        format(atom(ParamArray), '&[~w]', [ParamInner])
+    ),
+    format(atom(Code), '~wToolSpec { name: "~w", description: "~w", parameters: ~w },', [Indent, Name, Desc, ParamArray]).
 
 %% compile_destructive_tool_rust(+Name, +Config, +Options, -Code)
 %% Emit a Rust &str entry for destructive tools array.

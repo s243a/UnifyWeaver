@@ -50,6 +50,8 @@ impl AgentBackend for CliBackend {
             cmd.arg(model);
         }
         cmd.arg(message);
+        // Remove CLAUDECODE env var to allow nested Claude Code invocations
+        cmd.env_remove("CLAUDECODE");
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         match cmd.output() {
@@ -154,22 +156,25 @@ pub fn send_streaming(
 
 
 /// API-based backend that sends HTTP requests.
+/// Supports OpenAI and Anthropic message formats via api_format field.
 pub struct ApiBackend {
     pub backend_name: String,
     pub endpoint: String,
     pub api_key: Option<String>,
     pub model: String,
     pub stream: bool,
+    pub api_format: String,
 }
 
 impl ApiBackend {
-    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool) -> Self {
+    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool, api_format: &str) -> Self {
         Self {
             backend_name: name.to_string(),
             endpoint: endpoint.to_string(),
             api_key,
             model: model.to_string(),
             stream,
+            api_format: api_format.to_string(),
         }
     }
 
@@ -186,16 +191,130 @@ impl ApiBackend {
         }));
         messages
     }
+
+    fn build_request_body(&self, message: &str, context: &[Message]) -> serde_json::Value {
+        use crate::tools::tool_schemas_json;
+        let messages = self.build_messages(message, context);
+        let tools = tool_schemas_json();
+
+        if self.api_format == "anthropic" {
+            // Anthropic: system is top-level, tools use input_schema
+            let anthropic_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
+                let func = &t["function"];
+                serde_json::json!({
+                    "name": func["name"],
+                    "description": func["description"],
+                    "input_schema": func["parameters"],
+                })
+            }).collect();
+            let mut body = serde_json::json!({
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": 4096,
+            });
+            if !anthropic_tools.is_empty() {
+                body["tools"] = serde_json::json!(anthropic_tools);
+            }
+            body
+        } else {
+            // OpenAI / OpenRouter / Ollama format
+            let mut body = serde_json::json!({
+                "model": self.model,
+                "messages": messages,
+            });
+            if !tools.is_empty() {
+                body["tools"] = serde_json::json!(tools);
+            }
+            body
+        }
+    }
+
+    fn add_auth_header(&self, req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+        if let Some(ref key) = self.api_key {
+            if self.api_format == "anthropic" {
+                req.header("x-api-key", key)
+                   .header("anthropic-version", "2023-06-01")
+            } else {
+                req.header("Authorization", format!("Bearer {}", key))
+            }
+        } else {
+            req
+        }
+    }
+
+    /// Extract tool calls from an OpenAI-format response.
+    fn extract_tool_calls_openai(json: &serde_json::Value) -> Vec<ToolCall> {
+        let mut calls = Vec::new();
+        if let Some(tool_calls) = json["choices"][0]["message"]["tool_calls"].as_array() {
+            for tc in tool_calls {
+                let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                let id = tc["id"].as_str().unwrap_or("").to_string();
+                let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                let arguments: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_str(args_str).unwrap_or_default();
+                calls.push(ToolCall { name, arguments, id });
+            }
+        }
+        calls
+    }
+
+    /// Extract tool calls from an Anthropic-format response.
+    fn extract_tool_calls_anthropic(json: &serde_json::Value) -> Vec<ToolCall> {
+        let mut calls = Vec::new();
+        if let Some(content) = json["content"].as_array() {
+            for block in content {
+                if block["type"].as_str() == Some("tool_use") {
+                    let name = block["name"].as_str().unwrap_or("").to_string();
+                    let id = block["id"].as_str().unwrap_or("").to_string();
+                    let arguments: std::collections::HashMap<String, serde_json::Value> =
+                        if let Some(input) = block["input"].as_object() {
+                            input.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                        } else {
+                            std::collections::HashMap::new()
+                        };
+                    calls.push(ToolCall { name, arguments, id });
+                }
+            }
+        }
+        calls
+    }
+
+    /// Parse response JSON into AgentResponse (format-aware).
+    fn parse_response(&self, json: serde_json::Value) -> AgentResponse {
+        if self.api_format == "anthropic" {
+            let content = json["content"].as_array()
+                .and_then(|arr| arr.iter()
+                    .find(|b| b["type"].as_str() == Some("text"))
+                    .and_then(|b| b["text"].as_str()))
+                .unwrap_or("")
+                .to_string();
+            let input_tokens = json["usage"]["input_tokens"].as_u64().unwrap_or(0);
+            let output_tokens = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
+            let tool_calls = Self::extract_tool_calls_anthropic(&json);
+            AgentResponse {
+                content, input_tokens, output_tokens,
+                model: self.model.clone(),
+                tool_calls,
+            }
+        } else {
+            let content = json["choices"][0]["message"]["content"]
+                .as_str().unwrap_or("").to_string();
+            let input_tokens = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+            let output_tokens = json["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+            let tool_calls = Self::extract_tool_calls_openai(&json);
+            AgentResponse {
+                content, input_tokens, output_tokens,
+                model: self.model.clone(),
+                tool_calls,
+            }
+        }
+    }
 }
 
 impl AgentBackend for ApiBackend {
     fn send_message(&self, message: &str, context: &[Message]) -> AgentResponse {
         let client = reqwest::blocking::Client::new();
-        let messages = self.build_messages(message, context);
-        let mut body = serde_json::json!({
-            "model": self.model,
-            "messages": messages,
-        });
+        let mut body = self.build_request_body(message, context);
 
         if self.stream {
             body["stream"] = serde_json::json!(true);
@@ -214,30 +333,14 @@ impl AgentBackend for ApiBackend {
             };
         }
 
-        let mut req = client.post(&self.endpoint)
+        let req = client.post(&self.endpoint)
             .header("Content-Type", "application/json");
-        if let Some(ref key) = self.api_key {
-            req = req.header("Authorization", format!("Bearer {}", key));
-        }
+        let req = self.add_auth_header(req);
 
         match req.json(&body).send() {
             Ok(resp) => {
                 match resp.json::<serde_json::Value>() {
-                    Ok(json) => {
-                        let content = json["choices"][0]["message"]["content"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
-                        let input_tokens = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
-                        let output_tokens = json["usage"]["completion_tokens"].as_u64().unwrap_or(0);
-                        AgentResponse {
-                            content,
-                            input_tokens,
-                            output_tokens,
-                            model: self.model.clone(),
-                            ..Default::default()
-                        }
-                    }
+                    Ok(json) => self.parse_response(json),
                     Err(e) => AgentResponse {
                         content: format!("JSON parse error: {}", e),
                         model: self.model.clone(),
@@ -261,24 +364,24 @@ impl AgentBackend for ApiBackend {
 pub fn create_backend(config: &AgentConfig) -> Box<dyn AgentBackend> {
     match config.backend.as_str() {
         "coro" => Box::new(CliBackend::new("coro", "claude", &[], config.model.clone())),
-        "claude-code" => Box::new(CliBackend::new("claude-code", "claude", &[], Some("sonnet".to_string()))),
-        "gemini" => Box::new(CliBackend::new("gemini", "gemini", &[], Some("gemini-2.5-flash".to_string()))),
+        "claude-code" => Box::new(CliBackend::new("claude-code", "claude", &["--print", "--model"], Some("sonnet".to_string()))),
+        "gemini" => Box::new(CliBackend::new("gemini", "gemini", &["--model"], Some("gemini-2.5-flash".to_string()))),
         "claude" => {
             let key = std::env::var("ANTHROPIC_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("claude", "https://api.anthropic.com/v1/messages", key, &model, config.stream))
+            Box::new(ApiBackend::new("claude", "https://api.anthropic.com/v1/messages", key, &model, config.stream, "anthropic"))
         }
         "openai" => {
             let key = std::env::var("OPENAI_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("openai", "https://api.openai.com/v1/chat/completions", key, &model, config.stream))
+            Box::new(ApiBackend::new("openai", "https://api.openai.com/v1/chat/completions", key, &model, config.stream, "openai"))
         }
         "openrouter" => {
             let key = std::env::var("OPENROUTER_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
-            Box::new(ApiBackend::new("openrouter", "https://openrouter.ai/api/v1/chat/completions", key, &model, config.stream))
+            Box::new(ApiBackend::new("openrouter", "https://openrouter.ai/api/v1/chat/completions", key, &model, config.stream, "openai"))
         }
-        "ollama-api" => Box::new(ApiBackend::new("ollama-api", "http://localhost:11434/api/chat", None, &config.model.clone().unwrap_or_default(), config.stream)),
+        "ollama-api" => Box::new(ApiBackend::new("ollama-api", "http://localhost:11434/api/chat", None, &config.model.clone().unwrap_or_default(), config.stream, "openai")),
         "ollama-cli" => Box::new(CliBackend::new("ollama-cli", "ollama", &[], Some("llama3".to_string()))),
         _ => panic!("Unknown backend: {}", config.backend),
     }

@@ -10,29 +10,54 @@ use crate::types::*;
 
 
 
-/// Manages conversation history for the agent loop.
-#[derive(Debug, Default)]
+/// Manages conversation history with context modes and multi-limit trimming.
+#[derive(Debug)]
 pub struct ContextManager {
     pub messages: Vec<Message>,
     pub max_messages: usize,
+    pub max_context_tokens: i64,
+    pub max_chars: i64,
+    pub max_words: i64,
+    pub context_mode: String,
+}
+
+impl Default for ContextManager {
+    fn default() -> Self {
+        Self {
+            messages: Vec::new(),
+            max_messages: 50,
+            max_context_tokens: 100000,
+            max_chars: 0,
+            max_words: 0,
+            context_mode: "continue".to_string(),
+        }
+    }
 }
 
 impl ContextManager {
-    pub fn new(max_messages: usize) -> Self {
+    pub fn new(max_messages: usize, max_context_tokens: i64, max_chars: i64, max_words: i64, context_mode: &str) -> Self {
         Self {
             messages: Vec::new(),
             max_messages,
+            max_context_tokens,
+            max_chars,
+            max_words,
+            context_mode: context_mode.to_string(),
         }
     }
 
     pub fn add_message(&mut self, role: &str, content: &str) {
+        // Fresh mode: clear before each user message
+        if self.context_mode == "fresh" && role == "user" {
+            self.messages.clear();
+        }
         self.messages.push(Message {
             role: role.to_string(),
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: None,
         });
-        self.trim();
+        self.trim_if_needed();
     }
 
     pub fn add_tool_call_message(&mut self, content: &str, tool_calls: Vec<ToolCall>) {
@@ -42,7 +67,7 @@ impl ContextManager {
             tool_calls: Some(tool_calls),
             tool_call_id: None,
         });
-        self.trim();
+        self.trim_if_needed();
     }
 
     pub fn add_tool_result(&mut self, tool_call_id: &str, output: &str) {
@@ -52,7 +77,7 @@ impl ContextManager {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.to_string()),
         });
-        self.trim();
+        self.trim_if_needed();
     }
 
     pub fn get_context(&self) -> &[Message] {
@@ -75,10 +100,47 @@ impl ContextManager {
         self.messages.is_empty()
     }
 
-    fn trim(&mut self) {
+    /// Total character count across all messages.
+    pub fn char_count(&self) -> usize {
+        self.messages.iter().map(|m| m.content.len()).sum()
+    }
+
+    /// Total word count across all messages.
+    pub fn word_count(&self) -> usize {
+        self.messages.iter()
+            .map(|m| m.content.split_whitespace().count())
+            .sum()
+    }
+
+    /// Estimated token count (chars / 4 heuristic).
+    pub fn estimate_tokens(&self) -> usize {
+        self.char_count() / 4
+    }
+
+    /// Trim messages to stay within all configured limits.
+    pub fn trim_if_needed(&mut self) {
+        // Message count limit (sliding window)
         if self.max_messages > 0 && self.messages.len() > self.max_messages {
             let excess = self.messages.len() - self.max_messages;
             self.messages.drain(..excess);
+        }
+        // Token limit
+        if self.max_context_tokens > 0 {
+            while self.messages.len() > 1 && self.estimate_tokens() > self.max_context_tokens as usize {
+                self.messages.remove(0);
+            }
+        }
+        // Character limit
+        if self.max_chars > 0 {
+            while self.messages.len() > 1 && self.char_count() > self.max_chars as usize {
+                self.messages.remove(0);
+            }
+        }
+        // Word limit
+        if self.max_words > 0 {
+            while self.messages.len() > 1 && self.word_count() > self.max_words as usize {
+                self.messages.remove(0);
+            }
         }
     }
 }
