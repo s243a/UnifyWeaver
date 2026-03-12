@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (14 files) | Data + imperative + CLI + config loading + streaming + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching |
+| Rust | `generated/rust/` (14 files) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + export |
 
 ### Declarative Infrastructure
 
@@ -70,12 +70,12 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|-------|
 | `py_fragment/2` facts | 82 |
 | `prolog_fragment/2` facts | 33 |
-| `rust_fragment/2` facts | 22 |
+| `rust_fragment/2` facts | 23 |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 668 (590+78 unit + 27 Prolog + 59 Python) |
+| Total tests | 687 (590+97 unit + 27 Prolog + 59 Python) |
 
 ## Backends
 
@@ -697,6 +697,30 @@ Use Ctrl+C to interrupt, or set iteration limits:
 ```bash
 python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 ```
+
+## Rust Target Parity
+
+| Feature | Python | Rust | Status |
+|---------|--------|------|--------|
+| Core agent loop | Y | Y | Complete |
+| API backends (OpenAI/Anthropic) | Y | Y | Complete |
+| CLI backends | Y | Y | Complete |
+| Tool execution | Y | Y | Complete |
+| Session management | Y | Y | Complete (save/load/list/delete/update) |
+| Config loading (YAML) | Y | Y | Complete |
+| Security profiles | Y | Y | Complete |
+| Streaming + token parsing | Y | Y | Complete |
+| Gemini model validation | N | Y | Rust-only |
+| OnceLock schema caching | N | Y | Rust-only |
+| Export (markdown) | Y (4 formats) | Y (markdown) | Partial |
+| Command handlers | 20+ | 15+ | Mostly complete |
+| Env var expansion in config | Y | Y | Complete |
+| Session resume tracking | Y | Y | Complete |
+| Templates | Y | N | Future |
+| Skills | Y | N | Future |
+| Multiline input | Y | N | Future |
+| Retry logic | Y | N | Future |
+| proot sandbox | Y | N | Future |
 
 ## License
 

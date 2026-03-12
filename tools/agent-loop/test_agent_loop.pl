@@ -210,6 +210,15 @@ run_tests :-
     test_rust_schemas_cache,
     test_rust_gemini_validation,
     test_rust_phase7_generation,
+    %% Phase 8
+    test_rust_streaming_usage,
+    test_rust_command_handlers,
+    test_rust_session_update,
+    test_rust_config_env_expand,
+    test_rust_export_conversation,
+    test_rust_runtime_state,
+    test_rust_active_session,
+    test_rust_phase8_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3017,7 +3026,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 22),
+    assert_eq('Rust fragment count', RFCount, 23),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -3958,11 +3967,11 @@ test_rust_cli_stderr :-
     )).
 
 test_rust_streaming_todo :-
-    format("~nRust streaming TODO:~n"),
+    format("~nRust streaming token parsing:~n"),
     agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
     read_file_to_string(BackendsPath, BackendsContent, []),
-    assert_true('send_streaming has TODO comment for token counts', (
-        sub_string(BackendsContent, _, _, _, "TODO: SSE stream chunks")
+    assert_true('send_streaming has extract_usage_from_sse', (
+        sub_string(BackendsContent, _, _, _, "extract_usage_from_sse")
     )).
 
 test_rust_trim_drain :-
@@ -4017,4 +4026,108 @@ test_rust_phase7_generation :-
     read_file_to_string(ContextPath7, ContextContent7, []),
     assert_true('trim uses drain not remove', (
         sub_string(ContextContent7, _, _, _, "drain(..k)")
+    )).
+
+%% =========================================================================
+%% Phase 8 Tests — Streaming tokens, command handlers, session improvements,
+%%                  config hardening, export, parity
+%% =========================================================================
+
+test_rust_streaming_usage :-
+    format("~nRust streaming usage parsing:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('extract_usage_from_sse function exists', (
+        sub_string(BackendsContent, _, _, _, "fn extract_usage_from_sse")
+    )),
+    assert_true('extract_usage_from_sse returns Option<(u64, u64)>', (
+        sub_string(BackendsContent, _, _, _, "Option<(u64, u64)>")
+    )),
+    assert_true('stream_options include_usage in request body', (
+        sub_string(BackendsContent, _, _, _, "stream_options")
+    )).
+
+test_rust_command_handlers :-
+    format("~nRust command handlers:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('/iterations command handler exists', (
+        sub_string(MainContent, _, _, _, "state.max_iterations")
+    )),
+    assert_true('/stream command toggles state', (
+        sub_string(MainContent, _, _, _, "state.stream = !state.stream")
+    )),
+    assert_true('/tokens command shows context info', (
+        sub_string(MainContent, _, _, _, "context.estimate_tokens()")
+    )),
+    assert_true('/history command shows messages', (
+        sub_string(MainContent, _, _, _, "context.get_messages().iter().enumerate()")
+    )).
+
+test_rust_session_update :-
+    format("~nRust session update:~n"),
+    agent_loop_module:output_path(rust, 'sessions.rs', SessionsPath),
+    read_file_to_string(SessionsPath, SessionsContent, []),
+    assert_true('SessionManager has update method', (
+        sub_string(SessionsContent, _, _, _, "fn update(&self, id: &str")
+    )),
+    assert_true('chrono_simple_id public wrapper exists', (
+        sub_string(SessionsContent, _, _, _, "pub fn chrono_simple_id")
+    )).
+
+test_rust_config_env_expand :-
+    format("~nRust config env var expansion:~n"),
+    agent_loop_module:output_path(rust, 'config_loader.rs', ConfigPath),
+    read_file_to_string(ConfigPath, ConfigContent, []),
+    assert_true('expand_env_var function exists', (
+        sub_string(ConfigContent, _, _, _, "fn expand_env_var")
+    )),
+    assert_true('api_key uses expand_env_var', (
+        sub_string(ConfigContent, _, _, _, "expand_env_var(v)")
+    )).
+
+test_rust_export_conversation :-
+    format("~nRust export conversation:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('export_conversation function exists', (
+        sub_string(MainContent, _, _, _, "fn export_conversation(context: &ContextManager")
+    )),
+    assert_true('export writes markdown format', (
+        sub_string(MainContent, _, _, _, "# Conversation Export")
+    )).
+
+test_rust_runtime_state :-
+    format("~nRust RuntimeState:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('RuntimeState struct defined', (
+        sub_string(MainContent, _, _, _, "struct RuntimeState")
+    )),
+    assert_true('handle_command takes state: &mut RuntimeState', (
+        sub_string(MainContent, _, _, _, "state: &mut RuntimeState")
+    )).
+
+test_rust_active_session :-
+    format("~nRust active session tracking:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('active_session_id tracks loaded session', (
+        sub_string(MainContent, _, _, _, "let mut active_session_id")
+    )),
+    assert_true('session update uses active_session_id', (
+        sub_string(MainContent, _, _, _, "session_manager.update(id")
+    )).
+
+test_rust_phase8_generation :-
+    format("~nRust phase 8 generation:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath8),
+    read_file_to_string(BackendsPath8, BackendsContent8, []),
+    assert_true('send_streaming accepts api_format param', (
+        sub_string(BackendsContent8, _, _, _, "api_format: &str")
+    )),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath8),
+    read_file_to_string(MainPath8, MainContent8, []),
+    assert_true('export command wired in handle_command', (
+        sub_string(MainContent8, _, _, _, "export_conversation(context, &path)")
     )).

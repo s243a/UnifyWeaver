@@ -184,12 +184,21 @@ pub fn resolve_agent(
     config
 }
 
+/// Expand environment variable references (e.g. "$ANTHROPIC_API_KEY").
+fn expand_env_var(s: &str) -> String {
+    if s.starts_with('$') {
+        std::env::var(&s[1..]).unwrap_or_else(|_| s.to_string())
+    } else {
+        s.to_string()
+    }
+}
+
 fn apply_variant_to_config(config: &mut AgentConfig, variant: &AgentVariant, cf: &ConfigFile) {
     if let Some(ref v) = variant.backend { config.backend = v.clone(); }
     if let Some(ref v) = variant.model { config.model = Some(v.clone()); }
     if let Some(ref v) = variant.host { config.host = Some(v.clone()); }
     if let Some(ref v) = variant.port { config.port = Some(*v); }
-    if let Some(ref v) = variant.api_key { config.api_key = Some(v.clone()); }
+    if let Some(ref v) = variant.api_key { config.api_key = Some(expand_env_var(v)); }
     if let Some(ref v) = variant.command { config.command = Some(v.clone()); }
     if let Some(ref v) = variant.system_prompt { config.system_prompt = Some(v.clone()); }
     if let Some(ref v) = variant.agent_md { config.agent_md = Some(v.clone()); }

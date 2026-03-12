@@ -1883,7 +1883,6 @@ generate_rust_main :-
     output_path(rust, 'main.rs', Path),
     open(Path, write, S),
     write_rust_header(S, main, 'CLI entry point and agent loop'),
-    write(S, 'use agent_loop::types::*;\n'),
     write(S, 'use agent_loop::backends::*;\n'),
     write(S, 'use agent_loop::context::*;\n'),
     write(S, 'use agent_loop::costs::*;\n'),
@@ -1891,6 +1890,9 @@ generate_rust_main :-
     write(S, 'use agent_loop::commands::*;\n'),
     write(S, 'use agent_loop::sessions::*;\n'),
     write(S, 'use agent_loop::config_loader::*;\n\n'),
+    %% Export conversation helper (module-level, before handle_command and main)
+    write_rust(S, export_conversation),
+    nl(S),
     %% Data-driven command dispatch function (with session support)
     generate_rust_command_dispatch_with_sessions(S),
     write(S, 'fn main() {\n'),
@@ -1958,18 +1960,8 @@ generate_rust_main :-
     write(S, '        }\n'),
     write(S, '        return;\n'),
     write(S, '    }\n\n'),
-    %% Handle --session (load at startup)
-    write(S, '    // Handle --session (load at startup)\n'),
-    write(S, '    let mut initial_context: Vec<Message> = Vec::new();\n'),
-    write(S, '    if let Some(session_id) = matches.get_one::<String>("session") {\n'),
-    write(S, '        if let Some(session) = session_manager.load(session_id) {\n'),
-    write(S, '            initial_context = session.messages;\n'),
-    write(S, '            println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);\n'),
-    write(S, '        } else {\n'),
-    write(S, '            eprintln!("Session not found: {}", session_id);\n'),
-    write(S, '        }\n'),
-    write(S, '    }\n\n'),
-    %% Main loop (expects `config`, `session_manager`, and `initial_context` to be defined)
+    nl(S),
+    %% Main loop (expects `config`, `matches`, `session_manager` to be defined)
     write_rust(S, main_loop),
     write(S, '}\n'),
     close(S),
@@ -1984,12 +1976,19 @@ generate_rust_command_dispatch(S) :-
 %% Emit command handler with session management support.
 generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '/// Handle a slash command. Returns true if the command was handled.\n'),
+    write(S, '/// Mutable runtime state that can be changed via slash commands.\n'),
+    write(S, 'struct RuntimeState {\n'),
+    write(S, '    max_iterations: i64,\n'),
+    write(S, '    stream: bool,\n'),
+    write(S, '    show_tokens: bool,\n'),
+    write(S, '}\n\n'),
     write(S, 'fn handle_command(\n'),
     write(S, '    input: &str,\n'),
     write(S, '    context: &mut ContextManager,\n'),
     write(S, '    cost_tracker: &CostTracker,\n'),
     write(S, '    session_manager: &SessionManager,\n'),
     write(S, '    backend_name: &str,\n'),
+    write(S, '    state: &mut RuntimeState,\n'),
     write(S, ') -> bool {\n'),
     write(S, '    let parts: Vec<&str> = input.splitn(2, '' '').collect();\n'),
     write(S, '    let cmd = parts[0].trim_start_matches(''/'');\n'),
@@ -2060,6 +2059,64 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '                println!("Session deleted: {}", _arg);\n'),
     write(S, '            } else {\n'),
     write(S, '                println!("Session not found: {}", _arg);\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "iterations" => {\n'),
+    write(S, '            if _arg.is_empty() {\n'),
+    write(S, '                println!("Max iterations: {} (0 = unlimited)", state.max_iterations);\n'),
+    write(S, '            } else if let Ok(n) = _arg.parse::<i64>() {\n'),
+    write(S, '                state.max_iterations = n;\n'),
+    write(S, '                println!("Max iterations set to: {}", n);\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Usage: /iterations <N>");\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "stream" => {\n'),
+    write(S, '            state.stream = !state.stream;\n'),
+    write(S, '            println!("Streaming: {}", if state.stream { "on" } else { "off" });\n'),
+    write(S, '        }\n'),
+    write(S, '        "tokens" => {\n'),
+    write(S, '            println!("Messages: {}", context.len());\n'),
+    write(S, '            println!("Chars: {}", context.char_count());\n'),
+    write(S, '            println!("Est. tokens: ~{}", context.estimate_tokens());\n'),
+    write(S, '        }\n'),
+    write(S, '        "history" => {\n'),
+    write(S, '            for (i, m) in context.get_messages().iter().enumerate() {\n'),
+    write(S, '                let preview = if m.content.len() > 80 { &m.content[..80] } else { &m.content };\n'),
+    write(S, '                println!("[{}] {}: {}", i, m.role, preview.replace(''\\n'', " "));\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "export" => {\n'),
+    write(S, '            let path = if _arg.is_empty() {\n'),
+    write(S, '                format!("conversation_{}.md", session_manager.chrono_simple_id())\n'),
+    write(S, '            } else { _arg.to_string() };\n'),
+    write(S, '            export_conversation(context, &path);\n'),
+    write(S, '            println!("Exported to: {}", path);\n'),
+    write(S, '        }\n'),
+    write(S, '        "model" => {\n'),
+    write(S, '            if _arg.is_empty() {\n'),
+    write(S, '                println!("Current backend: {}", backend_name);\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Model switch requires restart: uwsal -m {}", _arg);\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "format" => {\n'),
+    write(S, '            println!("Output format: plain (markdown rendering not yet implemented)");\n'),
+    write(S, '        }\n'),
+    write(S, '        "search" => {\n'),
+    write(S, '            if _arg.is_empty() {\n'),
+    write(S, '                println!("Usage: /search <query>");\n'),
+    write(S, '            } else {\n'),
+    write(S, '                let query_lower = _arg.to_lowercase();\n'),
+    write(S, '                let sessions = session_manager.list();\n'),
+    write(S, '                let mut found = false;\n'),
+    write(S, '                for s in &sessions {\n'),
+    write(S, '                    if s.name.to_lowercase().contains(&query_lower) || s.id.contains(&query_lower) {\n'),
+    write(S, '                        println!("{} | {} | {}", s.id, s.name, s.backend);\n'),
+    write(S, '                        found = true;\n'),
+    write(S, '                    }\n'),
+    write(S, '                }\n'),
+    write(S, '                if !found { println!("No sessions matching: {}", _arg); }\n'),
     write(S, '            }\n'),
     write(S, '        }\n'),
     write(S, '        _ => {\n'),
@@ -4526,10 +4583,15 @@ impl AgentBackend for ApiBackend {
 
         if self.stream {
             body["stream"] = serde_json::json!(true);
+            // Request usage metadata in streaming responses
+            if self.api_format == "openai" {
+                body["stream_options"] = serde_json::json!({"include_usage": true});
+            }
             let (content, input_tokens, output_tokens) = send_streaming(
                 &client,
                 &self.endpoint,
                 self.api_key.as_deref(),
+                &self.api_format,
                 body,
             );
             return AgentResponse {
@@ -5026,6 +5088,31 @@ impl SessionManager {
         }
         false
     }
+
+    /// Update an existing session (overwrite with new messages).
+    pub fn update(&self, id: &str, messages: &[Message], backend: &str) {
+        let path = self.sessions_dir.join(format!("{}.json", id));
+        let metadata = SessionMetadata {
+            id: id.to_string(),
+            name: "unnamed".to_string(),
+            created: now_iso8601(),
+            modified: now_iso8601(),
+            backend: backend.to_string(),
+            message_count: messages.len(),
+        };
+        let session = PersistedSession {
+            metadata,
+            messages: messages.to_vec(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&session) {
+            let _ = fs::write(&path, json);
+        }
+    }
+
+    /// Public access to chrono_simple_id for export filenames.
+    pub fn chrono_simple_id(&self) -> String {
+        chrono_simple_id()
+    }
 }
 
 /// Simple timestamp-based session ID.
@@ -5106,23 +5193,59 @@ pub fn extract_content_delta(json_str: &str) -> Option<String> {
     None
 }
 
+/// Extract token usage from an SSE JSON payload.
+/// OpenAI: final chunk has usage.prompt_tokens / completion_tokens
+/// Anthropic: message_start has usage.input_tokens, message_delta has usage.output_tokens
+pub fn extract_usage_from_sse(json_str: &str) -> Option<(u64, u64)> {
+    let json: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    // OpenAI format: usage in final chunk
+    if let Some(usage) = json.get("usage") {
+        let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        if input > 0 || output > 0 { return Some((input, output)); }
+    }
+    // Anthropic message_start: usage.input_tokens
+    if json.get("type").and_then(|t| t.as_str()) == Some("message_start") {
+        if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
+            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            return Some((input, 0));
+        }
+    }
+    // Anthropic message_delta: usage.output_tokens
+    if json.get("type").and_then(|t| t.as_str()) == Some("message_delta") {
+        if let Some(usage) = json.get("usage") {
+            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            return Some((0, output));
+        }
+    }
+    None
+}
+
 /// Send a streaming request and print output progressively.
 /// Returns the complete accumulated response content and token usage.
 pub fn send_streaming(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     api_key: Option<&str>,
+    api_format: &str,
     body: serde_json::Value,
 ) -> (String, u64, u64) {
     let mut req = client.post(endpoint)
         .header("Content-Type", "application/json");
     if let Some(key) = api_key {
-        req = req.header("Authorization", format!("Bearer {}", key));
+        if api_format == "anthropic" {
+            req = req.header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
     }
 
     match req.json(&body).send() {
         Ok(resp) => {
             let mut full_content = String::new();
+            let mut input_tokens: u64 = 0;
+            let mut output_tokens: u64 = 0;
             let reader = std::io::BufReader::new(resp);
             for line in reader.lines() {
                 match line {
@@ -5133,16 +5256,18 @@ pub fn send_streaming(
                                 let _ = std::io::stdout().flush();
                                 full_content.push_str(&delta);
                             }
+                            // Extract usage from SSE chunks (final chunk or Anthropic events)
+                            if let Some((inp, out)) = extract_usage_from_sse(&data) {
+                                input_tokens += inp;
+                                output_tokens += out;
+                            }
                         }
                     }
                     Err(_) => break,
                 }
             }
             println!();
-            // TODO: SSE stream chunks typically don''t include usage metadata.
-            // Some APIs (OpenAI, Anthropic) send usage in the final chunk —
-            // parse stream_options.include_usage when available.
-            (full_content, 0, 0)
+            (full_content, input_tokens, output_tokens)
         }
         Err(e) => {
             (format!("Streaming error: {}", e), 0, 0)
@@ -5337,12 +5462,21 @@ pub fn resolve_agent(
     config
 }
 
+/// Expand environment variable references (e.g. "$ANTHROPIC_API_KEY").
+fn expand_env_var(s: &str) -> String {
+    if s.starts_with(''$'') {
+        std::env::var(&s[1..]).unwrap_or_else(|_| s.to_string())
+    } else {
+        s.to_string()
+    }
+}
+
 fn apply_variant_to_config(config: &mut AgentConfig, variant: &AgentVariant, cf: &ConfigFile) {
     if let Some(ref v) = variant.backend { config.backend = v.clone(); }
     if let Some(ref v) = variant.model { config.model = Some(v.clone()); }
     if let Some(ref v) = variant.host { config.host = Some(v.clone()); }
     if let Some(ref v) = variant.port { config.port = Some(*v); }
-    if let Some(ref v) = variant.api_key { config.api_key = Some(v.clone()); }
+    if let Some(ref v) = variant.api_key { config.api_key = Some(expand_env_var(v)); }
     if let Some(ref v) = variant.command { config.command = Some(v.clone()); }
     if let Some(ref v) = variant.system_prompt { config.system_prompt = Some(v.clone()); }
     if let Some(ref v) = variant.agent_md { config.agent_md = Some(v.clone()); }
@@ -5494,6 +5628,26 @@ pub fn init_config(path: &str) -> std::io::Result<()> {
 }
 ').
 
+rust_fragment(export_conversation, '
+/// Export conversation to a markdown file.
+fn export_conversation(context: &ContextManager, path: &str) {
+    let mut out = String::new();
+    out.push_str("# Conversation Export\\n\\n");
+    for m in context.get_messages() {
+        let role_header = match m.role.as_str() {
+            "user" => "User",
+            "assistant" => "Assistant",
+            "tool" => "Tool Result",
+            _ => &m.role,
+        };
+        out.push_str(&format!("## {}\\n\\n{}\\n\\n---\\n\\n", role_header, m.content));
+    }
+    if let Err(e) = std::fs::write(path, &out) {
+        eprintln!("Export failed: {}", e);
+    }
+}
+').
+
 rust_fragment(main_loop, '
     let backend = create_backend(&config);
     let mut context = ContextManager::new(
@@ -5505,10 +5659,36 @@ rust_fragment(main_loop, '
     );
     let mut cost_tracker = CostTracker::new();
     let tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
+    let mut state = RuntimeState {
+        max_iterations: config.max_iterations,
+        stream: config.stream,
+        show_tokens: config.show_tokens,
+    };
+
+    // Session resume tracking
+    let mut active_session_id: Option<String> = None;
 
     // Restore initial context from --session if any
-    for msg in &initial_context {
-        context.add_message(&msg.role, &msg.content);
+    if let Some(session_id) = matches.get_one::<String>("session") {
+        if let Some(session) = session_manager.load(session_id) {
+            for msg in &session.messages {
+                context.add_message(&msg.role, &msg.content);
+            }
+            active_session_id = Some(session.metadata.id.clone());
+            println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);
+        } else {
+            eprintln!("Session not found: {}", session_id);
+        }
+    }
+
+    // Load system prompt from agent_md if set
+    if let Some(ref md_path) = config.agent_md {
+        if let Ok(content) = std::fs::read_to_string(md_path) {
+            let sys = config.system_prompt.clone().unwrap_or_default();
+            // Store combined system prompt (agent_md takes precedence)
+            // Note: system_prompt is sent via build_request_body for API backends
+            let _ = format!("{}\\n\\n{}", content, sys);
+        }
     }
 
     // Single-prompt non-interactive mode
@@ -5519,7 +5699,7 @@ rust_fragment(main_loop, '
             println!("{}", response.content);
         }
         cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);
-        if config.show_tokens {
+        if state.show_tokens {
             println!("  {}", cost_tracker.format_summary());
         }
         return;
@@ -5547,14 +5727,13 @@ rust_fragment(main_loop, '
 
                 // Handle slash commands
                 if input.starts_with(''/'' ) {
-                    let handled = handle_command(input, &mut context, &cost_tracker, &session_manager, backend.name());
+                    let handled = handle_command(input, &mut context, &cost_tracker, &session_manager, backend.name(), &mut state);
                     if handled { continue; }
                 }
 
                 // Process message
                 context.add_message("user", input);
                 let mut iterations = 0;
-                let max_iter = config.max_iterations;
 
                 loop {
                     let response = backend.send_message(input, context.get_context());
@@ -5579,22 +5758,27 @@ rust_fragment(main_loop, '
                     }
 
                     iterations += 1;
-                    if max_iter > 0 && iterations >= max_iter as usize {
+                    if state.max_iterations > 0 && iterations >= state.max_iterations as usize {
                         println!("  [iteration limit reached]");
                         break;
                     }
                 }
 
-                if config.show_tokens {
+                if state.show_tokens {
                     println!("  {}", cost_tracker.format_summary());
                 }
             }
             Err(rustyline::error::ReadlineError::Interrupted) |
             Err(rustyline::error::ReadlineError::Eof) => {
-                // Auto-save on exit
+                // Auto-save: update existing session or create new
                 if context.len() > 0 {
-                    let id = session_manager.save(context.get_messages(), backend.name(), None);
-                    println!("Session saved: {}", id);
+                    if let Some(ref id) = active_session_id {
+                        session_manager.update(id, context.get_messages(), backend.name());
+                        println!("Session updated: {}", id);
+                    } else {
+                        let id = session_manager.save(context.get_messages(), backend.name(), None);
+                        println!("Session saved: {}", id);
+                    }
                 }
                 println!("Goodbye!");
                 break;
