@@ -36,6 +36,8 @@
 :- dynamic user:test_group_probe_dir_mixed_reach/4.
 :- dynamic user:test_group_probe_dir_mixed_bytarget_edge/4.
 :- dynamic user:test_group_probe_dir_mixed_bytarget_reach/4.
+:- dynamic user:test_group_probe_dir_mixed_bytarget_lru_edge/4.
+:- dynamic user:test_group_probe_dir_mixed_bytarget_lru_reach/4.
 :- dynamic user:test_cat/1.
 :- dynamic user:test_catmix/1.
 :- dynamic user:test_recursive_label_path_cat_filtered/4.
@@ -116,6 +118,8 @@
 :- dynamic user:test_probe_dir_mixed_reach/2.
 :- dynamic user:test_probe_dir_mixed_bytarget_edge/2.
 :- dynamic user:test_probe_dir_mixed_bytarget_reach/2.
+:- dynamic user:test_probe_dir_mixed_bytarget_lru_edge/2.
+:- dynamic user:test_probe_dir_mixed_bytarget_lru_reach/2.
 :- dynamic user:test_admission_edge/2.
 :- dynamic user:test_admission_reach_pair/2.
 :- dynamic user:test_admission_group_edge/4.
@@ -323,10 +327,12 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_eviction_runtime,
         verify_parameterized_reachability_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_by_target_seed_cache_lru_recency_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_seed_cache_admission_runtime,
         verify_parameterized_reachability_by_target_seed_cache_admission_runtime,
         verify_parameterized_reachability_seed_cache_admission_duplicate_heavy_runtime,
@@ -781,6 +787,21 @@ setup_test_data :-
         test_group_probe_dir_mixed_bytarget_edge(X, Y, L, Cat),
         test_group_probe_dir_mixed_bytarget_reach(Y, Z, L, Cat)
     )),
+    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(a, m, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(m, z, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(h, g, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(g, p, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(p, q, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(p, r, red, cat1)),
+    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(p, s, red, cat1)),
+    assertz(user:mode(test_group_probe_dir_mixed_bytarget_lru_reach(+, +, +, +))),
+    assertz(user:(test_group_probe_dir_mixed_bytarget_lru_reach(X, Y, L, Cat) :-
+        test_group_probe_dir_mixed_bytarget_lru_edge(X, Y, L, Cat)
+    )),
+    assertz(user:(test_group_probe_dir_mixed_bytarget_lru_reach(X, Z, L, Cat) :-
+        test_group_probe_dir_mixed_bytarget_lru_edge(X, Y, L, Cat),
+        test_group_probe_dir_mixed_bytarget_lru_reach(Y, Z, L, Cat)
+    )),
     assertz(user:test_cat(cat1)),
     assertz(user:test_catmix(catmix)),
     assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
@@ -1043,6 +1064,21 @@ setup_test_data :-
         test_probe_dir_mixed_bytarget_edge(X, Y),
         test_probe_dir_mixed_bytarget_reach(Y, Z)
     )),
+    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(a, m)),
+    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(m, z)),
+    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(h, g)),
+    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(g, p)),
+    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(p, q)),
+    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(p, r)),
+    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(p, s)),
+    assertz(user:mode(test_probe_dir_mixed_bytarget_lru_reach(+, +))),
+    assertz(user:(test_probe_dir_mixed_bytarget_lru_reach(X, Y) :-
+        test_probe_dir_mixed_bytarget_lru_edge(X, Y)
+    )),
+    assertz(user:(test_probe_dir_mixed_bytarget_lru_reach(X, Z) :-
+        test_probe_dir_mixed_bytarget_lru_edge(X, Y),
+        test_probe_dir_mixed_bytarget_lru_reach(Y, Z)
+    )),
     assertz(user:test_admission_edge(a, b)),
     assertz(user:test_admission_edge(a, c)),
     assertz(user:test_admission_edge(a, d)),
@@ -1232,6 +1268,9 @@ cleanup_test_data :-
     retractall(user:test_group_probe_dir_mixed_bytarget_edge(_, _, _, _)),
     retractall(user:test_group_probe_dir_mixed_bytarget_reach(_, _, _, _)),
     retractall(user:mode(test_group_probe_dir_mixed_bytarget_reach(_, _, _, _))),
+    retractall(user:test_group_probe_dir_mixed_bytarget_lru_edge(_, _, _, _)),
+    retractall(user:test_group_probe_dir_mixed_bytarget_lru_reach(_, _, _, _)),
+    retractall(user:mode(test_group_probe_dir_mixed_bytarget_lru_reach(_, _, _, _))),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_recursive_label_path_cat_asym(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_medium_selective(_, _, _, _)),
@@ -1280,6 +1319,9 @@ cleanup_test_data :-
     retractall(user:test_probe_dir_mixed_bytarget_edge(_, _)),
     retractall(user:test_probe_dir_mixed_bytarget_reach(_, _)),
     retractall(user:mode(test_probe_dir_mixed_bytarget_reach(_, _))),
+    retractall(user:test_probe_dir_mixed_bytarget_lru_edge(_, _)),
+    retractall(user:test_probe_dir_mixed_bytarget_lru_reach(_, _)),
+    retractall(user:mode(test_probe_dir_mixed_bytarget_lru_reach(_, _))),
     retractall(user:test_admission_edge(_, _)),
     retractall(user:test_admission_reach_pair(_, _)),
     retractall(user:mode(test_admission_reach_pair(_, _))),
@@ -3847,6 +3889,33 @@ verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency
         HotParams,
         HarnessSource).
 
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_lru_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z, red, cat1], [p, q, red, cat1]],
+    WarmParams2 = [[a, z, red, cat1], [p, r, red, cat1]],
+    TouchParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    InsertParams = [[a, z, red, cat1], [p, s, red, cat1]],
+    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ColdParams = [[a, z, red, cat1], [p, r, red, cat1]],
+    harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosureSeededByTarget',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
+         'CACHE_EVICTIONS:GroupedTransitiveClosureSeededByTarget=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime :-
     csharp_query_target:build_query_plan(test_label_cat_reach_param/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -4082,6 +4151,33 @@ verify_parameterized_reachability_by_target_seed_cache_lru_recency_runtime :-
     InsertParams = [[alice]],
     HotParams = [[charlie]],
     ColdParams = [[bob]],
+    harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeededByTarget',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
+         'CACHE_EVICTIONS:TransitiveClosureSeededByTarget=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_bytarget_lru_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z], [p, q]],
+    WarmParams2 = [[a, z], [p, r]],
+    TouchParams = [[a, z], [p, q]],
+    InsertParams = [[a, z], [p, s]],
+    HotParams = [[a, z], [p, q]],
+    ColdParams = [[a, z], [p, r]],
     harness_source_with_seed_cache_lru_recency_flag(
         ModuleClass,
         WarmParams1,
