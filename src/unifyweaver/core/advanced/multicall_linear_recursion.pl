@@ -326,6 +326,14 @@ test_multicall_linear :-
     ;   writeln('  ✗ FAIL - Elixir compilation failed')
     ),
 
+    % Test 9: Compile to F#
+    writeln('Test 9: Compile fibonacci (multi-call linear) to F#'),
+    (   compile_multicall_linear_recursion(test_fib/2, [target(fsharp)], MCFsCode) ->
+        write_output_file('output/advanced/fib_multicall.fs', MCFsCode),
+        writeln('  ✓ Compiled to output/advanced/fib_multicall.fs (fsharp)')
+    ;   writeln('  ✗ FAIL - F# compilation failed')
+    ),
+
     writeln('=== TESTS COMPLETE ===').
 
 %% Helper to write output files

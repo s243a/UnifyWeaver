@@ -687,7 +687,16 @@ test_mutual_recursion :-
         writeln('  ✓ Compiled to output/advanced/even_odd.exs (elixir)'),
         compile_mutual_recursion(Predicates1, [target(fsharp)], Code1F),
         write_bash_file('output/advanced/even_odd.fs', Code1F),
-        writeln('  ✓ Compiled to output/advanced/even_odd.fs (fsharp)')
+        writeln('  ✓ Compiled to output/advanced/even_odd.fs (fsharp)'),
+        compile_mutual_recursion(Predicates1, [target(c)], Code1C),
+        write_bash_file('output/advanced/even_odd.c', Code1C),
+        writeln('  ✓ Compiled to output/advanced/even_odd.c (c)'),
+        compile_mutual_recursion(Predicates1, [target(haskell)], Code1H),
+        write_bash_file('output/advanced/even_odd.hs', Code1H),
+        writeln('  ✓ Compiled to output/advanced/even_odd.hs (haskell)'),
+        compile_mutual_recursion(Predicates1, [target(java)], Code1J),
+        write_bash_file('output/advanced/even_odd.java', Code1J),
+        writeln('  ✓ Compiled to output/advanced/even_odd.java (java)')
     ;   writeln('  ✗ FAIL - should detect mutual recursion')
     ),
 

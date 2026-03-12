@@ -380,7 +380,10 @@ test_tree_recursion :-
             writeln('  ✓ Compiled to output/advanced/tree_fib.java (java)'),
             compile_tree_recursion(test_tree_fib/2, [target(elixir)], FibCode1E),
             write_bash_file('output/advanced/tree_fib.exs', FibCode1E),
-            writeln('  ✓ Compiled to output/advanced/tree_fib.exs (elixir)')
+            writeln('  ✓ Compiled to output/advanced/tree_fib.exs (elixir)'),
+            compile_tree_recursion(test_tree_fib/2, [target(fsharp)], FibCode1Fs),
+            write_bash_file('output/advanced/tree_fib.fs', FibCode1Fs),
+            writeln('  ✓ Compiled to output/advanced/tree_fib.fs (fsharp)')
         ;   writeln('  ✗ FAIL - cannot compile fibonacci tree pattern')
         )
     ;   writeln('  ✗ FAIL - fibonacci not detected as tree recursive')

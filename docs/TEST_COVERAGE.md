@@ -45,10 +45,10 @@ The advanced recursion test suite (`test_advanced.pl`) validates pattern detecti
 |---------|---------------|----------------|
 | Tail recursion | `count_items/3`, `sum_list/3` | bash, r, lua, c, haskell, java, elixir |
 | Linear recursion | `list_length/2`, `factorial/2` | bash, r, lua, c, haskell, java, elixir |
-| Tree recursion | `tree_sum/2`, `tree_fib/2` | bash, r, lua, c, haskell, java, elixir |
-| Mutual recursion | `is_even/1`, `is_odd/1` | bash, r, lua, elixir, fsharp |
-| Multi-call linear | `test_fib/2` | bash, r, lua, c, haskell, java, elixir |
-| Direct multi-call | `test_dfib/2` | bash, r, lua, c, haskell, java, elixir |
+| Tree recursion | `tree_sum/2`, `tree_fib/2` | bash, r, lua, c, haskell, java, elixir, fsharp |
+| Mutual recursion | `is_even/1`, `is_odd/1` | bash, r, lua, c, haskell, java, elixir, fsharp |
+| Multi-call linear | `test_fib/2` | bash, r, lua, c, haskell, java, elixir, fsharp |
+| Direct multi-call | `test_dfib/2` | bash, r, lua, c, haskell, java, elixir, fsharp |
 
 ### Infrastructure Tests
 
