@@ -292,6 +292,7 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_backward_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_single_seed_strategy_runtime,
         verify_parameterized_reachability_plan,
@@ -310,11 +311,14 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_overlap_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_cache_overlap_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_cache_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_reuse_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cache_reuse_runtime,
         verify_parameterized_reachability_pairs_cache_reuse_runtime,
         verify_parameterized_reachability_seed_cache_key_order_insensitive_runtime,
         verify_parameterized_reachability_by_target_cache_key_order_insensitive_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cache_key_order_insensitive_runtime,
         verify_parameterized_reachability_seed_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_seed_cache_eviction_runtime,
@@ -3538,6 +3542,18 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
         Params,
         BackwardHarnessSource).
 
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, z, red, cat1], [p, q, red, cat1]],
+    harness_source_with_cache_flag(ModuleClass, Params, 'GroupedTransitiveClosureSeededByTarget', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true',
+         'p,q,red,cat1'],
+        Params,
+        HarnessSource).
+
 verify_parameterized_reachability_plan :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
@@ -3644,6 +3660,18 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_reuse_r
          'CACHE_HIT:TransitiveClosureSeededByTarget=true'],
         Params,
         BackwardHarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_bytarget_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, z], [p, q]],
+    harness_source_with_cache_flag(ModuleClass, Params, 'TransitiveClosureSeededByTarget', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'CACHE_HIT:TransitiveClosureSeededByTarget=true',
+         'p,q'],
+        Params,
+        HarnessSource).
 
 verify_parameterized_reachability_single_seed_strategy_runtime :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
@@ -4027,6 +4055,25 @@ verify_parameterized_grouped_transitive_closure_by_target_cache_overlap_reuse_ru
          'a,c,red,cat1',
          'b,c,red,cat1',
          'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_overlap_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ExecParams = [[a, z, red, cat1], [p, q, red, cat1], [p, r, red, cat1]],
+    harness_source_with_cache_flag_warm_exec(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'GroupedTransitiveClosureSeededByTarget',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true',
+         'p,q,red,cat1',
+         'p,r,red,cat1'],
         ExecParams,
         HarnessSource).
 
@@ -5090,6 +5137,24 @@ verify_parameterized_reachability_by_target_cache_key_order_insensitive_runtime 
          'alice,charlie',
          'bob,charlie',
          'CACHE_HIT:TransitiveClosureSeededByTarget=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cache_key_order_insensitive_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_bytarget_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, z], [p, q]],
+    ExecParams = [[p, q], [a, z]],
+    harness_source_with_cache_flag_warm_exec(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'TransitiveClosureSeededByTarget',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'CACHE_HIT:TransitiveClosureSeededByTarget=true',
+         'p,q'],
         ExecParams,
         HarnessSource).
 
