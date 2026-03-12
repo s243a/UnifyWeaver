@@ -193,6 +193,14 @@ run_tests :-
     test_rust_yaml_config,
     test_rust_security_regex_lists,
     test_rust_phase5_generation,
+    %% Phase 6
+    test_rust_tool_params,
+    test_rust_tool_schemas_json,
+    test_rust_api_format,
+    test_rust_anthropic_format,
+    test_rust_context_modes,
+    test_rust_context_trim,
+    test_rust_phase6_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3794,4 +3802,111 @@ test_rust_phase5_generation :-
     read_file_to_string(MainPath5, MainContent5, []),
     assert_true('main.rs has ToolHandler with 3 args', (
         sub_string(MainContent5, _, _, _, "config.security_profile.clone()")
+    )).
+
+%% =========================================================================
+%% Phase 6 Tests — Tool schemas + API format + Context management
+%% =========================================================================
+
+test_rust_tool_params :-
+    format("~nRust tool params:~n"),
+    agent_loop_module:output_path(rust, 'tools.rs', ToolsPath),
+    read_file_to_string(ToolsPath, ToolsContent, []),
+    assert_true('ToolParam struct exists', (
+        sub_string(ToolsContent, _, _, _, "pub struct ToolParam")
+    )),
+    assert_true('ToolSpec has parameters field', (
+        sub_string(ToolsContent, _, _, _, "pub parameters: &'static [ToolParam]")
+    )),
+    assert_true('bash tool has command param', (
+        sub_string(ToolsContent, _, _, _, "ToolParam { name: \"command\"")
+    )),
+    assert_true('ToolParam has required field', (
+        sub_string(ToolsContent, _, _, _, "pub required: bool")
+    )).
+
+test_rust_tool_schemas_json :-
+    format("~nRust tool schemas JSON:~n"),
+    agent_loop_module:output_path(rust, 'tools.rs', ToolsPath),
+    read_file_to_string(ToolsPath, ToolsContent, []),
+    assert_true('tool_schemas_json function exists', (
+        sub_string(ToolsContent, _, _, _, "pub fn tool_schemas_json()")
+    )),
+    assert_true('generates OpenAI function format', (
+        sub_string(ToolsContent, _, _, _, "\"type\": \"function\"")
+    )).
+
+test_rust_api_format :-
+    format("~nRust API format:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('ApiBackend has api_format field', (
+        sub_string(BackendsContent, _, _, _, "pub api_format: String")
+    )),
+    assert_true('create_backend passes anthropic format for claude', (
+        sub_string(BackendsContent, _, _, _, "\"anthropic\"")
+    )),
+    assert_true('create_backend passes openai format for openrouter', (
+        sub_string(BackendsContent, _, _, _, "\"openai\"")
+    )).
+
+test_rust_anthropic_format :-
+    format("~nRust Anthropic format:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('uses x-api-key for Anthropic', (
+        sub_string(BackendsContent, _, _, _, "x-api-key")
+    )),
+    assert_true('parses Anthropic tool_use blocks', (
+        sub_string(BackendsContent, _, _, _, "extract_tool_calls_anthropic")
+    )),
+    assert_true('uses anthropic-version header', (
+        sub_string(BackendsContent, _, _, _, "anthropic-version")
+    )).
+
+test_rust_context_modes :-
+    format("~nRust context modes:~n"),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('ContextManager has context_mode', (
+        sub_string(ContextContent, _, _, _, "pub context_mode: String")
+    )),
+    assert_true('ContextManager has max_context_tokens', (
+        sub_string(ContextContent, _, _, _, "pub max_context_tokens: i64")
+    )),
+    assert_true('estimate_tokens method exists', (
+        sub_string(ContextContent, _, _, _, "fn estimate_tokens")
+    )),
+    assert_true('fresh mode clears context', (
+        sub_string(ContextContent, _, _, _, "context_mode == \"fresh\"")
+    )).
+
+test_rust_context_trim :-
+    format("~nRust context trim:~n"),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('trim_if_needed method exists', (
+        sub_string(ContextContent, _, _, _, "fn trim_if_needed")
+    )),
+    assert_true('char_count method exists', (
+        sub_string(ContextContent, _, _, _, "fn char_count")
+    )),
+    assert_true('word_count method exists', (
+        sub_string(ContextContent, _, _, _, "fn word_count")
+    )).
+
+test_rust_phase6_generation :-
+    format("~nRust phase 6 generation:~n"),
+    agent_loop_module:output_path(rust, 'tools.rs', ToolsPath),
+    read_file_to_string(ToolsPath, ToolsContent, []),
+    assert_true('tools.rs has ToolParam', (
+        sub_string(ToolsContent, _, _, _, "pub struct ToolParam")
+    )),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath6),
+    read_file_to_string(MainPath6, MainContent6, []),
+    assert_true('main.rs passes context_mode to ContextManager', (
+        sub_string(MainContent6, _, _, _, "config.context_mode")
+    )),
+    assert_true('main.rs wires max_chars CLI override', (
+        sub_string(MainContent6, _, _, _, "config.max_chars")
     )).

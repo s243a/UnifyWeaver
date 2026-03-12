@@ -120,6 +120,8 @@ pub static CONFIG_FIELDS: &[AgentConfigField] = &[
     AgentConfigField { name: "context_mode", type_annotation: "str", default_value: "\"continue\"", comment: "continue, fresh, sliding" },
     AgentConfigField { name: "max_context_tokens", type_annotation: "int", default_value: "100000", comment: "" },
     AgentConfigField { name: "max_messages", type_annotation: "int", default_value: "50", comment: "" },
+    AgentConfigField { name: "max_chars", type_annotation: "int", default_value: "0", comment: "0 = unlimited" },
+    AgentConfigField { name: "max_words", type_annotation: "int", default_value: "0", comment: "0 = unlimited" },
     AgentConfigField { name: "skills", type_annotation: "list[str]", default_value: "field(default_factory=list)", comment: "Paths to skill files" },
     AgentConfigField { name: "max_iterations", type_annotation: "int", default_value: "0", comment: "0 = unlimited, N = pause after N tool iterations" },
     AgentConfigField { name: "timeout", type_annotation: "int", default_value: "300", comment: "" },

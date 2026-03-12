@@ -475,6 +475,8 @@ agent_config_field(auto_tools,          'bool',           'False',   "Skip confi
 agent_config_field(context_mode,        'str',            '"continue"', "continue, fresh, sliding").
 agent_config_field(max_context_tokens,  'int',            '100000',  "").
 agent_config_field(max_messages,        'int',            '50',      "").
+agent_config_field(max_chars,           'int',            '0',       "0 = unlimited").
+agent_config_field(max_words,           'int',            '0',       "0 = unlimited").
 agent_config_field(skills,              'list[str]',      'field(default_factory=list)', "Paths to skill files").
 agent_config_field(max_iterations,      'int',            '0',       "0 = unlimited, N = pause after N tool iterations").
 agent_config_field(timeout,             'int',            '300',     "").
@@ -967,6 +969,7 @@ backend_factory('claude-code', [
     import_from(backends),
     default_command(claude),
     default_model(sonnet),
+    cli_args(["--print", "--model"]),
     constructor_args([
         arg(command, cmd),
         arg_model
@@ -979,6 +982,7 @@ backend_factory(gemini, [
     import_from(backends),
     default_command(gemini),
     default_model('gemini-3-flash-preview'),
+    cli_args(["--model"]),
     constructor_args([
         arg(command, cmd),
         arg_model,
@@ -1525,7 +1529,6 @@ generate_rust_tools :-
     open(Path, write, S),
     write_rust_header(S, tools, 'Tool specifications and handler registry'),
     agent_loop_components:emit_module_skeleton(S, rust, tools, [
-        use_external([serde-['Serialize', 'Deserialize']]),
         comment('Tool data layer — specs, handlers, destructive tool set')
     ]),
     write_rust(S, tools_types),
@@ -1716,15 +1719,26 @@ generate_rust_backend_factory(S) :-
     write(S, '    match config.backend.as_str() {\n'),
     maplist([FN]>>(
         resolve_factory_backend(FN, Props),
+        backend_factory(FN, FProps),
         (member(type(cli), Props) ->
             (member(command(Cmd), Props) -> true ; atom_string(FN, Cmd)),
-            (member(default_model(Model), Props) ->
-                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], Some("~w".to_string()))),~n', [FN, FN, Cmd, Model])
+            %% Build CLI args array: use cli_args from factory facts if present
+            (member(cli_args(CliArgs), FProps) ->
+                maplist([A,Q]>>(format(atom(Q), '"~w"', [A])), CliArgs, Quoted),
+                atomic_list_concat(Quoted, ', ', ArgsStr),
+                format(atom(ArgsLit), '&[~w]', [ArgsStr])
             ;
-                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", &[], config.model.clone())),~n', [FN, FN, Cmd])
+                ArgsLit = '&[]'
+            ),
+            (member(default_model(Model), Props) ->
+                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", ~w, Some("~w".to_string()))),~n', [FN, FN, Cmd, ArgsLit, Model])
+            ;
+                format(S, '        "~w" => Box::new(CliBackend::new("~w", "~w", ~w, config.model.clone())),~n', [FN, FN, Cmd, ArgsLit])
             )
         ; member(type(api), Props) ->
             (member(endpoint(EP), Props) -> true ; EP = ''),
+            %% Determine API format from auth_header property
+            (member(auth_header("x-api-key"), Props) -> ApiFmt = anthropic ; ApiFmt = openai),
             (member(auth_env(AuthEnv), Props) ->
                 format(S, '        "~w" => {~n', [FN]),
                 format(S, '            let key = std::env::var("~w").ok().or(config.api_key.clone());~n', [AuthEnv]),
@@ -1733,13 +1747,13 @@ generate_rust_backend_factory(S) :-
                 ;
                     format(S, '            let model = config.model.clone().unwrap_or_default();~n', [])
                 ),
-                format(S, '            Box::new(ApiBackend::new("~w", "~w", key, &model, config.stream))~n', [FN, EP]),
+                format(S, '            Box::new(ApiBackend::new("~w", "~w", key, &model, config.stream, "~w"))~n', [FN, EP, ApiFmt]),
                 format(S, '        }~n', [])
             ;
                 (member(default_model(DefModel2), Props) ->
-                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or("~w".to_string()), config.stream)),~n', [FN, FN, EP, DefModel2])
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or("~w".to_string()), config.stream, "~w")),~n', [FN, FN, EP, DefModel2, ApiFmt])
                 ;
-                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or_default(), config.stream)),~n', [FN, FN, EP])
+                    format(S, '        "~w" => Box::new(ApiBackend::new("~w", "~w", None, &config.model.clone().unwrap_or_default(), config.stream, "~w")),~n', [FN, FN, EP, ApiFmt])
                 )
             )
         ; true  %% skip unknown types
@@ -2156,7 +2170,7 @@ generate_rust_cli_config_build(S) :-
     %% Int overrides
     maplist([Field-ArgName]>>(
         format(S, '    if let Some(&v) = matches.get_one::<i64>("~w") { config.~w = v; }~n', [ArgName, Field])
-    ), [max_iterations-max_iterations, max_context_tokens-max_tokens]),
+    ), [max_iterations-max_iterations, max_context_tokens-max_tokens, max_chars-max_chars, max_words-max_words]),
     write(S, '\n').
 
 %% Generate a single module by name
@@ -3907,11 +3921,50 @@ impl CostTracker {
 %% =============================================================================
 
 rust_fragment(tools_types, '
-/// Tool specification
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Tool parameter specification
+#[derive(Debug, Clone)]
+pub struct ToolParam {
+    pub name: &''static str,
+    pub param_type: &''static str,
+    pub required: bool,
+    pub description: &''static str,
+}
+
+/// Tool specification with parameter schemas
+#[derive(Debug, Clone)]
 pub struct ToolSpec {
     pub name: &''static str,
     pub description: &''static str,
+    pub parameters: &''static [ToolParam],
+}
+
+/// Generate JSON tool schemas for API requests (OpenAI/Anthropic format).
+pub fn tool_schemas_json() -> Vec<serde_json::Value> {
+    TOOL_SPECS.iter().map(|spec| {
+        let mut properties = serde_json::Map::new();
+        let mut required = Vec::new();
+        for p in spec.parameters {
+            properties.insert(p.name.to_string(), serde_json::json!({
+                "type": p.param_type,
+                "description": p.description,
+            }));
+            if p.required {
+                required.push(serde_json::Value::String(p.name.to_string()));
+            }
+        }
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                }
+            }
+        })
+    }).collect()
 }
 
 ').
@@ -4002,29 +4055,54 @@ pub struct Message {
 
 rust_fragment(context_manager, '
 
-/// Manages conversation history for the agent loop.
-#[derive(Debug, Default)]
+/// Manages conversation history with context modes and multi-limit trimming.
+#[derive(Debug)]
 pub struct ContextManager {
     pub messages: Vec<Message>,
     pub max_messages: usize,
+    pub max_context_tokens: i64,
+    pub max_chars: i64,
+    pub max_words: i64,
+    pub context_mode: String,
+}
+
+impl Default for ContextManager {
+    fn default() -> Self {
+        Self {
+            messages: Vec::new(),
+            max_messages: 50,
+            max_context_tokens: 100000,
+            max_chars: 0,
+            max_words: 0,
+            context_mode: "continue".to_string(),
+        }
+    }
 }
 
 impl ContextManager {
-    pub fn new(max_messages: usize) -> Self {
+    pub fn new(max_messages: usize, max_context_tokens: i64, max_chars: i64, max_words: i64, context_mode: &str) -> Self {
         Self {
             messages: Vec::new(),
             max_messages,
+            max_context_tokens,
+            max_chars,
+            max_words,
+            context_mode: context_mode.to_string(),
         }
     }
 
     pub fn add_message(&mut self, role: &str, content: &str) {
+        // Fresh mode: clear before each user message
+        if self.context_mode == "fresh" && role == "user" {
+            self.messages.clear();
+        }
         self.messages.push(Message {
             role: role.to_string(),
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: None,
         });
-        self.trim();
+        self.trim_if_needed();
     }
 
     pub fn add_tool_call_message(&mut self, content: &str, tool_calls: Vec<ToolCall>) {
@@ -4034,7 +4112,7 @@ impl ContextManager {
             tool_calls: Some(tool_calls),
             tool_call_id: None,
         });
-        self.trim();
+        self.trim_if_needed();
     }
 
     pub fn add_tool_result(&mut self, tool_call_id: &str, output: &str) {
@@ -4044,7 +4122,7 @@ impl ContextManager {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.to_string()),
         });
-        self.trim();
+        self.trim_if_needed();
     }
 
     pub fn get_context(&self) -> &[Message] {
@@ -4067,10 +4145,47 @@ impl ContextManager {
         self.messages.is_empty()
     }
 
-    fn trim(&mut self) {
+    /// Total character count across all messages.
+    pub fn char_count(&self) -> usize {
+        self.messages.iter().map(|m| m.content.len()).sum()
+    }
+
+    /// Total word count across all messages.
+    pub fn word_count(&self) -> usize {
+        self.messages.iter()
+            .map(|m| m.content.split_whitespace().count())
+            .sum()
+    }
+
+    /// Estimated token count (chars / 4 heuristic).
+    pub fn estimate_tokens(&self) -> usize {
+        self.char_count() / 4
+    }
+
+    /// Trim messages to stay within all configured limits.
+    pub fn trim_if_needed(&mut self) {
+        // Message count limit (sliding window)
         if self.max_messages > 0 && self.messages.len() > self.max_messages {
             let excess = self.messages.len() - self.max_messages;
             self.messages.drain(..excess);
+        }
+        // Token limit
+        if self.max_context_tokens > 0 {
+            while self.messages.len() > 1 && self.estimate_tokens() > self.max_context_tokens as usize {
+                self.messages.remove(0);
+            }
+        }
+        // Character limit
+        if self.max_chars > 0 {
+            while self.messages.len() > 1 && self.char_count() > self.max_chars as usize {
+                self.messages.remove(0);
+            }
+        }
+        // Word limit
+        if self.max_words > 0 {
+            while self.messages.len() > 1 && self.word_count() > self.max_words as usize {
+                self.messages.remove(0);
+            }
         }
     }
 }
@@ -4151,22 +4266,25 @@ impl AgentBackend for CliBackend {
 rust_fragment(backend_api_impl, '
 
 /// API-based backend that sends HTTP requests.
+/// Supports OpenAI and Anthropic message formats via api_format field.
 pub struct ApiBackend {
     pub backend_name: String,
     pub endpoint: String,
     pub api_key: Option<String>,
     pub model: String,
     pub stream: bool,
+    pub api_format: String,
 }
 
 impl ApiBackend {
-    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool) -> Self {
+    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool, api_format: &str) -> Self {
         Self {
             backend_name: name.to_string(),
             endpoint: endpoint.to_string(),
             api_key,
             model: model.to_string(),
             stream,
+            api_format: api_format.to_string(),
         }
     }
 
@@ -4183,16 +4301,130 @@ impl ApiBackend {
         }));
         messages
     }
+
+    fn build_request_body(&self, message: &str, context: &[Message]) -> serde_json::Value {
+        use crate::tools::tool_schemas_json;
+        let messages = self.build_messages(message, context);
+        let tools = tool_schemas_json();
+
+        if self.api_format == "anthropic" {
+            // Anthropic: system is top-level, tools use input_schema
+            let anthropic_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
+                let func = &t["function"];
+                serde_json::json!({
+                    "name": func["name"],
+                    "description": func["description"],
+                    "input_schema": func["parameters"],
+                })
+            }).collect();
+            let mut body = serde_json::json!({
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": 4096,
+            });
+            if !anthropic_tools.is_empty() {
+                body["tools"] = serde_json::json!(anthropic_tools);
+            }
+            body
+        } else {
+            // OpenAI / OpenRouter / Ollama format
+            let mut body = serde_json::json!({
+                "model": self.model,
+                "messages": messages,
+            });
+            if !tools.is_empty() {
+                body["tools"] = serde_json::json!(tools);
+            }
+            body
+        }
+    }
+
+    fn add_auth_header(&self, req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+        if let Some(ref key) = self.api_key {
+            if self.api_format == "anthropic" {
+                req.header("x-api-key", key)
+                   .header("anthropic-version", "2023-06-01")
+            } else {
+                req.header("Authorization", format!("Bearer {}", key))
+            }
+        } else {
+            req
+        }
+    }
+
+    /// Extract tool calls from an OpenAI-format response.
+    fn extract_tool_calls_openai(json: &serde_json::Value) -> Vec<ToolCall> {
+        let mut calls = Vec::new();
+        if let Some(tool_calls) = json["choices"][0]["message"]["tool_calls"].as_array() {
+            for tc in tool_calls {
+                let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                let id = tc["id"].as_str().unwrap_or("").to_string();
+                let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                let arguments: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_str(args_str).unwrap_or_default();
+                calls.push(ToolCall { name, arguments, id });
+            }
+        }
+        calls
+    }
+
+    /// Extract tool calls from an Anthropic-format response.
+    fn extract_tool_calls_anthropic(json: &serde_json::Value) -> Vec<ToolCall> {
+        let mut calls = Vec::new();
+        if let Some(content) = json["content"].as_array() {
+            for block in content {
+                if block["type"].as_str() == Some("tool_use") {
+                    let name = block["name"].as_str().unwrap_or("").to_string();
+                    let id = block["id"].as_str().unwrap_or("").to_string();
+                    let arguments: std::collections::HashMap<String, serde_json::Value> =
+                        if let Some(input) = block["input"].as_object() {
+                            input.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                        } else {
+                            std::collections::HashMap::new()
+                        };
+                    calls.push(ToolCall { name, arguments, id });
+                }
+            }
+        }
+        calls
+    }
+
+    /// Parse response JSON into AgentResponse (format-aware).
+    fn parse_response(&self, json: serde_json::Value) -> AgentResponse {
+        if self.api_format == "anthropic" {
+            let content = json["content"].as_array()
+                .and_then(|arr| arr.iter()
+                    .find(|b| b["type"].as_str() == Some("text"))
+                    .and_then(|b| b["text"].as_str()))
+                .unwrap_or("")
+                .to_string();
+            let input_tokens = json["usage"]["input_tokens"].as_u64().unwrap_or(0);
+            let output_tokens = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
+            let tool_calls = Self::extract_tool_calls_anthropic(&json);
+            AgentResponse {
+                content, input_tokens, output_tokens,
+                model: self.model.clone(),
+                tool_calls,
+            }
+        } else {
+            let content = json["choices"][0]["message"]["content"]
+                .as_str().unwrap_or("").to_string();
+            let input_tokens = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+            let output_tokens = json["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+            let tool_calls = Self::extract_tool_calls_openai(&json);
+            AgentResponse {
+                content, input_tokens, output_tokens,
+                model: self.model.clone(),
+                tool_calls,
+            }
+        }
+    }
 }
 
 impl AgentBackend for ApiBackend {
     fn send_message(&self, message: &str, context: &[Message]) -> AgentResponse {
         let client = reqwest::blocking::Client::new();
-        let messages = self.build_messages(message, context);
-        let mut body = serde_json::json!({
-            "model": self.model,
-            "messages": messages,
-        });
+        let mut body = self.build_request_body(message, context);
 
         if self.stream {
             body["stream"] = serde_json::json!(true);
@@ -4211,30 +4443,14 @@ impl AgentBackend for ApiBackend {
             };
         }
 
-        let mut req = client.post(&self.endpoint)
+        let req = client.post(&self.endpoint)
             .header("Content-Type", "application/json");
-        if let Some(ref key) = self.api_key {
-            req = req.header("Authorization", format!("Bearer {}", key));
-        }
+        let req = self.add_auth_header(req);
 
         match req.json(&body).send() {
             Ok(resp) => {
                 match resp.json::<serde_json::Value>() {
-                    Ok(json) => {
-                        let content = json["choices"][0]["message"]["content"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
-                        let input_tokens = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
-                        let output_tokens = json["usage"]["completion_tokens"].as_u64().unwrap_or(0);
-                        AgentResponse {
-                            content,
-                            input_tokens,
-                            output_tokens,
-                            model: self.model.clone(),
-                            ..Default::default()
-                        }
-                    }
+                    Ok(json) => self.parse_response(json),
                     Err(e) => AgentResponse {
                         content: format!("JSON parse error: {}", e),
                         model: self.model.clone(),
@@ -5179,7 +5395,13 @@ pub fn init_config(path: &str) -> std::io::Result<()> {
 
 rust_fragment(main_loop, '
     let backend = create_backend(&config);
-    let mut context = ContextManager::new(config.max_messages as usize);
+    let mut context = ContextManager::new(
+        config.max_messages as usize,
+        config.max_context_tokens,
+        config.max_chars,
+        config.max_words,
+        &config.context_mode,
+    );
     let mut cost_tracker = CostTracker::new();
     let tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
 
@@ -5188,13 +5410,34 @@ rust_fragment(main_loop, '
         context.add_message(&msg.role, &msg.content);
     }
 
+    // Single-prompt non-interactive mode
+    if let Some(prompt) = matches.get_one::<String>("prompt") {
+        context.add_message("user", prompt);
+        let response = backend.send_message(prompt, context.get_context());
+        if !response.content.is_empty() {
+            println!("{}", response.content);
+        }
+        cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);
+        if config.show_tokens {
+            println!("  {}", cost_tracker.format_summary());
+        }
+        return;
+    }
+
     let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize readline");
+
+    // Handle --prompt-interactive: inject initial prompt
+    let mut initial_prompt = matches.get_one::<String>("prompt_interactive").cloned();
 
     println!("UnifyWeaver Agent Loop ({})", backend.name());
     println!("Type /help for commands, /exit to quit.\\n");
 
     loop {
-        let readline = rl.readline(">>> ");
+        let readline = if let Some(p) = initial_prompt.take() {
+            Ok(p)
+        } else {
+            rl.readline(">>> ")
+        };
         match readline {
             Ok(line) => {
                 let input = line.trim();

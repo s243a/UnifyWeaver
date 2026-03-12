@@ -291,6 +291,8 @@ fn main() {
     if let Some(v) = matches.get_one::<String>("approval_mode") { config.approval_mode = v.clone(); }
     if let Some(&v) = matches.get_one::<i64>("max_iterations") { config.max_iterations = v; }
     if let Some(&v) = matches.get_one::<i64>("max_tokens") { config.max_context_tokens = v; }
+    if let Some(&v) = matches.get_one::<i64>("max_chars") { config.max_chars = v; }
+    if let Some(&v) = matches.get_one::<i64>("max_words") { config.max_words = v; }
 
     // Resolve API key
     resolve_api_key(&mut config, config_file.as_ref());
@@ -336,7 +338,13 @@ fn main() {
 
 
     let backend = create_backend(&config);
-    let mut context = ContextManager::new(config.max_messages as usize);
+    let mut context = ContextManager::new(
+        config.max_messages as usize,
+        config.max_context_tokens,
+        config.max_chars,
+        config.max_words,
+        &config.context_mode,
+    );
     let mut cost_tracker = CostTracker::new();
     let tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
 
@@ -345,13 +353,34 @@ fn main() {
         context.add_message(&msg.role, &msg.content);
     }
 
+    // Single-prompt non-interactive mode
+    if let Some(prompt) = matches.get_one::<String>("prompt") {
+        context.add_message("user", prompt);
+        let response = backend.send_message(prompt, context.get_context());
+        if !response.content.is_empty() {
+            println!("{}", response.content);
+        }
+        cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);
+        if config.show_tokens {
+            println!("  {}", cost_tracker.format_summary());
+        }
+        return;
+    }
+
     let mut rl = rustyline::DefaultEditor::new().expect("Failed to initialize readline");
+
+    // Handle --prompt-interactive: inject initial prompt
+    let mut initial_prompt = matches.get_one::<String>("prompt_interactive").cloned();
 
     println!("UnifyWeaver Agent Loop ({})", backend.name());
     println!("Type /help for commands, /exit to quit.\n");
 
     loop {
-        let readline = rl.readline(">>> ");
+        let readline = if let Some(p) = initial_prompt.take() {
+            Ok(p)
+        } else {
+            rl.readline(">>> ")
+        };
         match readline {
             Ok(line) => {
                 let input = line.trim();

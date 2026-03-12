@@ -84,6 +84,10 @@ pub struct AgentConfig {
     pub context_mode: String,
     pub max_context_tokens: i64,
     pub max_messages: i64,
+    /// 0 = unlimited
+    pub max_chars: i64,
+    /// 0 = unlimited
+    pub max_words: i64,
     /// Paths to skill files
     pub skills: Vec<String>,
     /// 0 = unlimited, N = pause after N tool iterations
@@ -116,6 +120,8 @@ impl Default for AgentConfig {
             context_mode: "continue".to_string(),
             max_context_tokens: 100000,
             max_messages: 50,
+            max_chars: 0,
+            max_words: 0,
             skills: Vec::new(),
             max_iterations: 0,
             timeout: 300,
