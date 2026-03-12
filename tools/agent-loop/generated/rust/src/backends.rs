@@ -21,6 +21,42 @@ pub trait AgentBackend {
 
 
 
+/// Extract a numeric version from a gemini model name (e.g. "gemini-3-flash-preview" -> 3.0).
+fn extract_gemini_version(model: &str) -> Option<f64> {
+    for part in model.split('-') {
+        if let Ok(v) = part.parse::<f64>() {
+            return Some(v);
+        }
+        // Handle versions like "2.5" embedded in hyphenated segments
+        if part.contains('.') {
+            if let Ok(v) = part.parse::<f64>() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Validate a gemini model meets minimum version requirements.
+/// Flash models require version >= 3, Pro models require version >= 2.5.
+fn validate_gemini_model(model: &str, default: &str) -> String {
+    if model.contains("flash") {
+        if let Some(ver) = extract_gemini_version(model) {
+            if ver >= 3.0 { return model.to_string(); }
+        }
+        eprintln!("Warning: gemini flash requires version >= 3, using {}", default);
+        return default.to_string();
+    }
+    if model.contains("pro") {
+        if let Some(ver) = extract_gemini_version(model) {
+            if ver >= 2.5 { return model.to_string(); }
+        }
+        eprintln!("Warning: gemini pro requires version >= 2.5, using {}", default);
+        return default.to_string();
+    }
+    model.to_string()
+}
+
 /// CLI-based backend that shells out to a command.
 pub struct CliBackend {
     pub backend_name: String,
@@ -56,7 +92,17 @@ impl AgentBackend for CliBackend {
 
         match cmd.output() {
             Ok(output) => {
-                let content = String::from_utf8_lossy(&output.stdout).to_string();
+                let mut content = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr_text = String::from_utf8_lossy(&output.stderr);
+                if !stderr_text.is_empty() {
+                    if content.trim().is_empty() {
+                        // No stdout — surface stderr as the response (error case)
+                        content = format!("stderr: {}", stderr_text);
+                    } else {
+                        // Both present — log stderr as diagnostic
+                        eprintln!("[{}] stderr: {}", self.backend_name, stderr_text.trim());
+                    }
+                }
                 AgentResponse {
                     content,
                     model: self.backend_name.clone(),
@@ -146,6 +192,9 @@ pub fn send_streaming(
                 }
             }
             println!();
+            // TODO: SSE stream chunks typically don't include usage metadata.
+            // Some APIs (OpenAI, Anthropic) send usage in the final chunk —
+            // parse stream_options.include_usage when available.
             (full_content, 0, 0)
         }
         Err(e) => {
@@ -364,8 +413,12 @@ impl AgentBackend for ApiBackend {
 pub fn create_backend(config: &AgentConfig) -> Box<dyn AgentBackend> {
     match config.backend.as_str() {
         "coro" => Box::new(CliBackend::new("coro", "claude", &[], config.model.clone())),
-        "claude-code" => Box::new(CliBackend::new("claude-code", "claude", &["--print", "--model"], Some("sonnet".to_string()))),
-        "gemini" => Box::new(CliBackend::new("gemini", "gemini", &["--model"], Some("gemini-2.5-flash".to_string()))),
+        "claude-code" => Box::new(CliBackend::new("claude-code", "claude", &["--print", "--model"], config.model.clone().or(Some("sonnet".to_string())))),
+        "gemini" => {
+            let m = config.model.clone().unwrap_or("gemini-2.5-flash".to_string());
+            let validated = validate_gemini_model(&m, "gemini-2.5-flash");
+            Box::new(CliBackend::new("gemini", "gemini", &["--model"], Some(validated)))
+        }
         "claude" => {
             let key = std::env::var("ANTHROPIC_API_KEY").ok().or(config.api_key.clone());
             let model = config.model.clone().unwrap_or_default();
@@ -382,7 +435,7 @@ pub fn create_backend(config: &AgentConfig) -> Box<dyn AgentBackend> {
             Box::new(ApiBackend::new("openrouter", "https://openrouter.ai/api/v1/chat/completions", key, &model, config.stream, "openai"))
         }
         "ollama-api" => Box::new(ApiBackend::new("ollama-api", "http://localhost:11434/api/chat", None, &config.model.clone().unwrap_or_default(), config.stream, "openai")),
-        "ollama-cli" => Box::new(CliBackend::new("ollama-cli", "ollama", &[], Some("llama3".to_string()))),
+        "ollama-cli" => Box::new(CliBackend::new("ollama-cli", "ollama", &[], config.model.clone().or(Some("llama3".to_string())))),
         _ => panic!("Unknown backend: {}", config.backend),
     }
 }

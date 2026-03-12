@@ -100,9 +100,23 @@ impl ContextManager {
         self.messages.is_empty()
     }
 
-    /// Total character count across all messages.
+    /// Character count for a single message, including tool call estimates.
+    fn message_char_count(m: &Message) -> usize {
+        let mut n = m.content.len();
+        if let Some(ref tcs) = m.tool_calls {
+            for tc in tcs {
+                n += 100; // base overhead: name + id + JSON structure
+                for v in tc.arguments.values() {
+                    n += v.to_string().len();
+                }
+            }
+        }
+        n
+    }
+
+    /// Total character count across all messages (includes tool call estimates).
     pub fn char_count(&self) -> usize {
-        self.messages.iter().map(|m| m.content.len()).sum()
+        self.messages.iter().map(Self::message_char_count).sum()
     }
 
     /// Total word count across all messages.
@@ -118,29 +132,47 @@ impl ContextManager {
     }
 
     /// Trim messages to stay within all configured limits.
+    /// Uses drain(..k) instead of remove(0) for O(n) performance.
     pub fn trim_if_needed(&mut self) {
         // Message count limit (sliding window)
         if self.max_messages > 0 && self.messages.len() > self.max_messages {
             let excess = self.messages.len() - self.max_messages;
             self.messages.drain(..excess);
         }
-        // Token limit
-        if self.max_context_tokens > 0 {
-            while self.messages.len() > 1 && self.estimate_tokens() > self.max_context_tokens as usize {
-                self.messages.remove(0);
+        // Token limit — compute cutpoint then drain once
+        if self.max_context_tokens > 0 && self.estimate_tokens() > self.max_context_tokens as usize {
+            let limit = self.max_context_tokens as usize;
+            let mut k = 0;
+            while k < self.messages.len().saturating_sub(1) {
+                let remaining: usize = self.messages[k..].iter().map(Self::message_char_count).sum();
+                if remaining / 4 <= limit { break; }
+                k += 1;
             }
+            if k > 0 { self.messages.drain(..k); }
         }
         // Character limit
-        if self.max_chars > 0 {
-            while self.messages.len() > 1 && self.char_count() > self.max_chars as usize {
-                self.messages.remove(0);
+        if self.max_chars > 0 && self.char_count() > self.max_chars as usize {
+            let limit = self.max_chars as usize;
+            let mut k = 0;
+            let mut drop_chars = 0usize;
+            let total = self.char_count();
+            while k < self.messages.len().saturating_sub(1) && total - drop_chars > limit {
+                drop_chars += Self::message_char_count(&self.messages[k]);
+                k += 1;
             }
+            if k > 0 { self.messages.drain(..k); }
         }
         // Word limit
-        if self.max_words > 0 {
-            while self.messages.len() > 1 && self.word_count() > self.max_words as usize {
-                self.messages.remove(0);
+        if self.max_words > 0 && self.word_count() > self.max_words as usize {
+            let limit = self.max_words as usize;
+            let mut k = 0;
+            let mut drop_words = 0usize;
+            let total = self.word_count();
+            while k < self.messages.len().saturating_sub(1) && total - drop_words > limit {
+                drop_words += self.messages[k].content.split_whitespace().count();
+                k += 1;
             }
+            if k > 0 { self.messages.drain(..k); }
         }
     }
 }

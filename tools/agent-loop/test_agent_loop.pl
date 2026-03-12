@@ -201,6 +201,15 @@ run_tests :-
     test_rust_context_modes,
     test_rust_context_trim,
     test_rust_phase6_generation,
+    %% Phase 7
+    test_rust_cli_model_override,
+    test_rust_cli_stderr,
+    test_rust_streaming_todo,
+    test_rust_trim_drain,
+    test_rust_char_count_tools,
+    test_rust_schemas_cache,
+    test_rust_gemini_validation,
+    test_rust_phase7_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3920,4 +3929,92 @@ test_rust_phase6_generation :-
     )),
     assert_true('main.rs has single-prompt mode', (
         sub_string(MainContent6, _, _, _, "get_one::<String>(\"prompt\")")
+    )).
+
+%% =========================================================================
+%% Phase 7 Tests — Perplexity review fixes + gemini model validation
+%% =========================================================================
+
+test_rust_cli_model_override :-
+    format("~nRust CLI model override:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('claude-code uses config.model.clone().or()', (
+        sub_string(BackendsContent, _, _, _, "config.model.clone().or(Some(\"sonnet\"")
+    )),
+    assert_true('ollama-cli uses config.model.clone().or()', (
+        sub_string(BackendsContent, _, _, _, "config.model.clone().or(Some(\"llama3\"")
+    )).
+
+test_rust_cli_stderr :-
+    format("~nRust CLI stderr handling:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('CliBackend reads stderr_text', (
+        sub_string(BackendsContent, _, _, _, "stderr_text")
+    )),
+    assert_true('CliBackend surfaces stderr when stdout empty', (
+        sub_string(BackendsContent, _, _, _, "content.trim().is_empty()")
+    )).
+
+test_rust_streaming_todo :-
+    format("~nRust streaming TODO:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('send_streaming has TODO comment for token counts', (
+        sub_string(BackendsContent, _, _, _, "TODO: SSE stream chunks")
+    )).
+
+test_rust_trim_drain :-
+    format("~nRust trim drain:~n"),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('trim_if_needed uses drain pattern', (
+        sub_string(ContextContent, _, _, _, "self.messages.drain(..k)")
+    )),
+    assert_true('no self.messages.remove(0) calls', (
+        \+ sub_string(ContextContent, _, _, _, "self.messages.remove(0)")
+    )).
+
+test_rust_char_count_tools :-
+    format("~nRust char_count with tool calls:~n"),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('message_char_count includes tool_calls', (
+        sub_string(ContextContent, _, _, _, "fn message_char_count")
+    )).
+
+test_rust_schemas_cache :-
+    format("~nRust schemas cache:~n"),
+    agent_loop_module:output_path(rust, 'tools.rs', ToolsPath),
+    read_file_to_string(ToolsPath, ToolsContent, []),
+    assert_true('tool_schemas_json uses OnceLock', (
+        sub_string(ToolsContent, _, _, _, "OnceLock")
+    )),
+    assert_true('TOOL_SCHEMAS_CACHE static exists', (
+        sub_string(ToolsContent, _, _, _, "TOOL_SCHEMAS_CACHE")
+    )).
+
+test_rust_gemini_validation :-
+    format("~nRust gemini validation:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('validate_gemini_model function exists', (
+        sub_string(BackendsContent, _, _, _, "fn validate_gemini_model")
+    )),
+    assert_true('extract_gemini_version helper exists', (
+        sub_string(BackendsContent, _, _, _, "fn extract_gemini_version")
+    )).
+
+test_rust_phase7_generation :-
+    format("~nRust phase 7 generation:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath7),
+    read_file_to_string(BackendsPath7, BackendsContent7, []),
+    assert_true('gemini branch calls validate_gemini_model', (
+        sub_string(BackendsContent7, _, _, _, "validate_gemini_model(&m")
+    )),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath7),
+    read_file_to_string(ContextPath7, ContextContent7, []),
+    assert_true('trim uses drain not remove', (
+        sub_string(ContextContent7, _, _, _, "drain(..k)")
     )).
