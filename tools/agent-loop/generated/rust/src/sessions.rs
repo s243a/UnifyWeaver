@@ -127,6 +127,31 @@ impl SessionManager {
         }
         false
     }
+
+    /// Update an existing session (overwrite with new messages).
+    pub fn update(&self, id: &str, messages: &[Message], backend: &str) {
+        let path = self.sessions_dir.join(format!("{}.json", id));
+        let metadata = SessionMetadata {
+            id: id.to_string(),
+            name: "unnamed".to_string(),
+            created: now_iso8601(),
+            modified: now_iso8601(),
+            backend: backend.to_string(),
+            message_count: messages.len(),
+        };
+        let session = PersistedSession {
+            metadata,
+            messages: messages.to_vec(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&session) {
+            let _ = fs::write(&path, json);
+        }
+    }
+
+    /// Public access to chrono_simple_id for export filenames.
+    pub fn chrono_simple_id(&self) -> String {
+        chrono_simple_id()
+    }
 }
 
 /// Simple timestamp-based session ID.

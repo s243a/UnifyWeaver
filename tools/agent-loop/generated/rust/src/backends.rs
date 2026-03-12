@@ -159,23 +159,59 @@ pub fn extract_content_delta(json_str: &str) -> Option<String> {
     None
 }
 
+/// Extract token usage from an SSE JSON payload.
+/// OpenAI: final chunk has usage.prompt_tokens / completion_tokens
+/// Anthropic: message_start has usage.input_tokens, message_delta has usage.output_tokens
+pub fn extract_usage_from_sse(json_str: &str) -> Option<(u64, u64)> {
+    let json: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    // OpenAI format: usage in final chunk
+    if let Some(usage) = json.get("usage") {
+        let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        if input > 0 || output > 0 { return Some((input, output)); }
+    }
+    // Anthropic message_start: usage.input_tokens
+    if json.get("type").and_then(|t| t.as_str()) == Some("message_start") {
+        if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
+            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            return Some((input, 0));
+        }
+    }
+    // Anthropic message_delta: usage.output_tokens
+    if json.get("type").and_then(|t| t.as_str()) == Some("message_delta") {
+        if let Some(usage) = json.get("usage") {
+            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            return Some((0, output));
+        }
+    }
+    None
+}
+
 /// Send a streaming request and print output progressively.
 /// Returns the complete accumulated response content and token usage.
 pub fn send_streaming(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     api_key: Option<&str>,
+    api_format: &str,
     body: serde_json::Value,
 ) -> (String, u64, u64) {
     let mut req = client.post(endpoint)
         .header("Content-Type", "application/json");
     if let Some(key) = api_key {
-        req = req.header("Authorization", format!("Bearer {}", key));
+        if api_format == "anthropic" {
+            req = req.header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
     }
 
     match req.json(&body).send() {
         Ok(resp) => {
             let mut full_content = String::new();
+            let mut input_tokens: u64 = 0;
+            let mut output_tokens: u64 = 0;
             let reader = std::io::BufReader::new(resp);
             for line in reader.lines() {
                 match line {
@@ -186,16 +222,18 @@ pub fn send_streaming(
                                 let _ = std::io::stdout().flush();
                                 full_content.push_str(&delta);
                             }
+                            // Extract usage from SSE chunks (final chunk or Anthropic events)
+                            if let Some((inp, out)) = extract_usage_from_sse(&data) {
+                                input_tokens += inp;
+                                output_tokens += out;
+                            }
                         }
                     }
                     Err(_) => break,
                 }
             }
             println!();
-            // TODO: SSE stream chunks typically don't include usage metadata.
-            // Some APIs (OpenAI, Anthropic) send usage in the final chunk —
-            // parse stream_options.include_usage when available.
-            (full_content, 0, 0)
+            (full_content, input_tokens, output_tokens)
         }
         Err(e) => {
             (format!("Streaming error: {}", e), 0, 0)
@@ -367,10 +405,15 @@ impl AgentBackend for ApiBackend {
 
         if self.stream {
             body["stream"] = serde_json::json!(true);
+            // Request usage metadata in streaming responses
+            if self.api_format == "openai" {
+                body["stream_options"] = serde_json::json!({"include_usage": true});
+            }
             let (content, input_tokens, output_tokens) = send_streaming(
                 &client,
                 &self.endpoint,
                 self.api_key.as_deref(),
+                &self.api_format,
                 body,
             );
             return AgentResponse {
