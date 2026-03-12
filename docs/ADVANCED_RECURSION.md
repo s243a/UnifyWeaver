@@ -645,10 +645,10 @@ The test orchestrator (`test_advanced.pl`) loads 7 target modules and tests comp
 |---------|:----:|:-:|:---:|:-:|:-------:|:----:|:------:|:------:|
 | Tail recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Linear recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Tree recursion | ✅ | ✅ | ✅ | — | — | — | — | — |
+| Tree recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Mutual recursion | ✅ | ✅ | ✅ | — | — | — | ✅ | ✅ |
-| Multi-call linear | ✅ | ✅ | ✅ | — | — | — | — | — |
-| Direct multi-call | ✅ | ✅ | ✅ | — | — | — | — | — |
+| Multi-call linear | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Direct multi-call | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 ### Generated Files
 
@@ -658,10 +658,10 @@ Tests generate output in `output/advanced/` across multiple target languages:
 - `list_length.{sh,R,lua,c,hs,java,exs}` - Linear recursion
 - `factorial.{sh,R,lua,c,hs,java,exs}` - Linear recursion (multiplicative)
 - `tree_sum.{sh,R,lua}` - Tree recursion (binary tree)
-- `tree_fib.{sh,R,lua}` - Tree recursion (fibonacci)
+- `tree_fib.{sh,R,lua,c,hs,java,exs}` - Tree recursion (fibonacci)
 - `even_odd.{sh,R,lua,exs,fs}` - Mutual recursion
-- `fib_multicall.{sh,R,lua}` - Multi-call linear
-- `fib_direct.{sh,R,lua}` - Direct multi-call
+- `fib_multicall.{sh,R,lua,c,hs,java,exs}` - Multi-call linear
+- `fib_direct.{sh,R,lua,c,hs,java,exs}` - Direct multi-call
 
 ## Future Work
 

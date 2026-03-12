@@ -377,6 +377,38 @@ test_direct_multi_call :-
     ;   writeln('  ✗ FAIL - Lua compilation failed')
     ),
 
+    % Test 5: C compilation
+    writeln('Test 5: Compile fibonacci to C'),
+    (   compile_direct_multi_call(test_dfib/2, [target(c)], CCode) ->
+        write_output_file('output/advanced/fib_direct.c', CCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.c (c)')
+    ;   writeln('  ✗ FAIL - C compilation failed')
+    ),
+
+    % Test 6: Haskell compilation
+    writeln('Test 6: Compile fibonacci to Haskell'),
+    (   compile_direct_multi_call(test_dfib/2, [target(haskell)], HsCode) ->
+        write_output_file('output/advanced/fib_direct.hs', HsCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.hs (haskell)')
+    ;   writeln('  ✗ FAIL - Haskell compilation failed')
+    ),
+
+    % Test 7: Java compilation
+    writeln('Test 7: Compile fibonacci to Java'),
+    (   compile_direct_multi_call(test_dfib/2, [target(java)], JavaCode) ->
+        write_output_file('output/advanced/fib_direct.java', JavaCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.java (java)')
+    ;   writeln('  ✗ FAIL - Java compilation failed')
+    ),
+
+    % Test 8: Elixir compilation
+    writeln('Test 8: Compile fibonacci to Elixir'),
+    (   compile_direct_multi_call(test_dfib/2, [target(elixir)], ExCode) ->
+        write_output_file('output/advanced/fib_direct.exs', ExCode),
+        writeln('  ✓ Compiled to output/advanced/fib_direct.exs (elixir)')
+    ;   writeln('  ✗ FAIL - Elixir compilation failed')
+    ),
+
     format('~n=== Tests Complete ===~n', []).
 
 %% Helper to write output files
