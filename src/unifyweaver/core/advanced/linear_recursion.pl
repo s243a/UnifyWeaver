@@ -660,7 +660,10 @@ test_linear_recursion :-
         writeln('  ✓ Compiled to output/advanced/list_length.java (java)'),
         compile_linear_recursion(list_length/2, [target(elixir)], Code1E),
         write_bash_file('output/advanced/list_length.exs', Code1E),
-        writeln('  ✓ Compiled to output/advanced/list_length.exs (elixir)')
+        writeln('  ✓ Compiled to output/advanced/list_length.exs (elixir)'),
+        compile_linear_recursion(list_length/2, [target(fsharp)], Code1Fs),
+        write_bash_file('output/advanced/list_length.fs', Code1Fs),
+        writeln('  ✓ Compiled to output/advanced/list_length.fs (fsharp)')
     ;   writeln('  ✗ FAIL - should detect linear recursion')
     ),
 
@@ -691,7 +694,10 @@ test_linear_recursion :-
         writeln('  ✓ Compiled to output/advanced/factorial.java (java)'),
         compile_linear_recursion(factorial/2, [target(elixir)], Code2E),
         write_bash_file('output/advanced/factorial.exs', Code2E),
-        writeln('  ✓ Compiled to output/advanced/factorial.exs (elixir)')
+        writeln('  ✓ Compiled to output/advanced/factorial.exs (elixir)'),
+        compile_linear_recursion(factorial/2, [target(fsharp)], Code2Fs),
+        write_bash_file('output/advanced/factorial.fs', Code2Fs),
+        writeln('  ✓ Compiled to output/advanced/factorial.fs (fsharp)')
     ;   writeln('  ⚠ Pattern not detected (expected for factorial)')
     ),
 

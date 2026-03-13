@@ -37,14 +37,14 @@ Integration tests would verify:
 
 ## Advanced Recursion Pattern Tests
 
-The advanced recursion test suite (`test_advanced.pl`) validates pattern detection and cross-target compilation for 6 recursion patterns. It loads 7 target modules using empty import lists (`use_module(Path, [])`) to register multifile dispatch clauses without predicate name conflicts.
+The advanced recursion test suite (`test_advanced.pl`) validates pattern detection and cross-target compilation for 6 recursion patterns. It loads 8 target modules using empty import lists (`use_module(Path, [])`) to register multifile dispatch clauses without predicate name conflicts.
 
 ### Test Coverage Matrix
 
 | Pattern | Test Predicate | Targets Tested |
 |---------|---------------|----------------|
-| Tail recursion | `count_items/3`, `sum_list/3` | bash, r, lua, c, haskell, java, elixir |
-| Linear recursion | `list_length/2`, `factorial/2` | bash, r, lua, c, haskell, java, elixir |
+| Tail recursion | `count_items/3`, `sum_list/3` | bash, r, lua, c, haskell, java, elixir, fsharp |
+| Linear recursion | `list_length/2`, `factorial/2` | bash, r, lua, c, haskell, java, elixir, fsharp |
 | Tree recursion | `tree_sum/2`, `tree_fib/2` | bash, r, lua, c, haskell, java, elixir, fsharp |
 | Mutual recursion | `is_even/1`, `is_odd/1` | bash, r, lua, c, haskell, java, elixir, fsharp |
 | Multi-call linear | `test_fib/2` | bash, r, lua, c, haskell, java, elixir, fsharp |

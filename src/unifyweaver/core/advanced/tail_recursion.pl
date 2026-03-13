@@ -266,7 +266,10 @@ test_tail_recursion :-
         writeln('  ✓ Compiled to output/advanced/count_items.java (java)'),
         compile_tail_recursion(count_items/3, [target(elixir)], Code1E),
         write_bash_file('output/advanced/count_items.exs', Code1E),
-        writeln('  ✓ Compiled to output/advanced/count_items.exs (elixir)')
+        writeln('  ✓ Compiled to output/advanced/count_items.exs (elixir)'),
+        compile_tail_recursion(count_items/3, [target(fsharp)], Code1Fs),
+        write_bash_file('output/advanced/count_items.fs', Code1Fs),
+        writeln('  ✓ Compiled to output/advanced/count_items.fs (fsharp)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 
@@ -297,7 +300,10 @@ test_tail_recursion :-
         writeln('  ✓ Compiled to output/advanced/sum_list.java (java)'),
         compile_tail_recursion(sum_list/3, [target(elixir)], Code2E),
         write_bash_file('output/advanced/sum_list.exs', Code2E),
-        writeln('  ✓ Compiled to output/advanced/sum_list.exs (elixir)')
+        writeln('  ✓ Compiled to output/advanced/sum_list.exs (elixir)'),
+        compile_tail_recursion(sum_list/3, [target(fsharp)], Code2Fs),
+        write_bash_file('output/advanced/sum_list.fs', Code2Fs),
+        writeln('  ✓ Compiled to output/advanced/sum_list.fs (fsharp)')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 
