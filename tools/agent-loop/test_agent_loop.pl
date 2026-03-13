@@ -229,6 +229,12 @@ run_tests :-
     test_rust_multiline,
     test_rust_tool_e2e,
     test_rust_phase9_generation,
+    %% Phase 10
+    test_rust_full_templates,
+    test_rust_template_persistence,
+    test_rust_spinner,
+    test_rust_retry_wired,
+    test_rust_phase10_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3036,7 +3042,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 27),
+    assert_eq('Rust fragment count', RFCount, 28),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -4261,4 +4267,72 @@ test_rust_phase9_generation :-
     )),
     assert_true('multiline handler wired in main loop', (
         sub_string(MainContent9, _, _, _, "MultilineHandler::needs_continuation")
+    )).
+
+%% ============================================================================
+%% Phase 10 tests — full templates, persistence, spinner, retry wiring
+%% ============================================================================
+
+test_rust_full_templates :-
+    format("~nRust full templates (16 built-ins):~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('has convert template', (
+        sub_string(MainContent, _, _, _, "add_builtin(\"convert\"")
+    )),
+    assert_true('has translate template', (
+        sub_string(MainContent, _, _, _, "add_builtin(\"translate\"")
+    )),
+    assert_true('has optimize template', (
+        sub_string(MainContent, _, _, _, "add_builtin(\"optimize\"")
+    )),
+    assert_true('has doc template', (
+        sub_string(MainContent, _, _, _, "add_builtin(\"doc\"")
+    )).
+
+test_rust_template_persistence :-
+    format("~nRust template persistence:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('save_user_templates method exists', (
+        sub_string(MainContent, _, _, _, "fn save_user_templates")
+    )),
+    assert_true('load_user_templates method exists', (
+        sub_string(MainContent, _, _, _, "fn load_user_templates")
+    )),
+    assert_true('dirs_config_path helper exists', (
+        sub_string(MainContent, _, _, _, "fn dirs_config_path")
+    )).
+
+test_rust_spinner :-
+    format("~nRust spinner:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('Spinner struct exists', (
+        sub_string(MainContent, _, _, _, "struct Spinner")
+    )),
+    assert_true('Spinner start method exists', (
+        sub_string(MainContent, _, _, _, "fn start(msg: &str)")
+    )).
+
+test_rust_retry_wired :-
+    format("~nRust retry wired into API calls:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('retry_with_backoff called in main loop', (
+        sub_string(MainContent, _, _, _, "retry_with_backoff(&retry_config")
+    )),
+    assert_true('RetryConfig default created', (
+        sub_string(MainContent, _, _, _, "RetryConfig::default()")
+    )).
+
+test_rust_phase10_generation :-
+    format("~nRust phase 10 generation:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('spinner fragment emitted', (
+        agent_loop_module:rust_fragment(spinner, _)
+    )),
+    assert_true('Spinner used before API call', (
+        sub_string(MainContent, _, _, _, "Spinner::start(\"Thinking...\")")
     )).
