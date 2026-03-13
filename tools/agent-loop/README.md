@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (14 files) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates + skills + multiline input + history edit/undo |
+| Rust | `generated/rust/` (14 files) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display |
 
 ### Declarative Infrastructure
 
@@ -70,12 +70,12 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|-------|
 | `py_fragment/2` facts | 82 |
 | `prolog_fragment/2` facts | 33 |
-| `rust_fragment/2` facts | 27 |
+| `rust_fragment/2` facts | 28 |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 710 (590+120 unit + 27 Prolog + 59 Python) |
+| Total tests | 723 (590+120 unit + 27 Prolog + 59 Python) |
 
 ## Backends
 
@@ -716,11 +716,12 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Command handlers | 20+ | 20+ | Complete |
 | Env var expansion in config | Y | Y | Complete |
 | Session resume tracking | Y | Y | Complete |
-| Templates (6 built-in) | Y (16) | Y (6) | Partial |
+| Templates (16 built-in + persistence) | Y (16) | Y (16) | Complete |
 | Skills loader | Y | Y | Complete |
 | Multiline input | Y | Y | Complete |
-| Retry with backoff | Y | Y | Complete |
+| Retry with backoff (wired) | Y | Y | Complete |
 | History edit/delete/undo | Y | Y | Complete |
+| Spinner + rich display | Y | Y | Complete |
 | proot sandbox | Y | N | Future |
 
 ## License

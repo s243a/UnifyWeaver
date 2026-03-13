@@ -1883,6 +1883,7 @@ generate_rust_main :-
     output_path(rust, 'main.rs', Path),
     open(Path, write, S),
     write_rust_header(S, main, 'CLI entry point and agent loop'),
+    write(S, 'use agent_loop::types::Message;\n'),
     write(S, 'use agent_loop::backends::*;\n'),
     write(S, 'use agent_loop::context::*;\n'),
     write(S, 'use agent_loop::costs::*;\n'),
@@ -1903,6 +1904,9 @@ generate_rust_main :-
     nl(S),
     %% Multiline input handler
     write_rust(S, multiline_handler),
+    nl(S),
+    %% Spinner for API calls
+    write_rust(S, spinner),
     nl(S),
     %% Data-driven command dispatch function (with session support)
     generate_rust_command_dispatch_with_sessions(S),
@@ -2160,7 +2164,7 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '            println!("Output format: plain (markdown rendering not yet implemented)");\n'),
     write(S, '        }\n'),
     write(S, '        "template" | "templates" => {\n'),
-    write(S, '            let tmgr = TemplateManager::new();\n'),
+    write(S, '            let mut tmgr = TemplateManager::new();\n'),
     write(S, '            if _arg.is_empty() || _arg == "list" {\n'),
     write(S, '                for t in tmgr.list() {\n'),
     write(S, '                    println!("  @{:<12} {} [{}]", t.name, t.description, t.variables.join(", "));\n'),
@@ -2182,8 +2186,18 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '                } else {\n'),
     write(S, '                    println!("Unknown template: {}", name);\n'),
     write(S, '                }\n'),
+    write(S, '            } else if _arg.starts_with("add ") {\n'),
+    write(S, '                let rest = &_arg[4..];\n'),
+    write(S, '                let parts: Vec<&str> = rest.splitn(2, '' '').collect();\n'),
+    write(S, '                if parts.len() == 2 {\n'),
+    write(S, '                    tmgr.add(parts[0], parts[1], "User template");\n'),
+    write(S, '                    tmgr.save_user_templates();\n'),
+    write(S, '                    println!("Template added: {}", parts[0]);\n'),
+    write(S, '                } else {\n'),
+    write(S, '                    println!("Usage: /template add <name> <template string with {{vars}}>");\n'),
+    write(S, '                }\n'),
     write(S, '            } else {\n'),
-    write(S, '                println!("Usage: /template [list | use <name> key=val ...]");\n'),
+    write(S, '                println!("Usage: /template [list | use <name> key=val ... | add <name> <template>]");\n'),
     write(S, '            }\n'),
     write(S, '        }\n'),
     write(S, '        "multiline" => {\n'),
@@ -5974,17 +5988,32 @@ pub struct Template {
 /// Manages built-in and user-defined prompt templates.
 pub struct TemplateManager {
     templates: HashMap<String, Template>,
+    config_path: std::path::PathBuf,
 }
 
 impl TemplateManager {
     pub fn new() -> Self {
-        let mut mgr = Self { templates: HashMap::new() };
+        let config_path = dirs_config_path("templates.json");
+        let mut mgr = Self { templates: HashMap::new(), config_path };
+        // 16 built-in templates
         mgr.add_builtin("explain", "Explain the following code or concept:\\n\\n{input}", "Explain code or concept");
         mgr.add_builtin("review", "Review this code for {focus}:\\n\\n{code}", "Code review with focus area");
         mgr.add_builtin("refactor", "Refactor this code to improve {aspect}:\\n\\n{code}", "Refactor code");
         mgr.add_builtin("test", "Write tests for:\\n\\n{code}", "Generate tests");
         mgr.add_builtin("fix", "Fix the following bug or error:\\n\\n{input}", "Fix a bug");
         mgr.add_builtin("summarize", "Summarize the following:\\n\\n{input}", "Summarize text");
+        mgr.add_builtin("convert", "Convert this {from_lang} code to {to_lang}:\\n\\n{code}", "Convert between languages");
+        mgr.add_builtin("translate", "Translate to {language}:\\n\\n{input}", "Translate text");
+        mgr.add_builtin("simplify", "Simplify this code while preserving behavior:\\n\\n{code}", "Simplify code");
+        mgr.add_builtin("debug", "Debug this issue:\\n\\n{input}", "Debug a problem");
+        mgr.add_builtin("optimize", "Optimize this code for {goal}:\\n\\n{code}", "Optimize code");
+        mgr.add_builtin("regex", "Write a regex pattern that matches: {description}", "Generate regex");
+        mgr.add_builtin("sql", "Write a SQL query to: {description}", "Generate SQL");
+        mgr.add_builtin("bash", "Write a bash command to: {description}", "Generate bash");
+        mgr.add_builtin("git", "Write git commands to: {description}", "Generate git commands");
+        mgr.add_builtin("doc", "Write documentation for:\\n\\n{code}", "Generate docs");
+        // Load user templates from config
+        mgr.load_user_templates();
         mgr
     }
 
@@ -6052,6 +6081,51 @@ impl TemplateManager {
     pub fn get(&self, name: &str) -> Option<&Template> {
         self.templates.get(name)
     }
+
+    /// Load user-defined templates from JSON config file.
+    fn load_user_templates(&mut self) {
+        if let Ok(data) = std::fs::read_to_string(&self.config_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(obj) = json.as_object() {
+                    for (name, val) in obj {
+                        if let Some(tmpl_str) = val.get("template").and_then(|v| v.as_str()) {
+                            let desc = val.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                            self.add(name, tmpl_str, desc);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Save user-defined templates (non-builtins) to JSON config file.
+    pub fn save_user_templates(&self) {
+        let builtins = ["explain","review","refactor","test","fix","summarize",
+                        "convert","translate","simplify","debug","optimize",
+                        "regex","sql","bash","git","doc"];
+        let mut obj = serde_json::Map::new();
+        for (name, tmpl) in &self.templates {
+            if !builtins.contains(&name.as_str()) {
+                obj.insert(name.clone(), serde_json::json!({
+                    "template": tmpl.template,
+                    "description": tmpl.description
+                }));
+            }
+        }
+        if !obj.is_empty() {
+            if let Some(parent) = self.config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&self.config_path,
+                serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_default());
+        }
+    }
+}
+
+/// Get config path under ~/.agent-loop/
+fn dirs_config_path(filename: &str) -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".agent-loop").join(filename)
 }
 ').
 
@@ -6212,6 +6286,53 @@ impl MultilineHandler {
 }
 ').
 
+rust_fragment(spinner, '
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// A simple terminal spinner that shows activity during API calls.
+pub struct Spinner {
+    running: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Spinner {
+    /// Start a spinner with a message.
+    pub fn start(msg: &str) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        let msg = msg.to_string();
+        let handle = std::thread::spawn(move || {
+            let frames = ["|", "/", "-", "\\\\"];
+            let mut i = 0;
+            let start = std::time::Instant::now();
+            while r.load(Ordering::Relaxed) {
+                let elapsed = start.elapsed().as_secs();
+                eprint!("\\r  {} {} ({}s) ", frames[i % frames.len()], msg, elapsed);
+                i += 1;
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+            eprint!("\\r                                                    \\r");
+        });
+        Self { running, handle: Some(handle) }
+    }
+
+    /// Stop the spinner.
+    pub fn stop(mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+}
+').
+
 rust_fragment(main_loop, '
     let backend = create_backend(&config);
     let mut context = ContextManager::new(
@@ -6258,10 +6379,18 @@ rust_fragment(main_loop, '
         config.system_prompt = Some(final_system_prompt);
     }
 
+    // Retry configuration
+    let retry_config = RetryConfig::default();
+
     // Single-prompt non-interactive mode
     if let Some(prompt) = matches.get_one::<String>("prompt") {
         context.add_message("user", prompt);
-        let response = backend.send_message(prompt, context.get_context());
+        let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
+        let spinner = Spinner::start("Thinking...");
+        let response = retry_with_backoff(&retry_config, || {
+            Ok::<_, String>(backend.send_message(prompt, &ctx_snapshot))
+        }).unwrap_or_default();
+        spinner.stop();
         if !response.content.is_empty() {
             println!("{}", response.content);
         }
@@ -6316,7 +6445,12 @@ rust_fragment(main_loop, '
                 let mut iterations = 0;
 
                 loop {
-                    let response = backend.send_message(input, context.get_context());
+                    let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
+                    let spinner = Spinner::start("Thinking...");
+                    let response = retry_with_backoff(&retry_config, || {
+                        Ok::<_, String>(backend.send_message(input, &ctx_snapshot))
+                    }).unwrap_or_default();
+                    spinner.stop();
 
                     if !response.content.is_empty() {
                         println!("\\n{}", response.content);
@@ -6345,7 +6479,10 @@ rust_fragment(main_loop, '
                 }
 
                 if state.show_tokens {
-                    println!("  {}", cost_tracker.format_summary());
+                    println!("  {} | context: ~{} tokens ({} msgs)",
+                        cost_tracker.format_summary(),
+                        context.estimate_tokens(),
+                        context.len());
                 }
             }
             Err(rustyline::error::ReadlineError::Interrupted) |
