@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (14 files) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + export |
+| Rust | `generated/rust/` (14 files) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates + skills + multiline input + history edit/undo |
 
 ### Declarative Infrastructure
 
@@ -70,12 +70,12 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|-------|
 | `py_fragment/2` facts | 82 |
 | `prolog_fragment/2` facts | 33 |
-| `rust_fragment/2` facts | 23 |
+| `rust_fragment/2` facts | 27 |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 687 (590+97 unit + 27 Prolog + 59 Python) |
+| Total tests | 710 (590+120 unit + 27 Prolog + 59 Python) |
 
 ## Backends
 
@@ -712,14 +712,15 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Streaming + token parsing | Y | Y | Complete |
 | Gemini model validation | N | Y | Rust-only |
 | OnceLock schema caching | N | Y | Rust-only |
-| Export (markdown) | Y (4 formats) | Y (markdown) | Partial |
-| Command handlers | 20+ | 15+ | Mostly complete |
+| Export (4 formats) | Y | Y (md/html/json/txt) | Complete |
+| Command handlers | 20+ | 20+ | Complete |
 | Env var expansion in config | Y | Y | Complete |
 | Session resume tracking | Y | Y | Complete |
-| Templates | Y | N | Future |
-| Skills | Y | N | Future |
-| Multiline input | Y | N | Future |
-| Retry logic | Y | N | Future |
+| Templates (6 built-in) | Y (16) | Y (6) | Partial |
+| Skills loader | Y | Y | Complete |
+| Multiline input | Y | Y | Complete |
+| Retry with backoff | Y | Y | Complete |
+| History edit/delete/undo | Y | Y | Complete |
 | proot sandbox | Y | N | Future |
 
 ## License

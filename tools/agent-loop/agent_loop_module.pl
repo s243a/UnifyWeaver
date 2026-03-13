@@ -1893,6 +1893,17 @@ generate_rust_main :-
     %% Export conversation helper (module-level, before handle_command and main)
     write_rust(S, export_conversation),
     nl(S),
+    %% Retry logic with exponential backoff
+    write_rust(S, retry_logic),
+    nl(S),
+    %% Templates and skills
+    write_rust(S, template_manager),
+    nl(S),
+    write_rust(S, skills_loader),
+    nl(S),
+    %% Multiline input handler
+    write_rust(S, multiline_handler),
+    nl(S),
     %% Data-driven command dispatch function (with session support)
     generate_rust_command_dispatch_with_sessions(S),
     write(S, 'fn main() {\n'),
@@ -1981,6 +1992,7 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '    max_iterations: i64,\n'),
     write(S, '    stream: bool,\n'),
     write(S, '    show_tokens: bool,\n'),
+    write(S, '    multiline: bool,\n'),
     write(S, '}\n\n'),
     write(S, 'fn handle_command(\n'),
     write(S, '    input: &str,\n'),
@@ -2081,9 +2093,53 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '            println!("Est. tokens: ~{}", context.estimate_tokens());\n'),
     write(S, '        }\n'),
     write(S, '        "history" => {\n'),
-    write(S, '            for (i, m) in context.get_messages().iter().enumerate() {\n'),
-    write(S, '                let preview = if m.content.len() > 80 { &m.content[..80] } else { &m.content };\n'),
-    write(S, '                println!("[{}] {}: {}", i, m.role, preview.replace(''\\n'', " "));\n'),
+    write(S, '            let limit = _arg.parse::<usize>().unwrap_or(20);\n'),
+    write(S, '            print!("{}", context.format_history(limit));\n'),
+    write(S, '        }\n'),
+    write(S, '        "edit" => {\n'),
+    write(S, '            let parts: Vec<&str> = _arg.splitn(2, '' '').collect();\n'),
+    write(S, '            if let Some(idx) = parts.first().and_then(|s| s.parse::<usize>().ok()) {\n'),
+    write(S, '                if let Some(text) = parts.get(1) {\n'),
+    write(S, '                    if context.edit_message(idx, text) {\n'),
+    write(S, '                        println!("Edited message {}", idx);\n'),
+    write(S, '                    } else {\n'),
+    write(S, '                        println!("Invalid index: {}", idx);\n'),
+    write(S, '                    }\n'),
+    write(S, '                } else {\n'),
+    write(S, '                    if let Some(content) = context.get_full_content(idx) {\n'),
+    write(S, '                        println!("{}", content);\n'),
+    write(S, '                    } else {\n'),
+    write(S, '                        println!("Invalid index: {}", idx);\n'),
+    write(S, '                    }\n'),
+    write(S, '                }\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Usage: /edit <index> [new text]");\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "drop" => {\n'),
+    write(S, '            if _arg.contains(''-'') {\n'),
+    write(S, '                let parts: Vec<&str> = _arg.split(''-'').collect();\n'),
+    write(S, '                if let (Some(s), Some(e)) = (parts.first().and_then(|s| s.parse::<usize>().ok()), parts.get(1).and_then(|s| s.parse::<usize>().ok())) {\n'),
+    write(S, '                    let n = context.delete_range(s, e + 1);\n'),
+    write(S, '                    println!("Dropped {} messages", n);\n'),
+    write(S, '                } else {\n'),
+    write(S, '                    println!("Usage: /drop <N> or /drop <N>-<M>");\n'),
+    write(S, '                }\n'),
+    write(S, '            } else if let Ok(idx) = _arg.parse::<usize>() {\n'),
+    write(S, '                if context.delete_message(idx) {\n'),
+    write(S, '                    println!("Dropped message {}", idx);\n'),
+    write(S, '                } else {\n'),
+    write(S, '                    println!("Invalid index: {}", idx);\n'),
+    write(S, '                }\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Usage: /drop <N> or /drop <N>-<M>");\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "undo" => {\n'),
+    write(S, '            if context.undo() {\n'),
+    write(S, '                println!("Undone. Messages: {}", context.len());\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Nothing to undo.");\n'),
     write(S, '            }\n'),
     write(S, '        }\n'),
     write(S, '        "export" => {\n'),
@@ -2102,6 +2158,37 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '        }\n'),
     write(S, '        "format" => {\n'),
     write(S, '            println!("Output format: plain (markdown rendering not yet implemented)");\n'),
+    write(S, '        }\n'),
+    write(S, '        "template" | "templates" => {\n'),
+    write(S, '            let tmgr = TemplateManager::new();\n'),
+    write(S, '            if _arg.is_empty() || _arg == "list" {\n'),
+    write(S, '                for t in tmgr.list() {\n'),
+    write(S, '                    println!("  @{:<12} {} [{}]", t.name, t.description, t.variables.join(", "));\n'),
+    write(S, '                }\n'),
+    write(S, '            } else if _arg.starts_with("use ") {\n'),
+    write(S, '                let rest = &_arg[4..];\n'),
+    write(S, '                let parts: Vec<&str> = rest.splitn(2, '' '').collect();\n'),
+    write(S, '                let name = parts[0];\n'),
+    write(S, '                let mut vars = std::collections::HashMap::new();\n'),
+    write(S, '                if let Some(args_str) = parts.get(1) {\n'),
+    write(S, '                    for pair in args_str.split('' '') {\n'),
+    write(S, '                        if let Some((k, v)) = pair.split_once(''='') {\n'),
+    write(S, '                            vars.insert(k.to_string(), v.to_string());\n'),
+    write(S, '                        }\n'),
+    write(S, '                    }\n'),
+    write(S, '                }\n'),
+    write(S, '                if let Some(rendered) = tmgr.render(name, &vars) {\n'),
+    write(S, '                    println!("Template rendered:\\n{}", rendered);\n'),
+    write(S, '                } else {\n'),
+    write(S, '                    println!("Unknown template: {}", name);\n'),
+    write(S, '                }\n'),
+    write(S, '            } else {\n'),
+    write(S, '                println!("Usage: /template [list | use <name> key=val ...]");\n'),
+    write(S, '            }\n'),
+    write(S, '        }\n'),
+    write(S, '        "multiline" => {\n'),
+    write(S, '            state.multiline = !state.multiline;\n'),
+    write(S, '            println!("Multiline mode: {}", if state.multiline { "on" } else { "off" });\n'),
     write(S, '        }\n'),
     write(S, '        "search" => {\n'),
     write(S, '            if _arg.is_empty() {\n'),
@@ -4139,6 +4226,7 @@ pub struct ContextManager {
     pub max_chars: i64,
     pub max_words: i64,
     pub context_mode: String,
+    undo_stack: Vec<Vec<Message>>,
 }
 
 impl Default for ContextManager {
@@ -4150,6 +4238,7 @@ impl Default for ContextManager {
             max_chars: 0,
             max_words: 0,
             context_mode: "continue".to_string(),
+            undo_stack: Vec::new(),
         }
     }
 }
@@ -4163,6 +4252,7 @@ impl ContextManager {
             max_chars,
             max_words,
             context_mode: context_mode.to_string(),
+            undo_stack: Vec::new(),
         }
     }
 
@@ -4294,6 +4384,95 @@ impl ContextManager {
             }
             if k > 0 { self.messages.drain(..k); }
         }
+    }
+
+    /// Save current state for undo (max 10 deep).
+    fn save_state(&mut self) {
+        if self.undo_stack.len() >= 10 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(self.messages.clone());
+    }
+
+    /// Edit a message at the given index.
+    pub fn edit_message(&mut self, index: usize, new_content: &str) -> bool {
+        if index >= self.messages.len() { return false; }
+        self.save_state();
+        self.messages[index].content = new_content.to_string();
+        true
+    }
+
+    /// Delete a single message at the given index.
+    pub fn delete_message(&mut self, index: usize) -> bool {
+        if index >= self.messages.len() { return false; }
+        self.save_state();
+        self.messages.remove(index);
+        true
+    }
+
+    /// Delete messages in range [start, end) (exclusive end).
+    pub fn delete_range(&mut self, start: usize, end: usize) -> usize {
+        let end = end.min(self.messages.len());
+        if start >= end { return 0; }
+        self.save_state();
+        let count = end - start;
+        self.messages.drain(start..end);
+        count
+    }
+
+    /// Delete the last N messages.
+    pub fn delete_last(&mut self, n: usize) -> usize {
+        let count = n.min(self.messages.len());
+        if count == 0 { return 0; }
+        self.save_state();
+        let start = self.messages.len() - count;
+        self.messages.drain(start..);
+        count
+    }
+
+    /// Delete all messages after the given index.
+    pub fn truncate_after(&mut self, index: usize) -> usize {
+        if index >= self.messages.len() { return 0; }
+        self.save_state();
+        let count = self.messages.len() - index - 1;
+        self.messages.truncate(index + 1);
+        count
+    }
+
+    /// Undo the last edit/delete operation.
+    pub fn undo(&mut self) -> bool {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.messages = prev;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if undo is available.
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    /// Get full content of a message at index.
+    pub fn get_full_content(&self, index: usize) -> Option<String> {
+        self.messages.get(index).map(|m| m.content.clone())
+    }
+
+    /// Format history for display (last N messages, truncated previews).
+    pub fn format_history(&self, limit: usize) -> String {
+        let start = if self.messages.len() > limit { self.messages.len() - limit } else { 0 };
+        let mut out = String::new();
+        for (i, m) in self.messages[start..].iter().enumerate() {
+            let idx = start + i;
+            let preview = if m.content.len() > 80 {
+                format!("{}...", &m.content[..80])
+            } else {
+                m.content.replace(''\\n'', " ")
+            };
+            out.push_str(&format!("[{}] {}: {} ({} chars)\\n", idx, m.role, preview.replace(''\\n'', " "), m.content.len()));
+        }
+        out
     }
 }
 
@@ -5629,21 +5808,406 @@ pub fn init_config(path: &str) -> std::io::Result<()> {
 ').
 
 rust_fragment(export_conversation, '
-/// Export conversation to a markdown file.
+/// Export conversation, auto-detecting format from file extension.
 fn export_conversation(context: &ContextManager, path: &str) {
-    let mut out = String::new();
-    out.push_str("# Conversation Export\\n\\n");
-    for m in context.get_messages() {
-        let role_header = match m.role.as_str() {
-            "user" => "User",
-            "assistant" => "Assistant",
-            "tool" => "Tool Result",
-            _ => &m.role,
-        };
-        out.push_str(&format!("## {}\\n\\n{}\\n\\n---\\n\\n", role_header, m.content));
-    }
-    if let Err(e) = std::fs::write(path, &out) {
+    let ext = path.rsplit(''.'').next().unwrap_or("md").to_lowercase();
+    let content = match ext.as_str() {
+        "html" | "htm" => export_html(context),
+        "json" => export_json(context),
+        "txt" => export_text(context),
+        _ => export_markdown(context),
+    };
+    if let Err(e) = std::fs::write(path, &content) {
         eprintln!("Export failed: {}", e);
+    }
+}
+
+fn role_label(role: &str) -> &str {
+    match role {
+        "user" => "User",
+        "assistant" => "Assistant",
+        "tool" => "Tool Result",
+        _ => role,
+    }
+}
+
+fn export_markdown(context: &ContextManager) -> String {
+    let mut out = String::from("# Conversation Export\\n\\n");
+    for m in context.get_messages() {
+        out.push_str(&format!("## {}\\n\\n{}\\n\\n---\\n\\n", role_label(&m.role), m.content));
+    }
+    out
+}
+
+fn export_html(context: &ContextManager) -> String {
+    let mut out = String::from("<!DOCTYPE html>\\n<html><head><meta charset=\\"utf-8\\">\\n<title>Conversation Export</title>\\n<style>\\nbody { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }\\n.msg { margin: 10px 0; padding: 12px; border-radius: 8px; }\\n.user { background: #dbeafe; }\\n.assistant { background: #f3f4f6; }\\n.tool { background: #fef3c7; font-family: monospace; font-size: 0.9em; }\\npre { background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; overflow-x: auto; }\\n</style></head><body>\\n<h1>Conversation Export</h1>\\n");
+    for m in context.get_messages() {
+        let css_class = match m.role.as_str() {
+            "user" => "user",
+            "assistant" => "assistant",
+            _ => "tool",
+        };
+        let escaped = m.content
+            .replace(''&'', "&amp;")
+            .replace(''<'', "&lt;")
+            .replace(''>'', "&gt;")
+            .replace(''"'', "&quot;");
+        out.push_str(&format!("<div class=\\"msg {}\\"><strong>{}</strong><br>{}\\n</div>\\n", css_class, role_label(&m.role), escaped));
+    }
+    out.push_str("</body></html>\\n");
+    out
+}
+
+fn export_json(context: &ContextManager) -> String {
+    let messages: Vec<serde_json::Value> = context.get_messages().iter().map(|m| {
+        serde_json::json!({
+            "role": m.role,
+            "content": m.content
+        })
+    }).collect();
+    let doc = serde_json::json!({
+        "exported": chrono_now_iso8601(),
+        "message_count": context.len(),
+        "messages": messages
+    });
+    serde_json::to_string_pretty(&doc).unwrap_or_default()
+}
+
+fn export_text(context: &ContextManager) -> String {
+    let mut out = String::from("Conversation Export\\n");
+    out.push_str(&format!("Messages: {}\\n", context.len()));
+    out.push_str("========================================\\n\\n");
+    for m in context.get_messages() {
+        out.push_str(&format!("{}: {}\\n", role_label(&m.role), m.content));
+        out.push_str("----------------------------------------\\n\\n");
+    }
+    out
+}
+
+fn chrono_now_iso8601() -> String {
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}", dur.as_secs())
+}
+').
+
+rust_fragment(retry_logic, '
+/// Configuration for retry with exponential backoff.
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub base_delay_secs: f64,
+    pub max_delay_secs: f64,
+    pub exponential_base: f64,
+    pub jitter: bool,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay_secs: 1.0,
+            max_delay_secs: 60.0,
+            exponential_base: 2.0,
+            jitter: true,
+        }
+    }
+}
+
+/// Check if an HTTP status code is retryable.
+pub fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+/// Simple pseudo-random jitter based on system time.
+fn jitter_factor() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    0.5 + (nanos as f64 % 1000.0) / 2000.0
+}
+
+/// Retry a fallible operation with exponential backoff.
+pub fn retry_with_backoff<F, T>(config: &RetryConfig, mut f: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, String>,
+{
+    let mut last_err = String::new();
+    for attempt in 1..=config.max_attempts {
+        match f() {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                last_err = e;
+                if attempt == config.max_attempts {
+                    break;
+                }
+                let mut delay = config.base_delay_secs
+                    * config.exponential_base.powi((attempt - 1) as i32);
+                if delay > config.max_delay_secs {
+                    delay = config.max_delay_secs;
+                }
+                if config.jitter {
+                    delay *= jitter_factor();
+                }
+                eprintln!("Retry {}/{} in {:.1}s: {}", attempt, config.max_attempts, delay, last_err);
+                std::thread::sleep(std::time::Duration::from_secs_f64(delay));
+            }
+        }
+    }
+    Err(format!("Failed after {} attempts: {}", config.max_attempts, last_err))
+}
+').
+
+rust_fragment(template_manager, '
+use std::collections::HashMap;
+
+/// A prompt template with variable placeholders.
+#[derive(Debug, Clone)]
+pub struct Template {
+    pub name: String,
+    pub template: String,
+    pub description: String,
+    pub variables: Vec<String>,
+}
+
+/// Manages built-in and user-defined prompt templates.
+pub struct TemplateManager {
+    templates: HashMap<String, Template>,
+}
+
+impl TemplateManager {
+    pub fn new() -> Self {
+        let mut mgr = Self { templates: HashMap::new() };
+        mgr.add_builtin("explain", "Explain the following code or concept:\\n\\n{input}", "Explain code or concept");
+        mgr.add_builtin("review", "Review this code for {focus}:\\n\\n{code}", "Code review with focus area");
+        mgr.add_builtin("refactor", "Refactor this code to improve {aspect}:\\n\\n{code}", "Refactor code");
+        mgr.add_builtin("test", "Write tests for:\\n\\n{code}", "Generate tests");
+        mgr.add_builtin("fix", "Fix the following bug or error:\\n\\n{input}", "Fix a bug");
+        mgr.add_builtin("summarize", "Summarize the following:\\n\\n{input}", "Summarize text");
+        mgr
+    }
+
+    fn add_builtin(&mut self, name: &str, template: &str, description: &str) {
+        let variables = Self::extract_variables(template);
+        self.templates.insert(name.to_string(), Template {
+            name: name.to_string(),
+            template: template.to_string(),
+            description: description.to_string(),
+            variables,
+        });
+    }
+
+    fn extract_variables(template: &str) -> Vec<String> {
+        let mut vars = Vec::new();
+        let mut i = 0;
+        let bytes = template.as_bytes();
+        while i < bytes.len() {
+            if bytes[i] == b''{'' {
+                if let Some(end) = template[i+1..].find(''}'') {
+                    let var = &template[i+1..i+1+end];
+                    if var.chars().all(|c| c.is_alphanumeric() || c == ''_'') {
+                        if !vars.contains(&var.to_string()) {
+                            vars.push(var.to_string());
+                        }
+                    }
+                    i += end + 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        vars
+    }
+
+    /// Render a template with provided variables.
+    pub fn render(&self, name: &str, vars: &HashMap<String, String>) -> Option<String> {
+        let tmpl = self.templates.get(name)?;
+        let mut result = tmpl.template.clone();
+        for (k, v) in vars {
+            result = result.replace(&format!("{{{}}}", k), v);
+        }
+        Some(result)
+    }
+
+    /// List all available templates.
+    pub fn list(&self) -> Vec<&Template> {
+        let mut templates: Vec<_> = self.templates.values().collect();
+        templates.sort_by_key(|t| &t.name);
+        templates
+    }
+
+    /// Add a user-defined template.
+    pub fn add(&mut self, name: &str, template: &str, description: &str) {
+        let variables = Self::extract_variables(template);
+        self.templates.insert(name.to_string(), Template {
+            name: name.to_string(),
+            template: template.to_string(),
+            description: description.to_string(),
+            variables,
+        });
+    }
+
+    /// Get a template by name.
+    pub fn get(&self, name: &str) -> Option<&Template> {
+        self.templates.get(name)
+    }
+}
+').
+
+rust_fragment(skills_loader, '
+/// Load an agent.md file as a string.
+pub fn load_agent_md(path: &str) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// Load multiple skill files, returning their contents.
+pub fn load_skills(paths: &[String]) -> Vec<String> {
+    paths.iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .collect()
+}
+
+/// Build the final system prompt from agent.md, skills, and base prompt.
+pub fn build_system_prompt(agent_md: Option<&str>, skills: &[String], base: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if let Some(md) = agent_md {
+        parts.push(md.to_string());
+    }
+    if !skills.is_empty() {
+        parts.push("## Skills\\n".to_string());
+        for skill in skills {
+            parts.push(format!("---\\n{}\\n", skill));
+        }
+    }
+    if let Some(b) = base {
+        parts.push(b.to_string());
+    }
+    parts.join("\\n\\n")
+}
+').
+
+rust_fragment(multiline_handler, '
+/// Handles multi-line input detection and continuation.
+pub struct MultilineHandler {
+    pub explicit_mode: bool,
+}
+
+impl MultilineHandler {
+    pub fn new() -> Self {
+        Self { explicit_mode: false }
+    }
+
+    /// Check if a line needs continuation (triggers multi-line mode).
+    pub fn needs_continuation(line: &str) -> bool {
+        let trimmed = line.trim();
+        // Triple backticks
+        if trimmed.starts_with("```") && !trimmed[3..].contains("```") {
+            return true;
+        }
+        // Heredoc
+        if trimmed.starts_with("<<<") {
+            return true;
+        }
+        // Backslash continuation
+        if trimmed.ends_with(''\\\\'') {
+            return true;
+        }
+        // Unbalanced brackets
+        let mut depth = 0i32;
+        for ch in trimmed.chars() {
+            match ch {
+                ''{'' | ''['' | ''('' => depth += 1,
+                ''}'' | '']'' | '')'' => depth -= 1,
+                _ => {}
+            }
+        }
+        depth > 0
+    }
+
+    /// Read lines until the trigger condition is satisfied.
+    pub fn read_until_complete(first_line: &str, rl: &mut rustyline::DefaultEditor) -> String {
+        let mut lines = vec![first_line.to_string()];
+        let trimmed = first_line.trim();
+
+        if trimmed.starts_with("```") {
+            // Read until closing backticks
+            loop {
+                match rl.readline("... ") {
+                    Ok(line) => {
+                        let done = line.trim() == "```";
+                        lines.push(line);
+                        if done { break; }
+                    }
+                    Err(_) => break,
+                }
+            }
+        } else if trimmed.starts_with("<<<") {
+            // Heredoc: read until marker
+            let marker = trimmed[3..].trim().to_string();
+            let marker = if marker.is_empty() { "EOF".to_string() } else { marker };
+            loop {
+                match rl.readline("... ") {
+                    Ok(line) => {
+                        if line.trim() == marker { break; }
+                        lines.push(line);
+                    }
+                    Err(_) => break,
+                }
+            }
+        } else if trimmed.ends_with(''\\\\'') {
+            // Backslash continuation
+            if let Some(last) = lines.last_mut() {
+                *last = last.trim_end_matches(''\\\\'').to_string();
+            }
+            loop {
+                match rl.readline("... ") {
+                    Ok(line) => {
+                        if line.trim().ends_with(''\\\\'') {
+                            lines.push(line.trim_end_matches(''\\\\'').to_string());
+                        } else {
+                            lines.push(line);
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        } else {
+            // Bracket balancing
+            loop {
+                let combined = lines.join("\\n");
+                let mut depth = 0i32;
+                for ch in combined.chars() {
+                    match ch {
+                        ''{'' | ''['' | ''('' => depth += 1,
+                        ''}'' | '']'' | '')'' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                if depth <= 0 { break; }
+                match rl.readline("... ") {
+                    Ok(line) => lines.push(line),
+                    Err(_) => break,
+                }
+            }
+        }
+        lines.join("\\n")
+    }
+
+    /// Read lines in explicit multi-line mode until empty line or EOF.
+    pub fn read_explicit(&self, rl: &mut rustyline::DefaultEditor) -> String {
+        let mut lines = Vec::new();
+        loop {
+            match rl.readline("... ") {
+                Ok(line) => {
+                    if line.trim().is_empty() && !lines.is_empty() { break; }
+                    lines.push(line);
+                }
+                Err(_) => break,
+            }
+        }
+        lines.join("\\n")
     }
 }
 ').
@@ -5663,6 +6227,7 @@ rust_fragment(main_loop, '
         max_iterations: config.max_iterations,
         stream: config.stream,
         show_tokens: config.show_tokens,
+        multiline: false,
     };
 
     // Session resume tracking
@@ -5681,14 +6246,16 @@ rust_fragment(main_loop, '
         }
     }
 
-    // Load system prompt from agent_md if set
-    if let Some(ref md_path) = config.agent_md {
-        if let Ok(content) = std::fs::read_to_string(md_path) {
-            let sys = config.system_prompt.clone().unwrap_or_default();
-            // Store combined system prompt (agent_md takes precedence)
-            // Note: system_prompt is sent via build_request_body for API backends
-            let _ = format!("{}\\n\\n{}", content, sys);
-        }
+    // Build system prompt from agent_md + skills + base prompt
+    let agent_md_content = config.agent_md.as_deref().and_then(load_agent_md);
+    let skill_contents = load_skills(&config.skills);
+    let final_system_prompt = build_system_prompt(
+        agent_md_content.as_deref(),
+        &skill_contents,
+        config.system_prompt.as_deref(),
+    );
+    if !final_system_prompt.is_empty() {
+        config.system_prompt = Some(final_system_prompt);
     }
 
     // Single-prompt non-interactive mode
@@ -5722,6 +6289,19 @@ rust_fragment(main_loop, '
         match readline {
             Ok(line) => {
                 let input = line.trim();
+                if input.is_empty() { continue; }
+
+                // Multi-line input handling
+                let input = if state.multiline {
+                    let ml = MultilineHandler::new();
+                    let full = ml.read_explicit(&mut rl);
+                    format!("{}\\n{}", input, full)
+                } else if MultilineHandler::needs_continuation(input) {
+                    MultilineHandler::read_until_complete(input, &mut rl)
+                } else {
+                    input.to_string()
+                };
+                let input = input.trim();
                 if input.is_empty() { continue; }
                 let _ = rl.add_history_entry(input);
 

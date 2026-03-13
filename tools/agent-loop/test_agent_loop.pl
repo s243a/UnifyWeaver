@@ -219,6 +219,16 @@ run_tests :-
     test_rust_runtime_state,
     test_rust_active_session,
     test_rust_phase8_generation,
+    %% Phase 9
+    test_rust_history_edit,
+    test_rust_history_display,
+    test_rust_export_formats,
+    test_rust_retry_logic,
+    test_rust_templates,
+    test_rust_skills_loader,
+    test_rust_multiline,
+    test_rust_tool_e2e,
+    test_rust_phase9_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3026,7 +3036,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 23),
+    assert_eq('Rust fragment count', RFCount, 27),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -4060,8 +4070,8 @@ test_rust_command_handlers :-
     assert_true('/tokens command shows context info', (
         sub_string(MainContent, _, _, _, "context.estimate_tokens()")
     )),
-    assert_true('/history command shows messages', (
-        sub_string(MainContent, _, _, _, "context.get_messages().iter().enumerate()")
+    assert_true('/history command uses format_history', (
+        sub_string(MainContent, _, _, _, "context.format_history(")
     )).
 
 test_rust_session_update :-
@@ -4130,4 +4140,125 @@ test_rust_phase8_generation :-
     read_file_to_string(MainPath8, MainContent8, []),
     assert_true('export command wired in handle_command', (
         sub_string(MainContent8, _, _, _, "export_conversation(context, &path)")
+    )).
+
+%% =========================================================================
+%% Phase 9 Tests — History, multi-format export, retry, templates, skills,
+%%                  multiline, tool E2E
+%% =========================================================================
+
+test_rust_history_edit :-
+    format("~nRust history edit/delete/undo:~n"),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('edit_message method exists', (
+        sub_string(ContextContent, _, _, _, "fn edit_message")
+    )),
+    assert_true('delete_message method exists', (
+        sub_string(ContextContent, _, _, _, "fn delete_message")
+    )),
+    assert_true('undo method exists', (
+        sub_string(ContextContent, _, _, _, "fn undo(")
+    )).
+
+test_rust_history_display :-
+    format("~nRust history display:~n"),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('format_history method exists', (
+        sub_string(ContextContent, _, _, _, "fn format_history")
+    )),
+    assert_true('truncate_after method exists', (
+        sub_string(ContextContent, _, _, _, "fn truncate_after")
+    )).
+
+test_rust_export_formats :-
+    format("~nRust export formats:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('export_html function exists', (
+        sub_string(MainContent, _, _, _, "fn export_html")
+    )),
+    assert_true('export_json function exists', (
+        sub_string(MainContent, _, _, _, "fn export_json")
+    )),
+    assert_true('export_text function exists', (
+        sub_string(MainContent, _, _, _, "fn export_text")
+    )).
+
+test_rust_retry_logic :-
+    format("~nRust retry logic:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('RetryConfig struct exists', (
+        sub_string(MainContent, _, _, _, "struct RetryConfig")
+    )),
+    assert_true('retry_with_backoff function exists', (
+        sub_string(MainContent, _, _, _, "fn retry_with_backoff")
+    )),
+    assert_true('is_retryable_status function exists', (
+        sub_string(MainContent, _, _, _, "fn is_retryable_status")
+    )).
+
+test_rust_templates :-
+    format("~nRust templates:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('TemplateManager struct exists', (
+        sub_string(MainContent, _, _, _, "struct TemplateManager")
+    )),
+    assert_true('render method exists', (
+        sub_string(MainContent, _, _, _, "fn render(&self, name: &str")
+    )),
+    assert_true('built-in templates include explain', (
+        sub_string(MainContent, _, _, _, "add_builtin(\"explain\"")
+    )).
+
+test_rust_skills_loader :-
+    format("~nRust skills loader:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('load_agent_md function exists', (
+        sub_string(MainContent, _, _, _, "fn load_agent_md")
+    )),
+    assert_true('build_system_prompt function exists', (
+        sub_string(MainContent, _, _, _, "fn build_system_prompt")
+    )).
+
+test_rust_multiline :-
+    format("~nRust multiline input:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('needs_continuation function exists', (
+        sub_string(MainContent, _, _, _, "fn needs_continuation")
+    )),
+    assert_true('read_until_complete function exists', (
+        sub_string(MainContent, _, _, _, "fn read_until_complete")
+    )).
+
+test_rust_tool_e2e :-
+    format("~nRust tool call E2E:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('extract_tool_calls_openai exists', (
+        sub_string(BackendsContent, _, _, _, "extract_tool_calls_openai")
+    )),
+    assert_true('extract_tool_calls_anthropic exists', (
+        sub_string(BackendsContent, _, _, _, "extract_tool_calls_anthropic")
+    )),
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('add_tool_result method exists', (
+        sub_string(ContextContent, _, _, _, "fn add_tool_result")
+    )).
+
+test_rust_phase9_generation :-
+    format("~nRust phase 9 generation:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath9),
+    read_file_to_string(MainPath9, MainContent9, []),
+    assert_true('skills wired at startup via build_system_prompt', (
+        sub_string(MainContent9, _, _, _, "build_system_prompt(")
+    )),
+    assert_true('multiline handler wired in main loop', (
+        sub_string(MainContent9, _, _, _, "MultilineHandler::needs_continuation")
     )).
