@@ -18,6 +18,7 @@
     find_last_is_expression/2,
     translate_fold_expr/4,
     analyze_clause_structure/3,
+    extract_step_info/4,           % +RecClauses, -InputVar, -Step, -Direction
     test_linear_recursion/0        % Test predicate
 ]).
 
@@ -55,8 +56,11 @@ compile_linear_recursion(Pred/Arity, Options, Code) :-
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
 
-    % Determine memoization strategy based on constraints
-    (   member(unique(false), AllOptions) ->
+    % Determine memoization strategy based on constraints and options
+    (   member(memo(false), AllOptions) ->
+        format('  Applying memo(false): Memo disabled~n', []),
+        MemoEnabled = false
+    ;   member(unique(false), AllOptions) ->
         format('  Applying unique(false): Memo disabled~n', []),
         MemoEnabled = false
     ;   MemoEnabled = true
@@ -179,6 +183,45 @@ find_recursive_call((A, _B), RecCall) :-
     find_recursive_call(A, RecCall), !.
 find_recursive_call((_A, B), RecCall) :-
     find_recursive_call(B, RecCall).
+
+%% extract_step_info(+RecClauses, -InputVar, -Step, -Direction)
+%  Extract the recursion step from the recursive clause.
+%  Finds the `is` expression that computes the recursive call's input
+%  from the head's input, and determines step size and direction.
+%  Example: factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), ...
+%    → InputVar = N, Step = 1, Direction = down
+extract_step_info(RecClauses, InputVar, Step, Direction) :-
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [Pred, InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [Pred, RecInputVar, _RecOutputVar],
+    find_step_is_expression(RBody, RecInputVar, InputVar, Step, Direction).
+
+%% find_step_is_expression(+Body, +RecInputVar, +InputVar, -Step, -Direction)
+%  Walk the clause body to find an `is` expression where LHS == RecInputVar
+%  and RHS is InputVar +/- some integer constant.
+find_step_is_expression((A, B), RecInputVar, InputVar, Step, Direction) :- !,
+    (   find_step_is_expression(A, RecInputVar, InputVar, Step, Direction)
+    ->  true
+    ;   find_step_is_expression(B, RecInputVar, InputVar, Step, Direction)
+    ).
+find_step_is_expression(LHS is RHS, RecInputVar, InputVar, Step, Direction) :-
+    LHS == RecInputVar,
+    extract_step_from_expr(RHS, InputVar, Step, Direction).
+
+%% extract_step_from_expr(+Expr, +InputVar, -AbsStep, -Direction)
+%  Parse the arithmetic expression to determine step size and direction.
+%  SWI-Prolog stores N - K as N + (-K) in the clause database,
+%  so we handle both representations.
+%  N - K (K>0)  → Step = K,    Direction = down
+%  N + K (K>0)  → Step = K,    Direction = up
+%  N + K (K<0)  → Step = |K|,  Direction = down
+extract_step_from_expr(A - B, InputVar, Step, down) :-
+    A == InputVar, integer(B), B > 0, !, Step = B.
+extract_step_from_expr(A + B, InputVar, Step, up) :-
+    A == InputVar, integer(B), B > 0, !, Step = B.
+extract_step_from_expr(A + B, InputVar, Step, down) :-
+    A == InputVar, integer(B), B < 0, !, Step is abs(B).
 
 %% ============================================
 %% FOLD-BASED CODE GENERATION (Phase 3 & 4)

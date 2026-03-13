@@ -951,6 +951,25 @@ direct_translate_expr_to_r(Expr, 'input') :- var(Expr), !.
 :- use_module('../core/advanced/linear_recursion').
 :- multifile linear_recursion:compile_linear_pattern/8.
 
+%% generate_r_seq(+BaseInput, +Step, +Direction, -SeqExpr)
+%  Generate the R seq() expression for a loop range based on extracted step info.
+%  The loop iterates over values the input variable takes, excluding the base case.
+%  Direction=down: recursion counts down from n toward base, loop mirrors that.
+%  Direction=up:   recursion counts up from base toward n, loop mirrors that.
+generate_r_seq(BaseInput, Step, down, SeqExpr) :- !,
+    LoopEnd is BaseInput + Step,
+    (   Step =:= 1 ->
+        format(string(SeqExpr), 'seq(n, ~w)', [LoopEnd])
+    ;   NegStep is -Step,
+        format(string(SeqExpr), 'seq(n, ~w, by = ~w)', [LoopEnd, NegStep])
+    ).
+generate_r_seq(BaseInput, Step, up, SeqExpr) :-
+    LoopStart is BaseInput + Step,
+    (   Step =:= 1 ->
+        format(string(SeqExpr), 'seq(~w, n)', [LoopStart])
+    ;   format(string(SeqExpr), 'seq(~w, n, by = ~w)', [LoopStart, Step])
+    ).
+
 linear_recursion:compile_linear_pattern(r, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode) :-
     (   Arity =:= 2 ->
         linear_fold_based_r(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RCode)
@@ -970,6 +989,50 @@ linear_fold_based_r(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy,
     ).
 
 %% linear_numeric_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
+%  When memo disabled, generate a simple for-loop instead of Reduce + memo
+linear_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, false, _MemoStrategy, RCode) :-
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(linear_recursion:is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
+
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [_Pred, InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [_RecPred, _RecInput, AccVar],
+    find_last_is_expression(RBody, _ is ActualFoldExpr),
+
+    translate_fold_expr(ActualFoldExpr, InputVar, AccVar, RFoldOp),
+    % In the loop, i is 'current' and result is 'acc'
+    % RFoldOp uses 'current' and 'acc' — replace with 'i' and 'result'
+    atomic_list_concat(Parts1, 'current', RFoldOp),
+    atomic_list_concat(Parts1, 'i', RLoopOp1),
+    atomic_list_concat(Parts2, 'acc', RLoopOp1),
+    atomic_list_concat(Parts2, 'result', RLoopOp),
+
+    % Extract loop range from the recursion step — fail if not derivable
+    extract_step_info(RecClauses, _, Step, Direction),
+    generate_r_seq(BaseInput, Step, Direction, SeqExpr),
+
+    format(string(RCode), '# ~w - linear recursion (numeric, loop-based, R)
+
+~w <- function(n) {
+    if (n == ~w) return(~w)
+    result <- ~w
+    for (i in ~w) {
+        result <- ~w
+    }
+    return(result)
+}
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) >= 1) cat(~w(as.integer(args[1])), "\\n")
+}
+', [PredStr, PredStr, BaseInput, BaseOutput, BaseOutput, SeqExpr, RLoopOp, PredStr]).
+
+%  When memo enabled, use Reduce + memoization
 linear_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-
     atom_string(Pred, PredStr),
     functor(Head, Pred, 2),
@@ -983,6 +1046,10 @@ linear_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, Me
     find_last_is_expression(RBody, _ is ActualFoldExpr),
 
     translate_fold_expr(ActualFoldExpr, InputVar, AccVar, RFoldOp),
+
+    % Extract loop range from the recursion step — fail if not derivable
+    extract_step_info(RecClauses, _, Step, Direction),
+    generate_r_seq(BaseInput, Step, Direction, SeqExpr),
 
     (   MemoEnabled = true ->
         format(string(MemoDecl), '# Memoization table (~w strategy)~n~w_memo <- new.env(hash=TRUE, parent=emptyenv())~n', [MemoStrategy, PredStr]),
@@ -1014,7 +1081,7 @@ linear_numeric_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, Me
     }
 
     # Recursive case using Reduce
-    range_vals <- seq(n, 1, by=-1)
+    range_vals <- ~w
     result <- Reduce(~w_op, range_vals, init=~w)
 
 ~w
@@ -1030,7 +1097,7 @@ if (!interactive()) {
     args <- commandArgs(TRUE)
     if (length(args) >= 1) cat(~w(as.integer(args[1])), "\\n")
 }
-', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, PredStr, BaseOutput, MemoStoreCode, PredStr]).
+', [PredStr, MemoDecl, PredStr, RFoldOp, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, SeqExpr, PredStr, BaseOutput, MemoStoreCode, PredStr]).
 
 %% linear_list_fold_r(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -RCode)
 linear_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, RCode) :-

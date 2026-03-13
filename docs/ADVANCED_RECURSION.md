@@ -14,7 +14,7 @@ The `advanced/` module extends UnifyWeaver's basic recursion support with sophis
 
 **Priority-Based Compilation**: Try simpler patterns before complex ones
 1. **Tail recursion** → Compile to iterative loops
-2. **Linear recursion** → Compile with memoization (handles 1+ independent calls)
+2. **Linear recursion** → Compile to loop (when `memo(false)`) or with memoization (handles 1+ independent calls)
 3. **Multi-call linear** → Multiple independent recursive calls (e.g., fibonacci)
 4. **Direct multi-call** → Direct recursive calls with memoization
 5. **Tree recursion** → Compile structural decomposition patterns
@@ -94,7 +94,9 @@ fib(N, F) :-
     F is F1 + F2.     % Aggregation
 ```
 
-**Compilation Strategy**: Memoization with associative arrays
+**Compilation Strategy**: Loop (when `memo(false)` and step is derivable) or memoization with associative arrays (default)
+
+**Step extraction**: The compiler analyzes the recursion step expression (e.g., `N1 is N - 1`) to derive the loop range. If the step is not a simple additive constant (e.g., `N1 is N * 2`), the loop-based path fails and the compiler backtracks to try other strategies. No silent assumptions are made.
 
 **Detected by**: `pattern_matchers:is_linear_recursive_streamable/1`
 
@@ -193,8 +195,12 @@ compile_linear_recursion(Pred/Arity, Options, BashCode).
 compile_mutual_recursion(Predicates, Options, BashCode).
 ```
 
-**Options Format:** List of `Key=Value` pairs
-- Example: `[unique(true), ordered=false, output_lang=bash]`
+**Options Format:** List of `Key(Value)` terms
+- Example: `[target(r), memo(false), unique(true)]`
+
+**Key Options:**
+- `target(Target)` — Target language (`bash`, `r`, `lua`, `c`, `haskell`, `java`, `elixir`)
+- `memo(false)` — Disable memoization; for linear recursion on the R target, generates a simple `for` loop instead of `Reduce()` with memo tables. The loop range is derived from the recursion step expression (e.g., `N1 is N - 1` → `seq(n, 1)`). Fails cleanly if the step cannot be derived.
 
 **Constraint Integration:**
 - Compilers query `constraint_analyzer:get_constraints/2` for predicate constraints.
@@ -804,11 +810,12 @@ assertz(user:(is_even(N) :- ...)).
 - ✅ Fastest for list processing
 - ❌ Requires accumulator pattern
 
-**Linear recursion** (memoization):
+**Linear recursion** (loop or memoization):
 - ✅ Works for 1+ recursive calls with independence
-- ✅ Caches results for reuse
+- ✅ With `memo(false)`: compiles to `for` loop — O(1) space, no overhead
+- ✅ With memoization (default): caches results for reuse
 - ✅ Excellent for fibonacci-style patterns with multiple calls
-- ❌ O(n) space for memo table
+- ❌ Memo path: O(n) space for memo table
 
 **When to use which:**
 - List processing → Tail recursion
@@ -832,9 +839,9 @@ assertz(user:(is_even(N) :- ...)).
 - Mutual recursion groups
 
 **Not worth it for:**
-- One-time queries
+- One-time queries — use `memo(false)` to generate a loop instead
 - Monotonically increasing inputs
-- Very cheap predicates
+- Very cheap predicates (e.g., factorial — no repeated subproblems)
 
 ---
 
@@ -846,4 +853,4 @@ assertz(user:(is_even(N) :- ...)).
 
 ---
 
-*Last updated: 2026-03-11*
+*Last updated: 2026-03-12*
