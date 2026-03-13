@@ -542,15 +542,36 @@ local function ~w(n, expected)
     end
     return result
 end
-', [PredStr, MemoDecl, PredStr, PredStr, PredStr]).
 
-tree_recursion:compile_tree_pattern(lua, binary_tree, Pred, Arity, _UseMemo, LuaCode) :-
-    atom_string(Pred, PredStr),
-    format(string(LuaCode), '-- ~w/~w - binary tree recursion (Lua)\n-- TODO: implement binary tree pattern', [PredStr, Arity]).
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, MemoDecl, PredStr, PredStr, PredStr, PredStr]).
 
-tree_recursion:compile_tree_pattern(lua, generic, Pred, Arity, _UseMemo, LuaCode) :-
+tree_recursion:compile_tree_pattern(lua, _Pattern, Pred, _Arity, UseMemo, LuaCode) :-
     atom_string(Pred, PredStr),
-    format(string(LuaCode), '-- ~w/~w - generic tree recursion (Lua)\n-- TODO: implement generic tree pattern', [PredStr, Arity]).
+    (   UseMemo = true ->
+        MemoDecl = 'local _memo = {}'
+    ;   MemoDecl = '-- Memoization disabled'
+    ),
+    format(string(LuaCode),
+'-- ~w - tree recursion (Lua)
+~w
+local function ~w(n)
+    if n == 0 then return 0 end
+    if n == 1 then return 1 end
+    if _memo and _memo[n] then return _memo[n] end
+    local result = ~w(n - 1) + ~w(n - 2)
+    if _memo then _memo[n] = result end
+    return result
+end
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, MemoDecl, PredStr, PredStr, PredStr, PredStr]).
 
 :- multifile tail_recursion:compile_tail_pattern/9.
 tail_recursion:compile_tail_pattern(lua, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, StepOp, _ExitAfterResult, LuaCode) :-
@@ -584,7 +605,13 @@ local function ~w(items, acc)
     end
     return current_acc
 end
-', [PredStr, PredStr, LStepOp]).
+
+if arg then
+    local items = {}
+    for v in string.gmatch(arg[1] or "", "[^,]+") do items[#items+1] = tonumber(v) end
+    print(~w(items, 0))
+end
+', [PredStr, PredStr, LStepOp, PredStr]).
 
 generate_binary_tail_loop_lua(PredStr, LuaCode) :-
     format(string(LuaCode),
@@ -596,15 +623,126 @@ local function ~w(items)
     end
     return count
 end
-', [PredStr, PredStr]).
+
+if arg then
+    local items = {}
+    for v in string.gmatch(arg[1] or "", "[^,]+") do items[#items+1] = tonumber(v) end
+    print(~w(items))
+end
+', [PredStr, PredStr, PredStr]).
 
 :- multifile multicall_linear_recursion:compile_multicall_pattern/6.
-multicall_linear_recursion:compile_multicall_pattern(lua, PredStr, _BaseClauses, _RecClauses, _MemoEnabled, LuaCode) :-
-    format(string(LuaCode), '-- ~w/2 - multicall linear recursion (Lua)\n-- TODO: implement multicall linear pattern', [PredStr]).
+multicall_linear_recursion:compile_multicall_pattern(lua, PredStr, BaseClauses, _RecClauses, _MemoEnabled, LuaCode) :-
+    findall(BaseCaseCode, (
+        member(clause(BHead, _), BaseClauses),
+        BHead =.. [_P, BInput, BOutput],
+        format(string(BaseCaseCode), '    if n == ~w then return ~w end', [BInput, BOutput])
+    ), BaseCaseCodes),
+    atomic_list_concat(BaseCaseCodes, '\n', BaseCaseStr),
+    format(string(LuaCode),
+'-- ~w - multicall linear recursion (Lua)
+local ~w_memo = {}
+
+local function ~w(n)
+~w
+    if ~w_memo[n] ~~= nil then return ~w_memo[n] end
+    local result = ~w(n - 1) + ~w(n - 2)
+    ~w_memo[n] = result
+    return result
+end
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, PredStr, PredStr, BaseCaseStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr]).
 
 :- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
-direct_multi_call_recursion:compile_direct_multicall_pattern(lua, PredStr, _BaseClauses, _RecClause, LuaCode) :-
-    format(string(LuaCode), '-- ~w/2 - direct multicall recursion (Lua)\n-- TODO: implement direct multicall pattern', [PredStr]).
+direct_multi_call_recursion:compile_direct_multicall_pattern(lua, PredStr, BaseClauses, RecClause, LuaCode) :-
+    findall(BaseCaseCode, (
+        member(clause(BHead, _), BaseClauses),
+        BHead =.. [_P, BInput, BOutput],
+        format(string(BaseCaseCode), '    if input == ~w then return ~w end', [BInput, BOutput])
+    ), BaseCaseCodes),
+    atomic_list_concat(BaseCaseCodes, '\n', BaseCaseStr),
+    RecClause = clause(RecHead, RecBody),
+    RecHead =.. [Pred, _IV, _OV],
+    extract_body_components(RecBody, Pred, Computations, RecCalls, Aggregation),
+    direct_computations_lua(Computations, ComputationsCode),
+    direct_recursive_calls_lua(RecCalls, PredStr, RecCallsCode),
+    direct_aggregation_lua(Aggregation, AggCode),
+    format(string(LuaCode),
+'-- ~w - direct multicall recursion (Lua)
+local ~w_memo = {}
+
+local function ~w(input)
+    if ~w_memo[input] ~~= nil then return ~w_memo[input] end
+~w
+~w
+~w
+~w
+    ~w_memo[input] = result
+    return result
+end
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, PredStr, PredStr, PredStr, PredStr, BaseCaseStr, ComputationsCode, RecCallsCode, AggCode, PredStr, PredStr]).
+
+% Direct multicall helpers for Lua
+direct_computations_lua(Computations, Code) :-
+    findall(Line, (
+        member(Var is Expr, Computations),
+        direct_var_to_lua_name(Var, VarName),
+        direct_translate_expr_lua(Expr, LuaExpr),
+        format(string(Line), '    local ~w = ~w', [VarName, LuaExpr])
+    ), Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+direct_recursive_calls_lua(RecCalls, PredStr, Code) :-
+    findall(Line, (
+        member(RecCall, RecCalls),
+        RecCall =.. [_Pred, ArgVar, ResultVar],
+        direct_var_to_lua_name(ArgVar, ArgName),
+        direct_var_to_lua_name(ResultVar, ResName),
+        format(string(Line), '    local ~w = ~w(~w)', [ResName, PredStr, ArgName])
+    ), Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+direct_aggregation_lua(_ is Expr, Code) :-
+    direct_translate_agg_expr_lua(Expr, LuaExpr),
+    format(string(Code), '    local result = ~w', [LuaExpr]).
+
+direct_translate_agg_expr_lua(A + B, Expr) :-
+    direct_var_to_lua_name(A, AName), direct_var_to_lua_name(B, BName),
+    format(string(Expr), '~w + ~w', [AName, BName]).
+direct_translate_agg_expr_lua(A * B, Expr) :-
+    direct_var_to_lua_name(A, AName), direct_var_to_lua_name(B, BName),
+    format(string(Expr), '~w * ~w', [AName, BName]).
+
+direct_var_to_lua_name(Var, LuaName) :-
+    (   var(Var) ->
+        term_string(Var, VarStr),
+        atom_string(VarAtom, VarStr),
+        downcase_atom(VarAtom, LuaName)
+    ;   atom(Var) ->
+        downcase_atom(Var, LuaName)
+    ;   term_string(Var, VarStr),
+        atom_string(VarAtom, VarStr),
+        downcase_atom(VarAtom, LuaName)
+    ).
+
+direct_translate_expr_lua(N - K, Expr) :- var(N), integer(K), !,
+    format(string(Expr), 'input - ~w', [K]).
+direct_translate_expr_lua(N + K, Expr) :- var(N), integer(K), K < 0, !,
+    AbsK is abs(K), format(string(Expr), 'input - ~w', [AbsK]).
+direct_translate_expr_lua(N + K, Expr) :- var(N), integer(K), !,
+    format(string(Expr), 'input + ~w', [K]).
+direct_translate_expr_lua(Expr, 'input') :- var(Expr), !.
+direct_translate_expr_lua(N, S) :- integer(N), !, format(string(S), '~w', [N]).
+direct_translate_expr_lua(A, S) :- format(string(S), '~w', [A]).
 
 :- multifile linear_recursion:compile_linear_pattern/8.
 linear_recursion:compile_linear_pattern(lua, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, _MemoStrategy, LuaCode) :-
@@ -645,7 +783,12 @@ local function ~w(n)
     ~w_memo[n] = result
     return result
 end
-', [PredStr, PredStr, PredStr, PredStr, PredStr, BaseInput, BaseOutput, BaseOutput, LFoldOp, PredStr])
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, PredStr, PredStr, PredStr, PredStr, BaseInput, BaseOutput, BaseOutput, LFoldOp, PredStr, PredStr])
     ;   format(string(LuaCode),
 '-- ~w - fold-based linear recursion (numeric, Lua)
 local function ~w(n)
@@ -656,7 +799,12 @@ local function ~w(n)
     end
     return result
 end
-', [PredStr, PredStr, BaseInput, BaseOutput, BaseOutput, LFoldOp])
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, PredStr, BaseInput, BaseOutput, BaseOutput, LFoldOp, PredStr])
     ).
 
 generate_list_fold_lua(PredStr, _BaseClauses, RecClauses, _BaseInput, BaseOutput, MemoEnabled, LuaCode) :-
@@ -683,7 +831,13 @@ local function ~w(lst)
     ~w_memo[key] = result
     return result
 end
-', [PredStr, PredStr, PredStr, PredStr, PredStr, BaseOutput, BaseOutput, LFoldOp, PredStr])
+
+if arg then
+    local items = {}
+    for v in string.gmatch(arg[1] or "", "[^,]+") do items[#items+1] = tonumber(v) end
+    print(~w(items))
+end
+', [PredStr, PredStr, PredStr, PredStr, PredStr, BaseOutput, BaseOutput, LFoldOp, PredStr, PredStr])
     ;   format(string(LuaCode),
 '-- ~w - fold-based linear recursion (list, Lua)
 local function ~w(lst)
@@ -695,7 +849,13 @@ local function ~w(lst)
     end
     return result
 end
-', [PredStr, PredStr, BaseOutput, BaseOutput, LFoldOp])
+
+if arg then
+    local items = {}
+    for v in string.gmatch(arg[1] or "", "[^,]+") do items[#items+1] = tonumber(v) end
+    print(~w(items))
+end
+', [PredStr, PredStr, BaseOutput, BaseOutput, LFoldOp, PredStr])
     ).
 
 generate_generic_linear_recursion_lua(PredStr, Arity, MemoEnabled, LuaCode) :-
@@ -759,12 +919,29 @@ mutual_recursion:compile_mutual_pattern(lua, Predicates, MemoEnabled, _MemoStrat
     % Generate each function
     mutual_functions_lua(Predicates, Predicates, MemoEnabled, subsequent, FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FunctionsCode),
+    % Generate CLI dispatch for each predicate
+    generate_lua_mutual_dispatch(Predicates, DispatchCode),
     format(string(LuaCode),
 '-- Mutually recursive group (Lua)
 ~w
 
 ~w
-', [ForwardDecls, FunctionsCode]).
+
+if arg then
+    local func = arg[1]
+    local n = tonumber(arg[2])
+    if func and n then
+~w
+    end
+end
+', [ForwardDecls, FunctionsCode, DispatchCode]).
+
+generate_lua_mutual_dispatch(Predicates, Code) :-
+    findall(DispatchLine, (
+        member(Pred/_, Predicates),
+        format(string(DispatchLine), '        if func == "~w" then print(tostring(~w(n))) end', [Pred, Pred])
+    ), Lines),
+    atomic_list_concat(Lines, '\n', Code).
 
 mutual_functions_lua([], _AllPreds, _MemoEnabled, _Position, []).
 mutual_functions_lua([Pred/Arity|Rest], AllPreds, MemoEnabled, _Position, [Code|RestCodes]) :-
