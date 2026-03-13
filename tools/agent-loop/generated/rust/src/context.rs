@@ -19,6 +19,7 @@ pub struct ContextManager {
     pub max_chars: i64,
     pub max_words: i64,
     pub context_mode: String,
+    undo_stack: Vec<Vec<Message>>,
 }
 
 impl Default for ContextManager {
@@ -30,6 +31,7 @@ impl Default for ContextManager {
             max_chars: 0,
             max_words: 0,
             context_mode: "continue".to_string(),
+            undo_stack: Vec::new(),
         }
     }
 }
@@ -43,6 +45,7 @@ impl ContextManager {
             max_chars,
             max_words,
             context_mode: context_mode.to_string(),
+            undo_stack: Vec::new(),
         }
     }
 
@@ -174,6 +177,95 @@ impl ContextManager {
             }
             if k > 0 { self.messages.drain(..k); }
         }
+    }
+
+    /// Save current state for undo (max 10 deep).
+    fn save_state(&mut self) {
+        if self.undo_stack.len() >= 10 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(self.messages.clone());
+    }
+
+    /// Edit a message at the given index.
+    pub fn edit_message(&mut self, index: usize, new_content: &str) -> bool {
+        if index >= self.messages.len() { return false; }
+        self.save_state();
+        self.messages[index].content = new_content.to_string();
+        true
+    }
+
+    /// Delete a single message at the given index.
+    pub fn delete_message(&mut self, index: usize) -> bool {
+        if index >= self.messages.len() { return false; }
+        self.save_state();
+        self.messages.remove(index);
+        true
+    }
+
+    /// Delete messages in range [start, end) (exclusive end).
+    pub fn delete_range(&mut self, start: usize, end: usize) -> usize {
+        let end = end.min(self.messages.len());
+        if start >= end { return 0; }
+        self.save_state();
+        let count = end - start;
+        self.messages.drain(start..end);
+        count
+    }
+
+    /// Delete the last N messages.
+    pub fn delete_last(&mut self, n: usize) -> usize {
+        let count = n.min(self.messages.len());
+        if count == 0 { return 0; }
+        self.save_state();
+        let start = self.messages.len() - count;
+        self.messages.drain(start..);
+        count
+    }
+
+    /// Delete all messages after the given index.
+    pub fn truncate_after(&mut self, index: usize) -> usize {
+        if index >= self.messages.len() { return 0; }
+        self.save_state();
+        let count = self.messages.len() - index - 1;
+        self.messages.truncate(index + 1);
+        count
+    }
+
+    /// Undo the last edit/delete operation.
+    pub fn undo(&mut self) -> bool {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.messages = prev;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if undo is available.
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    /// Get full content of a message at index.
+    pub fn get_full_content(&self, index: usize) -> Option<String> {
+        self.messages.get(index).map(|m| m.content.clone())
+    }
+
+    /// Format history for display (last N messages, truncated previews).
+    pub fn format_history(&self, limit: usize) -> String {
+        let start = if self.messages.len() > limit { self.messages.len() - limit } else { 0 };
+        let mut out = String::new();
+        for (i, m) in self.messages[start..].iter().enumerate() {
+            let idx = start + i;
+            let preview = if m.content.len() > 80 {
+                format!("{}...", &m.content[..80])
+            } else {
+                m.content.replace('\n', " ")
+            };
+            out.push_str(&format!("[{}] {}: {} ({} chars)\n", idx, m.role, preview.replace('\n', " "), m.content.len()));
+        }
+        out
     }
 }
 
