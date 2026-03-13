@@ -750,7 +750,7 @@ let rec ~w n =
 [<EntryPoint>]
 let main argv =
     if argv.Length >= 1 then
-        printfn "%%d" (~w (int argv.[0]))
+        printfn "%d" (~w (int argv.[0]))
     0
 ', [PredStr, PredStr, PredStr, PredStr]).
 
@@ -787,7 +787,7 @@ let rec ~w n =
 [<EntryPoint>]
 let main argv =
     if argv.Length >= 1 then
-        printfn "%%d" (~w (int argv.[0]))
+        printfn "%d" (~w (int argv.[0]))
     0
 ', [PredStr, BaseCaseStr, PredStr, PredStr, PredStr]).
 
@@ -825,6 +825,6 @@ let rec ~w input =
 [<EntryPoint>]
 let main argv =
     if argv.Length >= 1 then
-        printfn "%%d" (~w (int argv.[0]))
+        printfn "%d" (~w (int argv.[0]))
     0
 ', [PredStr, BaseCaseStr, PredStr, PredStr, PredStr]).

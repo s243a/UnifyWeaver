@@ -956,7 +956,7 @@ int ~w(int n) {
 
 int main(int argc, char *argv[]) {
     memset(memo_set, 0, sizeof(memo_set));
-    if (argc >= 2) printf("%%d\\n", ~w(atoi(argv[1])));
+    if (argc >= 2) printf("%d\\n", ~w(atoi(argv[1])));
     return 0;
 }
 ', [PredStr, PredStr, PredStr, PredStr]).
@@ -993,7 +993,7 @@ int ~w(int n) {
 
 int main(int argc, char *argv[]) {
     memset(memo_set, 0, sizeof(memo_set));
-    if (argc >= 2) printf("%%d\\n", ~w(atoi(argv[1])));
+    if (argc >= 2) printf("%d\\n", ~w(atoi(argv[1])));
     return 0;
 }
 ', [PredStr, BaseCaseStr, PredStr, PredStr, PredStr]).
@@ -1039,7 +1039,7 @@ int ~w(int input) {
 
 int main(int argc, char *argv[]) {
     memset(memo_set, 0, sizeof(memo_set));
-    if (argc >= 2) printf("%%d\\n", ~w(atoi(argv[1])));
+    if (argc >= 2) printf("%d\\n", ~w(atoi(argv[1])));
     return 0;
 }
 ', [PredStr, BaseCaseStr, ComputationsCode, RecCallsCode, AggCode, PredStr]).
@@ -1252,7 +1252,7 @@ mutual_dispatch_c(Predicates, Code) :-
         member(Pred/_Arity, Predicates),
         atom_string(Pred, PredStr),
         format(string(DispLine),
-'    if (argc >= 3 && strcmp(argv[1], "~w") == 0) printf("%%d\\n", ~w(atoi(argv[2])));',
+'    if (argc >= 3 && strcmp(argv[1], "~w") == 0) printf("%d\\n", ~w(atoi(argv[2])));',
             [PredStr, PredStr])
     ), Lines),
     atomic_list_concat(Lines, '\n', Code).

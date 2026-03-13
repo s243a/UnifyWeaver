@@ -639,12 +639,12 @@ test_my_predicate :-
 
 ### Multi-Target Test Coverage
 
-The test orchestrator (`test_advanced.pl`) loads 7 target modules and tests compilation across them:
+The test orchestrator (`test_advanced.pl`) loads 8 target modules and tests compilation across them:
 
 | Pattern | bash | r | lua | c | haskell | java | elixir | fsharp |
 |---------|:----:|:-:|:---:|:-:|:-------:|:----:|:------:|:------:|
-| Tail recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Linear recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Tail recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Linear recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Tree recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Mutual recursion | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Multi-call linear | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -653,10 +653,10 @@ The test orchestrator (`test_advanced.pl`) loads 7 target modules and tests comp
 ### Generated Files
 
 Tests generate output in `output/advanced/` across multiple target languages:
-- `count_items.{sh,R,lua,c,hs,java,exs}` - Tail recursion
-- `sum_list.{sh,R,lua,c,hs,java,exs}` - Tail recursion (arithmetic)
-- `list_length.{sh,R,lua,c,hs,java,exs}` - Linear recursion
-- `factorial.{sh,R,lua,c,hs,java,exs}` - Linear recursion (multiplicative)
+- `count_items.{sh,R,lua,c,hs,java,exs,fs}` - Tail recursion
+- `sum_list.{sh,R,lua,c,hs,java,exs,fs}` - Tail recursion (arithmetic)
+- `list_length.{sh,R,lua,c,hs,java,exs,fs}` - Linear recursion
+- `factorial.{sh,R,lua,c,hs,java,exs,fs}` - Linear recursion (multiplicative)
 - `tree_sum.{sh,R,lua}` - Tree recursion (binary tree)
 - `tree_fib.{sh,R,lua,c,hs,java,exs,fs}` - Tree recursion (fibonacci)
 - `even_odd.{sh,R,lua,c,hs,java,exs,fs}` - Mutual recursion

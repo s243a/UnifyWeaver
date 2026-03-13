@@ -393,8 +393,24 @@ translate_goal_elixir(is(Var, Expr), VM, Code) :-
 
 translate_goal_elixir(true, _VM, "      # true") :- !.
 
+% Handle predicate calls (e.g., mutual recursive calls like is_odd(N1))
+translate_goal_elixir(Goal, VM, Code) :-
+    compound(Goal),
+    Goal =.. [Pred|Args],
+    Pred \= ',',
+    Pred \= ';',
+    maplist(translate_call_arg_elixir(VM), Args, ElixirArgs),
+    atomic_list_concat(ElixirArgs, ', ', ArgsStr),
+    format(string(Code), "      ~w(~w)", [Pred, ArgsStr]),
+    !.
+
 translate_goal_elixir(Goal, _VM, Code) :-
     format(string(Code), "      # TODO: translate ~w", [Goal]).
+
+%% translate_call_arg_elixir(+VM, +Arg, -ElixirArg)
+%  Translate a predicate call argument to Elixir.
+translate_call_arg_elixir(VM, Arg, ElixirArg) :-
+    expr_to_elixir(Arg, VM, ElixirArg).
 
 %% ============================================
 %% EXPRESSIONS AND VARIABLES
