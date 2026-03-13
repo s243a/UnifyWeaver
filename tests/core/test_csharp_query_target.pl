@@ -337,10 +337,12 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_eviction_runtime,
         verify_parameterized_reachability_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_by_target_seed_cache_lru_recency_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_lru_recency_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_lru_recency_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_lru_recency_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_lru_recency_runtime,
         verify_parameterized_reachability_seed_cache_admission_runtime,
@@ -3923,6 +3925,33 @@ verify_parameterized_grouped_transitive_closure_by_target_seed_cache_lru_recency
         HotParams,
         HarnessSource).
 
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z, red, cat1], [p, q, red, cat1]],
+    WarmParams2 = [[x, z, red, cat1], [p, q, red, cat1]],
+    TouchParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    InsertParams = [[y, z, red, cat1], [p, q, red, cat1]],
+    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
+    harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'GroupedTransitiveClosureSeeded',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
+         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
+         'CACHE_EVICTIONS:GroupedTransitiveClosureSeeded=1'],
+        HotParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_lru_recency_runtime :-
     csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_lru_reach/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -4274,6 +4303,33 @@ verify_parameterized_reachability_by_target_seed_cache_lru_recency_runtime :-
         ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
          'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
          'CACHE_EVICTIONS:TransitiveClosureSeededByTarget=1'],
+        HotParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_seed_cache_lru_recency_runtime :-
+    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams1 = [[a, z], [p, q]],
+    WarmParams2 = [[x, z], [p, q]],
+    TouchParams = [[a, z], [p, q]],
+    InsertParams = [[y, z], [p, q]],
+    HotParams = [[a, z], [p, q]],
+    ColdParams = [[x, z], [p, q]],
+    harness_source_with_seed_cache_lru_recency_flag(
+        ModuleClass,
+        WarmParams1,
+        WarmParams2,
+        TouchParams,
+        InsertParams,
+        HotParams,
+        ColdParams,
+        'TransitiveClosureSeeded',
+        2,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
+         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
+         'CACHE_EVICTIONS:TransitiveClosureSeeded=1'],
         HotParams,
         HarnessSource).
 
