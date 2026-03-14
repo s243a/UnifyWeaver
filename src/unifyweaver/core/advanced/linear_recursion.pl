@@ -19,6 +19,7 @@
     translate_fold_expr/4,
     analyze_clause_structure/3,
     extract_step_info/4,           % +RecClauses, -InputVar, -Step, -Direction
+    extract_step_info_for/3,       % +Pred/Arity, -Step, -Direction
     test_linear_recursion/0        % Test predicate
 ]).
 
@@ -222,6 +223,18 @@ extract_step_from_expr(A + B, InputVar, Step, up) :-
     A == InputVar, integer(B), B > 0, !, Step = B.
 extract_step_from_expr(A + B, InputVar, Step, down) :-
     A == InputVar, integer(B), B < 0, !, Step is abs(B).
+
+%% extract_step_info_for(+Pred/Arity, -Step, -Direction)
+%  Convenience wrapper: extract step info directly from a predicate name.
+extract_step_info_for(Pred/Arity, Step, Direction) :-
+    functor(Head, Pred, Arity),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    include(is_rec_clause(Pred), Clauses, RecClauses),
+    RecClauses \= [],
+    extract_step_info(RecClauses, _InputVar, Step, Direction).
+
+is_rec_clause(Pred, clause(_, Body)) :-
+    pattern_matchers:contains_call_to(Body, Pred).
 
 %% ============================================
 %% FOLD-BASED CODE GENERATION (Phase 3 & 4)

@@ -19,9 +19,12 @@
 :- use_module('scc_detection').
 :- use_module('pattern_matchers', [
     contains_call_to/2,
-    is_linear_recursive_streamable/1
+    is_linear_recursive_streamable/1,
+    can_transform_linear_to_tail/2,
+    split_body_at_recursive_call/5
     % Note: We define our own extract_goal/2 to avoid importing the one from pattern_matchers
 ]).
+:- use_module('purity_analysis', [is_associative_op/1]).
 :- use_module('tail_recursion').
 :- use_module('linear_recursion').
 :- use_module('multicall_linear_recursion').
@@ -53,6 +56,9 @@ compile_advanced_recursive(Pred/Arity, Options, BashCode) :-
         (   \+ memberchk(tail_recursion, SkipPatterns),
             try_tail_recursion(Pred/Arity, Options, BashCode) ->
             format('✓ Compiled as tail recursion~n')
+        ;   \+ memberchk(linear_as_tail, SkipPatterns),
+            try_linear_as_tail(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as linear→tail transformation~n')
         ;   \+ memberchk(linear_recursion, SkipPatterns),
             try_linear_recursion(Pred/Arity, Options, BashCode) ->
             format('✓ Compiled as linear recursion~n')
@@ -81,6 +87,8 @@ compile_advanced_recursive(Pred/Arity, Options, BashCode) :-
 %  Attempt to compile using a specific forced pattern.
 try_forced_pattern(tail_recursion, Pred/Arity, Options, Code) :-
     try_tail_recursion(Pred/Arity, Options, Code).
+try_forced_pattern(linear_as_tail, Pred/Arity, Options, Code) :-
+    try_linear_as_tail(Pred/Arity, Options, Code).
 try_forced_pattern(linear_recursion, Pred/Arity, Options, Code) :-
     try_linear_recursion(Pred/Arity, Options, Code).
 try_forced_pattern(multicall_linear_recursion, Pred/Arity, Options, Code) :-
@@ -104,6 +112,215 @@ try_tail_recursion(Pred/Arity, Options, BashCode) :-
     can_compile_tail_recursion(Pred/Arity),
     !,
     compile_tail_recursion(Pred/Arity, Options, BashCode).
+
+%% try_linear_as_tail(+Pred/Arity, +Options, -Code)
+%  Attempt to transform linear recursion to tail-recursive loop.
+%  Uses purity analysis to verify safety of reordering.
+try_linear_as_tail(Pred/Arity, Options, Code) :-
+    format('  Trying linear→tail transformation...~n'),
+
+    % Check for explicit unordered(false) — user forbids reordering
+    (   member(unordered(false), Options) ->
+        format('    Blocked by unordered(false) constraint~n'),
+        fail
+    ;   true
+    ),
+
+    can_transform_linear_to_tail(Pred/Arity, TransformInfo),
+    TransformInfo = transform(AccInit, AccOp, _Direction),
+    !,
+    format('  Transform: init=~w, op=~w~n', [AccInit, AccOp]),
+
+    % Determine target
+    (   member(target(Target), Options) -> true ; Target = bash ),
+
+    % Generate accumulator-based loop code
+    atom_string(Pred, PredStr),
+    generate_linear_as_tail_code(Target, PredStr, Arity, AccInit, AccOp, Pred/Arity, Code).
+
+%% generate_linear_as_tail_code(+Target, +PredStr, +Arity, +Init, +Op, +Pred/Arity, -Code)
+%  Generate target-specific while-loop code with accumulator.
+
+generate_linear_as_tail_code(bash, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    % Extract step info from the predicate
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_bash(Op, BashOp),
+    (   Direction = down ->
+        format(string(Cond), 'n > 0', [])
+    ;   format(string(Cond), 'n < limit', [])
+    ),
+    (   Direction = down ->
+        format(string(StepExpr), 'n=$((n - ~w))', [StepVal])
+    ;   format(string(StepExpr), 'n=$((n + ~w))', [StepVal])
+    ),
+    format(string(Code),
+'# ~s — compiled via linear→tail transformation
+~s() {
+    local n="$1"
+    local acc=~w
+    while (( ~s )); do
+        acc=$(( acc ~s n ))
+        ~s
+    done
+    echo "$acc"
+}', [PredStr, PredStr, Init, Cond, BashOp, StepExpr]).
+
+generate_linear_as_tail_code(r, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_r(Op, ROp),
+    (   Direction = down ->
+        format(string(Cond), 'n > 0', []),
+        format(string(StepExpr), 'n <- n - ~w', [StepVal])
+    ;   format(string(Cond), 'n < limit', []),
+        format(string(StepExpr), 'n <- n + ~w', [StepVal])
+    ),
+    format(string(Code),
+'~s <- function(n) {
+  acc <- ~w
+  while (~s) {
+    acc <- acc ~s n
+    ~s
+  }
+  return(acc)
+}', [PredStr, Init, Cond, ROp, StepExpr]).
+
+generate_linear_as_tail_code(python, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_python(Op, PyOp),
+    (   Direction = down ->
+        format(string(Cond), 'n > 0', []),
+        format(string(StepExpr), 'n -= ~w', [StepVal])
+    ;   format(string(Cond), 'n < limit', []),
+        format(string(StepExpr), 'n += ~w', [StepVal])
+    ),
+    format(string(Code),
+'def ~s(n):
+    acc = ~w
+    while ~s:
+        acc = acc ~s n
+        ~s
+    return acc', [PredStr, Init, Cond, PyOp, StepExpr]).
+
+generate_linear_as_tail_code(lua, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_lua(Op, LuaOp),
+    (   Direction = down ->
+        format(string(Cond), 'n > 0', []),
+        format(string(StepExpr), 'n = n - ~w', [StepVal])
+    ;   format(string(Cond), 'n < limit', []),
+        format(string(StepExpr), 'n = n + ~w', [StepVal])
+    ),
+    format(string(Code),
+'function ~s(n)
+    local acc = ~w
+    while ~s do
+        acc = acc ~s n
+        ~s
+    end
+    return acc
+end', [PredStr, Init, Cond, LuaOp, StepExpr]).
+
+generate_linear_as_tail_code(c, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_c(Op, COp),
+    (   Direction = down ->
+        format(string(Cond), 'n > 0', []),
+        format(string(StepExpr), 'n -= ~w;', [StepVal])
+    ;   format(string(Cond), 'n < limit', []),
+        format(string(StepExpr), 'n += ~w;', [StepVal])
+    ),
+    format(string(Code),
+'long long ~s(int n) {
+    long long acc = ~w;
+    while (~s) {
+        acc = acc ~s n;
+        ~s
+    }
+    return acc;
+}', [PredStr, Init, Cond, COp, StepExpr]).
+
+generate_linear_as_tail_code(java, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_java(Op, JavaOp),
+    (   Direction = down ->
+        format(string(Cond), 'n > 0', []),
+        format(string(StepExpr), 'n -= ~w;', [StepVal])
+    ;   format(string(Cond), 'n < limit', []),
+        format(string(StepExpr), 'n += ~w;', [StepVal])
+    ),
+    format(string(Code),
+'public static long ~s(int n) {
+    long acc = ~w;
+    while (~s) {
+        acc = acc ~s n;
+        ~s
+    }
+    return acc;
+}', [PredStr, Init, Cond, JavaOp, StepExpr]).
+
+generate_linear_as_tail_code(haskell, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_haskell(Op, HsOp),
+    (   Direction = down ->
+        format(string(StepExpr), 'n - ~w', [StepVal])
+    ;   format(string(StepExpr), 'n + ~w', [StepVal])
+    ),
+    format(string(Code),
+'~s :: Integer -> Integer
+~s n = go n ~w
+  where
+    go 0 acc = acc
+    go n acc = go (~s) (acc ~s n)', [PredStr, PredStr, Init, StepExpr, HsOp]).
+
+generate_linear_as_tail_code(elixir, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_elixir(Op, ExOp),
+    (   Direction = down ->
+        format(string(StepExpr), 'n - ~w', [StepVal])
+    ;   format(string(StepExpr), 'n + ~w', [StepVal])
+    ),
+    format(string(Code),
+'def ~s(n), do: do_~s(n, ~w)
+defp do_~s(0, acc), do: acc
+defp do_~s(n, acc), do: do_~s(~s, acc ~s n)', [PredStr, PredStr, Init, PredStr, PredStr, PredStr, StepExpr, ExOp]).
+
+generate_linear_as_tail_code(fsharp, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
+    linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
+    op_to_fsharp(Op, FsOp),
+    (   Direction = down ->
+        format(string(StepExpr), 'n - ~w', [StepVal])
+    ;   format(string(StepExpr), 'n + ~w', [StepVal])
+    ),
+    format(string(Code),
+'let ~s n =
+    let rec loop n acc =
+        if n = 0 then acc
+        else loop (~s) (acc ~s n)
+    loop n ~w', [PredStr, StepExpr, FsOp, Init]).
+
+generate_linear_as_tail_code(Target, PredStr, _, _, _, _, _) :-
+    format(user_error, 'Linear→tail code generation not implemented for target ~w (~s)~n', [Target, PredStr]),
+    fail.
+
+%% Operator translation helpers
+op_to_bash(+, '+').
+op_to_bash(*, '*').
+op_to_r(+, '+').
+op_to_r(*, '*').
+op_to_python(+, '+').
+op_to_python(*, '*').
+op_to_lua(+, '+').
+op_to_lua(*, '*').
+op_to_c(+, '+').
+op_to_c(*, '*').
+op_to_java(+, '+').
+op_to_java(*, '*').
+op_to_haskell(+, '+').
+op_to_haskell(*, '*').
+op_to_elixir(+, '+').
+op_to_elixir(*, '*').
+op_to_fsharp(+, '+').
+op_to_fsharp(*, '*').
 
 %% try_linear_recursion(+Pred/Arity, +Options, -BashCode)
 %  Attempt to compile as linear recursion
