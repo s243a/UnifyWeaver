@@ -23,10 +23,14 @@
     % Tree fold pattern detection
     is_tree_fold_pattern/1,               % +Pred/Arity - Check if should use fold
     should_use_fold_helper/1,             % +Pred/Arity - Alias for is_tree_fold_pattern
+    % Linear-to-tail recursion transformation
+    can_transform_linear_to_tail/2,       % +Pred/Arity, -TransformInfo
+    split_body_at_recursive_call/5,       % +Body, +Pred, -PreGoals, -RecCall, -PostGoals
     test_pattern_matchers/0         % Test predicate
 ]).
 
 :- use_module(library(lists)).
+:- use_module('purity_analysis').
 
 %% is_tail_recursive_accumulator(+Pred/Arity, -AccInfo)
 %  Detect tail recursion with accumulator pattern
@@ -486,6 +490,117 @@ should_use_fold_helper(Pred/Arity) :-
     is_tree_fold_pattern(Pred/Arity).
 
 %% ============================================
+%% LINEAR-TO-TAIL RECURSION TRANSFORMATION
+%% ============================================
+%
+% Detects when a linear-recursive predicate can be mechanically
+% transformed to tail-recursive form by introducing an accumulator.
+%
+% Requirements:
+%   1. Exactly one recursive call per clause (linear)
+%   2. Recursive call is NOT in tail position
+%   3. All goals after the recursive call are pure (no side effects)
+%   4. The post-recursion computation uses an associative operation
+%
+% TransformInfo = transform(AccInit, AccOp, Direction)
+%   AccInit   — initial accumulator value (from base case)
+%   AccOp     — the associative operation (+ or *)
+%   Direction — left_fold (accumulate from base up)
+
+%% can_transform_linear_to_tail(+Pred/Arity, -TransformInfo)
+can_transform_linear_to_tail(Pred/Arity, TransformInfo) :-
+    functor(Head, Pred, Arity),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+
+    % Partition into base/recursive
+    partition(is_recursive_for(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+
+    % Must be linear (single recursive call per clause)
+    forall(
+        member(clause(_, RecBody), RecClauses),
+        (   count_recursive_calls(RecBody, Pred, Count),
+            Count =:= 1
+        )
+    ),
+
+    % Recursive call must NOT already be in tail position
+    forall(
+        member(clause(_, RecBody), RecClauses),
+        \+ is_tail_call(RecBody, Pred)
+    ),
+
+    % For at least one recursive clause, extract and verify the pattern
+    member(clause(_, RecBody), RecClauses),
+    split_body_at_recursive_call(RecBody, Pred, _PreGoals, _RecCall, PostGoals),
+
+    % All post-recursion goals must be pure
+    is_pure_body(PostGoals),
+
+    % Extract the accumulation pattern from post-goals and base case
+    extract_linear_to_tail_pattern(PostGoals, BaseClauses, TransformInfo),
+    !.
+
+%% split_body_at_recursive_call(+Body, +Pred, -PreGoals, -RecCall, -PostGoals)
+%  Split a conjunction at the recursive call into pre/rec/post parts.
+split_body_at_recursive_call(Body, Pred, PreGoals, RecCall, PostGoals) :-
+    flatten_conjunction(Body, Goals),
+    append(Pre, [RecCall|Post], Goals),
+    functor(RecCall, Pred, _),
+    \+ (member(G, Pre), functor(G, Pred, _)),  % RecCall is first recursive call
+    !,
+    list_to_conjunction(Pre, PreGoals),
+    list_to_conjunction(Post, PostGoals).
+
+%% flatten_conjunction(+Body, -Goals)
+%  Flatten a conjunction into a list of goals.
+flatten_conjunction((A, B), Goals) :-
+    !,
+    flatten_conjunction(A, GoalsA),
+    flatten_conjunction(B, GoalsB),
+    append(GoalsA, GoalsB, Goals).
+flatten_conjunction(true, []) :- !.
+flatten_conjunction(Goal, [Goal]).
+
+%% list_to_conjunction(+List, -Conjunction)
+%  Convert a list of goals back to a conjunction.
+list_to_conjunction([], true).
+list_to_conjunction([G], G) :- !.
+list_to_conjunction([G|Gs], (G, Rest)) :-
+    list_to_conjunction(Gs, Rest).
+
+%% extract_linear_to_tail_pattern(+PostGoals, +BaseClauses, -TransformInfo)
+%  Match post-recursion goals against known accumulator patterns.
+%  Currently handles: Result is RecResult Op CurrentValue
+%                     Result is CurrentValue Op RecResult
+extract_linear_to_tail_pattern(PostGoals, BaseClauses, transform(Init, Op, left_fold)) :-
+    % Find the 'is' expression in post-goals
+    flatten_conjunction(PostGoals, PostList),
+    member(ResultIs, PostList),
+    ResultIs = (Result is Expr),
+
+    % Expr should be a binary operation combining recursive result with something
+    Expr =.. [Op, _A, _B],
+    is_associative_op(Op),
+
+    % Extract initial accumulator value from base case
+    extract_base_result_value(BaseClauses, Result, Init).
+
+%% extract_base_result_value(+BaseClauses, +ResultVar, -Init)
+%  Extract the result value from a base case clause.
+%  For factorial(0, 1): ResultVar unifies with the result position, Init = 1.
+extract_base_result_value(BaseClauses, _ResultVar, Init) :-
+    member(clause(Head, Body), BaseClauses),
+    Head =.. [_|Args],
+    last(Args, Init),
+    (   Body = true
+    ;   % Body might have unification: check for simple values
+        number(Init)
+    ),
+    !.
+
+%% ============================================
 %% TESTS
 %% ============================================
 
@@ -603,5 +718,52 @@ test_pattern_matchers :-
 
     % Clean up
     clear_linear_recursion_forbid(test_fib/2),
+
+    % Test 8: Linear-to-tail transformation detection (factorial)
+    writeln('Test 8: Linear-to-tail transformation (factorial)'),
+    catch(abolish(test_factorial/2), _, true),
+    assertz(user:(test_factorial(0, 1))),
+    assertz(user:(test_factorial(N, F) :- N > 0, N1 is N - 1, test_factorial(N1, F1), F is N * F1)),
+
+    % Should NOT be tail recursive (F is N * F1 is after recursive call)
+    (   \+ is_tail_recursive_accumulator(test_factorial/2, _) ->
+        writeln('  ✓ PASS - factorial is NOT natively tail recursive')
+    ;   writeln('  ✗ FAIL - factorial should not be natively tail recursive')
+    ),
+
+    % Should be transformable to tail recursive
+    (   can_transform_linear_to_tail(test_factorial/2, TransformInfo) ->
+        format('  ✓ PASS - factorial CAN be transformed to tail: ~w~n', [TransformInfo])
+    ;   writeln('  ✗ FAIL - factorial should be transformable to tail')
+    ),
+
+    % Test 9: Already tail recursive should NOT match transform
+    writeln('Test 9: Already tail recursive does not match transform'),
+    (   \+ can_transform_linear_to_tail(test_count/3, _) ->
+        writeln('  ✓ PASS - already tail recursive, not transformable')
+    ;   writeln('  ✗ FAIL - already tail recursive should not match transform')
+    ),
+
+    % Test 10: Additive linear recursion (sum)
+    writeln('Test 10: Linear-to-tail transformation (additive sum)'),
+    catch(abolish(test_sum_linear/2), _, true),
+    assertz(user:(test_sum_linear(0, 0))),
+    assertz(user:(test_sum_linear(N, S) :- N > 0, N1 is N - 1, test_sum_linear(N1, S1), S is S1 + N)),
+    (   can_transform_linear_to_tail(test_sum_linear/2, SumTransform) ->
+        format('  ✓ PASS - additive sum transformable: ~w~n', [SumTransform])
+    ;   writeln('  ✗ FAIL - additive sum should be transformable')
+    ),
+
+    % Test 11: Purity check — split_body_at_recursive_call
+    writeln('Test 11: split_body_at_recursive_call'),
+    TestBody = (N > 0, N1 is N - 1, test_factorial(N1, F1), F is N * F1),
+    (   split_body_at_recursive_call(TestBody, test_factorial, Pre, Rec, Post) ->
+        format('  ✓ PASS - Pre: ~w, Rec: ~w, Post: ~w~n', [Pre, Rec, Post])
+    ;   writeln('  ✗ FAIL - should split body at recursive call')
+    ),
+
+    % Cleanup
+    catch(abolish(test_factorial/2), _, true),
+    catch(abolish(test_sum_linear/2), _, true),
 
     writeln('=== PATTERN MATCHERS TESTS COMPLETE ===').
