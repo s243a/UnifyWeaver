@@ -376,8 +376,7 @@ test_tree_recursion :-
             write_bash_file('output/advanced/tree_fib.hs', FibCode1H),
             writeln('  ✓ Compiled to output/advanced/tree_fib.hs (haskell)'),
             compile_tree_recursion(test_tree_fib/2, [target(java)], FibCode1J),
-            write_bash_file('output/advanced/tree_fib.java', FibCode1J),
-            writeln('  ✓ Compiled to output/advanced/tree_fib.java (java)'),
+            write_java_file('output/advanced', FibCode1J),
             compile_tree_recursion(test_tree_fib/2, [target(elixir)], FibCode1E),
             write_bash_file('output/advanced/tree_fib.exs', FibCode1E),
             writeln('  ✓ Compiled to output/advanced/tree_fib.exs (elixir)'),
@@ -400,3 +399,18 @@ write_bash_file(Path, Code) :-
     % Make executable
     format(atom(ChmodCmd), 'chmod +x ~w', [Path]),
     shell(ChmodCmd).
+
+%% Write Java file using class name from generated code
+write_java_file(Dir, Code) :-
+    (   sub_string(Code, B, _, _, "public class "),
+        B1 is B + 13,
+        sub_string(Code, B1, _, _, Rest),
+        sub_string(Rest, SpacePos, 1, _, " "),
+        sub_string(Rest, 0, SpacePos, _, ClassName)
+    ->  atomic_list_concat([Dir, '/', ClassName, '.java'], FilePath),
+        open(FilePath, write, Stream),
+        write(Stream, Code),
+        close(Stream),
+        format('  ✓ Compiled to ~w (java)~n', [FilePath])
+    ;   writeln('  ✗ FAIL - could not extract Java class name from generated code')
+    ).
