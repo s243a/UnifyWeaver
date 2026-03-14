@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (15 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + 38 integration tests |
+| Rust | `generated/rust/` (15 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + 50 integration tests |
 
 ### Declarative Infrastructure
 
@@ -75,7 +75,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 756 + 38 Rust integration (590+128 unit + 27 Prolog + 59 Python + 38 cargo test) |
+| Total tests | 777 + 50 Rust integration (590+149 unit + 27 Prolog + 59 Python + 50 cargo test) |
 
 ## Backends
 
@@ -726,7 +726,8 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Paste detection + collapse | Y | Y | Complete (all 3 targets) |
 | Config gen (paste_mode) | Y | Y | Complete (auto/bracketed/timing/off) |
 | Bracketed paste mode | Y | Y | Complete (optional, configurable) |
-| Integration tests (cargo test) | N | Y (38 tests) | Rust-only |
+| Data-driven /help | Y | Y | Complete (from slash_command/4 facts) |
+| Integration tests (cargo test) | N | Y (50 tests) | Rust-only |
 
 ## License
 
