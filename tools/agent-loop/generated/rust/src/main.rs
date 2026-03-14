@@ -589,6 +589,7 @@ struct RuntimeState {
     stream: bool,
     show_tokens: bool,
     multiline: bool,
+    paste_mode: String,
 }
 
 fn handle_command(
@@ -1075,6 +1076,7 @@ fn main() {
         stream: config.stream,
         show_tokens: config.show_tokens,
         multiline: false,
+        paste_mode: config.paste_mode.clone(),
     };
 
     // Session resume tracking
@@ -1151,8 +1153,8 @@ fn main() {
                     let ml = MultilineHandler::new();
                     let full = ml.read_explicit(&mut rl);
                     format!("{}\n{}", input, full)
-                } else {
-                    // Try paste detection first
+                } else if state.paste_mode != "off" {
+                    // Try paste detection first (respects paste_mode setting)
                     match MultilineHandler::detect_paste(input) {
                         PasteResult::Pasted { content, line_count, char_count } => {
                             if line_count > 5 {
@@ -1167,6 +1169,13 @@ fn main() {
                                 line
                             }
                         }
+                    }
+                } else {
+                    // Paste detection disabled — just check multiline triggers
+                    if MultilineHandler::needs_continuation(input) {
+                        MultilineHandler::read_until_complete(input, &mut rl)
+                    } else {
+                        input.to_string()
                     }
                 };
                 let input = input.trim();

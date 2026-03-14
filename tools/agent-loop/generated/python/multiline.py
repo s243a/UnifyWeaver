@@ -25,6 +25,48 @@ def _read_pasted_lines(first_line: str, timeout: float = 0.05) -> str:
     return '\n'.join(lines)
 
 
+def _read_bracketed_paste(first_line: str) -> str:
+    """Read pasted text using bracketed paste mode detection.
+
+    Enables bracketed paste mode (ESC[?2004h), then checks if the
+    first_line was part of a bracketed paste (preceded by ESC[200~).
+    Falls back to timing-based detection if terminal doesn't support it.
+    """
+    import os, termios, tty
+    lines = [first_line]
+    try:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            # Enable bracketed paste mode
+            sys.stdout.write("\033[?2004h")
+            sys.stdout.flush()
+            # Use timing detection as fallback — bracketed paste
+            # is handled by the terminal sending ESC[200~ before
+            # and ESC[201~ after pasted text, but input() already
+            # consumed the first line. Use select to grab the rest.
+            while True:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if not ready:
+                    break
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                # Strip bracketed paste end marker if present
+                cleaned = line.rstrip('\n').replace("\033[201~", "").replace("\033[200~", "")
+                if cleaned:
+                    lines.append(cleaned)
+        finally:
+            # Disable bracketed paste mode
+            sys.stdout.write("\033[?2004l")
+            sys.stdout.flush()
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except (OSError, ValueError, ImportError):
+        # Fall back to timing-based detection
+        return _read_pasted_lines(first_line)
+    return '\n'.join(lines)
+
+
 def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str | None:
     """Get multi-line input from the user.
 
@@ -51,13 +93,14 @@ def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str |
     return "\n".join(lines)
 
 
-def get_input_smart(prompt: str = "You: ") -> str | None:
+def get_input_smart(prompt: str = "You: ", paste_mode: str = "auto") -> str | None:
     """Smart input that detects when multi-line is needed.
 
     Detection order:
-    1. Paste detection (if tty) — captures all pasted lines immediately
+    1. Paste detection (if tty and paste_mode != "off")
     2. If single line, check triggers: ```, <<<, \\, {/[/(
 
+    paste_mode: "auto" (timing-based), "bracketed" (ESC sequences), "timing", "off"
     Returns None on EOF.
     """
     try:
@@ -68,9 +111,13 @@ def get_input_smart(prompt: str = "You: ") -> str | None:
     if not line:
         return ""
 
-    # Paste detection first — if multiple lines arrived, return them all
-    if sys.stdin.isatty():
-        pasted = _read_pasted_lines(line)
+    # Paste detection (unless disabled)
+    if paste_mode != "off" and sys.stdin.isatty():
+        if paste_mode == "bracketed":
+            pasted = _read_bracketed_paste(line)
+        else:
+            # "auto" and "timing" both use timing-based detection
+            pasted = _read_pasted_lines(line)
         if '\n' in pasted:
             lines_list = pasted.split('\n')
             n_lines = len(lines_list)

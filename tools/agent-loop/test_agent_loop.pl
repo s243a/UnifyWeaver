@@ -241,6 +241,8 @@ run_tests :-
     test_rust_phase11_generation,
     %% Paste detection
     test_paste_detection_all_targets,
+    %% Config gen + bracketed paste
+    test_config_gen_paste_mode,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -4456,4 +4458,54 @@ test_paste_detection_all_targets :-
     )),
     assert_true('Prolog wait_for_input used for paste detection', (
         sub_string(PlContent, _, _, _, "wait_for_input")
+    )).
+
+%% ============================================================================
+%% Config generation + bracketed paste tests
+%% ============================================================================
+
+test_config_gen_paste_mode :-
+    format("~nConfig gen + bracketed paste:~n"),
+    %% Check paste_mode config field exists
+    assert_true('paste_mode config field defined', (
+        agent_loop_module:agent_config_field(paste_mode, _, _, _)
+    )),
+    %% Python: example config includes paste_mode
+    agent_loop_module:output_path(python, 'config.py', PyConfigPath),
+    read_file_to_string(PyConfigPath, PyConfigContent, []),
+    assert_true('Python example config has paste_mode', (
+        sub_string(PyConfigContent, _, _, _, "paste_mode")
+    )),
+    %% Python: _read_bracketed_paste function
+    agent_loop_module:output_path(python, 'multiline.py', PyMultiPath),
+    read_file_to_string(PyMultiPath, PyMultiContent, []),
+    assert_true('Python _read_bracketed_paste exists', (
+        sub_string(PyMultiContent, _, _, _, "_read_bracketed_paste")
+    )),
+    assert_true('Python get_input_smart accepts paste_mode', (
+        sub_string(PyMultiContent, _, _, _, "paste_mode")
+    )),
+    %% Rust: paste_mode in RuntimeState
+    agent_loop_module:output_path(rust, 'types.rs', RsTypesPath),
+    read_file_to_string(RsTypesPath, RsTypesContent, []),
+    assert_true('Rust RuntimeState has paste_mode field', (
+        sub_string(RsTypesContent, _, _, _, "paste_mode")
+    )),
+    %% Rust: example config includes paste_mode
+    agent_loop_module:output_path(rust, 'config_loader.rs', RsConfigPath),
+    read_file_to_string(RsConfigPath, RsConfigContent, []),
+    assert_true('Rust example config has paste_mode', (
+        sub_string(RsConfigContent, _, _, _, "paste_mode")
+    )),
+    %% Rust: main loop respects paste_mode
+    agent_loop_module:output_path(rust, 'main.rs', RsMainPath),
+    read_file_to_string(RsMainPath, RsMainContent, []),
+    assert_true('Rust main loop checks paste_mode', (
+        sub_string(RsMainContent, _, _, _, "paste_mode")
+    )),
+    %% Prolog: current_paste_mode dynamic predicate
+    agent_loop_module:output_path(prolog, 'agent_loop.pl', PlPath),
+    read_file_to_string(PlPath, PlContent, []),
+    assert_true('Prolog current_paste_mode predicate exists', (
+        sub_string(PlContent, _, _, _, "current_paste_mode")
     )).

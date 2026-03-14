@@ -484,6 +484,7 @@ agent_config_field(show_tokens,         'bool',           'True',    "").
 agent_config_field(stream,              'bool',           'False',   "Enable streaming output for API backends").
 agent_config_field(security_profile,    'str',            '"cautious"', "Security profile (open/cautious/guarded/paranoid)").
 agent_config_field(approval_mode,       'str',            '"yolo"',  "Tool approval mode (default/auto_edit/yolo/plan)").
+agent_config_field(paste_mode,           'str',            '"auto"',  "Paste detection mode: auto, bracketed, timing, off").
 agent_config_field(extra,               'dict',           'field(default_factory=dict)', "").
 
 %% config_field_json_default(FieldName, JsonDefault)
@@ -1817,6 +1818,9 @@ generate_rust_example_config(S) :-
     write(S, '\nfn generate_example_config() -> String {\n'),
     write(S, '    let mut s = String::new();\n'),
     write(S, '    s.push_str(\"{\\n\");\n'),
+    write(S, '    s.push_str(\"  \\\"default\\\": \\\"claude-sonnet\\\",\\n\");\n'),
+    write(S, '    s.push_str(\"  \\\"skills_dir\\\": \\\"./skills\\\",\\n\");\n'),
+    write(S, '    s.push_str(\"  \\\"paste_mode\\\": \\\"auto\\\",\\n\");\n'),
     write(S, '    s.push_str(\"  \\\"agents\\\": {\\n\");\n'),
     findall(Name-Backend-Opts, example_agent_config(Name, Backend, Opts), Examples),
     length(Examples, Len),
@@ -2019,6 +2023,7 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '    stream: bool,\n'),
     write(S, '    show_tokens: bool,\n'),
     write(S, '    multiline: bool,\n'),
+    write(S, '    paste_mode: String,\n'),
     write(S, '}\n\n'),
     write(S, 'fn handle_command(\n'),
     write(S, '    input: &str,\n'),
@@ -2952,6 +2957,7 @@ generate_config_save_example(S) :-
     write(S, '    example = {\n'),
     write(S, '        "default": "claude-sonnet",\n'),
     write(S, '        "skills_dir": "./skills",\n'),
+    write(S, '        "paste_mode": "auto",\n'),
     write(S, '        "agents": {\n'),
     findall(cfg(N,B,P), example_agent_config(N, B, P), Configs),
     generate_example_agents(S, Configs),
@@ -7216,6 +7222,7 @@ rust_fragment(main_loop, '
         stream: config.stream,
         show_tokens: config.show_tokens,
         multiline: false,
+        paste_mode: config.paste_mode.clone(),
     };
 
     // Session resume tracking
@@ -7292,8 +7299,8 @@ rust_fragment(main_loop, '
                     let ml = MultilineHandler::new();
                     let full = ml.read_explicit(&mut rl);
                     format!("{}\\n{}", input, full)
-                } else {
-                    // Try paste detection first
+                } else if state.paste_mode != "off" {
+                    // Try paste detection first (respects paste_mode setting)
                     match MultilineHandler::detect_paste(input) {
                         PasteResult::Pasted { content, line_count, char_count } => {
                             if line_count > 5 {
@@ -7308,6 +7315,13 @@ rust_fragment(main_loop, '
                                 line
                             }
                         }
+                    }
+                } else {
+                    // Paste detection disabled — just check multiline triggers
+                    if MultilineHandler::needs_continuation(input) {
+                        MultilineHandler::read_until_complete(input, &mut rl)
+                    } else {
+                        input.to_string()
                     }
                 };
                 let input = input.trim();
@@ -8293,10 +8307,13 @@ repl_loop :-
     ; repl_loop).
 
 %% Smart input reader with paste detection and multi-line support
+%% Respects paste_mode setting: auto/timing/bracketed/off
 read_input_smart(Input) :-
     read_line_to_string(user_input, Line),
     (Line = end_of_file -> Input = "/exit"
-    ; %% Try paste detection first
+    ; %% Check paste_mode setting (default: auto)
+      (current_paste_mode(PasteMode) -> true ; PasteMode = auto),
+      PasteMode \\= off,
       read_pasted_lines(Line, Lines, LineCount),
       LineCount > 1 ->
         atomic_list_concat(Lines, "\\n", PastedInput),
@@ -8310,6 +8327,9 @@ read_input_smart(Input) :-
         read_multiline(Delim, [Line], Input)
     ; atom_string(Input, Line)
     ).
+
+:- dynamic current_paste_mode/1.
+current_paste_mode(auto).
 
 %% Detect pasted lines by checking if stdin has more data within 50ms.
 read_pasted_lines(FirstLine, Lines, Count) :-
@@ -11357,6 +11377,48 @@ def _read_pasted_lines(first_line: str, timeout: float = 0.05) -> str:
     return \'\\n\'.join(lines)
 
 
+def _read_bracketed_paste(first_line: str) -> str:
+    """Read pasted text using bracketed paste mode detection.
+
+    Enables bracketed paste mode (ESC[?2004h), then checks if the
+    first_line was part of a bracketed paste (preceded by ESC[200~).
+    Falls back to timing-based detection if terminal doesn\'t support it.
+    """
+    import os, termios, tty
+    lines = [first_line]
+    try:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            # Enable bracketed paste mode
+            sys.stdout.write("\\033[?2004h")
+            sys.stdout.flush()
+            # Use timing detection as fallback — bracketed paste
+            # is handled by the terminal sending ESC[200~ before
+            # and ESC[201~ after pasted text, but input() already
+            # consumed the first line. Use select to grab the rest.
+            while True:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if not ready:
+                    break
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                # Strip bracketed paste end marker if present
+                cleaned = line.rstrip(\'\\n\').replace("\\033[201~", "").replace("\\033[200~", "")
+                if cleaned:
+                    lines.append(cleaned)
+        finally:
+            # Disable bracketed paste mode
+            sys.stdout.write("\\033[?2004l")
+            sys.stdout.flush()
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except (OSError, ValueError, ImportError):
+        # Fall back to timing-based detection
+        return _read_pasted_lines(first_line)
+    return \'\\n\'.join(lines)
+
+
 def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str | None:
     """Get multi-line input from the user.
 
@@ -11383,13 +11445,14 @@ def get_multiline_input(prompt: str = "You: ", end_marker: str = "EOF") -> str |
     return "\\n".join(lines)
 
 
-def get_input_smart(prompt: str = "You: ") -> str | None:
+def get_input_smart(prompt: str = "You: ", paste_mode: str = "auto") -> str | None:
     """Smart input that detects when multi-line is needed.
 
     Detection order:
-    1. Paste detection (if tty) — captures all pasted lines immediately
+    1. Paste detection (if tty and paste_mode != "off")
     2. If single line, check triggers: ```, <<<, \\\\, {/[/(
 
+    paste_mode: "auto" (timing-based), "bracketed" (ESC sequences), "timing", "off"
     Returns None on EOF.
     """
     try:
@@ -11400,9 +11463,13 @@ def get_input_smart(prompt: str = "You: ") -> str | None:
     if not line:
         return ""
 
-    # Paste detection first — if multiple lines arrived, return them all
-    if sys.stdin.isatty():
-        pasted = _read_pasted_lines(line)
+    # Paste detection (unless disabled)
+    if paste_mode != "off" and sys.stdin.isatty():
+        if paste_mode == "bracketed":
+            pasted = _read_bracketed_paste(line)
+        else:
+            # "auto" and "timing" both use timing-based detection
+            pasted = _read_pasted_lines(line)
         if \'\\n\' in pasted:
             lines_list = pasted.split(\'\\n\')
             n_lines = len(lines_list)
@@ -13387,7 +13454,8 @@ py_fragment(agent_loop_class_init, 'class AgentLoop:
 
     def _get_input(self) -> str | None:
         """Get input from user with multi-line support."""
-        return get_input_smart("You: ")
+        paste_mode = getattr(self.config, "paste_mode", "auto") if hasattr(self, "config") else "auto"
+        return get_input_smart("You: ", paste_mode=paste_mode)
 ').
 
 %% Per-handler command fragments — split from agent_loop_command_handlers
