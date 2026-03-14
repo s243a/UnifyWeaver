@@ -165,6 +165,27 @@ is_odd(1).
 is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
 ```
 
+**Why this pattern exists**: Target languages handle mutual recursion natively — any
+language that supports function calls supports mutually recursive functions. The mutual
+recursion pattern is not reimplementing language-level recursion. Instead, it solves the
+**code generation orchestration** problem:
+
+1. **Grouping**: Detects that `is_even/1` and `is_odd/1` form an SCC (strongly
+   connected component) and emits them into a **single output file** rather than
+   compiling each predicate independently into separate files
+2. **Shared memoization**: Generates a single shared memo structure (e.g.,
+   `mutualMemo` Map in TypeScript, `%mutual_memo` hash in Perl, `@mutual_memo` in
+   Ruby) that all functions in the group write to, avoiding redundant computation
+   across the group
+3. **CLI dispatch**: Generates an entry point that routes to any function in the group
+   by name (e.g., `ruby script.rb is_even 4`, `perl script.pl is_even 4`)
+4. **Guard and step extraction**: Extracts the `N > 0` guard and step size (e.g.,
+   `N1 is N - 1`) from Prolog clause bodies and translates them to target-language
+   conditionals and arithmetic
+
+Without this pattern, each predicate would be compiled in isolation, and the generated
+code for `is_even` would reference `is_odd` as an undefined function.
+
 **Compilation Strategy**:
 1. Build call graph
 2. Detect SCCs using Tarjan's algorithm
@@ -843,6 +864,21 @@ assertz(user:(is_even(N) :- ...)).
 - Monotonically increasing inputs
 - Very cheap predicates (e.g., factorial — no repeated subproblems)
 
+**Disabling memoization**: Pass `memo(false)` in the options list to suppress memo
+table generation. For linear recursion this produces a simple loop; for other patterns
+the `MemoEnabled` flag propagates through the multifile dispatch so each target can
+decide what "no memo" means (e.g., skip the hash/Map declaration and lookups). The
+`unique(false)` constraint also disables memoization, since non-unique results imply
+the memo cache would be incorrect.
+
+**Relationship to Prolog tabling**: SWI-Prolog supports tabling (`:- table pred/arity.`)
+which is Prolog's built-in memoization mechanism. UnifyWeaver does **not** use tabling
+internally — it analyses Prolog clauses at the term level and generates memoization code
+in the target language (hash tables, Maps, associative arrays, etc.). This is deliberate:
+the goal is to produce standalone target-language programs, not to speed up Prolog
+execution. Prolog tabling would memoize results during analysis, but the generated code
+must carry its own memoization since it runs outside Prolog entirely.
+
 ---
 
 ## References
@@ -853,4 +889,4 @@ assertz(user:(is_even(N) :- ...)).
 
 ---
 
-*Last updated: 2026-03-13*
+*Last updated: 2026-03-14*

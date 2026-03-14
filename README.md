@@ -79,8 +79,8 @@ Scala and Clojure also appear in the Functional table above.
 | **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Tree Recursion** | — | — | ✅ | ✅ |
-| **Transitive Closure** | ✅ | — | — | ✅ |
-| **Mutual Recursion** | ✅ | — | — | ✅ |
+| **Transitive Closure** | ✅ | — | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | — | ✅ | ✅ |
 | **Aggregations** | — | — | ✅ | ✅ |
 
 ### Scripting & Native Targets
@@ -90,8 +90,8 @@ Scala and Clojure also appear in the Functional table above.
 | **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | ✅ | — | — |
-| **Mutual Recursion** | ✅ | ✅ | — | — |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Aggregations** | — | — | — | — |
 
 ### Python Family Targets

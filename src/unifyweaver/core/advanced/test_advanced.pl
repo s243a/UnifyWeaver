@@ -34,6 +34,9 @@
 :- use_module('../../targets/java_target', []).
 :- use_module('../../targets/elixir_target', []).
 :- use_module('../../targets/fsharp_target', []).
+:- use_module('../../targets/ruby_target', []).
+:- use_module('../../targets/perl_target', []).
+:- use_module('../../targets/typescript_target', []).
 
 %% Main test runner
 test_all_advanced :-
