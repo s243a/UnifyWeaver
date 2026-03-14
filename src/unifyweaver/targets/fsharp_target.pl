@@ -802,7 +802,7 @@ direct_multi_call_recursion:compile_direct_multicall_pattern(fsharp, PredStr, Ba
     findall(BaseCaseCode, (
         member(clause(BHead, _), BaseClauses),
         BHead =.. [_P, BInput, BOutput],
-        format(string(BaseCaseCode), '    | ~w -> memo.[~w] <- ~w; ~w', [BInput, BInput, BOutput, BOutput])
+        format(string(BaseCaseCode), '        | ~w -> memo.[~w] <- ~w; ~w', [BInput, BInput, BOutput, BOutput])
     ), BaseCaseCodes),
     atomic_list_concat(BaseCaseCodes, '\n', BaseCaseStr),
     format(string(FsCode),

@@ -325,6 +325,14 @@ compile_mutual_recursion_elixir(PredList, _Options, Code) :-
 defmodule Generated.MutualGroup do
 ~w
 end
+
+case System.argv() do
+  [func, n_str | _] ->
+    {n, _} = Integer.parse(n_str)
+    result = apply(Generated.MutualGroup, String.to_atom(func), [n])
+    IO.puts(inspect(result))
+  _ -> :ok
+end
 ', [FuncDefs]).
 
 %% generate_mutual_module_elixir(+PredArityList, -FuncDefs)
@@ -802,7 +810,14 @@ defmodule Generated.~w do
     ~w_acc(rest, ~w)
   end
 end
-', [PredStr, PredCap, PredStr, ArgList, ArgList, PredStr, PredStr, PredStr, StepStr]).
+
+case System.argv() do
+  [items_str | _] ->
+    items = items_str |> String.split(",") |> Enum.map(&String.to_integer/1)
+    IO.puts(Generated.~w.~w_acc(items, 0))
+  _ -> :ok
+end
+', [PredStr, PredCap, PredStr, ArgList, ArgList, PredStr, PredStr, PredStr, StepStr, PredCap, PredStr]).
 
 %% ============================================
 %% MULTIFILE DISPATCH - Linear Recursion
@@ -823,7 +838,14 @@ defmodule Generated.~w do
     ~w(n - 1) + ~w(n - 2)
   end
 end
-', [PredStr, PredCap, PredStr, PredStr, PredStr, PredStr, PredStr]).
+
+case System.argv() do
+  [n_str | _] ->
+    {n, _} = Integer.parse(n_str)
+    IO.puts(Generated.~w.~w(n))
+  _ -> :ok
+end
+', [PredStr, PredCap, PredStr, PredStr, PredStr, PredStr, PredStr, PredCap, PredStr]).
 
 %% ============================================
 %% MULTIFILE DISPATCH - Mutual Recursion
@@ -866,9 +888,13 @@ defmodule ~w do
   end
 end
 
-# Usage:
-# ~w.start_link()
-# IO.puts ~w.~w(10)
+case System.argv() do
+  [n_str | _] ->
+    ~w.start_link()
+    {n, _} = Integer.parse(n_str)
+    IO.puts(~w.~w(n))
+  _ -> :ok
+end
 ', [PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr]).
 
 % ============================================================================
@@ -906,7 +932,15 @@ defmodule ~w do
     end
   end
 end
-', [PredStr, BaseCaseStr, PredStr, PredStr, PredStr]).
+
+case System.argv() do
+  [n_str | _] ->
+    ~w.start_link()
+    {n, _} = Integer.parse(n_str)
+    IO.puts(~w.~w(n))
+  _ -> :ok
+end
+', [PredStr, BaseCaseStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr]).
 
 % ============================================================================
 % DIRECT MULTI-CALL RECURSION - Elixir target delegation (multifile)
@@ -943,4 +977,12 @@ defmodule ~w do
     end
   end
 end
-', [PredStr, BaseCaseStr, PredStr, PredStr, PredStr]).
+
+case System.argv() do
+  [n_str | _] ->
+    ~w.start_link()
+    {n, _} = Integer.parse(n_str)
+    IO.puts(~w.~w(n))
+  _ -> :ok
+end
+', [PredStr, BaseCaseStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr]).
