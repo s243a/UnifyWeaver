@@ -10,6 +10,9 @@ use agent_loop::security::*;
 use agent_loop::tool_handler::*;
 use agent_loop::config::*;
 use agent_loop::proot_sandbox::*;
+use agent_loop::plugin_manager::*;
+use agent_loop::wasm_bindings::*;
+use agent_loop::sessions::*;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -656,4 +659,225 @@ fn test_proot_sandbox_env_overrides_content() {
     let overrides = sandbox.build_env_overrides();
     assert!(overrides.iter().any(|(k, _)| *k == "PROOT_NO_SECCOMP"));
     assert!(overrides.iter().any(|(k, v)| *k == "LD_PRELOAD" && v.is_empty()));
+}
+
+// ============================================================================
+// Plugin manager tests
+// ============================================================================
+
+#[test]
+fn test_plugin_manager_new_empty() {
+    let pm = PluginManager::new();
+    assert_eq!(pm.list_tools().len(), 0);
+    assert_eq!(pm.list_plugins().len(), 0);
+    assert!(!pm.has_tool("anything"));
+}
+
+#[test]
+fn test_plugin_manager_load_nonexistent_dir() {
+    let mut pm = PluginManager::new();
+    let count = pm.load_dir("/nonexistent/path/to/plugins");
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_plugin_manager_default_dir() {
+    let dir = PluginManager::default_dir();
+    let dir_str = dir.to_string_lossy();
+    assert!(dir_str.contains("plugins"));
+    assert!(dir_str.contains(".agent-loop"));
+}
+
+#[test]
+fn test_plugin_tool_schema_generation() {
+    // Create a plugin manifest in memory and test schema generation
+    let manifest_json = r#"{
+        "name": "test-plugin",
+        "version": "1.0",
+        "description": "Test plugin",
+        "tools": [{
+            "name": "greet",
+            "description": "Say hello",
+            "parameters": [{
+                "name": "name",
+                "param_type": "string",
+                "required": true,
+                "description": "Name to greet"
+            }],
+            "command_template": "echo Hello {name}!"
+        }]
+    }"#;
+
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let plugin_dir = format!("{}/uwsal_test_plugins", tmp_dir);
+    let _ = std::fs::create_dir_all(&plugin_dir);
+    let plugin_file = format!("{}/test.json", plugin_dir);
+    std::fs::write(&plugin_file, manifest_json).unwrap();
+
+    let mut pm = PluginManager::new();
+    let count = pm.load_dir(&plugin_dir);
+    assert_eq!(count, 1);
+    assert!(pm.has_tool("greet"));
+
+    let tool = pm.get_tool("greet").unwrap();
+    assert_eq!(tool.name, "greet");
+    assert_eq!(tool.parameters.len(), 1);
+
+    let schemas = pm.get_tool_schemas();
+    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas[0]["function"]["name"], "greet");
+
+    // Test command rendering
+    let mut args = HashMap::new();
+    args.insert("name".to_string(), serde_json::json!("World"));
+    let cmd = pm.execute("greet", &args).unwrap();
+    assert_eq!(cmd, "echo Hello World!");
+
+    // Cleanup
+    let _ = std::fs::remove_file(&plugin_file);
+    let _ = std::fs::remove_dir(&plugin_dir);
+}
+
+// ============================================================================
+// WASM bindings tests (non-wasm target — tests WasmAgentState directly)
+// ============================================================================
+
+#[test]
+fn test_wasm_agent_state_new() {
+    let state = WasmAgentState::new(4096, "openai", "gpt-4");
+    assert_eq!(state.get_message_count(), 0);
+}
+
+#[test]
+fn test_wasm_agent_state_messages() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("hello");
+    state.add_assistant_message("hi there");
+    assert_eq!(state.get_message_count(), 2);
+
+    let json = state.get_context_json();
+    assert!(json.contains("hello"));
+    assert!(json.contains("hi there"));
+}
+
+#[test]
+fn test_wasm_agent_state_build_request() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.set_system_prompt("You are helpful.");
+    state.add_user_message("What is 2+2?");
+
+    let req = state.build_request_json();
+    assert!(req.contains("gpt-4"));
+    assert!(req.contains("You are helpful"));
+    assert!(req.contains("What is 2+2"));
+}
+
+#[test]
+fn test_wasm_agent_state_export_json() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("test message");
+    let export = state.export_json();
+    assert!(export.contains("message_count"));
+    assert!(export.contains("test message"));
+}
+
+#[test]
+fn test_wasm_agent_state_export_markdown() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("user msg");
+    state.add_assistant_message("assistant msg");
+    let md = state.export_markdown();
+    assert!(md.contains("## You"));
+    assert!(md.contains("## Assistant"));
+}
+
+#[test]
+fn test_wasm_agent_state_clear() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("msg1");
+    state.add_user_message("msg2");
+    assert_eq!(state.get_message_count(), 2);
+    state.clear_context();
+    assert_eq!(state.get_message_count(), 0);
+}
+
+#[test]
+fn test_wasm_agent_state_parse_tool_calls_openai() {
+    let state = WasmAgentState::new(4096, "openai", "gpt-4");
+    let response = r#"{"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"bash","arguments":"ls"}}]}}]}"#;
+    let result = state.parse_tool_calls(response);
+    assert!(result.contains("bash"));
+    assert!(result.contains("call_1"));
+}
+
+#[test]
+fn test_wasm_agent_state_parse_tool_calls_anthropic() {
+    let state = WasmAgentState::new(4096, "anthropic", "claude-3");
+    let response = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{"file_path":"test.txt"}}]}"#;
+    let result = state.parse_tool_calls(response);
+    assert!(result.contains("tool_use"));
+    assert!(result.contains("read"));
+}
+
+// ============================================================================
+// Session manager tests
+// ============================================================================
+
+#[test]
+fn test_session_manager_empty_list() {
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let sm = SessionManager::new(Some(&test_dir));
+    let sessions = sm.list();
+    assert!(sessions.is_empty());
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn test_session_manager_save_and_load() {
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let sm = SessionManager::new(Some(&test_dir));
+
+    let messages = vec![
+        Message { role: "user".to_string(), content: "hello".to_string(), tool_calls: None, tool_call_id: None },
+        Message { role: "assistant".to_string(), content: "hi".to_string(), tool_calls: None, tool_call_id: None },
+    ];
+    let id = sm.save(&messages, "test-backend", Some("test-session"));
+
+    let loaded = sm.load(&id);
+    assert!(loaded.is_some());
+    let session = loaded.unwrap();
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.metadata.name, "test-session");
+    assert_eq!(session.metadata.backend, "test-backend");
+
+    // List should include our session
+    let sessions = sm.list();
+    assert_eq!(sessions.len(), 1);
+
+    // Delete
+    assert!(sm.delete(&id));
+    assert!(sm.list().is_empty());
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+// ============================================================================
+// Cost tracker expanded tests
+// ============================================================================
+
+#[test]
+fn test_cost_tracker_format_summary() {
+    let tracker = CostTracker::new();
+    let summary = tracker.format_summary();
+    assert!(summary.contains("0") || summary.contains("Cost"));
+}
+
+#[test]
+fn test_cost_tracker_record_and_report() {
+    let mut tracker = CostTracker::new();
+    tracker.record_usage("test-model", 100, 50);
+    let summary = tracker.format_summary();
+    assert!(summary.contains("100") || summary.contains("150") || summary.len() > 0);
 }

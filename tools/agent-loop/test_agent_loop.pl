@@ -247,6 +247,11 @@ run_tests :-
     test_rust_tool_call_e2e,
     test_rust_help_generation,
     test_rust_expanded_integration_tests,
+    %% Phase 13 — plugin system, WASM, data-driven dispatch, expanded tests
+    test_rust_plugin_system,
+    test_rust_wasm_bindings,
+    test_rust_data_driven_dispatch,
+    test_rust_phase13_integration_tests,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3054,7 +3059,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 30),
+    assert_eq('Rust fragment count', RFCount, 32),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -4617,4 +4622,148 @@ test_rust_expanded_integration_tests :-
     )),
     assert_true('proot env overrides content test exists', (
         sub_string(TestContent, _, _, _, "test_proot_sandbox_env_overrides_content")
+    )).
+
+%% ============================================================================
+%% Phase 13 — Plugin system tests
+%% ============================================================================
+
+test_rust_plugin_system :-
+    format("~nRust plugin system:~n"),
+    %% Check plugin_manager fragment exists
+    assert_true('plugin_manager fragment exists', (
+        agent_loop_module:rust_fragment(plugin_manager, _)
+    )),
+    %% Check generated file
+    agent_loop_module:output_path(rust, 'plugin_manager.rs', PluginPath),
+    read_file_to_string(PluginPath, PluginContent, []),
+    assert_true('PluginManager struct exists', (
+        sub_string(PluginContent, _, _, _, "pub struct PluginManager")
+    )),
+    assert_true('PluginTool struct exists', (
+        sub_string(PluginContent, _, _, _, "pub struct PluginTool")
+    )),
+    assert_true('PluginManifest struct exists', (
+        sub_string(PluginContent, _, _, _, "pub struct PluginManifest")
+    )),
+    assert_true('load_dir method exists', (
+        sub_string(PluginContent, _, _, _, "fn load_dir")
+    )),
+    assert_true('get_tool_schemas method exists', (
+        sub_string(PluginContent, _, _, _, "fn get_tool_schemas")
+    )),
+    assert_true('execute method exists', (
+        sub_string(PluginContent, _, _, _, "fn execute")
+    )).
+
+%% ============================================================================
+%% Phase 13 — WASM bindings tests
+%% ============================================================================
+
+test_rust_wasm_bindings :-
+    format("~nRust WASM bindings:~n"),
+    %% Check wasm_bindings fragment exists
+    assert_true('wasm_bindings fragment exists', (
+        agent_loop_module:rust_fragment(wasm_bindings, _)
+    )),
+    %% Check generated file
+    agent_loop_module:output_path(rust, 'wasm_bindings.rs', WasmPath),
+    read_file_to_string(WasmPath, WasmContent, []),
+    assert_true('WasmAgentState struct exists', (
+        sub_string(WasmContent, _, _, _, "pub struct WasmAgentState")
+    )),
+    assert_true('WasmAgent struct exists (wasm32)', (
+        sub_string(WasmContent, _, _, _, "pub struct WasmAgent")
+    )),
+    assert_true('build_request_json method', (
+        sub_string(WasmContent, _, _, _, "fn build_request_json")
+    )),
+    assert_true('parse_tool_calls method', (
+        sub_string(WasmContent, _, _, _, "fn parse_tool_calls")
+    )),
+    assert_true('cfg wasm32 conditional', (
+        sub_string(WasmContent, _, _, _, "cfg(target_arch")
+    )),
+    assert_true('wasm_bindgen import', (
+        sub_string(WasmContent, _, _, _, "wasm_bindgen")
+    )).
+
+%% ============================================================================
+%% Phase 13 — Data-driven dispatch tests
+%% ============================================================================
+
+test_rust_data_driven_dispatch :-
+    format("~nRust data-driven dispatch:~n"),
+    %% Check rust_command_body facts exist
+    assert_true('rust_command_body for exit exists', (
+        agent_loop_module:rust_command_body(exit, _)
+    )),
+    assert_true('rust_command_body for save exists', (
+        agent_loop_module:rust_command_body(save, _)
+    )),
+    assert_true('rust_command_body for template exists', (
+        agent_loop_module:rust_command_body(template, _)
+    )),
+    %% Verify generated dispatch has aliases
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('dispatch includes exit/quit alias', (
+        sub_string(MainContent, _, _, _, "\"exit\" | \"quit\"")
+    )),
+    assert_true('dispatch includes cost/costs alias', (
+        sub_string(MainContent, _, _, _, "\"cost\" | \"costs\"")
+    )),
+    assert_true('dispatch includes stream/streaming alias', (
+        sub_string(MainContent, _, _, _, "\"stream\" | \"streaming\"")
+    )),
+    assert_true('dispatch includes template/templates alias', (
+        sub_string(MainContent, _, _, _, "\"templates\" | \"template\"")
+    )),
+    assert_true('dispatch includes delete/del alias', (
+        sub_string(MainContent, _, _, _, "\"delete\" | \"del\"")
+    )),
+    %% Check model/tokens/multiline are in dispatch
+    assert_true('dispatch includes model command', (
+        sub_string(MainContent, _, _, _, "\"model\" =>")
+    )),
+    assert_true('dispatch includes tokens command', (
+        sub_string(MainContent, _, _, _, "\"tokens\" =>")
+    )),
+    assert_true('dispatch includes multiline command', (
+        sub_string(MainContent, _, _, _, "\"multiline\" =>")
+    )).
+
+%% ============================================================================
+%% Phase 13 — Expanded integration tests verification
+%% ============================================================================
+
+test_rust_phase13_integration_tests :-
+    format("~nRust Phase 13 integration tests:~n"),
+    agent_loop_module:output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../tests/integration_tests.rs', TestPath),
+    read_file_to_string(TestPath, TestContent, []),
+    %% Plugin tests
+    assert_true('plugin manager test exists', (
+        sub_string(TestContent, _, _, _, "test_plugin_manager_new_empty")
+    )),
+    assert_true('plugin schema test exists', (
+        sub_string(TestContent, _, _, _, "test_plugin_tool_schema_generation")
+    )),
+    %% WASM tests
+    assert_true('wasm state test exists', (
+        sub_string(TestContent, _, _, _, "test_wasm_agent_state_new")
+    )),
+    assert_true('wasm build request test exists', (
+        sub_string(TestContent, _, _, _, "test_wasm_agent_state_build_request")
+    )),
+    assert_true('wasm parse tool calls test exists', (
+        sub_string(TestContent, _, _, _, "test_wasm_agent_state_parse_tool_calls_openai")
+    )),
+    %% Session tests
+    assert_true('session save/load test exists', (
+        sub_string(TestContent, _, _, _, "test_session_manager_save_and_load")
+    )),
+    %% Cost tracker tests
+    assert_true('cost tracker record test exists', (
+        sub_string(TestContent, _, _, _, "test_cost_tracker_record_and_report")
     )).

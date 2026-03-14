@@ -14,3 +14,5 @@ pub mod tool_handler;
 pub mod sessions;
 pub mod config_loader;
 pub mod proot_sandbox;
+pub mod plugin_manager;
+pub mod wasm_bindings;
