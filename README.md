@@ -54,10 +54,10 @@ Targets for functional / FP-oriented languages with pattern matching and immutab
 |---------|:-------:|:--:|:-----:|:-------:|:------:|
 | **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | — |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | — | ✅ | ✅ | ✅ | — |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ### JVM & OOP Targets
 
