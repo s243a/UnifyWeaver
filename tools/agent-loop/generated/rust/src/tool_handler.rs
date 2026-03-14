@@ -8,6 +8,7 @@ use crate::types::*;
 
 use crate::security::SecurityProfileSpec;
 use crate::proot_sandbox::{ProotSandbox, ProotConfig};
+use crate::plugin_manager::PluginManager;
 
 /// Handles tool execution with security validation.
 pub struct ToolHandler {
@@ -15,11 +16,12 @@ pub struct ToolHandler {
     pub security_profile: String,
     pub approval_mode: String,
     pub proot: Option<ProotSandbox>,
+    pub plugins: Option<PluginManager>,
 }
 
 impl ToolHandler {
     pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
-        Self { auto_approve, security_profile, approval_mode, proot: None }
+        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None }
     }
 
     /// Enable proot sandbox with the given allowed dirs.
@@ -34,6 +36,35 @@ impl ToolHandler {
         } else {
             eprintln!("[Warning] proot sandbox requested but proot not found. Install with: pkg install proot");
         }
+    }
+
+    /// Load plugins from a directory. Returns number of plugins loaded.
+    pub fn load_plugins(&mut self, dir: &str) -> usize {
+        let mut pm = PluginManager::new();
+        let count = pm.load_dir(dir);
+        if count > 0 {
+            self.plugins = Some(pm);
+        }
+        count
+    }
+
+    /// Load plugins from the default directory (~/.agent-loop/plugins/).
+    pub fn load_default_plugins(&mut self) -> usize {
+        let dir = PluginManager::default_dir();
+        if dir.exists() {
+            self.load_plugins(dir.to_str().unwrap_or(""))
+        } else {
+            0
+        }
+    }
+
+    /// Get all tool schemas (built-in + plugins) for API tool_use format.
+    pub fn get_all_tool_schemas(&self) -> Vec<serde_json::Value> {
+        let mut schemas = crate::tools::tool_schemas_json().clone();
+        if let Some(ref pm) = self.plugins {
+            schemas.extend(pm.get_tool_schemas());
+        }
+        schemas
     }
 
     /// Look up the SecurityProfileSpec for the current profile.
@@ -190,10 +221,23 @@ impl ToolHandler {
             "read" => self.handle_read(&tool_call.arguments),
             "write" => self.handle_write(&tool_call.arguments),
             "edit" => self.handle_edit(&tool_call.arguments),
-            _ => ToolResult {
-                success: false,
-                output: format!("Unknown tool: {}", tool_call.name),
-                tool_name: tool_call.name.clone(),
+            _ => {
+                // Check plugin tools
+                if let Some(ref pm) = self.plugins {
+                    if let Some(cmd) = pm.execute(&tool_call.name, &tool_call.arguments) {
+                        // Execute plugin command via bash
+                        let mut plugin_args = std::collections::HashMap::new();
+                        plugin_args.insert("command".to_string(), serde_json::json!(cmd));
+                        let mut result = self.handle_bash(&plugin_args);
+                        result.tool_name = tool_call.name.clone();
+                        return result;
+                    }
+                }
+                ToolResult {
+                    success: false,
+                    output: format!("Unknown tool: {}", tool_call.name),
+                    tool_name: tool_call.name.clone(),
+                }
             },
         }
     }

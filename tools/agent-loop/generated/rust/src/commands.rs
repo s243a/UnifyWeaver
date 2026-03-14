@@ -31,6 +31,7 @@ pub static SLASH_COMMANDS: &[(&str, CommandSpec)] = &[
     ("stream", CommandSpec { match_type: "exact", help: "Toggle streaming mode for API backends" }),
     ("model", CommandSpec { match_type: "prefix_sp", help: "Show or switch model at runtime" }),
     ("tokens", CommandSpec { match_type: "exact", help: "Show context token estimate and limit" }),
+    ("multiline", CommandSpec { match_type: "exact", help: "Toggle multiline input mode" }),
     ("aliases", CommandSpec { match_type: "exact", help: "List command aliases (e.g., /q -> /quit)" }),
     ("templates", CommandSpec { match_type: "exact", help: "List prompt templates" }),
     ("history", CommandSpec { match_type: "exact_or_prefix_sp", help: "Show last n messages (default 10)" }),

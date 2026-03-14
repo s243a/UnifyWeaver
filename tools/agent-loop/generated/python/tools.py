@@ -174,6 +174,104 @@ class SecurityConfig:
         )
 
 
+
+class PluginManager:
+    """Manages loading and executing plugin-defined tools from JSON files."""
+
+    DEFAULT_DIR = os.path.join(os.path.expanduser("~"), ".agent-loop", "plugins")
+
+    def __init__(self):
+        self.plugins: list[dict] = []
+        self.tool_map: dict[str, tuple[int, int]] = {}  # name -> (plugin_idx, tool_idx)
+
+    def load_dir(self, directory: str) -> int:
+        """Load all .json plugin manifests from a directory. Returns count."""
+        if not os.path.isdir(directory):
+            return 0
+        count = 0
+        for fname in sorted(os.listdir(directory)):
+            if fname.endswith(".json"):
+                path = os.path.join(directory, fname)
+                if self.load_file(path):
+                    count += 1
+        return count
+
+    def load_file(self, path: str) -> bool:
+        """Load a single plugin manifest."""
+        try:
+            with open(path, "r") as f:
+                manifest = json.load(f)
+            plugin_idx = len(self.plugins)
+            for tool_idx, tool in enumerate(manifest.get("tools", [])):
+                self.tool_map[tool["name"]] = (plugin_idx, tool_idx)
+            self.plugins.append(manifest)
+            return True
+        except (json.JSONDecodeError, IOError, KeyError):
+            return False
+
+    def has_tool(self, name: str) -> bool:
+        return name in self.tool_map
+
+    def get_tool(self, name: str) -> dict | None:
+        if name not in self.tool_map:
+            return None
+        pi, ti = self.tool_map[name]
+        return self.plugins[pi]["tools"][ti]
+
+    def execute(self, name: str, args: dict) -> str | None:
+        """Render command template with arguments. Returns command string."""
+        tool = self.get_tool(name)
+        if tool is None:
+            return None
+        cmd = tool.get("command_template", "")
+        for param in tool.get("parameters", []):
+            placeholder = "{" + param["name"] + "}"
+            if param["name"] in args:
+                val = args[param["name"]]
+                cmd = cmd.replace(placeholder, str(val))
+            elif param.get("required", False):
+                return None
+        return cmd
+
+    def list_tools(self) -> list[dict]:
+        tools = []
+        for plugin in self.plugins:
+            tools.extend(plugin.get("tools", []))
+        return tools
+
+    def get_tool_schemas(self) -> list[dict]:
+        """Get tool schemas in OpenAI-compatible format."""
+        schemas = []
+        for tool in self.list_tools():
+            params = tool.get("parameters", [])
+            properties = {}
+            required = []
+            for p in params:
+                properties[p["name"]] = {
+                    "type": p.get("param_type", "string"),
+                    "description": p.get("description", "")
+                }
+                if p.get("required", False):
+                    required.append(p["name"])
+            schemas.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required
+                    }
+                }
+            })
+        return schemas
+
+    def load_default(self) -> int:
+        """Load plugins from the default directory."""
+        return self.load_dir(self.DEFAULT_DIR)
+
+
 class ToolHandler:
     """Handles execution of tool calls from agent responses."""
 
@@ -219,6 +317,30 @@ class ToolHandler:
                 print("[Warning] proot sandbox requested but proot not "
                       "found. Install with: pkg install proot",
                       file=sys.stderr)
+
+        # Load plugins
+        self.plugin_manager = PluginManager()
+        plugin_count = self.plugin_manager.load_default()
+        if plugin_count > 0:
+            # Register plugin tools as allowed and add dispatchers
+            for tool in self.plugin_manager.list_tools():
+                name = tool["name"]
+                self.allowed_tools.append(name)
+                self.tools[name] = self._make_plugin_handler(name)
+            print(f"[Loaded {plugin_count} plugin(s)]")
+
+    def _make_plugin_handler(self, tool_name: str):
+        """Create a handler function for a plugin tool."""
+        def handler(args):
+            cmd = self.plugin_manager.execute(tool_name, args)
+            if cmd is None:
+                return ToolResult(
+                    success=False,
+                    output=f"Missing required parameters for {tool_name}",
+                    tool_name=tool_name
+                )
+            return self._execute_bash({"command": cmd})
+        return handler
 
         self.tools = {
             'bash': self._execute_bash,

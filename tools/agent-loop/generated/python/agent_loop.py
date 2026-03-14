@@ -204,12 +204,26 @@ class AgentLoop:
         if cmd == 'stream' or cmd == 'streaming':
             return self._handle_stream_command()
 
+        # /model [name] - show or switch model
+        if cmd.startswith('model '):
+            return self._handle_model_command(text)
+
+        # /tokens - show context token estimate
+        if cmd == 'tokens':
+            return self._handle_tokens_command()
+
+        if cmd == 'multiline':
+            self.multiline_mode = not getattr(self, "multiline_mode", False)
+            state = "ON" if self.multiline_mode else "OFF"
+            print(f"Multiline mode: {state}")
+            return True
+
         # Aliases
         if cmd == 'aliases':
             return self._handle_aliases_command()
 
         # Templates
-        if cmd == 'templates':
+        if cmd == 'templates' or cmd == 'template':
             return self._handle_templates_command()
 
         # History
@@ -424,6 +438,25 @@ Cost Summary:
         self.streaming = not self.streaming
         status = "enabled" if self.streaming else "disabled"
         print(f"[Streaming {status}]\n")
+        return True
+
+    def _handle_model_command(self, text: str) -> bool:
+        """Handle /model [name] command."""
+        parts = text.split(maxsplit=1)
+        if len(parts) > 1:
+            new_model = parts[1].strip()
+            self.config["model"] = new_model
+            print(f"Model switched to: {new_model}")
+        else:
+            print(f"Current model: {self.config.get("model", "unknown")}")
+        return True
+
+    def _handle_tokens_command(self) -> bool:
+        """Handle /tokens command."""
+        count = self.context.token_count()
+        limit = self.config.get("max_context_tokens", 128000)
+        pct = (count / limit * 100) if limit > 0 else 0
+        print(f"Context: ~{count} tokens ({pct:.1f}% of {limit})")
         return True
 
     def _handle_aliases_command(self) -> bool:

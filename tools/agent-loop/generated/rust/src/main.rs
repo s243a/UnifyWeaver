@@ -1125,6 +1125,12 @@ fn main() {
         tool_handler.enable_proot(&cwd.to_string_lossy(), proot_dirs);
     }
 
+    // Load plugins from default directory
+    let plugin_count = tool_handler.load_default_plugins();
+    if plugin_count > 0 {
+        println!("[Loaded {} plugin(s)]", plugin_count);
+    }
+
     let mut state = RuntimeState {
         max_iterations: config.max_iterations,
         stream: config.stream,

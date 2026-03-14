@@ -826,7 +826,7 @@ fn test_wasm_agent_state_parse_tool_calls_anthropic() {
 #[test]
 fn test_session_manager_empty_list() {
     let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let test_dir = format!("{}/uwsal_test_sessions_empty_{}", tmp_dir, std::process::id());
     let sm = SessionManager::new(Some(&test_dir));
     let sessions = sm.list();
     assert!(sessions.is_empty());
@@ -836,7 +836,7 @@ fn test_session_manager_empty_list() {
 #[test]
 fn test_session_manager_save_and_load() {
     let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let test_dir = format!("{}/uwsal_test_sessions_saveload_{}", tmp_dir, std::process::id());
     let sm = SessionManager::new(Some(&test_dir));
 
     let messages = vec![
