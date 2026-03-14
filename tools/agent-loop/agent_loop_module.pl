@@ -1169,6 +1169,7 @@ generate_all(rust) :-
     generate_rust_tools,
     generate_rust_commands,
     generate_rust_security,
+    generate_rust_proot_sandbox,
     %% Phase 2 — imperative layer
     generate_rust_types,
     generate_rust_context,
@@ -1179,6 +1180,7 @@ generate_all(rust) :-
     %% Phase 4 — config loading + streaming
     generate_rust_config_loader,
     generate_rust_main,
+    generate_rust_integration_tests,
     write('Rust target done.'), nl.
 
 %% =============================================================================
@@ -1494,6 +1496,7 @@ generate_rust_lib :-
     write(S, 'pub mod tool_handler;\n'),
     write(S, 'pub mod sessions;\n'),
     write(S, 'pub mod config_loader;\n'),
+    write(S, 'pub mod proot_sandbox;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
 
@@ -1562,6 +1565,14 @@ generate_rust_security :-
     emit_rust_regex_lists(S),
     close(S),
     format('  Generated rust/src/security.rs~n', []).
+
+generate_rust_proot_sandbox :-
+    output_path(rust, 'proot_sandbox.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, proot_sandbox, 'Proot filesystem isolation sandbox'),
+    write_rust(S, proot_sandbox),
+    close(S),
+    format('  Generated rust/src/proot_sandbox.rs~n', []).
 
 %% emit_rust_regex_lists(+Stream)
 %% Emit regex_list/2 facts as Rust static &[&str] arrays into security.rs.
@@ -1981,6 +1992,17 @@ generate_rust_main :-
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/main.rs~n', []).
+
+generate_rust_integration_tests :-
+    output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../tests/', TestDir),
+    make_directory_path(TestDir),
+    atom_concat(TestDir, 'integration_tests.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, integration_tests, 'Integration tests — compile and run verification'),
+    write_rust(S, integration_tests),
+    close(S),
+    format('  Generated rust/tests/integration_tests.rs~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.
@@ -4169,8 +4191,232 @@ rust_fragment(security_types, '
 pub struct SecurityProfileSpec {
     pub path_validation: bool,
     pub command_validation: bool,
+    #[serde(default)]
+    pub proot_isolation: bool,
 }
 
+').
+
+rust_fragment(proot_sandbox, '
+use std::path::Path;
+
+/// Configuration for proot-based filesystem sandboxing.
+#[derive(Debug, Clone)]
+pub struct ProotConfig {
+    /// Extra directories the agent is allowed to access (bind-mounted)
+    pub allowed_dirs: Vec<String>,
+    /// Read-only bind mounts
+    pub readonly_binds: Vec<String>,
+    /// Kill child processes on exit
+    pub kill_on_exit: bool,
+    /// Termux prefix (for binaries, libs, etc.)
+    pub termux_prefix: String,
+    /// Extra proot flags passed verbatim
+    pub extra_flags: Vec<String>,
+    /// Redirect $HOME to a temp directory inside proot
+    pub redirect_home: Option<String>,
+    /// Dry-run mode: return command string without executing
+    pub dry_run: bool,
+}
+
+impl Default for ProotConfig {
+    fn default() -> Self {
+        Self {
+            allowed_dirs: Vec::new(),
+            readonly_binds: Vec::new(),
+            kill_on_exit: true,
+            termux_prefix: "/data/data/com.termux/files/usr".to_string(),
+            extra_flags: Vec::new(),
+            redirect_home: None,
+            dry_run: false,
+        }
+    }
+}
+
+/// Wraps commands in proot for filesystem isolation.
+///
+/// Layer 4 in the security model — the outermost execution wrapper.
+/// On Termux/Android, proot is available via `pkg install proot`.
+pub struct ProotSandbox {
+    working_dir: String,
+    config: ProotConfig,
+    proot_path: Option<String>,
+    available: Option<bool>,
+}
+
+impl ProotSandbox {
+    pub fn new(working_dir: &str, config: ProotConfig) -> Self {
+        Self {
+            working_dir: working_dir.to_string(),
+            config,
+            proot_path: None,
+            available: None,
+        }
+    }
+
+    /// Check if proot is installed and usable.
+    pub fn is_available(&mut self) -> bool {
+        if let Some(avail) = self.available {
+            return avail;
+        }
+        // Search PATH for proot binary
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let found = path_var.split('':'').find_map(|dir| {
+            let candidate = Path::new(dir).join("proot");
+            if candidate.exists() { Some(candidate.to_string_lossy().to_string()) } else { None }
+        });
+        self.available = Some(found.is_some());
+        self.proot_path = found;
+        self.available.unwrap()
+    }
+
+    /// Wrap a bash command to run inside proot.
+    ///
+    /// Binds: working dir (rw), Termux prefix, /proc, /dev, /system,
+    /// allowed_dirs, readonly_binds. Uses --kill-on-exit.
+    pub fn wrap_command(&mut self, command: &str) -> Result<String, String> {
+        if !self.is_available() {
+            return Err("proot is not installed. Install with: pkg install proot".to_string());
+        }
+
+        let proot = self.proot_path.as_ref().unwrap();
+        let mut parts: Vec<String> = vec![proot.clone()];
+
+        if self.config.kill_on_exit {
+            parts.push("--kill-on-exit".to_string());
+        }
+
+        // Working directory inside proot
+        parts.push("-w".to_string());
+        parts.push(self.working_dir.clone());
+
+        // Essential system binds (Termux/Android)
+        let essential = [
+            self.config.termux_prefix.clone(),
+            "/proc".to_string(),
+            "/dev".to_string(),
+            "/system".to_string(),
+        ];
+        for bind in &essential {
+            if Path::new(bind).exists() {
+                parts.push("-b".to_string());
+                parts.push(bind.clone());
+            }
+        }
+
+        // Working directory (read-write)
+        parts.push("-b".to_string());
+        parts.push(self.working_dir.clone());
+
+        // Redirect $HOME to a fake directory
+        if let Some(ref redirect) = self.config.redirect_home {
+            if let Ok(home) = std::env::var("HOME") {
+                parts.push("-b".to_string());
+                parts.push(format!("{}:{}", redirect, home));
+            }
+        }
+
+        // User-configured allowed directories
+        for dir_path in &self.config.allowed_dirs {
+            let expanded = shellexpand_home(dir_path);
+            if Path::new(&expanded).exists() {
+                parts.push("-b".to_string());
+                parts.push(expanded);
+            }
+        }
+
+        // Read-only binds
+        for dir_path in &self.config.readonly_binds {
+            let expanded = shellexpand_home(dir_path);
+            if Path::new(&expanded).exists() {
+                parts.push("-b".to_string());
+                parts.push(expanded);
+            }
+        }
+
+        // Extra flags
+        parts.extend(self.config.extra_flags.iter().cloned());
+
+        // The command to execute inside proot
+        let bash_path = format!("{}/bin/bash", self.config.termux_prefix);
+        parts.push(bash_path);
+        parts.push("-c".to_string());
+        parts.push(command.to_string());
+
+        Ok(quote_parts(&parts))
+    }
+
+    /// Return env vars needed for proot execution.
+    pub fn build_env_overrides(&self) -> Vec<(&''static str, &''static str)> {
+        vec![
+            ("PROOT_NO_SECCOMP", "1"),
+            ("LD_PRELOAD", ""),
+        ]
+    }
+
+    /// Return diagnostic info.
+    pub fn status(&mut self) -> ProotStatus {
+        ProotStatus {
+            available: self.is_available(),
+            proot_path: self.proot_path.clone(),
+            working_dir: self.working_dir.clone(),
+            allowed_dirs: self.config.allowed_dirs.clone(),
+            kill_on_exit: self.config.kill_on_exit,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProotStatus {
+    pub available: bool,
+    pub proot_path: Option<String>,
+    pub working_dir: String,
+    pub allowed_dirs: Vec<String>,
+    pub kill_on_exit: bool,
+}
+
+/// Expand ~ at the start of a path to $HOME.
+fn shellexpand_home(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{}{}", home, &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
+/// Quote command parts for shell execution.
+fn quote_parts(parts: &[String]) -> String {
+    let sq = char::from(39u8); // single quote character
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < parts.len() {
+        if parts[i] == "-c" && i + 1 < parts.len() {
+            result.push(parts[i].clone());
+            let inner = &parts[i + 1];
+            let escaped = shell_escape_sq(inner);
+            result.push(format!("{sq}{}{sq}", escaped));
+            i += 2;
+        } else {
+            let p = &parts[i];
+            if p.contains('' '') || p.contains(sq) || p.contains(''\\\\'' ) {
+                let escaped = shell_escape_sq(p);
+                result.push(format!("{sq}{}{sq}", escaped));
+            } else {
+                result.push(p.clone());
+            }
+            i += 1;
+        }
+    }
+    result.join(" ")
+}
+
+/// Escape single quotes for shell: replace '' with ''\\''''
+fn shell_escape_sq(s: &str) -> String {
+    let sq = char::from(39u8);
+    let replacement = format!("{sq}\\\\{sq}{sq}", );
+    s.replace(sq, &replacement)
+}
 ').
 
 %% --- Rust Phase 2: Imperative layer fragments ---
@@ -4827,17 +5073,33 @@ impl AgentBackend for ApiBackend {
 
 rust_fragment(tool_handler_struct, '
 use crate::security::SecurityProfileSpec;
+use crate::proot_sandbox::{ProotSandbox, ProotConfig};
 
 /// Handles tool execution with security validation.
 pub struct ToolHandler {
     pub auto_approve: bool,
     pub security_profile: String,
     pub approval_mode: String,
+    pub proot: Option<ProotSandbox>,
 }
 
 impl ToolHandler {
     pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
-        Self { auto_approve, security_profile, approval_mode }
+        Self { auto_approve, security_profile, approval_mode, proot: None }
+    }
+
+    /// Enable proot sandbox with the given allowed dirs.
+    pub fn enable_proot(&mut self, working_dir: &str, allowed_dirs: Vec<String>) {
+        let config = ProotConfig {
+            allowed_dirs,
+            ..ProotConfig::default()
+        };
+        let mut sandbox = ProotSandbox::new(working_dir, config);
+        if sandbox.is_available() {
+            self.proot = Some(sandbox);
+        } else {
+            eprintln!("[Warning] proot sandbox requested but proot not found. Install with: pkg install proot");
+        }
     }
 
     /// Look up the SecurityProfileSpec for the current profile.
@@ -4983,7 +5245,7 @@ impl ToolHandler {
 rust_fragment(tool_handler_dispatch, '
 impl ToolHandler {
     /// Execute a tool call and return the result.
-    pub fn execute(&self, tool_call: &ToolCall) -> ToolResult {
+    pub fn execute(&mut self, tool_call: &ToolCall) -> ToolResult {
         // Check approval mode before executing
         if !self.check_approval(&tool_call.name) {
             return ToolResult {
@@ -5006,7 +5268,7 @@ impl ToolHandler {
         }
     }
 
-    fn handle_bash(&self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
+    fn handle_bash(&mut self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
         let command = args.get("command")
             .and_then(|v| v.as_str())
             .unwrap_or("");
@@ -5019,9 +5281,37 @@ impl ToolHandler {
             };
         }
 
-        match Command::new("bash").arg("-c").arg(command)
-            .stdout(Stdio::piped()).stderr(Stdio::piped()).output()
-        {
+        // If proot is enabled, wrap the command in proot
+        let (exec_cmd, exec_env) = if let Some(ref mut proot) = self.proot {
+            match proot.wrap_command(command) {
+                Ok(wrapped) => {
+                    let env_overrides = proot.build_env_overrides();
+                    (wrapped, Some(env_overrides))
+                }
+                Err(e) => {
+                    return ToolResult {
+                        success: false,
+                        output: format!("Proot error: {}", e),
+                        tool_name: "bash".to_string(),
+                    };
+                }
+            }
+        } else {
+            (command.to_string(), None)
+        };
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&exec_cmd)
+           .stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        // Apply proot env overrides
+        if let Some(env_overrides) = exec_env {
+            for (key, val) in env_overrides {
+                cmd.env(key, val);
+            }
+        }
+
+        match cmd.output() {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -6333,6 +6623,508 @@ impl Drop for Spinner {
 }
 ').
 
+rust_fragment(integration_tests, '
+use agent_loop::types::*;
+use agent_loop::context::*;
+use agent_loop::costs::*;
+use agent_loop::security::*;
+use agent_loop::tool_handler::*;
+use agent_loop::config::*;
+use agent_loop::proot_sandbox::*;
+use std::collections::HashMap;
+
+// ============================================================================
+// Context manager tests
+// ============================================================================
+
+#[test]
+fn test_context_manager_add_and_retrieve() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "Hello");
+    ctx.add_message("assistant", "Hi there");
+    assert_eq!(ctx.len(), 2);
+    let msgs = ctx.get_context();
+    assert_eq!(msgs[0].role, "user");
+    assert_eq!(msgs[0].content, "Hello");
+    assert_eq!(msgs[1].role, "assistant");
+    assert_eq!(msgs[1].content, "Hi there");
+}
+
+#[test]
+fn test_context_manager_clear() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "test");
+    ctx.clear();
+    assert_eq!(ctx.len(), 0);
+}
+
+#[test]
+fn test_context_edit_and_undo() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "original");
+    assert!(ctx.edit_message(0, "edited"));
+    assert_eq!(ctx.get_context()[0].content, "edited");
+    assert!(ctx.can_undo());
+    assert!(ctx.undo());
+    assert_eq!(ctx.get_context()[0].content, "original");
+}
+
+#[test]
+fn test_context_delete_message() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "first");
+    ctx.add_message("assistant", "second");
+    ctx.add_message("user", "third");
+    assert!(ctx.delete_message(1));
+    assert_eq!(ctx.len(), 2);
+    assert_eq!(ctx.get_context()[1].content, "third");
+}
+
+#[test]
+fn test_context_delete_range() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "a");
+    ctx.add_message("assistant", "b");
+    ctx.add_message("user", "c");
+    ctx.add_message("assistant", "d");
+    let deleted = ctx.delete_range(1, 3);
+    assert_eq!(deleted, 2);
+    assert_eq!(ctx.len(), 2);
+}
+
+#[test]
+fn test_context_token_estimation() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "Hello world");
+    let tokens = ctx.estimate_tokens();
+    assert!(tokens > 0);
+}
+
+#[test]
+fn test_context_format_history() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "Hello");
+    ctx.add_message("assistant", "Hi");
+    let history = ctx.format_history(10);
+    assert!(history.contains("[0]"));
+    assert!(history.contains("user"));
+}
+
+#[test]
+fn test_context_tool_result() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "run a command");
+    ctx.add_tool_result("call_123", "command output");
+    assert_eq!(ctx.len(), 2);
+    let last = &ctx.get_context()[1];
+    assert_eq!(last.role, "tool");
+}
+
+// ============================================================================
+// Cost tracker tests
+// ============================================================================
+
+#[test]
+fn test_cost_tracker_initial() {
+    let tracker = CostTracker::new();
+    let summary = tracker.format_summary();
+    assert!(summary.contains("0"));
+}
+
+#[test]
+fn test_cost_tracker_record() {
+    let mut tracker = CostTracker::new();
+    tracker.record_usage("gpt-4", 100, 50);
+    let summary = tracker.format_summary();
+    assert!(summary.contains("150") || summary.contains("100"));
+}
+
+// ============================================================================
+// Security profile tests
+// ============================================================================
+
+#[test]
+fn test_security_profiles_exist() {
+    assert!(SECURITY_PROFILES.len() >= 4);
+    let names: Vec<&str> = SECURITY_PROFILES.iter().map(|(n, _)| *n).collect();
+    assert!(names.contains(&"open"));
+    assert!(names.contains(&"cautious"));
+    assert!(names.contains(&"guarded"));
+    assert!(names.contains(&"paranoid"));
+}
+
+#[test]
+fn test_open_profile_no_validation() {
+    let open = SECURITY_PROFILES.iter().find(|(n, _)| *n == "open").unwrap();
+    assert!(!open.1.path_validation);
+    assert!(!open.1.command_validation);
+}
+
+#[test]
+fn test_paranoid_profile_has_validation() {
+    let paranoid = SECURITY_PROFILES.iter().find(|(n, _)| *n == "paranoid").unwrap();
+    assert!(paranoid.1.path_validation);
+    assert!(paranoid.1.command_validation);
+}
+
+#[test]
+fn test_blocked_paths_populated() {
+    assert!(!BLOCKED_PATHS.is_empty());
+    assert!(BLOCKED_PATHS.contains(&"/etc/shadow"));
+}
+
+// ============================================================================
+// Tool handler tests
+// ============================================================================
+
+#[test]
+fn test_tool_handler_open_allows_all_paths() {
+    let handler = ToolHandler::new(false, "open".to_string(), "default".to_string());
+    assert!(handler.check_path_allowed("/etc/shadow"));
+    assert!(handler.check_path_allowed("/any/path"));
+}
+
+#[test]
+fn test_tool_handler_cautious_blocks_shadow() {
+    let handler = ToolHandler::new(false, "cautious".to_string(), "default".to_string());
+    assert!(!handler.check_path_allowed("/etc/shadow"));
+}
+
+#[test]
+fn test_tool_handler_command_blocking() {
+    let handler = ToolHandler::new(false, "cautious".to_string(), "default".to_string());
+    let result = handler.is_command_blocked("rm -rf /");
+    assert!(result.is_some());
+}
+
+#[test]
+fn test_tool_handler_open_allows_all_commands() {
+    let handler = ToolHandler::new(false, "open".to_string(), "default".to_string());
+    assert!(handler.is_command_blocked("rm -rf /").is_none());
+}
+
+#[test]
+fn test_tool_handler_approval_yolo() {
+    let handler = ToolHandler::new(false, "open".to_string(), "yolo".to_string());
+    assert!(handler.check_approval("bash"));
+    assert!(handler.check_approval("write"));
+}
+
+#[test]
+fn test_tool_handler_approval_plan_mode() {
+    let handler = ToolHandler::new(false, "open".to_string(), "plan".to_string());
+    assert!(handler.check_approval("read"));
+    assert!(!handler.check_approval("bash"));
+}
+
+#[test]
+fn test_tool_handler_execute_read_nonexistent() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let tc = ToolCall {
+        name: "read".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("file_path".to_string(), serde_json::json!("/nonexistent/file/path/xyz"));
+            m
+        },
+        id: "test_1".to_string(),
+    };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("Error"));
+}
+
+#[test]
+fn test_tool_handler_execute_bash_echo() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let tc = ToolCall {
+        name: "bash".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("command".to_string(), serde_json::json!("echo hello_integration_test"));
+            m
+        },
+        id: "test_2".to_string(),
+    };
+    let result = handler.execute(&tc);
+    assert!(result.success);
+    assert!(result.output.contains("hello_integration_test"));
+}
+
+#[test]
+fn test_tool_handler_execute_unknown_tool() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let tc = ToolCall {
+        name: "nonexistent_tool".to_string(),
+        arguments: HashMap::new(),
+        id: "test_3".to_string(),
+    };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("Unknown tool"));
+}
+
+#[test]
+fn test_tool_handler_blocked_command_rejected() {
+    let mut handler = ToolHandler::new(true, "cautious".to_string(), "yolo".to_string());
+    let tc = ToolCall {
+        name: "bash".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("command".to_string(), serde_json::json!("rm -rf /"));
+            m
+        },
+        id: "test_4".to_string(),
+    };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("blocked"));
+}
+
+// ============================================================================
+// Proot sandbox tests
+// ============================================================================
+
+#[test]
+fn test_proot_config_default() {
+    let config = ProotConfig::default();
+    assert!(config.kill_on_exit);
+    assert!(config.allowed_dirs.is_empty());
+    assert!(!config.dry_run);
+    assert_eq!(config.termux_prefix, "/data/data/com.termux/files/usr");
+}
+
+#[test]
+fn test_proot_sandbox_creation() {
+    let config = ProotConfig::default();
+    let sandbox = ProotSandbox::new("/tmp", config);
+    let status = {
+        let mut s = sandbox;
+        s.status()
+    };
+    assert_eq!(status.working_dir, "/tmp");
+    assert!(status.kill_on_exit);
+}
+
+#[test]
+fn test_proot_env_overrides() {
+    let config = ProotConfig::default();
+    let sandbox = ProotSandbox::new("/tmp", config);
+    let overrides = sandbox.build_env_overrides();
+    assert_eq!(overrides.len(), 2);
+    assert_eq!(overrides[0].0, "PROOT_NO_SECCOMP");
+    assert_eq!(overrides[0].1, "1");
+    assert_eq!(overrides[1].0, "LD_PRELOAD");
+    assert_eq!(overrides[1].1, "");
+}
+
+#[test]
+fn test_proot_config_custom() {
+    let config = ProotConfig {
+        allowed_dirs: vec!["/tmp".to_string(), "/home".to_string()],
+        kill_on_exit: false,
+        dry_run: true,
+        ..ProotConfig::default()
+    };
+    assert_eq!(config.allowed_dirs.len(), 2);
+    assert!(!config.kill_on_exit);
+    assert!(config.dry_run);
+}
+
+#[test]
+fn test_tool_handler_with_proot_field() {
+    let handler = ToolHandler::new(false, "open".to_string(), "default".to_string());
+    assert!(handler.proot.is_none());
+}
+
+// ============================================================================
+// Config data tests
+// ============================================================================
+
+#[test]
+fn test_cli_args_populated() {
+    assert!(!CLI_ARGS.is_empty());
+    let names: Vec<&str> = CLI_ARGS.iter().map(|a| a.name).collect();
+    assert!(names.contains(&"backend"));
+    assert!(names.contains(&"model"));
+    assert!(names.contains(&"proot"));
+}
+
+#[test]
+fn test_agent_config_defaults() {
+    let config = AgentConfig::default();
+    assert_eq!(config.backend, "");
+    assert!(!config.auto_tools);
+    assert_eq!(config.max_iterations, 0);
+}
+
+// ============================================================================
+// Message and type tests
+// ============================================================================
+
+#[test]
+fn test_message_creation() {
+    let msg = Message {
+        role: "user".to_string(),
+        content: "test message".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+    };
+    assert_eq!(msg.role, "user");
+    assert_eq!(msg.content, "test message");
+}
+
+#[test]
+fn test_tool_call_serialization() {
+    let tc = ToolCall {
+        name: "bash".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("command".to_string(), serde_json::json!("ls"));
+            m
+        },
+        id: "call_1".to_string(),
+    };
+    let json = serde_json::to_string(&tc).unwrap();
+    assert!(json.contains("bash"));
+    assert!(json.contains("call_1"));
+    // Deserialize back
+    let tc2: ToolCall = serde_json::from_str(&json).unwrap();
+    assert_eq!(tc2.name, "bash");
+    assert_eq!(tc2.id, "call_1");
+}
+
+#[test]
+fn test_tool_result_fields() {
+    let result = ToolResult {
+        success: true,
+        output: "ok".to_string(),
+        tool_name: "read".to_string(),
+    };
+    assert!(result.success);
+    assert_eq!(result.tool_name, "read");
+}
+
+// ============================================================================
+// End-to-end flow tests
+// ============================================================================
+
+#[test]
+fn test_e2e_tool_flow_bash_echo() {
+    // Simulate: user asks -> tool call -> execute -> result -> add to context
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+
+    // User message
+    ctx.add_message("user", "list files");
+
+    // Simulate a tool call response
+    let tc = ToolCall {
+        name: "bash".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("command".to_string(), serde_json::json!("echo e2e_test_output"));
+            m
+        },
+        id: "call_e2e_1".to_string(),
+    };
+
+    // Execute tool
+    let result = handler.execute(&tc);
+    assert!(result.success);
+    assert!(result.output.contains("e2e_test_output"));
+
+    // Add result to context
+    ctx.add_tool_result(&tc.id, &result.output);
+    assert_eq!(ctx.len(), 2);
+    assert_eq!(ctx.get_context()[1].role, "tool");
+}
+
+#[test]
+fn test_e2e_tool_flow_write_read() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+
+    // Write a temp file (use Termux-compatible tmp path)
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let tmp_path_buf = std::path::PathBuf::from(&tmp_dir).join("uwsal_integration_test.txt");
+    let tmp_path = tmp_path_buf.to_str().unwrap();
+    let write_tc = ToolCall {
+        name: "write".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("file_path".to_string(), serde_json::json!(tmp_path));
+            m.insert("content".to_string(), serde_json::json!("integration test content"));
+            m
+        },
+        id: "call_w1".to_string(),
+    };
+    let write_result = handler.execute(&write_tc);
+    assert!(write_result.success);
+    ctx.add_tool_result(&write_tc.id, &write_result.output);
+
+    // Read it back
+    let read_tc = ToolCall {
+        name: "read".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("file_path".to_string(), serde_json::json!(tmp_path));
+            m
+        },
+        id: "call_r1".to_string(),
+    };
+    let read_result = handler.execute(&read_tc);
+    assert!(read_result.success);
+    assert!(read_result.output.contains("integration test content"));
+    ctx.add_tool_result(&read_tc.id, &read_result.output);
+
+    // Cleanup
+    let _ = std::fs::remove_file(tmp_path);
+}
+
+#[test]
+fn test_e2e_security_blocks_dangerous_command() {
+    let mut handler = ToolHandler::new(true, "guarded".to_string(), "yolo".to_string());
+    let tc = ToolCall {
+        name: "bash".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("command".to_string(), serde_json::json!("sudo rm -rf /"));
+            m
+        },
+        id: "call_sec1".to_string(),
+    };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.to_lowercase().contains("blocked"));
+}
+
+#[test]
+fn test_e2e_context_survives_multiple_rounds() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+
+    for i in 0..5 {
+        ctx.add_message("user", &format!("request {}", i));
+        let tc = ToolCall {
+            name: "bash".to_string(),
+            arguments: {
+                let mut m = HashMap::new();
+                m.insert("command".to_string(), serde_json::json!(format!("echo round_{}", i)));
+                m
+            },
+            id: format!("call_{}", i),
+        };
+        let result = handler.execute(&tc);
+        assert!(result.success);
+        ctx.add_tool_result(&tc.id, &result.output);
+        ctx.add_message("assistant", &format!("response {}", i));
+    }
+    // 5 rounds × 3 messages (user + tool + assistant) = 15
+    assert_eq!(ctx.len(), 15);
+}
+').
+
 rust_fragment(main_loop, '
     let backend = create_backend(&config);
     let mut context = ContextManager::new(
@@ -6343,7 +7135,17 @@ rust_fragment(main_loop, '
         &config.context_mode,
     );
     let mut cost_tracker = CostTracker::new();
-    let tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
+    let mut tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
+
+    // Enable proot sandbox if requested via CLI or security profile
+    if matches.get_flag("proot") {
+        let proot_dirs: Vec<String> = matches.get_many::<String>("proot_allow_dir")
+            .map(|vals| vals.map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        tool_handler.enable_proot(&cwd.to_string_lossy(), proot_dirs);
+    }
+
     let mut state = RuntimeState {
         max_iterations: config.max_iterations,
         stream: config.stream,

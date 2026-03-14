@@ -14,13 +14,15 @@ use serde::{Serialize, Deserialize};
 pub struct SecurityProfileSpec {
     pub path_validation: bool,
     pub command_validation: bool,
+    #[serde(default)]
+    pub proot_isolation: bool,
 }
 
 pub static SECURITY_PROFILES: &[(&str, SecurityProfileSpec)] = &[
-    ("open", SecurityProfileSpec { path_validation: false, command_validation: false }),
-    ("cautious", SecurityProfileSpec { path_validation: true, command_validation: true }),
-    ("guarded", SecurityProfileSpec { path_validation: true, command_validation: true }),
-    ("paranoid", SecurityProfileSpec { path_validation: true, command_validation: true }),
+    ("open", SecurityProfileSpec { path_validation: false, command_validation: false, proot_isolation: false }),
+    ("cautious", SecurityProfileSpec { path_validation: true, command_validation: true, proot_isolation: false }),
+    ("guarded", SecurityProfileSpec { path_validation: true, command_validation: true, proot_isolation: false }),
+    ("paranoid", SecurityProfileSpec { path_validation: true, command_validation: true, proot_isolation: false }),
 ];
 
 pub static BLOCKED_PATHS: &[&str] = &[

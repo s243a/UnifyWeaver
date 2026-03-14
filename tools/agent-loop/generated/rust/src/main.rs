@@ -994,7 +994,17 @@ fn main() {
         &config.context_mode,
     );
     let mut cost_tracker = CostTracker::new();
-    let tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
+    let mut tool_handler = ToolHandler::new(config.auto_tools, config.security_profile.clone(), config.approval_mode.clone());
+
+    // Enable proot sandbox if requested via CLI or security profile
+    if matches.get_flag("proot") {
+        let proot_dirs: Vec<String> = matches.get_many::<String>("proot_allow_dir")
+            .map(|vals| vals.map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        tool_handler.enable_proot(&cwd.to_string_lossy(), proot_dirs);
+    }
+
     let mut state = RuntimeState {
         max_iterations: config.max_iterations,
         stream: config.stream,
