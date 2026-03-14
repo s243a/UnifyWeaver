@@ -239,6 +239,8 @@ run_tests :-
     test_rust_proot_sandbox,
     test_rust_integration_tests,
     test_rust_phase11_generation,
+    %% Paste detection
+    test_paste_detection_all_targets,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -4414,4 +4416,44 @@ test_rust_phase11_generation :-
     read_file_to_string(SecPath, SecContent, []),
     assert_true('SecurityProfileSpec has proot_isolation field', (
         sub_string(SecContent, _, _, _, "proot_isolation")
+    )).
+
+%% ============================================================================
+%% Paste detection tests — all 3 targets
+%% ============================================================================
+
+test_paste_detection_all_targets :-
+    format("~nPaste detection (all targets):~n"),
+    %% Python target
+    agent_loop_module:output_path(python, 'multiline.py', PyPath),
+    read_file_to_string(PyPath, PyContent, []),
+    assert_true('Python paste detection with collapse display', (
+        sub_string(PyContent, _, _, _, "[pasted")
+    )),
+    assert_true('Python _read_pasted_lines exists', (
+        sub_string(PyContent, _, _, _, "_read_pasted_lines")
+    )),
+    %% Rust target
+    agent_loop_module:output_path(rust, 'main.rs', RsPath),
+    read_file_to_string(RsPath, RsContent, []),
+    assert_true('Rust detect_paste function exists', (
+        sub_string(RsContent, _, _, _, "fn detect_paste")
+    )),
+    assert_true('Rust PasteResult enum exists', (
+        sub_string(RsContent, _, _, _, "enum PasteResult")
+    )),
+    assert_true('Rust paste collapse display', (
+        sub_string(RsContent, _, _, _, "[pasted")
+    )),
+    %% Prolog target
+    agent_loop_module:output_path(prolog, 'agent_loop.pl', PlPath),
+    read_file_to_string(PlPath, PlContent, []),
+    assert_true('Prolog read_pasted_lines predicate exists', (
+        sub_string(PlContent, _, _, _, "read_pasted_lines")
+    )),
+    assert_true('Prolog paste collapse display', (
+        sub_string(PlContent, _, _, _, "[pasted")
+    )),
+    assert_true('Prolog wait_for_input used for paste detection', (
+        sub_string(PlContent, _, _, _, "wait_for_input")
     )).

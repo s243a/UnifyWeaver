@@ -72,6 +72,11 @@ def get_input_smart(prompt: str = "You: ") -> str | None:
     if sys.stdin.isatty():
         pasted = _read_pasted_lines(line)
         if '\n' in pasted:
+            lines_list = pasted.split('\n')
+            n_lines = len(lines_list)
+            n_chars = len(pasted)
+            if n_lines > 5:
+                print(f"  [pasted {n_lines} lines ({n_chars} chars)]")
             return pasted
         # Single line — fall through to trigger checks
 
