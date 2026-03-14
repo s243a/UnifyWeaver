@@ -348,14 +348,69 @@ pub fn build_system_prompt(agent_md: Option<&str>, skills: &[String], base: Opti
 }
 
 
-/// Handles multi-line input detection and continuation.
+/// Handles multi-line input detection, paste detection, and continuation.
 pub struct MultilineHandler {
     pub explicit_mode: bool,
+}
+
+/// Result of paste detection: either a single line or a multi-line paste.
+pub enum PasteResult {
+    SingleLine(String),
+    Pasted { content: String, line_count: usize, char_count: usize },
 }
 
 impl MultilineHandler {
     pub fn new() -> Self {
         Self { explicit_mode: false }
+    }
+
+    /// Detect if additional lines are available on stdin (indicating a paste).
+    /// Uses non-blocking read with a short delay to check for buffered input.
+    pub fn detect_paste(first_line: &str) -> PasteResult {
+        use std::io::{self, BufRead};
+
+        // Only detect pastes from a real terminal
+        if !atty_is_tty() {
+            return PasteResult::SingleLine(first_line.to_string());
+        }
+
+        let mut lines = vec![first_line.to_string()];
+
+        // Short delay to let pasted data arrive in the buffer
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Try to read any buffered lines from stdin without blocking
+        let stdin = io::stdin();
+        let mut handle = stdin.lock();
+
+        loop {
+            let available = {
+                match handle.fill_buf() {
+                    Ok(buf) => buf.len(),
+                    Err(_) => 0,
+                }
+            };
+            if available == 0 {
+                break;
+            }
+            let mut line = String::new();
+            match handle.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    lines.push(line.trim_end_matches('\n').trim_end_matches('\r').to_string());
+                }
+                Err(_) => break,
+            }
+        }
+
+        if lines.len() > 1 {
+            let content = lines.join("\n");
+            let line_count = lines.len();
+            let char_count = content.len();
+            PasteResult::Pasted { content, line_count, char_count }
+        } else {
+            PasteResult::SingleLine(first_line.to_string())
+        }
     }
 
     /// Check if a line needs continuation (triggers multi-line mode).
@@ -469,6 +524,16 @@ impl MultilineHandler {
         }
         lines.join("\n")
     }
+}
+
+/// Check if stdin is a TTY (terminal).
+fn atty_is_tty() -> bool {
+    unsafe { libc_isatty(0) != 0 }
+}
+
+extern "C" {
+    #[link_name = "isatty"]
+    fn libc_isatty(fd: i32) -> i32;
 }
 
 
@@ -1081,15 +1146,28 @@ fn main() {
                 let input = line.trim();
                 if input.is_empty() { continue; }
 
-                // Multi-line input handling
+                // Paste detection + multi-line input handling
                 let input = if state.multiline {
                     let ml = MultilineHandler::new();
                     let full = ml.read_explicit(&mut rl);
                     format!("{}\n{}", input, full)
-                } else if MultilineHandler::needs_continuation(input) {
-                    MultilineHandler::read_until_complete(input, &mut rl)
                 } else {
-                    input.to_string()
+                    // Try paste detection first
+                    match MultilineHandler::detect_paste(input) {
+                        PasteResult::Pasted { content, line_count, char_count } => {
+                            if line_count > 5 {
+                                println!("  [pasted {} lines ({} chars)]", line_count, char_count);
+                            }
+                            content
+                        }
+                        PasteResult::SingleLine(line) => {
+                            if MultilineHandler::needs_continuation(&line) {
+                                MultilineHandler::read_until_complete(&line, &mut rl)
+                            } else {
+                                line
+                            }
+                        }
+                    }
                 };
                 let input = input.trim();
                 if input.is_empty() { continue; }

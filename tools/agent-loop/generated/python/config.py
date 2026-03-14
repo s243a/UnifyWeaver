@@ -99,6 +99,8 @@ class AgentConfig:
     context_mode: str = "continue"  # continue, fresh, sliding
     max_context_tokens: int = 100000
     max_messages: int = 50
+    max_chars: int = 0  # 0 = unlimited
+    max_words: int = 0  # 0 = unlimited
     skills: list[str] = field(default_factory=list)  # Paths to skill files
     max_iterations: int = 0  # 0 = unlimited, N = pause after N tool iterations
     timeout: int = 300
@@ -152,6 +154,8 @@ def _load_agent_config(name: str, data: dict) -> AgentConfig:
         context_mode=data.get('context_mode', 'continue'),
         max_context_tokens=data.get('max_context_tokens', 100000),
         max_messages=data.get('max_messages', 50),
+        max_chars=data.get('max_chars', 0),
+        max_words=data.get('max_words', 0),
         skills=data.get('skills', []),
         max_iterations=data.get('max_iterations', 0),
         timeout=data.get('timeout', 300),

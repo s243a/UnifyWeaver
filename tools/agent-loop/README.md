@@ -75,7 +75,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 740 + 38 Rust integration (590+120 unit + 27 Prolog + 59 Python + 38 cargo test) |
+| Total tests | 748 + 38 Rust integration (590+120 unit + 27 Prolog + 59 Python + 38 cargo test) |
 
 ## Backends
 
@@ -723,6 +723,7 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | History edit/delete/undo | Y | Y | Complete |
 | Spinner + rich display | Y | Y | Complete |
 | proot sandbox | Y | Y | Complete |
+| Paste detection + collapse | Y | Y | Complete (all 3 targets) |
 | Integration tests (cargo test) | N | Y (38 tests) | Rust-only |
 
 ## License

@@ -97,6 +97,8 @@ agent_config_field(auto_tools, bool, 'False', "Skip confirmation").
 agent_config_field(context_mode, str, '"continue"', "continue, fresh, sliding").
 agent_config_field(max_context_tokens, int, '100000', "").
 agent_config_field(max_messages, int, '50', "").
+agent_config_field(max_chars, int, '0', "0 = unlimited").
+agent_config_field(max_words, int, '0', "0 = unlimited").
 agent_config_field(skills, 'list[str]', 'field(default_factory=list)', "Paths to skill files").
 agent_config_field(max_iterations, int, '0', "0 = unlimited, N = pause after N tool iterations").
 agent_config_field(timeout, int, '300', "").

@@ -91,14 +91,43 @@ repl_loop :-
     ; process_input(Input, Backend) -> repl_loop
     ; repl_loop).
 
-%% Smart input reader with multi-line support
+%% Smart input reader with paste detection and multi-line support
 read_input_smart(Input) :-
     read_line_to_string(user_input, Line),
     (Line = end_of_file -> Input = "/exit"
+    ; %% Try paste detection first
+      read_pasted_lines(Line, Lines, LineCount),
+      LineCount > 1 ->
+        atomic_list_concat(Lines, "\n", PastedInput),
+        string_length(PastedInput, CharCount),
+        (LineCount > 5 ->
+            format("  [pasted ~w lines (~w chars)]~n", [LineCount, CharCount])
+        ; true),
+        atom_string(Input, PastedInput)
     ; is_multiline_trigger(Line) ->
         get_multiline_delimiter(Line, Delim),
         read_multiline(Delim, [Line], Input)
     ; atom_string(Input, Line)
+    ).
+
+%% Detect pasted lines by checking if stdin has more data within 50ms.
+read_pasted_lines(FirstLine, Lines, Count) :-
+    read_pasted_acc([FirstLine], Lines, Count).
+
+read_pasted_acc(Acc, Lines, Count) :-
+    (stream_property(user_input, type(text)),
+     wait_for_input([user_input], Ready, 0.05),
+     Ready \= [] ->
+        read_line_to_string(user_input, Next),
+        (Next = end_of_file ->
+            reverse(Acc, Lines),
+            length(Lines, Count)
+        ;
+            read_pasted_acc([Next|Acc], Lines, Count)
+        )
+    ;
+        reverse(Acc, Lines),
+        length(Lines, Count)
     ).
 
 is_multiline_trigger(Line) :-
