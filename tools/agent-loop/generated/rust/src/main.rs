@@ -617,9 +617,6 @@ fn handle_command(
             context.clear();
             println!("Context cleared.");
         }
-        "cost" | "costs" => {
-            println!("{}", cost_tracker.format_summary());
-        }
         "help" => {
             println!("Available commands:");
             println!();
@@ -671,6 +668,23 @@ fn handle_command(
             println!("Context: {} messages", context.len());
             println!("{}", cost_tracker.format_summary());
         }
+        "iterations" => {
+            if _arg.is_empty() {
+                println!("Max iterations: {} (0 = unlimited)", state.max_iterations);
+            } else if let Ok(n) = _arg.parse::<i64>() {
+                state.max_iterations = n;
+                println!("Max iterations set to: {}", n);
+            } else {
+                println!("Usage: /iterations <N>");
+            }
+        }
+        "backend" => {
+            if _arg.is_empty() {
+                println!("Current backend: {}", backend_name);
+            } else {
+                println!("Backend switch requires restart: uwsal -b {}", _arg);
+            }
+        }
         "save" => {
             let name = if _arg.is_empty() { None } else { Some(_arg) };
             let id = session_manager.save(context.get_messages(), backend_name, name);
@@ -699,83 +713,8 @@ fn handle_command(
                 }
             }
         }
-        "delete" => {
-            if _arg.is_empty() {
-                println!("Usage: /delete <session-id>");
-            } else if session_manager.delete(_arg) {
-                println!("Session deleted: {}", _arg);
-            } else {
-                println!("Session not found: {}", _arg);
-            }
-        }
-        "iterations" => {
-            if _arg.is_empty() {
-                println!("Max iterations: {} (0 = unlimited)", state.max_iterations);
-            } else if let Ok(n) = _arg.parse::<i64>() {
-                state.max_iterations = n;
-                println!("Max iterations set to: {}", n);
-            } else {
-                println!("Usage: /iterations <N>");
-            }
-        }
-        "stream" => {
-            state.stream = !state.stream;
-            println!("Streaming: {}", if state.stream { "on" } else { "off" });
-        }
-        "tokens" => {
-            println!("Messages: {}", context.len());
-            println!("Chars: {}", context.char_count());
-            println!("Est. tokens: ~{}", context.estimate_tokens());
-        }
-        "history" => {
-            let limit = _arg.parse::<usize>().unwrap_or(20);
-            print!("{}", context.format_history(limit));
-        }
-        "edit" => {
-            let parts: Vec<&str> = _arg.splitn(2, ' ').collect();
-            if let Some(idx) = parts.first().and_then(|s| s.parse::<usize>().ok()) {
-                if let Some(text) = parts.get(1) {
-                    if context.edit_message(idx, text) {
-                        println!("Edited message {}", idx);
-                    } else {
-                        println!("Invalid index: {}", idx);
-                    }
-                } else {
-                    if let Some(content) = context.get_full_content(idx) {
-                        println!("{}", content);
-                    } else {
-                        println!("Invalid index: {}", idx);
-                    }
-                }
-            } else {
-                println!("Usage: /edit <index> [new text]");
-            }
-        }
-        "drop" => {
-            if _arg.contains('-') {
-                let parts: Vec<&str> = _arg.split('-').collect();
-                if let (Some(s), Some(e)) = (parts.first().and_then(|s| s.parse::<usize>().ok()), parts.get(1).and_then(|s| s.parse::<usize>().ok())) {
-                    let n = context.delete_range(s, e + 1);
-                    println!("Dropped {} messages", n);
-                } else {
-                    println!("Usage: /drop <N> or /drop <N>-<M>");
-                }
-            } else if let Ok(idx) = _arg.parse::<usize>() {
-                if context.delete_message(idx) {
-                    println!("Dropped message {}", idx);
-                } else {
-                    println!("Invalid index: {}", idx);
-                }
-            } else {
-                println!("Usage: /drop <N> or /drop <N>-<M>");
-            }
-        }
-        "undo" => {
-            if context.undo() {
-                println!("Undone. Messages: {}", context.len());
-            } else {
-                println!("Nothing to undo.");
-            }
+        "format" => {
+            println!("Output format: plain (markdown rendering not yet implemented)");
         }
         "export" => {
             let path = if _arg.is_empty() {
@@ -784,6 +723,29 @@ fn handle_command(
             export_conversation(context, &path);
             println!("Exported to: {}", path);
         }
+        "cost" | "costs" => {
+            println!("{}", cost_tracker.format_summary());
+        }
+        "search" => {
+            if _arg.is_empty() {
+                println!("Usage: /search <query>");
+            } else {
+                let query_lower = _arg.to_lowercase();
+                let sessions = session_manager.list();
+                let mut found = false;
+                for s in &sessions {
+                    if s.name.to_lowercase().contains(&query_lower) || s.id.contains(&query_lower) {
+                        println!("{} | {} | {}", s.id, s.name, s.backend);
+                        found = true;
+                    }
+                }
+                if !found { println!("No sessions matching: {}", _arg); }
+            }
+        }
+        "stream" | "streaming" => {
+            state.stream = !state.stream;
+            println!("Streaming: {}", if state.stream { "on" } else { "off" });
+        }
         "model" => {
             if _arg.is_empty() {
                 println!("Current backend: {}", backend_name);
@@ -791,10 +753,23 @@ fn handle_command(
                 println!("Model switch requires restart: uwsal -m {}", _arg);
             }
         }
-        "format" => {
-            println!("Output format: plain (markdown rendering not yet implemented)");
+        "tokens" => {
+            println!("Messages: {}", context.len());
+            println!("Chars: {}", context.char_count());
+            println!("Est. tokens: ~{}", context.estimate_tokens());
         }
-        "template" | "templates" => {
+        "multiline" => {
+            state.multiline = !state.multiline;
+            println!("Multiline mode: {}", if state.multiline { "on" } else { "off" });
+        }
+        "aliases" => {
+            println!("Command aliases:");
+            println!("  /q, /quit  -> /exit");
+            println!("  /h, /?    -> /help");
+            println!("  /costs    -> /cost");
+            println!("  /del      -> /delete");
+        }
+        "templates" | "template" => {
             let mut tmgr = TemplateManager::new();
             if _arg.is_empty() || _arg == "list" {
                 for t in tmgr.list() {
@@ -831,24 +806,66 @@ fn handle_command(
                 println!("Usage: /template [list | use <name> key=val ... | add <name> <template>]");
             }
         }
-        "multiline" => {
-            state.multiline = !state.multiline;
-            println!("Multiline mode: {}", if state.multiline { "on" } else { "off" });
+        "history" => {
+            let limit = _arg.parse::<usize>().unwrap_or(20);
+            print!("{}", context.format_history(limit));
         }
-        "search" => {
-            if _arg.is_empty() {
-                println!("Usage: /search <query>");
+        "undo" => {
+            if context.undo() {
+                println!("Undone. Messages: {}", context.len());
             } else {
-                let query_lower = _arg.to_lowercase();
-                let sessions = session_manager.list();
-                let mut found = false;
-                for s in &sessions {
-                    if s.name.to_lowercase().contains(&query_lower) || s.id.contains(&query_lower) {
-                        println!("{} | {} | {}", s.id, s.name, s.backend);
-                        found = true;
+                println!("Nothing to undo.");
+            }
+        }
+        "delete" | "del" => {
+            if _arg.contains('-') {
+                let parts: Vec<&str> = _arg.split('-').collect();
+                if let (Some(s), Some(e)) = (parts.first().and_then(|s| s.parse::<usize>().ok()), parts.get(1).and_then(|s| s.parse::<usize>().ok())) {
+                    let n = context.delete_range(s, e + 1);
+                    println!("Dropped {} messages", n);
+                } else {
+                    println!("Usage: /drop <N> or /drop <N>-<M>");
+                }
+            } else if let Ok(idx) = _arg.parse::<usize>() {
+                if context.delete_message(idx) {
+                    println!("Dropped message {}", idx);
+                } else {
+                    println!("Invalid index: {}", idx);
+                }
+            } else {
+                println!("Usage: /drop <N> or /drop <N>-<M>");
+            }
+        }
+        "edit" => {
+            let parts: Vec<&str> = _arg.splitn(2, ' ').collect();
+            if let Some(idx) = parts.first().and_then(|s| s.parse::<usize>().ok()) {
+                if let Some(text) = parts.get(1) {
+                    if context.edit_message(idx, text) {
+                        println!("Edited message {}", idx);
+                    } else {
+                        println!("Invalid index: {}", idx);
+                    }
+                } else {
+                    if let Some(content) = context.get_full_content(idx) {
+                        println!("{}", content);
+                    } else {
+                        println!("Invalid index: {}", idx);
                     }
                 }
-                if !found { println!("No sessions matching: {}", _arg); }
+            } else {
+                println!("Usage: /edit <index> [new text]");
+            }
+        }
+        "replay" => {
+            if let Ok(idx) = _arg.parse::<usize>() {
+                if idx < context.len() {
+                    context.truncate_after(idx);
+                    println!("Replaying from message {}", idx);
+                } else {
+                    println!("Invalid index: {}", idx);
+                }
+            } else {
+                println!("Usage: /replay <index>");
             }
         }
         _ => {

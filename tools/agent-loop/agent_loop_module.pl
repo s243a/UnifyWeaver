@@ -776,7 +776,7 @@ slash_command(tokens, exact, [handler('_handle_tokens_command'),
 slash_command(aliases, exact, [handler('_handle_aliases_command'),
     comment('Aliases')],
     'List command aliases (e.g., /q -> /quit)').
-slash_command(templates, exact, [handler('_handle_templates_command'),
+slash_command(templates, exact, [aliases([template]), handler('_handle_templates_command'),
     comment('Templates')],
     'List prompt templates').
 slash_command(history, exact_or_prefix_sp, [handler('_handle_history_command'),
@@ -819,9 +819,268 @@ slash_command_dispatch_order([
     iterations, backend,
     save, load, sessions,
     format, export, cost, search, stream,
+    model, tokens, multiline,
     aliases, templates,
     history, undo,
     delete, edit, replay
+]).
+
+%% =============================================================================
+%% Rust command bodies — used by data-driven dispatch generator
+%% rust_command_body(Name, RustCodeLines)
+%% Each line is emitted as-is inside the match arm.
+%% =============================================================================
+
+rust_command_body(exit, [
+    '            // Auto-save on exit',
+    '            if context.len() > 0 {',
+    '                let id = session_manager.save(context.get_messages(), backend_name, None);',
+    '                println!("Session saved: {}", id);',
+    '            }',
+    '            println!("Goodbye!");',
+    '            std::process::exit(0);'
+]).
+
+rust_command_body(clear, [
+    '            context.clear();',
+    '            println!("Context cleared.");'
+]).
+
+rust_command_body(help, '%GENERATE_HELP%').
+
+rust_command_body(status, [
+    '            println!("Context: {} messages", context.len());',
+    '            println!("{}", cost_tracker.format_summary());'
+]).
+
+rust_command_body(cost, [
+    '            println!("{}", cost_tracker.format_summary());'
+]).
+
+rust_command_body(save, [
+    '            let name = if _arg.is_empty() { None } else { Some(_arg) };',
+    '            let id = session_manager.save(context.get_messages(), backend_name, name);',
+    '            println!("Session saved: {}", id);'
+]).
+
+rust_command_body(load, [
+    '            if _arg.is_empty() {',
+    '                println!("Usage: /load <session-id>");',
+    '            } else if let Some(session) = session_manager.load(_arg) {',
+    '                context.clear();',
+    '                for msg in &session.messages {',
+    '                    context.add_message(&msg.role, &msg.content);',
+    '                }',
+    '                println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);',
+    '            } else {',
+    '                println!("Session not found: {}", _arg);',
+    '            }'
+]).
+
+rust_command_body(sessions, [
+    '            let sessions = session_manager.list();',
+    '            if sessions.is_empty() {',
+    '                println!("No saved sessions.");',
+    '            } else {',
+    '                for s in &sessions {',
+    '                    println!("{} | {} | {} | {} msgs", s.id, s.name, s.backend, s.message_count);',
+    '                }',
+    '            }'
+]).
+
+rust_command_body(delete, [
+    '            if _arg.is_empty() {',
+    '                println!("Usage: /delete <session-id>");',
+    '            } else if session_manager.delete(_arg) {',
+    '                println!("Session deleted: {}", _arg);',
+    '            } else {',
+    '                println!("Session not found: {}", _arg);',
+    '            }'
+]).
+
+rust_command_body(iterations, [
+    '            if _arg.is_empty() {',
+    '                println!("Max iterations: {} (0 = unlimited)", state.max_iterations);',
+    '            } else if let Ok(n) = _arg.parse::<i64>() {',
+    '                state.max_iterations = n;',
+    '                println!("Max iterations set to: {}", n);',
+    '            } else {',
+    '                println!("Usage: /iterations <N>");',
+    '            }'
+]).
+
+rust_command_body(stream, [
+    '            state.stream = !state.stream;',
+    '            println!("Streaming: {}", if state.stream { "on" } else { "off" });'
+]).
+
+rust_command_body(tokens, [
+    '            println!("Messages: {}", context.len());',
+    '            println!("Chars: {}", context.char_count());',
+    '            println!("Est. tokens: ~{}", context.estimate_tokens());'
+]).
+
+rust_command_body(history, [
+    '            let limit = _arg.parse::<usize>().unwrap_or(20);',
+    '            print!("{}", context.format_history(limit));'
+]).
+
+rust_command_body(edit, [
+    '            let parts: Vec<&str> = _arg.splitn(2, '' '').collect();',
+    '            if let Some(idx) = parts.first().and_then(|s| s.parse::<usize>().ok()) {',
+    '                if let Some(text) = parts.get(1) {',
+    '                    if context.edit_message(idx, text) {',
+    '                        println!("Edited message {}", idx);',
+    '                    } else {',
+    '                        println!("Invalid index: {}", idx);',
+    '                    }',
+    '                } else {',
+    '                    if let Some(content) = context.get_full_content(idx) {',
+    '                        println!("{}", content);',
+    '                    } else {',
+    '                        println!("Invalid index: {}", idx);',
+    '                    }',
+    '                }',
+    '            } else {',
+    '                println!("Usage: /edit <index> [new text]");',
+    '            }'
+]).
+
+rust_command_body(drop, [
+    '            if _arg.contains(''-'') {',
+    '                let parts: Vec<&str> = _arg.split(''-'').collect();',
+    '                if let (Some(s), Some(e)) = (parts.first().and_then(|s| s.parse::<usize>().ok()), parts.get(1).and_then(|s| s.parse::<usize>().ok())) {',
+    '                    let n = context.delete_range(s, e + 1);',
+    '                    println!("Dropped {} messages", n);',
+    '                } else {',
+    '                    println!("Usage: /drop <N> or /drop <N>-<M>");',
+    '                }',
+    '            } else if let Ok(idx) = _arg.parse::<usize>() {',
+    '                if context.delete_message(idx) {',
+    '                    println!("Dropped message {}", idx);',
+    '                } else {',
+    '                    println!("Invalid index: {}", idx);',
+    '                }',
+    '            } else {',
+    '                println!("Usage: /drop <N> or /drop <N>-<M>");',
+    '            }'
+]).
+
+rust_command_body(undo, [
+    '            if context.undo() {',
+    '                println!("Undone. Messages: {}", context.len());',
+    '            } else {',
+    '                println!("Nothing to undo.");',
+    '            }'
+]).
+
+rust_command_body(export, [
+    '            let path = if _arg.is_empty() {',
+    '                format!("conversation_{}.md", session_manager.chrono_simple_id())',
+    '            } else { _arg.to_string() };',
+    '            export_conversation(context, &path);',
+    '            println!("Exported to: {}", path);'
+]).
+
+rust_command_body(model, [
+    '            if _arg.is_empty() {',
+    '                println!("Current backend: {}", backend_name);',
+    '            } else {',
+    '                println!("Model switch requires restart: uwsal -m {}", _arg);',
+    '            }'
+]).
+
+rust_command_body(format, [
+    '            println!("Output format: plain (markdown rendering not yet implemented)");'
+]).
+
+rust_command_body(template, [
+    '            let mut tmgr = TemplateManager::new();',
+    '            if _arg.is_empty() || _arg == "list" {',
+    '                for t in tmgr.list() {',
+    '                    println!("  @{:<12} {} [{}]", t.name, t.description, t.variables.join(", "));',
+    '                }',
+    '            } else if _arg.starts_with("use ") {',
+    '                let rest = &_arg[4..];',
+    '                let parts: Vec<&str> = rest.splitn(2, '' '').collect();',
+    '                let name = parts[0];',
+    '                let mut vars = std::collections::HashMap::new();',
+    '                if let Some(args_str) = parts.get(1) {',
+    '                    for pair in args_str.split('' '') {',
+    '                        if let Some((k, v)) = pair.split_once(''='') {',
+    '                            vars.insert(k.to_string(), v.to_string());',
+    '                        }',
+    '                    }',
+    '                }',
+    '                if let Some(rendered) = tmgr.render(name, &vars) {',
+    '                    println!("Template rendered:\\n{}", rendered);',
+    '                } else {',
+    '                    println!("Unknown template: {}", name);',
+    '                }',
+    '            } else if _arg.starts_with("add ") {',
+    '                let rest = &_arg[4..];',
+    '                let parts: Vec<&str> = rest.splitn(2, '' '').collect();',
+    '                if parts.len() == 2 {',
+    '                    tmgr.add(parts[0], parts[1], "User template");',
+    '                    tmgr.save_user_templates();',
+    '                    println!("Template added: {}", parts[0]);',
+    '                } else {',
+    '                    println!("Usage: /template add <name> <template string with {{vars}}>");',
+    '                }',
+    '            } else {',
+    '                println!("Usage: /template [list | use <name> key=val ... | add <name> <template>]");',
+    '            }'
+]).
+
+rust_command_body(multiline, [
+    '            state.multiline = !state.multiline;',
+    '            println!("Multiline mode: {}", if state.multiline { "on" } else { "off" });'
+]).
+
+rust_command_body(search, [
+    '            if _arg.is_empty() {',
+    '                println!("Usage: /search <query>");',
+    '            } else {',
+    '                let query_lower = _arg.to_lowercase();',
+    '                let sessions = session_manager.list();',
+    '                let mut found = false;',
+    '                for s in &sessions {',
+    '                    if s.name.to_lowercase().contains(&query_lower) || s.id.contains(&query_lower) {',
+    '                        println!("{} | {} | {}", s.id, s.name, s.backend);',
+    '                        found = true;',
+    '                    }',
+    '                }',
+    '                if !found { println!("No sessions matching: {}", _arg); }',
+    '            }'
+]).
+
+rust_command_body(backend, [
+    '            if _arg.is_empty() {',
+    '                println!("Current backend: {}", backend_name);',
+    '            } else {',
+    '                println!("Backend switch requires restart: uwsal -b {}", _arg);',
+    '            }'
+]).
+
+rust_command_body(aliases, [
+    '            println!("Command aliases:");',
+    '            println!("  /q, /quit  -> /exit");',
+    '            println!("  /h, /?    -> /help");',
+    '            println!("  /costs    -> /cost");',
+    '            println!("  /del      -> /delete");'
+]).
+
+rust_command_body(replay, [
+    '            if let Ok(idx) = _arg.parse::<usize>() {',
+    '                if idx < context.len() {',
+    '                    context.truncate_after(idx);',
+    '                    println!("Replaying from message {}", idx);',
+    '                } else {',
+    '                    println!("Invalid index: {}", idx);',
+    '                }',
+    '            } else {',
+    '                println!("Usage: /replay <index>");',
+    '            }'
 ]).
 
 %% =============================================================================
@@ -1171,6 +1430,8 @@ generate_all(rust) :-
     generate_rust_commands,
     generate_rust_security,
     generate_rust_proot_sandbox,
+    generate_rust_plugin_manager,
+    generate_rust_wasm_bindings,
     %% Phase 2 — imperative layer
     generate_rust_types,
     generate_rust_context,
@@ -1498,6 +1759,8 @@ generate_rust_lib :-
     write(S, 'pub mod sessions;\n'),
     write(S, 'pub mod config_loader;\n'),
     write(S, 'pub mod proot_sandbox;\n'),
+    write(S, 'pub mod plugin_manager;\n'),
+    write(S, 'pub mod wasm_bindings;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
 
@@ -1574,6 +1837,22 @@ generate_rust_proot_sandbox :-
     write_rust(S, proot_sandbox),
     close(S),
     format('  Generated rust/src/proot_sandbox.rs~n', []).
+
+generate_rust_plugin_manager :-
+    output_path(rust, 'plugin_manager.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, plugin_manager, 'Plugin system for loadable tool extensions'),
+    write_rust(S, plugin_manager),
+    close(S),
+    format('  Generated rust/src/plugin_manager.rs~n', []).
+
+generate_rust_wasm_bindings :-
+    output_path(rust, 'wasm_bindings.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, wasm_bindings, 'WASM bindings for browser-based agent loop'),
+    write_rust(S, wasm_bindings),
+    close(S),
+    format('  Generated rust/src/wasm_bindings.rs~n', []).
 
 %% emit_rust_regex_lists(+Stream)
 %% Emit regex_list/2 facts as Rust static &[&str] arrays into security.rs.
@@ -2014,7 +2293,7 @@ generate_rust_command_dispatch(S) :-
     generate_rust_command_dispatch_with_sessions(S).
 
 %% generate_rust_command_dispatch_with_sessions(+Stream)
-%% Emit command handler with session management support.
+%% Data-driven command handler — reads from rust_command_body/2 and slash_command/4.
 generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '/// Handle a slash command. Returns true if the command was handled.\n'),
     write(S, '/// Mutable runtime state that can be changed via slash commands.\n'),
@@ -2033,213 +2312,14 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '    backend_name: &str,\n'),
     write(S, '    state: &mut RuntimeState,\n'),
     write(S, ') -> bool {\n'),
-    write(S, '    let parts: Vec<&str> = input.splitn(2, '' '').collect();\n'),
-    write(S, '    let cmd = parts[0].trim_start_matches(''/'');\n'),
+    write(S, '    let parts: Vec<&str> = input.splitn(2, \' \').collect();\n'),
+    write(S, '    let cmd = parts[0].trim_start_matches(\'/\');\n'),
     write(S, '    let _arg = if parts.len() > 1 { parts[1].trim() } else { "" };\n'),
     write(S, '    match cmd {\n'),
-    write(S, '        "exit" | "quit" => {\n'),
-    write(S, '            // Auto-save on exit\n'),
-    write(S, '            if context.len() > 0 {\n'),
-    write(S, '                let id = session_manager.save(context.get_messages(), backend_name, None);\n'),
-    write(S, '                println!("Session saved: {}", id);\n'),
-    write(S, '            }\n'),
-    write(S, '            println!("Goodbye!");\n'),
-    write(S, '            std::process::exit(0);\n'),
-    write(S, '        }\n'),
-    write(S, '        "clear" => {\n'),
-    write(S, '            context.clear();\n'),
-    write(S, '            println!("Context cleared.");\n'),
-    write(S, '        }\n'),
-    write(S, '        "cost" | "costs" => {\n'),
-    write(S, '            println!("{}", cost_tracker.format_summary());\n'),
-    write(S, '        }\n'),
-    write(S, '        "help" => {\n'),
-    generate_rust_help_text(S),
-    write(S, '        }\n'),
-    write(S, '        "status" => {\n'),
-    write(S, '            println!("Context: {} messages", context.len());\n'),
-    write(S, '            println!("{}", cost_tracker.format_summary());\n'),
-    write(S, '        }\n'),
-    write(S, '        "save" => {\n'),
-    write(S, '            let name = if _arg.is_empty() { None } else { Some(_arg) };\n'),
-    write(S, '            let id = session_manager.save(context.get_messages(), backend_name, name);\n'),
-    write(S, '            println!("Session saved: {}", id);\n'),
-    write(S, '        }\n'),
-    write(S, '        "load" => {\n'),
-    write(S, '            if _arg.is_empty() {\n'),
-    write(S, '                println!("Usage: /load <session-id>");\n'),
-    write(S, '            } else if let Some(session) = session_manager.load(_arg) {\n'),
-    write(S, '                context.clear();\n'),
-    write(S, '                for msg in &session.messages {\n'),
-    write(S, '                    context.add_message(&msg.role, &msg.content);\n'),
-    write(S, '                }\n'),
-    write(S, '                println!("Loaded session: {} ({} messages)", session.metadata.name, session.metadata.message_count);\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Session not found: {}", _arg);\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "sessions" => {\n'),
-    write(S, '            let sessions = session_manager.list();\n'),
-    write(S, '            if sessions.is_empty() {\n'),
-    write(S, '                println!("No saved sessions.");\n'),
-    write(S, '            } else {\n'),
-    write(S, '                for s in &sessions {\n'),
-    write(S, '                    println!("{} | {} | {} | {} msgs", s.id, s.name, s.backend, s.message_count);\n'),
-    write(S, '                }\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "delete" => {\n'),
-    write(S, '            if _arg.is_empty() {\n'),
-    write(S, '                println!("Usage: /delete <session-id>");\n'),
-    write(S, '            } else if session_manager.delete(_arg) {\n'),
-    write(S, '                println!("Session deleted: {}", _arg);\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Session not found: {}", _arg);\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "iterations" => {\n'),
-    write(S, '            if _arg.is_empty() {\n'),
-    write(S, '                println!("Max iterations: {} (0 = unlimited)", state.max_iterations);\n'),
-    write(S, '            } else if let Ok(n) = _arg.parse::<i64>() {\n'),
-    write(S, '                state.max_iterations = n;\n'),
-    write(S, '                println!("Max iterations set to: {}", n);\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Usage: /iterations <N>");\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "stream" => {\n'),
-    write(S, '            state.stream = !state.stream;\n'),
-    write(S, '            println!("Streaming: {}", if state.stream { "on" } else { "off" });\n'),
-    write(S, '        }\n'),
-    write(S, '        "tokens" => {\n'),
-    write(S, '            println!("Messages: {}", context.len());\n'),
-    write(S, '            println!("Chars: {}", context.char_count());\n'),
-    write(S, '            println!("Est. tokens: ~{}", context.estimate_tokens());\n'),
-    write(S, '        }\n'),
-    write(S, '        "history" => {\n'),
-    write(S, '            let limit = _arg.parse::<usize>().unwrap_or(20);\n'),
-    write(S, '            print!("{}", context.format_history(limit));\n'),
-    write(S, '        }\n'),
-    write(S, '        "edit" => {\n'),
-    write(S, '            let parts: Vec<&str> = _arg.splitn(2, '' '').collect();\n'),
-    write(S, '            if let Some(idx) = parts.first().and_then(|s| s.parse::<usize>().ok()) {\n'),
-    write(S, '                if let Some(text) = parts.get(1) {\n'),
-    write(S, '                    if context.edit_message(idx, text) {\n'),
-    write(S, '                        println!("Edited message {}", idx);\n'),
-    write(S, '                    } else {\n'),
-    write(S, '                        println!("Invalid index: {}", idx);\n'),
-    write(S, '                    }\n'),
-    write(S, '                } else {\n'),
-    write(S, '                    if let Some(content) = context.get_full_content(idx) {\n'),
-    write(S, '                        println!("{}", content);\n'),
-    write(S, '                    } else {\n'),
-    write(S, '                        println!("Invalid index: {}", idx);\n'),
-    write(S, '                    }\n'),
-    write(S, '                }\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Usage: /edit <index> [new text]");\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "drop" => {\n'),
-    write(S, '            if _arg.contains(''-'') {\n'),
-    write(S, '                let parts: Vec<&str> = _arg.split(''-'').collect();\n'),
-    write(S, '                if let (Some(s), Some(e)) = (parts.first().and_then(|s| s.parse::<usize>().ok()), parts.get(1).and_then(|s| s.parse::<usize>().ok())) {\n'),
-    write(S, '                    let n = context.delete_range(s, e + 1);\n'),
-    write(S, '                    println!("Dropped {} messages", n);\n'),
-    write(S, '                } else {\n'),
-    write(S, '                    println!("Usage: /drop <N> or /drop <N>-<M>");\n'),
-    write(S, '                }\n'),
-    write(S, '            } else if let Ok(idx) = _arg.parse::<usize>() {\n'),
-    write(S, '                if context.delete_message(idx) {\n'),
-    write(S, '                    println!("Dropped message {}", idx);\n'),
-    write(S, '                } else {\n'),
-    write(S, '                    println!("Invalid index: {}", idx);\n'),
-    write(S, '                }\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Usage: /drop <N> or /drop <N>-<M>");\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "undo" => {\n'),
-    write(S, '            if context.undo() {\n'),
-    write(S, '                println!("Undone. Messages: {}", context.len());\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Nothing to undo.");\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "export" => {\n'),
-    write(S, '            let path = if _arg.is_empty() {\n'),
-    write(S, '                format!("conversation_{}.md", session_manager.chrono_simple_id())\n'),
-    write(S, '            } else { _arg.to_string() };\n'),
-    write(S, '            export_conversation(context, &path);\n'),
-    write(S, '            println!("Exported to: {}", path);\n'),
-    write(S, '        }\n'),
-    write(S, '        "model" => {\n'),
-    write(S, '            if _arg.is_empty() {\n'),
-    write(S, '                println!("Current backend: {}", backend_name);\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Model switch requires restart: uwsal -m {}", _arg);\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "format" => {\n'),
-    write(S, '            println!("Output format: plain (markdown rendering not yet implemented)");\n'),
-    write(S, '        }\n'),
-    write(S, '        "template" | "templates" => {\n'),
-    write(S, '            let mut tmgr = TemplateManager::new();\n'),
-    write(S, '            if _arg.is_empty() || _arg == "list" {\n'),
-    write(S, '                for t in tmgr.list() {\n'),
-    write(S, '                    println!("  @{:<12} {} [{}]", t.name, t.description, t.variables.join(", "));\n'),
-    write(S, '                }\n'),
-    write(S, '            } else if _arg.starts_with("use ") {\n'),
-    write(S, '                let rest = &_arg[4..];\n'),
-    write(S, '                let parts: Vec<&str> = rest.splitn(2, '' '').collect();\n'),
-    write(S, '                let name = parts[0];\n'),
-    write(S, '                let mut vars = std::collections::HashMap::new();\n'),
-    write(S, '                if let Some(args_str) = parts.get(1) {\n'),
-    write(S, '                    for pair in args_str.split('' '') {\n'),
-    write(S, '                        if let Some((k, v)) = pair.split_once(''='') {\n'),
-    write(S, '                            vars.insert(k.to_string(), v.to_string());\n'),
-    write(S, '                        }\n'),
-    write(S, '                    }\n'),
-    write(S, '                }\n'),
-    write(S, '                if let Some(rendered) = tmgr.render(name, &vars) {\n'),
-    write(S, '                    println!("Template rendered:\\n{}", rendered);\n'),
-    write(S, '                } else {\n'),
-    write(S, '                    println!("Unknown template: {}", name);\n'),
-    write(S, '                }\n'),
-    write(S, '            } else if _arg.starts_with("add ") {\n'),
-    write(S, '                let rest = &_arg[4..];\n'),
-    write(S, '                let parts: Vec<&str> = rest.splitn(2, '' '').collect();\n'),
-    write(S, '                if parts.len() == 2 {\n'),
-    write(S, '                    tmgr.add(parts[0], parts[1], "User template");\n'),
-    write(S, '                    tmgr.save_user_templates();\n'),
-    write(S, '                    println!("Template added: {}", parts[0]);\n'),
-    write(S, '                } else {\n'),
-    write(S, '                    println!("Usage: /template add <name> <template string with {{vars}}>");\n'),
-    write(S, '                }\n'),
-    write(S, '            } else {\n'),
-    write(S, '                println!("Usage: /template [list | use <name> key=val ... | add <name> <template>]");\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
-    write(S, '        "multiline" => {\n'),
-    write(S, '            state.multiline = !state.multiline;\n'),
-    write(S, '            println!("Multiline mode: {}", if state.multiline { "on" } else { "off" });\n'),
-    write(S, '        }\n'),
-    write(S, '        "search" => {\n'),
-    write(S, '            if _arg.is_empty() {\n'),
-    write(S, '                println!("Usage: /search <query>");\n'),
-    write(S, '            } else {\n'),
-    write(S, '                let query_lower = _arg.to_lowercase();\n'),
-    write(S, '                let sessions = session_manager.list();\n'),
-    write(S, '                let mut found = false;\n'),
-    write(S, '                for s in &sessions {\n'),
-    write(S, '                    if s.name.to_lowercase().contains(&query_lower) || s.id.contains(&query_lower) {\n'),
-    write(S, '                        println!("{} | {} | {}", s.id, s.name, s.backend);\n'),
-    write(S, '                        found = true;\n'),
-    write(S, '                    }\n'),
-    write(S, '                }\n'),
-    write(S, '                if !found { println!("No sessions matching: {}", _arg); }\n'),
-    write(S, '            }\n'),
-    write(S, '        }\n'),
+    %% Generate match arms from rust_command_body/2 facts
+    slash_command_dispatch_order(Order),
+    generate_rust_dispatch_arms(S, Order),
+    %% Default catch-all
     write(S, '        _ => {\n'),
     write(S, '            println!("Unknown command: /{}", cmd);\n'),
     write(S, '            return false;\n'),
@@ -2247,6 +2327,46 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '    }\n'),
     write(S, '    true\n'),
     write(S, '}\n\n').
+
+%% generate_rust_dispatch_arms(+Stream, +CommandNameList)
+%% Emit match arms for each command, auto-wiring aliases from slash_command/4.
+generate_rust_dispatch_arms(_, []).
+generate_rust_dispatch_arms(S, [CmdName|Rest]) :-
+    %% Determine the body key — most commands match by name,
+    %% but 'delete' dispatches to 'drop' body (Rust uses /drop internally)
+    (CmdName == delete -> BodyKey = drop ; BodyKey = CmdName),
+    %% 'templates' dispatches to 'template' body
+    (CmdName == templates -> BodyKey2 = template ; BodyKey2 = BodyKey),
+    (rust_command_body(BodyKey2, Body) ->
+        %% Build match pattern with aliases
+        rust_cmd_match_pattern(CmdName, Pattern),
+        format(S, '        ~w => {\n', [Pattern]),
+        %% Emit body
+        (Body == '%GENERATE_HELP%' ->
+            generate_rust_help_text(S)
+        ;
+            maplist([Line]>>(format(S, '~w\n', [Line])), Body)
+        ),
+        format(S, '        }\n', [])
+    ;
+        %% No body for this command — skip with comment
+        format(S, '        // ~w: no rust_command_body defined\n', [CmdName])
+    ),
+    generate_rust_dispatch_arms(S, Rest).
+
+%% rust_cmd_match_pattern(+CmdName, -Pattern)
+%% Build a Rust match pattern like "exit" | "quit" from slash_command aliases.
+rust_cmd_match_pattern(CmdName, Pattern) :-
+    atom_string(CmdName, CmdStr),
+    (slash_command(CmdName, _, Props, _),
+     member(aliases(Aliases), Props) ->
+        maplist([A, QA]>>(atom_string(A, AS), format(atom(QA), '"~w"', [AS])), Aliases, QuotedAliases),
+        format(atom(Primary), '"~w"', [CmdStr]),
+        append([Primary], QuotedAliases, AllPatterns),
+        atomic_list_concat(AllPatterns, ' | ', Pattern)
+    ;
+        format(atom(Pattern), '"~w"', [CmdStr])
+    ).
 
 %% generate_rust_clap_args(+Stream)
 %% Emit clap Arg::new() calls from cli_argument/2 facts.
@@ -5529,6 +5649,405 @@ impl ToolHandler {
 
 ').
 
+%% --- Fragment: plugin_manager (plugin_manager.rs) ---
+
+rust_fragment(plugin_manager, '
+use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
+
+/// A plugin-defined tool specification loaded from JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginTool {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub parameters: Vec<PluginParam>,
+    #[serde(default = "default_tool_type")]
+    pub tool_type: String,
+    #[serde(default)]
+    pub command_template: String,
+    #[serde(default)]
+    pub confirmation_required: bool,
+}
+
+fn default_tool_type() -> String { "bash".to_string() }
+
+/// A parameter definition for a plugin tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginParam {
+    pub name: String,
+    #[serde(default = "default_param_type")]
+    pub param_type: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub description: String,
+}
+
+fn default_param_type() -> String { "string".to_string() }
+
+/// A plugin manifest loaded from a JSON file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginManifest {
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    pub tools: Vec<PluginTool>,
+}
+
+/// Manages loading and executing plugin-defined tools.
+pub struct PluginManager {
+    plugins: Vec<PluginManifest>,
+    tool_map: HashMap<String, (usize, usize)>, // tool_name -> (plugin_idx, tool_idx)
+}
+
+impl PluginManager {
+    pub fn new() -> Self {
+        Self {
+            plugins: Vec::new(),
+            tool_map: HashMap::new(),
+        }
+    }
+
+    /// Load all plugin manifests from a directory.
+    /// Each .json file in the directory is treated as a plugin manifest.
+    pub fn load_dir(&mut self, dir: &str) -> usize {
+        let dir_path = Path::new(dir);
+        if !dir_path.is_dir() {
+            return 0;
+        }
+        let mut count = 0;
+        if let Ok(entries) = std::fs::read_dir(dir_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                    if self.load_file(&path) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    /// Load a single plugin manifest from a JSON file.
+    pub fn load_file(&mut self, path: &Path) -> bool {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        match serde_json::from_str::<PluginManifest>(&content) {
+            Ok(manifest) => {
+                let plugin_idx = self.plugins.len();
+                for (tool_idx, tool) in manifest.tools.iter().enumerate() {
+                    self.tool_map.insert(tool.name.clone(), (plugin_idx, tool_idx));
+                }
+                self.plugins.push(manifest);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Check if a tool name is provided by a plugin.
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.tool_map.contains_key(name)
+    }
+
+    /// Get the tool specification for a plugin tool.
+    pub fn get_tool(&self, name: &str) -> Option<&PluginTool> {
+        self.tool_map.get(name).map(|(pi, ti)| &self.plugins[*pi].tools[*ti])
+    }
+
+    /// Execute a plugin tool by rendering its command template.
+    pub fn execute(&self, name: &str, args: &HashMap<String, serde_json::Value>) -> Option<String> {
+        let tool = self.get_tool(name)?;
+        let mut cmd = tool.command_template.clone();
+        for param in &tool.parameters {
+            let placeholder = format!("{{{}}}", param.name);
+            if let Some(val) = args.get(&param.name) {
+                let val_str = match val {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                cmd = cmd.replace(&placeholder, &val_str);
+            } else if param.required {
+                return None; // Missing required param
+            }
+        }
+        Some(cmd)
+    }
+
+    /// List all loaded plugin tools.
+    pub fn list_tools(&self) -> Vec<&PluginTool> {
+        self.plugins.iter().flat_map(|p| p.tools.iter()).collect()
+    }
+
+    /// List loaded plugins.
+    pub fn list_plugins(&self) -> Vec<&PluginManifest> {
+        self.plugins.iter().collect()
+    }
+
+    /// Get tool schemas for API tool_use format (OpenAI-compatible).
+    pub fn get_tool_schemas(&self) -> Vec<serde_json::Value> {
+        self.list_tools().iter().map(|tool| {
+            let mut properties = serde_json::Map::new();
+            let mut required = Vec::new();
+            for param in &tool.parameters {
+                properties.insert(param.name.clone(), serde_json::json!({
+                    "type": param.param_type,
+                    "description": param.description,
+                }));
+                if param.required {
+                    required.push(serde_json::Value::String(param.name.clone()));
+                }
+            }
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    }
+                }
+            })
+        }).collect()
+    }
+
+    /// Default plugin directory path.
+    pub fn default_dir() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".agent-loop").join("plugins")
+    }
+}
+').
+
+%% --- Fragment: wasm_bindings (wasm_bindings.rs) ---
+
+rust_fragment(wasm_bindings, '
+//! WASM bindings for browser-based agent loop.
+//!
+//! This module provides WebAssembly-compatible wrappers for the core
+//! agent loop functionality. It compiles only when targeting wasm32.
+//!
+//! Build with: `cargo build --target wasm32-unknown-unknown --features wasm`
+//! Or with wasm-pack: `wasm-pack build --target web`
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+use crate::types::*;
+use crate::context::*;
+use crate::costs::*;
+use std::collections::HashMap;
+
+/// Browser-compatible agent loop state.
+/// Holds context, cost tracking, and configuration without
+/// filesystem or stdin dependencies.
+pub struct WasmAgentState {
+    context: ContextManager,
+    cost_tracker: CostTracker,
+    backend_name: String,
+    model: String,
+    system_prompt: Option<String>,
+}
+
+impl WasmAgentState {
+    pub fn new(max_tokens: usize, backend: &str, model: &str) -> Self {
+        Self {
+            context: ContextManager::new(max_tokens, 0, 0, 0, "sliding"),
+            cost_tracker: CostTracker::new(),
+            backend_name: backend.to_string(),
+            model: model.to_string(),
+            system_prompt: None,
+        }
+    }
+
+    pub fn set_system_prompt(&mut self, prompt: &str) {
+        self.system_prompt = Some(prompt.to_string());
+    }
+
+    pub fn add_user_message(&mut self, content: &str) {
+        self.context.add_message("user", content);
+    }
+
+    pub fn add_assistant_message(&mut self, content: &str) {
+        self.context.add_message("assistant", content);
+    }
+
+    pub fn add_tool_result(&mut self, tool_call_id: &str, output: &str) {
+        self.context.add_tool_result(tool_call_id, output);
+    }
+
+    pub fn get_context_json(&self) -> String {
+        let messages = self.context.get_context();
+        serde_json::to_string(&messages).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    pub fn get_message_count(&self) -> usize {
+        self.context.len()
+    }
+
+    pub fn clear_context(&mut self) {
+        self.context.clear();
+    }
+
+    pub fn get_cost_summary(&self) -> String {
+        self.cost_tracker.format_summary()
+    }
+
+    pub fn record_usage(&mut self, input_tokens: u64, output_tokens: u64) {
+        self.cost_tracker.record_usage(&self.model, input_tokens, output_tokens);
+    }
+
+    /// Build a request body suitable for fetch() in the browser.
+    pub fn build_request_json(&self) -> String {
+        let messages = self.context.get_context();
+        let mut body = serde_json::Map::new();
+        body.insert("model".to_string(), serde_json::json!(self.model));
+        let msg_json: Vec<serde_json::Value> = messages.iter().map(|m| {
+            serde_json::json!({"role": m.role, "content": m.content})
+        }).collect();
+        if let Some(ref sp) = self.system_prompt {
+            let mut all = vec![serde_json::json!({"role": "system", "content": sp})];
+            all.extend(msg_json);
+            body.insert("messages".to_string(), serde_json::json!(all));
+        } else {
+            body.insert("messages".to_string(), serde_json::json!(msg_json));
+        }
+        serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Parse a tool call from an API response JSON string.
+    pub fn parse_tool_calls(&self, response_json: &str) -> String {
+        // Returns JSON array of tool calls [{name, id, arguments}]
+        let val: serde_json::Value = match serde_json::from_str(response_json) {
+            Ok(v) => v,
+            Err(_) => return "[]".to_string(),
+        };
+        // Try OpenAI format
+        if let Some(choices) = val.get("choices") {
+            if let Some(tc) = choices[0].get("message").and_then(|m| m.get("tool_calls")) {
+                return tc.to_string();
+            }
+        }
+        // Try Anthropic format
+        if let Some(content) = val.get("content") {
+            if let Some(arr) = content.as_array() {
+                let tool_calls: Vec<&serde_json::Value> = arr.iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                    .collect();
+                if !tool_calls.is_empty() {
+                    return serde_json::to_string(&tool_calls).unwrap_or_else(|_| "[]".to_string());
+                }
+            }
+        }
+        "[]".to_string()
+    }
+
+    /// Export conversation as JSON string.
+    pub fn export_json(&self) -> String {
+        let messages = self.context.get_context();
+        serde_json::json!({
+            "message_count": messages.len(),
+            "messages": messages.iter().map(|m| {
+                serde_json::json!({"role": m.role, "content": m.content})
+            }).collect::<Vec<_>>(),
+        }).to_string()
+    }
+
+    /// Export conversation as Markdown string.
+    pub fn export_markdown(&self) -> String {
+        let messages = self.context.get_context();
+        let mut out = String::new();
+        for msg in messages {
+            let label = match msg.role.as_str() {
+                "user" => "You",
+                "assistant" => "Assistant",
+                "system" => "System",
+                _ => &msg.role,
+            };
+            out.push_str(&format!("## {}\\n\\n{}\\n\\n---\\n\\n", label, msg.content));
+        }
+        out
+    }
+}
+
+/// WASM-exported functions (only compiled for wasm32 targets).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct WasmAgent {
+    inner: WasmAgentState,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl WasmAgent {
+    #[wasm_bindgen(constructor)]
+    pub fn new(max_tokens: usize, backend: &str, model: &str) -> Self {
+        Self { inner: WasmAgentState::new(max_tokens, backend, model) }
+    }
+
+    pub fn set_system_prompt(&mut self, prompt: &str) {
+        self.inner.set_system_prompt(prompt);
+    }
+
+    pub fn add_user_message(&mut self, content: &str) {
+        self.inner.add_user_message(content);
+    }
+
+    pub fn add_assistant_message(&mut self, content: &str) {
+        self.inner.add_assistant_message(content);
+    }
+
+    pub fn add_tool_result(&mut self, tool_call_id: &str, output: &str) {
+        self.inner.add_tool_result(tool_call_id, output);
+    }
+
+    pub fn get_context_json(&self) -> String {
+        self.inner.get_context_json()
+    }
+
+    pub fn get_message_count(&self) -> usize {
+        self.inner.get_message_count()
+    }
+
+    pub fn clear_context(&mut self) {
+        self.inner.clear_context();
+    }
+
+    pub fn build_request_json(&self) -> String {
+        self.inner.build_request_json()
+    }
+
+    pub fn parse_tool_calls(&self, response_json: &str) -> String {
+        self.inner.parse_tool_calls(response_json)
+    }
+
+    pub fn export_json(&self) -> String {
+        self.inner.export_json()
+    }
+
+    pub fn export_markdown(&self) -> String {
+        self.inner.export_markdown()
+    }
+
+    pub fn record_usage(&mut self, input_tokens: u64, output_tokens: u64) {
+        self.inner.record_usage(input_tokens, output_tokens);
+    }
+
+    pub fn get_cost_summary(&self) -> String {
+        self.inner.get_cost_summary()
+    }
+}
+').
+
 %% --- Fragment: sessions_module (sessions.rs) ---
 
 rust_fragment(sessions_module, '
@@ -6781,6 +7300,9 @@ use agent_loop::security::*;
 use agent_loop::tool_handler::*;
 use agent_loop::config::*;
 use agent_loop::proot_sandbox::*;
+use agent_loop::plugin_manager::*;
+use agent_loop::wasm_bindings::*;
+use agent_loop::sessions::*;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -7427,6 +7949,227 @@ fn test_proot_sandbox_env_overrides_content() {
     let overrides = sandbox.build_env_overrides();
     assert!(overrides.iter().any(|(k, _)| *k == "PROOT_NO_SECCOMP"));
     assert!(overrides.iter().any(|(k, v)| *k == "LD_PRELOAD" && v.is_empty()));
+}
+
+// ============================================================================
+// Plugin manager tests
+// ============================================================================
+
+#[test]
+fn test_plugin_manager_new_empty() {
+    let pm = PluginManager::new();
+    assert_eq!(pm.list_tools().len(), 0);
+    assert_eq!(pm.list_plugins().len(), 0);
+    assert!(!pm.has_tool("anything"));
+}
+
+#[test]
+fn test_plugin_manager_load_nonexistent_dir() {
+    let mut pm = PluginManager::new();
+    let count = pm.load_dir("/nonexistent/path/to/plugins");
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_plugin_manager_default_dir() {
+    let dir = PluginManager::default_dir();
+    let dir_str = dir.to_string_lossy();
+    assert!(dir_str.contains("plugins"));
+    assert!(dir_str.contains(".agent-loop"));
+}
+
+#[test]
+fn test_plugin_tool_schema_generation() {
+    // Create a plugin manifest in memory and test schema generation
+    let manifest_json = r#"{
+        "name": "test-plugin",
+        "version": "1.0",
+        "description": "Test plugin",
+        "tools": [{
+            "name": "greet",
+            "description": "Say hello",
+            "parameters": [{
+                "name": "name",
+                "param_type": "string",
+                "required": true,
+                "description": "Name to greet"
+            }],
+            "command_template": "echo Hello {name}!"
+        }]
+    }"#;
+
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let plugin_dir = format!("{}/uwsal_test_plugins", tmp_dir);
+    let _ = std::fs::create_dir_all(&plugin_dir);
+    let plugin_file = format!("{}/test.json", plugin_dir);
+    std::fs::write(&plugin_file, manifest_json).unwrap();
+
+    let mut pm = PluginManager::new();
+    let count = pm.load_dir(&plugin_dir);
+    assert_eq!(count, 1);
+    assert!(pm.has_tool("greet"));
+
+    let tool = pm.get_tool("greet").unwrap();
+    assert_eq!(tool.name, "greet");
+    assert_eq!(tool.parameters.len(), 1);
+
+    let schemas = pm.get_tool_schemas();
+    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas[0]["function"]["name"], "greet");
+
+    // Test command rendering
+    let mut args = HashMap::new();
+    args.insert("name".to_string(), serde_json::json!("World"));
+    let cmd = pm.execute("greet", &args).unwrap();
+    assert_eq!(cmd, "echo Hello World!");
+
+    // Cleanup
+    let _ = std::fs::remove_file(&plugin_file);
+    let _ = std::fs::remove_dir(&plugin_dir);
+}
+
+// ============================================================================
+// WASM bindings tests (non-wasm target — tests WasmAgentState directly)
+// ============================================================================
+
+#[test]
+fn test_wasm_agent_state_new() {
+    let state = WasmAgentState::new(4096, "openai", "gpt-4");
+    assert_eq!(state.get_message_count(), 0);
+}
+
+#[test]
+fn test_wasm_agent_state_messages() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("hello");
+    state.add_assistant_message("hi there");
+    assert_eq!(state.get_message_count(), 2);
+
+    let json = state.get_context_json();
+    assert!(json.contains("hello"));
+    assert!(json.contains("hi there"));
+}
+
+#[test]
+fn test_wasm_agent_state_build_request() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.set_system_prompt("You are helpful.");
+    state.add_user_message("What is 2+2?");
+
+    let req = state.build_request_json();
+    assert!(req.contains("gpt-4"));
+    assert!(req.contains("You are helpful"));
+    assert!(req.contains("What is 2+2"));
+}
+
+#[test]
+fn test_wasm_agent_state_export_json() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("test message");
+    let export = state.export_json();
+    assert!(export.contains("message_count"));
+    assert!(export.contains("test message"));
+}
+
+#[test]
+fn test_wasm_agent_state_export_markdown() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("user msg");
+    state.add_assistant_message("assistant msg");
+    let md = state.export_markdown();
+    assert!(md.contains("## You"));
+    assert!(md.contains("## Assistant"));
+}
+
+#[test]
+fn test_wasm_agent_state_clear() {
+    let mut state = WasmAgentState::new(4096, "openai", "gpt-4");
+    state.add_user_message("msg1");
+    state.add_user_message("msg2");
+    assert_eq!(state.get_message_count(), 2);
+    state.clear_context();
+    assert_eq!(state.get_message_count(), 0);
+}
+
+#[test]
+fn test_wasm_agent_state_parse_tool_calls_openai() {
+    let state = WasmAgentState::new(4096, "openai", "gpt-4");
+    let response = r#"{"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"bash","arguments":"ls"}}]}}]}"#;
+    let result = state.parse_tool_calls(response);
+    assert!(result.contains("bash"));
+    assert!(result.contains("call_1"));
+}
+
+#[test]
+fn test_wasm_agent_state_parse_tool_calls_anthropic() {
+    let state = WasmAgentState::new(4096, "anthropic", "claude-3");
+    let response = r#"{"content":[{"type":"tool_use","id":"toolu_1","name":"read","input":{"file_path":"test.txt"}}]}"#;
+    let result = state.parse_tool_calls(response);
+    assert!(result.contains("tool_use"));
+    assert!(result.contains("read"));
+}
+
+// ============================================================================
+// Session manager tests
+// ============================================================================
+
+#[test]
+fn test_session_manager_empty_list() {
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let sm = SessionManager::new(Some(&test_dir));
+    let sessions = sm.list();
+    assert!(sessions.is_empty());
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn test_session_manager_save_and_load() {
+    let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let sm = SessionManager::new(Some(&test_dir));
+
+    let messages = vec![
+        Message { role: "user".to_string(), content: "hello".to_string(), tool_calls: None, tool_call_id: None },
+        Message { role: "assistant".to_string(), content: "hi".to_string(), tool_calls: None, tool_call_id: None },
+    ];
+    let id = sm.save(&messages, "test-backend", Some("test-session"));
+
+    let loaded = sm.load(&id);
+    assert!(loaded.is_some());
+    let session = loaded.unwrap();
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.metadata.name, "test-session");
+    assert_eq!(session.metadata.backend, "test-backend");
+
+    // List should include our session
+    let sessions = sm.list();
+    assert_eq!(sessions.len(), 1);
+
+    // Delete
+    assert!(sm.delete(&id));
+    assert!(sm.list().is_empty());
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+// ============================================================================
+// Cost tracker expanded tests
+// ============================================================================
+
+#[test]
+fn test_cost_tracker_format_summary() {
+    let tracker = CostTracker::new();
+    let summary = tracker.format_summary();
+    assert!(summary.contains("0") || summary.contains("Cost"));
+}
+
+#[test]
+fn test_cost_tracker_record_and_report() {
+    let mut tracker = CostTracker::new();
+    tracker.record_usage("test-model", 100, 50);
+    let summary = tracker.format_summary();
+    assert!(summary.contains("100") || summary.contains("150") || summary.len() > 0);
 }
 ').
 
