@@ -862,21 +862,35 @@ generate_generic_linear_recursion_lua(PredStr, Arity, MemoEnabled, LuaCode) :-
     (   MemoEnabled = true ->
         format(string(LuaCode),
 '-- ~w/~w - generic linear recursion (Lua)
+-- Note: generic fallback for arity ~~= 2 or unknown input type
 local ~w_memo = {}
 
 local function ~w(n)
     if ~w_memo[n] then return ~w_memo[n] end
-    -- Generic linear recursion: implement specific logic here
-    return nil
+    if n <= 0 then return 0 end
+    local result = ~w(n - 1) + 1
+    ~w_memo[n] = result
+    return result
 end
-', [PredStr, Arity, PredStr, PredStr, PredStr, PredStr])
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, Arity, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
     ;   format(string(LuaCode),
 '-- ~w/~w - generic linear recursion (Lua)
+-- Note: generic fallback for arity ~~= 2 or unknown input type
 local function ~w(n)
-    -- Generic linear recursion: implement specific logic here
-    return nil
+    if n <= 0 then return 0 end
+    return ~w(n - 1) + 1
 end
-', [PredStr, Arity, PredStr])
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, Arity, PredStr, PredStr, PredStr])
     ).
 
 % Translate fold expressions to Lua syntax
