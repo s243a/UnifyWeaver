@@ -782,7 +782,8 @@ multicall_linear_recursion:compile_multicall_pattern(haskell, PredStr, BaseClaus
         member(clause(BHead, _), BaseClauses),
         BHead =.. [_P, BInput, BOutput],
         format(string(BaseCaseCode), '~w ~w = ~w', [PredStr, BInput, BOutput])
-    ), BaseCaseCodes),
+    ), BaseCaseCodes0),
+    sort(BaseCaseCodes0, BaseCaseCodes),
     atomic_list_concat(BaseCaseCodes, '\n', BaseCaseStr),
     format(string(HsCode),
 '{-# LANGUAGE BangPatterns #-}
@@ -829,7 +830,8 @@ direct_multi_call_recursion:compile_direct_multicall_pattern(haskell, PredStr, B
         member(clause(BHead, _), BaseClauses),
         BHead =.. [_P, BInput, BOutput],
         format(string(BaseCaseCode), '~w ~w = ~w', [PredStr, BInput, BOutput])
-    ), BaseCaseCodes),
+    ), BaseCaseCodes0),
+    sort(BaseCaseCodes0, BaseCaseCodes),
     atomic_list_concat(BaseCaseCodes, '\n', BaseCaseStr),
     format(string(HsCode),
 '{-# LANGUAGE BangPatterns #-}

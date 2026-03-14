@@ -699,8 +699,7 @@ test_linear_recursion :-
         write_bash_file('output/advanced/list_length.hs', Code1H),
         writeln('  ✓ Compiled to output/advanced/list_length.hs (haskell)'),
         compile_linear_recursion(list_length/2, [target(java)], Code1J),
-        write_bash_file('output/advanced/list_length.java', Code1J),
-        writeln('  ✓ Compiled to output/advanced/list_length.java (java)'),
+        write_java_file('output/advanced', Code1J),
         compile_linear_recursion(list_length/2, [target(elixir)], Code1E),
         write_bash_file('output/advanced/list_length.exs', Code1E),
         writeln('  ✓ Compiled to output/advanced/list_length.exs (elixir)'),
@@ -733,8 +732,7 @@ test_linear_recursion :-
         write_bash_file('output/advanced/factorial.hs', Code2H),
         writeln('  ✓ Compiled to output/advanced/factorial.hs (haskell)'),
         compile_linear_recursion(factorial/2, [target(java)], Code2J),
-        write_bash_file('output/advanced/factorial.java', Code2J),
-        writeln('  ✓ Compiled to output/advanced/factorial.java (java)'),
+        write_java_file('output/advanced', Code2J),
         compile_linear_recursion(factorial/2, [target(elixir)], Code2E),
         write_bash_file('output/advanced/factorial.exs', Code2E),
         writeln('  ✓ Compiled to output/advanced/factorial.exs (elixir)'),
@@ -754,3 +752,18 @@ write_bash_file(Path, Content) :-
     % Make executable
     atom_concat('chmod +x ', Path, ChmodCmd),
     shell(ChmodCmd).
+
+%% Write Java file using class name from generated code
+write_java_file(Dir, Code) :-
+    (   sub_string(Code, B, _, _, "public class "),
+        B1 is B + 13,
+        sub_string(Code, B1, _, _, Rest),
+        sub_string(Rest, SpacePos, 1, _, " "),
+        sub_string(Rest, 0, SpacePos, _, ClassName)
+    ->  atomic_list_concat([Dir, '/', ClassName, '.java'], FilePath),
+        open(FilePath, write, Stream),
+        write(Stream, Code),
+        close(Stream),
+        format('  ✓ Compiled to ~w (java)~n', [FilePath])
+    ;   writeln('  ✗ FAIL - could not extract Java class name from generated code')
+    ).

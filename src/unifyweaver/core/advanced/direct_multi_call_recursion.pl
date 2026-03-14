@@ -396,8 +396,7 @@ test_direct_multi_call :-
     % Test 7: Java compilation
     writeln('Test 7: Compile fibonacci to Java'),
     (   compile_direct_multi_call(test_dfib/2, [target(java)], JavaCode) ->
-        write_output_file('output/advanced/fib_direct.java', JavaCode),
-        writeln('  ✓ Compiled to output/advanced/fib_direct.java (java)')
+        write_java_file('output/advanced', JavaCode)
     ;   writeln('  ✗ FAIL - Java compilation failed')
     ),
 
@@ -424,3 +423,18 @@ write_output_file(Path, Content) :-
     open(Path, write, Stream),
     write(Stream, Content),
     close(Stream).
+
+%% Write Java file using class name from generated code
+write_java_file(Dir, Code) :-
+    (   sub_string(Code, B, _, _, "public class "),
+        B1 is B + 13,
+        sub_string(Code, B1, _, _, Rest),
+        sub_string(Rest, SpacePos, 1, _, " "),
+        sub_string(Rest, 0, SpacePos, _, ClassName)
+    ->  atomic_list_concat([Dir, '/', ClassName, '.java'], FilePath),
+        open(FilePath, write, Stream),
+        write(Stream, Code),
+        close(Stream),
+        format('  ✓ Compiled to ~w (java)~n', [FilePath])
+    ;   writeln('  ✗ FAIL - could not extract Java class name from generated code')
+    ).

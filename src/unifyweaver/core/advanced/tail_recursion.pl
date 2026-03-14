@@ -262,8 +262,7 @@ test_tail_recursion :-
         write_bash_file('output/advanced/count_items.hs', Code1H),
         writeln('  ✓ Compiled to output/advanced/count_items.hs (haskell)'),
         compile_tail_recursion(count_items/3, [target(java)], Code1J),
-        write_bash_file('output/advanced/count_items.java', Code1J),
-        writeln('  ✓ Compiled to output/advanced/count_items.java (java)'),
+        write_java_file('output/advanced', Code1J),
         compile_tail_recursion(count_items/3, [target(elixir)], Code1E),
         write_bash_file('output/advanced/count_items.exs', Code1E),
         writeln('  ✓ Compiled to output/advanced/count_items.exs (elixir)'),
@@ -296,8 +295,7 @@ test_tail_recursion :-
         write_bash_file('output/advanced/sum_list.hs', Code2H),
         writeln('  ✓ Compiled to output/advanced/sum_list.hs (haskell)'),
         compile_tail_recursion(sum_list/3, [target(java)], Code2J),
-        write_bash_file('output/advanced/sum_list.java', Code2J),
-        writeln('  ✓ Compiled to output/advanced/sum_list.java (java)'),
+        write_java_file('output/advanced', Code2J),
         compile_tail_recursion(sum_list/3, [target(elixir)], Code2E),
         write_bash_file('output/advanced/sum_list.exs', Code2E),
         writeln('  ✓ Compiled to output/advanced/sum_list.exs (elixir)'),
@@ -317,3 +315,18 @@ write_bash_file(Path, Content) :-
     % Make executable
     atom_concat('chmod +x ', Path, ChmodCmd),
     shell(ChmodCmd).
+
+%% Write Java file using class name from generated code
+write_java_file(Dir, Code) :-
+    (   sub_string(Code, B, _, _, "public class "),
+        B1 is B + 13,
+        sub_string(Code, B1, _, _, Rest),
+        sub_string(Rest, SpacePos, 1, _, " "),
+        sub_string(Rest, 0, SpacePos, _, ClassName)
+    ->  atomic_list_concat([Dir, '/', ClassName, '.java'], FilePath),
+        open(FilePath, write, Stream),
+        write(Stream, Code),
+        close(Stream),
+        format('  ✓ Compiled to ~w (java)~n', [FilePath])
+    ;   writeln('  ✗ FAIL - could not extract Java class name from generated code')
+    ).

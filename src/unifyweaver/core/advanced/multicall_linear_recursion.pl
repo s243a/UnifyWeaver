@@ -313,8 +313,7 @@ test_multicall_linear :-
     % Test 7: Compile to Java
     writeln('Test 7: Compile fibonacci (multi-call linear) to Java'),
     (   compile_multicall_linear_recursion(test_fib/2, [target(java)], MCJavaCode) ->
-        write_output_file('output/advanced/fib_multicall.java', MCJavaCode),
-        writeln('  ✓ Compiled to output/advanced/fib_multicall.java (java)')
+        write_java_file('output/advanced', MCJavaCode)
     ;   writeln('  ✗ FAIL - Java compilation failed')
     ),
 
@@ -341,6 +340,21 @@ write_output_file(Path, Content) :-
     open(Path, write, Stream),
     write(Stream, Content),
     close(Stream).
+
+%% Write Java file using class name from generated code
+write_java_file(Dir, Code) :-
+    (   sub_string(Code, B, _, _, "public class "),
+        B1 is B + 13,
+        sub_string(Code, B1, _, _, Rest),
+        sub_string(Rest, SpacePos, 1, _, " "),
+        sub_string(Rest, 0, SpacePos, _, ClassName)
+    ->  atomic_list_concat([Dir, '/', ClassName, '.java'], FilePath),
+        open(FilePath, write, Stream),
+        write(Stream, Code),
+        close(Stream),
+        format('  ✓ Compiled to ~w (java)~n', [FilePath])
+    ;   writeln('  ✗ FAIL - could not extract Java class name from generated code')
+    ).
 
 abolish_if_exists(Pred/Arity) :-
     (   current_predicate(Pred/Arity) ->

@@ -695,8 +695,7 @@ test_mutual_recursion :-
         write_bash_file('output/advanced/even_odd.hs', Code1H),
         writeln('  ✓ Compiled to output/advanced/even_odd.hs (haskell)'),
         compile_mutual_recursion(Predicates1, [target(java)], Code1J),
-        write_bash_file('output/advanced/even_odd.java', Code1J),
-        writeln('  ✓ Compiled to output/advanced/even_odd.java (java)')
+        write_java_file('output/advanced', Code1J)
     ;   writeln('  ✗ FAIL - should detect mutual recursion')
     ),
 
@@ -723,3 +722,18 @@ write_bash_file(Path, Content) :-
     % Make executable
     atom_concat('chmod +x ', Path, ChmodCmd),
     shell(ChmodCmd).
+
+%% Write Java file using class name from generated code
+write_java_file(Dir, Code) :-
+    (   sub_string(Code, B, _, _, "public class "),
+        B1 is B + 13,
+        sub_string(Code, B1, _, _, Rest),
+        sub_string(Rest, SpacePos, 1, _, " "),
+        sub_string(Rest, 0, SpacePos, _, ClassName)
+    ->  atomic_list_concat([Dir, '/', ClassName, '.java'], FilePath),
+        open(FilePath, write, Stream),
+        write(Stream, Code),
+        close(Stream),
+        format('  ✓ Compiled to ~w (java)~n', [FilePath])
+    ;   writeln('  ✗ FAIL - could not extract Java class name from generated code')
+    ).
