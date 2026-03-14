@@ -102,8 +102,27 @@ merge_opts(Base, Override, Merged) :-
     pairs_values(Pairs, Merged).
 
 index_by_key(Options, Dict) :-
-    maplist(to_kv, Options, Pairs),
+    consolidate_list_options(Options, Consolidated),
+    maplist(to_kv, Consolidated, Pairs),
     dict_create(Dict, opts, Pairs).
+
+%% consolidate_list_options(+Options, -Consolidated)
+%  Merge multiple skip(X) options into a single skip([X1,X2,...]) so that
+%  dict_create doesn't crash on duplicate functor/arity keys.
+consolidate_list_options(Options, Consolidated) :-
+    % Collect all skip atoms and skip lists
+    findall(S, (member(skip(S), Options), atom(S)), SkipAtoms),
+    findall(S, (member(skip(SL), Options), is_list(SL), member(S, SL)), SkipListItems),
+    append(SkipAtoms, SkipListItems, AllSkips),
+    % Remove all skip() options from the list
+    exclude(is_skip_option, Options, Rest),
+    % Add back consolidated skip if non-empty
+    (   AllSkips \= [] ->
+        Consolidated = [skip(AllSkips)|Rest]
+    ;   Consolidated = Rest
+    ).
+
+is_skip_option(skip(_)).
 
 to_kv(Opt, Key-Opt) :-
     functor(Opt, F, A),

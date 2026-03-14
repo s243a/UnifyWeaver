@@ -26,6 +26,14 @@
 :- use_module('../targets/clojure_target', [compile_predicate_to_clojure/3]).
 :- use_module('../targets/jython_target', [compile_predicate_to_jython/3]).
 :- use_module('../targets/elixir_target', [compile_predicate_to_elixir/3]).
+:- use_module('../targets/r_target', []).        % registers multifile tail/linear patterns for R
+:- use_module('../targets/c_target', []).        % registers multifile tail/linear patterns for C
+:- use_module('../targets/haskell_target', []).  % registers multifile tail/linear patterns for Haskell
+:- use_module('../targets/fsharp_target', []).   % registers multifile tail/linear patterns for F#
+:- use_module('../targets/lua_target', []).      % registers multifile tail/linear patterns for Lua
+:- use_module('../targets/cpp_target', []).      % registers multifile tail/linear patterns for C++
+:- use_module('../targets/ruby_target', []).     % registers multifile tail/linear patterns for Ruby
+:- use_module('../targets/perl_target', []).     % registers multifile tail/linear patterns for Perl
 :- use_module(template_system).
 :- use_module(library(lists)).
 :- use_module(constraint_analyzer).
@@ -76,8 +84,7 @@ merge_options(RuntimeOpts, Constraints, Merged) :-
             FunctorName \= unordered
         ),
         OtherRuntimeOpts),
-    append(AllConstraints0, OtherRuntimeOpts, AllConstraints),
-    list_to_set(AllConstraints, Merged).
+    append(AllConstraints0, OtherRuntimeOpts, Merged).
 
 %% compile_dispatch(+Pred/Arity, +FinalOptions, +Target, -GeneratedCode)
 %  Target-aware compilation logic, now called after validation.
@@ -1602,7 +1609,7 @@ add_~w <- function(from_node, to_node) {
         queue <- queue[-1]
         neighbors <- tryCatch(get(current, envir = ~w_graph), error = function(e) c())
         for (next_node in neighbors) {
-            if (!(next_node %%in%% visited)) {
+            if (!(next_node %in% visited)) {
                 visited <- c(visited, next_node)
                 queue <- c(queue, next_node)
                 results <- c(results, next_node)
@@ -1624,7 +1631,7 @@ add_~w <- function(from_node, to_node) {
         neighbors <- tryCatch(get(current, envir = ~w_graph), error = function(e) c())
         for (next_node in neighbors) {
             if (next_node == target) return(TRUE)
-            if (!(next_node %%in%% visited)) {
+            if (!(next_node %in% visited)) {
                 visited <- c(visited, next_node)
                 queue <- c(queue, next_node)
             }
