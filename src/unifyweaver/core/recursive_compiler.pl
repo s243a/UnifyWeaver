@@ -81,9 +81,22 @@ merge_options(RuntimeOpts, Constraints, Merged) :-
 
 %% compile_dispatch(+Pred/Arity, +FinalOptions, +Target, -GeneratedCode)
 %  Target-aware compilation logic, now called after validation.
+%
+%  Pattern selection options:
+%    pattern(P) — force a specific pattern (transitive_closure, tail_recursion,
+%                 linear_recursion, mutual_recursion, tree_recursion, etc.)
+%    skip(P)    — skip a pattern during classification, fall through to the next
+%                 (e.g., skip(transitive_closure) to get linear_recursion instead)
+%    skip([P1,P2,...]) — skip multiple patterns
 compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     format('=== Analyzing ~w/~w ===~n', [Pred, Arity]),
-    classify_predicate(Pred/Arity, Classification),
+
+    % Check for forced pattern
+    (   member(pattern(ForcedPattern), FinalOptions) ->
+        format('Forced pattern: ~w~n', [ForcedPattern]),
+        Classification = ForcedPattern
+    ;   classify_predicate(Pred/Arity, FinalOptions, Classification)
+    ),
     format('Classification: ~w~n', [Classification]),
 
     (   Classification = non_recursive ->
@@ -152,6 +165,10 @@ compile_advanced(jython, Pred/Arity, FinalOptions, GeneratedCode) :-
     jython_target:compile_predicate_to_jython(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
 compile_advanced(elixir, Pred/Arity, FinalOptions, GeneratedCode) :-
     elixir_target:compile_predicate_to_elixir(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
+compile_advanced(r, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(r)|FinalOptions], GeneratedCode).
+compile_advanced(python, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(python)|FinalOptions], GeneratedCode).
 compile_advanced(go, Pred/Arity, _FinalOptions, _GeneratedCode) :-
     format(user_error, 'Advanced recursive compilation for target go not yet implemented (~w).~n',
            [Pred/Arity]),
@@ -180,18 +197,31 @@ prepare_csharp_query_options(Options, QueryOptions) :-
 is_target_option(target(_)).
 
 %% Classify predicate recursion pattern
+%  Backward-compatible 2-arg version (no options)
 classify_predicate(Pred/Arity, Classification) :-
+    classify_predicate(Pred/Arity, [], Classification).
+
+%% classify_predicate(+Pred/Arity, +Options, -Classification)
+%  Classifies with skip support.
+%  Options: skip(Pattern) or skip([P1,P2,...]) to skip patterns.
+classify_predicate(Pred/Arity, Options, Classification) :-
+    % Collect skip list from options
+    findall(S, (member(skip(S), Options), atom(S)), SkipAtoms),
+    findall(S, (member(skip(SL), Options), is_list(SL), member(S, SL)), SkipLists),
+    append(SkipAtoms, SkipLists, SkipPatterns),
+
     functor(Head, Pred, Arity),
     findall(Body, clause(Head, Body), Bodies),
 
     % Check for mutual recursion FIRST (before self-recursion check)
-    (   call_graph:predicates_in_group(Pred/Arity, Group),
+    (   \+ memberchk(mutual_recursion, SkipPatterns),
+        call_graph:predicates_in_group(Pred/Arity, Group),
         length(Group, GroupSize),
         GroupSize > 1 ->
         Classification = mutual_recursion
     ;   % Check if self-recursive
         contains_recursive_call(Pred, Bodies) ->
-        analyze_recursion_pattern(Pred, Arity, Bodies, Classification)
+        analyze_recursion_pattern(Pred, Arity, Bodies, SkipPatterns, Classification)
     ;   Classification = non_recursive
     ).
 
@@ -214,17 +244,26 @@ contains_goal((A; _), Goal) :-
 contains_goal((_;B), Goal) :- 
     contains_goal(B, Goal).
 
-%% Analyze recursion pattern
+%% Analyze recursion pattern (backward-compatible 4-arg version)
 analyze_recursion_pattern(Pred, Arity, Bodies, Pattern) :-
+    analyze_recursion_pattern(Pred, Arity, Bodies, [], Pattern).
+
+%% analyze_recursion_pattern(+Pred, +Arity, +Bodies, +SkipPatterns, -Pattern)
+%  Classifies with skip support. SkipPatterns is a list of pattern names
+%  to skip (e.g., [transitive_closure, tail_recursion]).
+analyze_recursion_pattern(Pred, Arity, Bodies, SkipPatterns, Pattern) :-
     % Separate base cases from recursive cases
     partition(is_recursive_clause(Pred), Bodies, RecClauses, BaseClauses),
-    
+
     % Check for transitive closure pattern
-    (   is_transitive_closure(Pred, Arity, BaseClauses, RecClauses, BasePred) ->
+    (   \+ memberchk(transitive_closure, SkipPatterns),
+        is_transitive_closure(Pred, Arity, BaseClauses, RecClauses, BasePred) ->
         Pattern = transitive_closure(BasePred)
-    ;   is_tail_recursive(Pred, RecClauses) ->
+    ;   \+ memberchk(tail_recursion, SkipPatterns),
+        is_tail_recursive(Pred, RecClauses) ->
         Pattern = tail_recursion
-    ;   is_linear_recursive(Pred, RecClauses) ->
+    ;   \+ memberchk(linear_recursion, SkipPatterns),
+        is_linear_recursive(Pred, RecClauses) ->
         Pattern = linear_recursion
     ;   Pattern = unknown_recursion
     ).
@@ -1530,6 +1569,95 @@ if ($args.Count -eq 1) {
     exit 1
 }
 ', [PredStr, BaseStr, PredStr, PredStr, BaseStr]),
+    !.
+
+%% R transitive closure - generates BFS with environment hash and list
+compile_transitive_closure(r, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+    atom_string(Pred, PredStr),
+    atom_string(BasePred, BaseStr),
+
+    format(string(GeneratedCode),
+'#!/usr/bin/env Rscript
+# Generated by UnifyWeaver R Target - Transitive Closure
+# Predicate: ~w/2 (transitive closure of ~w)
+
+# Adjacency list stored as an environment (hash map)
+~w_graph <- new.env(hash = TRUE, parent = emptyenv())
+
+add_~w <- function(from_node, to_node) {
+    if (!exists(from_node, envir = ~w_graph)) {
+        assign(from_node, c(), envir = ~w_graph)
+    }
+    assign(from_node, c(get(from_node, envir = ~w_graph), to_node), envir = ~w_graph)
+}
+
+# Find all reachable nodes from start (BFS)
+~w_all <- function(start) {
+    visited <- start
+    queue <- start
+    results <- c()
+
+    while (length(queue) > 0) {
+        current <- queue[1]
+        queue <- queue[-1]
+        neighbors <- tryCatch(get(current, envir = ~w_graph), error = function(e) c())
+        for (next_node in neighbors) {
+            if (!(next_node %%in%% visited)) {
+                visited <- c(visited, next_node)
+                queue <- c(queue, next_node)
+                results <- c(results, next_node)
+            }
+        }
+    }
+    results
+}
+
+# Check if target is reachable from start
+~w_check <- function(start, target) {
+    if (start == target) return(FALSE)
+    visited <- start
+    queue <- start
+
+    while (length(queue) > 0) {
+        current <- queue[1]
+        queue <- queue[-1]
+        neighbors <- tryCatch(get(current, envir = ~w_graph), error = function(e) c())
+        for (next_node in neighbors) {
+            if (next_node == target) return(TRUE)
+            if (!(next_node %%in%% visited)) {
+                visited <- c(visited, next_node)
+                queue <- c(queue, next_node)
+            }
+        }
+    }
+    FALSE
+}
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    # Read ~w facts from stdin (format: from:to)
+    lines <- readLines(file("stdin"))
+    for (line in lines) {
+        parts <- strsplit(trimws(line), ":")[[1]]
+        if (length(parts) == 2) add_~w(trimws(parts[1]), trimws(parts[2]))
+    }
+
+    if (length(args) == 1) {
+        for (r in ~w_all(args[1])) cat(args[1], ":", r, "\\n", sep = "")
+    } else if (length(args) == 2) {
+        if (~w_check(args[1], args[2])) {
+            cat(args[1], ":", args[2], "\\n", sep = "")
+        } else {
+            quit(status = 1)
+        }
+    } else {
+        cat("Usage: Rscript script.R <start> [target]\\n", file = stderr())
+        quit(status = 1)
+    }
+}
+', [PredStr, BaseStr, BaseStr, BaseStr, BaseStr, BaseStr, BaseStr, BaseStr,
+    PredStr, BaseStr, PredStr, BaseStr, BaseStr, BaseStr, PredStr, PredStr]),
     !.
 
 compile_transitive_closure(Target, Pred, Arity, BasePred, _Options, _GeneratedCode) :-

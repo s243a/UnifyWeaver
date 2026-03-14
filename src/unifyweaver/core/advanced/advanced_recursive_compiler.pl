@@ -40,25 +40,62 @@
 compile_advanced_recursive(Pred/Arity, Options, BashCode) :-
     format('~n=== Advanced Recursive Compilation: ~w/~w ===~n', [Pred, Arity]),
 
-    % Try patterns in priority order
-    (   try_tail_recursion(Pred/Arity, Options, BashCode) ->
-        format('✓ Compiled as tail recursion~n')
-    ;   try_linear_recursion(Pred/Arity, Options, BashCode) ->
-        format('✓ Compiled as linear recursion~n')
-    ;   try_multicall_linear_recursion(Pred/Arity, Options, BashCode) ->
-        format('✓ Compiled as multi-call linear recursion~n')
-    ;   try_direct_multi_call(Pred/Arity, Options, BashCode) ->
-        format('✓ Compiled as direct multi-call recursion~n')
-    ;   try_fold_pattern(Pred/Arity, Options, BashCode) ->
-        format('✓ Compiled as fold pattern~n')
-    ;   try_tree_recursion(Pred/Arity, Options, BashCode) ->
-        format('✓ Compiled as tree recursion~n')
-    ;   try_mutual_recursion_detection(Pred/Arity, Options, BashCode) ->
-        format('✓ Compiled as part of mutual recursion group~n')
-    ;   % No pattern matched - fail back to caller
-        format('✗ No advanced pattern matched~n'),
-        fail
+    % Collect skip list from options
+    findall(S, (member(skip(S), Options), atom(S)), SkipAtoms),
+    findall(S, (member(skip(SL), Options), is_list(SL), member(S, SL)), SkipLists),
+    append(SkipAtoms, SkipLists, SkipPatterns),
+
+    % Check for forced pattern
+    (   member(pattern(ForcedPattern), Options) ->
+        format('  Forced pattern: ~w~n', [ForcedPattern]),
+        try_forced_pattern(ForcedPattern, Pred/Arity, Options, BashCode)
+    ;   % Try patterns in priority order, respecting skip list
+        (   \+ memberchk(tail_recursion, SkipPatterns),
+            try_tail_recursion(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as tail recursion~n')
+        ;   \+ memberchk(linear_recursion, SkipPatterns),
+            try_linear_recursion(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as linear recursion~n')
+        ;   \+ memberchk(multicall_linear_recursion, SkipPatterns),
+            try_multicall_linear_recursion(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as multi-call linear recursion~n')
+        ;   \+ memberchk(direct_multi_call, SkipPatterns),
+            try_direct_multi_call(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as direct multi-call recursion~n')
+        ;   \+ memberchk(fold, SkipPatterns),
+            try_fold_pattern(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as fold pattern~n')
+        ;   \+ memberchk(tree_recursion, SkipPatterns),
+            try_tree_recursion(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as tree recursion~n')
+        ;   \+ memberchk(mutual_recursion, SkipPatterns),
+            try_mutual_recursion_detection(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as part of mutual recursion group~n')
+        ;   % No pattern matched - fail back to caller
+            format('✗ No advanced pattern matched~n'),
+            fail
+        )
     ).
+
+%% try_forced_pattern(+Pattern, +Pred/Arity, +Options, -Code)
+%  Attempt to compile using a specific forced pattern.
+try_forced_pattern(tail_recursion, Pred/Arity, Options, Code) :-
+    try_tail_recursion(Pred/Arity, Options, Code).
+try_forced_pattern(linear_recursion, Pred/Arity, Options, Code) :-
+    try_linear_recursion(Pred/Arity, Options, Code).
+try_forced_pattern(multicall_linear_recursion, Pred/Arity, Options, Code) :-
+    try_multicall_linear_recursion(Pred/Arity, Options, Code).
+try_forced_pattern(direct_multi_call, Pred/Arity, Options, Code) :-
+    try_direct_multi_call(Pred/Arity, Options, Code).
+try_forced_pattern(fold, Pred/Arity, Options, Code) :-
+    try_fold_pattern(Pred/Arity, Options, Code).
+try_forced_pattern(tree_recursion, Pred/Arity, Options, Code) :-
+    try_tree_recursion(Pred/Arity, Options, Code).
+try_forced_pattern(mutual_recursion, Pred/Arity, Options, Code) :-
+    try_mutual_recursion_detection(Pred/Arity, Options, Code).
+try_forced_pattern(Pattern, Pred/Arity, _, _) :-
+    format(user_error, 'Unknown forced pattern ~w for ~w~n', [Pattern, Pred/Arity]),
+    fail.
 
 %% try_tail_recursion(+Pred/Arity, +Options, -BashCode)
 %  Attempt to compile as tail recursion
