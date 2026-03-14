@@ -243,6 +243,10 @@ run_tests :-
     test_paste_detection_all_targets,
     %% Config gen + bracketed paste
     test_config_gen_paste_mode,
+    %% Phase 12 — tool call E2E, expanded tests, help generation
+    test_rust_tool_call_e2e,
+    test_rust_help_generation,
+    test_rust_expanded_integration_tests,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -4508,4 +4512,109 @@ test_config_gen_paste_mode :-
     read_file_to_string(PlPath, PlContent, []),
     assert_true('Prolog current_paste_mode predicate exists', (
         sub_string(PlContent, _, _, _, "current_paste_mode")
+    )).
+
+%% ============================================================================
+%% Phase 12 — Tool call E2E structural tests
+%% ============================================================================
+
+test_rust_tool_call_e2e :-
+    format("~nRust tool call E2E (structural):~n"),
+    %% Check extract_tool_calls_openai exists in backends.rs
+    agent_loop_module:output_path(rust, 'backends.rs', BackendsPath),
+    read_file_to_string(BackendsPath, BackendsContent, []),
+    assert_true('extract_tool_calls_openai exists', (
+        sub_string(BackendsContent, _, _, _, "extract_tool_calls_openai")
+    )),
+    assert_true('extract_tool_calls_anthropic exists', (
+        sub_string(BackendsContent, _, _, _, "extract_tool_calls_anthropic")
+    )),
+    assert_true('tool_calls JSON field parsed', (
+        sub_string(BackendsContent, _, _, _, "tool_calls")
+    )),
+    assert_true('tool_use content type parsed', (
+        sub_string(BackendsContent, _, _, _, "tool_use")
+    )),
+    %% Check add_tool_result exists in context.rs
+    agent_loop_module:output_path(rust, 'context.rs', ContextPath),
+    read_file_to_string(ContextPath, ContextContent, []),
+    assert_true('add_tool_result method exists', (
+        sub_string(ContextContent, _, _, _, "add_tool_result")
+    )),
+    assert_true('tool_call_id parameter used', (
+        sub_string(ContextContent, _, _, _, "tool_call_id")
+    )),
+    %% Check tool execution flow in main.rs
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main loop calls add_tool_result', (
+        sub_string(MainContent, _, _, _, "add_tool_result")
+    )),
+    assert_true('main loop calls execute tool', (
+        sub_string(MainContent, _, _, _, ".execute(")
+    )).
+
+%% ============================================================================
+%% Phase 12 — Data-driven help generation tests
+%% ============================================================================
+
+test_rust_help_generation :-
+    format("~nRust help generation:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    %% Help should now include all groups from slash_command_group/2
+    assert_true('help includes Commands group', (
+        sub_string(MainContent, _, _, _, "Commands (with or without / prefix)")
+    )),
+    assert_true('help includes Sessions group', (
+        sub_string(MainContent, _, _, _, "Sessions")
+    )),
+    assert_true('help includes History group', (
+        sub_string(MainContent, _, _, _, "History")
+    )),
+    assert_true('help includes multi-line input section', (
+        sub_string(MainContent, _, _, _, "Multi-line Input")
+    )),
+    %% Verify data-driven: generate_rust_help_text predicate exists
+    assert_true('generate_rust_help_text predicate exists', (
+        predicate_property(agent_loop_module:generate_rust_help_text(_), defined)
+    )),
+    %% Verify generate_rust_cli_help_function predicate exists
+    assert_true('generate_rust_cli_help_function predicate exists', (
+        predicate_property(agent_loop_module:generate_rust_cli_help_function(_), defined)
+    )).
+
+%% ============================================================================
+%% Phase 12 — Expanded integration tests verification
+%% ============================================================================
+
+test_rust_expanded_integration_tests :-
+    format("~nRust expanded integration tests:~n"),
+    agent_loop_module:output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../tests/integration_tests.rs', TestPath),
+    read_file_to_string(TestPath, TestContent, []),
+    %% Tool call flow tests
+    assert_true('tool result role test exists', (
+        sub_string(TestContent, _, _, _, "test_tool_result_adds_tool_role")
+    )),
+    assert_true('tool call struct test exists', (
+        sub_string(TestContent, _, _, _, "test_tool_call_struct_fields")
+    )),
+    assert_true('multiple tool results test exists', (
+        sub_string(TestContent, _, _, _, "test_multiple_tool_results_in_context")
+    )),
+    %% Config tests
+    assert_true('paste_mode default test exists', (
+        sub_string(TestContent, _, _, _, "test_agent_config_paste_mode_default")
+    )),
+    %% Security expanded tests
+    assert_true('guarded blocks paths test exists', (
+        sub_string(TestContent, _, _, _, "test_security_profile_guarded_blocks_paths")
+    )),
+    %% Proot expanded tests
+    assert_true('proot custom dirs test exists', (
+        sub_string(TestContent, _, _, _, "test_proot_config_custom_dirs")
+    )),
+    assert_true('proot env overrides content test exists', (
+        sub_string(TestContent, _, _, _, "test_proot_sandbox_env_overrides_content")
     )).

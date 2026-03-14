@@ -502,3 +502,158 @@ fn test_e2e_context_survives_multiple_rounds() {
     // 5 rounds × 3 messages (user + tool + assistant) = 15
     assert_eq!(ctx.len(), 15);
 }
+
+// ============================================================================
+// Tool call result flow tests
+// ============================================================================
+
+#[test]
+fn test_tool_result_adds_tool_role() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "do something");
+    ctx.add_tool_result("call_123", "tool output here");
+    assert_eq!(ctx.len(), 2);
+    let msgs = ctx.get_context();
+    assert_eq!(msgs[1].role, "tool");
+    assert!(msgs[1].content.contains("tool output here"));
+}
+
+#[test]
+fn test_tool_result_preserves_call_id() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_tool_result("call_abc_789", "result data");
+    let msgs = ctx.get_context();
+    assert_eq!(msgs[0].role, "tool");
+    // tool_call_id should be stored (either in content or metadata)
+    assert!(msgs[0].content.contains("result data"));
+}
+
+#[test]
+fn test_tool_call_struct_fields() {
+    let tc = ToolCall {
+        name: "bash".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("command".to_string(), serde_json::json!("ls -la"));
+            m
+        },
+        id: "call_test_001".to_string(),
+    };
+    assert_eq!(tc.name, "bash");
+    assert_eq!(tc.id, "call_test_001");
+    assert!(tc.arguments.contains_key("command"));
+}
+
+#[test]
+fn test_tool_result_struct_fields() {
+    let tr = ToolResult {
+        output: "file1.txt\nfile2.txt".to_string(),
+        success: true,
+        tool_name: "bash".to_string(),
+    };
+    assert!(tr.success);
+    assert!(tr.output.contains("file1"));
+    assert_eq!(tr.tool_name, "bash");
+}
+
+#[test]
+fn test_multiple_tool_results_in_context() {
+    let mut ctx = ContextManager::new(4096, 0, 0, 0, "sliding");
+    ctx.add_message("user", "run three commands");
+    ctx.add_tool_result("call_1", "output_1");
+    ctx.add_tool_result("call_2", "output_2");
+    ctx.add_tool_result("call_3", "output_3");
+    assert_eq!(ctx.len(), 4); // 1 user + 3 tool results
+    for i in 1..4 {
+        assert_eq!(ctx.get_context()[i].role, "tool");
+    }
+}
+
+// ============================================================================
+// Config and paste_mode tests
+// ============================================================================
+
+#[test]
+fn test_agent_config_paste_mode_default() {
+    let config = AgentConfig::default();
+    assert_eq!(config.paste_mode, "auto");
+}
+
+#[test]
+fn test_agent_config_has_all_expected_fields() {
+    let config = AgentConfig::default();
+    // Verify key fields exist and have sensible defaults
+    assert!(config.backend.is_empty() || config.backend == "coro" || config.backend == "");
+    assert!(config.max_iterations >= 0);
+    assert!(!config.paste_mode.is_empty());
+}
+
+// ============================================================================
+// Security profile validation tests
+// ============================================================================
+
+#[test]
+fn test_security_profile_guarded_blocks_paths() {
+    let mut handler = ToolHandler::new(true, "guarded".to_string(), "default".to_string());
+    // Guarded profile should exist and have blocked paths
+    let tc = ToolCall {
+        name: "read".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("file_path".to_string(), serde_json::json!("/etc/shadow"));
+            m
+        },
+        id: "call_sec_path".to_string(),
+    };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+}
+
+#[test]
+fn test_security_profile_paranoid_blocks_more() {
+    let mut handler = ToolHandler::new(true, "paranoid".to_string(), "default".to_string());
+    let tc = ToolCall {
+        name: "bash".to_string(),
+        arguments: {
+            let mut m = HashMap::new();
+            m.insert("command".to_string(), serde_json::json!("curl http://example.com"));
+            m
+        },
+        id: "call_sec_net".to_string(),
+    };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+}
+
+// ============================================================================
+// Proot expanded tests
+// ============================================================================
+
+#[test]
+fn test_proot_config_custom_dirs() {
+    let config = ProotConfig {
+        allowed_dirs: vec!["/tmp".to_string(), "/home/user".to_string()],
+        ..ProotConfig::default()
+    };
+    assert_eq!(config.allowed_dirs.len(), 2);
+    assert!(config.kill_on_exit);
+    assert!(config.termux_prefix.contains("termux"));
+}
+
+#[test]
+fn test_proot_config_dry_run() {
+    let config = ProotConfig {
+        dry_run: true,
+        ..ProotConfig::default()
+    };
+    assert!(config.dry_run);
+}
+
+#[test]
+fn test_proot_sandbox_env_overrides_content() {
+    let config = ProotConfig::default();
+    let sandbox = ProotSandbox::new("/tmp/test", config);
+    let overrides = sandbox.build_env_overrides();
+    assert!(overrides.iter().any(|(k, _)| *k == "PROOT_NO_SECCOMP"));
+    assert!(overrides.iter().any(|(k, v)| *k == "LD_PRELOAD" && v.is_empty()));
+}

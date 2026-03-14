@@ -622,13 +622,50 @@ fn handle_command(
         }
         "help" => {
             println!("Available commands:");
-            for (name, spec) in SLASH_COMMANDS.iter() {
-                println!("  /{:<15} {}", name, spec.help);
-            }
-            println!("  /{:<15} {}", "save [name]", "Save current session");
-            println!("  /{:<15} {}", "load <id>", "Load a saved session");
-            println!("  /{:<15} {}", "sessions", "List saved sessions");
-            println!("  /{:<15} {}", "delete <id>", "Delete a saved session");
+            println!();
+            println!("Commands (with or without / prefix):");
+            println!("  /exit, /quit       - Exit the agent loop");
+            println!("  /clear             - Clear conversation context");
+            println!("  /status            - Show context status");
+            println!("  /help              - Show this help message");
+            println!();
+            println!("Loop Control:");
+            println!("  /iterations [N]    - Show or set max iterations (0 = unlimited)");
+            println!("  /backend [name]    - Show or switch backend/agent");
+            println!("  /model [name]      - Show or switch model at runtime");
+            println!("  /format [type]     - Set context format (plain/markdown/json/xml)");
+            println!("  /stream            - Toggle streaming mode for API backends");
+            println!();
+            println!("Sessions:");
+            println!("  /save [name]       - Save current conversation");
+            println!("  /load <id>         - Load a saved conversation");
+            println!("  /sessions          - List saved sessions");
+            println!("  /search <query>    - Search across saved sessions");
+            println!();
+            println!("Export & Costs:");
+            println!("  /export <path>     - Export conversation (.md, .html, .json, .txt)");
+            println!("  /cost              - Show API cost tracking summary");
+            println!("  /tokens            - Show context token estimate and limit");
+            println!();
+            println!("History:");
+            println!("  /history [n]       - Show last n messages (default 10)");
+            println!("  /delete <idx>      - Delete message at index");
+            println!("  /delete <s>-<e>    - Delete messages from s to e");
+            println!("  /delete last [n]   - Delete last n messages");
+            println!("  /edit <idx>        - Edit message at index");
+            println!("  /replay <idx>      - Re-send message at index");
+            println!("  /undo              - Undo last history change");
+            println!();
+            println!("Shortcuts:");
+            println!("  /aliases           - List command aliases (e.g., /q -> /quit)");
+            println!("  /templates         - List prompt templates");
+            println!();
+            println!("Multi-line Input:");
+            println!("  Start with ``` for code blocks");
+            println!("  Start with <<< for heredoc mode");
+            println!("  End lines with \\\\ for continuation");
+            println!();
+            println!("Just type your message to chat with the agent.");
         }
         "status" => {
             println!("Context: {} messages", context.len());
