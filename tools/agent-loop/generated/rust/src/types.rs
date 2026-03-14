@@ -100,6 +100,8 @@ pub struct AgentConfig {
     pub security_profile: String,
     /// Tool approval mode (default/auto_edit/yolo/plan)
     pub approval_mode: String,
+    /// Paste detection mode: auto, bracketed, timing, off
+    pub paste_mode: String,
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
@@ -129,6 +131,7 @@ impl Default for AgentConfig {
             stream: false,
             security_profile: "cautious".to_string(),
             approval_mode: "yolo".to_string(),
+            paste_mode: "auto".to_string(),
             extra: std::collections::HashMap::new(),
         }
     }

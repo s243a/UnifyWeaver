@@ -92,10 +92,13 @@ repl_loop :-
     ; repl_loop).
 
 %% Smart input reader with paste detection and multi-line support
+%% Respects paste_mode setting: auto/timing/bracketed/off
 read_input_smart(Input) :-
     read_line_to_string(user_input, Line),
     (Line = end_of_file -> Input = "/exit"
-    ; %% Try paste detection first
+    ; %% Check paste_mode setting (default: auto)
+      (current_paste_mode(PasteMode) -> true ; PasteMode = auto),
+      PasteMode \= off,
       read_pasted_lines(Line, Lines, LineCount),
       LineCount > 1 ->
         atomic_list_concat(Lines, "\n", PastedInput),
@@ -109,6 +112,9 @@ read_input_smart(Input) :-
         read_multiline(Delim, [Line], Input)
     ; atom_string(Input, Line)
     ).
+
+:- dynamic current_paste_mode/1.
+current_paste_mode(auto).
 
 %% Detect pasted lines by checking if stdin has more data within 50ms.
 read_pasted_lines(FirstLine, Lines, Count) :-

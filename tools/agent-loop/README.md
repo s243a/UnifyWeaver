@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (15 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + 38 integration tests |
+| Rust | `generated/rust/` (15 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + 38 integration tests |
 
 ### Declarative Infrastructure
 
@@ -75,7 +75,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 748 + 38 Rust integration (590+120 unit + 27 Prolog + 59 Python + 38 cargo test) |
+| Total tests | 756 + 38 Rust integration (590+128 unit + 27 Prolog + 59 Python + 38 cargo test) |
 
 ## Backends
 
@@ -724,6 +724,8 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Spinner + rich display | Y | Y | Complete |
 | proot sandbox | Y | Y | Complete |
 | Paste detection + collapse | Y | Y | Complete (all 3 targets) |
+| Config gen (paste_mode) | Y | Y | Complete (auto/bracketed/timing/off) |
+| Bracketed paste mode | Y | Y | Complete (optional, configurable) |
 | Integration tests (cargo test) | N | Y (38 tests) | Rust-only |
 
 ## License

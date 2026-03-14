@@ -108,6 +108,7 @@ class AgentConfig:
     stream: bool = False  # Enable streaming output for API backends
     security_profile: str = "cautious"  # Security profile (open/cautious/guarded/paranoid)
     approval_mode: str = "yolo"  # Tool approval mode (default/auto_edit/yolo/plan)
+    paste_mode: str = "auto"  # Paste detection mode: auto, bracketed, timing, off
     extra: dict = field(default_factory=dict)
 
 
@@ -163,6 +164,7 @@ def _load_agent_config(name: str, data: dict) -> AgentConfig:
         stream=data.get('stream', False),
         security_profile=data.get('security_profile', "cautious"),
         approval_mode=data.get('approval_mode', "yolo"),
+        paste_mode=data.get('paste_mode', "auto"),
         extra=data.get('extra', {})
     )
 
@@ -292,6 +294,7 @@ def save_example_config(path: str | Path):
     example = {
         "default": "claude-sonnet",
         "skills_dir": "./skills",
+        "paste_mode": "auto",
         "agents": {
             "claude-sonnet": {
                 "backend": "claude-code",

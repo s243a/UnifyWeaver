@@ -348,6 +348,9 @@ pub fn init_config(path: &str) -> std::io::Result<()> {
 fn generate_example_config() -> String {
     let mut s = String::new();
     s.push_str("{\n");
+    s.push_str("  \"default\": \"claude-sonnet\",\n");
+    s.push_str("  \"skills_dir\": \"./skills\",\n");
+    s.push_str("  \"paste_mode\": \"auto\",\n");
     s.push_str("  \"agents\": {\n");
     s.push_str("    \"claude-sonnet\": {\n");
     s.push_str("      \"backend\": \"claude-code\",\n");

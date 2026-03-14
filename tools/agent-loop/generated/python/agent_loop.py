@@ -130,7 +130,8 @@ class AgentLoop:
 
     def _get_input(self) -> str | None:
         """Get input from user with multi-line support."""
-        return get_input_smart("You: ")
+        paste_mode = getattr(self.config, "paste_mode", "auto") if hasattr(self, "config") else "auto"
+        return get_input_smart("You: ", paste_mode=paste_mode)
 
     def _handle_command(self, user_input: str) -> bool:
         """Handle special commands. Returns True if command was handled."""

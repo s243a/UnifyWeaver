@@ -129,6 +129,7 @@ pub static CONFIG_FIELDS: &[AgentConfigField] = &[
     AgentConfigField { name: "stream", type_annotation: "bool", default_value: "False", comment: "Enable streaming output for API backends" },
     AgentConfigField { name: "security_profile", type_annotation: "str", default_value: "\"cautious\"", comment: "Security profile (open/cautious/guarded/paranoid)" },
     AgentConfigField { name: "approval_mode", type_annotation: "str", default_value: "\"yolo\"", comment: "Tool approval mode (default/auto_edit/yolo/plan)" },
+    AgentConfigField { name: "paste_mode", type_annotation: "str", default_value: "\"auto\"", comment: "Paste detection mode: auto, bracketed, timing, off" },
     AgentConfigField { name: "extra", type_annotation: "dict", default_value: "field(default_factory=dict)", comment: "" },
 ];
 
