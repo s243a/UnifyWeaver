@@ -50,6 +50,24 @@ function Resolve-ProjectRoot {
     return $root.Path
 }
 
+function Get-GeneratedQueryProjects {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RootPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$NameFilter = "*"
+    )
+
+    if (-not (Test-Path $RootPath)) {
+        return @()
+    }
+
+    return @(Get-ChildItem -Path $RootPath -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like $NameFilter -and (Test-Path (Join-Path $_.FullName "expected_rows.txt"))
+    } | Sort-Object -Property FullName -Unique)
+}
+
 function Find-SwiplExe {
     $cmd = Get-Command swipl -ErrorAction SilentlyContinue
     if ($cmd) {
@@ -165,9 +183,7 @@ $env:NUGET_PACKAGES = $nugetPackages
 $env:NUGET_HTTP_CACHE_PATH = $nugetHttpCache
 
 if (-not $SkipCodegen) {
-    $generatedDirs = Get-ChildItem -Path $outputPath -Directory -ErrorAction SilentlyContinue | Where-Object {
-        Test-Path (Join-Path $_.FullName "expected_rows.txt")
-    }
+    $generatedDirs = Get-GeneratedQueryProjects -RootPath $outputPath
     if ($generatedDirs) {
         $generatedDirs | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -191,9 +207,7 @@ if (-not $SkipCodegen) {
 
 Assert-DotnetAvailable
 
-$projects = Get-ChildItem -Path $outputPath -Directory -Filter $ProjectFilter | Where-Object {
-    Test-Path (Join-Path $_.FullName "expected_rows.txt")
-}
+$projects = Get-GeneratedQueryProjects -RootPath $outputPath -NameFilter $ProjectFilter
 
 if (-not $projects) {
     throw "No generated query projects found in '$outputPath' (expected directories containing expected_rows.txt)."
@@ -271,9 +285,7 @@ foreach ($project in $projects) {
 }
 
 if (-not $KeepArtifacts) {
-    Get-ChildItem -Path $outputPath -Directory -ErrorAction SilentlyContinue | Where-Object {
-        Test-Path (Join-Path $_.FullName "expected_rows.txt")
-    } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-GeneratedQueryProjects -RootPath $outputPath | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if ($failures -gt 0) {
