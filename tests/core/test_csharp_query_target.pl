@@ -296,6 +296,7 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_single_seed_strategy_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_single_seed_strategy_runtime,
         verify_parameterized_reachability_plan,
@@ -305,6 +306,7 @@ test_csharp_query_target :-
         verify_parameterized_reachability_pairs_single_probe_backward_strategy_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_strategy_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_reuse_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_reuse_runtime,
         verify_parameterized_reachability_single_seed_strategy_runtime,
         verify_parameterized_reachability_by_target_single_strategy_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_reuse_runtime,
@@ -326,10 +328,12 @@ test_csharp_query_target :-
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_key_order_insensitive_runtime,
         verify_parameterized_reachability_by_target_cache_key_order_insensitive_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cache_key_order_insensitive_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_key_order_insensitive_runtime,
         verify_parameterized_reachability_seed_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cache_overlap_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_seed_cache_eviction_runtime,
         verify_parameterized_reachability_by_target_seed_cache_eviction_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_eviction_runtime,
@@ -3569,6 +3573,26 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
         Params,
         HarnessSource).
 
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_mixed_lru_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, z, red, cat1], [p, q, red, cat1]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        Params,
+        Params,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'p,q,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=true'],
+        Params,
+        HarnessSource).
+
 verify_parameterized_reachability_plan :-
     csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
@@ -3685,6 +3709,26 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cac
         ['a,z',
          'CACHE_HIT:TransitiveClosureSeededByTarget=true',
          'p,q'],
+        Params,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_admission_mixed_lru_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a, z], [p, q]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        Params,
+        Params,
+        'TransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'p,q',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=true'],
         Params,
         HarnessSource).
 
@@ -4171,6 +4215,28 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
          'CACHE_HIT:GroupedTransitiveClosureSeededByTarget=true',
          'p,q,red,cat1',
          'p,r,red,cat1'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_overlap_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_mixed_lru_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ExecParams = [[a, z, red, cat1], [p, q, red, cat1], [p, r, red, cat1]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'p,q,red,cat1',
+         'p,r,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=true'],
         ExecParams,
         HarnessSource).
 
@@ -5297,6 +5363,27 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cac
         ['a,z',
          'CACHE_HIT:TransitiveClosureSeededByTarget=true',
          'p,q'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_key_order_insensitive_runtime :-
+    csharp_query_target:build_query_plan(test_admission_mixed_lru_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, z], [p, q]],
+    ExecParams = [[p, q], [a, z]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'TransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'p,q',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=true'],
         ExecParams,
         HarnessSource).
 
@@ -6765,6 +6852,76 @@ var _planText = QueryPlanExplainer.Explain(result.Plan);
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
     ', [ModuleClass, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
+
+harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        MinCostPerProbe,
+        Source) :-
+    (   WarmParams == []
+    ->  WarmDecl = '',
+        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, null, warmTrace).ToList();\n'
+    ;   csharp_params_literal(WarmParams, WarmLiteral),
+        format(atom(WarmDecl), 'var warmParameters = ~w;~n', [WarmLiteral]),
+        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, warmParameters, warmTrace).ToList();\n'
+    ),
+    (   ExecParams == []
+    ->  ExecDecl = '',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(ExecParams, ExecLiteral),
+        format(atom(ExecDecl), 'var parameters = ~w;~n', [ExecLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(
+    result.Provider,
+    new QueryExecutorOptions(
+        ReuseCaches: true,
+        PairProbeCacheMaxEntries: ~w,
+        PairProbeCacheAdmissionMinCost: ~w,
+        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+var _planText = QueryPlanExplainer.Explain(result.Plan);
+~w~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => \"[\" + string.Join(\"|\", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + \"]\",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+
+ ~wvar trace = new QueryExecutionTrace();
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+ 
+   var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
+   Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
+    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_pair_limit(ModuleClass, WarmParams1, WarmParams2, ExecParams, Cache, PairLimit, Source) :-
     csharp_params_literal(WarmParams1, WarmLiteral1),
