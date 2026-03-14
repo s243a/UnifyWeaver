@@ -7,17 +7,33 @@ use crate::types::*;
 
 
 use crate::security::SecurityProfileSpec;
+use crate::proot_sandbox::{ProotSandbox, ProotConfig};
 
 /// Handles tool execution with security validation.
 pub struct ToolHandler {
     pub auto_approve: bool,
     pub security_profile: String,
     pub approval_mode: String,
+    pub proot: Option<ProotSandbox>,
 }
 
 impl ToolHandler {
     pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
-        Self { auto_approve, security_profile, approval_mode }
+        Self { auto_approve, security_profile, approval_mode, proot: None }
+    }
+
+    /// Enable proot sandbox with the given allowed dirs.
+    pub fn enable_proot(&mut self, working_dir: &str, allowed_dirs: Vec<String>) {
+        let config = ProotConfig {
+            allowed_dirs,
+            ..ProotConfig::default()
+        };
+        let mut sandbox = ProotSandbox::new(working_dir, config);
+        if sandbox.is_available() {
+            self.proot = Some(sandbox);
+        } else {
+            eprintln!("[Warning] proot sandbox requested but proot not found. Install with: pkg install proot");
+        }
     }
 
     /// Look up the SecurityProfileSpec for the current profile.
@@ -159,7 +175,7 @@ impl ToolHandler {
 
 impl ToolHandler {
     /// Execute a tool call and return the result.
-    pub fn execute(&self, tool_call: &ToolCall) -> ToolResult {
+    pub fn execute(&mut self, tool_call: &ToolCall) -> ToolResult {
         // Check approval mode before executing
         if !self.check_approval(&tool_call.name) {
             return ToolResult {
@@ -182,7 +198,7 @@ impl ToolHandler {
         }
     }
 
-    fn handle_bash(&self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
+    fn handle_bash(&mut self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
         let command = args.get("command")
             .and_then(|v| v.as_str())
             .unwrap_or("");
@@ -195,9 +211,37 @@ impl ToolHandler {
             };
         }
 
-        match Command::new("bash").arg("-c").arg(command)
-            .stdout(Stdio::piped()).stderr(Stdio::piped()).output()
-        {
+        // If proot is enabled, wrap the command in proot
+        let (exec_cmd, exec_env) = if let Some(ref mut proot) = self.proot {
+            match proot.wrap_command(command) {
+                Ok(wrapped) => {
+                    let env_overrides = proot.build_env_overrides();
+                    (wrapped, Some(env_overrides))
+                }
+                Err(e) => {
+                    return ToolResult {
+                        success: false,
+                        output: format!("Proot error: {}", e),
+                        tool_name: "bash".to_string(),
+                    };
+                }
+            }
+        } else {
+            (command.to_string(), None)
+        };
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&exec_cmd)
+           .stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        // Apply proot env overrides
+        if let Some(env_overrides) = exec_env {
+            for (key, val) in env_overrides {
+                cmd.env(key, val);
+            }
+        }
+
+        match cmd.output() {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);

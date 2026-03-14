@@ -394,9 +394,10 @@ agent_security_type:compile_component(Name, Config, Options, Code) :-
     ; member(target(rust), Options) ->
         (member(path_validation(PV), Config) -> true ; PV = false),
         (member(command_blocklist(CV), Config) -> true ; CV = false),
+        (member(proot_isolation(PI), Config) -> true ; PI = false),
         indent_atom(Options, Indent),
-        format(atom(Code), '~w("~w", SecurityProfileSpec { path_validation: ~w, command_validation: ~w }),',
-               [Indent, Name, PV, CV])
+        format(atom(Code), '~w("~w", SecurityProfileSpec { path_validation: ~w, command_validation: ~w, proot_isolation: ~w }),',
+               [Indent, Name, PV, CV, PI])
     ; member(target(prolog), Options) ->
         with_output_to(atom(Code), (
             format('security_profile(~q, ', [Name]),

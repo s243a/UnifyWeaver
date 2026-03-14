@@ -235,6 +235,10 @@ run_tests :-
     test_rust_spinner,
     test_rust_retry_wired,
     test_rust_phase10_generation,
+    %% Phase 11
+    test_rust_proot_sandbox,
+    test_rust_integration_tests,
+    test_rust_phase11_generation,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3042,7 +3046,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 28),
+    assert_eq('Rust fragment count', RFCount, 30),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -3737,10 +3741,10 @@ test_rust_command_validation_fix :-
     agent_loop_module:output_path(rust, 'security.rs', SecPath),
     read_file_to_string(SecPath, SecContent, []),
     assert_true('cautious has command_validation true', (
-        sub_string(SecContent, _, _, _, "\"cautious\", SecurityProfileSpec { path_validation: true, command_validation: true }")
+        sub_string(SecContent, _, _, _, "\"cautious\", SecurityProfileSpec { path_validation: true, command_validation: true, proot_isolation: false }")
     )),
     assert_true('open has command_validation false', (
-        sub_string(SecContent, _, _, _, "\"open\", SecurityProfileSpec { path_validation: false, command_validation: false }")
+        sub_string(SecContent, _, _, _, "\"open\", SecurityProfileSpec { path_validation: false, command_validation: false, proot_isolation: false }")
     )).
 
 test_rust_security_wiring :-
@@ -4335,4 +4339,79 @@ test_rust_phase10_generation :-
     )),
     assert_true('Spinner used before API call', (
         sub_string(MainContent, _, _, _, "Spinner::start(\"Thinking...\")")
+    )).
+
+%% ============================================================================
+%% Phase 11 tests — proot sandbox + integration tests
+%% ============================================================================
+
+test_rust_proot_sandbox :-
+    format("~nRust proot sandbox:~n"),
+    agent_loop_module:output_path(rust, 'proot_sandbox.rs', ProotPath),
+    read_file_to_string(ProotPath, ProotContent, []),
+    assert_true('ProotConfig struct exists', (
+        sub_string(ProotContent, _, _, _, "struct ProotConfig")
+    )),
+    assert_true('ProotSandbox struct exists', (
+        sub_string(ProotContent, _, _, _, "struct ProotSandbox")
+    )),
+    assert_true('is_available method exists', (
+        sub_string(ProotContent, _, _, _, "fn is_available")
+    )),
+    assert_true('wrap_command method exists', (
+        sub_string(ProotContent, _, _, _, "fn wrap_command")
+    )),
+    assert_true('build_env_overrides method exists', (
+        sub_string(ProotContent, _, _, _, "fn build_env_overrides")
+    )),
+    assert_true('PROOT_NO_SECCOMP env var set', (
+        sub_string(ProotContent, _, _, _, "PROOT_NO_SECCOMP")
+    )),
+    %% Check proot is wired into ToolHandler
+    agent_loop_module:output_path(rust, 'tool_handler.rs', THPath),
+    read_file_to_string(THPath, THContent, []),
+    assert_true('ToolHandler has proot field', (
+        sub_string(THContent, _, _, _, "proot: Option<ProotSandbox>")
+    )),
+    assert_true('enable_proot method exists', (
+        sub_string(THContent, _, _, _, "fn enable_proot")
+    )),
+    assert_true('proot wraps bash commands', (
+        sub_string(THContent, _, _, _, "proot.wrap_command")
+    )).
+
+test_rust_integration_tests :-
+    format("~nRust integration tests:~n"),
+    agent_loop_module:output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../tests/integration_tests.rs', TestPath),
+    read_file_to_string(TestPath, TestContent, []),
+    assert_true('integration test file exists and has tests', (
+        sub_string(TestContent, _, _, _, "#[test]")
+    )),
+    assert_true('context manager tests exist', (
+        sub_string(TestContent, _, _, _, "test_context_manager_add_and_retrieve")
+    )),
+    assert_true('security profile tests exist', (
+        sub_string(TestContent, _, _, _, "test_security_profiles_exist")
+    )),
+    assert_true('tool handler E2E tests exist', (
+        sub_string(TestContent, _, _, _, "test_e2e_tool_flow_bash_echo")
+    )),
+    assert_true('proot config tests exist', (
+        sub_string(TestContent, _, _, _, "test_proot_config_default")
+    )).
+
+test_rust_phase11_generation :-
+    format("~nRust phase 11 generation:~n"),
+    assert_true('proot_sandbox fragment exists', (
+        agent_loop_module:rust_fragment(proot_sandbox, _)
+    )),
+    assert_true('integration_tests fragment exists', (
+        agent_loop_module:rust_fragment(integration_tests, _)
+    )),
+    %% Check SecurityProfileSpec has proot_isolation field
+    agent_loop_module:output_path(rust, 'security.rs', SecPath),
+    read_file_to_string(SecPath, SecContent, []),
+    assert_true('SecurityProfileSpec has proot_isolation field', (
+        sub_string(SecContent, _, _, _, "proot_isolation")
     )).

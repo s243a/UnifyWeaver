@@ -13,3 +13,4 @@ pub mod backends;
 pub mod tool_handler;
 pub mod sessions;
 pub mod config_loader;
+pub mod proot_sandbox;
