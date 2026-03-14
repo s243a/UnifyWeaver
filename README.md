@@ -45,6 +45,10 @@ Different targets support different recursion patterns. Choose based on your nee
 | **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Advanced Aggregations** | — | — | ✅ | — | — | ✅ | — | — | ✅ |
+
+> **Aggregations** = dynamic fold expression extraction for list/numeric linear recursion (e.g., extracting `*` from `F is N * F1`).
+> **Advanced Aggregations** = full `aggregate_all/3` support with grouping, having filters, and multiple aggregation operations (sum, count, max, min, avg).
 
 ### Functional Language Targets
 
@@ -92,7 +96,7 @@ Scala and Clojure also appear in the Functional table above.
 | **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | — | — | — | — |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
 
 ### Python Family Targets
 
