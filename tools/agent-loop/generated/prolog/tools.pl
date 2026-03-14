@@ -73,10 +73,70 @@ tool_description(openrouter_api, bash, $, command, truncate(72)).
 
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
-    (tool_handler(ToolName, _) -> true
+    (tool_handler(ToolName, _) ->
+        execute_tool_impl(ToolName, Params, Result)
+    ; execute_plugin_tool(ToolName, Params, Result) ->
+        true
     ; format(atom(Err), "Unknown tool: ~w", [ToolName]),
-      Result = error(Err), !),
-    execute_tool_impl(ToolName, Params, Result).
+      Result = error(Err)
+    ).
+
+%% Plugin tool execution — loads from ~/.agent-loop/plugins/
+:- dynamic plugin_tool/3.  %% plugin_tool(Name, Template, Params)
+
+load_plugins :-
+    retractall(plugin_tool(_, _, _)),
+    (getenv('HOME', Home) -> true ; Home = "."),
+    format(atom(PluginDir), "~w/.agent-loop/plugins", [Home]),
+    (exists_directory(PluginDir) ->
+        directory_files(PluginDir, Files),
+        include([F]>>(atom_concat(_, '.json', F)), Files, JsonFiles),
+        maplist([JF]>>(
+            format(atom(FullPath), "~w/~w", [PluginDir, JF]),
+            catch(load_plugin_file(FullPath), _, true)
+        ), JsonFiles)
+    ; true).
+
+load_plugin_file(Path) :-
+    read_file_to_string(Path, Content, []),
+    atom_json_dict(Content, Manifest, []),
+    (get_dict(tools, Manifest, Tools) ->
+        maplist([Tool]>>(
+            get_dict(name, Tool, Name),
+            (get_dict(command_template, Tool, Template) -> true ; Template = ""),
+            (get_dict(parameters, Tool, Params) -> true ; Params = []),
+            atom_string(NameAtom, Name),
+            assertz(plugin_tool(NameAtom, Template, Params))
+        ), Tools)
+    ; true).
+
+execute_plugin_tool(ToolName, Params, Result) :-
+    plugin_tool(ToolName, Template, PluginParams),
+    render_plugin_template(Template, Params, PluginParams, Command),
+    execute_tool_impl(bash, _{command: Command}, Result).
+
+render_plugin_template(Template, Args, PluginParams, Rendered) :-
+    atom_string(Template, TStr),
+    foldl([P, In, Out]>>(
+        (is_dict(P) -> get_dict(name, P, PName) ; PName = P),
+        atom_string(PName, PNameStr),
+        format(atom(Placeholder), "{~w}", [PNameStr]),
+        atom_string(Placeholder, PlaceholderStr),
+        (get_dict(PName, Args, Val) ->
+            term_string(Val, ValStr),
+            split_string(In, PlaceholderStr, "", Parts),
+            atomics_to_string(Parts, ValStr, Out)
+        ; Out = In)
+    ), PluginParams, TStr, RenderedStr),
+    atom_string(Rendered, RenderedStr).
+
+atomics_to_string([], _, "").
+atomics_to_string([Part], _, Part).
+atomics_to_string([Part|Rest], Sep, Result) :-
+    Rest \= [],
+    atomics_to_string(Rest, Sep, RestStr),
+    string_concat(Part, Sep, WithSep),
+    string_concat(WithSep, RestStr, Result).
 
 execute_tool_impl(bash, Params, Result) :-
     get_dict(command, Params, Cmd),

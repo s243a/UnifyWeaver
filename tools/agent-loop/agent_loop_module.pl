@@ -773,6 +773,8 @@ slash_command(tokens, exact, [handler('_handle_tokens_command'),
     comment('/tokens - show context token estimate'),
     target(prolog)],
     'Show context token estimate and limit').
+slash_command(multiline, exact, [comment('Toggle multiline input mode')],
+    'Toggle multiline input mode').
 slash_command(aliases, exact, [handler('_handle_aliases_command'),
     comment('Aliases')],
     'List command aliases (e.g., /q -> /quit)').
@@ -823,6 +825,36 @@ slash_command_dispatch_order([
     aliases, templates,
     history, undo,
     delete, edit, replay
+]).
+
+%% =============================================================================
+%% Python command bodies — used by data-driven dispatch generator
+%% py_command_body(Name, PythonCodeLines)
+%% Each line is emitted inside the if/elif block (indented at 12 spaces).
+%% =============================================================================
+
+py_command_body(exit, [
+    '            self.running = False'
+]).
+
+py_command_body(clear, [
+    '            self.context.clear()',
+    '            self.history_manager = HistoryManager(self.context)',
+    '            print("[Context cleared]\\n")'
+]).
+
+py_command_body(help, [
+    '            self._print_help()'
+]).
+
+py_command_body(status, [
+    '            self._print_status()'
+]).
+
+py_command_body(multiline, [
+    '            self.multiline_mode = not getattr(self, "multiline_mode", False)',
+    '            state = "ON" if self.multiline_mode else "OFF"',
+    '            print(f"Multiline mode: {state}")'
 ]).
 
 %% =============================================================================
@@ -1740,6 +1772,12 @@ generate_rust_cargo_toml :-
     write(S, 'reqwest = { version = "0.12", features = ["json", "blocking"] }\n'),
     write(S, 'rustyline = "14"\n'),
     write(S, 'serde_yaml = "0.9"\n'),
+    write(S, 'wasm-bindgen = { version = "0.2", optional = true }\n\n'),
+    write(S, '[features]\n'),
+    write(S, 'default = []\n'),
+    write(S, 'wasm = ["wasm-bindgen"]\n\n'),
+    write(S, '[lib]\n'),
+    write(S, 'crate-type = ["cdylib", "rlib"]\n'),
     close(S),
     format('  Generated rust/Cargo.toml~n', []).
 
@@ -3276,6 +3314,9 @@ generate_tools_module :-
     %% SecurityConfig (imperative — has from_profile method)
     write_py(S, tools_security_config),
     write(S, '\n\n'),
+    %% PluginManager class
+    write_py(S, plugin_manager_class),
+    write(S, '\n\n'),
     %% ToolHandler class (header + generated dispatch + body)
     findall(T, tool_handler(T, _), DefaultTools),
     format_python_string_list(DefaultTools, DefaultToolsStr),
@@ -3416,34 +3457,15 @@ generate_command_dispatch_chain(S, [Cmd|Rest]) :-
     generate_command_dispatch_chain(S, Rest).
 
 %% Generate a single command dispatch entry
-%% Special cases: exit, clear, help, status are inline (no handler property)
-generate_single_dispatch(S, exit, exact, Props) :-
-    !,
+%% Commands with py_command_body/2 facts get inline bodies.
+%% Commands with handler property in slash_command/4 get method calls.
+generate_single_dispatch(S, Cmd, exact, Props) :-
+    py_command_body(Cmd, BodyLines), !,
     (member(aliases(Aliases), Props) -> true ; Aliases = []),
-    write(S, '        if cmd == \'exit\''),
+    format(S, '        if cmd == \'~w\'', [Cmd]),
     agent_loop_components:emit_alias_conditions(S, [aliases(Aliases), match_style(exact)]),
     write(S, ':\n'),
-    write(S, '            self.running = False\n'),
-    write(S, '            return True\n').
-
-generate_single_dispatch(S, clear, exact, _) :-
-    !,
-    write(S, '        if cmd == \'clear\':\n'),
-    write(S, '            self.context.clear()\n'),
-    write(S, '            self.history_manager = HistoryManager(self.context)\n'),
-    write(S, '            print("[Context cleared]\\n")\n'),
-    write(S, '            return True\n').
-
-generate_single_dispatch(S, help, exact, _) :-
-    !,
-    write(S, '        if cmd == \'help\':\n'),
-    write(S, '            self._print_help()\n'),
-    write(S, '            return True\n').
-
-generate_single_dispatch(S, status, exact, _) :-
-    !,
-    write(S, '        if cmd == \'status\':\n'),
-    write(S, '            self._print_status()\n'),
+    maplist([Line]>>(format(S, '~w~n', [Line])), BodyLines),
     write(S, '            return True\n').
 
 %% Generic exact-match command with handler
@@ -5279,6 +5301,7 @@ impl AgentBackend for ApiBackend {
 rust_fragment(tool_handler_struct, '
 use crate::security::SecurityProfileSpec;
 use crate::proot_sandbox::{ProotSandbox, ProotConfig};
+use crate::plugin_manager::PluginManager;
 
 /// Handles tool execution with security validation.
 pub struct ToolHandler {
@@ -5286,11 +5309,12 @@ pub struct ToolHandler {
     pub security_profile: String,
     pub approval_mode: String,
     pub proot: Option<ProotSandbox>,
+    pub plugins: Option<PluginManager>,
 }
 
 impl ToolHandler {
     pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
-        Self { auto_approve, security_profile, approval_mode, proot: None }
+        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None }
     }
 
     /// Enable proot sandbox with the given allowed dirs.
@@ -5305,6 +5329,35 @@ impl ToolHandler {
         } else {
             eprintln!("[Warning] proot sandbox requested but proot not found. Install with: pkg install proot");
         }
+    }
+
+    /// Load plugins from a directory. Returns number of plugins loaded.
+    pub fn load_plugins(&mut self, dir: &str) -> usize {
+        let mut pm = PluginManager::new();
+        let count = pm.load_dir(dir);
+        if count > 0 {
+            self.plugins = Some(pm);
+        }
+        count
+    }
+
+    /// Load plugins from the default directory (~/.agent-loop/plugins/).
+    pub fn load_default_plugins(&mut self) -> usize {
+        let dir = PluginManager::default_dir();
+        if dir.exists() {
+            self.load_plugins(dir.to_str().unwrap_or(""))
+        } else {
+            0
+        }
+    }
+
+    /// Get all tool schemas (built-in + plugins) for API tool_use format.
+    pub fn get_all_tool_schemas(&self) -> Vec<serde_json::Value> {
+        let mut schemas = crate::tools::tool_schemas_json().clone();
+        if let Some(ref pm) = self.plugins {
+            schemas.extend(pm.get_tool_schemas());
+        }
+        schemas
     }
 
     /// Look up the SecurityProfileSpec for the current profile.
@@ -5465,10 +5518,23 @@ impl ToolHandler {
             "read" => self.handle_read(&tool_call.arguments),
             "write" => self.handle_write(&tool_call.arguments),
             "edit" => self.handle_edit(&tool_call.arguments),
-            _ => ToolResult {
-                success: false,
-                output: format!("Unknown tool: {}", tool_call.name),
-                tool_name: tool_call.name.clone(),
+            _ => {
+                // Check plugin tools
+                if let Some(ref pm) = self.plugins {
+                    if let Some(cmd) = pm.execute(&tool_call.name, &tool_call.arguments) {
+                        // Execute plugin command via bash
+                        let mut plugin_args = std::collections::HashMap::new();
+                        plugin_args.insert("command".to_string(), serde_json::json!(cmd));
+                        let mut result = self.handle_bash(&plugin_args);
+                        result.tool_name = tool_call.name.clone();
+                        return result;
+                    }
+                }
+                ToolResult {
+                    success: false,
+                    output: format!("Unknown tool: {}", tool_call.name),
+                    tool_name: tool_call.name.clone(),
+                }
             },
         }
     }
@@ -5839,7 +5905,7 @@ rust_fragment(wasm_bindings, '
 //! Build with: `cargo build --target wasm32-unknown-unknown --features wasm`
 //! Or with wasm-pack: `wasm-pack build --target web`
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 use wasm_bindgen::prelude::*;
 
 use crate::types::*;
@@ -5980,13 +6046,13 @@ impl WasmAgentState {
 }
 
 /// WASM-exported functions (only compiled for wasm32 targets).
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 pub struct WasmAgent {
     inner: WasmAgentState,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 impl WasmAgent {
     #[wasm_bindgen(constructor)]
@@ -8116,7 +8182,7 @@ fn test_wasm_agent_state_parse_tool_calls_anthropic() {
 #[test]
 fn test_session_manager_empty_list() {
     let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let test_dir = format!("{}/uwsal_test_sessions_empty_{}", tmp_dir, std::process::id());
     let sm = SessionManager::new(Some(&test_dir));
     let sessions = sm.list();
     assert!(sessions.is_empty());
@@ -8126,7 +8192,7 @@ fn test_session_manager_empty_list() {
 #[test]
 fn test_session_manager_save_and_load() {
     let tmp_dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let test_dir = format!("{}/uwsal_test_sessions_{}", tmp_dir, std::process::id());
+    let test_dir = format!("{}/uwsal_test_sessions_saveload_{}", tmp_dir, std::process::id());
     let sm = SessionManager::new(Some(&test_dir));
 
     let messages = vec![
@@ -8192,6 +8258,12 @@ rust_fragment(main_loop, '
             .unwrap_or_default();
         let cwd = std::env::current_dir().unwrap_or_default();
         tool_handler.enable_proot(&cwd.to_string_lossy(), proot_dirs);
+    }
+
+    // Load plugins from default directory
+    let plugin_count = tool_handler.load_default_plugins();
+    if plugin_count > 0 {
+        println!("[Loaded {} plugin(s)]", plugin_count);
     }
 
     let mut state = RuntimeState {
@@ -8502,10 +8574,70 @@ handle_slash_command(RawCmd, Args, Action) :-
 
 prolog_fragment(tools_execute_dispatch, '%% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
-    (tool_handler(ToolName, _) -> true
+    (tool_handler(ToolName, _) ->
+        execute_tool_impl(ToolName, Params, Result)
+    ; execute_plugin_tool(ToolName, Params, Result) ->
+        true
     ; format(atom(Err), "Unknown tool: ~w", [ToolName]),
-      Result = error(Err), !),
-    execute_tool_impl(ToolName, Params, Result).
+      Result = error(Err)
+    ).
+
+%% Plugin tool execution — loads from ~/.agent-loop/plugins/
+:- dynamic plugin_tool/3.  %% plugin_tool(Name, Template, Params)
+
+load_plugins :-
+    retractall(plugin_tool(_, _, _)),
+    (getenv(''HOME'', Home) -> true ; Home = "."),
+    format(atom(PluginDir), "~w/.agent-loop/plugins", [Home]),
+    (exists_directory(PluginDir) ->
+        directory_files(PluginDir, Files),
+        include([F]>>(atom_concat(_, ''.json'', F)), Files, JsonFiles),
+        maplist([JF]>>(
+            format(atom(FullPath), "~w/~w", [PluginDir, JF]),
+            catch(load_plugin_file(FullPath), _, true)
+        ), JsonFiles)
+    ; true).
+
+load_plugin_file(Path) :-
+    read_file_to_string(Path, Content, []),
+    atom_json_dict(Content, Manifest, []),
+    (get_dict(tools, Manifest, Tools) ->
+        maplist([Tool]>>(
+            get_dict(name, Tool, Name),
+            (get_dict(command_template, Tool, Template) -> true ; Template = ""),
+            (get_dict(parameters, Tool, Params) -> true ; Params = []),
+            atom_string(NameAtom, Name),
+            assertz(plugin_tool(NameAtom, Template, Params))
+        ), Tools)
+    ; true).
+
+execute_plugin_tool(ToolName, Params, Result) :-
+    plugin_tool(ToolName, Template, PluginParams),
+    render_plugin_template(Template, Params, PluginParams, Command),
+    execute_tool_impl(bash, _{command: Command}, Result).
+
+render_plugin_template(Template, Args, PluginParams, Rendered) :-
+    atom_string(Template, TStr),
+    foldl([P, In, Out]>>(
+        (is_dict(P) -> get_dict(name, P, PName) ; PName = P),
+        atom_string(PName, PNameStr),
+        format(atom(Placeholder), "{~w}", [PNameStr]),
+        atom_string(Placeholder, PlaceholderStr),
+        (get_dict(PName, Args, Val) ->
+            term_string(Val, ValStr),
+            split_string(In, PlaceholderStr, "", Parts),
+            atomics_to_string(Parts, ValStr, Out)
+        ; Out = In)
+    ), PluginParams, TStr, RenderedStr),
+    atom_string(Rendered, RenderedStr).
+
+atomics_to_string([], _, "").
+atomics_to_string([Part], _, Part).
+atomics_to_string([Part|Rest], Sep, Result) :-
+    Rest \\= [],
+    atomics_to_string(Rest, Sep, RestStr),
+    string_concat(Part, Sep, WithSep),
+    string_concat(WithSep, RestStr, Result).
 
 execute_tool_impl(bash, Params, Result) :-
     get_dict(command, Params, Cmd),
@@ -11386,6 +11518,104 @@ class SecurityConfig:
         )
 ').
 
+py_fragment(plugin_manager_class, '
+class PluginManager:
+    """Manages loading and executing plugin-defined tools from JSON files."""
+
+    DEFAULT_DIR = os.path.join(os.path.expanduser("~"), ".agent-loop", "plugins")
+
+    def __init__(self):
+        self.plugins: list[dict] = []
+        self.tool_map: dict[str, tuple[int, int]] = {}  # name -> (plugin_idx, tool_idx)
+
+    def load_dir(self, directory: str) -> int:
+        """Load all .json plugin manifests from a directory. Returns count."""
+        if not os.path.isdir(directory):
+            return 0
+        count = 0
+        for fname in sorted(os.listdir(directory)):
+            if fname.endswith(".json"):
+                path = os.path.join(directory, fname)
+                if self.load_file(path):
+                    count += 1
+        return count
+
+    def load_file(self, path: str) -> bool:
+        """Load a single plugin manifest."""
+        try:
+            with open(path, "r") as f:
+                manifest = json.load(f)
+            plugin_idx = len(self.plugins)
+            for tool_idx, tool in enumerate(manifest.get("tools", [])):
+                self.tool_map[tool["name"]] = (plugin_idx, tool_idx)
+            self.plugins.append(manifest)
+            return True
+        except (json.JSONDecodeError, IOError, KeyError):
+            return False
+
+    def has_tool(self, name: str) -> bool:
+        return name in self.tool_map
+
+    def get_tool(self, name: str) -> dict | None:
+        if name not in self.tool_map:
+            return None
+        pi, ti = self.tool_map[name]
+        return self.plugins[pi]["tools"][ti]
+
+    def execute(self, name: str, args: dict) -> str | None:
+        """Render command template with arguments. Returns command string."""
+        tool = self.get_tool(name)
+        if tool is None:
+            return None
+        cmd = tool.get("command_template", "")
+        for param in tool.get("parameters", []):
+            placeholder = "{" + param["name"] + "}"
+            if param["name"] in args:
+                val = args[param["name"]]
+                cmd = cmd.replace(placeholder, str(val))
+            elif param.get("required", False):
+                return None
+        return cmd
+
+    def list_tools(self) -> list[dict]:
+        tools = []
+        for plugin in self.plugins:
+            tools.extend(plugin.get("tools", []))
+        return tools
+
+    def get_tool_schemas(self) -> list[dict]:
+        """Get tool schemas in OpenAI-compatible format."""
+        schemas = []
+        for tool in self.list_tools():
+            params = tool.get("parameters", [])
+            properties = {}
+            required = []
+            for p in params:
+                properties[p["name"]] = {
+                    "type": p.get("param_type", "string"),
+                    "description": p.get("description", "")
+                }
+                if p.get("required", False):
+                    required.append(p["name"])
+            schemas.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required
+                    }
+                }
+            })
+        return schemas
+
+    def load_default(self) -> int:
+        """Load plugins from the default directory."""
+        return self.load_dir(self.DEFAULT_DIR)
+').
+
 py_fragment(tools_handler_class_header, 'class ToolHandler:
     """Handles execution of tool calls from agent responses."""
 
@@ -11431,6 +11661,30 @@ py_fragment(tools_handler_class_header, 'class ToolHandler:
                 print("[Warning] proot sandbox requested but proot not "
                       "found. Install with: pkg install proot",
                       file=sys.stderr)
+
+        # Load plugins
+        self.plugin_manager = PluginManager()
+        plugin_count = self.plugin_manager.load_default()
+        if plugin_count > 0:
+            # Register plugin tools as allowed and add dispatchers
+            for tool in self.plugin_manager.list_tools():
+                name = tool["name"]
+                self.allowed_tools.append(name)
+                self.tools[name] = self._make_plugin_handler(name)
+            print(f"[Loaded {plugin_count} plugin(s)]")
+
+    def _make_plugin_handler(self, tool_name: str):
+        """Create a handler function for a plugin tool."""
+        def handler(args):
+            cmd = self.plugin_manager.execute(tool_name, args)
+            if cmd is None:
+                return ToolResult(
+                    success=False,
+                    output=f"Missing required parameters for {tool_name}",
+                    tool_name=tool_name
+                )
+            return self._execute_bash({"command": cmd})
+        return handler
 ').
 
 py_fragment(tools_handler_class_body, '
@@ -14628,6 +14882,25 @@ py_fragment(handler_stream_command, '    def _handle_stream_command(self) -> boo
         self.streaming = not self.streaming
         status = "enabled" if self.streaming else "disabled"
         print(f"[Streaming {status}]\\n")
+        return True').
+
+py_fragment(handler_model_command, '    def _handle_model_command(self, text: str) -> bool:
+        """Handle /model [name] command."""
+        parts = text.split(maxsplit=1)
+        if len(parts) > 1:
+            new_model = parts[1].strip()
+            self.config["model"] = new_model
+            print(f"Model switched to: {new_model}")
+        else:
+            print(f"Current model: {self.config.get(\"model\", \"unknown\")}")
+        return True').
+
+py_fragment(handler_tokens_command, '    def _handle_tokens_command(self) -> bool:
+        """Handle /tokens command."""
+        count = self.context.token_count()
+        limit = self.config.get("max_context_tokens", 128000)
+        pct = (count / limit * 100) if limit > 0 else 0
+        print(f"Context: ~{count} tokens ({pct:.1f}% of {limit})")
         return True').
 
 py_fragment(handler_aliases_command, '    def _handle_aliases_command(self) -> bool:

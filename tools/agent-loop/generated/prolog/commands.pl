@@ -21,7 +21,7 @@
 %%   - command_alias/2: first-argument string hash-indexed, all distinct
 
 %% Indexing hints (SWI-Prolog auto-indexes first argument):
-%%   slash_command/4: first-argument indexed (23 clauses)
+%%   slash_command/4: first-argument indexed (24 clauses)
 %%   command_alias/2: first-argument indexed (30 clauses)
 
 %% slash_command(+Name, +MatchType, +Options, +HelpText)
@@ -41,8 +41,9 @@ slash_command(search, prefix, [handler('_handle_search_command'), comment('/sear
 slash_command(stream, exact, [aliases([streaming]), handler('_handle_stream_command'), comment('/stream - toggle streaming mode')], 'Toggle streaming mode for API backends').
 slash_command(model, prefix_sp, [handler('_handle_model_command'), comment('/model [name] - show or switch model'), help_display('/model [name]'), target(prolog)], 'Show or switch model at runtime').
 slash_command(tokens, exact, [handler('_handle_tokens_command'), comment('/tokens - show context token estimate'), target(prolog)], 'Show context token estimate and limit').
+slash_command(multiline, exact, [comment('Toggle multiline input mode')], 'Toggle multiline input mode').
 slash_command(aliases, exact, [handler('_handle_aliases_command'), comment('Aliases')], 'List command aliases (e.g., /q -> /quit)').
-slash_command(templates, exact, [handler('_handle_templates_command'), comment('Templates')], 'List prompt templates').
+slash_command(templates, exact, [aliases([template]), handler('_handle_templates_command'), comment('Templates')], 'List prompt templates').
 slash_command(history, exact_or_prefix_sp, [handler('_handle_history_command'), comment('History'), help_display('/history [n]')], 'Show last n messages (default 10)').
 slash_command(undo, exact, [handler('_handle_undo_command'), comment('Undo')], 'Undo last history change').
 slash_command(delete, prefix_sp, [aliases([del]), handler('_handle_delete_command'), comment('Delete message(s)'), help_lines(['/delete <idx>      - Delete message at index','/delete <s>-<e>    - Delete messages from s to e','/delete last [n]   - Delete last n messages'])], 'Delete message(s) at index or range').

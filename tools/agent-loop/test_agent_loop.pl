@@ -252,6 +252,12 @@ run_tests :-
     test_rust_wasm_bindings,
     test_rust_data_driven_dispatch,
     test_rust_phase13_integration_tests,
+    %% Phase 14 — plugin wiring, WASM config, Python dispatch, Python/Prolog plugins
+    test_rust_plugin_wiring,
+    test_rust_wasm_cargo_config,
+    test_py_command_body_dispatch,
+    test_py_plugin_manager,
+    test_prolog_plugin_loading,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -307,7 +313,7 @@ test_component_registration :-
     length(Commands, NC),
     length(Backends, NB),
     assert_eq('Tool count', NT, 4),
-    assert_eq('Command count', NC, 23),
+    assert_eq('Command count', NC, 24),
     assert_eq('Backend count', NB, 8).
 
 %% ============================================================================
@@ -381,7 +387,7 @@ test_handler_fragment_count :-
         sub_atom(Name, 0, _, _, handler_)
     ), Handlers),
     length(Handlers, Count),
-    assert_eq('Handler fragment count', Count, 17).
+    assert_eq('Handler fragment count', Count, 19).
 
 %% ============================================================================
 %% Test 7: CLI Override Facts
@@ -1237,7 +1243,7 @@ test_emit_command_optimization_hints :-
             current_output(S2),
             agent_loop_components:emit_command_facts(S2, [target(prolog)])
         )),
-        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (23 clauses)')
+        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (24 clauses)')
     )),
     assert_true('emit_command_facts includes command_alias clause count', (
         with_output_to(atom(Output3), (
@@ -4682,7 +4688,7 @@ test_rust_wasm_bindings :-
         sub_string(WasmContent, _, _, _, "fn parse_tool_calls")
     )),
     assert_true('cfg wasm32 conditional', (
-        sub_string(WasmContent, _, _, _, "cfg(target_arch")
+        sub_string(WasmContent, _, _, _, "target_arch = \"wasm32\"")
     )),
     assert_true('wasm_bindgen import', (
         sub_string(WasmContent, _, _, _, "wasm_bindgen")
@@ -4766,4 +4772,127 @@ test_rust_phase13_integration_tests :-
     %% Cost tracker tests
     assert_true('cost tracker record test exists', (
         sub_string(TestContent, _, _, _, "test_cost_tracker_record_and_report")
+    )).
+
+%% ============================================================================
+%% Phase 14 — Plugin wiring into ToolHandler
+%% ============================================================================
+
+test_rust_plugin_wiring :-
+    format("~nRust plugin wiring:~n"),
+    agent_loop_module:rust_fragment(tool_handler_struct, Content),
+    %% ToolHandler has plugins field
+    assert_true('ToolHandler has plugins field', (
+        sub_string(Content, _, _, _, "plugins: Option<PluginManager>")
+    )),
+    %% load_plugins method exists
+    assert_true('load_plugins method exists', (
+        sub_string(Content, _, _, _, "fn load_plugins")
+    )),
+    %% load_default_plugins method exists
+    assert_true('load_default_plugins method exists', (
+        sub_string(Content, _, _, _, "fn load_default_plugins")
+    )),
+    %% get_all_tool_schemas method exists
+    assert_true('get_all_tool_schemas method exists', (
+        sub_string(Content, _, _, _, "fn get_all_tool_schemas")
+    )),
+    %% Plugin fallback in dispatch
+    agent_loop_module:rust_fragment(tool_handler_dispatch, DispatchContent),
+    assert_true('execute has plugin fallback', (
+        sub_string(DispatchContent, _, _, _, "pm.execute")
+    )).
+
+%% ============================================================================
+%% Phase 14 — WASM Cargo.toml configuration
+%% ============================================================================
+
+test_rust_wasm_cargo_config :-
+    format("~nRust WASM Cargo config:~n"),
+    %% Read generated Cargo.toml
+    agent_loop_module:output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../Cargo.toml', CargoPath),
+    read_file_to_string(CargoPath, CargoContent, []),
+    assert_true('Cargo.toml has wasm-bindgen dependency', (
+        sub_string(CargoContent, _, _, _, "wasm-bindgen")
+    )),
+    assert_true('Cargo.toml has wasm feature', (
+        sub_string(CargoContent, _, _, _, "[features]")
+    )),
+    assert_true('Cargo.toml has cdylib crate-type', (
+        sub_string(CargoContent, _, _, _, "cdylib")
+    )).
+
+%% ============================================================================
+%% Phase 14 — Python data-driven command dispatch
+%% ============================================================================
+
+test_py_command_body_dispatch :-
+    format("~nPython data-driven dispatch:~n"),
+    %% py_command_body facts exist
+    assert_true('py_command_body for exit exists', (
+        agent_loop_module:py_command_body(exit, _)
+    )),
+    assert_true('py_command_body for clear exists', (
+        agent_loop_module:py_command_body(clear, _)
+    )),
+    assert_true('py_command_body for help exists', (
+        agent_loop_module:py_command_body(help, _)
+    )),
+    assert_true('py_command_body for status exists', (
+        agent_loop_module:py_command_body(status, _)
+    )),
+    assert_true('py_command_body for multiline exists', (
+        agent_loop_module:py_command_body(multiline, _)
+    )),
+    %% Verify dispatch generation uses py_command_body
+    with_output_to(string(DispatchOutput), (
+        current_output(S),
+        agent_loop_module:generate_single_dispatch(S, exit, exact, [])
+    )),
+    assert_true('exit dispatch uses inline body', (
+        sub_string(DispatchOutput, _, _, _, "self.running = False")
+    )).
+
+%% ============================================================================
+%% Phase 14 — Python plugin manager
+%% ============================================================================
+
+test_py_plugin_manager :-
+    format("~nPython plugin manager:~n"),
+    assert_true('py_fragment plugin_manager_class exists', (
+        agent_loop_module:py_fragment(plugin_manager_class, _)
+    )),
+    agent_loop_module:py_fragment(plugin_manager_class, PyPluginContent),
+    assert_true('PluginManager class defined', (
+        sub_string(PyPluginContent, _, _, _, "class PluginManager")
+    )),
+    assert_true('load_dir method exists', (
+        sub_string(PyPluginContent, _, _, _, "def load_dir")
+    )),
+    assert_true('execute method exists', (
+        sub_string(PyPluginContent, _, _, _, "def execute")
+    )),
+    assert_true('get_tool_schemas method exists', (
+        sub_string(PyPluginContent, _, _, _, "def get_tool_schemas")
+    )).
+
+%% ============================================================================
+%% Phase 14 — Prolog plugin loading
+%% ============================================================================
+
+test_prolog_plugin_loading :-
+    format("~nProlog plugin loading:~n"),
+    agent_loop_module:prolog_fragment(tools_execute_dispatch, PlContent),
+    assert_true('execute_plugin_tool predicate exists', (
+        sub_string(PlContent, _, _, _, "execute_plugin_tool")
+    )),
+    assert_true('load_plugin_file predicate exists', (
+        sub_string(PlContent, _, _, _, "load_plugin_file")
+    )),
+    assert_true('plugin_tool dynamic declaration', (
+        sub_string(PlContent, _, _, _, "dynamic plugin_tool")
+    )),
+    assert_true('render_plugin_template predicate exists', (
+        sub_string(PlContent, _, _, _, "render_plugin_template")
     )).

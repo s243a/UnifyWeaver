@@ -11,7 +11,7 @@
 //! Build with: `cargo build --target wasm32-unknown-unknown --features wasm`
 //! Or with wasm-pack: `wasm-pack build --target web`
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 use wasm_bindgen::prelude::*;
 
 use crate::types::*;
@@ -152,13 +152,13 @@ impl WasmAgentState {
 }
 
 /// WASM-exported functions (only compiled for wasm32 targets).
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 pub struct WasmAgent {
     inner: WasmAgentState,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 impl WasmAgent {
     #[wasm_bindgen(constructor)]
