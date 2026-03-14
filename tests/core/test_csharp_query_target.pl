@@ -19,6 +19,8 @@
 :- use_module('src/unifyweaver/sources/json_source').
 
 :- dynamic cqt_option/2.
+:- dynamic cqt_run_root/1.
+:- dynamic cqt_cleanup_failure/2.
 :- dynamic user:test_factorial/2.
 :- dynamic user:test_factorial_input/1.
 :- dynamic user:test_fib_param/2.
@@ -181,9 +183,10 @@ test_csharp_query_target :-
     set_prolog_flag(verbose, silent),
     configure_csharp_query_options,
     writeln('=== Testing C# query target ==='),
-    setup_test_data,
-    progress_init,
-    Tests = [
+    setup_call_cleanup(
+        setup_test_data,
+        (   progress_init,
+            Tests = [
         verify_fact_plan,
         verify_join_plan,
         verify_join_ordering_constant_arg_plan,
@@ -394,13 +397,17 @@ test_csharp_query_target :-
         verify_json_null_policy_skip_plan,
         verify_json_null_policy_default_plan,
         verify_json_object_source_plan
-    ],
-    length(Tests, Total),
-    retractall(progress_total(_)),
-    asserta(progress_total(Total)),
-    maplist(run_with_progress, Tests),
-    progress_maybe_report(force),
-    cleanup_test_data,
+            ],
+            length(Tests, Total),
+            retractall(progress_total(_)),
+            asserta(progress_total(Total)),
+            maplist(run_with_progress, Tests),
+            progress_maybe_report(force)
+        ),
+        (   cleanup_test_data,
+            finalize_cqt_run_state
+        )
+    ),
     writeln('=== C# query target tests complete ===').
 
 setup_test_data :-
@@ -6019,7 +6026,7 @@ prepare_temp_dir(Plan, Dir) :-
         atomic_list_concat(['cq_', PredPrefix, '_', ShortUUID], Sub)
     ;   atomic_list_concat(['csharp_query_', PredName, '_', UUID], Sub)
     ),
-    cqt_option(output_dir, Base),
+    cqt_temp_root(Base),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
     make_directory_path(Dir).
@@ -6032,10 +6039,16 @@ prepare_temp_dir(Dir) :-
         atomic_list_concat(['cq_', ShortUUID], Sub)
     ;   atomic_list_concat(['csharp_query_', UUID], Sub)
     ),
-    cqt_option(output_dir, Base),
+    cqt_temp_root(Base),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
     make_directory_path(Dir).
+
+cqt_temp_root(Base) :-
+    cqt_run_root(Base),
+    !.
+cqt_temp_root(Base) :-
+    cqt_option(output_dir, Base).
 
 run_dotnet_plan_verbose(Dotnet, Plan, ExpectedRows, Dir) :-
     run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir),
@@ -6047,12 +6060,86 @@ run_dotnet_plan_verbose(Dotnet, Plan, ExpectedRows, Dir) :-
 finalize_temp_dir(Dir) :-
     (   cqt_option(keep_artifacts, true)
     ->  format('  (kept C# artifacts in ~w)~n', [Dir])
-    ;   catch(
-            delete_directory_and_contents(Dir),
-            Error,
-            format('  (warning: could not cleanup ~w: ~w)~n', [Dir, Error])
-        )
+    ;   catch(delete_directory_and_contents(Dir),
+              Error,
+              record_cqt_cleanup_failure(Dir, Error))
     ).
+
+record_cqt_cleanup_failure(Dir, Error) :-
+    retractall(cqt_cleanup_failure(Dir, _)),
+    assertz(cqt_cleanup_failure(Dir, Error)).
+
+initialize_cqt_run_state :-
+    retractall(cqt_run_root(_)),
+    retractall(cqt_cleanup_failure(_, _)),
+    cqt_option(output_dir, Base),
+    make_directory_path(Base),
+    uuid(UUID),
+    (   current_prolog_flag(windows, true)
+    ->  sub_atom(UUID, 0, 8, _, ShortUUID),
+        atomic_list_concat(['cq_run_', ShortUUID], Subdir)
+    ;   atomic_list_concat(['csharp_query_run_', UUID], Subdir)
+    ),
+    directory_file_path(Base, Subdir, RunRoot),
+    make_directory_path(RunRoot),
+    assertz(cqt_run_root(RunRoot)).
+
+finalize_cqt_run_state :-
+    (   cqt_option(keep_artifacts, true)
+    ->  retractall(cqt_cleanup_failure(_, _))
+    ;   retry_cqt_cleanup_failures(Remaining),
+        summarize_cqt_cleanup_failures(Remaining),
+        cleanup_cqt_run_root
+    ),
+    retractall(cqt_run_root(_)).
+
+retry_cqt_cleanup_failures(Remaining) :-
+    findall(Dir-Error,
+            retract(cqt_cleanup_failure(Dir, Error)),
+            Failures0),
+    sort(Failures0, Failures),
+    retry_cqt_cleanup_failures(Failures, Remaining).
+
+retry_cqt_cleanup_failures([], []).
+retry_cqt_cleanup_failures([Dir-_|Rest], Remaining) :-
+    (   \+ exists_directory(Dir)
+    ->  retry_cqt_cleanup_failures(Rest, Remaining)
+    ;   catch(delete_directory_and_contents(Dir), _, fail)
+    ->  retry_cqt_cleanup_failures(Rest, Remaining)
+    ;   Remaining = [Dir|Tail],
+        retry_cqt_cleanup_failures(Rest, Tail)
+    ).
+
+summarize_cqt_cleanup_failures([]).
+summarize_cqt_cleanup_failures(Remaining) :-
+    length(Remaining, Count),
+    take_upto(3, Remaining, PreviewDirs),
+    atomic_list_concat(PreviewDirs, ', ', Preview),
+    (   cqt_run_root(RunRoot)
+    ->  format('  (cleanup summary: ~w temp dirs remained locked under ~w; first: ~w)~n',
+               [Count, RunRoot, Preview])
+    ;   format('  (cleanup summary: ~w temp dirs remained locked; first: ~w)~n',
+               [Count, Preview])
+    ).
+
+cleanup_cqt_run_root :-
+    (   cqt_run_root(RunRoot),
+        exists_directory(RunRoot)
+    ->  catch(delete_directory_and_contents(RunRoot), _, true)
+    ;   true
+    ).
+
+take_upto(Count, List, Prefix) :-
+    take_upto(Count, List, [], PrefixRev),
+    reverse(PrefixRev, Prefix).
+
+take_upto(0, _, Acc, Acc) :-
+    !.
+take_upto(_, [], Acc, Acc) :-
+    !.
+take_upto(Count, [Item|Rest], Acc, Prefix) :-
+    NextCount is Count - 1,
+    take_upto(NextCount, Rest, [Item|Acc], Prefix).
 
 % Build-first approach (works around dotnet run hang)
 % See: docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md
@@ -7438,7 +7525,8 @@ configure_csharp_query_options :-
     default_cqt_options(Default),
     maplist(assertz, Default),
     capture_env_overrides,
-    capture_cli_overrides.
+    capture_cli_overrides,
+    initialize_cqt_run_state.
 
 default_cqt_options([
     cqt_option(output_dir, 'tmp'),
