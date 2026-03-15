@@ -485,6 +485,8 @@ agent_config_field(stream,              'bool',           'False',   "Enable str
 agent_config_field(security_profile,    'str',            '"cautious"', "Security profile (open/cautious/guarded/paranoid)").
 agent_config_field(approval_mode,       'str',            '"yolo"',  "Tool approval mode (default/auto_edit/yolo/plan)").
 agent_config_field(paste_mode,           'str',            '"auto"',  "Paste detection mode: auto, bracketed, timing, off").
+agent_config_field(tool_cache_ttl,      'int',            '60',      "Tool result cache TTL in seconds (0 = disabled)").
+agent_config_field(mcp_servers,         'list',           'field(default_factory=list)', "MCP server configs: [{name, command, args, env}]").
 agent_config_field(extra,               'dict',           'field(default_factory=dict)', "").
 
 %% config_field_json_default(FieldName, JsonDefault)
@@ -644,6 +646,28 @@ tool_handler(edit,  '_edit_file').
 destructive_tool(bash).
 destructive_tool(write).
 destructive_tool(edit).
+
+%% cacheable_tool(ToolName)
+%% Tools whose results can be cached (non-destructive, deterministic).
+cacheable_tool(read).
+
+%% tool_cache_default_ttl(Seconds)
+tool_cache_default_ttl(60).
+
+%% =============================================================================
+%% MCP (Model Context Protocol) Data
+%% =============================================================================
+
+%% mcp_transport(TransportType)
+mcp_transport(stdio).
+
+%% mcp_method(MethodId, MethodString)
+mcp_method(initialize, 'initialize').
+mcp_method(tools_list, 'tools/list').
+mcp_method(tools_call, 'tools/call').
+
+%% mcp_jsonrpc_version(Version)
+mcp_jsonrpc_version('2.0').
 
 %% =============================================================================
 %% Command Aliases Data
@@ -878,15 +902,19 @@ py_command_body(init, [
 ]).
 py_command_body(reload, [
     '            try:',
-    '                from config import read_config_cascade',
-    '                new_cfg = read_config_cascade()',
+    '                from config import load_config, get_default_config',
+    '                fresh = load_config()',
+    '                if fresh is None:',
+    '                    fresh = get_default_config().agents.get(self.config.name, get_default_config().agents["default"])',
     '                changes = []',
-    '                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile"]:',
+    '                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile", "stream", "max_iterations"]:',
     '                    old_val = getattr(self.config, key, None)',
-    '                    new_val = getattr(new_cfg, key, None)',
+    '                    new_val = getattr(fresh, key, None)',
     '                    if old_val != new_val:',
     '                        setattr(self.config, key, new_val)',
     '                        changes.append(f"{key}: {old_val} -> {new_val}")',
+    '                if hasattr(self, "tool_handler") and hasattr(self.tool_handler, "cache"):',
+    '                    self.tool_handler.cache.clear()',
     '                if changes:',
     '                    for c in changes: print(f"  Reloaded: {c}")',
     '                else:',
@@ -1507,6 +1535,8 @@ generate_all(python) :-
     generate_module(skills),
     generate_module(templates),
     generate_module(async_backend),
+    generate_module(output_parser),
+    generate_module(mcp_client),
     generate_module(security_audit),
     generate_module(security_proxy),
     generate_module(security_path_proxy),
@@ -1538,6 +1568,8 @@ generate_all(rust) :-
     generate_rust_security,
     generate_rust_proot_sandbox,
     generate_rust_plugin_manager,
+    generate_rust_output_parser,
+    generate_rust_mcp_client,
     generate_rust_wasm_bindings,
     %% Phase 2 — imperative layer
     generate_rust_types,
@@ -1882,6 +1914,8 @@ generate_rust_lib :-
     write(S, 'pub mod config_loader;\n'),
     write(S, 'pub mod proot_sandbox;\n'),
     write(S, 'pub mod plugin_manager;\n'),
+    write(S, 'pub mod output_parser;\n'),
+    write(S, 'pub mod mcp_client;\n'),
     write(S, 'pub mod wasm_bindings;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
@@ -1968,6 +2002,23 @@ generate_rust_plugin_manager :-
     close(S),
     format('  Generated rust/src/plugin_manager.rs~n', []).
 
+generate_rust_output_parser :-
+    output_path(rust, 'output_parser.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, output_parser, 'Structured output parser — extract JSON from model responses'),
+    write(S, 'use crate::types::*;\n\n'),
+    write_rust(S, output_parser),
+    close(S),
+    format('  Generated rust/src/output_parser.rs~n', []).
+
+generate_rust_mcp_client :-
+    output_path(rust, 'mcp_client.rs', Path),
+    open(Path, write, S),
+    write_rust_header(S, mcp_client, 'MCP client — stdio JSON-RPC 2.0 transport'),
+    write_rust(S, mcp_client),
+    close(S),
+    format('  Generated rust/src/mcp_client.rs~n', []).
+
 generate_rust_wasm_bindings :-
     output_path(rust, 'wasm_bindings.rs', Path),
     open(Path, write, S),
@@ -2021,6 +2072,7 @@ rust_type_mapping('int', 'i64').
 rust_type_mapping('int | None', 'Option<i64>').
 rust_type_mapping('bool', 'bool').
 rust_type_mapping('list[str]', 'Vec<String>').
+rust_type_mapping('list', 'Vec<serde_json::Value>').
 rust_type_mapping('dict', 'std::collections::HashMap<String, serde_json::Value>').
 
 generate_rust_types :-
@@ -2085,6 +2137,7 @@ rust_default_value('str', Val, Quoted) :-
         format(atom(Quoted), '"~w".to_string()', [S])
     ).
 rust_default_value('list[str]', _, 'Vec::new()') :- !.
+rust_default_value('list', _, 'Vec::new()') :- !.
 rust_default_value('dict', _, 'std::collections::HashMap::new()') :- !.
 rust_default_value(_, _, 'Default::default()').
 
@@ -2196,6 +2249,7 @@ generate_rust_tool_handler :-
     write_rust(S, tool_handler_struct),
     write_rust(S, tool_handler_validation),
     write_rust(S, tool_handler_dispatch),
+    write_rust(S, tool_result_cache),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
 
@@ -2679,6 +2733,8 @@ generate_module(security_proxy)     :- generate_simple_module('security/proxy.py
 generate_module(security_path_proxy):- generate_simple_module('security/path_proxy.py', security_path_proxy_module).
 generate_module(security_proot_sandbox) :- generate_simple_module('security/proot_sandbox.py', security_proot_sandbox_module).
 generate_module(async_backend)       :- generate_simple_module('async_backend.py', async_backend_module).
+generate_module(output_parser)       :- generate_simple_module('output_parser.py', output_parser).
+generate_module(mcp_client)          :- generate_simple_module('mcp_client.py', mcp_client).
 generate_module(agent_loop_main)     :- generate_agent_loop_main.
 generate_module(readme)             :- generate_readme.
 
@@ -3127,6 +3183,9 @@ generate_tools :-
     nl(S),
     agent_loop_components:emit_py_set_from_components(S, agent_tools, destructive_tool/1, python,
         [fact_type(destructive_tool)]),
+    nl(S), nl(S),
+    %% Tool schema caching (Python parity with Rust OnceLock)
+    write_py(S, tool_schema_cache),
     close(S),
     format('  Generated tools_generated.py~n', []).
 
@@ -3449,6 +3508,9 @@ generate_tools_module :-
     write(S, '\n\n'),
     %% SecurityConfig (imperative — has from_profile method)
     write_py(S, tools_security_config),
+    write(S, '\n\n'),
+    %% ToolResultCache class
+    write_py(S, tool_result_cache),
     write(S, '\n\n'),
     %% PluginManager class
     write_py(S, plugin_manager_class),
@@ -4029,6 +4091,10 @@ generate_factory_branch(S, BT, Props, FirstFlag) :-
     ; true),
     %% Resolution logic based on resolve_type
     generate_resolve_logic(S, BT, RT, Props),
+    %% Model validation (e.g. gemini version constraints)
+    (member(model_validator(_), Props), member(default_model(DefModel), Props) ->
+        format(S, '        _validated_model = validate_gemini_model(agent_config.model or \'~w\', \'~w\')~n', [DefModel, DefModel])
+    ; true),
     %% Constructor call
     format(S, '        return ~w(~n', [ClassName]),
     generate_constructor_args(S, Args, Props),
@@ -4077,9 +4143,16 @@ generate_single_arg(S, arg_expr(KW, Expr), _, LastFlag) :-
     ;
         format(S, '            ~w=~w,~n', [KW, Expr])
     ).
-%% arg_model — model=agent_config.model or 'default'
+%% arg_model — model=agent_config.model or 'default' (or _validated_model if validator present)
 generate_single_arg(S, arg_model, Props, LastFlag) :-
-    (member(default_model(DefModel), Props) ->
+    (member(model_validator(_), Props), member(default_model(_), Props) ->
+        %% Use pre-validated model variable
+        (LastFlag == last ->
+            write(S, '            model=_validated_model\n')
+        ;
+            write(S, '            model=_validated_model,\n')
+        )
+    ; member(default_model(DefModel), Props) ->
         (LastFlag == last ->
             format(S, '            model=agent_config.model or \'~w\'~n', [DefModel])
         ;
@@ -4161,6 +4234,9 @@ generate_agent_loop_main :-
     generate_cli_fallbacks_dict(S),
     %% Two blank line separators (lines 847-848)
     write(S, '\n\n'),
+    %% 8b. Gemini model validation (Python parity)
+    write_py(S, validate_gemini_model),
+    nl(S), nl(S),
     %% 9. Generated backend factory function (lines 849-947)
     generate_backend_factory_fn(S),
     %% Two blank line separators (lines 947-948)
@@ -7239,6 +7315,294 @@ fn reload_config(config: &mut AgentConfig, state: &mut RuntimeState) -> Result<V
 }
 ').
 
+rust_fragment(tool_result_cache, '
+use std::time::Instant;
+
+/// Cache for tool execution results, keyed by (tool_name, canonical_args).
+pub struct ToolResultCache {
+    cache: std::collections::HashMap<String, (Instant, ToolResult)>,
+    ttl: std::time::Duration,
+    skip_tools: std::collections::HashSet<String>,
+}
+
+impl ToolResultCache {
+    pub fn new(ttl_secs: u64) -> Self {
+        let mut skip = std::collections::HashSet::new();
+        skip.insert("bash".to_string());
+        skip.insert("write".to_string());
+        skip.insert("edit".to_string());
+        Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip }
+    }
+
+    fn make_key(tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> String {
+        let canonical = serde_json::to_string(args).unwrap_or_default();
+        format!("{}:{}", tool_name, canonical)
+    }
+
+    pub fn get(&self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> Option<&ToolResult> {
+        if self.skip_tools.contains(tool_name) { return None; }
+        let key = Self::make_key(tool_name, args);
+        if let Some((ts, result)) = self.cache.get(&key) {
+            if ts.elapsed() < self.ttl {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    pub fn put(&mut self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>, result: ToolResult) {
+        if self.skip_tools.contains(tool_name) { return; }
+        let key = Self::make_key(tool_name, args);
+        self.cache.insert(key, (Instant::now(), result));
+    }
+
+    pub fn clear(&mut self) { self.cache.clear(); }
+    pub fn len(&self) -> usize { self.cache.len() }
+}
+').
+
+rust_fragment(output_parser, '
+/// Structured output parser — extract JSON from model responses.
+
+pub struct ParsedOutput {
+    pub json_blocks: Vec<serde_json::Value>,
+    pub raw_text: String,
+    pub errors: Vec<String>,
+}
+
+pub struct OutputParser;
+
+impl OutputParser {
+    /// Extract fenced JSON blocks (```json ... ```).
+    fn extract_fenced(text: &str) -> Vec<serde_json::Value> {
+        let mut results = Vec::new();
+        let marker = "```";
+        let mut pos = 0;
+        while let Some(start) = text[pos..].find(marker) {
+            let abs_start = pos + start;
+            if let Some(nl) = text[abs_start..].find(''\\n'') {
+                let content_start = abs_start + nl + 1;
+                if let Some(end) = text[content_start..].find(marker) {
+                    let block = text[content_start..content_start + end].trim();
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(block) {
+                        match val {
+                            serde_json::Value::Object(_) => results.push(val),
+                            serde_json::Value::Array(arr) => {
+                                for item in arr {
+                                    if item.is_object() { results.push(item); }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    pos = content_start + end + marker.len();
+                } else { break; }
+            } else { break; }
+        }
+        results
+    }
+
+    /// Extract bare JSON objects by tracking brace depth.
+    fn extract_bare(text: &str) -> Vec<serde_json::Value> {
+        let mut results = Vec::new();
+        let mut depth: i32 = 0;
+        let mut start = 0usize;
+        for (i, ch) in text.char_indices() {
+            match ch {
+                ''{'' => {
+                    if depth == 0 { start = i; }
+                    depth += 1;
+                }
+                ''}'' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text[start..=i]) {
+                            if val.is_object() { results.push(val); }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        results
+    }
+
+    /// Extract JSON blocks from text (fenced code blocks first, then bare objects).
+    pub fn extract_json(text: &str) -> Vec<serde_json::Value> {
+        let results = Self::extract_fenced(text);
+        if !results.is_empty() { return results; }
+        Self::extract_bare(text)
+    }
+
+    /// Parse response, optionally validating expected top-level keys.
+    pub fn parse_response(text: &str, expected_keys: Option<&[&str]>) -> ParsedOutput {
+        let blocks = Self::extract_json(text);
+        let mut errors = Vec::new();
+        if let Some(keys) = expected_keys {
+            for (i, block) in blocks.iter().enumerate() {
+                if let Some(obj) = block.as_object() {
+                    let missing: Vec<&str> = keys.iter().filter(|k| !obj.contains_key(**k)).copied().collect();
+                    if !missing.is_empty() {
+                        errors.push(format!("Block {}: missing keys {:?}", i, missing));
+                    }
+                }
+            }
+        }
+        ParsedOutput { json_blocks: blocks, raw_text: text.to_string(), errors }
+    }
+}
+').
+
+rust_fragment(mcp_client, '
+/// MCP (Model Context Protocol) client — stdio JSON-RPC 2.0 transport.
+
+use std::io::{BufRead, Write as IoWrite};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+}
+
+pub struct McpClient {
+    pub name: String,
+    command: Vec<String>,
+    env: std::collections::HashMap<String, String>,
+    process: Option<std::process::Child>,
+    request_id: u64,
+}
+
+impl McpClient {
+    pub fn new(name: String, command: Vec<String>, env: std::collections::HashMap<String, String>) -> Self {
+        Self { name, command, env, process: None, request_id: 0 }
+    }
+
+    pub fn connect(&mut self) -> bool {
+        if self.command.is_empty() { return false; }
+        let mut cmd = std::process::Command::new(&self.command[0]);
+        if self.command.len() > 1 { cmd.args(&self.command[1..]); }
+        cmd.stdin(std::process::Stdio::piped())
+           .stdout(std::process::Stdio::piped())
+           .stderr(std::process::Stdio::null());
+        for (k, v) in &self.env { cmd.env(k, v); }
+        match cmd.spawn() {
+            Ok(child) => {
+                self.process = Some(child);
+                let resp = self.send_request("initialize", Some(serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "uwsal", "version": "0.2.0"}
+                })));
+                resp.is_some() && resp.unwrap().get("error").is_none()
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn send_request(&mut self, method: &str, params: Option<serde_json::Value>) -> Option<serde_json::Value> {
+        let child = self.process.as_mut()?;
+        self.request_id += 1;
+        let mut request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": method,
+        });
+        if let Some(p) = params {
+            request["params"] = p;
+        }
+        let stdin = child.stdin.as_mut()?;
+        let line = format!("{}\n", request);
+        stdin.write_all(line.as_bytes()).ok()?;
+        stdin.flush().ok()?;
+        let stdout = child.stdout.as_mut()?;
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut resp_line = String::new();
+        reader.read_line(&mut resp_line).ok()?;
+        serde_json::from_str(&resp_line).ok()
+    }
+
+    pub fn discover_tools(&mut self) -> Vec<serde_json::Value> {
+        self.send_request("tools/list", Some(serde_json::json!({})))
+            .and_then(|r| r.get("result")?.get("tools")?.as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    pub fn call_tool(&mut self, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+        self.send_request("tools/call", Some(serde_json::json!({"name": name, "arguments": arguments})))
+            .and_then(|r| r.get("result").cloned())
+            .unwrap_or(serde_json::json!({"error": "No response"}))
+    }
+
+    pub fn disconnect(&mut self) {
+        if let Some(mut child) = self.process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) { self.disconnect(); }
+}
+
+/// Manage multiple MCP server connections.
+pub struct McpManager {
+    pub clients: std::collections::HashMap<String, McpClient>,
+    tools: std::collections::HashMap<String, (String, serde_json::Value)>,  // prefixed_name -> (server_name, spec)
+}
+
+impl McpManager {
+    pub fn new() -> Self {
+        Self { clients: std::collections::HashMap::new(), tools: std::collections::HashMap::new() }
+    }
+
+    pub fn from_configs(configs: &[McpServerConfig]) -> Self {
+        let mut mgr = Self::new();
+        for cfg in configs {
+            mgr.add_server(cfg);
+        }
+        mgr
+    }
+
+    pub fn add_server(&mut self, config: &McpServerConfig) -> bool {
+        let mut client = McpClient::new(config.name.clone(), config.command.clone(), config.env.clone());
+        if client.connect() {
+            for tool in client.discover_tools() {
+                if let Some(tool_name) = tool.get("name").and_then(|n| n.as_str()) {
+                    let prefixed = format!("mcp:{}:{}", config.name, tool_name);
+                    self.tools.insert(prefixed, (config.name.clone(), tool.clone()));
+                }
+            }
+            self.clients.insert(config.name.clone(), client);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn list_tools(&self) -> Vec<(&str, &str)> {
+        self.tools.iter().map(|(name, (server, _))| (name.as_str(), server.as_str())).collect()
+    }
+
+    pub fn dispatch(&mut self, tool_name: &str, arguments: serde_json::Value) -> Option<serde_json::Value> {
+        let (server_name, spec) = self.tools.get(tool_name)?;
+        let real_name = spec.get("name").and_then(|n| n.as_str()).unwrap_or(tool_name.rsplit('':'').next().unwrap_or(""));
+        let client = self.clients.get_mut(server_name)?;
+        Some(client.call_tool(real_name, arguments))
+    }
+
+    pub fn disconnect_all(&mut self) {
+        for (_, client) in self.clients.iter_mut() {
+            client.disconnect();
+        }
+        self.clients.clear();
+        self.tools.clear();
+    }
+}
+').
+
 rust_fragment(export_conversation, '
 /// Export conversation, auto-detecting format from file extension.
 fn export_conversation(context: &ContextManager, path: &str) {
@@ -9182,6 +9546,96 @@ async fn test_plugin_execute_async_echo() {
     assert!(output.contains("hello_plugin"), "Output should contain echo text");
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// ============================================================================
+// Phase 20: Output parser, tool result cache, MCP client
+// ============================================================================
+
+#[test]
+fn test_output_parser_extract_fenced_json() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "Here is the result:\n```json\n{}\n```\nDone.";
+    let blocks = OutputParser::extract_json(text);
+    // Fenced block with empty JSON object
+    assert!(blocks.len() >= 1);
+}
+
+#[test]
+fn test_output_parser_no_json() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "No JSON here, just plain text.";
+    let blocks = OutputParser::extract_json(text);
+    assert_eq!(blocks.len(), 0);
+}
+
+#[test]
+fn test_output_parser_extract_bare_json_simple() {
+    use agent_loop::output_parser::OutputParser;
+    let text = r#"The answer is {"result": true} end."#;
+    let blocks = OutputParser::extract_json(text);
+    assert_eq!(blocks.len(), 1);
+}
+
+#[test]
+fn test_output_parser_key_validation() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "```json\n{}\n```";
+    let parsed = OutputParser::parse_response(text, Some(&["name"]));
+    assert_eq!(parsed.json_blocks.len(), 1);
+    assert!(!parsed.errors.is_empty(), "Should report missing key");
+}
+
+#[test]
+fn test_output_parser_key_validation_pass() {
+    use agent_loop::output_parser::OutputParser;
+    let text = r#"```json
+{"name": "test", "age": 25}
+```"#;
+    let parsed = OutputParser::parse_response(text, Some(&["name", "age"]));
+    assert_eq!(parsed.json_blocks.len(), 1);
+    assert!(parsed.errors.is_empty(), "All keys present, no errors");
+}
+
+#[test]
+fn test_tool_result_cache_in_tool_handler() {
+    let th_src = include_str!("../src/tool_handler.rs");
+    assert!(th_src.contains("ToolResultCache"), "tool_handler.rs should have ToolResultCache");
+}
+
+#[test]
+fn test_output_parser_module_exists() {
+    let op_src = include_str!("../src/output_parser.rs");
+    assert!(op_src.contains("OutputParser"), "output_parser.rs should have OutputParser struct");
+    assert!(op_src.contains("extract_json"), "Should have extract_json method");
+    assert!(op_src.contains("parse_response"), "Should have parse_response method");
+    assert!(op_src.contains("ParsedOutput"), "Should have ParsedOutput struct");
+}
+
+#[test]
+fn test_mcp_client_module_exists() {
+    let mcp_src = include_str!("../src/mcp_client.rs");
+    assert!(mcp_src.contains("McpClient"), "mcp_client.rs should have McpClient struct");
+    assert!(mcp_src.contains("McpManager"), "Should have McpManager struct");
+    assert!(mcp_src.contains("McpServerConfig"), "Should have McpServerConfig struct");
+    assert!(mcp_src.contains("discover_tools"), "Should have discover_tools method");
+    assert!(mcp_src.contains("call_tool"), "Should have call_tool method");
+    assert!(mcp_src.contains("tools/list"), "Should use tools/list JSON-RPC method");
+    assert!(mcp_src.contains("tools/call"), "Should use tools/call JSON-RPC method");
+}
+
+#[test]
+fn test_lib_rs_has_phase20_modules() {
+    let lib_src = include_str!("../src/lib.rs");
+    assert!(lib_src.contains("pub mod output_parser"), "lib.rs should export output_parser");
+    assert!(lib_src.contains("pub mod mcp_client"), "lib.rs should export mcp_client");
+}
+
+#[test]
+fn test_types_has_phase20_config_fields() {
+    let types_src = include_str!("../src/types.rs");
+    assert!(types_src.contains("tool_cache_ttl"), "AgentConfig should have tool_cache_ttl");
+    assert!(types_src.contains("mcp_servers"), "AgentConfig should have mcp_servers");
 }
 ').
 
@@ -11161,6 +11615,360 @@ msg_tokens(Msg, Acc, Total) :-
 ').
 
 
+
+%% --- Fragment: validate_gemini_model (Python parity with Rust) ---
+
+py_fragment(validate_gemini_model, '
+import re as _re
+
+def extract_gemini_version(model: str) -> float | None:
+    """Extract numeric version from gemini model name (e.g. "gemini-3-flash-preview" -> 3.0)."""
+    for part in model.split("-"):
+        try:
+            return float(part)
+        except ValueError:
+            pass
+    return None
+
+def validate_gemini_model(model: str, default: str = "gemini-3-flash-preview") -> str:
+    """Validate gemini model version. Flash >= 3.0, Pro >= 2.5."""
+    if "flash" in model:
+        ver = extract_gemini_version(model)
+        if ver is not None and ver >= 3.0:
+            return model
+        import sys
+        print(f"Warning: gemini flash requires version >= 3, using {default}", file=sys.stderr)
+        return default
+    if "pro" in model:
+        ver = extract_gemini_version(model)
+        if ver is not None and ver >= 2.5:
+            return model
+        import sys
+        print(f"Warning: gemini pro requires version >= 2.5, using {default}", file=sys.stderr)
+        return default
+    return model
+').
+
+%% --- Fragment: tool_schema_cache (Python parity with Rust OnceLock) ---
+
+py_fragment(tool_schema_cache, '
+_TOOL_SCHEMAS_CACHE = None
+
+def get_tool_schemas() -> list[dict]:
+    """Return cached tool schemas in JSON Schema format for API backends."""
+    global _TOOL_SCHEMAS_CACHE
+    if _TOOL_SCHEMAS_CACHE is not None:
+        return _TOOL_SCHEMAS_CACHE
+    schemas = []
+    for name, spec in TOOL_SPECS.items():
+        props = {}
+        required = []
+        for p in spec.get("parameters", []):
+            props[p["name"]] = {"type": p.get("param_type", "string")}
+            if p.get("description"):
+                props[p["name"]]["description"] = p["description"]
+            if p.get("required", False):
+                required.append(p["name"])
+        schema = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": spec.get("description", ""),
+                "parameters": {
+                    "type": "object",
+                    "properties": props,
+                    "required": required
+                }
+            }
+        }
+        schemas.append(schema)
+    _TOOL_SCHEMAS_CACHE = schemas
+    return schemas
+').
+
+%% --- Fragment: tool_result_cache (Python — new capability) ---
+
+py_fragment(tool_result_cache, '
+import time as _time
+import json as _json
+
+class ToolResultCache:
+    """Cache tool execution results with TTL. Skips destructive tools."""
+
+    def __init__(self, ttl: int = 60, skip_tools: set[str] | None = None):
+        self.ttl = ttl
+        self.skip_tools = skip_tools or {"bash", "write", "edit"}
+        self._cache: dict[str, tuple[float, object]] = {}
+
+    def _make_key(self, tool_name: str, args: dict) -> str:
+        canonical = _json.dumps(args, sort_keys=True, default=str)
+        return f"{tool_name}:{canonical}"
+
+    def get(self, tool_name: str, args: dict):
+        if tool_name in self.skip_tools:
+            return None
+        key = self._make_key(tool_name, args)
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        ts, result = entry
+        if _time.monotonic() - ts > self.ttl:
+            del self._cache[key]
+            return None
+        return result
+
+    def put(self, tool_name: str, args: dict, result) -> None:
+        if tool_name in self.skip_tools:
+            return
+        key = self._make_key(tool_name, args)
+        self._cache[key] = (_time.monotonic(), result)
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+    def size(self) -> int:
+        return len(self._cache)
+').
+
+%% --- Fragment: output_parser (Python — new capability) ---
+
+py_fragment(output_parser, '# Structured output parser - extract JSON from model responses.
+
+import json
+
+class ParsedOutput:
+    """Result of parsing a model response for structured output."""
+    __slots__ = ("json_blocks", "raw_text", "errors")
+
+    def __init__(self, json_blocks: list[dict], raw_text: str, errors: list[str]):
+        self.json_blocks = json_blocks
+        self.raw_text = raw_text
+        self.errors = errors
+
+class OutputParser:
+    """Extract and validate JSON from model responses."""
+
+    @classmethod
+    def _extract_fenced(cls, text: str) -> list[dict]:
+        """Extract JSON from fenced code blocks (```json ... ```)."""
+        results = []
+        marker = "```"
+        pos = 0
+        while True:
+            start = text.find(marker, pos)
+            if start < 0:
+                break
+            # Skip optional language tag
+            line_end = text.find("\\n", start)
+            if line_end < 0:
+                break
+            end = text.find(marker, line_end)
+            if end < 0:
+                break
+            block = text[line_end + 1:end].strip()
+            try:
+                parsed = json.loads(block)
+                if isinstance(parsed, dict):
+                    results.append(parsed)
+                elif isinstance(parsed, list):
+                    results.extend(d for d in parsed if isinstance(d, dict))
+            except (json.JSONDecodeError, ValueError):
+                pass
+            pos = end + len(marker)
+        return results
+
+    @classmethod
+    def _extract_bare(cls, text: str) -> list[dict]:
+        """Extract bare JSON objects from text."""
+        results = []
+        depth = 0
+        start = -1
+        for i, ch in enumerate(text):
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    try:
+                        parsed = json.loads(text[start:i + 1])
+                        if isinstance(parsed, dict):
+                            results.append(parsed)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    start = -1
+        return results
+
+    @classmethod
+    def extract_json(cls, text: str) -> list[dict]:
+        """Extract all JSON blocks from text (fenced first, then bare)."""
+        results = cls._extract_fenced(text)
+        if results:
+            return results
+        return cls._extract_bare(text)
+
+    @classmethod
+    def parse_response(cls, text: str, expected_keys: list[str] | None = None) -> ParsedOutput:
+        """Parse response, optionally validating expected top-level keys."""
+        blocks = cls.extract_json(text)
+        errors = []
+        if expected_keys and blocks:
+            for i, block in enumerate(blocks):
+                missing = [k for k in expected_keys if k not in block]
+                if missing:
+                    errors.append(f"Block {i}: missing keys {missing}")
+        return ParsedOutput(json_blocks=blocks, raw_text=text, errors=errors)
+').
+
+%% --- Fragment: mcp_client (Python — new capability) ---
+
+py_fragment(mcp_client, '# MCP (Model Context Protocol) client - stdio JSON-RPC 2.0 transport.
+
+import json
+import subprocess
+import os
+import sys
+
+class MCPClient:
+    """Connect to an MCP server over stdio and call tools."""
+
+    def __init__(self, name: str, command: list[str], env: dict[str, str] | None = None):
+        self.name = name
+        self.command = command
+        self.env = env
+        self._process = None
+        self._request_id = 0
+
+    def connect(self, timeout: float = 10.0) -> bool:
+        """Start the MCP server subprocess."""
+        try:
+            merged_env = {**os.environ, **(self.env or {})}
+            self._process = subprocess.Popen(
+                self.command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=merged_env,
+            )
+            # Send initialize request
+            resp = self._send_request("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "uwsal", "version": "0.2.0"}
+            })
+            return resp is not None and "error" not in resp
+        except (OSError, FileNotFoundError) as e:
+            print(f"MCP [{self.name}] connect failed: {e}", file=sys.stderr)
+            return False
+
+    def _send_request(self, method: str, params: dict | None = None) -> dict | None:
+        """Send a JSON-RPC 2.0 request and read the response."""
+        if not self._process or self._process.stdin is None:
+            return None
+        self._request_id += 1
+        request = {
+            "jsonrpc": "2.0",
+            "id": self._request_id,
+            "method": method,
+        }
+        if params is not None:
+            request["params"] = params
+        try:
+            line = json.dumps(request) + "\\n"
+            self._process.stdin.write(line.encode())
+            self._process.stdin.flush()
+            resp_line = self._process.stdout.readline()
+            if not resp_line:
+                return None
+            return json.loads(resp_line.decode())
+        except (BrokenPipeError, json.JSONDecodeError, OSError):
+            return None
+
+    def discover_tools(self) -> list[dict]:
+        """Call tools/list and return tool definitions."""
+        resp = self._send_request("tools/list", {})
+        if resp and "result" in resp:
+            return resp["result"].get("tools", [])
+        return []
+
+    def call_tool(self, name: str, arguments: dict) -> dict:
+        """Call tools/call and return the result."""
+        resp = self._send_request("tools/call", {"name": name, "arguments": arguments})
+        if resp and "result" in resp:
+            return resp["result"]
+        error = resp.get("error", {}) if resp else {"message": "No response"}
+        return {"error": error.get("message", str(error))}
+
+    def disconnect(self) -> None:
+        """Terminate the MCP server subprocess."""
+        if self._process:
+            try:
+                self._process.stdin.close()
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                self._process.kill()
+            self._process = None
+
+    def __del__(self):
+        self.disconnect()
+
+
+class MCPManager:
+    """Manage multiple MCP server connections."""
+
+    def __init__(self, server_configs: list[dict] | None = None):
+        self.clients: dict[str, MCPClient] = {}
+        self._tools: dict[str, tuple[str, dict]] = {}  # tool_name -> (server_name, spec)
+        if server_configs:
+            for cfg in server_configs:
+                self.add_server(cfg)
+
+    def add_server(self, config: dict) -> bool:
+        """Add and connect an MCP server from config dict."""
+        name = config.get("name", "")
+        command = config.get("command", [])
+        if isinstance(command, str):
+            command = command.split()
+        env = config.get("env")
+        client = MCPClient(name, command, env)
+        if client.connect():
+            self.clients[name] = client
+            # Discover tools
+            for tool in client.discover_tools():
+                tool_name = f"mcp:{name}:{tool[\"name\"]}"
+                self._tools[tool_name] = (name, tool)
+            return True
+        return False
+
+    def list_tools(self) -> list[dict]:
+        """List all discovered MCP tools."""
+        return [
+            {"name": name, "server": server, "description": spec.get("description", "")}
+            for name, (server, spec) in self._tools.items()
+        ]
+
+    def dispatch(self, tool_name: str, arguments: dict) -> dict | None:
+        """Dispatch a tool call to the appropriate MCP server."""
+        entry = self._tools.get(tool_name)
+        if not entry:
+            return None
+        server_name, spec = entry
+        client = self.clients.get(server_name)
+        if not client:
+            return None
+        # Extract the real tool name (strip mcp:server: prefix)
+        real_name = spec.get("name", tool_name.split(":")[-1])
+        return client.call_tool(real_name, arguments)
+
+    def disconnect_all(self) -> None:
+        """Disconnect all MCP servers."""
+        for client in self.clients.values():
+            client.disconnect()
+        self.clients.clear()
+        self._tools.clear()
+').
 
 %% --- Fragment: _format_prompt (shared by 5 CLI backends) ---
 

@@ -281,6 +281,13 @@ run_tests :-
     test_rust_phase19_tool_approval,
     test_rust_phase19_error_recovery,
     test_rust_phase19_context_overflow,
+    %% Phase 20 — Python parity + new capabilities
+    test_phase20_gemini_validation,
+    test_phase20_tool_schema_cache,
+    test_phase20_reload_fix,
+    test_phase20_tool_result_cache,
+    test_phase20_output_parser,
+    test_phase20_mcp_support,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3107,7 +3114,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 34),
+    assert_eq('Rust fragment count', RFCount, 37),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -5368,4 +5375,154 @@ test_rust_phase19_context_overflow :-
     read_file_to_string(CtxPath, CtxContent, []),
     assert_true('add_message returns usize', (
         sub_string(CtxContent, _, _, _, "-> usize")
+    )).
+
+%% ============================================================================
+%% Phase 20 — Python parity + new capabilities
+%% ============================================================================
+
+test_phase20_gemini_validation :-
+    format("~nPhase 20 — Gemini model validation:~n"),
+    assert_true('py_fragment validate_gemini_model exists', (
+        agent_loop_module:py_fragment(validate_gemini_model, Code),
+        sub_string(Code, _, _, _, "extract_gemini_version")
+    )),
+    assert_true('validate_gemini_model checks flash >= 3.0', (
+        agent_loop_module:py_fragment(validate_gemini_model, Code),
+        sub_string(Code, _, _, _, "3.0")
+    )),
+    assert_true('validate_gemini_model checks pro >= 2.5', (
+        agent_loop_module:py_fragment(validate_gemini_model, Code),
+        sub_string(Code, _, _, _, "2.5")
+    )),
+    %% Verify wired into factory
+    agent_loop_module:output_path(python, 'agent_loop.py', AgPath),
+    read_file_to_string(AgPath, AgContent, []),
+    assert_true('agent_loop.py contains validate_gemini_model', (
+        sub_string(AgContent, _, _, _, "validate_gemini_model")
+    )).
+
+test_phase20_tool_schema_cache :-
+    format("~nPhase 20 — tool schema cache:~n"),
+    assert_true('py_fragment tool_schema_cache exists', (
+        agent_loop_module:py_fragment(tool_schema_cache, Code),
+        sub_string(Code, _, _, _, "_TOOL_SCHEMAS_CACHE")
+    )),
+    assert_true('tools_generated.py has get_tool_schemas', (
+        agent_loop_module:output_path(python, 'tools_generated.py', TGPath),
+        read_file_to_string(TGPath, TGContent, []),
+        sub_string(TGContent, _, _, _, "get_tool_schemas")
+    )).
+
+test_phase20_reload_fix :-
+    format("~nPhase 20 — reload fix:~n"),
+    agent_loop_module:output_path(python, 'agent_loop.py', AgPath),
+    read_file_to_string(AgPath, Content, []),
+    assert_true('reload uses load_config', (
+        sub_string(Content, _, _, _, "load_config")
+    )),
+    assert_true('reload compares stream field', (
+        sub_string(Content, _, _, _, "stream")
+    )),
+    assert_true('reload compares max_iterations field', (
+        sub_string(Content, _, _, _, "max_iterations")
+    )).
+
+test_phase20_tool_result_cache :-
+    format("~nPhase 20 — tool result cache:~n"),
+    %% Python
+    assert_true('py_fragment tool_result_cache exists', (
+        agent_loop_module:py_fragment(tool_result_cache, Code),
+        sub_string(Code, _, _, _, "ToolResultCache")
+    )),
+    assert_true('tools.py has ToolResultCache', (
+        agent_loop_module:output_path(python, 'tools.py', ToolsPath),
+        read_file_to_string(ToolsPath, ToolsContent, []),
+        sub_string(ToolsContent, _, _, _, "ToolResultCache")
+    )),
+    %% Rust
+    assert_true('rust_fragment tool_result_cache exists', (
+        agent_loop_module:rust_fragment(tool_result_cache, RCode),
+        sub_string(RCode, _, _, _, "ToolResultCache")
+    )),
+    assert_true('tool_handler.rs has ToolResultCache', (
+        agent_loop_module:output_path(rust, 'tool_handler.rs', THPath),
+        read_file_to_string(THPath, THContent, []),
+        sub_string(THContent, _, _, _, "ToolResultCache")
+    )),
+    %% Cacheable tool facts
+    assert_true('cacheable_tool(read) defined', (
+        agent_loop_module:cacheable_tool(read)
+    )),
+    assert_true('tool_cache_default_ttl defined', (
+        agent_loop_module:tool_cache_default_ttl(60)
+    )).
+
+test_phase20_output_parser :-
+    format("~nPhase 20 — output parser:~n"),
+    %% Python
+    assert_true('py_fragment output_parser exists', (
+        agent_loop_module:py_fragment(output_parser, Code),
+        sub_string(Code, _, _, _, "OutputParser")
+    )),
+    assert_true('output_parser.py generated', (
+        agent_loop_module:output_path(python, 'output_parser.py', OPPath),
+        exists_file(OPPath)
+    )),
+    %% Rust
+    assert_true('rust_fragment output_parser exists', (
+        agent_loop_module:rust_fragment(output_parser, RCode),
+        sub_string(RCode, _, _, _, "OutputParser")
+    )),
+    assert_true('output_parser.rs generated', (
+        agent_loop_module:output_path(rust, 'output_parser.rs', ROPPath),
+        exists_file(ROPPath)
+    )),
+    assert_true('lib.rs has output_parser module', (
+        agent_loop_module:output_path(rust, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibContent, []),
+        sub_string(LibContent, _, _, _, "pub mod output_parser")
+    )).
+
+test_phase20_mcp_support :-
+    format("~nPhase 20 — MCP support:~n"),
+    %% Prolog facts
+    assert_true('mcp_transport(stdio) defined', (
+        agent_loop_module:mcp_transport(stdio)
+    )),
+    assert_true('mcp_method tools_list defined', (
+        agent_loop_module:mcp_method(tools_list, _)
+    )),
+    assert_true('mcp_method tools_call defined', (
+        agent_loop_module:mcp_method(tools_call, _)
+    )),
+    %% Python
+    assert_true('py_fragment mcp_client exists', (
+        agent_loop_module:py_fragment(mcp_client, Code),
+        sub_string(Code, _, _, _, "MCPClient")
+    )),
+    assert_true('mcp_client.py generated', (
+        agent_loop_module:output_path(python, 'mcp_client.py', MCPPath),
+        exists_file(MCPPath)
+    )),
+    %% Rust
+    assert_true('rust_fragment mcp_client exists', (
+        agent_loop_module:rust_fragment(mcp_client, RCode),
+        sub_string(RCode, _, _, _, "McpClient")
+    )),
+    assert_true('mcp_client.rs generated', (
+        agent_loop_module:output_path(rust, 'mcp_client.rs', RMCPPath),
+        exists_file(RMCPPath)
+    )),
+    assert_true('lib.rs has mcp_client module', (
+        agent_loop_module:output_path(rust, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibContent, []),
+        sub_string(LibContent, _, _, _, "pub mod mcp_client")
+    )),
+    %% Config field
+    assert_true('agent_config_field mcp_servers exists', (
+        agent_loop_module:agent_config_field(mcp_servers, _, _, _)
+    )),
+    assert_true('agent_config_field tool_cache_ttl exists', (
+        agent_loop_module:agent_config_field(tool_cache_ttl, _, _, _)
     )).

@@ -130,6 +130,8 @@ pub static CONFIG_FIELDS: &[AgentConfigField] = &[
     AgentConfigField { name: "security_profile", type_annotation: "str", default_value: "\"cautious\"", comment: "Security profile (open/cautious/guarded/paranoid)" },
     AgentConfigField { name: "approval_mode", type_annotation: "str", default_value: "\"yolo\"", comment: "Tool approval mode (default/auto_edit/yolo/plan)" },
     AgentConfigField { name: "paste_mode", type_annotation: "str", default_value: "\"auto\"", comment: "Paste detection mode: auto, bracketed, timing, off" },
+    AgentConfigField { name: "tool_cache_ttl", type_annotation: "int", default_value: "60", comment: "Tool result cache TTL in seconds (0 = disabled)" },
+    AgentConfigField { name: "mcp_servers", type_annotation: "list", default_value: "field(default_factory=list)", comment: "MCP server configs: [{name, command, args, env}]" },
     AgentConfigField { name: "extra", type_annotation: "dict", default_value: "field(default_factory=dict)", comment: "" },
 ];
 

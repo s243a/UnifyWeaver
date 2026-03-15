@@ -490,3 +490,47 @@ impl ToolHandler {
     }
 }
 
+
+use std::time::Instant;
+
+/// Cache for tool execution results, keyed by (tool_name, canonical_args).
+pub struct ToolResultCache {
+    cache: std::collections::HashMap<String, (Instant, ToolResult)>,
+    ttl: std::time::Duration,
+    skip_tools: std::collections::HashSet<String>,
+}
+
+impl ToolResultCache {
+    pub fn new(ttl_secs: u64) -> Self {
+        let mut skip = std::collections::HashSet::new();
+        skip.insert("bash".to_string());
+        skip.insert("write".to_string());
+        skip.insert("edit".to_string());
+        Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip }
+    }
+
+    fn make_key(tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> String {
+        let canonical = serde_json::to_string(args).unwrap_or_default();
+        format!("{}:{}", tool_name, canonical)
+    }
+
+    pub fn get(&self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> Option<&ToolResult> {
+        if self.skip_tools.contains(tool_name) { return None; }
+        let key = Self::make_key(tool_name, args);
+        if let Some((ts, result)) = self.cache.get(&key) {
+            if ts.elapsed() < self.ttl {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    pub fn put(&mut self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>, result: ToolResult) {
+        if self.skip_tools.contains(tool_name) { return; }
+        let key = Self::make_key(tool_name, args);
+        self.cache.insert(key, (Instant::now(), result));
+    }
+
+    pub fn clear(&mut self) { self.cache.clear(); }
+    pub fn len(&self) -> usize { self.cache.len() }
+}

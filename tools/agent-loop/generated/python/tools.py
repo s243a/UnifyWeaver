@@ -176,6 +176,48 @@ class SecurityConfig:
 
 
 
+import time as _time
+import json as _json
+
+class ToolResultCache:
+    """Cache tool execution results with TTL. Skips destructive tools."""
+
+    def __init__(self, ttl: int = 60, skip_tools: set[str] | None = None):
+        self.ttl = ttl
+        self.skip_tools = skip_tools or {"bash", "write", "edit"}
+        self._cache: dict[str, tuple[float, object]] = {}
+
+    def _make_key(self, tool_name: str, args: dict) -> str:
+        canonical = _json.dumps(args, sort_keys=True, default=str)
+        return f"{tool_name}:{canonical}"
+
+    def get(self, tool_name: str, args: dict):
+        if tool_name in self.skip_tools:
+            return None
+        key = self._make_key(tool_name, args)
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        ts, result = entry
+        if _time.monotonic() - ts > self.ttl:
+            del self._cache[key]
+            return None
+        return result
+
+    def put(self, tool_name: str, args: dict, result) -> None:
+        if tool_name in self.skip_tools:
+            return
+        key = self._make_key(tool_name, args)
+        self._cache[key] = (_time.monotonic(), result)
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+    def size(self) -> int:
+        return len(self._cache)
+
+
+
 class PluginManager:
     """Manages loading and executing plugin-defined tools from JSON files."""
 

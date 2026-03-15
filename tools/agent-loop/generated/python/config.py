@@ -109,6 +109,8 @@ class AgentConfig:
     security_profile: str = "cautious"  # Security profile (open/cautious/guarded/paranoid)
     approval_mode: str = "yolo"  # Tool approval mode (default/auto_edit/yolo/plan)
     paste_mode: str = "auto"  # Paste detection mode: auto, bracketed, timing, off
+    tool_cache_ttl: int = 60  # Tool result cache TTL in seconds (0 = disabled)
+    mcp_servers: list = field(default_factory=list)  # MCP server configs: [{name, command, args, env}]
     extra: dict = field(default_factory=dict)
 
 
@@ -165,6 +167,8 @@ def _load_agent_config(name: str, data: dict) -> AgentConfig:
         security_profile=data.get('security_profile', "cautious"),
         approval_mode=data.get('approval_mode', "yolo"),
         paste_mode=data.get('paste_mode', "auto"),
+        tool_cache_ttl=data.get('tool_cache_ttl', 60),
+        mcp_servers=data.get('mcp_servers', field(default_factory=list)),
         extra=data.get('extra', {})
     )
 

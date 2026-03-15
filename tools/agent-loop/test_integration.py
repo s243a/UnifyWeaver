@@ -641,3 +641,181 @@ class TestCommandDispatch:
         loop._print_help = lambda: None
         result = loop._handle_command("help")
         assert result is True
+
+
+# ============================================================================
+# TestOutputParser — Phase 20 structured output parsing
+# ============================================================================
+
+class TestOutputParser:
+    """Test OutputParser: JSON extraction from model responses."""
+
+    def test_extract_fenced_json(self):
+        from output_parser import OutputParser
+        text = 'Here is the result:\n```json\n{"key": "value", "count": 42}\n```\nDone.'
+        blocks = OutputParser.extract_json(text)
+        assert len(blocks) == 1
+        assert blocks[0]["key"] == "value"
+        assert blocks[0]["count"] == 42
+
+    def test_extract_bare_json(self):
+        from output_parser import OutputParser
+        text = 'The answer is {"result": true, "data": [1,2,3]} end.'
+        blocks = OutputParser.extract_json(text)
+        assert len(blocks) == 1
+        assert blocks[0]["result"] is True
+
+    def test_no_json_returns_empty(self):
+        from output_parser import OutputParser
+        text = "No JSON here, just plain text."
+        blocks = OutputParser.extract_json(text)
+        assert len(blocks) == 0
+
+    def test_key_validation_pass(self):
+        from output_parser import OutputParser
+        text = '```json\n{"name": "test", "age": 25}\n```'
+        parsed = OutputParser.parse_response(text, expected_keys=["name", "age"])
+        assert len(parsed.json_blocks) == 1
+        assert len(parsed.errors) == 0
+
+    def test_key_validation_fail(self):
+        from output_parser import OutputParser
+        text = '```json\n{"name": "test"}\n```'
+        parsed = OutputParser.parse_response(text, expected_keys=["name", "age"])
+        assert len(parsed.json_blocks) == 1
+        assert len(parsed.errors) == 1
+        assert "age" in parsed.errors[0]
+
+    def test_multiple_fenced_blocks(self):
+        from output_parser import OutputParser
+        text = '```json\n{"a": 1}\n```\ntext\n```json\n{"b": 2}\n```'
+        blocks = OutputParser.extract_json(text)
+        assert len(blocks) == 2
+
+
+# ============================================================================
+# TestToolResultCache — Phase 20 tool result caching
+# ============================================================================
+
+class TestToolResultCache:
+    """Test ToolResultCache: caching, TTL, skip destructive."""
+
+    def test_cache_hit(self):
+        from tools import ToolResultCache
+        cache = ToolResultCache(ttl=60)
+        cache.put("read", {"file": "test.txt"}, "file contents")
+        result = cache.get("read", {"file": "test.txt"})
+        assert result == "file contents"
+
+    def test_cache_miss(self):
+        from tools import ToolResultCache
+        cache = ToolResultCache(ttl=60)
+        result = cache.get("read", {"file": "test.txt"})
+        assert result is None
+
+    def test_skip_destructive(self):
+        from tools import ToolResultCache
+        cache = ToolResultCache(ttl=60)
+        cache.put("bash", {"command": "ls"}, "output")
+        result = cache.get("bash", {"command": "ls"})
+        assert result is None  # bash is destructive, skipped
+
+    def test_skip_write(self):
+        from tools import ToolResultCache
+        cache = ToolResultCache(ttl=60)
+        cache.put("write", {"file": "x"}, "ok")
+        assert cache.get("write", {"file": "x"}) is None
+
+    def test_cache_clear(self):
+        from tools import ToolResultCache
+        cache = ToolResultCache(ttl=60)
+        cache.put("read", {"file": "a"}, "data")
+        assert cache.size() == 1
+        cache.clear()
+        assert cache.size() == 0
+
+    def test_cache_different_args(self):
+        from tools import ToolResultCache
+        cache = ToolResultCache(ttl=60)
+        cache.put("read", {"file": "a.txt"}, "content_a")
+        cache.put("read", {"file": "b.txt"}, "content_b")
+        assert cache.get("read", {"file": "a.txt"}) == "content_a"
+        assert cache.get("read", {"file": "b.txt"}) == "content_b"
+
+
+# ============================================================================
+# TestToolSchemaCache — Phase 20 tool schema caching
+# ============================================================================
+
+class TestToolSchemaCache:
+    """Test get_tool_schemas() caching."""
+
+    def test_schemas_returned(self):
+        from tools_generated import get_tool_schemas
+        schemas = get_tool_schemas()
+        assert len(schemas) == 4  # bash, read, write, edit
+        names = {s["function"]["name"] for s in schemas}
+        assert names == {"bash", "read", "write", "edit"}
+
+    def test_schemas_cached(self):
+        from tools_generated import get_tool_schemas
+        s1 = get_tool_schemas()
+        s2 = get_tool_schemas()
+        assert s1 is s2  # Same object reference = cached
+
+
+# ============================================================================
+# TestGeminiValidation — Phase 20 Gemini model validation
+# ============================================================================
+
+class TestGeminiValidation:
+    """Test validate_gemini_model function."""
+
+    def test_flash_valid(self):
+        from agent_loop import validate_gemini_model
+        assert validate_gemini_model("gemini-3-flash-preview") == "gemini-3-flash-preview"
+
+    def test_flash_reject(self):
+        from agent_loop import validate_gemini_model
+        result = validate_gemini_model("gemini-2-flash", "gemini-3-flash-preview")
+        assert result == "gemini-3-flash-preview"  # fallback to default
+
+    def test_pro_valid(self):
+        from agent_loop import validate_gemini_model
+        assert validate_gemini_model("gemini-2.5-pro-preview") == "gemini-2.5-pro-preview"
+
+    def test_pro_reject(self):
+        from agent_loop import validate_gemini_model
+        result = validate_gemini_model("gemini-2-pro", "gemini-3-flash-preview")
+        assert result == "gemini-3-flash-preview"
+
+    def test_unknown_passthrough(self):
+        from agent_loop import validate_gemini_model
+        assert validate_gemini_model("some-other-model") == "some-other-model"
+
+
+# ============================================================================
+# TestMCPClient — Phase 20 MCP support
+# ============================================================================
+
+class TestMCPClient:
+    """Test MCPClient and MCPManager import and structure."""
+
+    def test_mcp_client_importable(self):
+        from mcp_client import MCPClient
+        assert MCPClient is not None
+
+    def test_mcp_manager_importable(self):
+        from mcp_client import MCPManager
+        assert MCPManager is not None
+
+    def test_mcp_manager_empty(self):
+        from mcp_client import MCPManager
+        mgr = MCPManager()
+        assert mgr.list_tools() == []
+
+    def test_mcp_client_init(self):
+        from mcp_client import MCPClient
+        client = MCPClient("test", ["echo", "hello"])
+        assert client.name == "test"
+        assert client.command == ["echo", "hello"]
