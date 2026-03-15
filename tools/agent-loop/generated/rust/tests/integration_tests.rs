@@ -1285,3 +1285,71 @@ Content-Length: {}
     assert!(result.is_err(), "Single call to 429 should fail");
     assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
 }
+
+// ============================================================================
+// Phase 18: Streaming wiring, plugin async, WASM Makefile
+// ============================================================================
+
+#[test]
+fn test_main_rs_has_streaming_wiring() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("send_streaming_async"), "main.rs should call send_streaming_async");
+    assert!(main_src.contains("state.stream"), "main.rs should check state.stream");
+    assert!(main_src.contains("stdout().flush()"), "Streaming should flush stdout per token");
+}
+
+#[test]
+fn test_plugin_manager_has_execute_async() {
+    let pm_src = include_str!("../src/plugin_manager.rs");
+    assert!(pm_src.contains("async fn execute_async"), "PluginManager should have execute_async");
+    assert!(pm_src.contains("tokio::process::Command"), "Async plugin should use tokio::process");
+}
+
+#[test]
+fn test_tool_handler_has_execute_async() {
+    let th_src = include_str!("../src/tool_handler.rs");
+    assert!(th_src.contains("async fn execute_async"), "ToolHandler should have execute_async");
+    assert!(th_src.contains("execute_async"), "Should reference plugin async execution");
+}
+
+#[test]
+fn test_makefile_has_wasm_targets() {
+    let makefile = include_str!("../Makefile");
+    assert!(makefile.contains("wasm:"), "Makefile should have wasm target");
+    assert!(makefile.contains("wasm-pack:"), "Makefile should have wasm-pack target");
+    assert!(makefile.contains("wasm32-unknown-unknown"), "wasm target should use wasm32 target triple");
+    assert!(makefile.contains("--features wasm"), "wasm target should enable wasm feature");
+}
+
+#[tokio::test]
+async fn test_plugin_execute_async_echo() {
+    use agent_loop::plugin_manager::PluginManager;
+    use std::collections::HashMap;
+
+    let mut pm = PluginManager::new();
+    // Create a test plugin manifest
+    let manifest_json = serde_json::json!({
+        "name": "test-plugin",
+        "version": "1.0",
+        "tools": [{
+            "name": "echo_test",
+            "description": "Echo test",
+            "command_template": "echo hello_plugin",
+            "parameters": []
+        }]
+    });
+    let dir = std::env::temp_dir().join(format!("uwsal_plugin_async_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest_path = dir.join("test.json");
+    std::fs::write(&manifest_path, manifest_json.to_string()).unwrap();
+    pm.load_file(&manifest_path);
+
+    let args = HashMap::new();
+    let result = pm.execute_async("echo_test", &args).await;
+    assert!(result.is_some(), "Plugin should execute");
+    let (success, output) = result.unwrap();
+    assert!(success, "Plugin should succeed");
+    assert!(output.contains("hello_plugin"), "Output should contain echo text");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

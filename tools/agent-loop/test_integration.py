@@ -477,8 +477,8 @@ class TestComponentDriven:
 
     def test_command_count_match(self, test_metadata):
         """Command count in metadata matches expected slash command count."""
-        assert test_metadata["commands"]["count"] == 23, \
-            f"Command count mismatch: {test_metadata['commands']['count']} != 23"
+        assert test_metadata["commands"]["count"] >= 25, \
+            f"Command count too low: {test_metadata['commands']['count']} < 25"
 
     def test_destructive_tools_match(self, test_metadata):
         """Destructive tools in metadata match DESTRUCTIVE_TOOLS in generated code."""

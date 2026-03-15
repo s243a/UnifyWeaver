@@ -1519,7 +1519,7 @@ write_lines(S, [Line|Rest]) :-
 %% Declarative import specs per generator file.
 %% Spec types: bare(Module) | from(Module, [Names])
 generator_import_specs(tools, [
-    bare(os), bare(re), bare(subprocess),
+    bare(json), bare(os), bare(re), bare(subprocess),
     from(dataclasses, [dataclass, field]),
     from(pathlib, ['Path']),
     from('backends.base', ['ToolCall']),

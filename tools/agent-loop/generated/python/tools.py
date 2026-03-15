@@ -1,5 +1,6 @@
 """Tool handler for executing agent tool calls."""
 
+import json
 import os
 import re
 import subprocess

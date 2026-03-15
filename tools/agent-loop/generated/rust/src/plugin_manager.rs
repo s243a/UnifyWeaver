@@ -142,6 +142,31 @@ impl PluginManager {
         self.plugins.iter().collect()
     }
 
+    /// Execute a plugin tool asynchronously using tokio::process::Command.
+    /// Returns (success, output) tuple.
+    pub async fn execute_async(&self, name: &str, args: &HashMap<String, serde_json::Value>) -> Option<(bool, String)> {
+        let cmd_str = self.execute(name, args)?;
+        match tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd_str)
+            .output()
+            .await
+        {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let combined = if stderr.is_empty() {
+                    stdout.to_string()
+                } else {
+                    format!("{}
+{}", stdout, stderr)
+                };
+                Some((output.status.success(), combined))
+            }
+            Err(e) => Some((false, format!("Plugin execution error: {}", e))),
+        }
+    }
+
     /// Get tool schemas for API tool_use format (OpenAI-compatible).
     pub fn get_tool_schemas(&self) -> Vec<serde_json::Value> {
         self.list_tools().iter().map(|tool| {
