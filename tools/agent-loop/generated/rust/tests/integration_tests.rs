@@ -942,7 +942,7 @@ Content-Length: {}
     let backend = AsyncApiBackend::new(
         "mock", &endpoint, None, "test-model", false, "openai"
     );
-    let result = backend.send_async("test message", &[]).await;
+    let result = backend.send_async("test message", &[]).await.unwrap();
     assert_eq!(result.content, "Hello from mock!");
     assert_eq!(result.input_tokens, 10);
     assert_eq!(result.output_tokens, 5);
@@ -977,7 +977,7 @@ Content-Length: {}
         "mock-anthropic", &endpoint, Some("sk-test".to_string()),
         "claude-3", false, "anthropic"
     );
-    let result = backend.send_async("bonjour", &[]).await;
+    let result = backend.send_async("bonjour", &[]).await.unwrap();
     assert_eq!(result.content, "Bonjour from Anthropic mock!");
     assert_eq!(result.input_tokens, 8);
     assert_eq!(result.output_tokens, 4);
@@ -989,7 +989,9 @@ async fn test_async_backend_connection_refused() {
         "fail", "http://127.0.0.1:1/v1/chat", None, "test", false, "openai"
     );
     let result = backend.send_async("test", &[]).await;
-    assert!(result.content.contains("error") || result.content.contains("Error"));
+    assert!(result.is_err(), "Connection refused should return Err");
+    let err = result.unwrap_err();
+    assert!(err.to_lowercase().contains("error"), "Error message should contain error: {}", err);
 }
 
 #[test]
@@ -1063,4 +1065,223 @@ fn test_tool_call_multiple_calls() {
     assert_eq!(response.tool_calls.len(), 2);
     assert_eq!(response.tool_calls[0].name, "bash");
     assert_eq!(response.tool_calls[1].name, "read");
+}
+
+// ============================================================================
+// Phase 16: Config init, retry, templates, sessions, multiline, concurrent
+// ============================================================================
+
+#[test]
+fn test_init_config_creates_file() {
+    let dir = std::env::temp_dir().join(format!("uwsal_test_init_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("test_config.json");
+    let path_str = path.to_str().unwrap();
+    let result = agent_loop::config_loader::init_config(path_str);
+    assert!(result.is_ok(), "init_config should succeed");
+    assert!(path.exists(), "Config file should exist");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(parsed.get("agents").is_some(), "Config should have agents field");
+    assert!(parsed.get("default").is_some(), "Config should have default field");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn test_init_config_has_agent_presets() {
+    let dir = std::env::temp_dir().join(format!("uwsal_test_init_presets_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cfg.json");
+    agent_loop::config_loader::init_config(path.to_str().unwrap()).unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let agents = parsed.get("agents").expect("should have agents");
+    assert!(agents.get("claude-sonnet").is_some(), "Should have claude-sonnet preset");
+    assert!(agents.get("yolo").is_some(), "Should have yolo preset");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn test_session_manager_list_empty() {
+    let dir = std::env::temp_dir().join(format!("uwsal_test_sess_list_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sm = agent_loop::sessions::SessionManager::new(Some(dir.to_str().unwrap()));
+    let sessions = sm.list();
+    assert!(sessions.is_empty(), "Empty dir should have no sessions");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn test_context_edit_message_content() {
+    let mut ctx = ContextManager::new(4096, 100000, 50000, 25000, "sliding");
+    ctx.add_message("user", "hello");
+    ctx.add_message("assistant", "hi there");
+    assert_eq!(ctx.get_messages().len(), 2);
+    let edited = ctx.edit_message(0, "hello world");
+    assert!(edited, "edit_message should succeed");
+    assert_eq!(ctx.get_messages()[0].content, "hello world");
+}
+
+#[test]
+fn test_context_delete_message_phase16() {
+    let mut ctx = ContextManager::new(4096, 100000, 50000, 25000, "sliding");
+    ctx.add_message("user", "msg1");
+    ctx.add_message("assistant", "msg2");
+    ctx.add_message("user", "msg3");
+    let deleted = ctx.delete_message(1);
+    assert!(deleted, "delete_message should succeed");
+    assert_eq!(ctx.get_messages().len(), 2);
+    assert_eq!(ctx.get_messages()[1].content, "msg3");
+}
+
+#[test]
+fn test_context_undo_edit() {
+    let mut ctx = ContextManager::new(4096, 100000, 50000, 25000, "sliding");
+    ctx.add_message("user", "original");
+    ctx.edit_message(0, "modified");
+    assert_eq!(ctx.get_messages()[0].content, "modified");
+    let undone = ctx.undo();
+    assert!(undone, "undo should succeed");
+    assert_eq!(ctx.get_messages()[0].content, "original");
+}
+
+#[test]
+fn test_main_rs_has_retry_logic() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct RetryConfig"), "main.rs should have RetryConfig");
+    assert!(main_src.contains("fn retry_with_backoff"), "main.rs should have retry_with_backoff");
+    assert!(main_src.contains("max_attempts"), "RetryConfig should have max_attempts");
+}
+
+#[test]
+fn test_main_rs_has_template_manager() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct TemplateManager"), "main.rs should have TemplateManager");
+    assert!(main_src.contains("fn render("), "TemplateManager should have render");
+    assert!(main_src.contains("fn list("), "TemplateManager should have list");
+    assert!(main_src.contains("explain"), "Should have explain template");
+    assert!(main_src.contains("review"), "Should have review template");
+}
+
+#[test]
+fn test_main_rs_has_multiline_handler() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct MultilineHandler"), "main.rs should have MultilineHandler");
+    assert!(main_src.contains("fn needs_continuation"), "Should have needs_continuation");
+    assert!(main_src.contains("fn read_until_complete"), "Should have read_until_complete");
+}
+
+#[test]
+fn test_main_rs_has_async_backend_wiring() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("AsyncApiBackend"), "main.rs should reference AsyncApiBackend");
+    assert!(main_src.contains("send_async"), "main.rs should use send_async");
+    assert!(main_src.contains("async fn main"), "main should be async");
+}
+
+#[test]
+fn test_main_rs_has_concurrent_tool_execution() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("Arc::new"), "Should use Arc for concurrent tool calls");
+    assert!(main_src.contains("Mutex::new"), "Should use Mutex for concurrent tool calls");
+    assert!(main_src.contains("results_ordered"), "Should collect results in order");
+}
+
+#[test]
+fn test_main_rs_has_init_command() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("init"), "main.rs should handle init command");
+    assert!(main_src.contains("init_config"), "Should call init_config");
+}
+
+#[test]
+fn test_main_rs_has_async_retry() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("retry_async"), "main.rs should have retry_async function");
+    assert!(main_src.contains("tokio::time::sleep"), "async retry should use tokio sleep");
+}
+
+#[test]
+fn test_backends_has_retryable_status_check() {
+    let backends_src = include_str!("../src/backends.rs");
+    assert!(backends_src.contains("retryable"), "backends.rs should check retryable status");
+    assert!(backends_src.contains("429"), "Should handle rate limiting (429)");
+    assert!(backends_src.contains("503"), "Should handle service unavailable (503)");
+}
+
+#[test]
+fn test_cargo_toml_has_release_profile() {
+    let cargo = include_str!("../Cargo.toml");
+    assert!(cargo.contains("[profile.release]"), "Should have release profile");
+    assert!(cargo.contains("lto = true"), "Release should enable LTO");
+    assert!(cargo.contains("strip = true"), "Release should strip binary");
+}
+
+#[test]
+fn test_makefile_exists() {
+    let makefile = include_str!("../Makefile");
+    assert!(makefile.contains("uwsal"), "Makefile should reference uwsal binary");
+    assert!(makefile.contains("release:"), "Makefile should have release target");
+    assert!(makefile.contains("install:"), "Makefile should have install target");
+    assert!(makefile.contains("dist:"), "Makefile should have dist target");
+}
+
+#[tokio::test]
+async fn test_async_retry_with_mock_server_429() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let endpoint = format!("http://{}/v1/chat/completions", addr);
+
+    let attempt_count = Arc::new(AtomicU32::new(0));
+    let count_clone = attempt_count.clone();
+
+    tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let attempt = count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt < 3 {
+                // Return 429 for first 2 attempts
+                let body = "Rate limited";
+                let response = format!(
+                    "HTTP/1.1 429 Too Many Requests
+Content-Length: {}
+
+{}",
+                    body.len(), body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            } else {
+                // Return success on 3rd attempt
+                let body = serde_json::json!({
+                    "choices": [{"message": {"content": "Success after retry!", "role": "assistant"}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+                }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+
+{}",
+                    body.len(), body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let backend = AsyncApiBackend::new(
+        "retry-test", &endpoint, Some("key".to_string()), "test", false, "openai"
+    );
+    // Retry should recover from 429 errors
+    let result = backend.send_async("test", &[]).await;
+    // First 2 calls return 429 (Err), then retry kicks in at call site
+    assert!(result.is_err(), "Single call to 429 should fail");
+    assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
 }

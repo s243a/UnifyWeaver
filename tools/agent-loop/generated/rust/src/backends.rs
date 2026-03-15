@@ -492,8 +492,8 @@ impl AsyncApiBackend {
         }
     }
 
-    /// Send a non-streaming async request.
-    pub async fn send_async(&self, message: &str, context: &[Message]) -> AgentResponse {
+    /// Send a non-streaming async request. Returns Err for retryable failures.
+    pub async fn send_async(&self, message: &str, context: &[Message]) -> Result<AgentResponse, String> {
         let client = reqwest::Client::new();
         let body = self.inner.build_request_body(message, context);
 
@@ -503,20 +503,26 @@ impl AsyncApiBackend {
 
         match req.json(&body).send().await {
             Ok(resp) => {
+                let status = resp.status().as_u16();
+                if matches!(status, 408 | 429 | 500 | 502 | 503 | 504) {
+                    return Err(format!("HTTP {} (retryable)", status));
+                }
                 match resp.json::<serde_json::Value>().await {
-                    Ok(json) => self.inner.parse_response(json),
-                    Err(e) => AgentResponse {
-                        content: format!("JSON parse error: {}", e),
-                        model: self.inner.model.clone(),
-                        ..Default::default()
-                    },
+                    Ok(json) => Ok(self.inner.parse_response(json)),
+                    Err(e) => Err(format!("JSON parse error: {}", e)),
                 }
             }
-            Err(e) => AgentResponse {
-                content: format!("HTTP error: {}", e),
-                model: self.inner.model.clone(),
-                ..Default::default()
-            },
+            Err(e) => {
+                if e.is_connect() || e.is_timeout() {
+                    Err(format!("Connection error (retryable): {}", e))
+                } else {
+                    Ok(AgentResponse {
+                        content: format!("HTTP error: {}", e),
+                        model: self.inner.model.clone(),
+                        ..Default::default()
+                    })
+                }
+            }
         }
     }
 
@@ -611,7 +617,7 @@ impl AsyncAgentBackend for AsyncApiBackend {
         let msg = message.to_string();
         let ctx = context.to_vec();
         Box::pin(async move {
-            self.send_async(&msg, &ctx).await
+            self.send_async(&msg, &ctx).await.unwrap_or_default()
         })
     }
 

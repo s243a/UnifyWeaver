@@ -106,7 +106,7 @@ test_commands_module :-
     format("~ncommands.pl:~n"),
     findall(N, commands:slash_command(N, _, _, _), Cmds),
     length(Cmds, CmdCount),
-    pl_assert_eq('slash_command count', CmdCount, 24),
+    pl_assert_eq('slash_command count', CmdCount, 25),
     findall(A, commands:command_alias(A, _), Aliases),
     length(Aliases, ACount),
     pl_assert_eq('command_alias count', ACount, 30),

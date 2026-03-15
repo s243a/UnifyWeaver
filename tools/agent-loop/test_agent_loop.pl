@@ -262,6 +262,15 @@ run_tests :-
     test_rust_async_backend,
     test_rust_e2e_integration_tests,
     test_prolog_data_driven_dispatch,
+    %% Phase 16 — async wiring, concurrent tools, /init, Python async backend, expanded tests
+    test_rust_phase16_async_wiring,
+    test_rust_phase16_init_command,
+    test_rust_phase16_concurrent_tools,
+    test_python_async_backend,
+    test_rust_phase16_cargo_tests,
+    %% Phase 17 — async retry, retryable status, release profile, Makefile, packaging
+    test_rust_phase17_async_retry,
+    test_rust_phase17_packaging,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -317,7 +326,7 @@ test_component_registration :-
     length(Commands, NC),
     length(Backends, NB),
     assert_eq('Tool count', NT, 4),
-    assert_eq('Command count', NC, 24),
+    assert_eq('Command count', NC, 25),
     assert_eq('Backend count', NB, 8).
 
 %% ============================================================================
@@ -1247,7 +1256,7 @@ test_emit_command_optimization_hints :-
             current_output(S2),
             agent_loop_components:emit_command_facts(S2, [target(prolog)])
         )),
-        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (24 clauses)')
+        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (25 clauses)')
     )),
     assert_true('emit_command_facts includes command_alias clause count', (
         with_output_to(atom(Output3), (
@@ -4997,4 +5006,192 @@ test_prolog_data_driven_dispatch :-
     )),
     assert_true('handle_slash_command uses command_action', (
         sub_string(CmdContent, _, _, _, "command_action")
+    )).
+
+%% ============================================================================
+%% Phase 16 — Async wiring, concurrent tools, /init, Python async backend
+%% ============================================================================
+
+test_rust_phase16_async_wiring :-
+    format("~nRust Phase 16 async wiring:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs has AsyncApiBackend usage', (
+        sub_string(MainContent, _, _, _, "AsyncApiBackend")
+    )),
+    assert_true('main.rs has send_async call', (
+        sub_string(MainContent, _, _, _, "send_async")
+    )),
+    assert_true('main.rs has async fn main', (
+        sub_string(MainContent, _, _, _, "async fn main")
+    )),
+    assert_true('main.rs has tokio::main attribute', (
+        sub_string(MainContent, _, _, _, "tokio::main")
+    )).
+
+test_rust_phase16_init_command :-
+    format("~nRust Phase 16 /init command:~n"),
+    %% Verify slash_command fact exists
+    assert_true('slash_command init exists', (
+        agent_loop_module:slash_command(init, _, _, _)
+    )),
+    %% Verify rust_command_body exists
+    assert_true('rust_command_body init exists', (
+        agent_loop_module:rust_command_body(init, _)
+    )),
+    %% Verify py_command_body exists
+    assert_true('py_command_body init exists', (
+        agent_loop_module:py_command_body(init, _)
+    )),
+    %% Verify prolog_command_action exists
+    assert_true('prolog_command_action init exists', (
+        agent_loop_module:prolog_command_action(init, init)
+    )),
+    %% Verify generated main.rs has init_config
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs has init_config call', (
+        sub_string(MainContent, _, _, _, "init_config")
+    )).
+
+test_rust_phase16_concurrent_tools :-
+    format("~nRust Phase 16 concurrent tools:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs has Arc for concurrent tools', (
+        sub_string(MainContent, _, _, _, "Arc::new")
+    )),
+    assert_true('main.rs has Mutex for concurrent tools', (
+        sub_string(MainContent, _, _, _, "Mutex::new")
+    )),
+    assert_true('main.rs has results_ordered collection', (
+        sub_string(MainContent, _, _, _, "results_ordered")
+    )),
+    assert_true('main.rs splits single vs multiple tool calls', (
+        sub_string(MainContent, _, _, _, "tool_calls.len() == 1")
+    )).
+
+test_python_async_backend :-
+    format("~nPython async backend:~n"),
+    %% Verify py_fragment exists
+    assert_true('py_fragment async_backend_module exists', (
+        agent_loop_module:py_fragment(async_backend_module, _)
+    )),
+    %% Verify generated file exists
+    agent_loop_module:output_path(python, 'async_backend.py', AsyncPath),
+    assert_true('async_backend.py file exists', (
+        exists_file(AsyncPath)
+    )),
+    read_file_to_string(AsyncPath, AsyncContent, []),
+    assert_true('async_backend.py has AsyncAgentBackend class', (
+        sub_string(AsyncContent, _, _, _, "class AsyncAgentBackend")
+    )),
+    assert_true('async_backend.py has send_async method', (
+        sub_string(AsyncContent, _, _, _, "async def send_async")
+    )),
+    assert_true('async_backend.py has send_streaming_async method', (
+        sub_string(AsyncContent, _, _, _, "async def send_streaming_async")
+    )),
+    assert_true('async_backend.py has aiohttp import', (
+        sub_string(AsyncContent, _, _, _, "import aiohttp")
+    )),
+    assert_true('async_backend.py supports both API formats', (
+        sub_string(AsyncContent, _, _, _, "anthropic")
+    )).
+
+test_rust_phase16_cargo_tests :-
+    format("~nRust Phase 16 cargo tests:~n"),
+    agent_loop_module:output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../tests/integration_tests.rs', TestPath),
+    read_file_to_string(TestPath, TestContent, []),
+    assert_true('integration tests has init_config test', (
+        sub_string(TestContent, _, _, _, "test_init_config_creates_file")
+    )),
+    assert_true('integration tests has context edit test', (
+        sub_string(TestContent, _, _, _, "test_context_edit_message_content")
+    )),
+    assert_true('integration tests has context undo test', (
+        sub_string(TestContent, _, _, _, "test_context_undo_edit")
+    )),
+    assert_true('integration tests has async wiring test', (
+        sub_string(TestContent, _, _, _, "test_main_rs_has_async_backend_wiring")
+    )),
+    assert_true('integration tests has concurrent tools test', (
+        sub_string(TestContent, _, _, _, "test_main_rs_has_concurrent_tool_execution")
+    )),
+    assert_true('integration tests has session list test', (
+        sub_string(TestContent, _, _, _, "test_session_manager_list_empty")
+    )),
+    %% Count total tests
+    findall(_, sub_string(TestContent, _, _, _, "#[test]"), TestMarkers),
+    length(TestMarkers, TestCount),
+    assert_true('integration test count >= 89', (
+        TestCount >= 89
+    )).
+
+%% ============================================================================
+%% Phase 17 — Async retry, retryable status, release profile, Makefile
+%% ============================================================================
+
+test_rust_phase17_async_retry :-
+    format("~nRust Phase 17 async retry:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs has retry_async function', (
+        sub_string(MainContent, _, _, _, "async fn retry_async")
+    )),
+    assert_true('main.rs uses tokio::time::sleep', (
+        sub_string(MainContent, _, _, _, "tokio::time::sleep")
+    )),
+    assert_true('main.rs wraps async send with retry', (
+        sub_string(MainContent, _, _, _, "retry_async(&retry_config")
+    )),
+    %% Check backends.rs has retryable status check
+    agent_loop_module:output_path(rust, 'backends.rs', BackPath),
+    read_file_to_string(BackPath, BackContent, []),
+    assert_true('backends.rs has retryable HTTP status check', (
+        sub_string(BackContent, _, _, _, "retryable")
+    )),
+    assert_true('backends.rs checks 429 rate limit', (
+        sub_string(BackContent, _, _, _, "429")
+    )),
+    assert_true('send_async returns Result', (
+        sub_string(BackContent, _, _, _, "Result<AgentResponse, String>")
+    )).
+
+test_rust_phase17_packaging :-
+    format("~nRust Phase 17 packaging:~n"),
+    %% Check Cargo.toml has release profile
+    agent_loop_module:target_dir(rust, SrcDir),
+    atom_concat(SrcDir, '../Cargo.toml', CargoPath),
+    read_file_to_string(CargoPath, CargoContent, []),
+    assert_true('Cargo.toml has release profile', (
+        sub_string(CargoContent, _, _, _, "[profile.release]")
+    )),
+    assert_true('release profile has LTO', (
+        sub_string(CargoContent, _, _, _, "lto = true")
+    )),
+    assert_true('release profile has strip', (
+        sub_string(CargoContent, _, _, _, "strip = true")
+    )),
+    assert_true('release profile has opt-level 3', (
+        sub_string(CargoContent, _, _, _, "opt-level = 3")
+    )),
+    %% Check Makefile exists
+    atom_concat(SrcDir, '../Makefile', MakePath),
+    assert_true('Makefile exists', (
+        exists_file(MakePath)
+    )),
+    read_file_to_string(MakePath, MakeContent, []),
+    assert_true('Makefile has release target', (
+        sub_string(MakeContent, _, _, _, "release:")
+    )),
+    assert_true('Makefile has install target', (
+        sub_string(MakeContent, _, _, _, "install:")
+    )),
+    assert_true('Makefile has dist target', (
+        sub_string(MakeContent, _, _, _, "dist:")
+    )),
+    assert_true('Makefile references uwsal', (
+        sub_string(MakeContent, _, _, _, "uwsal")
     )).
