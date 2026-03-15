@@ -38,3 +38,38 @@ DESTRUCTIVE_TOOLS = {
     "write",
     "edit",
 }
+
+
+
+_TOOL_SCHEMAS_CACHE = None
+
+def get_tool_schemas() -> list[dict]:
+    """Return cached tool schemas in JSON Schema format for API backends."""
+    global _TOOL_SCHEMAS_CACHE
+    if _TOOL_SCHEMAS_CACHE is not None:
+        return _TOOL_SCHEMAS_CACHE
+    schemas = []
+    for name, spec in TOOL_SPECS.items():
+        props = {}
+        required = []
+        for p in spec.get("parameters", []):
+            props[p["name"]] = {"type": p.get("param_type", "string")}
+            if p.get("description"):
+                props[p["name"]]["description"] = p["description"]
+            if p.get("required", False):
+                required.append(p["name"])
+        schema = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": spec.get("description", ""),
+                "parameters": {
+                    "type": "object",
+                    "properties": props,
+                    "required": required
+                }
+            }
+        }
+        schemas.append(schema)
+    _TOOL_SCHEMAS_CACHE = schemas
+    return schemas

@@ -249,15 +249,19 @@ class AgentLoop:
 
         if cmd == 'reload':
             try:
-                from config import read_config_cascade
-                new_cfg = read_config_cascade()
+                from config import load_config, get_default_config
+                fresh = load_config()
+                if fresh is None:
+                    fresh = get_default_config().agents.get(self.config.name, get_default_config().agents["default"])
                 changes = []
-                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile"]:
+                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile", "stream", "max_iterations"]:
                     old_val = getattr(self.config, key, None)
-                    new_val = getattr(new_cfg, key, None)
+                    new_val = getattr(fresh, key, None)
                     if old_val != new_val:
                         setattr(self.config, key, new_val)
                         changes.append(f"{key}: {old_val} -> {new_val}")
+                if hasattr(self, "tool_handler") and hasattr(self.tool_handler, "cache"):
+                    self.tool_handler.cache.clear()
                 if changes:
                     for c in changes: print(f"  Reloaded: {c}")
                 else:
@@ -917,6 +921,37 @@ _CLI_FALLBACKS = {
 }
 
 
+
+import re as _re
+
+def extract_gemini_version(model: str) -> float | None:
+    """Extract numeric version from gemini model name (e.g. "gemini-3-flash-preview" -> 3.0)."""
+    for part in model.split("-"):
+        try:
+            return float(part)
+        except ValueError:
+            pass
+    return None
+
+def validate_gemini_model(model: str, default: str = "gemini-3-flash-preview") -> str:
+    """Validate gemini model version. Flash >= 3.0, Pro >= 2.5."""
+    if "flash" in model:
+        ver = extract_gemini_version(model)
+        if ver is not None and ver >= 3.0:
+            return model
+        import sys
+        print(f"Warning: gemini flash requires version >= 3, using {default}", file=sys.stderr)
+        return default
+    if "pro" in model:
+        ver = extract_gemini_version(model)
+        if ver is not None and ver >= 2.5:
+            return model
+        import sys
+        print(f"Warning: gemini pro requires version >= 2.5, using {default}", file=sys.stderr)
+        return default
+    return model
+
+
 def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
                                sandbox: bool = False, approval_mode: str = "yolo",
                                allowed_tools: list[str] | None = None,
@@ -950,9 +985,10 @@ def create_backend_from_config(agent_config: AgentConfig, config_dir: str = "",
         from backends import GeminiBackend
         cmd = _resolve_command('gemini', agent_config.command, 'gemini',
                                _CLI_FALLBACKS['gemini'], no_fallback)
+        _validated_model = validate_gemini_model(agent_config.model or 'gemini-3-flash-preview', 'gemini-3-flash-preview')
         return GeminiBackend(
             command=cmd,
-            model=agent_config.model or 'gemini-3-flash-preview',
+            model=_validated_model,
             sandbox=sandbox,
             approval_mode=approval_mode,
             allowed_tools=allowed_tools or []

@@ -102,6 +102,10 @@ pub struct AgentConfig {
     pub approval_mode: String,
     /// Paste detection mode: auto, bracketed, timing, off
     pub paste_mode: String,
+    /// Tool result cache TTL in seconds (0 = disabled)
+    pub tool_cache_ttl: i64,
+    /// MCP server configs: [{name, command, args, env}]
+    pub mcp_servers: Vec<serde_json::Value>,
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
@@ -132,6 +136,8 @@ impl Default for AgentConfig {
             security_profile: "cautious".to_string(),
             approval_mode: "yolo".to_string(),
             paste_mode: "auto".to_string(),
+            tool_cache_ttl: 60,
+            mcp_servers: Vec::new(),
             extra: std::collections::HashMap::new(),
         }
     }

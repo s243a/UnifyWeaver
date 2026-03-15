@@ -1353,3 +1353,99 @@ async fn test_plugin_execute_async_echo() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ============================================================================
+// Phase 20: Output parser, tool result cache, MCP client
+// ============================================================================
+
+#[test]
+fn test_output_parser_extract_fenced_json() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "Here is the result:
+```json
+{}
+```
+Done.";
+    let blocks = OutputParser::extract_json(text);
+    // Fenced block with empty JSON object
+    assert!(blocks.len() >= 1);
+}
+
+#[test]
+fn test_output_parser_no_json() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "No JSON here, just plain text.";
+    let blocks = OutputParser::extract_json(text);
+    assert_eq!(blocks.len(), 0);
+}
+
+#[test]
+fn test_output_parser_extract_bare_json_simple() {
+    use agent_loop::output_parser::OutputParser;
+    let text = r#"The answer is {"result": true} end."#;
+    let blocks = OutputParser::extract_json(text);
+    assert_eq!(blocks.len(), 1);
+}
+
+#[test]
+fn test_output_parser_key_validation() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "```json
+{}
+```";
+    let parsed = OutputParser::parse_response(text, Some(&["name"]));
+    assert_eq!(parsed.json_blocks.len(), 1);
+    assert!(!parsed.errors.is_empty(), "Should report missing key");
+}
+
+#[test]
+fn test_output_parser_key_validation_pass() {
+    use agent_loop::output_parser::OutputParser;
+    let text = r#"```json
+{"name": "test", "age": 25}
+```"#;
+    let parsed = OutputParser::parse_response(text, Some(&["name", "age"]));
+    assert_eq!(parsed.json_blocks.len(), 1);
+    assert!(parsed.errors.is_empty(), "All keys present, no errors");
+}
+
+#[test]
+fn test_tool_result_cache_in_tool_handler() {
+    let th_src = include_str!("../src/tool_handler.rs");
+    assert!(th_src.contains("ToolResultCache"), "tool_handler.rs should have ToolResultCache");
+}
+
+#[test]
+fn test_output_parser_module_exists() {
+    let op_src = include_str!("../src/output_parser.rs");
+    assert!(op_src.contains("OutputParser"), "output_parser.rs should have OutputParser struct");
+    assert!(op_src.contains("extract_json"), "Should have extract_json method");
+    assert!(op_src.contains("parse_response"), "Should have parse_response method");
+    assert!(op_src.contains("ParsedOutput"), "Should have ParsedOutput struct");
+}
+
+#[test]
+fn test_mcp_client_module_exists() {
+    let mcp_src = include_str!("../src/mcp_client.rs");
+    assert!(mcp_src.contains("McpClient"), "mcp_client.rs should have McpClient struct");
+    assert!(mcp_src.contains("McpManager"), "Should have McpManager struct");
+    assert!(mcp_src.contains("McpServerConfig"), "Should have McpServerConfig struct");
+    assert!(mcp_src.contains("discover_tools"), "Should have discover_tools method");
+    assert!(mcp_src.contains("call_tool"), "Should have call_tool method");
+    assert!(mcp_src.contains("tools/list"), "Should use tools/list JSON-RPC method");
+    assert!(mcp_src.contains("tools/call"), "Should use tools/call JSON-RPC method");
+}
+
+#[test]
+fn test_lib_rs_has_phase20_modules() {
+    let lib_src = include_str!("../src/lib.rs");
+    assert!(lib_src.contains("pub mod output_parser"), "lib.rs should export output_parser");
+    assert!(lib_src.contains("pub mod mcp_client"), "lib.rs should export mcp_client");
+}
+
+#[test]
+fn test_types_has_phase20_config_fields() {
+    let types_src = include_str!("../src/types.rs");
+    assert!(types_src.contains("tool_cache_ttl"), "AgentConfig should have tool_cache_ttl");
+    assert!(types_src.contains("mcp_servers"), "AgentConfig should have mcp_servers");
+}

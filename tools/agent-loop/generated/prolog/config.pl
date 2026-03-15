@@ -107,6 +107,8 @@ agent_config_field(stream, bool, 'False', "Enable streaming output for API backe
 agent_config_field(security_profile, str, '"cautious"', "Security profile (open/cautious/guarded/paranoid)").
 agent_config_field(approval_mode, str, '"yolo"', "Tool approval mode (default/auto_edit/yolo/plan)").
 agent_config_field(paste_mode, str, '"auto"', "Paste detection mode: auto, bracketed, timing, off").
+agent_config_field(tool_cache_ttl, int, '60', "Tool result cache TTL in seconds (0 = disabled)").
+agent_config_field(mcp_servers, list, 'field(default_factory=list)', "MCP server configs: [{name, command, args, env}]").
 agent_config_field(extra, dict, 'field(default_factory=dict)', "").
 
 %% default_agent_preset(+PresetName, +Backend, +Overrides)
