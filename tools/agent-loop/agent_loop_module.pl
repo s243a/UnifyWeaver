@@ -807,6 +807,9 @@ slash_command(replay, prefix_sp, [handler('_handle_replay_command'),
 slash_command(init, exact_or_prefix_sp, [comment('Generate config file'),
     help_display('/init [path]')],
     'Create example config file (default: uwsal.json)').
+slash_command(reload, exact, [comment('Reload config file'),
+    help_display('/reload')],
+    'Reload config from disk (hot-reload model, backend, system_prompt)').
 
 %% slash_command_group(GroupLabel, CommandNames)
 %% Used for help text layout
@@ -816,6 +819,7 @@ slash_command_group('Sessions', [save, load, sessions, search]).
 slash_command_group('Export & Costs', [export, cost, tokens]).
 slash_command_group('History', [history, delete, edit, replay, undo]).
 slash_command_group('Shortcuts', [aliases, templates]).
+slash_command_group('Config', [init, reload]).
 
 %% slash_command_dispatch_order/1 — the exact order commands appear in _handle_command
 %% This matches the prototype's ordering which differs from help text groups
@@ -827,7 +831,7 @@ slash_command_dispatch_order([
     model, tokens, multiline,
     aliases, templates,
     history, undo,
-    delete, edit, replay, init
+    delete, edit, replay, init, reload
 ]).
 
 %% =============================================================================
@@ -872,6 +876,24 @@ py_command_body(init, [
     '            except Exception as e:',
     '                print(f"Error: {e}")'
 ]).
+py_command_body(reload, [
+    '            try:',
+    '                from config import read_config_cascade',
+    '                new_cfg = read_config_cascade()',
+    '                changes = []',
+    '                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile"]:',
+    '                    old_val = getattr(self.config, key, None)',
+    '                    new_val = getattr(new_cfg, key, None)',
+    '                    if old_val != new_val:',
+    '                        setattr(self.config, key, new_val)',
+    '                        changes.append(f"{key}: {old_val} -> {new_val}")',
+    '                if changes:',
+    '                    for c in changes: print(f"  Reloaded: {c}")',
+    '                else:',
+    '                    print("  Config unchanged.")',
+    '            except Exception as e:',
+    '                print(f"  Reload error: {e}")'
+]).
 
 %% =============================================================================
 %% Prolog command actions — used by data-driven dispatch generator
@@ -885,6 +907,7 @@ prolog_command_action(help, help).
 prolog_command_action(status, status).
 prolog_command_action(multiline, multiline).
 prolog_command_action(init, init).
+prolog_command_action(reload, reload).
 
 %% =============================================================================
 %% Rust command bodies — used by data-driven dispatch generator
@@ -1149,6 +1172,20 @@ rust_command_body(init, [
     '            match init_config(path) {',
     '                Ok(()) => {}',
     '                Err(e) => println!("Error: {}", e),',
+    '            }'
+]).
+rust_command_body(reload, [
+    '            match reload_config(config, state) {',
+    '                Ok(changes) => {',
+    '                    if changes.is_empty() {',
+    '                        println!("  Config unchanged.");',
+    '                    } else {',
+    '                        for change in &changes {',
+    '                            println!("  Reloaded: {}", change);',
+    '                        }',
+    '                    }',
+    '                }',
+    '                Err(e) => println!("  Reload error: {}", e),',
     '            }'
 ]).
 
@@ -2263,7 +2300,7 @@ generate_rust_main :-
     output_path(rust, 'main.rs', Path),
     open(Path, write, S),
     write_rust_header(S, main, 'CLI entry point and agent loop'),
-    write(S, 'use agent_loop::types::{Message, ToolCall, ToolResult};\n'),
+    write(S, 'use agent_loop::types::{Message, ToolCall, ToolResult, AgentConfig};\n'),
     write(S, 'use agent_loop::backends::*;\n'),
     write(S, 'use agent_loop::context::*;\n'),
     write(S, 'use agent_loop::costs::*;\n'),
@@ -2273,6 +2310,9 @@ generate_rust_main :-
     write(S, 'use agent_loop::config_loader::*;\n\n'),
     %% Export conversation helper (module-level, before handle_command and main)
     write_rust(S, export_conversation),
+    nl(S),
+    %% Config hot-reload
+    write_rust(S, config_reload),
     nl(S),
     %% Retry logic with exponential backoff
     write_rust(S, retry_logic),
@@ -2443,6 +2483,7 @@ generate_rust_command_dispatch_with_sessions(S) :-
     write(S, '    session_manager: &SessionManager,\n'),
     write(S, '    backend_name: &str,\n'),
     write(S, '    state: &mut RuntimeState,\n'),
+    write(S, '    config: &mut AgentConfig,\n'),
     write(S, ') -> bool {\n'),
     write(S, '    let parts: Vec<&str> = input.splitn(2, \' \').collect();\n'),
     write(S, '    let cmd = parts[0].trim_start_matches(\'/\');\n'),
@@ -4838,7 +4879,8 @@ impl ContextManager {
         }
     }
 
-    pub fn add_message(&mut self, role: &str, content: &str) {
+    /// Add a message to context. Returns number of old messages trimmed (0 if none).
+    pub fn add_message(&mut self, role: &str, content: &str) -> usize {
         // Fresh mode: clear before each user message
         if self.context_mode == "fresh" && role == "user" {
             self.messages.clear();
@@ -4849,7 +4891,7 @@ impl ContextManager {
             tool_calls: None,
             tool_call_id: None,
         });
-        self.trim_if_needed();
+        self.trim_if_needed()
     }
 
     pub fn add_tool_call_message(&mut self, content: &str, tool_calls: Vec<ToolCall>) {
@@ -4925,7 +4967,9 @@ impl ContextManager {
 
     /// Trim messages to stay within all configured limits.
     /// Uses drain(..k) instead of remove(0) for O(n) performance.
-    pub fn trim_if_needed(&mut self) {
+    /// Trim context if limits are exceeded. Returns number of messages dropped.
+    pub fn trim_if_needed(&mut self) -> usize {
+        let before = self.messages.len();
         // Message count limit (sliding window)
         if self.max_messages > 0 && self.messages.len() > self.max_messages {
             let excess = self.messages.len() - self.max_messages;
@@ -4966,6 +5010,7 @@ impl ContextManager {
             }
             if k > 0 { self.messages.drain(..k); }
         }
+        before - self.messages.len()
     }
 
     /// Save current state for undo (max 10 deep).
@@ -5527,7 +5572,12 @@ impl AsyncApiBackend {
                             }
                         }
                         Err(e) => {
-                            full_content.push_str(&format!("\n[Stream error: {}]", e));
+                            if !full_content.is_empty() {
+                                // Partial response recovered — notify but keep content
+                                full_content.push_str(&format!("\n\n[Stream interrupted: {}. Partial response above.]", e));
+                            } else {
+                                full_content = format!("[Stream error: {}]", e);
+                            }
                             break;
                         }
                     }
@@ -5754,15 +5804,69 @@ impl ToolHandler {
                     return true;
                 }
                 // For other tools, prompt user
-                eprint!("  Allow {} tool? [y/N] ", tool_name);
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_ok() {
-                    input.trim().eq_ignore_ascii_case("y")
-                } else {
-                    false
-                }
+                true // Return true, actual prompt happens in confirm_tool_execution
             }
             _ => true,
+        }
+    }
+
+    /// Interactive confirmation for tool execution with argument preview.
+    /// Returns true if the user approves, false to skip.
+    pub fn confirm_tool_execution(&self, tool_call: &ToolCall) -> bool {
+        // Auto-approve in yolo mode or if auto_approve is set
+        if self.approval_mode == "yolo" || self.auto_approve {
+            return true;
+        }
+        // Read is always safe
+        if tool_call.name == "read" {
+            return true;
+        }
+        // Plan mode blocks all non-read tools
+        if self.approval_mode == "plan" {
+            eprintln!("  [plan mode] Blocked: {}", tool_call.name);
+            return false;
+        }
+        // auto_edit mode: allow read/edit/write without prompt
+        if self.approval_mode == "auto_edit" && matches!(tool_call.name.as_str(), "edit" | "write") {
+            return true;
+        }
+
+        // Show tool details for confirmation
+        let is_destructive = matches!(tool_call.name.as_str(), "bash" | "write" | "edit");
+        let label = if is_destructive { "DESTRUCTIVE" } else { "Tool" };
+        eprintln!("  [{}] {} tool:", label, tool_call.name);
+
+        // Show relevant arguments preview
+        match tool_call.name.as_str() {
+            "bash" => {
+                if let Some(cmd) = tool_call.arguments.get("command").and_then(|v| v.as_str()) {
+                    let preview = if cmd.len() > 120 { &cmd[..120] } else { cmd };
+                    eprintln!("    command: {}", preview);
+                }
+            }
+            "write" | "edit" => {
+                if let Some(path) = tool_call.arguments.get("file_path").and_then(|v| v.as_str()) {
+                    eprintln!("    file: {}", path);
+                }
+            }
+            _ => {
+                // Show first argument key for plugin tools
+                if let Some((key, val)) = tool_call.arguments.iter().next() {
+                    let preview = val.to_string();
+                    let preview = if preview.len() > 80 { &preview[..80] } else { &preview };
+                    eprintln!("    {}: {}", key, preview);
+                }
+            }
+        }
+
+        eprint!("  Execute? [y/N] ");
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            input.trim().eq_ignore_ascii_case("y")
+        } else {
+            false
         }
     }
 }
@@ -7090,6 +7194,48 @@ pub fn init_config(path: &str) -> std::io::Result<()> {
     std::fs::write(path, content)?;
     println!("Created example config: {}", path);
     Ok(())
+}
+').
+
+rust_fragment(config_reload, '
+/// Reload config from disk, returning list of changed fields.
+fn reload_config(config: &mut AgentConfig, state: &mut RuntimeState) -> Result<Vec<String>, String> {
+    let path = find_config_file(None, false).ok_or("No config file found")?;
+    let cf = load_config_file(&path).ok_or(format!("Failed to parse {}", path))?;
+    let fresh = resolve_agent(Some(&config.name), Some(&cf));
+    let mut changes = Vec::new();
+
+    if config.backend != fresh.backend {
+        changes.push(format!("backend: {} -> {}", config.backend, fresh.backend));
+        config.backend = fresh.backend.clone();
+    }
+    if config.model != fresh.model {
+        changes.push(format!("model: {:?} -> {:?}", config.model, fresh.model));
+        config.model = fresh.model.clone();
+    }
+    if config.system_prompt != fresh.system_prompt {
+        changes.push("system_prompt updated".to_string());
+        config.system_prompt = fresh.system_prompt.clone();
+    }
+    if config.approval_mode != fresh.approval_mode {
+        changes.push(format!("approval_mode: {} -> {}", config.approval_mode, fresh.approval_mode));
+        config.approval_mode = fresh.approval_mode.clone();
+    }
+    if config.security_profile != fresh.security_profile {
+        changes.push(format!("security_profile: {} -> {}", config.security_profile, fresh.security_profile));
+        config.security_profile = fresh.security_profile.clone();
+    }
+    if config.stream != fresh.stream {
+        changes.push(format!("stream: {} -> {}", config.stream, fresh.stream));
+        config.stream = fresh.stream;
+        state.stream = fresh.stream;
+    }
+    if config.max_iterations != fresh.max_iterations {
+        changes.push(format!("max_iterations: {} -> {}", config.max_iterations, fresh.max_iterations));
+        config.max_iterations = fresh.max_iterations;
+        state.max_iterations = fresh.max_iterations;
+    }
+    Ok(changes)
 }
 ').
 
@@ -9222,12 +9368,15 @@ rust_fragment(main_loop, '
 
                 // Handle slash commands
                 if input.starts_with(''/'' ) {
-                    let handled = handle_command(input, &mut context, &cost_tracker, &session_manager, backend.name(), &mut state);
+                    let handled = handle_command(input, &mut context, &cost_tracker, &session_manager, backend.name(), &mut state, &mut config);
                     if handled { continue; }
                 }
 
                 // Process message
-                context.add_message("user", input);
+                let trimmed = context.add_message("user", input);
+                if trimmed > 0 {
+                    eprintln!("  [context] Trimmed {} old message(s) to stay within limits", trimmed);
+                }
                 let mut iterations = 0;
 
                 loop {
@@ -9276,9 +9425,13 @@ rust_fragment(main_loop, '
                     if response.tool_calls.len() == 1 {
                         let tc = &response.tool_calls[0];
                         println!("  [tool: {}]", tc.name);
-                        let result = tool_handler.execute(tc);
-                        println!("  {}", if result.success { "OK" } else { "FAIL" });
-                        context.add_tool_result(&tc.id, &result.output);
+                        if !tool_handler.confirm_tool_execution(tc) {
+                            context.add_tool_result(&tc.id, "[Tool execution declined by user]");
+                        } else {
+                            let result = tool_handler.execute(tc);
+                            println!("  {}", if result.success { "OK" } else { "FAIL" });
+                            context.add_tool_result(&tc.id, &result.output);
+                        }
                     } else {
                         // Execute multiple tool calls concurrently via spawn_blocking
                         let tool_calls_owned: Vec<ToolCall> = response.tool_calls.clone();
@@ -9287,6 +9440,17 @@ rust_fragment(main_loop, '
                         // Run sequentially but in spawn_blocking to not block the tokio runtime
                         for tc in &tool_calls_owned {
                             println!("  [tool: {}]", tc.name);
+                            let handler = handler_arc.lock().unwrap();
+                            if !handler.confirm_tool_execution(tc) {
+                                results_ordered.push((tc.id.clone(), tc.name.clone(), ToolResult {
+                                    success: false,
+                                    output: "[Tool execution declined by user]".to_string(),
+                                    tool_name: tc.name.clone(),
+                                }));
+                                drop(handler);
+                                continue;
+                            }
+                            drop(handler);
                             let result = handler_arc.lock().unwrap().execute(tc);
                             println!("  [{}] {}", tc.name, if result.success { "OK" } else { "FAIL" });
                             results_ordered.push((tc.id.clone(), tc.name.clone(), result));

@@ -49,7 +49,8 @@ impl ContextManager {
         }
     }
 
-    pub fn add_message(&mut self, role: &str, content: &str) {
+    /// Add a message to context. Returns number of old messages trimmed (0 if none).
+    pub fn add_message(&mut self, role: &str, content: &str) -> usize {
         // Fresh mode: clear before each user message
         if self.context_mode == "fresh" && role == "user" {
             self.messages.clear();
@@ -60,7 +61,7 @@ impl ContextManager {
             tool_calls: None,
             tool_call_id: None,
         });
-        self.trim_if_needed();
+        self.trim_if_needed()
     }
 
     pub fn add_tool_call_message(&mut self, content: &str, tool_calls: Vec<ToolCall>) {
@@ -136,7 +137,9 @@ impl ContextManager {
 
     /// Trim messages to stay within all configured limits.
     /// Uses drain(..k) instead of remove(0) for O(n) performance.
-    pub fn trim_if_needed(&mut self) {
+    /// Trim context if limits are exceeded. Returns number of messages dropped.
+    pub fn trim_if_needed(&mut self) -> usize {
+        let before = self.messages.len();
         // Message count limit (sliding window)
         if self.max_messages > 0 && self.messages.len() > self.max_messages {
             let excess = self.messages.len() - self.max_messages;
@@ -177,6 +180,7 @@ impl ContextManager {
             }
             if k > 0 { self.messages.drain(..k); }
         }
+        before - self.messages.len()
     }
 
     /// Save current state for undo (max 10 deep).

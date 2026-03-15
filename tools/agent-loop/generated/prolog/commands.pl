@@ -22,7 +22,7 @@
 %%   - command_alias/2: first-argument string hash-indexed, all distinct
 
 %% Indexing hints (SWI-Prolog auto-indexes first argument):
-%%   slash_command/4: first-argument indexed (25 clauses)
+%%   slash_command/4: first-argument indexed (26 clauses)
 %%   command_alias/2: first-argument indexed (30 clauses)
 
 %% slash_command(+Name, +MatchType, +Options, +HelpText)
@@ -51,6 +51,7 @@ slash_command(delete, prefix_sp, [aliases([del]), handler('_handle_delete_comman
 slash_command(edit, prefix_sp, [handler('_handle_edit_command'), comment('Edit message'), help_display('/edit <idx>')], 'Edit message at index').
 slash_command(replay, prefix_sp, [handler('_handle_replay_command'), comment('Replay from message'), help_display('/replay <idx>')], 'Re-send message at index').
 slash_command(init, exact_or_prefix_sp, [comment('Generate config file'), help_display('/init [path]')], 'Create example config file (default: uwsal.json)').
+slash_command(reload, exact, [comment('Reload config file'), help_display('/reload')], 'Reload config from disk (hot-reload model, backend, system_prompt)').
 
 %% command_alias(+Alias, +CanonicalName)
 command_alias("q", "quit").
@@ -91,6 +92,7 @@ slash_command_group('Sessions', [save, load, sessions, search]).
 slash_command_group('Export & Costs', [export, cost, tokens]).
 slash_command_group('History', [history, delete, edit, replay, undo]).
 slash_command_group('Shortcuts', [aliases, templates]).
+slash_command_group('Config', [init, reload]).
 
 %% command_action(+Command, +Action) — data-driven dispatch
 command_action(exit, exit).
@@ -99,6 +101,7 @@ command_action(help, help).
 command_action(status, status).
 command_action(multiline, multiline).
 command_action(init, init).
+command_action(reload, reload).
 
 %% Resolve aliases — may return "command args" for compound aliases
 resolve_command(Input, Command, ExtraArgs) :-

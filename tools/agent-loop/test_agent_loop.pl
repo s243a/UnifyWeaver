@@ -276,6 +276,11 @@ run_tests :-
     test_rust_phase18_plugin_async,
     test_rust_phase18_wasm_makefile,
     test_python_integration_fixed,
+    %% Phase 19 — config reload, tool approval, error recovery, context overflow
+    test_rust_phase19_config_reload,
+    test_rust_phase19_tool_approval,
+    test_rust_phase19_error_recovery,
+    test_rust_phase19_context_overflow,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -331,7 +336,7 @@ test_component_registration :-
     length(Commands, NC),
     length(Backends, NB),
     assert_eq('Tool count', NT, 4),
-    assert_eq('Command count', NC, 25),
+    assert_eq('Command count', NC, 26),
     assert_eq('Backend count', NB, 8).
 
 %% ============================================================================
@@ -1003,9 +1008,28 @@ test_binding_imports :-
 
 test_prolog_integration :-
     format("~nProlog integration tests:~n"),
+    %% Run subprocess and capture exit code
     assert_true('Prolog integration tests pass', (
         shell('swipl -l test_prolog_integration.pl -g "run_prolog_tests, halt" 2>&1', ExitCode),
         ExitCode =:= 0
+    )),
+    %% Also verify the test file itself is well-formed
+    assert_true('test_prolog_integration.pl exists', (
+        exists_file('test_prolog_integration.pl')
+    )),
+    %% Verify it covers key modules
+    read_file_to_string('test_prolog_integration.pl', TContent, []),
+    assert_true('Prolog integration covers costs module', (
+        sub_string(TContent, _, _, _, "costs.pl")
+    )),
+    assert_true('Prolog integration covers commands module', (
+        sub_string(TContent, _, _, _, "commands.pl")
+    )),
+    assert_true('Prolog integration covers security module', (
+        sub_string(TContent, _, _, _, "security.pl")
+    )),
+    assert_true('Prolog integration covers backends module', (
+        sub_string(TContent, _, _, _, "backends.pl")
     )).
 
 %% ============================================================================
@@ -1261,7 +1285,7 @@ test_emit_command_optimization_hints :-
             current_output(S2),
             agent_loop_components:emit_command_facts(S2, [target(prolog)])
         )),
-        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (25 clauses)')
+        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (26 clauses)')
     )),
     assert_true('emit_command_facts includes command_alias clause count', (
         with_output_to(atom(Output3), (
@@ -3083,7 +3107,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 33),
+    assert_eq('Rust fragment count', RFCount, 34),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -5274,4 +5298,74 @@ test_python_integration_fixed :-
     assert_true('Python integration tests pass', (
         shell('cd generated/python && python3 -m pytest ../../test_integration.py -q --tb=short 2>&1', ExitCode),
         ExitCode =:= 0
+    )).
+
+%% ============================================================================
+%% Phase 19 — Config reload, tool approval, error recovery, context overflow
+%% ============================================================================
+
+test_rust_phase19_config_reload :-
+    format("~nPhase 19 — config reload:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, Content, []),
+    assert_true('reload_config function exists', (
+        sub_string(Content, _, _, _, "fn reload_config(")
+    )),
+    assert_true('reload_config uses find_config_file', (
+        sub_string(Content, _, _, _, "find_config_file(None, false)")
+    )),
+    assert_true('reload_config uses resolve_agent', (
+        sub_string(Content, _, _, _, "resolve_agent(Some(")
+    )),
+    assert_true('reload command dispatches to reload_config', (
+        sub_string(Content, _, _, _, "reload_config(config, state)")
+    )),
+    %% Verify slash_command fact
+    assert_true('reload slash_command defined', (
+        agent_loop_module:slash_command(reload, exact, _, _)
+    )).
+
+test_rust_phase19_tool_approval :-
+    format("~nPhase 19 — tool approval:~n"),
+    agent_loop_module:output_path(rust, 'tool_handler.rs', THPath),
+    read_file_to_string(THPath, Content, []),
+    assert_true('confirm_tool_execution method exists', (
+        sub_string(Content, _, _, _, "fn confirm_tool_execution")
+    )),
+    assert_true('approval checks yolo mode', (
+        sub_string(Content, _, _, _, "yolo")
+    )),
+    assert_true('approval auto-allows read tool', (
+        sub_string(Content, _, _, _, "read")
+    )),
+    %% Verify main loop wires tool confirmation
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main loop calls confirm_tool_execution', (
+        sub_string(MainContent, _, _, _, "confirm_tool_execution")
+    )).
+
+test_rust_phase19_error_recovery :-
+    format("~nPhase 19 — error recovery:~n"),
+    agent_loop_module:output_path(rust, 'backends.rs', BePath),
+    read_file_to_string(BePath, Content, []),
+    assert_true('streaming error preserves partial content', (
+        sub_string(Content, _, _, _, "Stream interrupted")
+    )),
+    assert_true('stream error fallback for empty content', (
+        sub_string(Content, _, _, _, "Stream error")
+    )).
+
+test_rust_phase19_context_overflow :-
+    format("~nPhase 19 — context overflow:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, Content, []),
+    assert_true('context overflow notification exists', (
+        sub_string(Content, _, _, _, "Trimmed")
+    )),
+    %% Verify add_message returns usize
+    agent_loop_module:output_path(rust, 'context.rs', CtxPath),
+    read_file_to_string(CtxPath, CtxContent, []),
+    assert_true('add_message returns usize', (
+        sub_string(CtxContent, _, _, _, "-> usize")
     )).

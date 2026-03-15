@@ -586,8 +586,14 @@ impl AsyncApiBackend {
                             }
                         }
                         Err(e) => {
-                            full_content.push_str(&format!("
-[Stream error: {}]", e));
+                            if !full_content.is_empty() {
+                                // Partial response recovered — notify but keep content
+                                full_content.push_str(&format!("
+
+[Stream interrupted: {}. Partial response above.]", e));
+                            } else {
+                                full_content = format!("[Stream error: {}]", e);
+                            }
                             break;
                         }
                     }
