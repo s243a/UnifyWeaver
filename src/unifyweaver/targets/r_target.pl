@@ -1107,12 +1107,14 @@ linear_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoS
     partition(linear_recursion:is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
 
     RecClauses = [clause(RHead, RBody)|_],
-    RHead =.. [_Pred, _InputVar, _OutputVar],
+    RHead =.. [_Pred, InputVar, _OutputVar],
     find_recursive_call(RBody, RecCall),
     RecCall =.. [_RecPred, _RecInput, AccVar],
     find_last_is_expression(RBody, _ is ActualFoldExpr),
 
-    translate_fold_expr(ActualFoldExpr, _DummyInput, AccVar, RFoldOp),
+    % For list patterns, InputVar is [H|T] — extract the head element variable
+    (   InputVar = [HeadVar|_] -> true ; HeadVar = InputVar ),
+    translate_fold_expr(ActualFoldExpr, HeadVar, AccVar, RFoldOp),
 
     (   MemoEnabled = true ->
         format(string(MemoDecl), '# Memoization table (~w strategy)~n~w_memo <- new.env(hash=TRUE, parent=emptyenv())~n', [MemoStrategy, PredStr]),

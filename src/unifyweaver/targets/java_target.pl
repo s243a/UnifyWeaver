@@ -1173,10 +1173,14 @@ linear_recursion:compile_linear_pattern(java, PredStr, Arity, BaseClauses, _RecC
 linear_fold_java(PredStr, ClassName, BaseClauses, MemoEnabled, Code) :-
     linear_recursion:extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
     linear_recursion:detect_input_type(BaseInput, InputType),
-    (   MemoEnabled = true ->
+    (   MemoEnabled = true, InputType = numeric ->
         MemoDecl = "    private static final HashMap<Integer, Integer> memo = new HashMap<>();",
         format(string(MemoCheck), '        if (memo.containsKey(n)) return memo.get(n);', []),
         format(string(MemoStore), '        memo.put(n, result);', [])
+    ;   MemoEnabled = true, InputType = list ->
+        MemoDecl = "    private static final HashMap<Integer, Integer> memo = new HashMap<>();",
+        format(string(MemoCheck), '        int _key = Arrays.hashCode(lst);\n        if (memo.containsKey(_key)) return memo.get(_key);', []),
+        format(string(MemoStore), '        memo.put(_key, result);', [])
     ;   MemoDecl = "    // Memoization disabled",
         MemoCheck = '',
         MemoStore = ''
@@ -1191,7 +1195,9 @@ linear_fold_java(PredStr, ClassName, BaseClauses, MemoEnabled, Code) :-
         linear_recursion:find_recursive_call(RBody, RecCall),
         RecCall =.. [_, _, AccVar],
         linear_recursion:find_last_is_expression(RBody, _ is FoldExpr),
-        translate_fold_expr_java(FoldExpr, InputVar, AccVar, JavaOp)
+        % For list patterns, InputVar is [H|T] — extract the head element variable
+        (   InputVar = [HeadVar|_] -> true ; HeadVar = InputVar ),
+        translate_fold_expr_java(FoldExpr, HeadVar, AccVar, JavaOp)
     ;   JavaOp = "current * acc"
     ),
     (   InputType = numeric ->

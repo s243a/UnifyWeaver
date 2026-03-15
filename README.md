@@ -89,14 +89,14 @@ Scala and Clojure also appear in the Functional table above.
 
 ### Scripting & Native Targets
 
-| Pattern | C | C++ | Ruby | Perl |
-|---------|:-:|:---:|:----:|:----:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
+| Pattern | C | C++ | Ruby | Perl | Lua | R |
+|---------|:-:|:---:|:----:|:----:|:---:|:-:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ### Python Family Targets
 
@@ -394,6 +394,39 @@ UnifyWeaver follows a modular compilation pipeline:
 6. **Code Generation / Plan Emission** - Renders shell templates, C# source, or query plans for the selected backend
 
 **See [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [Extended Documentation](docs/EXTENDED_README.md) for detailed architecture.**
+
+### Mustache Template System
+
+Large code templates (50+ lines) are stored as external `.mustache` files rather than inline `format/2` strings. This eliminates Prolog escape sequence issues and makes templates easier to read and maintain.
+
+**Directory structure:**
+```
+templates/targets/
+├── c/transitive_closure.mustache
+├── cpp/transitive_closure.mustache
+├── rust/transitive_closure.mustache
+├── go/transitive_closure.mustache
+├── ruby/transitive_closure.mustache
+├── perl/transitive_closure.mustache
+├── python/transitive_closure.mustache
+├── ... (18 target directories)
+```
+
+**How it works:**
+
+Templates use `{{placeholder}}` syntax and are rendered via `template_system:render_template/3`:
+
+```prolog
+%% Helper: load and render a target-specific mustache template
+compile_tc_from_template(Target, Pred, BasePred, ExtraDict, Code) :-
+    atom_string(Target, TargetStr),
+    format(string(Path), 'templates/targets/~w/transitive_closure.mustache', [TargetStr]),
+    read_file_to_string(Path, Template, []),
+    append([pred=PredStr, base=BaseStr], ExtraDict, Dict),
+    template_system:render_template(Template, Dict, Code).
+```
+
+**Common placeholders:** `{{pred}}` (predicate name), `{{base}}` (base relation name), `{{pred_cap}}` (capitalized predicate name for class/struct names).
 
 ## Examples
 
