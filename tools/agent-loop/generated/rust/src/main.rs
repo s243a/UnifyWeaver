@@ -1236,18 +1236,32 @@ async fn main() {
         let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
         let spinner = Spinner::start("Thinking...");
         let response = if let Some(ref ab) = async_backend {
-            let ab_ref = ab;
-            let ctx_ref = &ctx_snapshot;
-            retry_async(&retry_config, || async {
-                ab_ref.send_async(prompt, ctx_ref).await
-            }).await.unwrap_or_default()
+            if state.stream {
+                spinner.stop();
+                let response = ab.send_streaming_async(prompt, &ctx_snapshot, |token| {
+                    print!("{}", token);
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                }).await;
+                println!();
+                response
+            } else {
+                let ab_ref = ab;
+                let ctx_ref = &ctx_snapshot;
+                let r = retry_async(&retry_config, || async {
+                    ab_ref.send_async(prompt, ctx_ref).await
+                }).await.unwrap_or_default();
+                spinner.stop();
+                r
+            }
         } else {
-            retry_with_backoff(&retry_config, || {
+            let r = retry_with_backoff(&retry_config, || {
                 Ok::<_, String>(backend.send_message(prompt, &ctx_snapshot))
-            }).unwrap_or_default()
+            }).unwrap_or_default();
+            spinner.stop();
+            r
         };
-        spinner.stop();
-        if !response.content.is_empty() {
+        if !state.stream && !response.content.is_empty() {
             println!("{}", response.content);
         }
         cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);
@@ -1324,19 +1338,34 @@ async fn main() {
                     let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
                     let spinner = Spinner::start("Thinking...");
                     let response = if let Some(ref ab) = async_backend {
-                        let ab_ref = ab;
-                        let ctx_ref = &ctx_snapshot;
-                        retry_async(&retry_config, || async {
-                            ab_ref.send_async(input, ctx_ref).await
-                        }).await.unwrap_or_default()
+                        if state.stream {
+                            spinner.stop();
+                            print!("\n");
+                            let response = ab.send_streaming_async(input, &ctx_snapshot, |token| {
+                                print!("{}", token);
+                                use std::io::Write;
+                                std::io::stdout().flush().ok();
+                            }).await;
+                            println!();
+                            response
+                        } else {
+                            let ab_ref = ab;
+                            let ctx_ref = &ctx_snapshot;
+                            let r = retry_async(&retry_config, || async {
+                                ab_ref.send_async(input, ctx_ref).await
+                            }).await.unwrap_or_default();
+                            spinner.stop();
+                            r
+                        }
                     } else {
-                        retry_with_backoff(&retry_config, || {
+                        let r = retry_with_backoff(&retry_config, || {
                             Ok::<_, String>(backend.send_message(input, &ctx_snapshot))
-                        }).unwrap_or_default()
+                        }).unwrap_or_default();
+                        spinner.stop();
+                        r
                     };
-                    spinner.stop();
 
-                    if !response.content.is_empty() {
+                    if !state.stream && !response.content.is_empty() {
                         println!("\n{}", response.content);
                     }
                     cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);

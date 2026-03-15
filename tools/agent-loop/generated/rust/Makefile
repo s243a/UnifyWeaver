@@ -4,7 +4,7 @@
 BINARY_NAME := uwsal
 INSTALL_DIR := $(HOME)/.local/bin
 
-.PHONY: build release test check clean install uninstall help
+.PHONY: build release test check clean install uninstall dist wasm wasm-pack help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -41,3 +41,11 @@ dist: release ## Create distribution archive
 	cp target/release/$(BINARY_NAME) dist/
 	@cd dist && tar czf $(BINARY_NAME)-$(shell uname -m)-$(shell uname -s | tr A-Z a-z).tar.gz $(BINARY_NAME)
 	@echo "Archive: dist/$(BINARY_NAME)-$(shell uname -m)-$(shell uname -s | tr A-Z a-z).tar.gz"
+
+wasm: ## Build WASM library (requires wasm32-unknown-unknown target)
+	cargo build --target wasm32-unknown-unknown --features wasm --release
+	@echo "WASM: target/wasm32-unknown-unknown/release/agent_loop.wasm"
+
+wasm-pack: ## Build WASM with wasm-pack for web usage
+	wasm-pack build --target web --features wasm
+	@echo "WASM pack output: pkg/"

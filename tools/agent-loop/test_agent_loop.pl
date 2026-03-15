@@ -271,6 +271,11 @@ run_tests :-
     %% Phase 17 — async retry, retryable status, release profile, Makefile, packaging
     test_rust_phase17_async_retry,
     test_rust_phase17_packaging,
+    %% Phase 18 — streaming wiring, plugin async, WASM Makefile, Python test fix
+    test_rust_phase18_streaming,
+    test_rust_phase18_plugin_async,
+    test_rust_phase18_wasm_makefile,
+    test_python_integration_fixed,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -5194,4 +5199,79 @@ test_rust_phase17_packaging :-
     )),
     assert_true('Makefile references uwsal', (
         sub_string(MakeContent, _, _, _, "uwsal")
+    )).
+
+%% ============================================================================
+%% Phase 18 — Streaming wiring, plugin async, WASM Makefile, Python test fix
+%% ============================================================================
+
+test_rust_phase18_streaming :-
+    format("~nRust Phase 18 streaming wiring:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs calls send_streaming_async', (
+        sub_string(MainContent, _, _, _, "send_streaming_async")
+    )),
+    assert_true('main.rs checks state.stream for async path', (
+        sub_string(MainContent, _, _, _, "state.stream")
+    )),
+    assert_true('streaming flushes stdout', (
+        sub_string(MainContent, _, _, _, "stdout().flush()")
+    )),
+    assert_true('streaming used in single-prompt mode', (
+        sub_string(MainContent, _, _, _, "send_streaming_async(prompt")
+    )),
+    assert_true('streaming used in REPL mode', (
+        sub_string(MainContent, _, _, _, "send_streaming_async(input")
+    )).
+
+test_rust_phase18_plugin_async :-
+    format("~nRust Phase 18 plugin async:~n"),
+    agent_loop_module:output_path(rust, 'plugin_manager.rs', PMPath),
+    read_file_to_string(PMPath, PMContent, []),
+    assert_true('plugin_manager has execute_async', (
+        sub_string(PMContent, _, _, _, "async fn execute_async")
+    )),
+    assert_true('plugin_manager uses tokio::process::Command', (
+        sub_string(PMContent, _, _, _, "tokio::process::Command")
+    )),
+    agent_loop_module:output_path(rust, 'tool_handler.rs', THPath),
+    read_file_to_string(THPath, THContent, []),
+    assert_true('tool_handler has execute_async', (
+        sub_string(THContent, _, _, _, "async fn execute_async")
+    )),
+    assert_true('tool_handler execute_async uses plugin async', (
+        sub_string(THContent, _, _, _, "execute_async")
+    )).
+
+test_rust_phase18_wasm_makefile :-
+    format("~nRust Phase 18 WASM Makefile:~n"),
+    agent_loop_module:target_dir(rust, SrcDir),
+    atom_concat(SrcDir, '../Makefile', MakePath),
+    read_file_to_string(MakePath, MakeContent, []),
+    assert_true('Makefile has wasm target', (
+        sub_string(MakeContent, _, _, _, "wasm:")
+    )),
+    assert_true('Makefile has wasm-pack target', (
+        sub_string(MakeContent, _, _, _, "wasm-pack:")
+    )),
+    assert_true('wasm target uses wasm32 triple', (
+        sub_string(MakeContent, _, _, _, "wasm32-unknown-unknown")
+    )),
+    assert_true('wasm target enables wasm feature', (
+        sub_string(MakeContent, _, _, _, "--features wasm")
+    )).
+
+test_python_integration_fixed :-
+    format("~nPython integration tests (fixed):~n"),
+    %% Verify tools.py has json import
+    agent_loop_module:output_path(python, 'tools.py', ToolsPath),
+    read_file_to_string(ToolsPath, ToolsContent, []),
+    assert_true('tools.py has json import', (
+        sub_string(ToolsContent, _, _, _, "import json")
+    )),
+    %% Run actual Python tests
+    assert_true('Python integration tests pass', (
+        shell('cd generated/python && python3 -m pytest ../../test_integration.py -q --tb=short 2>&1', ExitCode),
+        ExitCode =:= 0
     )).

@@ -242,6 +242,25 @@ impl ToolHandler {
         }
     }
 
+    /// Async tool execution — uses tokio::process::Command for plugin tools.
+    /// Falls back to sync execute() for built-in tools.
+    pub async fn execute_async(&mut self, tool_call: &ToolCall) -> ToolResult {
+        // Check if this is a plugin tool with async support
+        if let Some(ref pm) = self.plugins {
+            if pm.has_tool(&tool_call.name) {
+                if let Some((success, output)) = pm.execute_async(&tool_call.name, &tool_call.arguments).await {
+                    return ToolResult {
+                        success,
+                        output,
+                        tool_name: tool_call.name.clone(),
+                    };
+                }
+            }
+        }
+        // Fall back to sync execution for built-in tools
+        self.execute(tool_call)
+    }
+
     fn handle_bash(&mut self, args: &std::collections::HashMap<String, serde_json::Value>) -> ToolResult {
         let command = args.get("command")
             .and_then(|v| v.as_str())
