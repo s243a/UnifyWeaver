@@ -873,7 +873,7 @@ int main(int argc, char* argv[]) {
     /* Usage with list input */
     return 0;
 }
-', [PredStr, MemoDecl, PredStr, BaseOutput, BaseOutput, ListCOp])
+', [PredStr, '/* List pattern — no memoization */', PredStr, BaseOutput, BaseOutput, ListCOp])
     ;   linear_generic_c(PredStr, 2, MemoEnabled, Code)
     ).
 
