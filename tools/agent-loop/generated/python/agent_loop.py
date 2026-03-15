@@ -247,6 +247,25 @@ class AgentLoop:
             return self._handle_replay_command(text)
 
 
+        if cmd == 'reload':
+            try:
+                from config import read_config_cascade
+                new_cfg = read_config_cascade()
+                changes = []
+                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile"]:
+                    old_val = getattr(self.config, key, None)
+                    new_val = getattr(new_cfg, key, None)
+                    if old_val != new_val:
+                        setattr(self.config, key, new_val)
+                        changes.append(f"{key}: {old_val} -> {new_val}")
+                if changes:
+                    for c in changes: print(f"  Reloaded: {c}")
+                else:
+                    print("  Config unchanged.")
+            except Exception as e:
+                print(f"  Reload error: {e}")
+            return True
+
         return False
 
     def _handle_iterations_command(self, text: str) -> bool:
@@ -633,6 +652,10 @@ History:
 Shortcuts:
   /aliases           - List command aliases (e.g., /q -> /quit)
   /templates         - List prompt templates
+
+Config:
+  /init [path]       - Create example config file (default: uwsal.json)
+  /reload            - Reload config from disk (hot-reload model, backend, system_prompt)
 
 Multi-line Input:
   Start with ``` for code blocks

@@ -190,15 +190,69 @@ impl ToolHandler {
                     return true;
                 }
                 // For other tools, prompt user
-                eprint!("  Allow {} tool? [y/N] ", tool_name);
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_ok() {
-                    input.trim().eq_ignore_ascii_case("y")
-                } else {
-                    false
-                }
+                true // Return true, actual prompt happens in confirm_tool_execution
             }
             _ => true,
+        }
+    }
+
+    /// Interactive confirmation for tool execution with argument preview.
+    /// Returns true if the user approves, false to skip.
+    pub fn confirm_tool_execution(&self, tool_call: &ToolCall) -> bool {
+        // Auto-approve in yolo mode or if auto_approve is set
+        if self.approval_mode == "yolo" || self.auto_approve {
+            return true;
+        }
+        // Read is always safe
+        if tool_call.name == "read" {
+            return true;
+        }
+        // Plan mode blocks all non-read tools
+        if self.approval_mode == "plan" {
+            eprintln!("  [plan mode] Blocked: {}", tool_call.name);
+            return false;
+        }
+        // auto_edit mode: allow read/edit/write without prompt
+        if self.approval_mode == "auto_edit" && matches!(tool_call.name.as_str(), "edit" | "write") {
+            return true;
+        }
+
+        // Show tool details for confirmation
+        let is_destructive = matches!(tool_call.name.as_str(), "bash" | "write" | "edit");
+        let label = if is_destructive { "DESTRUCTIVE" } else { "Tool" };
+        eprintln!("  [{}] {} tool:", label, tool_call.name);
+
+        // Show relevant arguments preview
+        match tool_call.name.as_str() {
+            "bash" => {
+                if let Some(cmd) = tool_call.arguments.get("command").and_then(|v| v.as_str()) {
+                    let preview = if cmd.len() > 120 { &cmd[..120] } else { cmd };
+                    eprintln!("    command: {}", preview);
+                }
+            }
+            "write" | "edit" => {
+                if let Some(path) = tool_call.arguments.get("file_path").and_then(|v| v.as_str()) {
+                    eprintln!("    file: {}", path);
+                }
+            }
+            _ => {
+                // Show first argument key for plugin tools
+                if let Some((key, val)) = tool_call.arguments.iter().next() {
+                    let preview = val.to_string();
+                    let preview = if preview.len() > 80 { &preview[..80] } else { &preview };
+                    eprintln!("    {}: {}", key, preview);
+                }
+            }
+        }
+
+        eprint!("  Execute? [y/N] ");
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            input.trim().eq_ignore_ascii_case("y")
+        } else {
+            false
         }
     }
 }
