@@ -696,16 +696,17 @@ linear_recursion:compile_linear_pattern(typescript, PredStr, Arity, BaseClauses,
     atom_string(Pred, PredStr),
     linear_recursion:extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
     linear_recursion:detect_input_type(BaseInput, InputType),
+    % Extract recursive clauses once (used by both numeric and list branches)
+    functor(Head, Pred, Arity),
+    findall(clause(Head, Body), user:clause(Head, Body), AllClauses),
+    partition(linear_recursion:is_recursive_clause(Pred), AllClauses, ActualRec, _),
     (   InputType = numeric ->
         % Extract fold expression
-        functor(Head, Pred, Arity),
-        findall(clause(Head, Body), user:clause(Head, Body), AllClauses),
-        partition(linear_recursion:is_recursive_clause(Pred), AllClauses, ActualRec, _),
-        (   ActualRec = [clause(_RH, RBody)|_],
+        (   ActualRec = [clause(RH, RBody)|_],
+            RH =.. [_, InputVar, _],
             linear_recursion:find_recursive_call(RBody, RecCall),
-            RecCall =.. [_|RecArgs], last(RecArgs, AccVar),
-            linear_recursion:find_last_is_expression(RBody, _ is FoldExpr),
-            FoldExpr =.. [_|FoldArgs], last(FoldArgs, InputVar)
+            RecCall =.. [_, _, AccVar],
+            linear_recursion:find_last_is_expression(RBody, _ is FoldExpr)
         ->  translate_fold_expr_typescript(FoldExpr, InputVar, AccVar, TsOp)
         ;   TsOp = "acc + current"
         ),
