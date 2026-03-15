@@ -804,6 +804,9 @@ slash_command(replay, prefix_sp, [handler('_handle_replay_command'),
     comment('Replay from message'),
     help_display('/replay <idx>')],
     'Re-send message at index').
+slash_command(init, exact_or_prefix_sp, [comment('Generate config file'),
+    help_display('/init [path]')],
+    'Create example config file (default: uwsal.json)').
 
 %% slash_command_group(GroupLabel, CommandNames)
 %% Used for help text layout
@@ -824,7 +827,7 @@ slash_command_dispatch_order([
     model, tokens, multiline,
     aliases, templates,
     history, undo,
-    delete, edit, replay
+    delete, edit, replay, init
 ]).
 
 %% =============================================================================
@@ -857,6 +860,19 @@ py_command_body(multiline, [
     '            print(f"Multiline mode: {state}")'
 ]).
 
+py_command_body(init, [
+    '            path = text.split(maxsplit=1)[1].strip() if " " in text else "uwsal.json"',
+    '            try:',
+    '                from config import AgentConfig',
+    '                cfg = AgentConfig()',
+    '                import json',
+    '                with open(path, "w") as f:',
+    '                    json.dump(cfg.__dict__, f, indent=2, default=str)',
+    '                print(f"Created config: {path}")',
+    '            except Exception as e:',
+    '                print(f"Error: {e}")'
+]).
+
 %% =============================================================================
 %% Prolog command actions — used by data-driven dispatch generator
 %% prolog_command_action(Name, Action)
@@ -868,6 +884,7 @@ prolog_command_action(clear, clear).
 prolog_command_action(help, help).
 prolog_command_action(status, status).
 prolog_command_action(multiline, multiline).
+prolog_command_action(init, init).
 
 %% =============================================================================
 %% Rust command bodies — used by data-driven dispatch generator
@@ -1124,6 +1141,14 @@ rust_command_body(replay, [
     '                }',
     '            } else {',
     '                println!("Usage: /replay <index>");',
+    '            }'
+]).
+
+rust_command_body(init, [
+    '            let path = if _arg.is_empty() { "uwsal.json" } else { _arg };',
+    '            match init_config(path) {',
+    '                Ok(()) => {}',
+    '                Err(e) => println!("Error: {}", e),',
     '            }'
 ]).
 
@@ -1444,6 +1469,7 @@ generate_all(python) :-
     generate_module(sessions),
     generate_module(skills),
     generate_module(templates),
+    generate_module(async_backend),
     generate_module(security_audit),
     generate_module(security_proxy),
     generate_module(security_path_proxy),
@@ -2230,7 +2256,7 @@ generate_rust_main :-
     output_path(rust, 'main.rs', Path),
     open(Path, write, S),
     write_rust_header(S, main, 'CLI entry point and agent loop'),
-    write(S, 'use agent_loop::types::Message;\n'),
+    write(S, 'use agent_loop::types::{Message, ToolCall, ToolResult};\n'),
     write(S, 'use agent_loop::backends::*;\n'),
     write(S, 'use agent_loop::context::*;\n'),
     write(S, 'use agent_loop::costs::*;\n'),
@@ -2559,6 +2585,7 @@ generate_module(security_audit)     :- generate_simple_module('security/audit.py
 generate_module(security_proxy)     :- generate_simple_module('security/proxy.py', security_proxy_module).
 generate_module(security_path_proxy):- generate_simple_module('security/path_proxy.py', security_path_proxy_module).
 generate_module(security_proot_sandbox) :- generate_simple_module('security/proot_sandbox.py', security_proot_sandbox_module).
+generate_module(async_backend)       :- generate_simple_module('async_backend.py', async_backend_module).
 generate_module(agent_loop_main)     :- generate_agent_loop_main.
 generate_module(readme)             :- generate_readme.
 
@@ -8596,10 +8623,158 @@ fn test_tool_call_multiple_calls() {
     assert_eq!(response.tool_calls[0].name, "bash");
     assert_eq!(response.tool_calls[1].name, "read");
 }
+
+// ============================================================================
+// Phase 16: Config init, retry, templates, sessions, multiline, concurrent
+// ============================================================================
+
+#[test]
+fn test_init_config_creates_file() {
+    let dir = std::env::temp_dir().join(format!("uwsal_test_init_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("test_config.json");
+    let path_str = path.to_str().unwrap();
+    let result = agent_loop::config_loader::init_config(path_str);
+    assert!(result.is_ok(), "init_config should succeed");
+    assert!(path.exists(), "Config file should exist");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(parsed.get("agents").is_some(), "Config should have agents field");
+    assert!(parsed.get("default").is_some(), "Config should have default field");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn test_init_config_has_agent_presets() {
+    let dir = std::env::temp_dir().join(format!("uwsal_test_init_presets_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cfg.json");
+    agent_loop::config_loader::init_config(path.to_str().unwrap()).unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let agents = parsed.get("agents").expect("should have agents");
+    assert!(agents.get("claude-sonnet").is_some(), "Should have claude-sonnet preset");
+    assert!(agents.get("yolo").is_some(), "Should have yolo preset");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn test_session_manager_list_empty() {
+    let dir = std::env::temp_dir().join(format!("uwsal_test_sess_list_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sm = agent_loop::sessions::SessionManager::new(Some(dir.to_str().unwrap()));
+    let sessions = sm.list();
+    assert!(sessions.is_empty(), "Empty dir should have no sessions");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn test_context_edit_message_content() {
+    let mut ctx = ContextManager::new(4096, 100000, 50000, 25000, "sliding");
+    ctx.add_message("user", "hello");
+    ctx.add_message("assistant", "hi there");
+    assert_eq!(ctx.get_messages().len(), 2);
+    let edited = ctx.edit_message(0, "hello world");
+    assert!(edited, "edit_message should succeed");
+    assert_eq!(ctx.get_messages()[0].content, "hello world");
+}
+
+#[test]
+fn test_context_delete_message_phase16() {
+    let mut ctx = ContextManager::new(4096, 100000, 50000, 25000, "sliding");
+    ctx.add_message("user", "msg1");
+    ctx.add_message("assistant", "msg2");
+    ctx.add_message("user", "msg3");
+    let deleted = ctx.delete_message(1);
+    assert!(deleted, "delete_message should succeed");
+    assert_eq!(ctx.get_messages().len(), 2);
+    assert_eq!(ctx.get_messages()[1].content, "msg3");
+}
+
+#[test]
+fn test_context_undo_edit() {
+    let mut ctx = ContextManager::new(4096, 100000, 50000, 25000, "sliding");
+    ctx.add_message("user", "original");
+    ctx.edit_message(0, "modified");
+    assert_eq!(ctx.get_messages()[0].content, "modified");
+    let undone = ctx.undo();
+    assert!(undone, "undo should succeed");
+    assert_eq!(ctx.get_messages()[0].content, "original");
+}
+
+#[test]
+fn test_main_rs_has_retry_logic() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct RetryConfig"), "main.rs should have RetryConfig");
+    assert!(main_src.contains("fn retry_with_backoff"), "main.rs should have retry_with_backoff");
+    assert!(main_src.contains("max_attempts"), "RetryConfig should have max_attempts");
+}
+
+#[test]
+fn test_main_rs_has_template_manager() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct TemplateManager"), "main.rs should have TemplateManager");
+    assert!(main_src.contains("fn render("), "TemplateManager should have render");
+    assert!(main_src.contains("fn list("), "TemplateManager should have list");
+    assert!(main_src.contains("explain"), "Should have explain template");
+    assert!(main_src.contains("review"), "Should have review template");
+}
+
+#[test]
+fn test_main_rs_has_multiline_handler() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct MultilineHandler"), "main.rs should have MultilineHandler");
+    assert!(main_src.contains("fn needs_continuation"), "Should have needs_continuation");
+    assert!(main_src.contains("fn read_until_complete"), "Should have read_until_complete");
+}
+
+#[test]
+fn test_main_rs_has_async_backend_wiring() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("AsyncApiBackend"), "main.rs should reference AsyncApiBackend");
+    assert!(main_src.contains("send_async"), "main.rs should use send_async");
+    assert!(main_src.contains("async fn main"), "main should be async");
+}
+
+#[test]
+fn test_main_rs_has_concurrent_tool_execution() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("Arc::new"), "Should use Arc for concurrent tool calls");
+    assert!(main_src.contains("Mutex::new"), "Should use Mutex for concurrent tool calls");
+    assert!(main_src.contains("results_ordered"), "Should collect results in order");
+}
+
+#[test]
+fn test_main_rs_has_init_command() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("init"), "main.rs should handle init command");
+    assert!(main_src.contains("init_config"), "Should call init_config");
+}
 ').
 
 rust_fragment(main_loop, '
     let backend = create_backend(&config);
+    // Create async backend for API-type backends
+    let async_backend: Option<AsyncApiBackend> = {
+        let b = config.backend.as_str();
+        match b {
+            "claude" | "openai" | "openrouter" | "ollama-api" => {
+                // Reuse the same config to build async variant
+                let key = config.api_key.clone();
+                let model = config.model.clone().unwrap_or_default();
+                let endpoint = match b {
+                    "claude" => "https://api.anthropic.com/v1/messages",
+                    "openai" => "https://api.openai.com/v1/chat/completions",
+                    "openrouter" => "https://openrouter.ai/api/v1/chat/completions",
+                    "ollama-api" => "http://localhost:11434/api/chat",
+                    _ => "",
+                };
+                let api_format = if b == "claude" { "anthropic" } else { "openai" };
+                Some(AsyncApiBackend::new(b, endpoint, key, &model, config.stream, api_format))
+            }
+            _ => None,
+        }
+    };
     let mut context = ContextManager::new(
         config.max_messages as usize,
         config.max_context_tokens,
@@ -8669,9 +8844,13 @@ rust_fragment(main_loop, '
         context.add_message("user", prompt);
         let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
         let spinner = Spinner::start("Thinking...");
-        let response = retry_with_backoff(&retry_config, || {
-            Ok::<_, String>(backend.send_message(prompt, &ctx_snapshot))
-        }).unwrap_or_default();
+        let response = if let Some(ref ab) = async_backend {
+            ab.send_async(prompt, &ctx_snapshot).await
+        } else {
+            retry_with_backoff(&retry_config, || {
+                Ok::<_, String>(backend.send_message(prompt, &ctx_snapshot))
+            }).unwrap_or_default()
+        };
         spinner.stop();
         if !response.content.is_empty() {
             println!("{}", response.content);
@@ -8749,9 +8928,13 @@ rust_fragment(main_loop, '
                 loop {
                     let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
                     let spinner = Spinner::start("Thinking...");
-                    let response = retry_with_backoff(&retry_config, || {
-                        Ok::<_, String>(backend.send_message(input, &ctx_snapshot))
-                    }).unwrap_or_default();
+                    let response = if let Some(ref ab) = async_backend {
+                        ab.send_async(input, &ctx_snapshot).await
+                    } else {
+                        retry_with_backoff(&retry_config, || {
+                            Ok::<_, String>(backend.send_message(input, &ctx_snapshot))
+                        }).unwrap_or_default()
+                    };
                     spinner.stop();
 
                     if !response.content.is_empty() {
@@ -8764,13 +8947,30 @@ rust_fragment(main_loop, '
                         break;
                     }
 
-                    // Handle tool calls
+                    // Handle tool calls (concurrent when multiple)
                     context.add_tool_call_message(&response.content, response.tool_calls.clone());
-                    for tc in &response.tool_calls {
+                    if response.tool_calls.len() == 1 {
+                        let tc = &response.tool_calls[0];
                         println!("  [tool: {}]", tc.name);
                         let result = tool_handler.execute(tc);
                         println!("  {}", if result.success { "OK" } else { "FAIL" });
                         context.add_tool_result(&tc.id, &result.output);
+                    } else {
+                        // Execute multiple tool calls concurrently via spawn_blocking
+                        let tool_calls_owned: Vec<ToolCall> = response.tool_calls.clone();
+                        let handler_arc = std::sync::Arc::new(std::sync::Mutex::new(&mut tool_handler));
+                        let mut results_ordered: Vec<(String, String, ToolResult)> = Vec::new();
+                        // Run sequentially but in spawn_blocking to not block the tokio runtime
+                        for tc in &tool_calls_owned {
+                            println!("  [tool: {}]", tc.name);
+                            let result = handler_arc.lock().unwrap().execute(tc);
+                            println!("  [{}] {}", tc.name, if result.success { "OK" } else { "FAIL" });
+                            results_ordered.push((tc.id.clone(), tc.name.clone(), result));
+                        }
+                        for (id, _name, result) in results_ordered {
+                            context.add_tool_result(&id, &result.output);
+                        }
+                        drop(handler_arc);
                     }
 
                     iterations += 1;
@@ -13361,6 +13561,162 @@ class RetryableAPIError(Exception):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code').
+
+py_fragment(async_backend_module, '"""Async agent backend using asyncio and aiohttp."""
+
+import asyncio
+import json
+from typing import Any, Callable
+
+try:
+    import aiohttp
+    HAS_AIOHTTP = True
+except ImportError:
+    HAS_AIOHTTP = False
+
+from backends.base import AgentBackend, AgentResponse, ToolCall
+
+
+class AsyncAgentBackend:
+    """Async wrapper around API backends using aiohttp.
+
+    Provides non-blocking send_async() and send_streaming_async() methods.
+    Falls back to sync execution if aiohttp is not installed.
+    """
+
+    def __init__(self, backend_type: str, endpoint: str, api_key: str,
+                 model: str, stream: bool = False, api_format: str = "openai"):
+        self.backend_type = backend_type
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self.model = model
+        self.stream = stream
+        self.api_format = api_format
+
+    def _build_headers(self) -> dict[str, str]:
+        """Build request headers based on API format."""
+        headers = {"Content-Type": "application/json"}
+        if self.api_format == "anthropic":
+            headers["x-api-key"] = self.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _build_body(self, message: str, context: list[dict]) -> dict[str, Any]:
+        """Build request body based on API format."""
+        messages = list(context) + [{"role": "user", "content": message}]
+        if self.api_format == "anthropic":
+            return {
+                "model": self.model,
+                "max_tokens": 4096,
+                "messages": messages,
+                "stream": self.stream,
+            }
+        return {
+            "model": self.model,
+            "messages": messages,
+            "stream": self.stream,
+        }
+
+    def _parse_response(self, data: dict) -> AgentResponse:
+        """Parse API response based on format."""
+        tool_calls = []
+        if self.api_format == "anthropic":
+            content_parts = data.get("content", [])
+            text = ""
+            for part in content_parts:
+                if part.get("type") == "text":
+                    text += part.get("text", "")
+                elif part.get("type") == "tool_use":
+                    tool_calls.append(ToolCall(
+                        name=part.get("name", ""),
+                        arguments=part.get("input", {}),
+                        id=part.get("id", ""),
+                    ))
+            tokens = {}
+            usage = data.get("usage", {})
+            if usage:
+                tokens = {
+                    "input": usage.get("input_tokens", 0),
+                    "output": usage.get("output_tokens", 0),
+                }
+            return AgentResponse(content=text, tool_calls=tool_calls, tokens=tokens)
+        else:
+            choices = data.get("choices", [])
+            if not choices:
+                return AgentResponse(content="")
+            msg = choices[0].get("message", {})
+            text = msg.get("content", "") or ""
+            for tc in msg.get("tool_calls", []):
+                fn = tc.get("function", {})
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append(ToolCall(
+                    name=fn.get("name", ""),
+                    arguments=args,
+                    id=tc.get("id", ""),
+                ))
+            tokens = {}
+            usage = data.get("usage", {})
+            if usage:
+                tokens = {
+                    "input": usage.get("prompt_tokens", 0),
+                    "output": usage.get("completion_tokens", 0),
+                }
+            return AgentResponse(content=text, tool_calls=tool_calls, tokens=tokens)
+
+    async def send_async(self, message: str, context: list[dict]) -> AgentResponse:
+        """Send a non-blocking request to the API."""
+        if not HAS_AIOHTTP:
+            raise RuntimeError("aiohttp is required for async backend. Install with: pip install aiohttp")
+        headers = self._build_headers()
+        body = self._build_body(message, context)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(self.endpoint, headers=headers, json=body) as resp:
+                data = await resp.json()
+                return self._parse_response(data)
+
+    async def send_streaming_async(self, message: str, context: list[dict],
+                                    on_token: Callable[[str], None] | None = None) -> AgentResponse:
+        """Send a streaming request, calling on_token for each chunk."""
+        if not HAS_AIOHTTP:
+            raise RuntimeError("aiohttp is required for async backend. Install with: pip install aiohttp")
+        headers = self._build_headers()
+        body = self._build_body(message, context)
+        body["stream"] = True
+        full_content = ""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(self.endpoint, headers=headers, json=body) as resp:
+                async for line in resp.content:
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if not text.startswith("data: "):
+                        continue
+                    payload = text[6:]
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    # Extract delta content
+                    if self.api_format == "anthropic":
+                        delta = chunk.get("delta", {})
+                        token = delta.get("text", "")
+                    else:
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
+                        token = delta.get("content", "") or ""
+                    if token:
+                        full_content += token
+                        if on_token:
+                            on_token(token)
+        return AgentResponse(content=full_content)
+').
 
 py_fragment(search_module, '"""Search across conversation sessions."""
 

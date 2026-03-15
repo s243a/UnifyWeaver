@@ -22,7 +22,7 @@
 %%   - command_alias/2: first-argument string hash-indexed, all distinct
 
 %% Indexing hints (SWI-Prolog auto-indexes first argument):
-%%   slash_command/4: first-argument indexed (24 clauses)
+%%   slash_command/4: first-argument indexed (25 clauses)
 %%   command_alias/2: first-argument indexed (30 clauses)
 
 %% slash_command(+Name, +MatchType, +Options, +HelpText)
@@ -50,6 +50,7 @@ slash_command(undo, exact, [handler('_handle_undo_command'), comment('Undo')], '
 slash_command(delete, prefix_sp, [aliases([del]), handler('_handle_delete_command'), comment('Delete message(s)'), help_lines(['/delete <idx>      - Delete message at index','/delete <s>-<e>    - Delete messages from s to e','/delete last [n]   - Delete last n messages'])], 'Delete message(s) at index or range').
 slash_command(edit, prefix_sp, [handler('_handle_edit_command'), comment('Edit message'), help_display('/edit <idx>')], 'Edit message at index').
 slash_command(replay, prefix_sp, [handler('_handle_replay_command'), comment('Replay from message'), help_display('/replay <idx>')], 'Re-send message at index').
+slash_command(init, exact_or_prefix_sp, [comment('Generate config file'), help_display('/init [path]')], 'Create example config file (default: uwsal.json)').
 
 %% command_alias(+Alias, +CanonicalName)
 command_alias("q", "quit").
@@ -97,6 +98,7 @@ command_action(clear, clear).
 command_action(help, help).
 command_action(status, status).
 command_action(multiline, multiline).
+command_action(init, init).
 
 %% Resolve aliases — may return "command args" for compound aliases
 resolve_command(Input, Command, ExtraArgs) :-

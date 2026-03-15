@@ -246,6 +246,7 @@ class AgentLoop:
         if cmd.startswith('replay '):
             return self._handle_replay_command(text)
 
+
         return False
 
     def _handle_iterations_command(self, text: str) -> bool:

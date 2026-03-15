@@ -39,5 +39,6 @@ pub static SLASH_COMMANDS: &[(&str, CommandSpec)] = &[
     ("delete", CommandSpec { match_type: "prefix_sp", help: "Delete message(s) at index or range" }),
     ("edit", CommandSpec { match_type: "prefix_sp", help: "Edit message at index" }),
     ("replay", CommandSpec { match_type: "prefix_sp", help: "Re-send message at index" }),
+    ("init", CommandSpec { match_type: "exact_or_prefix_sp", help: "Create example config file (default: uwsal.json)" }),
 ];
 

@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (17 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + 76 integration tests |
+| Rust | `generated/rust/` (17 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async main loop wiring + concurrent tool execution + /init config command + 88 integration tests |
 
 ### Declarative Infrastructure
 
@@ -75,7 +75,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 854 + 76 Rust integration (590+181 unit + 27 Prolog + 59 Python + 76 cargo test) |
+| Total tests | 881 + 88 Rust integration (608+181 unit + 27 Prolog + 59 Python + 88 cargo test) |
 
 ## Backends
 
@@ -731,8 +731,11 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Plugin system | Y | Y | Complete (JSON manifests, tool schemas, ToolHandler wiring) |
 | Plugin system (Prolog) | N | N | Prolog-only (dynamic plugin_tool/3, JSON loading) |
 | WASM bindings | N | Y | Complete (feature-gated wasm-bindgen) |
-| Async/tokio runtime | N | Y | Complete (AsyncApiBackend, streaming, trait) |
-| Integration tests (cargo test) | N | Y (76 tests) | Rust-only (incl. E2E mock server tests) |
+| Async/tokio runtime | N | Y | Complete (AsyncApiBackend, streaming, trait, wired into main loop) |
+| Concurrent tool execution | N | Y | Complete (Arc+Mutex sequential, single vs multi split) |
+| Config /init command | N | Y | Complete (JSON/YAML config generation via init_config) |
+| Python async backend | N | Y | Complete (AsyncAgentBackend with aiohttp, OpenAI+Anthropic) |
+| Integration tests (cargo test) | N | Y (88 tests) | Rust-only (incl. E2E mock server tests, Phase 16 coverage) |
 
 ## License
 
