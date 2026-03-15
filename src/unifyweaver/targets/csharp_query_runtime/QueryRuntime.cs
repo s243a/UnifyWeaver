@@ -7262,10 +7262,14 @@ namespace UnifyWeaver.QueryRuntime
                         out var forwardTargetsBySource,
                         out var backwardSourcesByTarget))
                 {
+                    var canReuseBatchedPairProbeCache =
+                        _pairProbeCacheMaxEntries > 0 &&
+                        _pairProbeCacheAdmissionMinCostPerProbe > 0d;
+
                     if (forwardTargetsBySource.Count > 0 && backwardSourcesByTarget.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeMixed");
-                        if (_pairProbeCacheMaxEntries > 0 && _pairProbeCacheAdmissionMinCostPerProbe > 0d)
+                        if (canReuseBatchedPairProbeCache)
                         {
                             return ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
                                 closure,
@@ -7286,6 +7290,16 @@ namespace UnifyWeaver.QueryRuntime
                     if (forwardTargetsBySource.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeForward");
+                        if (canReuseBatchedPairProbeCache)
+                        {
+                            return ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                                closure,
+                                inputPositions,
+                                forwardTargetsBySource,
+                                backwardSourcesByTarget,
+                                context);
+                        }
+
                         if (_cacheContext is not null && forwardTargetsBySource.Count <= MaxMemoizedGroupedPairSeeds)
                         {
                             trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
@@ -7304,6 +7318,16 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeBackward");
+                    if (canReuseBatchedPairProbeCache)
+                    {
+                        return ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                            closure,
+                            inputPositions,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+                    }
+
                     if (_cacheContext is not null && backwardSourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds)
                     {
                         trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
@@ -10454,10 +10478,14 @@ namespace UnifyWeaver.QueryRuntime
                         out var forwardBySource,
                         out var backwardByTarget))
                 {
+                    var canReuseBatchedPairProbeCache =
+                        _pairProbeCacheMaxEntries > 0 &&
+                        _pairProbeCacheAdmissionMinCostPerProbe > 0d;
+
                     if (forwardBySource.Count > 0 && backwardByTarget.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeMixed");
-                        if (_pairProbeCacheMaxEntries > 0 && _pairProbeCacheAdmissionMinCostPerProbe > 0d)
+                        if (canReuseBatchedPairProbeCache)
                         {
                             return ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
                                 closure,
@@ -10476,6 +10504,15 @@ namespace UnifyWeaver.QueryRuntime
                     if (forwardBySource.Count > 0)
                     {
                         trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeForward");
+                        if (canReuseBatchedPairProbeCache)
+                        {
+                            return ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                                closure,
+                                forwardBySource,
+                                backwardByTarget,
+                                context);
+                        }
+
                         if (_cacheContext is not null && forwardBySource.Count <= MaxMemoizedPairSeeds)
                         {
                             trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
@@ -10487,6 +10524,15 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeBackward");
+                    if (canReuseBatchedPairProbeCache)
+                    {
+                        return ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                            closure,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+                    }
+
                     if (_cacheContext is not null && backwardByTarget.Count <= MaxMemoizedPairSeeds)
                     {
                         trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");

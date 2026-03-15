@@ -311,6 +311,10 @@ test_csharp_query_target :-
         verify_parameterized_reachability_by_target_single_strategy_runtime,
         verify_parameterized_reachability_pairs_single_probe_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_reuse_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_key_order_insensitive_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_key_order_insensitive_runtime,
+        verify_parameterized_reachability_pairs_single_probe_cache_overlap_reuse_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_overlap_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_cache_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_key_order_insensitive_runtime,
@@ -3778,6 +3782,92 @@ verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_reuse_r
         ['a,c,red,cat1',
          'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=true'],
         Params,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_single_probe_cache_key_order_insensitive_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[alice, bob], [bob, charlie]],
+    ExecParams = [[bob, charlie], [alice, bob]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'TransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['bob,charlie',
+         'alice,bob',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_key_order_insensitive_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, b, red, cat1], [b, c, red, cat1]],
+    ExecParams = [[b, c, red, cat1], [a, b, red, cat1]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['b,c,red,cat1',
+         'a,b,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_single_probe_cache_overlap_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[alice, bob], [bob, charlie]],
+    ExecParams = [[bob, charlie], [alice, bob], [alice, charlie]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'TransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['bob,charlie',
+         'alice,charlie',
+         'alice,bob',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_overlap_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_label_cat_reach_param_both/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, b, red, cat1], [b, c, red, cat1]],
+    ExecParams = [[b, c, red, cat1], [a, b, red, cat1], [a, c, red, cat1]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['b,c,red,cat1',
+         'a,b,red,cat1',
+         'a,c,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=true'],
+        ExecParams,
         HarnessSource).
 
 verify_parameterized_reachability_pairs_single_probe_cache_eviction_runtime :-
