@@ -316,6 +316,7 @@ test_csharp_query_target :-
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_key_order_insensitive_runtime,
+        verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_key_order_insensitive_runtime,
         verify_parameterized_grouped_transitive_closure_seed_cache_overlap_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_overlap_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_by_target_cache_overlap_reuse_runtime,
@@ -333,6 +334,7 @@ test_csharp_query_target :-
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_by_target_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_cache_overlap_reuse_runtime,
+        verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_overlap_reuse_runtime,
         verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_overlap_reuse_runtime,
         verify_parameterized_reachability_seed_cache_eviction_runtime,
         verify_parameterized_reachability_by_target_seed_cache_eviction_runtime,
@@ -4199,6 +4201,27 @@ verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed
         ExecParams,
         HarnessSource).
 
+verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_key_order_insensitive_runtime :-
+    csharp_query_target:build_query_plan(test_admission_group_mixed_lru_reach/4, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, z, red, cat1], [p, q, red, cat1]],
+    ExecParams = [[p, q, red, cat1], [a, z, red, cat1]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'GroupedTransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z,red,cat1',
+         'p,q,red,cat1',
+         'CACHE_HIT:GroupedTransitiveClosurePairsSingleProbe=true'],
+        ExecParams,
+        HarnessSource).
+
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_overlap_reuse_runtime :-
     csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_reach/4, [target(csharp_query)], Plan),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
@@ -5383,6 +5406,28 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_ke
     maybe_run_query_runtime_with_harness(Plan,
         ['a,z',
          'p,q',
+         'CACHE_HIT:TransitiveClosurePairsSingleProbe=true'],
+        ExecParams,
+        HarnessSource).
+
+verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_overlap_reuse_runtime :-
+    csharp_query_target:build_query_plan(test_admission_mixed_lru_reach/2, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    WarmParams = [[a, z], [p, q]],
+    ExecParams = [[a, z], [p, q], [p, r]],
+    harness_source_with_pair_cache_flag_warm_exec_normalized(
+        ModuleClass,
+        WarmParams,
+        ExecParams,
+        'TransitiveClosurePairsSingleProbe',
+        4,
+        0,
+        0.1,
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,z',
+         'p,q',
+         'p,r',
          'CACHE_HIT:TransitiveClosurePairsSingleProbe=true'],
         ExecParams,
         HarnessSource).
