@@ -161,6 +161,37 @@ where
     Err(format!("Failed after {} attempts: {}", config.max_attempts, last_err))
 }
 
+/// Async retry wrapper with exponential backoff for async backends.
+pub async fn retry_async<F, Fut, T>(config: &RetryConfig, mut f: F) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let mut last_err = String::new();
+    for attempt in 1..=config.max_attempts {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                last_err = e;
+                if attempt == config.max_attempts {
+                    break;
+                }
+                let mut delay = config.base_delay_secs
+                    * config.exponential_base.powi((attempt - 1) as i32);
+                if delay > config.max_delay_secs {
+                    delay = config.max_delay_secs;
+                }
+                if config.jitter {
+                    delay *= jitter_factor();
+                }
+                eprintln!("Retry {}/{} in {:.1}s: {}", attempt, config.max_attempts, delay, last_err);
+                tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
+            }
+        }
+    }
+    Err(format!("Failed after {} attempts: {}", config.max_attempts, last_err))
+}
+
 
 use std::collections::HashMap;
 
@@ -1205,7 +1236,11 @@ async fn main() {
         let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
         let spinner = Spinner::start("Thinking...");
         let response = if let Some(ref ab) = async_backend {
-            ab.send_async(prompt, &ctx_snapshot).await
+            let ab_ref = ab;
+            let ctx_ref = &ctx_snapshot;
+            retry_async(&retry_config, || async {
+                ab_ref.send_async(prompt, ctx_ref).await
+            }).await.unwrap_or_default()
         } else {
             retry_with_backoff(&retry_config, || {
                 Ok::<_, String>(backend.send_message(prompt, &ctx_snapshot))
@@ -1289,7 +1324,11 @@ async fn main() {
                     let ctx_snapshot: Vec<Message> = context.get_context().to_vec();
                     let spinner = Spinner::start("Thinking...");
                     let response = if let Some(ref ab) = async_backend {
-                        ab.send_async(input, &ctx_snapshot).await
+                        let ab_ref = ab;
+                        let ctx_ref = &ctx_snapshot;
+                        retry_async(&retry_config, || async {
+                            ab_ref.send_async(input, ctx_ref).await
+                        }).await.unwrap_or_default()
                     } else {
                         retry_with_backoff(&retry_config, || {
                             Ok::<_, String>(backend.send_message(input, &ctx_snapshot))

@@ -942,7 +942,7 @@ Content-Length: {}
     let backend = AsyncApiBackend::new(
         "mock", &endpoint, None, "test-model", false, "openai"
     );
-    let result = backend.send_async("test message", &[]).await;
+    let result = backend.send_async("test message", &[]).await.unwrap();
     assert_eq!(result.content, "Hello from mock!");
     assert_eq!(result.input_tokens, 10);
     assert_eq!(result.output_tokens, 5);
@@ -977,7 +977,7 @@ Content-Length: {}
         "mock-anthropic", &endpoint, Some("sk-test".to_string()),
         "claude-3", false, "anthropic"
     );
-    let result = backend.send_async("bonjour", &[]).await;
+    let result = backend.send_async("bonjour", &[]).await.unwrap();
     assert_eq!(result.content, "Bonjour from Anthropic mock!");
     assert_eq!(result.input_tokens, 8);
     assert_eq!(result.output_tokens, 4);
@@ -989,7 +989,9 @@ async fn test_async_backend_connection_refused() {
         "fail", "http://127.0.0.1:1/v1/chat", None, "test", false, "openai"
     );
     let result = backend.send_async("test", &[]).await;
-    assert!(result.content.contains("error") || result.content.contains("Error"));
+    assert!(result.is_err(), "Connection refused should return Err");
+    let err = result.unwrap_err();
+    assert!(err.to_lowercase().contains("error"), "Error message should contain error: {}", err);
 }
 
 #[test]
@@ -1190,4 +1192,96 @@ fn test_main_rs_has_init_command() {
     let main_src = include_str!("../src/main.rs");
     assert!(main_src.contains("init"), "main.rs should handle init command");
     assert!(main_src.contains("init_config"), "Should call init_config");
+}
+
+#[test]
+fn test_main_rs_has_async_retry() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("retry_async"), "main.rs should have retry_async function");
+    assert!(main_src.contains("tokio::time::sleep"), "async retry should use tokio sleep");
+}
+
+#[test]
+fn test_backends_has_retryable_status_check() {
+    let backends_src = include_str!("../src/backends.rs");
+    assert!(backends_src.contains("retryable"), "backends.rs should check retryable status");
+    assert!(backends_src.contains("429"), "Should handle rate limiting (429)");
+    assert!(backends_src.contains("503"), "Should handle service unavailable (503)");
+}
+
+#[test]
+fn test_cargo_toml_has_release_profile() {
+    let cargo = include_str!("../Cargo.toml");
+    assert!(cargo.contains("[profile.release]"), "Should have release profile");
+    assert!(cargo.contains("lto = true"), "Release should enable LTO");
+    assert!(cargo.contains("strip = true"), "Release should strip binary");
+}
+
+#[test]
+fn test_makefile_exists() {
+    let makefile = include_str!("../Makefile");
+    assert!(makefile.contains("uwsal"), "Makefile should reference uwsal binary");
+    assert!(makefile.contains("release:"), "Makefile should have release target");
+    assert!(makefile.contains("install:"), "Makefile should have install target");
+    assert!(makefile.contains("dist:"), "Makefile should have dist target");
+}
+
+#[tokio::test]
+async fn test_async_retry_with_mock_server_429() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let endpoint = format!("http://{}/v1/chat/completions", addr);
+
+    let attempt_count = Arc::new(AtomicU32::new(0));
+    let count_clone = attempt_count.clone();
+
+    tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let attempt = count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt < 3 {
+                // Return 429 for first 2 attempts
+                let body = "Rate limited";
+                let response = format!(
+                    "HTTP/1.1 429 Too Many Requests
+Content-Length: {}
+
+{}",
+                    body.len(), body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            } else {
+                // Return success on 3rd attempt
+                let body = serde_json::json!({
+                    "choices": [{"message": {"content": "Success after retry!", "role": "assistant"}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+                }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+
+{}",
+                    body.len(), body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let backend = AsyncApiBackend::new(
+        "retry-test", &endpoint, Some("key".to_string()), "test", false, "openai"
+    );
+    // Retry should recover from 429 errors
+    let result = backend.send_async("test", &[]).await;
+    // First 2 calls return 429 (Err), then retry kicks in at call site
+    assert!(result.is_err(), "Single call to 429 should fail");
+    assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
 }

@@ -268,6 +268,9 @@ run_tests :-
     test_rust_phase16_concurrent_tools,
     test_python_async_backend,
     test_rust_phase16_cargo_tests,
+    %% Phase 17 — async retry, retryable status, release profile, Makefile, packaging
+    test_rust_phase17_async_retry,
+    test_rust_phase17_packaging,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -5122,6 +5125,73 @@ test_rust_phase16_cargo_tests :-
     %% Count total tests
     findall(_, sub_string(TestContent, _, _, _, "#[test]"), TestMarkers),
     length(TestMarkers, TestCount),
-    assert_true('integration test count >= 85', (
-        TestCount >= 85
+    assert_true('integration test count >= 89', (
+        TestCount >= 89
+    )).
+
+%% ============================================================================
+%% Phase 17 — Async retry, retryable status, release profile, Makefile
+%% ============================================================================
+
+test_rust_phase17_async_retry :-
+    format("~nRust Phase 17 async retry:~n"),
+    agent_loop_module:output_path(rust, 'main.rs', MainPath),
+    read_file_to_string(MainPath, MainContent, []),
+    assert_true('main.rs has retry_async function', (
+        sub_string(MainContent, _, _, _, "async fn retry_async")
+    )),
+    assert_true('main.rs uses tokio::time::sleep', (
+        sub_string(MainContent, _, _, _, "tokio::time::sleep")
+    )),
+    assert_true('main.rs wraps async send with retry', (
+        sub_string(MainContent, _, _, _, "retry_async(&retry_config")
+    )),
+    %% Check backends.rs has retryable status check
+    agent_loop_module:output_path(rust, 'backends.rs', BackPath),
+    read_file_to_string(BackPath, BackContent, []),
+    assert_true('backends.rs has retryable HTTP status check', (
+        sub_string(BackContent, _, _, _, "retryable")
+    )),
+    assert_true('backends.rs checks 429 rate limit', (
+        sub_string(BackContent, _, _, _, "429")
+    )),
+    assert_true('send_async returns Result', (
+        sub_string(BackContent, _, _, _, "Result<AgentResponse, String>")
+    )).
+
+test_rust_phase17_packaging :-
+    format("~nRust Phase 17 packaging:~n"),
+    %% Check Cargo.toml has release profile
+    agent_loop_module:target_dir(rust, SrcDir),
+    atom_concat(SrcDir, '../Cargo.toml', CargoPath),
+    read_file_to_string(CargoPath, CargoContent, []),
+    assert_true('Cargo.toml has release profile', (
+        sub_string(CargoContent, _, _, _, "[profile.release]")
+    )),
+    assert_true('release profile has LTO', (
+        sub_string(CargoContent, _, _, _, "lto = true")
+    )),
+    assert_true('release profile has strip', (
+        sub_string(CargoContent, _, _, _, "strip = true")
+    )),
+    assert_true('release profile has opt-level 3', (
+        sub_string(CargoContent, _, _, _, "opt-level = 3")
+    )),
+    %% Check Makefile exists
+    atom_concat(SrcDir, '../Makefile', MakePath),
+    assert_true('Makefile exists', (
+        exists_file(MakePath)
+    )),
+    read_file_to_string(MakePath, MakeContent, []),
+    assert_true('Makefile has release target', (
+        sub_string(MakeContent, _, _, _, "release:")
+    )),
+    assert_true('Makefile has install target', (
+        sub_string(MakeContent, _, _, _, "install:")
+    )),
+    assert_true('Makefile has dist target', (
+        sub_string(MakeContent, _, _, _, "dist:")
+    )),
+    assert_true('Makefile references uwsal', (
+        sub_string(MakeContent, _, _, _, "uwsal")
     )).
