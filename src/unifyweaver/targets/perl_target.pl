@@ -345,7 +345,7 @@ compile_linear_recursive_rules(Pred, Arity, Clauses, Code) :-
 
     format(string(Code),
 "{
-    my %%memo;
+    my %memo;
     sub ~w {
         my $callback = shift;
         my (~s) = @_;
@@ -1278,22 +1278,17 @@ use strict;
 use warnings;
 use List::Util qw(reduce);
 
-~w
-
 sub ~w {
     my ($lst_ref) = @_;
-~w
     return ~w unless @$lst_ref;
-    my $result = reduce { ~w } ~w, @$lst_ref;
-~w
-    return $result;
+    return reduce { ~w } ~w, @$lst_ref;
 }
 
 if (@ARGV) {
     my @items = split(/,/, $ARGV[0]);
     print ~w(\\@items), "\\n";
 }
-', [PredStr, MemoDecl, PredStr, MemoCheck, BaseOutput, ListFoldOp, BaseOutput, MemoStore, PredStr])
+', [PredStr, PredStr, BaseOutput, ListFoldOp, BaseOutput, PredStr])
     ;   linear_generic_perl(PredStr, 2, MemoEnabled, Code)
     ).
 
@@ -1396,7 +1391,7 @@ tree_recursion:compile_tree_pattern(perl, _Pattern, Pred, _Arity, _UseMemo, Perl
 use strict;
 use warnings;
 
-my %%~w_memo;
+my %~w_memo;
 
 sub ~w {
     my ($n) = @_;
@@ -1432,7 +1427,7 @@ multicall_linear_recursion:compile_multicall_pattern(perl, PredStr, BaseClauses,
 use strict;
 use warnings;
 
-my %%~w_memo;
+my %~w_memo;
 
 sub ~w {
     my ($n) = @_;
@@ -1467,7 +1462,7 @@ direct_multi_call_recursion:compile_direct_multicall_pattern(perl, PredStr, Base
 use strict;
 use warnings;
 
-my %%~w_memo;
+my %~w_memo;
 
 sub ~w {
     my ($n) = @_;
@@ -1498,7 +1493,7 @@ mutual_recursion:compile_mutual_pattern(perl, Predicates, MemoEnabled, _MemoStra
 use strict;
 use warnings;
 
-my %%mutual_memo;
+my %mutual_memo;
 
 ~w
 
