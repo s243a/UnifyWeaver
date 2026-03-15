@@ -13,6 +13,7 @@ use agent_loop::proot_sandbox::*;
 use agent_loop::plugin_manager::*;
 use agent_loop::wasm_bindings::*;
 use agent_loop::sessions::*;
+use agent_loop::backends::*;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -880,4 +881,186 @@ fn test_cost_tracker_record_and_report() {
     tracker.record_usage("test-model", 100, 50);
     let summary = tracker.format_summary();
     assert!(summary.contains("100") || summary.contains("150") || summary.len() > 0);
+}
+
+// ============================================================================
+// Async backend tests
+// ============================================================================
+
+#[test]
+fn test_async_api_backend_creation() {
+    let backend = AsyncApiBackend::new(
+        "test-async", "http://localhost:9999/v1/chat/completions",
+        Some("test-key".to_string()), "gpt-4", false, "openai"
+    );
+    assert_eq!(backend.inner.backend_name, "test-async");
+    assert_eq!(backend.inner.model, "gpt-4");
+    assert_eq!(backend.inner.api_format, "openai");
+    assert_eq!(backend.name(), "test-async");
+    assert!(backend.supports_streaming());
+}
+
+#[test]
+fn test_async_api_backend_anthropic_format() {
+    let backend = AsyncApiBackend::new(
+        "test-claude", "https://api.anthropic.com/v1/messages",
+        Some("sk-test".to_string()), "claude-3-opus", true, "anthropic"
+    );
+    assert_eq!(backend.inner.api_format, "anthropic");
+    assert_eq!(backend.inner.stream, true);
+}
+
+#[tokio::test]
+async fn test_async_backend_mock_server() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
+
+    // Start a mock HTTP server
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let endpoint = format!("http://{}/v1/chat/completions", addr);
+
+    // Spawn mock server that returns a valid OpenAI response
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        // Read the request (just consume it)
+        let mut buf = vec![0u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+        // Send response
+        let body = r#"{"choices":[{"message":{"content":"Hello from mock!","role":"assistant"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+
+{}",
+            body.len(), body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let backend = AsyncApiBackend::new(
+        "mock", &endpoint, None, "test-model", false, "openai"
+    );
+    let result = backend.send_async("test message", &[]).await;
+    assert_eq!(result.content, "Hello from mock!");
+    assert_eq!(result.input_tokens, 10);
+    assert_eq!(result.output_tokens, 5);
+}
+
+#[tokio::test]
+async fn test_async_backend_anthropic_mock() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let endpoint = format!("http://{}/v1/messages", addr);
+
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+        let body = r#"{"content":[{"type":"text","text":"Bonjour from Anthropic mock!"}],"usage":{"input_tokens":8,"output_tokens":4}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+
+{}",
+            body.len(), body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let backend = AsyncApiBackend::new(
+        "mock-anthropic", &endpoint, Some("sk-test".to_string()),
+        "claude-3", false, "anthropic"
+    );
+    let result = backend.send_async("bonjour", &[]).await;
+    assert_eq!(result.content, "Bonjour from Anthropic mock!");
+    assert_eq!(result.input_tokens, 8);
+    assert_eq!(result.output_tokens, 4);
+}
+
+#[tokio::test]
+async fn test_async_backend_connection_refused() {
+    let backend = AsyncApiBackend::new(
+        "fail", "http://127.0.0.1:1/v1/chat", None, "test", false, "openai"
+    );
+    let result = backend.send_async("test", &[]).await;
+    assert!(result.content.contains("error") || result.content.contains("Error"));
+}
+
+#[test]
+fn test_async_backend_request_body_format() {
+    let backend = AsyncApiBackend::new(
+        "test", "http://localhost/v1", Some("key".to_string()),
+        "gpt-4", false, "openai"
+    );
+    let body = backend.inner.build_request_body("hello", &[]);
+    assert_eq!(body["model"], "gpt-4");
+    assert!(body["messages"].as_array().unwrap().len() > 0);
+}
+
+#[test]
+fn test_async_backend_anthropic_request_body() {
+    let backend = AsyncApiBackend::new(
+        "test", "http://localhost/v1", Some("key".to_string()),
+        "claude-3-opus", false, "anthropic"
+    );
+    let body = backend.inner.build_request_body("hello", &[]);
+    assert_eq!(body["model"], "claude-3-opus");
+    assert!(body.get("max_tokens").is_some());
+}
+
+#[test]
+fn test_tool_call_extraction_openai_format() {
+    let args_json = serde_json::json!({"command": "ls"}).to_string();
+    let json = serde_json::json!({
+        "choices": [{"message": {"content": "", "tool_calls": [
+            {"id": "call_1", "function": {"name": "bash", "arguments": args_json}}
+        ]}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+    });
+    let backend = ApiBackend::new("test", "", None, "gpt-4", false, "openai");
+    let response = backend.parse_response(json);
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].name, "bash");
+    assert_eq!(response.tool_calls[0].id, "call_1");
+}
+
+#[test]
+fn test_tool_call_extraction_anthropic_format() {
+    let json = serde_json::json!({
+        "content": [
+            {"type": "text", "text": "Let me check."},
+            {"type": "tool_use", "id": "toolu_1", "name": "read", "input": {"file_path": "test.txt"}}
+        ],
+        "usage": {"input_tokens": 20, "output_tokens": 10}
+    });
+    let backend = ApiBackend::new("test", "", None, "claude-3", false, "anthropic");
+    let response = backend.parse_response(json);
+    assert_eq!(response.content, "Let me check.");
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].name, "read");
+    assert_eq!(response.tool_calls[0].arguments.get("file_path").unwrap(), "test.txt");
+}
+
+#[test]
+fn test_tool_call_multiple_calls() {
+    let args1 = serde_json::json!({"command": "ls"}).to_string();
+    let args2 = serde_json::json!({"file_path": "/tmp/test"}).to_string();
+    let json = serde_json::json!({
+        "choices": [{"message": {"content": "", "tool_calls": [
+            {"id": "call_1", "function": {"name": "bash", "arguments": args1}},
+            {"id": "call_2", "function": {"name": "read", "arguments": args2}}
+        ]}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+    });
+    let backend = ApiBackend::new("test", "", None, "gpt-4", false, "openai");
+    let response = backend.parse_response(json);
+    assert_eq!(response.tool_calls.len(), 2);
+    assert_eq!(response.tool_calls[0].name, "bash");
+    assert_eq!(response.tool_calls[1].name, "read");
 }

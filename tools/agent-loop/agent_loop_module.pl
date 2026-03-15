@@ -858,6 +858,18 @@ py_command_body(multiline, [
 ]).
 
 %% =============================================================================
+%% Prolog command actions — used by data-driven dispatch generator
+%% prolog_command_action(Name, Action)
+%% Commands without a handler(H) property map to action atoms.
+%% =============================================================================
+
+prolog_command_action(exit, exit).
+prolog_command_action(clear, clear).
+prolog_command_action(help, help).
+prolog_command_action(status, status).
+prolog_command_action(multiline, multiline).
+
+%% =============================================================================
 %% Rust command bodies — used by data-driven dispatch generator
 %% rust_command_body(Name, RustCodeLines)
 %% Each line is emitted as-is inside the match arm.
@@ -1607,7 +1619,7 @@ generate_prolog_commands :-
     write_prolog_header(S, commands, 'Slash commands and aliases'),
     agent_loop_components:emit_prolog_module_skeleton(S, commands, [
         exports([slash_command/4, command_alias/2, slash_command_group/2,
-                 resolve_command/3, handle_slash_command/3]),
+                 command_action/2, resolve_command/3, handle_slash_command/3]),
         dependencies([module(commands)]),
         det([resolve_command/3, handle_slash_command/3])
     ]),
@@ -1769,7 +1781,9 @@ generate_rust_cargo_toml :-
     write(S, 'once_cell = "1"\n'),
     write(S, 'clap = { version = "4", features = ["derive"] }\n'),
     write(S, 'regex = "1"\n'),
-    write(S, 'reqwest = { version = "0.12", features = ["json", "blocking"] }\n'),
+    write(S, 'reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }\n'),
+    write(S, 'tokio = { version = "1", features = ["full"] }\n'),
+    write(S, 'futures = "0.3"\n'),
     write(S, 'rustyline = "14"\n'),
     write(S, 'serde_yaml = "0.9"\n'),
     write(S, 'wasm-bindgen = { version = "0.2", optional = true }\n\n'),
@@ -2026,6 +2040,7 @@ generate_rust_backends :-
     write_rust(S, backend_cli_impl),
     write_rust(S, streaming_handler),
     write_rust(S, backend_api_impl),
+    write_rust(S, async_backend),
     %% Data-driven backend factory
     generate_rust_backend_factory(S),
     close(S),
@@ -2242,7 +2257,8 @@ generate_rust_main :-
     nl(S),
     %% Data-driven command dispatch function (with session support)
     generate_rust_command_dispatch_with_sessions(S),
-    write(S, 'fn main() {\n'),
+    write(S, '#[tokio::main]\n'),
+    write(S, 'async fn main() {\n'),
     %% Clap argument parsing
     write(S, '    let matches = clap::Command::new("uwsal")\n'),
     write(S, '        .about("UnifyWeaver Agent Loop")\n'),
@@ -5123,7 +5139,7 @@ impl ApiBackend {
         messages
     }
 
-    fn build_request_body(&self, message: &str, context: &[Message]) -> serde_json::Value {
+    pub fn build_request_body(&self, message: &str, context: &[Message]) -> serde_json::Value {
         use crate::tools::tool_schemas_json;
         let messages = self.build_messages(message, context);
         let tools = tool_schemas_json();
@@ -5211,7 +5227,7 @@ impl ApiBackend {
     }
 
     /// Parse response JSON into AgentResponse (format-aware).
-    fn parse_response(&self, json: serde_json::Value) -> AgentResponse {
+    pub fn parse_response(&self, json: serde_json::Value) -> AgentResponse {
         if self.api_format == "anthropic" {
             let content = json["content"].as_array()
                 .and_then(|arr| arr.iter()
@@ -5293,6 +5309,174 @@ impl AgentBackend for ApiBackend {
     }
 
     fn name(&self) -> &str { &self.backend_name }
+    fn supports_streaming(&self) -> bool { true }
+}
+
+').
+
+rust_fragment(async_backend, '
+
+/// Async interface for agent backends (tokio-based).
+pub trait AsyncAgentBackend {
+    /// Send a message asynchronously and return the response.
+    fn send_message_async(&self, message: &str, context: &[Message])
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentResponse> + Send + ''_>>;
+
+    /// Return the backend name.
+    fn name(&self) -> &str;
+
+    /// Whether this backend supports streaming.
+    fn supports_streaming(&self) -> bool { false }
+}
+
+/// Async wrapper around ApiBackend for non-blocking HTTP calls.
+pub struct AsyncApiBackend {
+    pub inner: ApiBackend,
+}
+
+impl AsyncApiBackend {
+    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool, api_format: &str) -> Self {
+        Self {
+            inner: ApiBackend::new(name, endpoint, api_key, model, stream, api_format),
+        }
+    }
+
+    fn add_auth_header(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(ref key) = self.inner.api_key {
+            if self.inner.api_format == "anthropic" {
+                req.header("x-api-key", key)
+                   .header("anthropic-version", "2023-06-01")
+            } else {
+                req.header("Authorization", format!("Bearer {}", key))
+            }
+        } else {
+            req
+        }
+    }
+
+    /// Send a non-streaming async request.
+    pub async fn send_async(&self, message: &str, context: &[Message]) -> AgentResponse {
+        let client = reqwest::Client::new();
+        let body = self.inner.build_request_body(message, context);
+
+        let req = client.post(&self.inner.endpoint)
+            .header("Content-Type", "application/json");
+        let req = self.add_auth_header(req);
+
+        match req.json(&body).send().await {
+            Ok(resp) => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(json) => self.inner.parse_response(json),
+                    Err(e) => AgentResponse {
+                        content: format!("JSON parse error: {}", e),
+                        model: self.inner.model.clone(),
+                        ..Default::default()
+                    },
+                }
+            }
+            Err(e) => AgentResponse {
+                content: format!("HTTP error: {}", e),
+                model: self.inner.model.clone(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Send a streaming async request, calling on_token for each chunk.
+    pub async fn send_streaming_async<F>(&self, message: &str, context: &[Message], mut on_token: F) -> AgentResponse
+    where F: FnMut(&str)
+    {
+        use futures::StreamExt;
+        let client = reqwest::Client::new();
+        let mut body = self.inner.build_request_body(message, context);
+        body["stream"] = serde_json::json!(true);
+        if self.inner.api_format != "anthropic" {
+            body["stream_options"] = serde_json::json!({"include_usage": true});
+        }
+
+        let req = client.post(&self.inner.endpoint)
+            .header("Content-Type", "application/json");
+        let req = self.add_auth_header(req);
+
+        match req.json(&body).send().await {
+            Ok(resp) => {
+                let mut full_content = String::new();
+                let mut input_tokens: u64 = 0;
+                let mut output_tokens: u64 = 0;
+                let mut stream = resp.bytes_stream();
+
+                let mut buffer = String::new();
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(bytes) => {
+                            buffer.push_str(&String::from_utf8_lossy(&bytes));
+                            while let Some(line_end) = buffer.find(''\\n'') {
+                                let line = buffer[..line_end].to_string();
+                                buffer = buffer[line_end + 1..].to_string();
+                                if let Some(data) = line.strip_prefix("data: ") {
+                                    if data.trim() == "[DONE]" { continue; }
+                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                        // Extract token from delta
+                                        let token = if self.inner.api_format == "anthropic" {
+                                            json["delta"]["text"].as_str().unwrap_or("").to_string()
+                                        } else {
+                                            json["choices"][0]["delta"]["content"].as_str().unwrap_or("").to_string()
+                                        };
+                                        if !token.is_empty() {
+                                            on_token(&token);
+                                            full_content.push_str(&token);
+                                        }
+                                        // Extract usage if present
+                                        if let Some(usage) = json.get("usage") {
+                                            if let Some(it) = usage["input_tokens"].as_u64()
+                                                .or(usage["prompt_tokens"].as_u64()) {
+                                                input_tokens = it;
+                                            }
+                                            if let Some(ot) = usage["output_tokens"].as_u64()
+                                                .or(usage["completion_tokens"].as_u64()) {
+                                                output_tokens = ot;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            full_content.push_str(&format!("\n[Stream error: {}]", e));
+                            break;
+                        }
+                    }
+                }
+
+                AgentResponse {
+                    content: full_content,
+                    input_tokens,
+                    output_tokens,
+                    model: self.inner.model.clone(),
+                    ..Default::default()
+                }
+            }
+            Err(e) => AgentResponse {
+                content: format!("HTTP error: {}", e),
+                model: self.inner.model.clone(),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+impl AsyncAgentBackend for AsyncApiBackend {
+    fn send_message_async(&self, message: &str, context: &[Message])
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentResponse> + Send + ''_>>
+    {
+        let msg = message.to_string();
+        let ctx = context.to_vec();
+        Box::pin(async move {
+            self.send_async(&msg, &ctx).await
+        })
+    }
+
+    fn name(&self) -> &str { self.inner.name() }
     fn supports_streaming(&self) -> bool { true }
 }
 
@@ -7369,6 +7553,7 @@ use agent_loop::proot_sandbox::*;
 use agent_loop::plugin_manager::*;
 use agent_loop::wasm_bindings::*;
 use agent_loop::sessions::*;
+use agent_loop::backends::*;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -8237,6 +8422,180 @@ fn test_cost_tracker_record_and_report() {
     let summary = tracker.format_summary();
     assert!(summary.contains("100") || summary.contains("150") || summary.len() > 0);
 }
+
+// ============================================================================
+// Async backend tests
+// ============================================================================
+
+#[test]
+fn test_async_api_backend_creation() {
+    let backend = AsyncApiBackend::new(
+        "test-async", "http://localhost:9999/v1/chat/completions",
+        Some("test-key".to_string()), "gpt-4", false, "openai"
+    );
+    assert_eq!(backend.inner.backend_name, "test-async");
+    assert_eq!(backend.inner.model, "gpt-4");
+    assert_eq!(backend.inner.api_format, "openai");
+    assert_eq!(backend.name(), "test-async");
+    assert!(backend.supports_streaming());
+}
+
+#[test]
+fn test_async_api_backend_anthropic_format() {
+    let backend = AsyncApiBackend::new(
+        "test-claude", "https://api.anthropic.com/v1/messages",
+        Some("sk-test".to_string()), "claude-3-opus", true, "anthropic"
+    );
+    assert_eq!(backend.inner.api_format, "anthropic");
+    assert_eq!(backend.inner.stream, true);
+}
+
+#[tokio::test]
+async fn test_async_backend_mock_server() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
+
+    // Start a mock HTTP server
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let endpoint = format!("http://{}/v1/chat/completions", addr);
+
+    // Spawn mock server that returns a valid OpenAI response
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        // Read the request (just consume it)
+        let mut buf = vec![0u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+        // Send response
+        let body = r#"{"choices":[{"message":{"content":"Hello from mock!","role":"assistant"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let backend = AsyncApiBackend::new(
+        "mock", &endpoint, None, "test-model", false, "openai"
+    );
+    let result = backend.send_async("test message", &[]).await;
+    assert_eq!(result.content, "Hello from mock!");
+    assert_eq!(result.input_tokens, 10);
+    assert_eq!(result.output_tokens, 5);
+}
+
+#[tokio::test]
+async fn test_async_backend_anthropic_mock() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let endpoint = format!("http://{}/v1/messages", addr);
+
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+        let body = r#"{"content":[{"type":"text","text":"Bonjour from Anthropic mock!"}],"usage":{"input_tokens":8,"output_tokens":4}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let backend = AsyncApiBackend::new(
+        "mock-anthropic", &endpoint, Some("sk-test".to_string()),
+        "claude-3", false, "anthropic"
+    );
+    let result = backend.send_async("bonjour", &[]).await;
+    assert_eq!(result.content, "Bonjour from Anthropic mock!");
+    assert_eq!(result.input_tokens, 8);
+    assert_eq!(result.output_tokens, 4);
+}
+
+#[tokio::test]
+async fn test_async_backend_connection_refused() {
+    let backend = AsyncApiBackend::new(
+        "fail", "http://127.0.0.1:1/v1/chat", None, "test", false, "openai"
+    );
+    let result = backend.send_async("test", &[]).await;
+    assert!(result.content.contains("error") || result.content.contains("Error"));
+}
+
+#[test]
+fn test_async_backend_request_body_format() {
+    let backend = AsyncApiBackend::new(
+        "test", "http://localhost/v1", Some("key".to_string()),
+        "gpt-4", false, "openai"
+    );
+    let body = backend.inner.build_request_body("hello", &[]);
+    assert_eq!(body["model"], "gpt-4");
+    assert!(body["messages"].as_array().unwrap().len() > 0);
+}
+
+#[test]
+fn test_async_backend_anthropic_request_body() {
+    let backend = AsyncApiBackend::new(
+        "test", "http://localhost/v1", Some("key".to_string()),
+        "claude-3-opus", false, "anthropic"
+    );
+    let body = backend.inner.build_request_body("hello", &[]);
+    assert_eq!(body["model"], "claude-3-opus");
+    assert!(body.get("max_tokens").is_some());
+}
+
+#[test]
+fn test_tool_call_extraction_openai_format() {
+    let args_json = serde_json::json!({"command": "ls"}).to_string();
+    let json = serde_json::json!({
+        "choices": [{"message": {"content": "", "tool_calls": [
+            {"id": "call_1", "function": {"name": "bash", "arguments": args_json}}
+        ]}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+    });
+    let backend = ApiBackend::new("test", "", None, "gpt-4", false, "openai");
+    let response = backend.parse_response(json);
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].name, "bash");
+    assert_eq!(response.tool_calls[0].id, "call_1");
+}
+
+#[test]
+fn test_tool_call_extraction_anthropic_format() {
+    let json = serde_json::json!({
+        "content": [
+            {"type": "text", "text": "Let me check."},
+            {"type": "tool_use", "id": "toolu_1", "name": "read", "input": {"file_path": "test.txt"}}
+        ],
+        "usage": {"input_tokens": 20, "output_tokens": 10}
+    });
+    let backend = ApiBackend::new("test", "", None, "claude-3", false, "anthropic");
+    let response = backend.parse_response(json);
+    assert_eq!(response.content, "Let me check.");
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].name, "read");
+    assert_eq!(response.tool_calls[0].arguments.get("file_path").unwrap(), "test.txt");
+}
+
+#[test]
+fn test_tool_call_multiple_calls() {
+    let args1 = serde_json::json!({"command": "ls"}).to_string();
+    let args2 = serde_json::json!({"file_path": "/tmp/test"}).to_string();
+    let json = serde_json::json!({
+        "choices": [{"message": {"content": "", "tool_calls": [
+            {"id": "call_1", "function": {"name": "bash", "arguments": args1}},
+            {"id": "call_2", "function": {"name": "read", "arguments": args2}}
+        ]}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+    });
+    let backend = ApiBackend::new("test", "", None, "gpt-4", false, "openai");
+    let response = backend.parse_response(json);
+    assert_eq!(response.tool_calls.len(), 2);
+    assert_eq!(response.tool_calls[0].name, "bash");
+    assert_eq!(response.tool_calls[1].name, "read");
+}
 ').
 
 rust_fragment(main_loop, '
@@ -8562,10 +8921,8 @@ handle_slash_command(RawCmd, Args, Action) :-
     (slash_command(CmdAtom, _Match, Opts, _Help) ->
         (member(handler(Handler), Opts) ->
             Action = call_handler(Handler, FinalArgs)
-        ; CmdAtom = exit -> Action = exit
-        ; CmdAtom = clear -> Action = clear
-        ; CmdAtom = help -> Action = help
-        ; CmdAtom = status -> Action = status
+        ; command_action(CmdAtom, DirectAction) ->
+            Action = DirectAction
         ; Action = unknown(CmdAtom))
     ; Action = not_a_command).
 ').
@@ -8619,17 +8976,31 @@ execute_plugin_tool(ToolName, Params, Result) :-
 render_plugin_template(Template, Args, PluginParams, Rendered) :-
     atom_string(Template, TStr),
     foldl([P, In, Out]>>(
-        (is_dict(P) -> get_dict(name, P, PName) ; PName = P),
-        atom_string(PName, PNameStr),
-        format(atom(Placeholder), "{~w}", [PNameStr]),
-        atom_string(Placeholder, PlaceholderStr),
-        (get_dict(PName, Args, Val) ->
+        (is_dict(P) -> get_dict(name, P, PName0) ; PName0 = P),
+        (atom(PName0) -> PNameAtom = PName0 ; atom_string(PNameAtom, PName0)),
+        atom_string(PNameAtom, PNameStr),
+        format(string(Placeholder), "{~w}", [PNameStr]),
+        (get_dict(PNameAtom, Args, Val) ->
             term_string(Val, ValStr),
-            split_string(In, PlaceholderStr, "", Parts),
-            atomics_to_string(Parts, ValStr, Out)
+            replace_all_in_string(In, Placeholder, ValStr, Out)
         ; Out = In)
     ), PluginParams, TStr, RenderedStr),
     atom_string(Rendered, RenderedStr).
+
+%% replace_all_in_string(+Input, +Search, +Replace, -Output)
+replace_all_in_string(Input, Search, Replace, Output) :-
+    string_length(Search, SLen),
+    (SLen =:= 0 -> Output = Input
+    ; replace_all_helper(Input, Search, SLen, Replace, Output)).
+replace_all_helper(Input, Search, SLen, Replace, Output) :-
+    (sub_string(Input, Before, SLen, _, Search) ->
+        sub_string(Input, 0, Before, _, Left),
+        AfterPos is Before + SLen,
+        sub_string(Input, AfterPos, _, 0, Right),
+        replace_all_helper(Right, Search, SLen, Replace, RestOutput),
+        string_concat(Left, Replace, Tmp),
+        string_concat(Tmp, RestOutput, Output)
+    ; Output = Input).
 
 atomics_to_string([], _, "").
 atomics_to_string([Part], _, Part).

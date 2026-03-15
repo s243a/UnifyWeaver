@@ -7,6 +7,7 @@
     slash_command/4,
     command_alias/2,
     slash_command_group/2,
+    command_action/2,
     resolve_command/3,
     handle_slash_command/3
 ]).
@@ -90,6 +91,13 @@ slash_command_group('Export & Costs', [export, cost, tokens]).
 slash_command_group('History', [history, delete, edit, replay, undo]).
 slash_command_group('Shortcuts', [aliases, templates]).
 
+%% command_action(+Command, +Action) — data-driven dispatch
+command_action(exit, exit).
+command_action(clear, clear).
+command_action(help, help).
+command_action(status, status).
+command_action(multiline, multiline).
+
 %% Resolve aliases — may return "command args" for compound aliases
 resolve_command(Input, Command, ExtraArgs) :-
     (command_alias(Input, Canonical) ->
@@ -117,9 +125,7 @@ handle_slash_command(RawCmd, Args, Action) :-
     (slash_command(CmdAtom, _Match, Opts, _Help) ->
         (member(handler(Handler), Opts) ->
             Action = call_handler(Handler, FinalArgs)
-        ; CmdAtom = exit -> Action = exit
-        ; CmdAtom = clear -> Action = clear
-        ; CmdAtom = help -> Action = help
-        ; CmdAtom = status -> Action = status
+        ; command_action(CmdAtom, DirectAction) ->
+            Action = DirectAction
         ; Action = unknown(CmdAtom))
     ; Action = not_a_command).
