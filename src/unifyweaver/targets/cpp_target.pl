@@ -813,6 +813,8 @@ int main(int argc, char* argv[]) {
 #include <vector>
 #include <unordered_map>
 #include <numeric>
+#include <sstream>
+#include <string>
 
 ~w
 
@@ -823,10 +825,20 @@ int ~w(const std::vector<int>& lst) {
 }
 
 int main(int argc, char* argv[]) {
-    // Usage with list input
+    if (argc >= 2) {
+        std::vector<int> items;
+        std::string s(argv[1]);
+        size_t pos = 0, found;
+        while ((found = s.find('','', pos)) != std::string::npos) {
+            items.push_back(std::stoi(s.substr(pos, found - pos)));
+            pos = found + 1;
+        }
+        items.push_back(std::stoi(s.substr(pos)));
+        std::cout << ~w(items) << std::endl;
+    }
     return 0;
 }
-', [PredStr, '// List pattern — no memoization', PredStr, BaseOutput, BaseOutput, ListCppOp])
+', [PredStr, '// List pattern — no memoization', PredStr, BaseOutput, BaseOutput, ListCppOp, PredStr])
     ;   linear_generic_cpp(PredStr, 2, MemoEnabled, Code)
     ).
 

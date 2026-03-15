@@ -870,10 +870,16 @@ int ~w(const int* lst, int len) {
 }
 
 int main(int argc, char* argv[]) {
-    /* Usage with list input */
+    if (argc >= 2) {
+        int items[1024], len = 0;
+        char *copy = strdup(argv[1]), *tok = strtok(copy, ",");
+        while (tok && len < 1024) { items[len++] = atoi(tok); tok = strtok(NULL, ","); }
+        printf("%d\\n", ~w(items, len));
+        free(copy);
+    }
     return 0;
 }
-', [PredStr, '/* List pattern — no memoization */', PredStr, BaseOutput, BaseOutput, ListCOp])
+', [PredStr, '/* List pattern — no memoization */', PredStr, BaseOutput, BaseOutput, ListCOp, PredStr])
     ;   linear_generic_c(PredStr, 2, MemoEnabled, Code)
     ).
 
