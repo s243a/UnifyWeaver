@@ -876,7 +876,8 @@ fn handle_command(
     true
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let matches = clap::Command::new("uwsal")
         .about("UnifyWeaver Agent Loop")
         .version(env!("CARGO_PKG_VERSION"))

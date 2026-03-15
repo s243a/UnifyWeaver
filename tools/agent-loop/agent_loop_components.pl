@@ -730,6 +730,11 @@ emit_command_facts(S, _Options) :-
         agent_loop_module:write_prolog_term(S, Cmds),
         write(S, ').\n')
     ), GroupPairs),
+    write(S, '\n'),
+    %% command_action — data-driven dispatch for commands without handlers
+    write(S, '%% command_action(+Command, +Action) — data-driven dispatch\n'),
+    findall(Cmd-Act, agent_loop_module:prolog_command_action(Cmd, Act), ActionPairs),
+    maplist([Cmd-Act]>>(format(S, 'command_action(~q, ~q).~n', [Cmd, Act])), ActionPairs),
     write(S, '\n').
 
 %% emit_backend_facts(+Stream, +Options)

@@ -503,3 +503,141 @@ class TestComponentDriven:
         assert "```mermaid" in content, "README should contain mermaid code block"
         assert "graph TD" in content, "README should contain graph TD directive"
         assert "agent_loop" in content, "README diagram should reference agent_loop module"
+
+
+# ============================================================================
+# TestPluginManager — Phase 14 Python plugin system
+# ============================================================================
+
+class TestPluginManager:
+    """Test the PluginManager class in generated tools.py."""
+
+    def test_plugin_manager_import(self):
+        from tools import PluginManager
+        pm = PluginManager()
+        assert pm is not None
+
+    def test_plugin_manager_empty_state(self):
+        from tools import PluginManager
+        pm = PluginManager()
+        assert pm.list_tools() == []
+        assert pm.get_tool_schemas() == []
+
+    def test_plugin_manager_load_nonexistent_dir(self):
+        from tools import PluginManager
+        pm = PluginManager()
+        count = pm.load_dir("/nonexistent/path/to/plugins")
+        assert count == 0
+
+    def test_plugin_manager_load_file(self):
+        from tools import PluginManager
+        pm = PluginManager()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            import json
+            json.dump({
+                "name": "test-plugin",
+                "version": "1.0",
+                "tools": [{
+                    "name": "greet",
+                    "description": "Say hello",
+                    "parameters": [{"name": "name", "param_type": "string", "required": True}],
+                    "command_template": "echo Hello {name}!"
+                }]
+            }, f)
+            f.flush()
+            pm.load_file(f.name)
+        tools = pm.list_tools()
+        assert len(tools) == 1
+        assert tools[0]["name"] == "greet"
+        os.unlink(f.name)
+
+    def test_plugin_manager_execute(self):
+        from tools import PluginManager
+        pm = PluginManager()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            import json
+            json.dump({
+                "name": "test-plugin",
+                "version": "1.0",
+                "tools": [{
+                    "name": "greet",
+                    "description": "Say hello",
+                    "parameters": [{"name": "name", "param_type": "string", "required": True}],
+                    "command_template": "echo Hello {name}!"
+                }]
+            }, f)
+            f.flush()
+            pm.load_file(f.name)
+        result = pm.execute("greet", {"name": "World"})
+        assert result == "echo Hello World!"
+        os.unlink(f.name)
+
+    def test_plugin_manager_tool_schemas(self):
+        from tools import PluginManager
+        pm = PluginManager()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            import json
+            json.dump({
+                "name": "test-plugin",
+                "version": "1.0",
+                "tools": [{
+                    "name": "greet",
+                    "description": "Greet someone",
+                    "parameters": [{"name": "name", "param_type": "string", "required": True}],
+                    "command_template": "echo Hello {name}!"
+                }]
+            }, f)
+            f.flush()
+            pm.load_file(f.name)
+        schemas = pm.get_tool_schemas()
+        assert len(schemas) == 1
+        assert schemas[0]["type"] == "function"
+        assert schemas[0]["function"]["name"] == "greet"
+        os.unlink(f.name)
+
+    def test_plugin_execute_unknown_tool(self):
+        from tools import PluginManager
+        pm = PluginManager()
+        result = pm.execute("nonexistent", {})
+        assert result is None
+
+
+# ============================================================================
+# TestCommandDispatch — Phase 14 data-driven dispatch
+# ============================================================================
+
+class TestCommandDispatch:
+    """Test that data-driven command dispatch works in agent_loop.py."""
+
+    def test_agent_loop_module_importable(self):
+        """agent_loop module can be imported."""
+        import agent_loop
+        assert hasattr(agent_loop, 'AgentLoop')
+
+    def test_handle_command_exit(self):
+        """Exit command sets running=False."""
+        import agent_loop
+        loop = agent_loop.AgentLoop.__new__(agent_loop.AgentLoop)
+        loop.running = True
+        loop.config = {"model": "test", "max_context_tokens": 4096}
+        loop.context = type('MockCtx', (), {'clear': lambda self: None, 'token_count': lambda self: 0})()
+        loop.alias_manager = type('MockAlias', (), {'resolve': lambda self, x: x})()
+        # Mock other required attributes
+        loop.multiline_mode = False
+        result = loop._handle_command("exit")
+        assert result is True
+        assert loop.running is False
+
+    def test_handle_command_help(self):
+        """Help command returns True."""
+        import agent_loop
+        loop = agent_loop.AgentLoop.__new__(agent_loop.AgentLoop)
+        loop.running = True
+        loop.config = {"model": "test", "max_context_tokens": 4096}
+        loop.context = type('MockCtx', (), {'messages': []})()
+        loop.alias_manager = type('MockAlias', (), {'resolve': lambda self, x: x})()
+        loop.multiline_mode = False
+        # _print_help needs to exist
+        loop._print_help = lambda: None
+        result = loop._handle_command("help")
+        assert result is True

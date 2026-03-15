@@ -258,6 +258,10 @@ run_tests :-
     test_py_command_body_dispatch,
     test_py_plugin_manager,
     test_prolog_plugin_loading,
+    %% Phase 15 — async backend, E2E tests, Prolog data-driven dispatch
+    test_rust_async_backend,
+    test_rust_e2e_integration_tests,
+    test_prolog_data_driven_dispatch,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3065,7 +3069,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 32),
+    assert_eq('Rust fragment count', RFCount, 33),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -4895,4 +4899,102 @@ test_prolog_plugin_loading :-
     )),
     assert_true('render_plugin_template predicate exists', (
         sub_string(PlContent, _, _, _, "render_plugin_template")
+    )).
+
+%% ============================================================================
+%% Phase 15 — Async backend fragment
+%% ============================================================================
+
+test_rust_async_backend :-
+    format("~nRust async backend:~n"),
+    assert_true('async_backend fragment exists', (
+        agent_loop_module:rust_fragment(async_backend, _)
+    )),
+    agent_loop_module:rust_fragment(async_backend, AsyncContent),
+    assert_true('AsyncAgentBackend trait defined', (
+        sub_string(AsyncContent, _, _, _, "trait AsyncAgentBackend")
+    )),
+    assert_true('AsyncApiBackend struct defined', (
+        sub_string(AsyncContent, _, _, _, "struct AsyncApiBackend")
+    )),
+    assert_true('send_async method exists', (
+        sub_string(AsyncContent, _, _, _, "async fn send_async")
+    )),
+    assert_true('send_streaming_async method exists', (
+        sub_string(AsyncContent, _, _, _, "async fn send_streaming_async")
+    )),
+    assert_true('futures::StreamExt used', (
+        sub_string(AsyncContent, _, _, _, "futures::StreamExt")
+    )),
+    %% Verify tokio in Cargo.toml
+    agent_loop_module:output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../Cargo.toml', CargoPath),
+    read_file_to_string(CargoPath, CargoContent, []),
+    assert_true('Cargo.toml has tokio dependency', (
+        sub_string(CargoContent, _, _, _, "tokio")
+    )),
+    assert_true('Cargo.toml has futures dependency', (
+        sub_string(CargoContent, _, _, _, "futures")
+    )).
+
+%% ============================================================================
+%% Phase 15 — E2E integration test assertions
+%% ============================================================================
+
+test_rust_e2e_integration_tests :-
+    format("~nRust E2E integration tests:~n"),
+    agent_loop_module:output_path(rust, '', SrcDir),
+    atom_concat(SrcDir, '../tests/integration_tests.rs', TestPath),
+    read_file_to_string(TestPath, TestContent, []),
+    assert_true('async mock server test exists', (
+        sub_string(TestContent, _, _, _, "test_async_backend_mock_server")
+    )),
+    assert_true('anthropic mock test exists', (
+        sub_string(TestContent, _, _, _, "test_async_backend_anthropic_mock")
+    )),
+    assert_true('connection refused test exists', (
+        sub_string(TestContent, _, _, _, "test_async_backend_connection_refused")
+    )),
+    assert_true('tool call extraction openai test exists', (
+        sub_string(TestContent, _, _, _, "test_tool_call_extraction_openai_format")
+    )),
+    assert_true('tool call extraction anthropic test exists', (
+        sub_string(TestContent, _, _, _, "test_tool_call_extraction_anthropic_format")
+    )),
+    assert_true('tool call multiple test exists', (
+        sub_string(TestContent, _, _, _, "test_tool_call_multiple_calls")
+    )),
+    assert_true('tokio::test attribute used', (
+        sub_string(TestContent, _, _, _, "tokio::test")
+    )).
+
+%% ============================================================================
+%% Phase 15 — Prolog data-driven dispatch
+%% ============================================================================
+
+test_prolog_data_driven_dispatch :-
+    format("~nProlog data-driven dispatch:~n"),
+    assert_true('prolog_command_action exit exists', (
+        agent_loop_module:prolog_command_action(exit, exit)
+    )),
+    assert_true('prolog_command_action clear exists', (
+        agent_loop_module:prolog_command_action(clear, clear)
+    )),
+    assert_true('prolog_command_action help exists', (
+        agent_loop_module:prolog_command_action(help, help)
+    )),
+    assert_true('prolog_command_action status exists', (
+        agent_loop_module:prolog_command_action(status, status)
+    )),
+    assert_true('prolog_command_action multiline exists', (
+        agent_loop_module:prolog_command_action(multiline, multiline)
+    )),
+    %% Verify generated commands.pl has command_action facts
+    agent_loop_module:output_path(prolog, 'commands.pl', CmdPath),
+    read_file_to_string(CmdPath, CmdContent, []),
+    assert_true('generated commands.pl has command_action facts', (
+        sub_string(CmdContent, _, _, _, "command_action(exit")
+    )),
+    assert_true('handle_slash_command uses command_action', (
+        sub_string(CmdContent, _, _, _, "command_action")
     )).

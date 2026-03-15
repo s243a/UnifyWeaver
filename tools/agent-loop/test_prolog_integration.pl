@@ -17,6 +17,14 @@
 
 :- dynamic pl_test_passed/1, pl_test_failed/1.
 
+%% tmp_file_name(+Name, -Path) — get a writable temp file path
+tmp_file_name(Name, Path) :-
+    (getenv('TMPDIR', TmpDir) -> true
+    ; getenv('HOME', Home) -> atom_concat(Home, '/tmp', TmpDir)
+    ; TmpDir = '/tmp'),
+    (exists_directory(TmpDir) -> true ; make_directory_path(TmpDir)),
+    format(atom(Path), "~w/~w", [TmpDir, Name]).
+
 run_prolog_tests :-
     retractall(pl_test_passed(_)),
     retractall(pl_test_failed(_)),
@@ -28,6 +36,7 @@ run_prolog_tests :-
     test_backends_module,
     test_cost_tracker_runtime,
     test_config_runtime,
+    test_plugin_system,
     %% Report
     aggregate_all(count, pl_test_passed(_), Passed),
     aggregate_all(count, pl_test_failed(_), Failed),
@@ -203,4 +212,52 @@ test_config_runtime :-
     %% audit_profile_level lookup
     pl_assert_true('audit_profile_level paranoid is forensic', (
         config:audit_profile_level(paranoid, forensic)
+    )).
+
+%% ============================================================================
+%% Plugin loading and dispatch tests (Phase 15)
+%% ============================================================================
+
+test_plugin_system :-
+    format("~nplugin system:~n"),
+    %% Plugin tool loading from JSON fixture
+    tmp_file_name('uwsal_test_plugin.json', TmpFile),
+    PluginJson = '{"name":"test-plugin","version":"1.0","tools":[{"name":"greet","description":"Say hello","parameters":[{"name":"who","param_type":"string"}],"command_template":"echo Hello {who}!"}]}',
+    open(TmpFile, write, WS),
+    write(WS, PluginJson),
+    close(WS),
+    pl_assert_true('load_plugin_file succeeds', (
+        tools:load_plugin_file(TmpFile)
+    )),
+    pl_assert_true('plugin_tool registered', (
+        tools:plugin_tool(greet, _, _)
+    )),
+    pl_assert_true('execute_plugin_tool renders template', (
+        tools:execute_plugin_tool(greet, _{who: 'World'}, Result),
+        Result \= error(_)
+    )),
+    %% Cleanup
+    retractall(tools:plugin_tool(greet, _, _)),
+    (exists_file(TmpFile) -> delete_file(TmpFile) ; true),
+    %% command_action facts
+    pl_assert_true('command_action exit exists', (
+        commands:command_action(exit, exit)
+    )),
+    pl_assert_true('command_action clear exists', (
+        commands:command_action(clear, clear)
+    )),
+    pl_assert_true('command_action help exists', (
+        commands:command_action(help, help)
+    )),
+    pl_assert_true('command_action multiline exists', (
+        commands:command_action(multiline, multiline)
+    )),
+    %% handle_slash_command uses command_action
+    pl_assert_true('handle_slash_command exit returns exit action', (
+        commands:handle_slash_command(exit, "", Action),
+        Action == exit
+    )),
+    pl_assert_true('handle_slash_command help returns help action', (
+        commands:handle_slash_command(help, "", Action2),
+        Action2 == help
     )).

@@ -118,17 +118,31 @@ execute_plugin_tool(ToolName, Params, Result) :-
 render_plugin_template(Template, Args, PluginParams, Rendered) :-
     atom_string(Template, TStr),
     foldl([P, In, Out]>>(
-        (is_dict(P) -> get_dict(name, P, PName) ; PName = P),
-        atom_string(PName, PNameStr),
-        format(atom(Placeholder), "{~w}", [PNameStr]),
-        atom_string(Placeholder, PlaceholderStr),
-        (get_dict(PName, Args, Val) ->
+        (is_dict(P) -> get_dict(name, P, PName0) ; PName0 = P),
+        (atom(PName0) -> PNameAtom = PName0 ; atom_string(PNameAtom, PName0)),
+        atom_string(PNameAtom, PNameStr),
+        format(string(Placeholder), "{~w}", [PNameStr]),
+        (get_dict(PNameAtom, Args, Val) ->
             term_string(Val, ValStr),
-            split_string(In, PlaceholderStr, "", Parts),
-            atomics_to_string(Parts, ValStr, Out)
+            replace_all_in_string(In, Placeholder, ValStr, Out)
         ; Out = In)
     ), PluginParams, TStr, RenderedStr),
     atom_string(Rendered, RenderedStr).
+
+%% replace_all_in_string(+Input, +Search, +Replace, -Output)
+replace_all_in_string(Input, Search, Replace, Output) :-
+    string_length(Search, SLen),
+    (SLen =:= 0 -> Output = Input
+    ; replace_all_helper(Input, Search, SLen, Replace, Output)).
+replace_all_helper(Input, Search, SLen, Replace, Output) :-
+    (sub_string(Input, Before, SLen, _, Search) ->
+        sub_string(Input, 0, Before, _, Left),
+        AfterPos is Before + SLen,
+        sub_string(Input, AfterPos, _, 0, Right),
+        replace_all_helper(Right, Search, SLen, Replace, RestOutput),
+        string_concat(Left, Replace, Tmp),
+        string_concat(Tmp, RestOutput, Output)
+    ; Output = Input).
 
 atomics_to_string([], _, "").
 atomics_to_string([Part], _, Part).

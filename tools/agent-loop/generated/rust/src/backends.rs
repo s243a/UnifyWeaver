@@ -279,7 +279,7 @@ impl ApiBackend {
         messages
     }
 
-    fn build_request_body(&self, message: &str, context: &[Message]) -> serde_json::Value {
+    pub fn build_request_body(&self, message: &str, context: &[Message]) -> serde_json::Value {
         use crate::tools::tool_schemas_json;
         let messages = self.build_messages(message, context);
         let tools = tool_schemas_json();
@@ -367,7 +367,7 @@ impl ApiBackend {
     }
 
     /// Parse response JSON into AgentResponse (format-aware).
-    fn parse_response(&self, json: serde_json::Value) -> AgentResponse {
+    pub fn parse_response(&self, json: serde_json::Value) -> AgentResponse {
         if self.api_format == "anthropic" {
             let content = json["content"].as_array()
                 .and_then(|arr| arr.iter()
@@ -449,6 +449,173 @@ impl AgentBackend for ApiBackend {
     }
 
     fn name(&self) -> &str { &self.backend_name }
+    fn supports_streaming(&self) -> bool { true }
+}
+
+
+
+/// Async interface for agent backends (tokio-based).
+pub trait AsyncAgentBackend {
+    /// Send a message asynchronously and return the response.
+    fn send_message_async(&self, message: &str, context: &[Message])
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentResponse> + Send + '_>>;
+
+    /// Return the backend name.
+    fn name(&self) -> &str;
+
+    /// Whether this backend supports streaming.
+    fn supports_streaming(&self) -> bool { false }
+}
+
+/// Async wrapper around ApiBackend for non-blocking HTTP calls.
+pub struct AsyncApiBackend {
+    pub inner: ApiBackend,
+}
+
+impl AsyncApiBackend {
+    pub fn new(name: &str, endpoint: &str, api_key: Option<String>, model: &str, stream: bool, api_format: &str) -> Self {
+        Self {
+            inner: ApiBackend::new(name, endpoint, api_key, model, stream, api_format),
+        }
+    }
+
+    fn add_auth_header(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(ref key) = self.inner.api_key {
+            if self.inner.api_format == "anthropic" {
+                req.header("x-api-key", key)
+                   .header("anthropic-version", "2023-06-01")
+            } else {
+                req.header("Authorization", format!("Bearer {}", key))
+            }
+        } else {
+            req
+        }
+    }
+
+    /// Send a non-streaming async request.
+    pub async fn send_async(&self, message: &str, context: &[Message]) -> AgentResponse {
+        let client = reqwest::Client::new();
+        let body = self.inner.build_request_body(message, context);
+
+        let req = client.post(&self.inner.endpoint)
+            .header("Content-Type", "application/json");
+        let req = self.add_auth_header(req);
+
+        match req.json(&body).send().await {
+            Ok(resp) => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(json) => self.inner.parse_response(json),
+                    Err(e) => AgentResponse {
+                        content: format!("JSON parse error: {}", e),
+                        model: self.inner.model.clone(),
+                        ..Default::default()
+                    },
+                }
+            }
+            Err(e) => AgentResponse {
+                content: format!("HTTP error: {}", e),
+                model: self.inner.model.clone(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Send a streaming async request, calling on_token for each chunk.
+    pub async fn send_streaming_async<F>(&self, message: &str, context: &[Message], mut on_token: F) -> AgentResponse
+    where F: FnMut(&str)
+    {
+        use futures::StreamExt;
+        let client = reqwest::Client::new();
+        let mut body = self.inner.build_request_body(message, context);
+        body["stream"] = serde_json::json!(true);
+        if self.inner.api_format != "anthropic" {
+            body["stream_options"] = serde_json::json!({"include_usage": true});
+        }
+
+        let req = client.post(&self.inner.endpoint)
+            .header("Content-Type", "application/json");
+        let req = self.add_auth_header(req);
+
+        match req.json(&body).send().await {
+            Ok(resp) => {
+                let mut full_content = String::new();
+                let mut input_tokens: u64 = 0;
+                let mut output_tokens: u64 = 0;
+                let mut stream = resp.bytes_stream();
+
+                let mut buffer = String::new();
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(bytes) => {
+                            buffer.push_str(&String::from_utf8_lossy(&bytes));
+                            while let Some(line_end) = buffer.find('\n') {
+                                let line = buffer[..line_end].to_string();
+                                buffer = buffer[line_end + 1..].to_string();
+                                if let Some(data) = line.strip_prefix("data: ") {
+                                    if data.trim() == "[DONE]" { continue; }
+                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                        // Extract token from delta
+                                        let token = if self.inner.api_format == "anthropic" {
+                                            json["delta"]["text"].as_str().unwrap_or("").to_string()
+                                        } else {
+                                            json["choices"][0]["delta"]["content"].as_str().unwrap_or("").to_string()
+                                        };
+                                        if !token.is_empty() {
+                                            on_token(&token);
+                                            full_content.push_str(&token);
+                                        }
+                                        // Extract usage if present
+                                        if let Some(usage) = json.get("usage") {
+                                            if let Some(it) = usage["input_tokens"].as_u64()
+                                                .or(usage["prompt_tokens"].as_u64()) {
+                                                input_tokens = it;
+                                            }
+                                            if let Some(ot) = usage["output_tokens"].as_u64()
+                                                .or(usage["completion_tokens"].as_u64()) {
+                                                output_tokens = ot;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            full_content.push_str(&format!("
+[Stream error: {}]", e));
+                            break;
+                        }
+                    }
+                }
+
+                AgentResponse {
+                    content: full_content,
+                    input_tokens,
+                    output_tokens,
+                    model: self.inner.model.clone(),
+                    ..Default::default()
+                }
+            }
+            Err(e) => AgentResponse {
+                content: format!("HTTP error: {}", e),
+                model: self.inner.model.clone(),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+impl AsyncAgentBackend for AsyncApiBackend {
+    fn send_message_async(&self, message: &str, context: &[Message])
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = AgentResponse> + Send + '_>>
+    {
+        let msg = message.to_string();
+        let ctx = context.to_vec();
+        Box::pin(async move {
+            self.send_async(&msg, &ctx).await
+        })
+    }
+
+    fn name(&self) -> &str { self.inner.name() }
     fn supports_streaming(&self) -> bool { true }
 }
 
