@@ -182,7 +182,12 @@ generate_linear_as_tail_code(r, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
     ~s
   }
   return(acc)
-}', [PredStr, Init, Cond, ROp, StepExpr]).
+}
+
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    if (length(args) >= 1) cat(~s(as.integer(args[1])), "\\n")
+}', [PredStr, Init, Cond, ROp, StepExpr, PredStr]).
 
 generate_linear_as_tail_code(python, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
     linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
@@ -194,12 +199,18 @@ generate_linear_as_tail_code(python, PredStr, _Arity, Init, Op, Pred/Arity, Code
         format(string(StepExpr), 'n += ~w', [StepVal])
     ),
     format(string(Code),
-'def ~s(n):
+'import sys
+
+def ~s(n):
     acc = ~w
     while ~s:
         acc = acc ~s n
         ~s
-    return acc', [PredStr, Init, Cond, PyOp, StepExpr]).
+    return acc
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2:
+        print(~s(int(sys.argv[1])))', [PredStr, Init, Cond, PyOp, StepExpr, PredStr]).
 
 generate_linear_as_tail_code(lua, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
     linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
@@ -317,11 +328,22 @@ generate_linear_as_tail_code(haskell, PredStr, _Arity, Init, Op, Pred/Arity, Cod
     ;   format(string(StepExpr), 'n + ~w', [StepVal])
     ),
     format(string(Code),
-'~s :: Integer -> Integer
+'module Main where
+
+import System.Environment (getArgs)
+
+~s :: Integer -> Integer
 ~s n = go n ~w
   where
     go 0 acc = acc
-    go n acc = go (~s) (acc ~s n)', [PredStr, PredStr, Init, StepExpr, HsOp]).
+    go n acc = go (~s) (acc ~s n)
+
+main :: IO ()
+main = do
+    args <- getArgs
+    case args of
+        (x:_) -> print (~s (read x))
+        _     -> putStrLn "Usage: ~s <n>"', [PredStr, PredStr, Init, StepExpr, HsOp, PredStr, PredStr]).
 
 generate_linear_as_tail_code(elixir, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
     linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
@@ -331,9 +353,16 @@ generate_linear_as_tail_code(elixir, PredStr, _Arity, Init, Op, Pred/Arity, Code
     ;   format(string(StepExpr), 'n + ~w', [StepVal])
     ),
     format(string(Code),
-'def ~s(n), do: do_~s(n, ~w)
-defp do_~s(0, acc), do: acc
-defp do_~s(n, acc), do: do_~s(~s, acc ~s n)', [PredStr, PredStr, Init, PredStr, PredStr, PredStr, StepExpr, ExOp]).
+'defmodule Tail do
+  def ~s(n), do: do_~s(n, ~w)
+  defp do_~s(0, acc), do: acc
+  defp do_~s(n, acc), do: do_~s(~s, acc ~s n)
+end
+
+case System.argv() do
+  [n | _] -> IO.puts(Tail.~s(String.to_integer(n)))
+  _ -> IO.puts("Usage: elixir script.exs <n>")
+end', [PredStr, PredStr, Init, PredStr, PredStr, PredStr, StepExpr, ExOp, PredStr]).
 
 generate_linear_as_tail_code(fsharp, PredStr, _Arity, Init, Op, Pred/Arity, Code) :-
     linear_recursion:extract_step_info_for(Pred/Arity, StepVal, Direction),
@@ -343,11 +372,19 @@ generate_linear_as_tail_code(fsharp, PredStr, _Arity, Init, Op, Pred/Arity, Code
     ;   format(string(StepExpr), 'n + ~w', [StepVal])
     ),
     format(string(Code),
-'let ~s n =
+'open System
+
+let ~s n =
     let rec loop n acc =
         if n = 0 then acc
         else loop (~s) (acc ~s n)
-    loop n ~w', [PredStr, StepExpr, FsOp, Init]).
+    loop n ~w
+
+[<EntryPoint>]
+let main argv =
+    if argv.Length >= 1 then
+        printfn "%d" (~s (int argv.[0]))
+    0', [PredStr, StepExpr, FsOp, Init, PredStr]).
 
 generate_linear_as_tail_code(Target, PredStr, _, _, _, _, _) :-
     format(user_error, 'Linear→tail code generation not implemented for target ~w (~s)~n', [Target, PredStr]),
