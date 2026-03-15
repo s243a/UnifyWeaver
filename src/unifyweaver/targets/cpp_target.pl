@@ -826,7 +826,7 @@ int main(int argc, char* argv[]) {
     // Usage with list input
     return 0;
 }
-', [PredStr, MemoDecl, PredStr, BaseOutput, BaseOutput, ListCppOp])
+', [PredStr, '// List pattern — no memoization', PredStr, BaseOutput, BaseOutput, ListCppOp])
     ;   linear_generic_cpp(PredStr, 2, MemoEnabled, Code)
     ).
 

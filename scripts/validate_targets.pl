@@ -113,11 +113,18 @@ run_validation :-
     assertz(user:parent(bob, pat)),
     assertz(user:parent(ann, sue)),
 
-    Targets = [ruby, perl, typescript, c, cpp, elixir, fsharp, haskell, java, lua, r],
-
+    % Full-suite targets (all 5 patterns)
+    FullTargets = [ruby, perl, typescript, c, cpp, elixir, fsharp, haskell, java, lua, r],
     forall(
-        member(Target, Targets),
+        member(Target, FullTargets),
         validate_target(Target)
+    ),
+
+    % Transitive-closure-only targets
+    TcOnlyTargets = [go, sql],
+    forall(
+        member(Target, TcOnlyTargets),
+        validate_tc_only(Target)
     ),
 
     writeln(''),
@@ -157,11 +164,21 @@ validate_target(Target) :-
     ->  true ; format('  ✗ mutual even_odd: FAILED~n')
     ),
 
-    % Transitive closure: ancestor (not all targets support this)
+    % Transitive closure: ancestor
     atomic_list_concat(['ancestor', Ext], TcFile),
     (   catch(generate(Target, transitive, ancestor, 2, TcFile), E5,
             (format('  ✗ transitive ancestor: ~w~n', [E5]), true))
     ->  true ; format('  ✗ transitive ancestor: not supported~n')
+    ).
+
+%% Validate transitive-closure-only targets (Go, SQL)
+validate_tc_only(Target) :-
+    target_ext(Target, Ext),
+    format('~n--- ~w (transitive closure only) ---~n', [Target]),
+    atomic_list_concat(['ancestor', Ext], TcFile),
+    (   catch(generate(Target, transitive, ancestor, 2, TcFile), E,
+            (format('  ✗ transitive ancestor: ~w~n', [E]), true))
+    ->  true ; format('  ✗ transitive ancestor: FAILED~n')
     ).
 
 target_ext(ruby, '.rb').
@@ -175,3 +192,5 @@ target_ext(haskell, '.hs').
 target_ext(java, '.java').
 target_ext(lua, '.lua').
 target_ext(r, '.R').
+target_ext(go, '.go').
+target_ext(sql, '.sql').
