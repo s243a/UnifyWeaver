@@ -1,5 +1,5 @@
 #!/usr/bin/env swipl
-%% validate_targets.pl — Generate and test output for Ruby, Perl, TypeScript, C, C++
+%% validate_targets.pl — Generate and test output for all targets with multifile dispatch
 %%
 %% Usage: swipl -g "consult('scripts/validate_targets'), run_validation" -t halt
 
@@ -18,6 +18,12 @@
 :- use_module('src/unifyweaver/targets/typescript_target', []).
 :- use_module('src/unifyweaver/targets/c_target', []).
 :- use_module('src/unifyweaver/targets/cpp_target', []).
+:- use_module('src/unifyweaver/targets/elixir_target', []).
+:- use_module('src/unifyweaver/targets/fsharp_target', []).
+:- use_module('src/unifyweaver/targets/haskell_target', []).
+:- use_module('src/unifyweaver/targets/java_target', []).
+:- use_module('src/unifyweaver/targets/lua_target', []).
+:- use_module('src/unifyweaver/targets/r_target', []).
 
 :- use_module(library(lists)).
 
@@ -107,7 +113,7 @@ run_validation :-
     assertz(user:parent(bob, pat)),
     assertz(user:parent(ann, sue)),
 
-    Targets = [ruby, perl, typescript, c, cpp],
+    Targets = [ruby, perl, typescript, c, cpp, elixir, fsharp, haskell, java, lua, r],
 
     forall(
         member(Target, Targets),
@@ -151,11 +157,11 @@ validate_target(Target) :-
     ->  true ; format('  ✗ mutual even_odd: FAILED~n')
     ),
 
-    % Transitive closure: ancestor
+    % Transitive closure: ancestor (not all targets support this)
     atomic_list_concat(['ancestor', Ext], TcFile),
     (   catch(generate(Target, transitive, ancestor, 2, TcFile), E5,
             (format('  ✗ transitive ancestor: ~w~n', [E5]), true))
-    ->  true ; format('  ✗ transitive ancestor: FAILED~n')
+    ->  true ; format('  ✗ transitive ancestor: not supported~n')
     ).
 
 target_ext(ruby, '.rb').
@@ -163,3 +169,9 @@ target_ext(perl, '.pl').
 target_ext(typescript, '.ts').
 target_ext(c, '.c').
 target_ext(cpp, '.cpp').
+target_ext(elixir, '.ex').
+target_ext(fsharp, '.fs').
+target_ext(haskell, '.hs').
+target_ext(java, '.java').
+target_ext(lua, '.lua').
+target_ext(r, '.R').
