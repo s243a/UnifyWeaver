@@ -24,6 +24,10 @@
 :- use_module('src/unifyweaver/targets/java_target', []).
 :- use_module('src/unifyweaver/targets/lua_target', []).
 :- use_module('src/unifyweaver/targets/r_target', []).
+:- use_module('src/unifyweaver/targets/kotlin_target', []).
+:- use_module('src/unifyweaver/targets/scala_target', []).
+:- use_module('src/unifyweaver/targets/clojure_target', []).
+:- use_module('src/unifyweaver/targets/jython_target', []).
 
 :- use_module(library(lists)).
 
@@ -120,6 +124,13 @@ run_validation :-
         validate_target(Target)
     ),
 
+    % Targets with linear + transitive closure dispatch only (no multicall/mutual)
+    LinearTcTargets = [kotlin, scala, clojure, jython],
+    forall(
+        member(Target, LinearTcTargets),
+        validate_linear_tc(Target)
+    ),
+
     % Transitive-closure-only targets
     TcOnlyTargets = [go, sql],
     forall(
@@ -171,6 +182,32 @@ validate_target(Target) :-
     ->  true ; format('  ✗ transitive ancestor: not supported~n')
     ).
 
+%% Validate targets with linear + transitive closure support (Kotlin, Scala, Clojure, Jython)
+validate_linear_tc(Target) :-
+    target_ext(Target, Ext),
+    format('~n--- ~w (linear + transitive closure) ---~n', [Target]),
+
+    % Linear recursion: factorial
+    atomic_list_concat(['factorial', Ext], FacFile),
+    (   catch(generate(Target, linear, factorial, 2, FacFile), E,
+            (format('  ✗ linear factorial: ~w~n', [E]), true))
+    ->  true ; format('  ✗ linear factorial: FAILED~n')
+    ),
+
+    % Linear recursion: list_sum
+    atomic_list_concat(['list_sum', Ext], SumFile),
+    (   catch(generate(Target, linear, list_sum, 2, SumFile), E2,
+            (format('  ✗ linear list_sum: ~w~n', [E2]), true))
+    ->  true ; format('  ✗ linear list_sum: FAILED~n')
+    ),
+
+    % Transitive closure: ancestor
+    atomic_list_concat(['ancestor', Ext], TcFile),
+    (   catch(generate(Target, transitive, ancestor, 2, TcFile), E3,
+            (format('  ✗ transitive ancestor: ~w~n', [E3]), true))
+    ->  true ; format('  ✗ transitive ancestor: FAILED~n')
+    ).
+
 %% Validate transitive-closure-only targets (Go, SQL)
 validate_tc_only(Target) :-
     target_ext(Target, Ext),
@@ -194,3 +231,7 @@ target_ext(lua, '.lua').
 target_ext(r, '.R').
 target_ext(go, '.go').
 target_ext(sql, '.sql').
+target_ext(kotlin, '.kt').
+target_ext(scala, '.scala').
+target_ext(clojure, '.clj').
+target_ext(jython, '.jy.py').
