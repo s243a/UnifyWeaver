@@ -422,6 +422,57 @@ test_csharp_query_target :-
     ),
     writeln('=== C# query target tests complete ===').
 
+assert_binary_recursive_fixture(EdgePred, ReachPred, ModeSpec, EdgeFacts) :-
+    maplist(assert_fact(EdgePred), EdgeFacts),
+    assert_mode(ReachPred, ModeSpec),
+    assert_binary_recursive_rules(EdgePred, ReachPred).
+
+assert_grouped_recursive_fixture(EdgePred, ReachPred, ModeSpec, EdgeFacts) :-
+    maplist(assert_fact(EdgePred), EdgeFacts),
+    assert_mode(ReachPred, ModeSpec),
+    assert_grouped_recursive_rules(EdgePred, ReachPred).
+
+assert_fact(Pred, Args) :-
+    Fact =.. [Pred | Args],
+    assertz(user:Fact).
+
+assert_mode(Pred, ModeSpec) :-
+    ModeTerm =.. [Pred | ModeSpec],
+    assertz(user:mode(ModeTerm)).
+
+assert_binary_recursive_rules(EdgePred, ReachPred) :-
+    BaseHead =.. [ReachPred, X, Y],
+    BaseEdge =.. [EdgePred, X, Y],
+    assertz(user:(BaseHead :- BaseEdge)),
+    RecursiveHead =.. [ReachPred, X, Z],
+    RecursiveEdge =.. [EdgePred, X, Y],
+    RecursiveCall =.. [ReachPred, Y, Z],
+    assertz(user:(RecursiveHead :-
+        RecursiveEdge,
+        RecursiveCall
+    )).
+
+assert_grouped_recursive_rules(EdgePred, ReachPred) :-
+    BaseHead =.. [ReachPred, X, Y, L, Cat],
+    BaseEdge =.. [EdgePred, X, Y, L, Cat],
+    assertz(user:(BaseHead :- BaseEdge)),
+    RecursiveHead =.. [ReachPred, X, Z, L, Cat],
+    RecursiveEdge =.. [EdgePred, X, Y, L, Cat],
+    RecursiveCall =.. [ReachPred, Y, Z, L, Cat],
+    assertz(user:(RecursiveHead :-
+        RecursiveEdge,
+        RecursiveCall
+    )).
+
+cleanup_recursive_fixture(EdgePred, ReachPred, Arity) :-
+    functor(EdgeTerm, EdgePred, Arity),
+    retractall(user:EdgeTerm),
+    functor(ReachTerm, ReachPred, Arity),
+    retractall(user:ReachTerm),
+    length(ModeArgs, Arity),
+    ModeTerm =.. [ReachPred | ModeArgs],
+    retractall(user:mode(ModeTerm)).
+
 setup_test_data :-
     cleanup_test_data,
     assertz(user:test_fact(alice, bob)),
@@ -763,76 +814,36 @@ setup_test_data :-
         test_label_cat_edge(X, Y, L, Cat),
         test_label_cat_reach_param_both(Y, Z, L, Cat)
     )),
-    assertz(user:test_group_probe_dir_forward_edge(a, b, red, cat1)),
-    assertz(user:test_group_probe_dir_forward_edge(b, c, red, cat1)),
-    assertz(user:test_group_probe_dir_forward_edge(x, c, red, cat1)),
-    assertz(user:test_group_probe_dir_forward_edge(y, c, red, cat1)),
-    assertz(user:mode(test_group_probe_dir_forward_reach(+, +, +, +))),
-    assertz(user:(test_group_probe_dir_forward_reach(X, Y, L, Cat) :-
-        test_group_probe_dir_forward_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_group_probe_dir_forward_reach(X, Z, L, Cat) :-
-        test_group_probe_dir_forward_edge(X, Y, L, Cat),
-        test_group_probe_dir_forward_reach(Y, Z, L, Cat)
-    )),
-    assertz(user:test_group_probe_dir_backward_edge(a, b, red, cat1)),
-    assertz(user:test_group_probe_dir_backward_edge(a, d, red, cat1)),
-    assertz(user:test_group_probe_dir_backward_edge(a, e, red, cat1)),
-    assertz(user:test_group_probe_dir_backward_edge(b, c, red, cat1)),
-    assertz(user:mode(test_group_probe_dir_backward_reach(+, +, +, +))),
-    assertz(user:(test_group_probe_dir_backward_reach(X, Y, L, Cat) :-
-        test_group_probe_dir_backward_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_group_probe_dir_backward_reach(X, Z, L, Cat) :-
-        test_group_probe_dir_backward_edge(X, Y, L, Cat),
-        test_group_probe_dir_backward_reach(Y, Z, L, Cat)
-    )),
-    assertz(user:test_group_probe_dir_mixed_edge(a, m, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_edge(m, z, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_edge(x, z, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_edge(y, z, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_edge(p, q, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_edge(p, r, red, cat1)),
-    assertz(user:mode(test_group_probe_dir_mixed_reach(+, +, +, +))),
-    assertz(user:(test_group_probe_dir_mixed_reach(X, Y, L, Cat) :-
-        test_group_probe_dir_mixed_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_group_probe_dir_mixed_reach(X, Z, L, Cat) :-
-        test_group_probe_dir_mixed_edge(X, Y, L, Cat),
-        test_group_probe_dir_mixed_reach(Y, Z, L, Cat)
-    )),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(a, m, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(m, z, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(x, z, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(h, g, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(g, p, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(p, q, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(p, r, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(u, t, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_edge(u, v, red, cat1)),
-    assertz(user:mode(test_group_probe_dir_mixed_bytarget_reach(+, +, +, +))),
-    assertz(user:(test_group_probe_dir_mixed_bytarget_reach(X, Y, L, Cat) :-
-        test_group_probe_dir_mixed_bytarget_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_group_probe_dir_mixed_bytarget_reach(X, Z, L, Cat) :-
-        test_group_probe_dir_mixed_bytarget_edge(X, Y, L, Cat),
-        test_group_probe_dir_mixed_bytarget_reach(Y, Z, L, Cat)
-    )),
-    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(a, m, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(m, z, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(h, g, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(g, p, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(p, q, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(p, r, red, cat1)),
-    assertz(user:test_group_probe_dir_mixed_bytarget_lru_edge(p, s, red, cat1)),
-    assertz(user:mode(test_group_probe_dir_mixed_bytarget_lru_reach(+, +, +, +))),
-    assertz(user:(test_group_probe_dir_mixed_bytarget_lru_reach(X, Y, L, Cat) :-
-        test_group_probe_dir_mixed_bytarget_lru_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_group_probe_dir_mixed_bytarget_lru_reach(X, Z, L, Cat) :-
-        test_group_probe_dir_mixed_bytarget_lru_edge(X, Y, L, Cat),
-        test_group_probe_dir_mixed_bytarget_lru_reach(Y, Z, L, Cat)
-    )),
+    assert_grouped_recursive_fixture(
+        test_group_probe_dir_forward_edge,
+        test_group_probe_dir_forward_reach,
+        [+, +, +, +],
+        [[a, b, red, cat1], [b, c, red, cat1], [x, c, red, cat1], [y, c, red, cat1]]
+    ),
+    assert_grouped_recursive_fixture(
+        test_group_probe_dir_backward_edge,
+        test_group_probe_dir_backward_reach,
+        [+, +, +, +],
+        [[a, b, red, cat1], [a, d, red, cat1], [a, e, red, cat1], [b, c, red, cat1]]
+    ),
+    assert_grouped_recursive_fixture(
+        test_group_probe_dir_mixed_edge,
+        test_group_probe_dir_mixed_reach,
+        [+, +, +, +],
+        [[a, m, red, cat1], [m, z, red, cat1], [x, z, red, cat1], [y, z, red, cat1], [p, q, red, cat1], [p, r, red, cat1]]
+    ),
+    assert_grouped_recursive_fixture(
+        test_group_probe_dir_mixed_bytarget_edge,
+        test_group_probe_dir_mixed_bytarget_reach,
+        [+, +, +, +],
+        [[a, m, red, cat1], [m, z, red, cat1], [x, z, red, cat1], [h, g, red, cat1], [g, p, red, cat1], [p, q, red, cat1], [p, r, red, cat1], [u, t, red, cat1], [u, v, red, cat1]]
+    ),
+    assert_grouped_recursive_fixture(
+        test_group_probe_dir_mixed_bytarget_lru_edge,
+        test_group_probe_dir_mixed_bytarget_lru_reach,
+        [+, +, +, +],
+        [[a, m, red, cat1], [m, z, red, cat1], [h, g, red, cat1], [g, p, red, cat1], [p, q, red, cat1], [p, r, red, cat1], [p, s, red, cat1]]
+    ),
     assertz(user:test_cat(cat1)),
     assertz(user:test_catmix(catmix)),
     assertz(user:test_recursive_label_path_cat_filtered(a, b, red, cat1)),
@@ -1048,137 +1059,64 @@ setup_test_data :-
     assertz(user:mode(test_reachable_param_both(+, +))),
     assertz(user:(test_reachable_param_both(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable_param_both(X, Z) :- test_fact(X, Y), test_reachable_param_both(Y, Z))),
-    assertz(user:test_probe_dir_forward_edge(a, b)),
-    assertz(user:test_probe_dir_forward_edge(b, c)),
-    assertz(user:test_probe_dir_forward_edge(x, c)),
-    assertz(user:test_probe_dir_forward_edge(y, c)),
-    assertz(user:mode(test_probe_dir_forward_reach(+, +))),
-    assertz(user:(test_probe_dir_forward_reach(X, Y) :- test_probe_dir_forward_edge(X, Y))),
-    assertz(user:(test_probe_dir_forward_reach(X, Z) :-
-        test_probe_dir_forward_edge(X, Y),
-        test_probe_dir_forward_reach(Y, Z)
-    )),
-    assertz(user:test_probe_dir_backward_edge(a, b)),
-    assertz(user:test_probe_dir_backward_edge(a, d)),
-    assertz(user:test_probe_dir_backward_edge(a, e)),
-    assertz(user:test_probe_dir_backward_edge(b, c)),
-    assertz(user:mode(test_probe_dir_backward_reach(+, +))),
-    assertz(user:(test_probe_dir_backward_reach(X, Y) :- test_probe_dir_backward_edge(X, Y))),
-    assertz(user:(test_probe_dir_backward_reach(X, Z) :-
-        test_probe_dir_backward_edge(X, Y),
-        test_probe_dir_backward_reach(Y, Z)
-    )),
-    assertz(user:test_probe_dir_mixed_edge(a, m)),
-    assertz(user:test_probe_dir_mixed_edge(m, z)),
-    assertz(user:test_probe_dir_mixed_edge(x, z)),
-    assertz(user:test_probe_dir_mixed_edge(y, z)),
-    assertz(user:test_probe_dir_mixed_edge(p, q)),
-    assertz(user:test_probe_dir_mixed_edge(p, r)),
-    assertz(user:mode(test_probe_dir_mixed_reach(+, +))),
-    assertz(user:(test_probe_dir_mixed_reach(X, Y) :- test_probe_dir_mixed_edge(X, Y))),
-    assertz(user:(test_probe_dir_mixed_reach(X, Z) :-
-        test_probe_dir_mixed_edge(X, Y),
-        test_probe_dir_mixed_reach(Y, Z)
-    )),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(a, m)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(m, z)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(x, z)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(h, g)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(g, p)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(p, q)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(p, r)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(u, t)),
-    assertz(user:test_probe_dir_mixed_bytarget_edge(u, v)),
-    assertz(user:mode(test_probe_dir_mixed_bytarget_reach(+, +))),
-    assertz(user:(test_probe_dir_mixed_bytarget_reach(X, Y) :- test_probe_dir_mixed_bytarget_edge(X, Y))),
-    assertz(user:(test_probe_dir_mixed_bytarget_reach(X, Z) :-
-        test_probe_dir_mixed_bytarget_edge(X, Y),
-        test_probe_dir_mixed_bytarget_reach(Y, Z)
-    )),
-    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(a, m)),
-    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(m, z)),
-    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(h, g)),
-    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(g, p)),
-    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(p, q)),
-    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(p, r)),
-    assertz(user:test_probe_dir_mixed_bytarget_lru_edge(p, s)),
-    assertz(user:mode(test_probe_dir_mixed_bytarget_lru_reach(+, +))),
-    assertz(user:(test_probe_dir_mixed_bytarget_lru_reach(X, Y) :-
-        test_probe_dir_mixed_bytarget_lru_edge(X, Y)
-    )),
-    assertz(user:(test_probe_dir_mixed_bytarget_lru_reach(X, Z) :-
-        test_probe_dir_mixed_bytarget_lru_edge(X, Y),
-        test_probe_dir_mixed_bytarget_lru_reach(Y, Z)
-    )),
-    assertz(user:test_admission_edge(a, b)),
-    assertz(user:test_admission_edge(a, c)),
-    assertz(user:test_admission_edge(a, d)),
-    assertz(user:test_admission_edge(b, e)),
-    assertz(user:test_admission_edge(c, e)),
-    assertz(user:test_admission_edge(d, e)),
-    assertz(user:mode(test_admission_reach_pair(+, +))),
-    assertz(user:(test_admission_reach_pair(X, Y) :- test_admission_edge(X, Y))),
-    assertz(user:(test_admission_reach_pair(X, Z) :-
-        test_admission_edge(X, Y),
-        test_admission_reach_pair(Y, Z)
-    )),
-    assertz(user:test_admission_group_edge(a, b, adm, cata)),
-    assertz(user:test_admission_group_edge(a, c, adm, cata)),
-    assertz(user:test_admission_group_edge(b, e, adm, cata)),
-    assertz(user:test_admission_group_edge(c, e, adm, cata)),
-    assertz(user:test_admission_group_edge(d, e, adm, cata)),
-    assertz(user:mode(test_admission_group_reach_param(+, -, +, +))),
-    assertz(user:(test_admission_group_reach_param(X, Y, L, Cat) :-
-        test_admission_group_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_admission_group_reach_param(X, Z, L, Cat) :-
-        test_admission_group_edge(X, Y, L, Cat),
-        test_admission_group_reach_param(Y, Z, L, Cat)
-    )),
-    assertz(user:mode(test_admission_group_reach_param_end(-, +, +, +))),
-    assertz(user:(test_admission_group_reach_param_end(X, Y, L, Cat) :-
-        test_admission_group_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_admission_group_reach_param_end(X, Z, L, Cat) :-
-        test_admission_group_edge(X, Y, L, Cat),
-        test_admission_group_reach_param_end(Y, Z, L, Cat)
-    )),
-    assertz(user:mode(test_admission_group_reach_pair(+, +, +, +))),
-    assertz(user:(test_admission_group_reach_pair(X, Y, L, Cat) :-
-        test_admission_group_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_admission_group_reach_pair(X, Z, L, Cat) :-
-        test_admission_group_edge(X, Y, L, Cat),
-        test_admission_group_reach_pair(Y, Z, L, Cat)
-    )),
-    assertz(user:test_admission_mixed_lru_edge(a, z)),
-    assertz(user:test_admission_mixed_lru_edge(x, z)),
-    assertz(user:test_admission_mixed_lru_edge(y, z)),
-    assertz(user:test_admission_mixed_lru_edge(p, q)),
-    assertz(user:test_admission_mixed_lru_edge(p, r)),
-    assertz(user:test_admission_mixed_lru_edge(p, s)),
-    assertz(user:mode(test_admission_mixed_lru_reach(+, +))),
-    assertz(user:(test_admission_mixed_lru_reach(X, Y) :-
-        test_admission_mixed_lru_edge(X, Y)
-    )),
-    assertz(user:(test_admission_mixed_lru_reach(X, Z) :-
-        test_admission_mixed_lru_edge(X, Y),
-        test_admission_mixed_lru_reach(Y, Z)
-    )),
-    assertz(user:test_admission_group_mixed_lru_edge(a, z, red, cat1)),
-    assertz(user:test_admission_group_mixed_lru_edge(x, z, red, cat1)),
-    assertz(user:test_admission_group_mixed_lru_edge(y, z, red, cat1)),
-    assertz(user:test_admission_group_mixed_lru_edge(p, q, red, cat1)),
-    assertz(user:test_admission_group_mixed_lru_edge(p, r, red, cat1)),
-    assertz(user:test_admission_group_mixed_lru_edge(p, s, red, cat1)),
-    assertz(user:mode(test_admission_group_mixed_lru_reach(+, +, +, +))),
-    assertz(user:(test_admission_group_mixed_lru_reach(X, Y, L, Cat) :-
-        test_admission_group_mixed_lru_edge(X, Y, L, Cat)
-    )),
-    assertz(user:(test_admission_group_mixed_lru_reach(X, Z, L, Cat) :-
-        test_admission_group_mixed_lru_edge(X, Y, L, Cat),
-        test_admission_group_mixed_lru_reach(Y, Z, L, Cat)
-    )),
+    assert_binary_recursive_fixture(
+        test_probe_dir_forward_edge,
+        test_probe_dir_forward_reach,
+        [+, +],
+        [[a, b], [b, c], [x, c], [y, c]]
+    ),
+    assert_binary_recursive_fixture(
+        test_probe_dir_backward_edge,
+        test_probe_dir_backward_reach,
+        [+, +],
+        [[a, b], [a, d], [a, e], [b, c]]
+    ),
+    assert_binary_recursive_fixture(
+        test_probe_dir_mixed_edge,
+        test_probe_dir_mixed_reach,
+        [+, +],
+        [[a, m], [m, z], [x, z], [y, z], [p, q], [p, r]]
+    ),
+    assert_binary_recursive_fixture(
+        test_probe_dir_mixed_bytarget_edge,
+        test_probe_dir_mixed_bytarget_reach,
+        [+, +],
+        [[a, m], [m, z], [x, z], [h, g], [g, p], [p, q], [p, r], [u, t], [u, v]]
+    ),
+    assert_binary_recursive_fixture(
+        test_probe_dir_mixed_bytarget_lru_edge,
+        test_probe_dir_mixed_bytarget_lru_reach,
+        [+, +],
+        [[a, m], [m, z], [h, g], [g, p], [p, q], [p, r], [p, s]]
+    ),
+    assert_binary_recursive_fixture(
+        test_admission_edge,
+        test_admission_reach_pair,
+        [+, +],
+        [[a, b], [a, c], [a, d], [b, e], [c, e], [d, e]]
+    ),
+    maplist(
+        assert_fact(test_admission_group_edge),
+        [[a, b, adm, cata], [a, c, adm, cata], [b, e, adm, cata], [c, e, adm, cata], [d, e, adm, cata]]
+    ),
+    assert_mode(test_admission_group_reach_param, [+, -, +, +]),
+    assert_grouped_recursive_rules(test_admission_group_edge, test_admission_group_reach_param),
+    assert_mode(test_admission_group_reach_param_end, [-, +, +, +]),
+    assert_grouped_recursive_rules(test_admission_group_edge, test_admission_group_reach_param_end),
+    assert_mode(test_admission_group_reach_pair, [+, +, +, +]),
+    assert_grouped_recursive_rules(test_admission_group_edge, test_admission_group_reach_pair),
+    assert_binary_recursive_fixture(
+        test_admission_mixed_lru_edge,
+        test_admission_mixed_lru_reach,
+        [+, +],
+        [[a, z], [x, z], [y, z], [p, q], [p, r], [p, s]]
+    ),
+    assert_grouped_recursive_fixture(
+        test_admission_group_mixed_lru_edge,
+        test_admission_group_mixed_lru_reach,
+        [+, +, +, +],
+        [[a, z, red, cat1], [x, z, red, cat1], [y, z, red, cat1], [p, q, red, cat1], [p, r, red, cat1], [p, s, red, cat1]]
+    ),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -1287,21 +1225,11 @@ cleanup_test_data :-
     retractall(user:mode(test_label_cat_reach_param_end(_, _, _, _))),
     retractall(user:test_label_cat_reach_param_both(_, _, _, _)),
     retractall(user:mode(test_label_cat_reach_param_both(_, _, _, _))),
-    retractall(user:test_group_probe_dir_forward_edge(_, _, _, _)),
-    retractall(user:test_group_probe_dir_forward_reach(_, _, _, _)),
-    retractall(user:mode(test_group_probe_dir_forward_reach(_, _, _, _))),
-    retractall(user:test_group_probe_dir_backward_edge(_, _, _, _)),
-    retractall(user:test_group_probe_dir_backward_reach(_, _, _, _)),
-    retractall(user:mode(test_group_probe_dir_backward_reach(_, _, _, _))),
-    retractall(user:test_group_probe_dir_mixed_edge(_, _, _, _)),
-    retractall(user:test_group_probe_dir_mixed_reach(_, _, _, _)),
-    retractall(user:mode(test_group_probe_dir_mixed_reach(_, _, _, _))),
-    retractall(user:test_group_probe_dir_mixed_bytarget_edge(_, _, _, _)),
-    retractall(user:test_group_probe_dir_mixed_bytarget_reach(_, _, _, _)),
-    retractall(user:mode(test_group_probe_dir_mixed_bytarget_reach(_, _, _, _))),
-    retractall(user:test_group_probe_dir_mixed_bytarget_lru_edge(_, _, _, _)),
-    retractall(user:test_group_probe_dir_mixed_bytarget_lru_reach(_, _, _, _)),
-    retractall(user:mode(test_group_probe_dir_mixed_bytarget_lru_reach(_, _, _, _))),
+    cleanup_recursive_fixture(test_group_probe_dir_forward_edge, test_group_probe_dir_forward_reach, 4),
+    cleanup_recursive_fixture(test_group_probe_dir_backward_edge, test_group_probe_dir_backward_reach, 4),
+    cleanup_recursive_fixture(test_group_probe_dir_mixed_edge, test_group_probe_dir_mixed_reach, 4),
+    cleanup_recursive_fixture(test_group_probe_dir_mixed_bytarget_edge, test_group_probe_dir_mixed_bytarget_reach, 4),
+    cleanup_recursive_fixture(test_group_probe_dir_mixed_bytarget_lru_edge, test_group_probe_dir_mixed_bytarget_lru_reach, 4),
     retractall(user:test_sparse_input_fact(_, _, _)),
     retractall(user:test_recursive_label_path_cat_asym(_, _, _, _)),
     retractall(user:test_recursive_label_path_cat_medium_selective(_, _, _, _)),
@@ -1338,37 +1266,17 @@ cleanup_test_data :-
     retractall(user:mode(test_reachable_param_end(_, _))),
     retractall(user:test_reachable_param_both(_, _)),
     retractall(user:mode(test_reachable_param_both(_, _))),
-    retractall(user:test_probe_dir_forward_edge(_, _)),
-    retractall(user:test_probe_dir_forward_reach(_, _)),
-    retractall(user:mode(test_probe_dir_forward_reach(_, _))),
-    retractall(user:test_probe_dir_backward_edge(_, _)),
-    retractall(user:test_probe_dir_backward_reach(_, _)),
-    retractall(user:mode(test_probe_dir_backward_reach(_, _))),
-    retractall(user:test_probe_dir_mixed_edge(_, _)),
-    retractall(user:test_probe_dir_mixed_reach(_, _)),
-    retractall(user:mode(test_probe_dir_mixed_reach(_, _))),
-    retractall(user:test_probe_dir_mixed_bytarget_edge(_, _)),
-    retractall(user:test_probe_dir_mixed_bytarget_reach(_, _)),
-    retractall(user:mode(test_probe_dir_mixed_bytarget_reach(_, _))),
-    retractall(user:test_probe_dir_mixed_bytarget_lru_edge(_, _)),
-    retractall(user:test_probe_dir_mixed_bytarget_lru_reach(_, _)),
-    retractall(user:mode(test_probe_dir_mixed_bytarget_lru_reach(_, _))),
-    retractall(user:test_admission_edge(_, _)),
-    retractall(user:test_admission_reach_pair(_, _)),
-    retractall(user:mode(test_admission_reach_pair(_, _))),
-    retractall(user:test_admission_group_edge(_, _, _, _)),
-    retractall(user:test_admission_group_reach_param(_, _, _, _)),
-    retractall(user:mode(test_admission_group_reach_param(_, _, _, _))),
-    retractall(user:test_admission_group_reach_param_end(_, _, _, _)),
-    retractall(user:mode(test_admission_group_reach_param_end(_, _, _, _))),
-    retractall(user:test_admission_group_reach_pair(_, _, _, _)),
-    retractall(user:mode(test_admission_group_reach_pair(_, _, _, _))),
-    retractall(user:test_admission_mixed_lru_edge(_, _)),
-    retractall(user:test_admission_mixed_lru_reach(_, _)),
-    retractall(user:mode(test_admission_mixed_lru_reach(_, _))),
-    retractall(user:test_admission_group_mixed_lru_edge(_, _, _, _)),
-    retractall(user:test_admission_group_mixed_lru_reach(_, _, _, _)),
-    retractall(user:mode(test_admission_group_mixed_lru_reach(_, _, _, _))),
+    cleanup_recursive_fixture(test_probe_dir_forward_edge, test_probe_dir_forward_reach, 2),
+    cleanup_recursive_fixture(test_probe_dir_backward_edge, test_probe_dir_backward_reach, 2),
+    cleanup_recursive_fixture(test_probe_dir_mixed_edge, test_probe_dir_mixed_reach, 2),
+    cleanup_recursive_fixture(test_probe_dir_mixed_bytarget_edge, test_probe_dir_mixed_bytarget_reach, 2),
+    cleanup_recursive_fixture(test_probe_dir_mixed_bytarget_lru_edge, test_probe_dir_mixed_bytarget_lru_reach, 2),
+    cleanup_recursive_fixture(test_admission_edge, test_admission_reach_pair, 2),
+    cleanup_recursive_fixture(test_admission_group_edge, test_admission_group_reach_param, 4),
+    cleanup_recursive_fixture(test_admission_group_edge, test_admission_group_reach_param_end, 4),
+    cleanup_recursive_fixture(test_admission_group_edge, test_admission_group_reach_pair, 4),
+    cleanup_recursive_fixture(test_admission_mixed_lru_edge, test_admission_mixed_lru_reach, 2),
+    cleanup_recursive_fixture(test_admission_group_mixed_lru_edge, test_admission_group_mixed_lru_reach, 4),
     retractall(user:test_reachable(_, _)),
     retractall(user:test_cat(_)),
     retractall(user:test_catmix(_)),
@@ -4549,925 +4457,548 @@ verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_see
         HarnessSource).
 
 verify_parameterized_reachability_seed_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[alice]],
-    WarmColdParams = [[bob]],
-    HotParams = [[alice]],
-    ColdParams = [[bob]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_reachable_param/2,
+        [[alice]],
+        [[bob]],
+        [[alice]],
+        [[bob]],
         'TransitiveClosureSeeded',
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_by_target_seed_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_reachable_param_end/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[charlie]],
-    WarmColdParams = [[bob]],
-    HotParams = [[charlie]],
-    ColdParams = [[bob]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_reachable_param_end/2,
+        [[charlie]],
+        [[bob]],
+        [[charlie]],
+        [[bob]],
         'TransitiveClosureSeededByTarget',
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_reachable_param/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[alice], [alice], [alice], [alice], [alice], [alice]],
-    WarmColdParams = [[bob], [bob], [bob], [bob], [bob], [bob]],
-    HotParams = [[alice], [alice], [alice], [alice], [alice], [alice]],
-    ColdParams = [[bob], [bob], [bob], [bob], [bob], [bob]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_reachable_param/2,
+        [[alice], [alice], [alice], [alice], [alice], [alice]],
+        [[bob], [bob], [bob], [bob], [bob], [bob]],
+        [[alice], [alice], [alice], [alice], [alice], [alice]],
+        [[bob], [bob], [bob], [bob], [bob], [bob]],
         'TransitiveClosureSeeded',
         2,
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_by_target_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_reachable_param_end/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[charlie], [charlie], [charlie], [charlie], [charlie], [charlie]],
-    WarmColdParams = [[bob], [bob], [bob], [bob], [bob], [bob]],
-    HotParams = [[charlie], [charlie], [charlie], [charlie], [charlie], [charlie]],
-    ColdParams = [[bob], [bob], [bob], [bob], [bob], [bob]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_reachable_param_end/2,
+        [[charlie], [charlie], [charlie], [charlie], [charlie], [charlie]],
+        [[bob], [bob], [bob], [bob], [bob], [bob]],
+        [[charlie], [charlie], [charlie], [charlie], [charlie], [charlie]],
+        [[bob], [bob], [bob], [bob], [bob], [bob]],
         'TransitiveClosureSeededByTarget',
         2,
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_single_probe_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_admission_reach_pair/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, e]],
-    WarmColdParams = [[b, e]],
-    HotParams = [[a, e]],
-    ColdParams = [[b, e]],
-    harness_source_with_pair_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_reach_pair/2,
+        [[a, e]],
+        [[b, e]],
+        [[a, e]],
+        [[b, e]],
         'TransitiveClosurePairsSingleProbe',
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_single_probe_cache_admission_normalized_runtime :-
-    csharp_query_target:build_query_plan(test_admission_reach_pair/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, e], [a, e]],
-    WarmColdParams = [[b, e], [b, e]],
-    HotParams = [[a, e], [a, e]],
-    ColdParams = [[b, e], [b, e]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_reach_pair/2,
+        [[a, e], [a, e]],
+        [[b, e], [b, e]],
+        [[a, e], [a, e]],
+        [[b, e], [b, e]],
         'TransitiveClosurePairsSingleProbe',
         2,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_single_probe_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_admission_reach_pair/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, e], [a, e], [a, e], [a, e], [a, e], [a, e]],
-    WarmColdParams = [[b, e], [b, e], [b, e], [b, e], [b, e], [b, e]],
-    HotParams = [[a, e], [a, e], [a, e], [a, e], [a, e], [a, e]],
-    ColdParams = [[b, e], [b, e], [b, e], [b, e], [b, e], [b, e]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_reach_pair/2,
+        [[a, e], [a, e], [a, e], [a, e], [a, e], [a, e]],
+        [[b, e], [b, e], [b, e], [b, e], [b, e], [b, e]],
+        [[a, e], [a, e], [a, e], [a, e], [a, e], [a, e]],
+        [[b, e], [b, e], [b, e], [b, e], [b, e], [b, e]],
         'TransitiveClosurePairsSingleProbe',
         2,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_pair_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_admission_mixed_lru_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [p, q], [a, z], [p, q], [a, z], [p, q]],
-    WarmColdParams = [[x, z], [x, z], [y, z], [y, z], [p, r], [p, r], [p, s], [p, s]],
-    HotParams = [[a, z], [p, q], [a, z], [p, q], [a, z], [p, q]],
-    ColdParams = [[x, z], [x, z], [y, z], [y, z], [p, r], [p, r], [p, s], [p, s]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_mixed_lru_reach/2,
+        [[a, z], [p, q], [a, z], [p, q], [a, z], [p, q]],
+        [[x, z], [x, z], [y, z], [y, z], [p, r], [p, r], [p, s], [p, s]],
+        [[a, z], [p, q], [a, z], [p, q], [a, z], [p, q]],
+        [[x, z], [x, z], [y, z], [y, z], [p, r], [p, r], [p, s], [p, s]],
         'TransitiveClosurePairsSingleProbe',
         8,
         0,
         0.2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=2',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=4'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        2,
+        4).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [p, q]],
-    WarmColdParams = [[x, z], [p, q]],
-    HotParams = [[a, z], [p, q]],
-    ColdParams = [[x, z], [p, q]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_probe_dir_mixed_reach/2,
+        [[a, z], [p, q]],
+        [[x, z], [p, q]],
+        [[a, z], [p, q]],
+        [[x, z], [p, q]],
         'TransitiveClosureSeeded',
         8,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [a, z], [a, m], [a, m], [a, z], [a, m]],
-    WarmColdParams = [[x, z], [x, z], [p, q], [p, q], [x, z], [p, q]],
-    HotParams = [[a, z], [a, z], [a, m], [a, m], [a, z], [a, m]],
-    ColdParams = [[x, z], [x, z], [p, q], [p, q], [x, z], [p, q]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_probe_dir_mixed_reach/2,
+        [[a, z], [a, z], [a, m], [a, m], [a, z], [a, m]],
+        [[x, z], [x, z], [p, q], [p, q], [x, z], [p, q]],
+        [[a, z], [a, z], [a, m], [a, m], [a, z], [a, m]],
+        [[x, z], [x, z], [p, q], [p, q], [x, z], [p, q]],
         'TransitiveClosureSeeded',
         8,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_normalized_runtime :-
-    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [p, q]],
-    WarmColdParams = [[x, z], [p, q]],
-    HotParams = [[a, z], [p, q]],
-    ColdParams = [[x, z], [p, q]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_probe_dir_mixed_reach/2,
+        [[a, z], [p, q]],
+        [[x, z], [p, q]],
+        [[a, z], [p, q]],
+        [[x, z], [p, q]],
         'TransitiveClosurePairsSingleProbe',
         8,
         1,
         1,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=0',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=4'],
-        HotParams,
-        HarnessSource).
+        false,
+        false,
+        0,
+        4).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_cache_admission_selectivity_runtime :-
-    csharp_query_target:build_query_plan(test_probe_dir_mixed_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [p, q]],
-    WarmColdParams = [[x, z], [p, r]],
-    HotParams = [[a, z], [p, q]],
-    ColdParams = [[x, z], [p, r]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_probe_dir_mixed_reach/2,
+        [[a, z], [p, q]],
+        [[x, z], [p, r]],
+        [[a, z], [p, q]],
+        [[x, z], [p, r]],
         'TransitiveClosurePairsSingleProbe',
         8,
         0,
         0.3,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_HIT_COLD:TransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:TransitiveClosurePairsSingleProbe=0',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosurePairsSingleProbe=4'],
-        HotParams,
-        HarnessSource).
+        false,
+        false,
+        0,
+        4).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_positive_runtime :-
-    csharp_query_target:build_query_plan(test_probe_dir_mixed_bytarget_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [p, q]],
-    WarmColdParams = [[x, z], [u, t]],
-    HotParams = [[a, z], [p, q]],
-    ColdParams = [[x, z], [u, t]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_probe_dir_mixed_bytarget_reach/2,
+        [[a, z], [p, q]],
+        [[x, z], [u, t]],
+        [[a, z], [p, q]],
+        [[x, z], [u, t]],
         'TransitiveClosureSeededByTarget',
         8,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_probe_dir_mixed_bytarget_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [a, z], [p, q], [p, q], [a, z], [p, q]],
-    WarmColdParams = [[x, z], [x, z], [u, t], [u, t], [x, z], [u, t]],
-    HotParams = [[a, z], [a, z], [p, q], [p, q], [a, z], [p, q]],
-    ColdParams = [[x, z], [x, z], [u, t], [u, t], [x, z], [u, t]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_probe_dir_mixed_bytarget_reach/2,
+        [[a, z], [a, z], [p, q], [p, q], [a, z], [p, q]],
+        [[x, z], [x, z], [u, t], [u, t], [x, z], [u, t]],
+        [[a, z], [a, z], [p, q], [p, q], [a, z], [p, q]],
+        [[x, z], [x, z], [u, t], [u, t], [x, z], [u, t]],
         'TransitiveClosureSeededByTarget',
         8,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_selectivity_runtime :-
-    csharp_query_target:build_query_plan(test_probe_dir_mixed_bytarget_reach/2, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z], [p, q]],
-    WarmColdParams = [[x, z], [u, t]],
-    HotParams = [[a, z], [p, q]],
-    ColdParams = [[x, z], [u, t]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_probe_dir_mixed_bytarget_reach/2,
+        [[a, z], [p, q]],
+        [[x, z], [u, t]],
+        [[a, z], [p, q]],
+        [[x, z], [u, t]],
         'TransitiveClosureSeededByTarget',
         8,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:TransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:TransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:TransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:TransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_seed_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_param/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, adm, cata]],
-    WarmColdParams = [[b, adm, cata]],
-    HotParams = [[a, adm, cata]],
-    ColdParams = [[b, adm, cata]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_admission_group_reach_param/4,
+        [[a, adm, cata]],
+        [[b, adm, cata]],
+        [[a, adm, cata]],
+        [[b, adm, cata]],
         'GroupedTransitiveClosureSeeded',
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_param_end/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[e, adm, cata]],
-    WarmColdParams = [[b, adm, cata]],
-    HotParams = [[e, adm, cata]],
-    ColdParams = [[b, adm, cata]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_admission_group_reach_param_end/4,
+        [[e, adm, cata]],
+        [[b, adm, cata]],
+        [[e, adm, cata]],
+        [[b, adm, cata]],
         'GroupedTransitiveClosureSeededByTarget',
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_param/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata]],
-    WarmColdParams = [[d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata]],
-    HotParams = [[a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata]],
-    ColdParams = [[d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_admission_group_reach_param/4,
+        [[a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata]],
+        [[d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata]],
+        [[a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata], [a, adm, cata]],
+        [[d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata], [d, adm, cata]],
         'GroupedTransitiveClosureSeeded',
         2,
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_param_end/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata]],
-    WarmColdParams = [[b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata]],
-    HotParams = [[e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata]],
-    ColdParams = [[b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_admission_group_reach_param_end/4,
+        [[e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata]],
+        [[b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata]],
+        [[e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata], [e, adm, cata]],
+        [[b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata], [b, adm, cata]],
         'GroupedTransitiveClosureSeededByTarget',
         2,
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_seed_cache_admission_selectivity_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_param/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, adm, cata]],
-    WarmColdParams = [[d, adm, cata]],
-    HotParams = [[a, adm, cata]],
-    ColdParams = [[d, adm, cata]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_admission_group_reach_param/4,
+        [[a, adm, cata]],
+        [[d, adm, cata]],
+        [[a, adm, cata]],
+        [[d, adm, cata]],
         'GroupedTransitiveClosureSeeded',
         2,
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_by_target_seed_cache_admission_selectivity_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_param_end/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[e, adm, cata]],
-    WarmColdParams = [[b, adm, cata]],
-    HotParams = [[e, adm, cata]],
-    ColdParams = [[b, adm, cata]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_admission_group_reach_param_end/4,
+        [[e, adm, cata]],
+        [[b, adm, cata]],
+        [[e, adm, cata]],
+        [[b, adm, cata]],
         'GroupedTransitiveClosureSeededByTarget',
         2,
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_pair/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, e, adm, cata]],
-    WarmColdParams = [[b, e, adm, cata]],
-    HotParams = [[a, e, adm, cata]],
-    ColdParams = [[b, e, adm, cata]],
-    harness_source_with_pair_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_group_reach_pair/4,
+        [[a, e, adm, cata]],
+        [[b, e, adm, cata]],
+        [[a, e, adm, cata]],
+        [[b, e, adm, cata]],
         'GroupedTransitiveClosurePairsSingleProbe',
         1,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_normalized_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_pair/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, e, adm, cata], [a, e, adm, cata]],
-    WarmColdParams = [[b, e, adm, cata], [b, e, adm, cata]],
-    HotParams = [[a, e, adm, cata], [a, e, adm, cata]],
-    ColdParams = [[b, e, adm, cata], [b, e, adm, cata]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_group_reach_pair/4,
+        [[a, e, adm, cata], [a, e, adm, cata]],
+        [[b, e, adm, cata], [b, e, adm, cata]],
+        [[a, e, adm, cata], [a, e, adm, cata]],
+        [[b, e, adm, cata], [b, e, adm, cata]],
         'GroupedTransitiveClosurePairsSingleProbe',
         2,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_single_probe_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_reach_pair/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [
-        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata],
-        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata]
-    ],
-    WarmColdParams = [
-        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata],
-        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata]
-    ],
-    HotParams = [
-        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata],
-        [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata]
-    ],
-    ColdParams = [
-        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata],
-        [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata]
-    ],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_group_reach_pair/4,
+        [[a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata]],
+        [[b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata]],
+        [[a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata], [a, e, adm, cata]],
+        [[b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata], [b, e, adm, cata]],
         'GroupedTransitiveClosurePairsSingleProbe',
         2,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_pair_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_admission_group_mixed_lru_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [
-        [a, z, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1],
-        [a, z, red, cat1], [p, q, red, cat1]
-    ],
-    WarmColdParams = [
-        [x, z, red, cat1], [x, z, red, cat1], [y, z, red, cat1], [y, z, red, cat1],
-        [p, r, red, cat1], [p, r, red, cat1], [p, s, red, cat1], [p, s, red, cat1]
-    ],
-    HotParams = [
-        [a, z, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1],
-        [a, z, red, cat1], [p, q, red, cat1]
-    ],
-    ColdParams = [
-        [x, z, red, cat1], [x, z, red, cat1], [y, z, red, cat1], [y, z, red, cat1],
-        [p, r, red, cat1], [p, r, red, cat1], [p, s, red, cat1], [p, s, red, cat1]
-    ],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_admission_group_mixed_lru_reach/4,
+        [[a, z, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [x, z, red, cat1], [y, z, red, cat1], [y, z, red, cat1], [p, r, red, cat1], [p, r, red, cat1], [p, s, red, cat1], [p, s, red, cat1]],
+        [[a, z, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [x, z, red, cat1], [y, z, red, cat1], [y, z, red, cat1], [p, r, red, cat1], [p, r, red, cat1], [p, s, red, cat1], [p, s, red, cat1]],
         'GroupedTransitiveClosurePairsSingleProbe',
         8,
         0,
         0.2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=2',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=4'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        2,
+        4).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    WarmColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    ColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_group_probe_dir_mixed_reach/4,
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
         'GroupedTransitiveClosureSeeded',
         8,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [
-        [a, z, red, cat1], [a, z, red, cat1], [a, m, red, cat1],
-        [a, m, red, cat1], [a, z, red, cat1], [a, m, red, cat1]
-    ],
-    WarmColdParams = [
-        [x, z, red, cat1], [x, z, red, cat1], [p, q, red, cat1],
-        [p, q, red, cat1], [x, z, red, cat1], [p, q, red, cat1]
-    ],
-    HotParams = [
-        [a, z, red, cat1], [a, z, red, cat1], [a, m, red, cat1],
-        [a, m, red, cat1], [a, z, red, cat1], [a, m, red, cat1]
-    ],
-    ColdParams = [
-        [x, z, red, cat1], [x, z, red, cat1], [p, q, red, cat1],
-        [p, q, red, cat1], [x, z, red, cat1], [p, q, red, cat1]
-    ],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_group_probe_dir_mixed_reach/4,
+        [[a, z, red, cat1], [a, z, red, cat1], [a, m, red, cat1], [a, m, red, cat1], [a, z, red, cat1], [a, m, red, cat1]],
+        [[x, z, red, cat1], [x, z, red, cat1], [p, q, red, cat1], [p, q, red, cat1], [x, z, red, cat1], [p, q, red, cat1]],
+        [[a, z, red, cat1], [a, z, red, cat1], [a, m, red, cat1], [a, m, red, cat1], [a, z, red, cat1], [a, m, red, cat1]],
+        [[x, z, red, cat1], [x, z, red, cat1], [p, q, red, cat1], [p, q, red, cat1], [x, z, red, cat1], [p, q, red, cat1]],
         'GroupedTransitiveClosureSeeded',
         8,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_seed_cache_admission_selectivity_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z, red, cat1], [a, m, red, cat1]],
-    WarmColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    HotParams = [[a, z, red, cat1], [a, m, red, cat1]],
-    ColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_group_probe_dir_mixed_reach/4,
+        [[a, z, red, cat1], [a, m, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
+        [[a, z, red, cat1], [a, m, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
         'GroupedTransitiveClosureSeeded',
         8,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeeded=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeeded=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeeded=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeeded=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_normalized_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    WarmColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    ColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_group_probe_dir_mixed_reach/4,
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
         'GroupedTransitiveClosurePairsSingleProbe',
         8,
         1,
         1,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=0',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=4'],
-        HotParams,
-        HarnessSource).
+        false,
+        false,
+        0,
+        4).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_cache_admission_selectivity_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    WarmColdParams = [[x, z, red, cat1], [p, r, red, cat1]],
-    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    ColdParams = [[x, z, red, cat1], [p, r, red, cat1]],
-    harness_source_with_pair_cache_admission_normalized_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_pair_cache_admission_test(
+        test_group_probe_dir_mixed_reach/4,
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, r, red, cat1]],
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, r, red, cat1]],
         'GroupedTransitiveClosurePairsSingleProbe',
         8,
         0,
         0.3,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_HIT_COLD:GroupedTransitiveClosurePairsSingleProbe=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosurePairsSingleProbe=0',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosurePairsSingleProbe=4'],
-        HotParams,
-        HarnessSource).
+        false,
+        false,
+        0,
+        4).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_cache_admission_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    WarmColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    ColdParams = [[x, z, red, cat1], [p, q, red, cat1]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_group_probe_dir_mixed_reach/4,
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [p, q, red, cat1]],
         'GroupedTransitiveClosureSeededByTarget',
         8,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=0',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=2'],
-        HotParams,
-        HarnessSource).
+        none,
+        false,
+        false,
+        0,
+        2).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_positive_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    WarmColdParams = [[x, z, red, cat1], [u, t, red, cat1]],
-    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    ColdParams = [[x, z, red, cat1], [u, t, red, cat1]],
-    harness_source_with_seed_cache_admission_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_group_probe_dir_mixed_bytarget_reach/4,
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [u, t, red, cat1]],
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [u, t, red, cat1]],
         'GroupedTransitiveClosureSeededByTarget',
         8,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        none,
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_duplicate_heavy_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [
-        [a, z, red, cat1], [a, z, red, cat1], [p, q, red, cat1],
-        [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1]
-    ],
-    WarmColdParams = [
-        [x, z, red, cat1], [x, z, red, cat1], [u, t, red, cat1],
-        [u, t, red, cat1], [x, z, red, cat1], [u, t, red, cat1]
-    ],
-    HotParams = [
-        [a, z, red, cat1], [a, z, red, cat1], [p, q, red, cat1],
-        [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1]
-    ],
-    ColdParams = [
-        [x, z, red, cat1], [x, z, red, cat1], [u, t, red, cat1],
-        [u, t, red, cat1], [x, z, red, cat1], [u, t, red, cat1]
-    ],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_group_probe_dir_mixed_bytarget_reach/4,
+        [[a, z, red, cat1], [a, z, red, cat1], [p, q, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [x, z, red, cat1], [u, t, red, cat1], [u, t, red, cat1], [x, z, red, cat1], [u, t, red, cat1]],
+        [[a, z, red, cat1], [a, z, red, cat1], [p, q, red, cat1], [p, q, red, cat1], [a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [x, z, red, cat1], [u, t, red, cat1], [u, t, red, cat1], [x, z, red, cat1], [u, t, red, cat1]],
         'GroupedTransitiveClosureSeededByTarget',
         8,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_grouped_transitive_closure_pairs_batched_single_probe_mixed_by_target_seed_cache_admission_selectivity_runtime :-
-    csharp_query_target:build_query_plan(test_group_probe_dir_mixed_bytarget_reach/4, [target(csharp_query)], Plan),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
-    WarmHotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    WarmColdParams = [[x, z, red, cat1], [u, t, red, cat1]],
-    HotParams = [[a, z, red, cat1], [p, q, red, cat1]],
-    ColdParams = [[x, z, red, cat1], [u, t, red, cat1]],
-    harness_source_with_seed_cache_admission_selectivity_flag(
-        ModuleClass,
-        WarmHotParams,
-        WarmColdParams,
-        HotParams,
-        ColdParams,
+    run_seed_cache_admission_test(
+        test_group_probe_dir_mixed_bytarget_reach/4,
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [u, t, red, cat1]],
+        [[a, z, red, cat1], [p, q, red, cat1]],
+        [[x, z, red, cat1], [u, t, red, cat1]],
         'GroupedTransitiveClosureSeededByTarget',
         8,
         2,
         2,
-        HarnessSource),
-    maybe_run_query_runtime_with_harness(Plan,
-        ['CACHE_HIT_HOT:GroupedTransitiveClosureSeededByTarget=true',
-         'CACHE_HIT_COLD:GroupedTransitiveClosureSeededByTarget=false',
-         'CACHE_ADMISSIONS:GroupedTransitiveClosureSeededByTarget=1',
-         'CACHE_ADMISSION_SKIPS:GroupedTransitiveClosureSeededByTarget=1'],
-        HotParams,
-        HarnessSource).
+        true,
+        false,
+        1,
+        1).
 
 verify_parameterized_reachability_pairs_cache_reuse_runtime :-
     csharp_query_target:build_query_plan(test_reachable_param_both/2, [target(csharp_query)], Plan),
@@ -6224,6 +5755,163 @@ maybe_run_query_runtime_with_harness(Plan, ExpectedRows, Params, HarnessSource) 
         )
     ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
     ).
+
+seed_cache_admission_harness(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        SeedLimit,
+        MinRows,
+        MinRowsPerSeed,
+        HarnessSource) :-
+    (   MinRowsPerSeed == none
+    ->  harness_source_with_seed_cache_admission_flag(
+            ModuleClass,
+            WarmHotParams,
+            WarmColdParams,
+            HotParams,
+            ColdParams,
+            Cache,
+            SeedLimit,
+            MinRows,
+            HarnessSource)
+    ;   harness_source_with_seed_cache_admission_selectivity_flag(
+            ModuleClass,
+            WarmHotParams,
+            WarmColdParams,
+            HotParams,
+            ColdParams,
+            Cache,
+            SeedLimit,
+            MinRows,
+            MinRowsPerSeed,
+            HarnessSource)
+    ).
+
+pair_cache_admission_harness(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        MinCostPerProbe,
+        HarnessSource) :-
+    (   MinCostPerProbe == none
+    ->  harness_source_with_pair_cache_admission_flag(
+            ModuleClass,
+            WarmHotParams,
+            WarmColdParams,
+            HotParams,
+            ColdParams,
+            Cache,
+            PairLimit,
+            MinCost,
+            HarnessSource)
+    ;   harness_source_with_pair_cache_admission_normalized_flag(
+            ModuleClass,
+            WarmHotParams,
+            WarmColdParams,
+            HotParams,
+            ColdParams,
+            Cache,
+            PairLimit,
+            MinCost,
+            MinCostPerProbe,
+            HarnessSource)
+    ).
+
+cache_admission_expectations(Cache, HotHit, ColdHit, Admissions, AdmissionSkips, ExpectedRows) :-
+    (   HotHit == true -> HotHitText = 'true' ; HotHitText = 'false' ),
+    (   ColdHit == true -> ColdHitText = 'true' ; ColdHitText = 'false' ),
+    format(atom(HotLine), 'CACHE_HIT_HOT:~w=~w', [Cache, HotHitText]),
+    format(atom(ColdLine), 'CACHE_HIT_COLD:~w=~w', [Cache, ColdHitText]),
+    format(atom(AdmissionsLine), 'CACHE_ADMISSIONS:~w=~w', [Cache, Admissions]),
+    format(atom(SkipsLine), 'CACHE_ADMISSION_SKIPS:~w=~w', [Cache, AdmissionSkips]),
+    ExpectedRows = [HotLine, ColdLine, AdmissionsLine, SkipsLine].
+
+maybe_run_cache_admission_case(Plan, Cache, HotHit, ColdHit, Admissions, AdmissionSkips, HotParams, HarnessSource) :-
+    cache_admission_expectations(Cache, HotHit, ColdHit, Admissions, AdmissionSkips, ExpectedRows),
+    maybe_run_query_runtime_with_harness(Plan, ExpectedRows, HotParams, HarnessSource).
+
+run_seed_cache_admission_test(
+        QueryPI,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        SeedLimit,
+        MinRows,
+        MinRowsPerSeed,
+        HotHit,
+        ColdHit,
+        Admissions,
+        AdmissionSkips) :-
+    csharp_query_target:build_query_plan(QueryPI, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    seed_cache_admission_harness(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        SeedLimit,
+        MinRows,
+        MinRowsPerSeed,
+        HarnessSource),
+    maybe_run_cache_admission_case(
+        Plan,
+        Cache,
+        HotHit,
+        ColdHit,
+        Admissions,
+        AdmissionSkips,
+        HotParams,
+        HarnessSource).
+
+run_pair_cache_admission_test(
+        QueryPI,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        MinCostPerProbe,
+        HotHit,
+        ColdHit,
+        Admissions,
+        AdmissionSkips) :-
+    csharp_query_target:build_query_plan(QueryPI, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    pair_cache_admission_harness(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        PairLimit,
+        MinCost,
+        MinCostPerProbe,
+        HarnessSource),
+    maybe_run_cache_admission_case(
+        Plan,
+        Cache,
+        HotHit,
+        ColdHit,
+        Admissions,
+        AdmissionSkips,
+        HotParams,
+        HarnessSource).
 
 maybe_run_multi_mode_dispatch_runtime(ModuleClass, ModuleSource, HarnessSource, ExpectedRows) :-
     (   getenv('SKIP_CSHARP_EXECUTION', '1')
@@ -7464,15 +7152,34 @@ Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
     ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
-harness_source_with_seed_cache_admission_flag(
+seed_cache_admission_options(SeedLimit, MinRows, none, OptionsLiteral) :-
+    format(atom(OptionsLiteral),
+        'ReuseCaches: true, SeededCacheMaxEntries: ~w, SeededCacheAdmissionMinRows: ~w',
+        [SeedLimit, MinRows]).
+
+seed_cache_admission_options(SeedLimit, MinRows, rows_per_seed(MinRowsPerSeed), OptionsLiteral) :-
+    format(atom(OptionsLiteral),
+        'ReuseCaches: true, SeededCacheMaxEntries: ~w, SeededCacheAdmissionMinRows: ~w, SeededCacheAdmissionMinRowsPerSeed: ~w',
+        [SeedLimit, MinRows, MinRowsPerSeed]).
+
+pair_cache_admission_options(PairLimit, MinCost, none, OptionsLiteral) :-
+    format(atom(OptionsLiteral),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w',
+        [PairLimit, MinCost]).
+
+pair_cache_admission_options(PairLimit, MinCost, cost_per_probe(MinCostPerProbe), OptionsLiteral) :-
+    format(atom(OptionsLiteral),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w, PairProbeCacheAdmissionMinCostPerProbe: ~w',
+        [PairLimit, MinCost, MinCostPerProbe]).
+
+harness_source_with_cache_admission_internal(
         ModuleClass,
         WarmHotParams,
         WarmColdParams,
         HotParams,
         ColdParams,
         Cache,
-        SeedLimit,
-        MinRows,
+        OptionsLiteral,
         Source) :-
     csharp_params_literal(WarmHotParams, WarmHotLiteral),
     csharp_params_literal(WarmColdParams, WarmColdLiteral),
@@ -7486,7 +7193,7 @@ harness_source_with_seed_cache_admission_flag(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: ~w, SeededCacheAdmissionMinRows: ~w));
+    new QueryExecutorOptions(~w));
 var warmHotParameters = ~w;
 var warmHotTrace = new QueryExecutionTrace();
 _ = executor.Execute(result.Plan, warmHotParameters, warmHotTrace).ToList();
@@ -7510,7 +7217,28 @@ Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
 Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, SeedLimit, MinRows, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+
+harness_source_with_seed_cache_admission_flag(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        SeedLimit,
+        MinRows,
+        Source) :-
+    seed_cache_admission_options(SeedLimit, MinRows, none, OptionsLiteral),
+    harness_source_with_cache_admission_internal(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        OptionsLiteral,
+        Source).
 
 harness_source_with_seed_cache_admission_selectivity_flag(
         ModuleClass,
@@ -7523,47 +7251,16 @@ harness_source_with_seed_cache_admission_selectivity_flag(
         MinRows,
         MinRowsPerSeed,
         Source) :-
-    csharp_params_literal(WarmHotParams, WarmHotLiteral),
-    csharp_params_literal(WarmColdParams, WarmColdLiteral),
-    csharp_params_literal(HotParams, HotLiteral),
-    csharp_params_literal(ColdParams, ColdLiteral),
-    format(atom(Source),
-'using System;
- using System.Linq;
- using UnifyWeaver.QueryRuntime;
-
-var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(
-    result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        SeededCacheMaxEntries: ~w,
-        SeededCacheAdmissionMinRows: ~w,
-        SeededCacheAdmissionMinRowsPerSeed: ~w));
-var warmHotParameters = ~w;
-var warmHotTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, warmHotParameters, warmHotTrace).ToList();
-var warmColdParameters = ~w;
-var warmColdTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, warmColdParameters, warmColdTrace).ToList();
-var hotParameters = ~w;
-var hotTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
-var coldParameters = ~w;
-var coldTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
-
-var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
-var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
-var admissions = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions)
-    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions);
-var admissionSkips = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips)
-    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips);
-Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
-Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
-Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
-Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, SeedLimit, MinRows, MinRowsPerSeed, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    seed_cache_admission_options(SeedLimit, MinRows, rows_per_seed(MinRowsPerSeed), OptionsLiteral),
+    harness_source_with_cache_admission_internal(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        OptionsLiteral,
+        Source).
 
 harness_source_with_pair_cache_admission_flag(
         ModuleClass,
@@ -7575,43 +7272,16 @@ harness_source_with_pair_cache_admission_flag(
         PairLimit,
         MinCost,
         Source) :-
-    csharp_params_literal(WarmHotParams, WarmHotLiteral),
-    csharp_params_literal(WarmColdParams, WarmColdLiteral),
-    csharp_params_literal(HotParams, HotLiteral),
-    csharp_params_literal(ColdParams, ColdLiteral),
-    format(atom(Source),
-'using System;
- using System.Linq;
- using UnifyWeaver.QueryRuntime;
-
-var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(
-    result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w));
-var warmHotParameters = ~w;
-var warmHotTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, warmHotParameters, warmHotTrace).ToList();
-var warmColdParameters = ~w;
-var warmColdTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, warmColdParameters, warmColdTrace).ToList();
-var hotParameters = ~w;
-var hotTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
-var coldParameters = ~w;
-var coldTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
-
-var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
-var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
-var admissions = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions)
-    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions);
-var admissionSkips = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips)
-    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips);
-Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
-Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
-Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
-Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, PairLimit, MinCost, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    pair_cache_admission_options(PairLimit, MinCost, none, OptionsLiteral),
+    harness_source_with_cache_admission_internal(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        OptionsLiteral,
+        Source).
 
 harness_source_with_pair_cache_admission_normalized_flag(
         ModuleClass,
@@ -7624,47 +7294,16 @@ harness_source_with_pair_cache_admission_normalized_flag(
         MinCost,
         MinCostPerProbe,
         Source) :-
-    csharp_params_literal(WarmHotParams, WarmHotLiteral),
-    csharp_params_literal(WarmColdParams, WarmColdLiteral),
-    csharp_params_literal(HotParams, HotLiteral),
-    csharp_params_literal(ColdParams, ColdLiteral),
-    format(atom(Source),
-'using System;
- using System.Linq;
- using UnifyWeaver.QueryRuntime;
-
-var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(
-    result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        PairProbeCacheMaxEntries: ~w,
-        PairProbeCacheAdmissionMinCost: ~w,
-        PairProbeCacheAdmissionMinCostPerProbe: ~w));
-var warmHotParameters = ~w;
-var warmHotTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, warmHotParameters, warmHotTrace).ToList();
-var warmColdParameters = ~w;
-var warmColdTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, warmColdParameters, warmColdTrace).ToList();
-var hotParameters = ~w;
-var hotTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, hotParameters, hotTrace).ToList();
-var coldParameters = ~w;
-var coldTrace = new QueryExecutionTrace();
-_ = executor.Execute(result.Plan, coldParameters, coldTrace).ToList();
-
-var hotHit = hotTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
-var coldHit = coldTrace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
-var admissions = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions)
-    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.Admissions);
-var admissionSkips = warmHotTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips)
-    + warmColdTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s => s.AdmissionSkips);
-Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
-Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
-Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
-Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    pair_cache_admission_options(PairLimit, MinCost, cost_per_probe(MinCostPerProbe), OptionsLiteral),
+    harness_source_with_cache_admission_internal(
+        ModuleClass,
+        WarmHotParams,
+        WarmColdParams,
+        HotParams,
+        ColdParams,
+        Cache,
+        OptionsLiteral,
+        Source).
 
 harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
     (   Params == []
