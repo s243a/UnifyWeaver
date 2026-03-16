@@ -7,7 +7,7 @@
 
 add_{{base}} <- function(from_node, to_node) {
     if (!exists(from_node, envir = {{base}}_graph)) {
-        assign(from_node, c(), envir = {{base}}_graph)
+        assign(from_node, character(0), envir = {{base}}_graph)
     }
     assign(from_node, c(get(from_node, envir = {{base}}_graph), to_node), envir = {{base}}_graph)
 }
@@ -16,12 +16,12 @@ add_{{base}} <- function(from_node, to_node) {
 {{pred}}_all <- function(start) {
     visited <- start
     queue <- start
-    results <- c()
+    results <- character(0)
 
     while (length(queue) > 0) {
         current <- queue[1]
         queue <- queue[-1]
-        neighbors <- tryCatch(get(current, envir = {{base}}_graph), error = function(e) c())
+        neighbors <- tryCatch(get(current, envir = {{base}}_graph), error = function(e) character(0))
         for (next_node in neighbors) {
             if (!(next_node %in% visited)) {
                 visited <- c(visited, next_node)
@@ -42,7 +42,7 @@ add_{{base}} <- function(from_node, to_node) {
     while (length(queue) > 0) {
         current <- queue[1]
         queue <- queue[-1]
-        neighbors <- tryCatch(get(current, envir = {{base}}_graph), error = function(e) c())
+        neighbors <- tryCatch(get(current, envir = {{base}}_graph), error = function(e) character(0))
         for (next_node in neighbors) {
             if (next_node == target) return(TRUE)
             if (!(next_node %in% visited)) {
