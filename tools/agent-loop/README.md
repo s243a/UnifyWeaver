@@ -62,20 +62,20 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + 108 integration tests |
+| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + 122 integration tests |
 
 ### Declarative Infrastructure
 
 | Metric | Count |
 |--------|-------|
-| `py_fragment/2` facts | 91 |
+| `py_fragment/2` facts | 93 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 37 |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 960 + 108 Rust integration (653+181 unit + 27 Prolog + 92 Python + 108 cargo test) |
+| Total tests | 982 + 122 Rust integration (653+181 unit + 36 Prolog integration + 108 Python + 122 cargo test) |
 
 ## Backends
 
@@ -710,8 +710,8 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Config loading (YAML) | Y | Y | Complete |
 | Security profiles | Y | Y | Complete |
 | Streaming + token parsing | Y | Y | Complete |
-| Gemini model validation | N | Y | Rust-only |
-| OnceLock schema caching | N | Y | Rust-only |
+| Gemini model validation | Y | Y | Complete |
+| Tool schema caching | Y | Y | Complete (OnceLock in Rust, lazy cache in Python) |
 | Export (4 formats) | Y | Y (md/html/json/txt) | Complete |
 | Command handlers | 20+ | 20+ | Complete |
 | Env var expansion in config | Y | Y | Complete |
@@ -735,12 +735,15 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Async retry with backoff | N | Y | Complete (retry_async, retryable HTTP status, tokio::time::sleep) |
 | Concurrent tool execution | N | Y | Complete (Arc+Mutex sequential, single vs multi split) |
 | Config /init command | N | Y | Complete (JSON/YAML config generation via init_config) |
-| Python async backend | N | Y | Complete (AsyncAgentBackend with aiohttp, OpenAI+Anthropic) |
+| Python async backend | Y | Y | Complete (AsyncApiBackend with aiohttp/urllib fallback, OpenAI+Anthropic) |
 | Binary packaging | N | Y | Complete (Makefile, release profile with LTO+strip, install/dist/wasm targets) |
 | Streaming async wiring | N | Y | Complete (send_streaming_async wired into main loop, token-by-token display) |
 | Plugin async execution | N | Y | Complete (PluginManager.execute_async via tokio::process, ToolHandler.execute_async) |
 | WASM build targets | N | Y | Complete (Makefile wasm + wasm-pack targets, feature-gated) |
-| Integration tests (cargo test) | N | Y (98 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM) |
+| Tool result caching | Y | Y | Complete (TTL-based, skips destructive tools, /clear-cache command) |
+| MCP server support | Y | Y | Complete (stdio JSON-RPC, tool discovery + dispatch, MCPManager) |
+| Cache/MCP wiring in ToolHandler | Y | Y | Complete (cache check/store + mcp: prefix dispatch) |
+| Integration tests (cargo test) | N | Y (122 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP) |
 
 ## License
 

@@ -288,6 +288,12 @@ run_tests :-
     test_phase20_tool_result_cache,
     test_phase20_output_parser,
     test_phase20_mcp_support,
+    %% Phase 21 — Cache wiring, MCP dispatch, async backend, E2E
+    test_phase21_cache_wiring,
+    test_phase21_mcp_dispatch_wiring,
+    test_phase21_async_backend,
+    test_phase21_clear_cache_command,
+    test_phase21_e2e_tests,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -343,7 +349,7 @@ test_component_registration :-
     length(Commands, NC),
     length(Backends, NB),
     assert_eq('Tool count', NT, 4),
-    assert_eq('Command count', NC, 26),
+    assert_eq('Command count', NC, 27),
     assert_eq('Backend count', NB, 8).
 
 %% ============================================================================
@@ -1292,14 +1298,14 @@ test_emit_command_optimization_hints :-
             current_output(S2),
             agent_loop_components:emit_command_facts(S2, [target(prolog)])
         )),
-        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (26 clauses)')
+        sub_atom(Output2, _, _, _, 'slash_command/4: first-argument indexed (27 clauses)')
     )),
     assert_true('emit_command_facts includes command_alias clause count', (
         with_output_to(atom(Output3), (
             current_output(S3),
             agent_loop_components:emit_command_facts(S3, [target(prolog)])
         )),
-        sub_atom(Output3, _, _, _, 'command_alias/2: first-argument indexed (30 clauses)')
+        sub_atom(Output3, _, _, _, 'command_alias/2: first-argument indexed (31 clauses)')
     )).
 
 %% ============================================================================
@@ -5525,4 +5531,128 @@ test_phase20_mcp_support :-
     )),
     assert_true('agent_config_field tool_cache_ttl exists', (
         agent_loop_module:agent_config_field(tool_cache_ttl, _, _, _)
+    )).
+
+%% ============================================================================
+%% Phase 21 — Cache wiring, MCP dispatch, async backend, E2E tests
+%% ============================================================================
+
+test_phase21_cache_wiring :-
+    format("~nPhase 21 — cache wiring:~n"),
+    %% Rust: ToolHandler struct has cache field
+    assert_true('tool_handler.rs has cache field', (
+        agent_loop_module:rust_fragment(tool_handler_struct, C1),
+        sub_atom(C1, _, _, _, 'pub cache: ToolResultCache')
+    )),
+    %% Rust: execute() checks cache
+    assert_true('execute() checks cache.get', (
+        agent_loop_module:rust_fragment(tool_handler_dispatch, C2),
+        sub_atom(C2, _, _, _, 'self.cache.get(')
+    )),
+    %% Rust: execute() stores in cache
+    assert_true('execute() calls cache.put', (
+        agent_loop_module:rust_fragment(tool_handler_dispatch, C3),
+        sub_atom(C3, _, _, _, 'self.cache.put(')
+    )),
+    %% Python: ToolHandler.__init__ creates cache (emitted by generator, not in fragment)
+    assert_true('Python ToolHandler has cache init', (
+        read_file_to_string('generated/python/tools.py', C4, []),
+        sub_atom(C4, _, _, _, 'self.cache = ToolResultCache()')
+    )),
+    %% Python: execute() checks cache
+    assert_true('Python execute() checks cache', (
+        agent_loop_module:py_fragment(tools_handler_class_body, C5),
+        sub_atom(C5, _, _, _, 'self.cache.get(')
+    )),
+    %% Python: execute() stores in cache
+    assert_true('Python execute() stores in cache', (
+        agent_loop_module:py_fragment(tools_handler_class_body, C6),
+        sub_atom(C6, _, _, _, 'self.cache.put(')
+    )).
+
+test_phase21_mcp_dispatch_wiring :-
+    format("~nPhase 21 — MCP dispatch wiring:~n"),
+    %% Rust: ToolHandler has mcp_manager field
+    assert_true('Rust ToolHandler has mcp_manager', (
+        agent_loop_module:rust_fragment(tool_handler_struct, M1),
+        sub_atom(M1, _, _, _, 'pub mcp_manager')
+    )),
+    %% Rust: execute() handles mcp: prefix
+    assert_true('Rust execute() checks mcp: prefix', (
+        agent_loop_module:rust_fragment(tool_handler_dispatch, M2),
+        sub_atom(M2, _, _, _, 'starts_with("mcp:")')
+    )),
+    %% Rust: set_mcp_servers method
+    assert_true('Rust has set_mcp_servers', (
+        agent_loop_module:rust_fragment(tool_handler_struct, M3),
+        sub_atom(M3, _, _, _, 'set_mcp_servers')
+    )),
+    %% Python: ToolHandler has mcp_manager (emitted by generator)
+    assert_true('Python ToolHandler has mcp_manager', (
+        read_file_to_string('generated/python/tools.py', M4, []),
+        sub_atom(M4, _, _, _, 'self.mcp_manager')
+    )),
+    %% Python: execute() calls _execute_mcp
+    assert_true('Python execute() handles mcp:', (
+        agent_loop_module:py_fragment(tools_handler_class_body, M5),
+        sub_atom(M5, _, _, _, '_execute_mcp')
+    )).
+
+test_phase21_async_backend :-
+    format("~nPhase 21 — async backend:~n"),
+    %% py_fragment exists
+    assert_true('py_fragment async_api_backend exists', (
+        agent_loop_module:py_fragment(async_api_backend, _)
+    )),
+    %% Has async method
+    assert_true('async backend has send_message_async', (
+        agent_loop_module:py_fragment(async_api_backend, A1),
+        sub_atom(A1, _, _, _, 'send_message_async')
+    )),
+    %% Supports both API formats
+    assert_true('async backend supports anthropic format', (
+        agent_loop_module:py_fragment(async_api_backend, A2),
+        sub_atom(A2, _, _, _, 'anthropic')
+    )),
+    %% Has aiohttp import
+    assert_true('async backend uses aiohttp', (
+        agent_loop_module:py_fragment(async_api_backend, A3),
+        sub_atom(A3, _, _, _, 'aiohttp')
+    )),
+    %% Check base.py will contain it
+    assert_true('backends/base.py generated with async', (
+        read_file_to_string('generated/python/backends/base.py', Content, []),
+        sub_atom(Content, _, _, _, 'AsyncApiBackend')
+    )).
+
+test_phase21_clear_cache_command :-
+    format("~nPhase 21 — clear-cache command:~n"),
+    %% slash_command fact exists
+    assert_true('slash_command clear-cache exists', (
+        agent_loop_module:slash_command('clear-cache', _, _, _)
+    )),
+    %% command alias
+    assert_true('command_alias cc -> clear-cache', (
+        agent_loop_module:command_alias("cc", "clear-cache")
+    )),
+    %% In Config group
+    assert_true('clear-cache in Config group', (
+        agent_loop_module:slash_command_group('Config', Cmds),
+        member('clear-cache', Cmds)
+    )).
+
+test_phase21_e2e_tests :-
+    format("~nPhase 21 — E2E test presence:~n"),
+    %% Rust integration tests have E2E
+    assert_true('Rust has E2E read test', (
+        agent_loop_module:rust_fragment(integration_tests, E1),
+        sub_atom(E1, _, _, _, 'test_e2e_tool_handler_execute_read')
+    )),
+    assert_true('Rust has E2E MCP test', (
+        agent_loop_module:rust_fragment(integration_tests, E2),
+        sub_atom(E2, _, _, _, 'test_e2e_tool_handler_mcp_no_servers')
+    )),
+    assert_true('Rust has E2E unknown tool test', (
+        agent_loop_module:rust_fragment(integration_tests, E3),
+        sub_atom(E3, _, _, _, 'test_e2e_tool_handler_unknown_tool')
     )).

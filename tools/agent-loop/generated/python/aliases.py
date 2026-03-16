@@ -58,6 +58,9 @@ DEFAULT_ALIASES = {
     # Search
     "find": "search",
     "grep": "search",
+
+    # Cache
+    "cc": "clear-cache",
 }
 
 
@@ -145,7 +148,7 @@ class AliasManager:
             "Export": ["exp", "md", "html"],
             "Backend": ["be", "sw", "yolo", "opus", "sonnet", "haiku", "gpt", "local"],
             "Iterations": ["iter", "i0", "i1", "i3", "i5"],
-            "Other": ["fmt", "str", "$", "find", "grep"],
+            "Other": ["fmt", "str", "$", "find", "grep", "cc"],
         }
 
         for category, keys in categories.items():

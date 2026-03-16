@@ -17,11 +17,25 @@ pub struct ToolHandler {
     pub approval_mode: String,
     pub proot: Option<ProotSandbox>,
     pub plugins: Option<PluginManager>,
+    pub cache: ToolResultCache,
+    pub mcp_manager: Option<crate::mcp_client::McpManager>,
 }
 
 impl ToolHandler {
     pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
-        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None }
+        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None, cache: ToolResultCache::new(60), mcp_manager: None }
+    }
+
+    /// Set cache TTL in seconds.
+    pub fn set_cache_ttl(&mut self, ttl_secs: u64) {
+        self.cache = ToolResultCache::new(ttl_secs);
+    }
+
+    /// Configure MCP servers from config.
+    pub fn set_mcp_servers(&mut self, configs: &[crate::mcp_client::McpServerConfig]) {
+        if !configs.is_empty() {
+            self.mcp_manager = Some(crate::mcp_client::McpManager::from_configs(configs));
+        }
     }
 
     /// Enable proot sandbox with the given allowed dirs.
@@ -270,7 +284,38 @@ impl ToolHandler {
             };
         }
 
-        match tool_call.name.as_str() {
+        // Check cache for non-destructive tools
+        if let Some(cached) = self.cache.get(&tool_call.name, &tool_call.arguments) {
+            return cached.clone();
+        }
+
+        // MCP tool dispatch (tool names starting with "mcp:")
+        if tool_call.name.starts_with("mcp:") {
+            let result = if let Some(ref mut mgr) = self.mcp_manager {
+                match mgr.dispatch(&tool_call.name, serde_json::json!(tool_call.arguments)) {
+                    Some(val) => ToolResult {
+                        success: true,
+                        output: serde_json::to_string_pretty(&val).unwrap_or_default(),
+                        tool_name: tool_call.name.clone(),
+                    },
+                    None => ToolResult {
+                        success: false,
+                        output: format!("MCP tool not found: {}", tool_call.name),
+                        tool_name: tool_call.name.clone(),
+                    },
+                }
+            } else {
+                ToolResult {
+                    success: false,
+                    output: "No MCP servers configured".to_string(),
+                    tool_name: tool_call.name.clone(),
+                }
+            };
+            self.cache.put(&tool_call.name, &tool_call.arguments, result.clone());
+            return result;
+        }
+
+        let result = match tool_call.name.as_str() {
             "bash" => self.handle_bash(&tool_call.arguments),
             "read" => self.handle_read(&tool_call.arguments),
             "write" => self.handle_write(&tool_call.arguments),
@@ -282,9 +327,9 @@ impl ToolHandler {
                         // Execute plugin command via bash
                         let mut plugin_args = std::collections::HashMap::new();
                         plugin_args.insert("command".to_string(), serde_json::json!(cmd));
-                        let mut result = self.handle_bash(&plugin_args);
-                        result.tool_name = tool_call.name.clone();
-                        return result;
+                        let mut r = self.handle_bash(&plugin_args);
+                        r.tool_name = tool_call.name.clone();
+                        return r;
                     }
                 }
                 ToolResult {
@@ -293,7 +338,11 @@ impl ToolHandler {
                     tool_name: tool_call.name.clone(),
                 }
             },
-        }
+        };
+
+        // Store in cache
+        self.cache.put(&tool_call.name, &tool_call.arguments, result.clone());
+        result
     }
 
     /// Async tool execution — uses tokio::process::Command for plugin tools.

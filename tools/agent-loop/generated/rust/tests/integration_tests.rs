@@ -1449,3 +1449,151 @@ fn test_types_has_phase20_config_fields() {
     assert!(types_src.contains("tool_cache_ttl"), "AgentConfig should have tool_cache_ttl");
     assert!(types_src.contains("mcp_servers"), "AgentConfig should have mcp_servers");
 }
+
+// ============================================================================
+// Phase 21: Cache wiring, MCP dispatch, behavioral tests, E2E
+// ============================================================================
+
+#[test]
+fn test_tool_handler_has_cache_field() {
+    let th_src = include_str!("../src/tool_handler.rs");
+    assert!(th_src.contains("pub cache: ToolResultCache"), "ToolHandler should have cache field");
+    assert!(th_src.contains("pub mcp_manager: Option"), "ToolHandler should have mcp_manager field");
+}
+
+#[test]
+fn test_tool_handler_cache_wiring() {
+    let th_src = include_str!("../src/tool_handler.rs");
+    assert!(th_src.contains("self.cache.get("), "execute() should check cache");
+    assert!(th_src.contains("self.cache.put("), "execute() should store in cache");
+}
+
+#[test]
+fn test_tool_handler_mcp_dispatch() {
+    let th_src = include_str!("../src/tool_handler.rs");
+    assert!(th_src.contains(r#"starts_with("mcp:")"#), "execute() should check for mcp: prefix");
+    assert!(th_src.contains("mgr.dispatch"), "Should dispatch to MCP manager");
+}
+
+#[test]
+fn test_output_parser_nested_json() {
+    use agent_loop::output_parser::OutputParser;
+    let text = r#"Result: {"outer": {"inner": [1, 2, 3]}, "flag": true}"#;
+    let blocks = OutputParser::extract_json(text);
+    assert_eq!(blocks.len(), 1);
+    assert!(blocks[0]["outer"]["inner"].is_array());
+    assert_eq!(blocks[0]["flag"], true);
+}
+
+#[test]
+fn test_output_parser_multiple_bare_objects() {
+    use agent_loop::output_parser::OutputParser;
+    let text = r#"First: {"a": 1} then {"b": 2} done"#;
+    let blocks = OutputParser::extract_json(text);
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["a"], 1);
+    assert_eq!(blocks[1]["b"], 2);
+}
+
+#[test]
+fn test_output_parser_malformed_json() {
+    use agent_loop::output_parser::OutputParser;
+    let text = r#"Bad: {not json at all} and {"valid": true}"#;
+    let blocks = OutputParser::extract_json(text);
+    // Should extract only the valid JSON
+    assert!(blocks.len() >= 1);
+    assert_eq!(blocks.last().unwrap()["valid"], true);
+}
+
+#[test]
+fn test_tool_result_cache_basic() {
+    use std::collections::HashMap;
+    let mut cache = ToolResultCache::new(60);
+    let mut args = HashMap::new();
+    args.insert("file_path".to_string(), serde_json::json!("test.txt"));
+    let result = ToolResult { success: true, output: "contents".to_string(), tool_name: "read".to_string() };
+    cache.put("read", &args, result);
+    assert_eq!(cache.len(), 1);
+    let cached = cache.get("read", &args);
+    assert!(cached.is_some());
+    assert_eq!(cached.unwrap().output, "contents");
+}
+
+#[test]
+fn test_tool_result_cache_skip_destructive() {
+    use std::collections::HashMap;
+    let mut cache = ToolResultCache::new(60);
+    let mut args = HashMap::new();
+    args.insert("command".to_string(), serde_json::json!("ls"));
+    let result = ToolResult { success: true, output: "files".to_string(), tool_name: "bash".to_string() };
+    cache.put("bash", &args, result);
+    assert_eq!(cache.len(), 0, "bash should be skipped");
+    assert!(cache.get("bash", &args).is_none());
+}
+
+#[test]
+fn test_tool_result_cache_clear() {
+    use std::collections::HashMap;
+    let mut cache = ToolResultCache::new(60);
+    let args = HashMap::new();
+    cache.put("read", &args, ToolResult { success: true, output: "x".to_string(), tool_name: "read".to_string() });
+    assert_eq!(cache.len(), 1);
+    cache.clear();
+    assert_eq!(cache.len(), 0);
+}
+
+#[test]
+fn test_mcp_jsonrpc_envelope() {
+    // Verify MCP client produces correct JSON-RPC 2.0 envelope structure
+    let mcp_src = include_str!("../src/mcp_client.rs");
+    assert!(mcp_src.contains("jsonrpc"), "Should include jsonrpc field");
+    assert!(mcp_src.contains("2.0"), "Should use JSON-RPC 2.0");
+    assert!(mcp_src.contains("request_id"), "Should track request IDs");
+}
+
+#[test]
+fn test_tool_handler_clear_cache_method() {
+    let th_src = include_str!("../src/tool_handler.rs");
+    assert!(th_src.contains("set_cache_ttl"), "Should have set_cache_ttl method");
+    assert!(th_src.contains("set_mcp_servers"), "Should have set_mcp_servers method");
+}
+
+#[test]
+fn test_e2e_tool_handler_execute_read() {
+    // End-to-end: create ToolHandler, execute a read tool call, verify result
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let mut args = std::collections::HashMap::new();
+    // Read a file that definitely exists
+    args.insert("file_path".to_string(), serde_json::json!("Cargo.toml"));
+    let tc = ToolCall { name: "read".to_string(), arguments: args.clone(), id: "test_1".to_string() };
+    let result = handler.execute(&tc);
+    assert!(result.success, "Reading Cargo.toml should succeed");
+    assert!(result.output.contains("agent-loop") || result.output.contains("[package]"),
+            "Output should contain package info");
+    // Second call should hit cache
+    let result2 = handler.execute(&tc);
+    assert!(result2.success, "Cached read should succeed");
+    assert_eq!(result.output, result2.output, "Cached result should match");
+}
+
+#[test]
+fn test_e2e_tool_handler_mcp_no_servers() {
+    // MCP tool call with no servers configured should fail gracefully
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let mut args = std::collections::HashMap::new();
+    args.insert("query".to_string(), serde_json::json!("test"));
+    let tc = ToolCall { name: "mcp:server:tool".to_string(), arguments: args, id: "test_mcp".to_string() };
+    let result = handler.execute(&tc);
+    assert!(!result.success, "MCP call without servers should fail");
+    assert!(result.output.contains("No MCP servers"), "Should mention no MCP servers");
+}
+
+#[test]
+fn test_e2e_tool_handler_unknown_tool() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let args = std::collections::HashMap::new();
+    let tc = ToolCall { name: "nonexistent".to_string(), arguments: args, id: "test_unk".to_string() };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("Unknown tool"));
+}

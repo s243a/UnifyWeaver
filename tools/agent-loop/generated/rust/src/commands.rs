@@ -41,5 +41,6 @@ pub static SLASH_COMMANDS: &[(&str, CommandSpec)] = &[
     ("replay", CommandSpec { match_type: "prefix_sp", help: "Re-send message at index" }),
     ("init", CommandSpec { match_type: "exact_or_prefix_sp", help: "Create example config file (default: uwsal.json)" }),
     ("reload", CommandSpec { match_type: "exact", help: "Reload config from disk (hot-reload model, backend, system_prompt)" }),
+    ("clear-cache", CommandSpec { match_type: "exact", help: "Flush the tool result cache" }),
 ];
 

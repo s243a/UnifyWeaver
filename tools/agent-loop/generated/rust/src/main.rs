@@ -733,6 +733,7 @@ fn handle_command(
             println!("Config:");
             println!("  /init [path]       - Create example config file (default: uwsal.json)");
             println!("  /reload            - Reload config from disk (hot-reload model, backend, system_prompt)");
+            println!("  /clear-cache       - Flush the tool result cache");
             println!();
             println!("Multi-line Input:");
             println!("  Start with ``` for code blocks");

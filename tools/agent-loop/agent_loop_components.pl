@@ -1580,7 +1580,7 @@ generator_export_specs(security_init, Exports) :-
     ), Exports).
 
 generator_export_specs(backends_init, Exports) :-
-    StaticExports = ['AgentBackend', 'AgentResponse', 'ToolCall'],
+    StaticExports = ['AgentBackend', 'AgentResponse', 'ToolCall', 'AsyncApiBackend'],
     findall(ClassName, (
         agent_loop_module:backend_factory(_, Spec),
         member(class_name(ClassName), Spec),

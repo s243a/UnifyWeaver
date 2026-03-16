@@ -250,7 +250,7 @@ class TestAliasesModule:
 
     def test_alias_count(self):
         from aliases import DEFAULT_ALIASES
-        assert len(DEFAULT_ALIASES) == 30
+        assert len(DEFAULT_ALIASES) == 31
 
     def test_known_aliases(self):
         from aliases import DEFAULT_ALIASES
@@ -819,3 +819,155 @@ class TestMCPClient:
         client = MCPClient("test", ["echo", "hello"])
         assert client.name == "test"
         assert client.command == ["echo", "hello"]
+
+
+# ============================================================================
+# TestAsyncApiBackend — Phase 21 Python async backend
+# ============================================================================
+
+class TestAsyncApiBackend:
+    """Test AsyncApiBackend class."""
+
+    def test_importable(self):
+        from backends.base import AsyncApiBackend
+        assert AsyncApiBackend is not None
+
+    def test_in_all(self):
+        import backends
+        assert "AsyncApiBackend" in backends.__all__
+
+    def test_init_openai(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("test", "http://localhost/v1", "key", "gpt-4")
+        assert backend.name == "test"
+        assert backend.api_format == "openai"
+
+    def test_init_anthropic(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("claude", "http://localhost/v1", "key", "claude-3",
+                                  api_format="anthropic")
+        assert backend.api_format == "anthropic"
+
+    def test_build_headers_openai(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("test", "http://localhost", "sk-test", "gpt-4")
+        headers = backend._build_headers()
+        assert headers["Authorization"] == "Bearer sk-test"
+
+    def test_build_headers_anthropic(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("test", "http://localhost", "sk-test", "claude-3",
+                                  api_format="anthropic")
+        headers = backend._build_headers()
+        assert headers["x-api-key"] == "sk-test"
+        assert "anthropic-version" in headers
+
+    def test_build_body_openai(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("test", "http://localhost", "key", "gpt-4")
+        body = backend._build_body("hello", [])
+        assert body["model"] == "gpt-4"
+        assert len(body["messages"]) == 1
+        assert body["messages"][0]["content"] == "hello"
+
+    def test_parse_response_openai(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("test", "http://localhost", "key", "gpt-4")
+        data = {
+            "choices": [{"message": {"content": "Hello!", "role": "assistant"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        }
+        resp = backend._parse_response(data)
+        assert resp.content == "Hello!"
+        assert resp.tokens["input"] == 10
+        assert resp.tokens["output"] == 5
+
+    def test_parse_response_anthropic(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("test", "http://localhost", "key", "claude-3",
+                                  api_format="anthropic")
+        data = {
+            "content": [{"type": "text", "text": "Bonjour!"}],
+            "usage": {"input_tokens": 8, "output_tokens": 4}
+        }
+        resp = backend._parse_response(data)
+        assert resp.content == "Bonjour!"
+        assert resp.tokens["input"] == 8
+
+    def test_parse_response_with_tool_calls(self):
+        from backends.base import AsyncApiBackend
+        backend = AsyncApiBackend("test", "http://localhost", "key", "gpt-4")
+        data = {
+            "choices": [{"message": {"content": "", "tool_calls": [
+                {"id": "call_1", "function": {"name": "bash", "arguments": '{"command": "ls"}'}}
+            ]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        }
+        resp = backend._parse_response(data)
+        assert len(resp.tool_calls) == 1
+        assert resp.tool_calls[0].name == "bash"
+
+
+# ============================================================================
+# TestToolHandlerCacheWiring — Phase 21 cache wiring
+# ============================================================================
+
+class TestToolHandlerCacheWiring:
+    """Test that ToolHandler has cache field and uses it."""
+
+    def test_tool_handler_has_cache(self):
+        from tools import ToolHandler
+        handler = ToolHandler()
+        assert hasattr(handler, 'cache')
+        assert handler.cache.size() == 0
+
+    def test_tool_handler_has_mcp_manager(self):
+        from tools import ToolHandler
+        handler = ToolHandler()
+        assert hasattr(handler, 'mcp_manager')
+        assert handler.mcp_manager is None
+
+    def test_cache_populated_on_read(self):
+        import os
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(confirm_destructive=False)
+        test_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "test_integration.py"))
+        tc = ToolCall(name="read", arguments={"path": test_file})
+        result = handler.execute(tc)
+        assert result.success
+        assert handler.cache.size() == 1
+        # Second call should hit cache
+        result2 = handler.execute(tc)
+        assert result2.success
+        assert result2.output == result.output
+
+    def test_cache_skips_bash(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(confirm_destructive=False)
+        tc = ToolCall(name="bash", arguments={"command": "echo hello"})
+        result = handler.execute(tc)
+        assert result.success
+        assert handler.cache.size() == 0  # bash is destructive, not cached
+
+    def test_mcp_dispatch_no_servers(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(confirm_destructive=False)
+        tc = ToolCall(name="mcp:server:tool", arguments={"query": "test"})
+        result = handler.execute(tc)
+        assert not result.success
+        assert "No MCP servers" in result.output
+
+
+# ============================================================================
+# TestClearCacheCommand — Phase 21 /clear-cache
+# ============================================================================
+
+class TestClearCacheCommand:
+    """Test /clear-cache command integration."""
+
+    def test_alias_count_updated(self):
+        from aliases import DEFAULT_ALIASES
+        assert DEFAULT_ALIASES.get("cc") == "clear-cache"
