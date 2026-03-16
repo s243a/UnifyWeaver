@@ -109,6 +109,7 @@ agent_config_field(approval_mode, str, '"yolo"', "Tool approval mode (default/au
 agent_config_field(paste_mode, str, '"auto"', "Paste detection mode: auto, bracketed, timing, off").
 agent_config_field(tool_cache_ttl, int, '60', "Tool result cache TTL in seconds (0 = disabled)").
 agent_config_field(mcp_servers, list, 'field(default_factory=list)', "MCP server configs: [{name, command, args, env}]").
+agent_config_field(token_budget, float, '0.0', "Maximum cost budget in USD (0 = unlimited)").
 agent_config_field(extra, dict, 'field(default_factory=dict)', "").
 
 %% default_agent_preset(+PresetName, +Backend, +Overrides)

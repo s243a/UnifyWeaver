@@ -132,6 +132,7 @@ pub static CONFIG_FIELDS: &[AgentConfigField] = &[
     AgentConfigField { name: "paste_mode", type_annotation: "str", default_value: "\"auto\"", comment: "Paste detection mode: auto, bracketed, timing, off" },
     AgentConfigField { name: "tool_cache_ttl", type_annotation: "int", default_value: "60", comment: "Tool result cache TTL in seconds (0 = disabled)" },
     AgentConfigField { name: "mcp_servers", type_annotation: "list", default_value: "field(default_factory=list)", comment: "MCP server configs: [{name, command, args, env}]" },
+    AgentConfigField { name: "token_budget", type_annotation: "float", default_value: "0.0", comment: "Maximum cost budget in USD (0 = unlimited)" },
     AgentConfigField { name: "extra", type_annotation: "dict", default_value: "field(default_factory=dict)", comment: "" },
 ];
 

@@ -66,8 +66,8 @@ class ContextManager:
         self._word_count = 0
 
     def add_message(self, role: str, content: str, tokens: int = 0,
-                    tool_call_id: str = "", tool_calls: list | None = None) -> None:
-        """Add a message to the context."""
+                    tool_call_id: str = "", tool_calls: list | None = None) -> int:
+        """Add a message to the context. Returns number of trimmed messages."""
         if tokens == 0:
             tokens = _estimate_tokens(content)
 
@@ -78,10 +78,11 @@ class ContextManager:
         self._token_count += tokens
         self._char_count += len(content)
         self._word_count += _count_words(content)
-        self._trim_if_needed()
+        return self._trim_if_needed()
 
-    def _trim_if_needed(self) -> None:
-        """Remove old messages if any context limit is exceeded."""
+    def _trim_if_needed(self) -> int:
+        """Remove old messages if any context limit is exceeded. Returns count trimmed."""
+        before = len(self.messages)
         while len(self.messages) > self.max_messages:
             self._remove_oldest()
 
@@ -95,6 +96,7 @@ class ContextManager:
         if self.max_words > 0:
             while self._word_count > self.max_words and len(self.messages) > 1:
                 self._remove_oldest()
+        return before - len(self.messages)
 
     def _remove_oldest(self) -> None:
         """Remove the oldest message and update counters."""

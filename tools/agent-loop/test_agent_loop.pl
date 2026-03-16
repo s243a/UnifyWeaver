@@ -298,6 +298,11 @@ run_tests :-
     test_phase22_streaming_retry,
     test_phase22_output_parser_wiring,
     test_phase22_mcp_lifecycle,
+    test_phase23_context_overflow,
+    test_phase23_reload_robustness,
+    test_phase23_session_autosave,
+    test_phase23_schema_validation,
+    test_phase23_token_budget,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -5760,4 +5765,105 @@ test_phase22_mcp_lifecycle :-
     assert_true('Rust exit disconnects MCP', (
         agent_loop_module:rust_fragment(main_loop, RM2),
         sub_atom(RM2, _, _, _, 'disconnect_all')
+    )).
+
+%% ============================================================================
+%% Phase 23 — Context overflow, reload robustness, auto-save, schema validation, budget
+%% ============================================================================
+
+test_phase23_context_overflow :-
+    format("~nPhase 23 — Context overflow notification:~n"),
+    %% Python add_message returns int
+    assert_true('Python add_message returns int', (
+        agent_loop_module:py_fragment(context_manager_class, CM1),
+        sub_atom(CM1, _, _, _, '-> int')
+    )),
+    %% Python _process_message checks trimmed count
+    assert_true('Python _process_message notifies on trim', (
+        agent_loop_module:py_fragment(agent_loop_process_message, PM1),
+        sub_atom(PM1, _, _, _, '_trimmed')
+    )).
+
+test_phase23_reload_robustness :-
+    format("~nPhase 23 — Config reload robustness:~n"),
+    %% Reload syncs approval_mode to tool handler
+    assert_true('Reload syncs approval_mode', (
+        agent_loop_module:py_command_body(reload, Lines),
+        atomic_list_concat(Lines, Full),
+        sub_atom(Full, _, _, _, 'approval_mode')
+    )),
+    %% Reload refreshes MCP servers
+    assert_true('Reload refreshes MCP', (
+        agent_loop_module:py_command_body(reload, Lines2),
+        atomic_list_concat(Lines2, Full2),
+        sub_atom(Full2, _, _, _, 'disconnect_all')
+    )),
+    %% Reload re-creates backend
+    assert_true('Reload re-creates backend', (
+        agent_loop_module:py_command_body(reload, Lines3),
+        atomic_list_concat(Lines3, Full3),
+        sub_atom(Full3, _, _, _, 'create_backend_from_config')
+    )).
+
+test_phase23_session_autosave :-
+    format("~nPhase 23 — Session auto-save:~n"),
+    %% Python run() has auto-save before Goodbye
+    assert_true('Python run() auto-saves session', (
+        agent_loop_module:py_fragment(agent_loop_class_init, AI1),
+        sub_atom(AI1, _, _, _, 'save_session')
+    )).
+
+test_phase23_schema_validation :-
+    format("~nPhase 23 — Tool schema validation:~n"),
+    %% Python has _validate_tool_args method
+    assert_true('Python has _validate_tool_args', (
+        agent_loop_module:py_fragment(tools_handler_class_methods, VM1),
+        sub_atom(VM1, _, _, _, '_validate_tool_args')
+    )),
+    %% Python execute() calls validation
+    assert_true('Python execute checks validation', (
+        agent_loop_module:py_fragment(tools_handler_class_body, VB1),
+        sub_atom(VB1, _, _, _, '_validate_tool_args')
+    )),
+    %% Rust has validate_tool_args
+    assert_true('Rust has validate_tool_args', (
+        agent_loop_module:rust_fragment(tool_handler_validation, RS1),
+        sub_atom(RS1, _, _, _, 'validate_tool_args')
+    )),
+    %% Rust execute() calls validation
+    assert_true('Rust execute checks validation', (
+        agent_loop_module:rust_fragment(tool_handler_dispatch, RD1),
+        sub_atom(RD1, _, _, _, 'validate_tool_args')
+    )).
+
+test_phase23_token_budget :-
+    format("~nPhase 23 — Token budget:~n"),
+    %% token_budget config field exists
+    assert_true('token_budget config field', (
+        agent_loop_module:agent_config_field(token_budget, _, _, _)
+    )),
+    %% Python CostTracker has is_over_budget
+    assert_true('Python CostTracker has is_over_budget', (
+        agent_loop_module:py_fragment(cost_tracker_methods, CT1),
+        sub_atom(CT1, _, _, _, 'is_over_budget')
+    )),
+    %% Python CostTracker has budget_remaining
+    assert_true('Python CostTracker has budget_remaining', (
+        agent_loop_module:py_fragment(cost_tracker_methods, CT2),
+        sub_atom(CT2, _, _, _, 'budget_remaining')
+    )),
+    %% Python _process_message checks budget
+    assert_true('Python checks budget in loop', (
+        agent_loop_module:py_fragment(agent_loop_process_message, PB1),
+        sub_atom(PB1, _, _, _, 'is_over_budget')
+    )),
+    %% Rust CostTracker has is_over_budget
+    assert_true('Rust CostTracker has is_over_budget', (
+        read_file_to_string('generated/rust/src/costs.rs', CostSrc, []),
+        sub_atom(CostSrc, _, _, _, 'is_over_budget')
+    )),
+    %% Rust main_loop checks budget
+    assert_true('Rust checks budget in loop', (
+        agent_loop_module:rust_fragment(main_loop, RM1),
+        sub_atom(RM1, _, _, _, 'is_over_budget')
     )).

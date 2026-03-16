@@ -1516,6 +1516,23 @@ async fn main() {
                         context.estimate_tokens(),
                         context.len());
                 }
+
+                // Check token budget
+                let budget = config.token_budget;
+                if budget > 0.0 && cost_tracker.is_over_budget(budget) {
+                    eprintln!("  [Budget exceeded] Spent ${:.4} of ${:.4} budget.", cost_tracker.total_cost(), budget);
+                    eprint!("  Continue? [y/N] ");
+                    use std::io::Write;
+                    std::io::stderr().flush().ok();
+                    let mut answer = String::new();
+                    if std::io::stdin().read_line(&mut answer).is_ok() {
+                        if !answer.trim().eq_ignore_ascii_case("y") {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
             }
             Err(rustyline::error::ReadlineError::Interrupted) |
             Err(rustyline::error::ReadlineError::Eof) => {

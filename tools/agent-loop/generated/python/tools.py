@@ -373,6 +373,13 @@ class ToolHandler:
 
         self.destructive_tools = {'bash', 'write', 'edit'}
 
+        self.tool_required_params = {
+            'bash': ['command'],
+            'read': ['path'],
+            'write': ['path', 'content'],
+            'edit': ['path', 'old_string', 'new_string'],
+        }
+
         # Tool result cache
         self.cache = ToolResultCache()
 
@@ -444,6 +451,16 @@ class ToolHandler:
         except (EOFError, KeyboardInterrupt):
             return False
 
+    def _validate_tool_args(self, tool_call: ToolCall) -> str | None:
+        """Validate tool call arguments against schema. Returns error message or None."""
+        required = self.tool_required_params.get(tool_call.name)
+        if required is None:
+            return None  # No schema for this tool (plugin/MCP)
+        missing = [p for p in required if p not in tool_call.arguments]
+        if missing:
+            return f"Missing required parameter(s): {', '.join(missing)}"
+        return None
+
     def _init_plugins(self):
         """Load plugins from default directory."""
         self.plugin_manager = PluginManager()
@@ -483,6 +500,15 @@ class ToolHandler:
             return ToolResult(
                 success=False,
                 output="User declined to execute tool",
+                tool_name=tool_call.name
+            )
+
+        # Validate tool arguments against schema
+        validation_error = self._validate_tool_args(tool_call)
+        if validation_error:
+            return ToolResult(
+                success=False,
+                output=f"[Validation] {validation_error}",
                 tool_name=tool_call.name
             )
 
