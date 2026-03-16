@@ -96,6 +96,10 @@ Mustache template, small `.pl` file). Make it the reference implementation.
 
 **Goal:** Introduce TypR safely without regressing existing `r` output.
 
+**Status:** Implemented as an initial pilot and validated with the local TypR
+CLI. Remaining work is broader generic rule-body lowering, not basic target
+bring-up.
+
 **Changes:**
 1. Add `src/unifyweaver/targets/typr_target.pl` implementing standard interface:
    - `target_info/1`
@@ -124,7 +128,18 @@ Mustache template, small `.pl` file). Make it the reference implementation.
 - Explicit `uw_type(..., any)` emits `Any`.
 - `uw_typed_mode(Pred/Arity, infer|explicit|off)` overrides global/per-call mode.
 - Existing `r` target output remains unchanged.
-- (Optional) Generated TypR transpiles and runs via TypR toolchain in CI smoke test.
+- Generated TypR validates through the real TypR CLI in focused smoke tests.
+
+**Implemented pilot scope:**
+- real TypR syntax output
+- standard target registry integration
+- typed-mode precedence support
+- simple fact predicate lowering
+- transitive-closure generation with compile-time fact seeding
+
+**Remaining scope after Phase 2.5:**
+- broader lowering for generic non-recursive rule bodies
+- richer typed preamble generation for domain/record-heavy use cases
 
 ---
 
@@ -221,6 +236,9 @@ Each target follows the same pattern as Phases 2–4:
 3. Add a `MIGRATION.md` note confirming backward compatibility.
 4. Add `docs/design/TYPR_TARGET_DESIGN.md` to the type system document index.
 
+**Status note:** The design docs should now describe TypR as an implemented
+initial target, not just a proposed rollout item.
+
 ---
 
 ## Dependency Graph
@@ -258,6 +276,7 @@ Phase 1 (Core Prolog infrastructure)
 2. **Type inference vs. declaration:** Should UnifyWeaver attempt to *infer*
    node types from Prolog fact ground terms (e.g., if all `edge/2` facts have
    integer first arguments, infer `integer`)? This would be a Phase 8 item and
+   is intentionally out of scope for the current TypR merge.
    is explicitly out of scope for this plan.
 
 3. **Arity > 2 predicates:** The current `transitive_closure` pattern only

@@ -17,8 +17,15 @@ This document focuses on architecture and rollout choices specific to TypR.
    but the main R path today is still direct emission.
 3. Type-capable targets are mixed:
    some are direct emitters, some template-driven, and some hybrid.
-4. `target_registry:compile_to_target/4` dispatches to `compile_predicate/3`,
-   but `r_target.pl` currently exports `compile_predicate_to_r/3` only.
+4. `target_registry:compile_to_target/4` dispatches to `compile_predicate/3`.
+5. `typr_target.pl` now exists and emits real TypR syntax validated with the
+   local `typr` CLI.
+6. The current TypR pilot covers:
+   - typed-mode resolution
+   - shared type mapping
+   - simple fact predicates
+   - transitive-closure generation
+7. The remaining gap is broader lowering for arbitrary generic rule bodies.
 
 Implication: TypR design must support both generation styles and should not
 assume a Mustache-only pipeline.
@@ -81,6 +88,23 @@ This keeps type declarations (`uw_type/3`) separate from emission policy
 
 This preserves meaning: unknown vs intentionally polymorphic.
 
+### 5) TypR Binding Discipline
+
+Generated TypR should follow TypR's stronger binding model:
+
+- use `let` when first introducing a name
+- use plain assignment for later updates to the same name
+
+Example:
+
+```typr
+let count <- 0;
+count <- count + 1;
+```
+
+This is the safer codegen rule because TypR distinguishes `let` bindings from
+plain assignment in its AST and type-checking path.
+
 ---
 
 ## IR Contract for TypR
@@ -131,23 +155,35 @@ machinery until record/domain-type support lands across multiple targets.
 
 ## Rollout Plan (TypR-Specific)
 
-1. Add `typr_target.pl` with standard interface (`target_info/1`,
-   `compile_predicate/3`) and legacy compatibility wrapper if needed.
-2. Register `typr` in `target_registry.pl` as family `r`.
-3. Implement transitive-closure pilot generation in TypR for parity with
-   existing R examples.
-4. Add option handling:
+Completed:
+
+1. Added `typr_target.pl` with standard interface (`target_info/1`,
+   `compile_predicate/3`) and compatibility wrapper.
+2. Registered `typr` in `target_registry.pl` as family `r`.
+3. Implemented transitive-closure pilot generation in TypR.
+4. Implemented option handling:
    - `typed_mode(off|infer|explicit)`
    - default `infer` for target `typr`
-   - resolve mode using the defined precedence order
-5. Add golden tests:
-   - no types declared -> infer-mode output has omitted annotations
-   - explicit `any` -> output contains `Any`
-   - explicit scalar/composite declarations -> emitted annotations match
-6. Optional validation phase: run generated TypR through TypR transpiler and
-   execute resulting R in smoke tests.
-7. After the TypR pilot is stable, audit opportunities to share templates or
-   code-generation helpers with `r` without making TypR the mandatory path.
+   - precedence resolution through shared type declarations
+5. Added focused tests for:
+   - omitted annotations in infer mode
+   - explicit `Any`
+   - per-predicate typed-mode override
+   - target-registry dispatch
+   - real TypR validation through the CLI
+
+Current implementation note:
+
+- transitive closure uses valid TypR syntax plus inline raw-R IIFEs where the
+  current TypR surface language is too restrictive for the required BFS logic
+  inside nested scopes
+
+Follow-on work:
+
+1. Extend TypR beyond simple fact predicates and the transitive-closure pilot.
+2. Add broader lowering for generic non-recursive rule bodies.
+3. Audit opportunities to share templates or code-generation helpers with `r`
+   without making TypR the mandatory path.
 
 ---
 
@@ -157,3 +193,5 @@ machinery until record/domain-type support lands across multiple targets.
    technical debt and should be fixed independently of TypR.
 2. If TypR and R later converge structurally, template sharing should happen
    after the shared type/context layer is stable, not before.
+3. The current TypR backend is mergeable as an initial target, but should still
+   be described as an initial/pilot implementation rather than full TypR parity.

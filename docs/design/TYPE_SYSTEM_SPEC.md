@@ -247,6 +247,21 @@ Initial implementation may keep R and TypR templates/code paths separate even
 when they share the same underlying type-resolution layer. Later convergence is
 allowed once TypR output shape stabilizes.
 
+TypR code generation should also follow TypR binding discipline:
+
+- use `let` when first introducing a name
+- use plain assignment for later updates to that name
+
+Example:
+
+```typr
+let visited <- [start];
+visited <- c(visited, next_node);
+```
+
+This is preferable to relying on the compiler to infer whether a plain
+assignment is an introduction or an update.
+
 ---
 
 ## 6. Fallback / Untyped Targets

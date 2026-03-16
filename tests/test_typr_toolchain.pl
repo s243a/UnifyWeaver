@@ -1,0 +1,93 @@
+:- module(test_typr_toolchain, [run_all_tests/0]).
+
+:- use_module(library(filesex)).
+:- use_module(library(plunit)).
+:- use_module(library(process)).
+:- use_module('../src/unifyweaver/targets/type_declarations').
+:- use_module('../src/unifyweaver/targets/typr_target').
+
+run_all_tests :-
+    run_tests([typr_toolchain]).
+
+:- begin_tests(typr_toolchain).
+
+test(generated_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:simple_fact(hello)),
+    assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
+    once(compile_predicate_to_typr(simple_fact/1, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:simple_fact(_)).
+
+test(transitive_closure_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:edge(_, _)).
+
+:- end_tests(typr_toolchain).
+
+typr_cli_available :-
+    process_create(path(sh), ['-c', 'command -v typr >/dev/null 2>&1'], [process(Pid)]),
+    process_wait(Pid, exit(0)).
+
+create_smoke_project(ProjectDir) :-
+    tmp_file(typr_smoke, RootDir),
+    make_directory(RootDir),
+    run_typr(RootDir, ['new', 'smoke_project']),
+    directory_file_path(RootDir, 'smoke_project', ProjectDir),
+    exists_directory(ProjectDir).
+
+write_generated_typr_program(ProjectDir, Code) :-
+    directory_file_path(ProjectDir, 'TypR/main.ty', MainFile),
+    setup_call_cleanup(
+        open(MainFile, write, Stream),
+        write(Stream, Code),
+        close(Stream)
+    ).
+
+maybe_build_with_r(ProjectDir) :-
+    (   rscript_available
+    ->  run_typr(ProjectDir, ['build'])
+    ;   true
+    ).
+
+rscript_available :-
+    process_create(path(sh), ['-c', 'command -v Rscript >/dev/null 2>&1'], [process(Pid)]),
+    process_wait(Pid, exit(0)).
+
+run_typr(ProjectDir, Args) :-
+    process_create(
+        path(typr),
+        Args,
+        [ cwd(ProjectDir),
+          stdout(pipe(Stdout)),
+          stderr(pipe(Stderr)),
+          process(Pid)
+        ]
+    ),
+    read_string(Stdout, _, _),
+    read_string(Stderr, _, _),
+    close(Stdout),
+    close(Stderr),
+    process_wait(Pid, exit(0)).

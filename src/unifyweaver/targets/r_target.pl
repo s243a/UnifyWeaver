@@ -6,6 +6,7 @@
 % Supports vectorized operations, data frames, and native pipes.
 
 :- module(r_target, [
+    compile_predicate/3,            % +Predicate, +Options, -RCode
     compile_predicate_to_r/3,       % +Predicate, +Options, -RCode
     compile_facts_to_r/3,           % +Pred, +Arity, -RCode
     init_r_target/0,                % Initialize R target with bindings
@@ -35,6 +36,9 @@ init_r_target :-
 %% compile_predicate_to_r(+PredIndicator, +Options, -RCode)
 %  Compile a Prolog predicate indicator into an R function.
 %  Handles: no clauses, single clause, multiple clauses (if/else if chain).
+compile_predicate(PredIndicator, Options, RCode) :-
+    compile_predicate_to_r(PredIndicator, Options, RCode).
+
 compile_predicate_to_r(PredIndicator, _Options, RCode) :-
     (   PredIndicator = Module:Pred/Arity
     ->  true

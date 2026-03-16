@@ -26,6 +26,7 @@
 :- use_module('../targets/clojure_target', [compile_predicate_to_clojure/3]).
 :- use_module('../targets/jython_target', [compile_predicate_to_jython/3]).
 :- use_module('../targets/elixir_target', [compile_predicate_to_elixir/3]).
+:- use_module('../targets/typr_target', [compile_predicate_to_typr/3]).
 :- use_module('../targets/r_target', []).        % registers multifile tail/linear patterns for R
 :- use_module('../targets/c_target', []).        % registers multifile tail/linear patterns for C
 :- use_module('../targets/haskell_target', []).  % registers multifile tail/linear patterns for Haskell
@@ -148,6 +149,8 @@ compile_non_recursive(scala, Pred/Arity, FinalOptions, GeneratedCode) :-
     scala_target:compile_predicate_to_scala(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(clojure, Pred/Arity, FinalOptions, GeneratedCode) :-
     clojure_target:compile_predicate_to_clojure(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
+    compile_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(jython, Pred/Arity, FinalOptions, GeneratedCode) :-
     jython_target:compile_predicate_to_jython(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(elixir, Pred/Arity, FinalOptions, GeneratedCode) :-
@@ -630,6 +633,11 @@ compile_transitive_closure(powershell, Pred, _Arity, BasePred, _Options, Generat
 %% R transitive closure — loaded from templates/targets/r/transitive_closure.mustache
 compile_transitive_closure(r, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
     compile_tc_from_template(r, Pred, BasePred, [], GeneratedCode),
+    !.
+
+%% TypR transitive closure — loaded from templates/targets/typr/transitive_closure.mustache
+compile_transitive_closure(typr, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_predicate_to_typr(Pred/2, [base_pred(BasePred)|Options], GeneratedCode),
     !.
 
 %% Ruby transitive closure — loaded from templates/targets/ruby/transitive_closure.mustache
