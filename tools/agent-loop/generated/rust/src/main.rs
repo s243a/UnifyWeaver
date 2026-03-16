@@ -10,6 +10,7 @@ use agent_loop::tool_handler::*;
 use agent_loop::commands::*;
 use agent_loop::sessions::*;
 use agent_loop::config_loader::*;
+use agent_loop::output_parser::*;
 
 
 /// Export conversation, auto-detecting format from file extension.
@@ -1252,6 +1253,23 @@ async fn main() {
         println!("[Loaded {} plugin(s)]", plugin_count);
     }
 
+    // Initialize MCP servers from config
+    if !config.mcp_servers.is_empty() {
+        use agent_loop::mcp_client::McpServerConfig;
+        let mcp_configs: Vec<McpServerConfig> = config.mcp_servers.iter().filter_map(|s| {
+            serde_json::from_value(s.clone()).ok()
+        }).collect();
+        if !mcp_configs.is_empty() {
+            tool_handler.set_mcp_servers(&mcp_configs);
+            if let Some(ref mgr) = tool_handler.mcp_manager {
+                let tool_count = mgr.list_tools().len();
+                if tool_count > 0 {
+                    println!("[MCP: connected {} server(s), {} tool(s)]", mcp_configs.len(), tool_count);
+                }
+            }
+        }
+    }
+
     let mut state = RuntimeState {
         max_iterations: config.max_iterations,
         stream: config.stream,
@@ -1435,6 +1453,11 @@ async fn main() {
                     cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);
 
                     if response.tool_calls.is_empty() {
+                        // Parse structured output (JSON blocks) from response
+                        let parsed = OutputParser::parse_response(&response.content, None);
+                        if !parsed.json_blocks.is_empty() {
+                            eprintln!("  [parsed {} JSON block(s) from response]", parsed.json_blocks.len());
+                        }
                         context.add_message("assistant", &response.content);
                         break;
                     }
@@ -1514,5 +1537,10 @@ async fn main() {
                 break;
             }
         }
+    }
+
+    // Disconnect MCP servers on exit
+    if let Some(ref mut mgr) = tool_handler.mcp_manager {
+        mgr.disconnect_all();
     }
 }

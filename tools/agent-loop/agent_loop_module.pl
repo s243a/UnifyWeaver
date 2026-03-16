@@ -2376,7 +2376,8 @@ generate_rust_main :-
     write(S, 'use agent_loop::tool_handler::*;\n'),
     write(S, 'use agent_loop::commands::*;\n'),
     write(S, 'use agent_loop::sessions::*;\n'),
-    write(S, 'use agent_loop::config_loader::*;\n\n'),
+    write(S, 'use agent_loop::config_loader::*;\n'),
+    write(S, 'use agent_loop::output_parser::*;\n\n'),
     %% Export conversation helper (module-level, before handle_command and main)
     write_rust(S, export_conversation),
     nl(S),
@@ -4251,6 +4252,9 @@ generate_agent_loop_main :-
     nl(S),
     %% 6b. _process_message (lines 617-779)
     write_py(S, agent_loop_process_message),
+    nl(S),
+    %% 6c. _send_streaming_with_retry
+    write_py(S, agent_loop_streaming_retry),
     %% Two blank line separators (lines 779-780)
     nl(S), nl(S),
     %% 7. build_system_prompt + _resolve_command (lines 781-835)
@@ -9861,6 +9865,75 @@ fn test_e2e_tool_handler_unknown_tool() {
     assert!(!result.success);
     assert!(result.output.contains("Unknown tool"));
 }
+
+// ============================================================================
+// Phase 22 — Tool approval UI, OutputParser wiring, MCP lifecycle
+// ============================================================================
+
+#[test]
+fn test_phase22_tool_approval_yolo() {
+    let handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    assert!(handler.check_approval("bash"));
+    assert!(handler.check_approval("write"));
+    assert!(handler.check_approval("read"));
+}
+
+#[test]
+fn test_phase22_tool_approval_plan() {
+    let handler = ToolHandler::new(true, "open".to_string(), "plan".to_string());
+    assert!(handler.check_approval("read"));
+    assert!(!handler.check_approval("bash"));
+    assert!(!handler.check_approval("write"));
+}
+
+#[test]
+fn test_phase22_tool_approval_auto_edit() {
+    let handler = ToolHandler::new(true, "open".to_string(), "auto_edit".to_string());
+    assert!(handler.check_approval("read"));
+    assert!(handler.check_approval("edit"));
+    assert!(handler.check_approval("write"));
+    assert!(!handler.check_approval("bash"));
+}
+
+#[test]
+fn test_phase22_plan_mode_blocks_execute() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "plan".to_string());
+    let mut args = HashMap::new();
+    args.insert("command".to_string(), serde_json::json!("ls"));
+    let tc = ToolCall { name: "bash".to_string(), arguments: args, id: "plan_test".to_string() };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("blocked by approval mode"));
+}
+
+#[test]
+fn test_phase22_output_parser_in_main() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("use agent_loop::output_parser"), "main.rs should import output_parser");
+    assert!(main_src.contains("OutputParser::parse_response"), "main.rs should call OutputParser::parse_response");
+}
+
+#[test]
+fn test_phase22_mcp_lifecycle_init() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("set_mcp_servers"), "main.rs should init MCP servers");
+    assert!(main_src.contains("disconnect_all"), "main.rs should disconnect MCP on exit");
+}
+
+#[test]
+fn test_phase22_output_parser_extract_fenced() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "Result:\n```json\n{}\n```\nEnd.";
+    let blocks = OutputParser::extract_json(text);
+    assert!(!blocks.is_empty(), "Should extract fenced JSON block");
+}
+
+#[test]
+fn test_phase22_output_parser_no_json() {
+    use agent_loop::output_parser::OutputParser;
+    let blocks = OutputParser::extract_json("No JSON here at all.");
+    assert!(blocks.is_empty());
+}
 ').
 
 rust_fragment(main_loop, '
@@ -9909,6 +9982,23 @@ rust_fragment(main_loop, '
     let plugin_count = tool_handler.load_default_plugins();
     if plugin_count > 0 {
         println!("[Loaded {} plugin(s)]", plugin_count);
+    }
+
+    // Initialize MCP servers from config
+    if !config.mcp_servers.is_empty() {
+        use agent_loop::mcp_client::McpServerConfig;
+        let mcp_configs: Vec<McpServerConfig> = config.mcp_servers.iter().filter_map(|s| {
+            serde_json::from_value(s.clone()).ok()
+        }).collect();
+        if !mcp_configs.is_empty() {
+            tool_handler.set_mcp_servers(&mcp_configs);
+            if let Some(ref mgr) = tool_handler.mcp_manager {
+                let tool_count = mgr.list_tools().len();
+                if tool_count > 0 {
+                    println!("[MCP: connected {} server(s), {} tool(s)]", mcp_configs.len(), tool_count);
+                }
+            }
+        }
     }
 
     let mut state = RuntimeState {
@@ -10094,6 +10184,11 @@ rust_fragment(main_loop, '
                     cost_tracker.record_usage(&response.model, response.input_tokens, response.output_tokens);
 
                     if response.tool_calls.is_empty() {
+                        // Parse structured output (JSON blocks) from response
+                        let parsed = OutputParser::parse_response(&response.content, None);
+                        if !parsed.json_blocks.is_empty() {
+                            eprintln!("  [parsed {} JSON block(s) from response]", parsed.json_blocks.len());
+                        }
                         context.add_message("assistant", &response.content);
                         break;
                     }
@@ -10173,6 +10268,11 @@ rust_fragment(main_loop, '
                 break;
             }
         }
+    }
+
+    // Disconnect MCP servers on exit
+    if let Some(ref mut mgr) = tool_handler.mcp_manager {
+        mgr.disconnect_all();
     }
 ').
 
@@ -13823,10 +13923,12 @@ py_fragment(tools_handler_class_header, 'class ToolHandler:
         confirm_destructive: bool = True,
         working_dir: str | None = None,
         security: SecurityConfig | None = None,
-        audit: AuditLogger | None = None
+        audit: AuditLogger | None = None,
+        approval_mode: str = "default"
     ):
         self.allowed_tools = allowed_tools or {{default_tools}}
         self.confirm_destructive = confirm_destructive
+        self.approval_mode = approval_mode
         self.working_dir = working_dir or os.getcwd()
         self.security = security or SecurityConfig()
         self.audit = audit or AuditLogger(level=\'disabled\')
@@ -13862,6 +13964,68 @@ py_fragment(tools_handler_class_header, 'class ToolHandler:
 ').
 
 py_fragment(tools_handler_class_methods, '
+    def check_approval(self, tool_name: str) -> bool:
+        """Check if a tool is approved to execute under the current approval mode.
+        Returns True if approved, False if blocked."""
+        mode = self.approval_mode
+        if mode == "yolo":
+            return True
+        if mode == "plan":
+            return tool_name == "read"
+        if mode == "auto_edit":
+            return tool_name in ("read", "edit", "write")
+        # default mode: read always approved, others go through confirm
+        if tool_name == "read":
+            return True
+        return True  # actual prompt happens in confirm_tool_execution
+
+    def confirm_tool_execution(self, tool_call: ToolCall) -> bool:
+        """Interactive confirmation for tool execution with argument preview.
+        Returns True if the user approves, False to skip."""
+        import sys
+        # Auto-approve in yolo mode
+        if self.approval_mode == "yolo" or not self.confirm_destructive:
+            return True
+        # Read is always safe
+        if tool_call.name == "read":
+            return True
+        # Plan mode blocks all non-read tools
+        if self.approval_mode == "plan":
+            print(f"  [plan mode] Blocked: {tool_call.name}", file=sys.stderr)
+            return False
+        # auto_edit mode: allow read/edit/write without prompt
+        if self.approval_mode == "auto_edit" and tool_call.name in ("edit", "write"):
+            return True
+
+        # Show tool details for confirmation
+        is_destructive = tool_call.name in ("bash", "write", "edit")
+        label = "DESTRUCTIVE" if is_destructive else "Tool"
+        print(f"  [{label}] {tool_call.name} tool:", file=sys.stderr)
+
+        # Show relevant arguments preview
+        if tool_call.name == "bash":
+            cmd = tool_call.arguments.get("command", "")
+            preview = cmd[:120] if len(cmd) > 120 else cmd
+            print(f"    command: {preview}", file=sys.stderr)
+        elif tool_call.name in ("write", "edit"):
+            path = tool_call.arguments.get("file_path", tool_call.arguments.get("path", ""))
+            print(f"    file: {path}", file=sys.stderr)
+        else:
+            # Show first argument for plugin/MCP tools
+            for key, val in tool_call.arguments.items():
+                preview = str(val)
+                preview = preview[:80] if len(preview) > 80 else preview
+                print(f"    {key}: {preview}", file=sys.stderr)
+                break
+
+        try:
+            sys.stderr.write("  Execute? [y/N] ")
+            sys.stderr.flush()
+            response = input().strip().lower()
+            return response in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
     def _init_plugins(self):
         """Load plugins from default directory."""
         self.plugin_manager = PluginManager()
@@ -13890,6 +14054,22 @@ py_fragment(tools_handler_class_methods, '
 py_fragment(tools_handler_class_body, '
     def execute(self, tool_call: ToolCall) -> ToolResult:
         """Execute a tool call and return the result."""
+        # Check approval mode before executing
+        if not self.check_approval(tool_call.name):
+            return ToolResult(
+                success=False,
+                output=f"Tool \'{tool_call.name}\' blocked by approval mode \'{self.approval_mode}\'",
+                tool_name=tool_call.name
+            )
+
+        # Interactive confirmation (for default/auto_edit modes)
+        if not self.confirm_tool_execution(tool_call):
+            return ToolResult(
+                success=False,
+                output="User declined to execute tool",
+                tool_name=tool_call.name
+            )
+
         # Check cache first
         cached = self.cache.get(tool_call.name, tool_call.arguments)
         if cached is not None:
@@ -17460,14 +17640,14 @@ py_fragment(agent_loop_process_message, '    def _process_message(self, user_inp
             else:
                 print(f"  {status}")
 
-        # Get response from backend (with streaming if enabled)
+        # Get response from backend (with streaming + retry)
         try:
             if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, \'send_message_streaming\'):
                 if spinner:
                     spinner.stop()
                     spinner = None
                 print("\\nAssistant: ", end="", flush=True)
-                response = self.backend.send_message_streaming(
+                response = self._send_streaming_with_retry(
                     user_input,
                     self.context.get_context(),
                     on_token=lambda t: print(t, end="", flush=True)
@@ -17580,6 +17760,15 @@ py_fragment(agent_loop_process_message, '    def _process_message(self, user_inp
         else:
             print()  # Just add spacing after streamed output
 
+        # Parse structured output (JSON blocks) from response
+        try:
+            from output_parser import OutputParser
+            parsed = OutputParser.parse_response(response.content)
+            if parsed.json_blocks:
+                self._last_parsed_output = parsed
+        except Exception:
+            pass  # OutputParser is optional
+
         # Add response to context
         output_tokens = response.tokens.get(\'output\', 0)
         input_tokens = response.tokens.get(\'input\', 0)
@@ -17600,6 +17789,34 @@ py_fragment(agent_loop_process_message, '    def _process_message(self, user_inp
             if self.cost_tracker:
                 cost_info = f" | Est. cost: {self.cost_tracker.get_summary()[\'cost_formatted\']}"
             print(f"  [Tokens: {token_info}{cost_info}]\\n")
+').
+
+py_fragment(agent_loop_streaming_retry, '    def _send_streaming_with_retry(self, message: str, context: list,
+                                    on_token=None, max_retries: int = 3) -> "AgentResponse":
+        """Send streaming message with retry on connection/timeout errors."""
+        import time as _retry_time
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return self.backend.send_message_streaming(
+                    message, context, on_token=on_token
+                )
+            except (ConnectionError, TimeoutError, OSError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    delay = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
+                    print(f"\\n  [Retry {attempt + 1}/{max_retries} after {delay:.1f}s: {e}]", flush=True)
+                    _retry_time.sleep(delay)
+                    print("Assistant: ", end="", flush=True)
+            except Exception:
+                # Non-retryable errors — let the outer handler deal with them
+                raise
+        # All retries exhausted
+        from backends.base import AgentResponse
+        return AgentResponse(
+            content=f"[Streaming failed after {max_retries} retries: {last_error}]",
+            tokens={}
+        )
 ').
 
 py_fragment(agent_loop_helpers, 'def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str | None:
@@ -17807,14 +18024,30 @@ py_fragment(agent_loop_main_body_post_audit, '    audit_level = audit_levels.get
     audit_logger = AuditLogger(log_dir=audit_log_dir, level=audit_level)
 
     # Create tool handler
+    approval_mode = getattr(agent_config, "approval_mode", "default") or "default"
     tools = None
     if agent_config.tools:
         tools = ToolHandler(
             allowed_tools=agent_config.tools,
             confirm_destructive=not agent_config.auto_tools,
             security=security,
-            audit=audit_logger
+            audit=audit_logger,
+            approval_mode=approval_mode
         )
+
+    # Initialize MCP servers from config
+    mcp_manager = None
+    mcp_server_configs = getattr(agent_config, "mcp_servers", None) or []
+    if tools and mcp_server_configs:
+        try:
+            from mcp_client import MCPManager
+            mcp_manager = MCPManager(mcp_server_configs)
+            mcp_count = len(mcp_manager.tools)
+            if mcp_count > 0:
+                print(f"[MCP: connected {len(mcp_server_configs)} server(s), {mcp_count} tool(s)]")
+            tools.mcp_manager = mcp_manager
+        except Exception as e:
+            print(f"[MCP init warning: {e}]", file=sys.stderr)
 
     # Start audit session
     import uuid as _uuid
@@ -17873,6 +18106,12 @@ py_fragment(agent_loop_main_body_post_audit, '    audit_level = audit_levels.get
         # Interactive mode
         loop.run()
     finally:
+        # Disconnect MCP servers
+        if mcp_manager is not None:
+            try:
+                mcp_manager.disconnect_all()
+            except Exception:
+                pass
         audit_logger.end_session()
 
 

@@ -712,14 +712,14 @@ Status:
             else:
                 print(f"  {status}")
 
-        # Get response from backend (with streaming if enabled)
+        # Get response from backend (with streaming + retry)
         try:
             if self.streaming and self.backend.supports_streaming() and hasattr(self.backend, 'send_message_streaming'):
                 if spinner:
                     spinner.stop()
                     spinner = None
                 print("\nAssistant: ", end="", flush=True)
-                response = self.backend.send_message_streaming(
+                response = self._send_streaming_with_retry(
                     user_input,
                     self.context.get_context(),
                     on_token=lambda t: print(t, end="", flush=True)
@@ -832,6 +832,15 @@ Status:
         else:
             print()  # Just add spacing after streamed output
 
+        # Parse structured output (JSON blocks) from response
+        try:
+            from output_parser import OutputParser
+            parsed = OutputParser.parse_response(response.content)
+            if parsed.json_blocks:
+                self._last_parsed_output = parsed
+        except Exception:
+            pass  # OutputParser is optional
+
         # Add response to context
         output_tokens = response.tokens.get('output', 0)
         input_tokens = response.tokens.get('input', 0)
@@ -852,6 +861,33 @@ Status:
             if self.cost_tracker:
                 cost_info = f" | Est. cost: {self.cost_tracker.get_summary()['cost_formatted']}"
             print(f"  [Tokens: {token_info}{cost_info}]\n")
+
+    def _send_streaming_with_retry(self, message: str, context: list,
+                                    on_token=None, max_retries: int = 3) -> "AgentResponse":
+        """Send streaming message with retry on connection/timeout errors."""
+        import time as _retry_time
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return self.backend.send_message_streaming(
+                    message, context, on_token=on_token
+                )
+            except (ConnectionError, TimeoutError, OSError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    delay = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
+                    print(f"\n  [Retry {attempt + 1}/{max_retries} after {delay:.1f}s: {e}]", flush=True)
+                    _retry_time.sleep(delay)
+                    print("Assistant: ", end="", flush=True)
+            except Exception:
+                # Non-retryable errors — let the outer handler deal with them
+                raise
+        # All retries exhausted
+        from backends.base import AgentResponse
+        return AgentResponse(
+            content=f"[Streaming failed after {max_retries} retries: {last_error}]",
+            tokens={}
+        )
 
 
 def build_system_prompt(agent_config: AgentConfig, config_dir: str = "") -> str | None:
@@ -1465,14 +1501,30 @@ def main():
     audit_logger = AuditLogger(log_dir=audit_log_dir, level=audit_level)
 
     # Create tool handler
+    approval_mode = getattr(agent_config, "approval_mode", "default") or "default"
     tools = None
     if agent_config.tools:
         tools = ToolHandler(
             allowed_tools=agent_config.tools,
             confirm_destructive=not agent_config.auto_tools,
             security=security,
-            audit=audit_logger
+            audit=audit_logger,
+            approval_mode=approval_mode
         )
+
+    # Initialize MCP servers from config
+    mcp_manager = None
+    mcp_server_configs = getattr(agent_config, "mcp_servers", None) or []
+    if tools and mcp_server_configs:
+        try:
+            from mcp_client import MCPManager
+            mcp_manager = MCPManager(mcp_server_configs)
+            mcp_count = len(mcp_manager.tools)
+            if mcp_count > 0:
+                print(f"[MCP: connected {len(mcp_server_configs)} server(s), {mcp_count} tool(s)]")
+            tools.mcp_manager = mcp_manager
+        except Exception as e:
+            print(f"[MCP init warning: {e}]", file=sys.stderr)
 
     # Start audit session
     import uuid as _uuid
@@ -1531,6 +1583,12 @@ def main():
         # Interactive mode
         loop.run()
     finally:
+        # Disconnect MCP servers
+        if mcp_manager is not None:
+            try:
+                mcp_manager.disconnect_all()
+            except Exception:
+                pass
         audit_logger.end_session()
 
 

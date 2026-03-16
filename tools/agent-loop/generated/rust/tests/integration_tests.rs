@@ -1597,3 +1597,76 @@ fn test_e2e_tool_handler_unknown_tool() {
     assert!(!result.success);
     assert!(result.output.contains("Unknown tool"));
 }
+
+// ============================================================================
+// Phase 22 — Tool approval UI, OutputParser wiring, MCP lifecycle
+// ============================================================================
+
+#[test]
+fn test_phase22_tool_approval_yolo() {
+    let handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    assert!(handler.check_approval("bash"));
+    assert!(handler.check_approval("write"));
+    assert!(handler.check_approval("read"));
+}
+
+#[test]
+fn test_phase22_tool_approval_plan() {
+    let handler = ToolHandler::new(true, "open".to_string(), "plan".to_string());
+    assert!(handler.check_approval("read"));
+    assert!(!handler.check_approval("bash"));
+    assert!(!handler.check_approval("write"));
+}
+
+#[test]
+fn test_phase22_tool_approval_auto_edit() {
+    let handler = ToolHandler::new(true, "open".to_string(), "auto_edit".to_string());
+    assert!(handler.check_approval("read"));
+    assert!(handler.check_approval("edit"));
+    assert!(handler.check_approval("write"));
+    assert!(!handler.check_approval("bash"));
+}
+
+#[test]
+fn test_phase22_plan_mode_blocks_execute() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "plan".to_string());
+    let mut args = HashMap::new();
+    args.insert("command".to_string(), serde_json::json!("ls"));
+    let tc = ToolCall { name: "bash".to_string(), arguments: args, id: "plan_test".to_string() };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("blocked by approval mode"));
+}
+
+#[test]
+fn test_phase22_output_parser_in_main() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("use agent_loop::output_parser"), "main.rs should import output_parser");
+    assert!(main_src.contains("OutputParser::parse_response"), "main.rs should call OutputParser::parse_response");
+}
+
+#[test]
+fn test_phase22_mcp_lifecycle_init() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("set_mcp_servers"), "main.rs should init MCP servers");
+    assert!(main_src.contains("disconnect_all"), "main.rs should disconnect MCP on exit");
+}
+
+#[test]
+fn test_phase22_output_parser_extract_fenced() {
+    use agent_loop::output_parser::OutputParser;
+    let text = "Result:
+```json
+{}
+```
+End.";
+    let blocks = OutputParser::extract_json(text);
+    assert!(!blocks.is_empty(), "Should extract fenced JSON block");
+}
+
+#[test]
+fn test_phase22_output_parser_no_json() {
+    use agent_loop::output_parser::OutputParser;
+    let blocks = OutputParser::extract_json("No JSON here at all.");
+    assert!(blocks.is_empty());
+}

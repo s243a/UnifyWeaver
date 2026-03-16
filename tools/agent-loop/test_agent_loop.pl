@@ -294,6 +294,10 @@ run_tests :-
     test_phase21_async_backend,
     test_phase21_clear_cache_command,
     test_phase21_e2e_tests,
+    test_phase22_tool_approval_ui,
+    test_phase22_streaming_retry,
+    test_phase22_output_parser_wiring,
+    test_phase22_mcp_lifecycle,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -5655,4 +5659,105 @@ test_phase21_e2e_tests :-
     assert_true('Rust has E2E unknown tool test', (
         agent_loop_module:rust_fragment(integration_tests, E3),
         sub_atom(E3, _, _, _, 'test_e2e_tool_handler_unknown_tool')
+    )).
+
+%% ============================================================================
+%% Phase 22 — Tool approval UI, streaming retry, OutputParser wiring, MCP lifecycle
+%% ============================================================================
+
+test_phase22_tool_approval_ui :-
+    format("~nPhase 22 — Tool approval UI (Python parity):~n"),
+    %% Python ToolHandler has approval_mode param
+    assert_true('Python ToolHandler has approval_mode param', (
+        agent_loop_module:py_fragment(tools_handler_class_header, H1),
+        sub_atom(H1, _, _, _, 'approval_mode')
+    )),
+    %% Python has check_approval method
+    assert_true('Python has check_approval method', (
+        agent_loop_module:py_fragment(tools_handler_class_methods, M1),
+        sub_atom(M1, _, _, _, 'def check_approval')
+    )),
+    %% Python has confirm_tool_execution method
+    assert_true('Python has confirm_tool_execution method', (
+        agent_loop_module:py_fragment(tools_handler_class_methods, M2),
+        sub_atom(M2, _, _, _, 'def confirm_tool_execution')
+    )),
+    %% Python execute() calls check_approval before cache
+    assert_true('Python execute checks approval before cache', (
+        agent_loop_module:py_fragment(tools_handler_class_body, B1),
+        sub_atom(B1, _, _, _, 'check_approval')
+    )),
+    %% Python execute() calls confirm_tool_execution
+    assert_true('Python execute calls confirm_tool_execution', (
+        agent_loop_module:py_fragment(tools_handler_class_body, B2),
+        sub_atom(B2, _, _, _, 'confirm_tool_execution')
+    )),
+    %% Main passes approval_mode to ToolHandler
+    assert_true('Main passes approval_mode to ToolHandler', (
+        agent_loop_module:py_fragment(agent_loop_main_body_post_audit, P1),
+        sub_atom(P1, _, _, _, 'approval_mode=approval_mode')
+    )).
+
+test_phase22_streaming_retry :-
+    format("~nPhase 22 — Streaming error recovery (Python):~n"),
+    %% Python has _send_streaming_with_retry method
+    assert_true('Python has _send_streaming_with_retry', (
+        agent_loop_module:py_fragment(agent_loop_streaming_retry, R1),
+        sub_atom(R1, _, _, _, '_send_streaming_with_retry')
+    )),
+    %% Retry method has exponential backoff
+    assert_true('Streaming retry has exponential backoff', (
+        agent_loop_module:py_fragment(agent_loop_streaming_retry, R2),
+        sub_atom(R2, _, _, _, '2 ** attempt')
+    )),
+    %% Retry method catches connection errors
+    assert_true('Streaming retry catches ConnectionError', (
+        agent_loop_module:py_fragment(agent_loop_streaming_retry, R3),
+        sub_atom(R3, _, _, _, 'ConnectionError')
+    )),
+    %% _process_message uses retry wrapper
+    assert_true('_process_message uses streaming retry wrapper', (
+        agent_loop_module:py_fragment(agent_loop_process_message, PM1),
+        sub_atom(PM1, _, _, _, '_send_streaming_with_retry')
+    )).
+
+test_phase22_output_parser_wiring :-
+    format("~nPhase 22 — OutputParser wiring:~n"),
+    %% Python _process_message imports OutputParser
+    assert_true('Python _process_message uses OutputParser', (
+        agent_loop_module:py_fragment(agent_loop_process_message, OP1),
+        sub_atom(OP1, _, _, _, 'OutputParser.parse_response')
+    )),
+    %% Rust main_loop uses OutputParser
+    assert_true('Rust main_loop uses OutputParser', (
+        agent_loop_module:rust_fragment(main_loop, RL1),
+        sub_atom(RL1, _, _, _, 'OutputParser::parse_response')
+    )),
+    %% Rust main imports output_parser
+    assert_true('Rust main imports output_parser', (
+        read_file_to_string('generated/rust/src/main.rs', MainSrc, []),
+        sub_atom(MainSrc, _, _, _, 'output_parser')
+    )).
+
+test_phase22_mcp_lifecycle :-
+    format("~nPhase 22 — MCP server lifecycle:~n"),
+    %% Python main initializes MCP from config
+    assert_true('Python main creates MCPManager', (
+        agent_loop_module:py_fragment(agent_loop_main_body_post_audit, MCP1),
+        sub_atom(MCP1, _, _, _, 'MCPManager')
+    )),
+    %% Python finally block disconnects MCP
+    assert_true('Python exit disconnects MCP', (
+        agent_loop_module:py_fragment(agent_loop_main_body_post_audit, MCP2),
+        sub_atom(MCP2, _, _, _, 'disconnect_all')
+    )),
+    %% Rust main initializes MCP
+    assert_true('Rust main initializes MCP', (
+        agent_loop_module:rust_fragment(main_loop, RM1),
+        sub_atom(RM1, _, _, _, 'set_mcp_servers')
+    )),
+    %% Rust exit disconnects MCP
+    assert_true('Rust exit disconnects MCP', (
+        agent_loop_module:rust_fragment(main_loop, RM2),
+        sub_atom(RM2, _, _, _, 'disconnect_all')
     )).

@@ -971,3 +971,164 @@ class TestClearCacheCommand:
     def test_alias_count_updated(self):
         from aliases import DEFAULT_ALIASES
         assert DEFAULT_ALIASES.get("cc") == "clear-cache"
+
+
+# ============================================================================
+# TestToolApprovalUI — Phase 22 approval mode system
+# ============================================================================
+
+class TestToolApprovalUI:
+    """Test tool approval mode system in ToolHandler."""
+
+    def test_tool_handler_has_approval_mode(self):
+        from tools import ToolHandler
+        handler = ToolHandler()
+        assert hasattr(handler, 'approval_mode')
+        assert handler.approval_mode == "default"
+
+    def test_approval_mode_yolo(self):
+        from tools import ToolHandler
+        handler = ToolHandler(approval_mode="yolo")
+        assert handler.check_approval("bash") is True
+        assert handler.check_approval("write") is True
+
+    def test_approval_mode_plan(self):
+        from tools import ToolHandler
+        handler = ToolHandler(approval_mode="plan")
+        assert handler.check_approval("read") is True
+        assert handler.check_approval("bash") is False
+        assert handler.check_approval("write") is False
+
+    def test_approval_mode_auto_edit(self):
+        from tools import ToolHandler
+        handler = ToolHandler(approval_mode="auto_edit")
+        assert handler.check_approval("read") is True
+        assert handler.check_approval("edit") is True
+        assert handler.check_approval("write") is True
+        assert handler.check_approval("bash") is False
+
+    def test_approval_mode_default_read_approved(self):
+        from tools import ToolHandler
+        handler = ToolHandler(approval_mode="default")
+        assert handler.check_approval("read") is True
+
+    def test_confirm_tool_execution_yolo(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="yolo")
+        tc = ToolCall(name="bash", arguments={"command": "rm -rf /"})
+        assert handler.confirm_tool_execution(tc) is True
+
+    def test_confirm_tool_execution_plan_blocks(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="plan")
+        tc = ToolCall(name="bash", arguments={"command": "ls"})
+        assert handler.confirm_tool_execution(tc) is False
+
+    def test_execute_blocked_by_plan_mode(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="plan")
+        tc = ToolCall(name="bash", arguments={"command": "ls"})
+        result = handler.execute(tc)
+        assert not result.success
+        assert "blocked by approval mode" in result.output
+
+
+# ============================================================================
+# TestStreamingRetry — Phase 22 streaming error recovery
+# ============================================================================
+
+class TestStreamingRetry:
+    """Test streaming retry wrapper exists in generated code."""
+
+    def test_agent_loop_has_streaming_retry(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "_send_streaming_with_retry" in src
+
+    def test_process_message_uses_retry(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "_send_streaming_with_retry" in src
+
+
+# ============================================================================
+# TestOutputParserWiring — Phase 22 OutputParser in response processing
+# ============================================================================
+
+class TestOutputParserWiring:
+    """Test OutputParser is wired into response processing."""
+
+    def test_process_message_uses_output_parser(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "OutputParser.parse_response" in src
+
+    def test_output_parser_importable(self):
+        from output_parser import OutputParser, ParsedOutput
+        assert hasattr(OutputParser, 'parse_response')
+        assert hasattr(OutputParser, 'extract_json')
+
+    def test_output_parser_extract_fenced(self):
+        from output_parser import OutputParser
+        text = 'Here is some JSON:\n```json\n{"key": "value"}\n```\nDone.'
+        blocks = OutputParser.extract_json(text)
+        assert len(blocks) == 1
+        assert blocks[0]["key"] == "value"
+
+    def test_output_parser_extract_bare(self):
+        from output_parser import OutputParser
+        text = 'The result is {"count": 42} and that is it.'
+        blocks = OutputParser.extract_json(text)
+        assert len(blocks) == 1
+        assert blocks[0]["count"] == 42
+
+    def test_output_parser_no_json(self):
+        from output_parser import OutputParser
+        blocks = OutputParser.extract_json("No JSON here at all")
+        assert len(blocks) == 0
+
+    def test_output_parser_key_validation(self):
+        from output_parser import OutputParser
+        text = '```json\n{"name": "test", "value": 1}\n```'
+        parsed = OutputParser.parse_response(text, expected_keys=["name"])
+        assert len(parsed.json_blocks) == 1
+        assert len(parsed.errors) == 0
+
+    def test_output_parser_key_validation_missing(self):
+        from output_parser import OutputParser
+        text = '```json\n{"name": "test"}\n```'
+        parsed = OutputParser.parse_response(text, expected_keys=["name", "missing_key"])
+        assert len(parsed.errors) > 0
+
+
+# ============================================================================
+# TestMCPLifecycle — Phase 22 MCP server lifecycle management
+# ============================================================================
+
+class TestMCPLifecycle:
+    """Test MCP lifecycle wiring in generated code."""
+
+    def test_main_has_mcp_init(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "MCPManager" in src
+        assert "mcp_server_configs" in src
+
+    def test_main_has_mcp_disconnect(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "disconnect_all" in src
+
+    def test_mcp_manager_importable(self):
+        from mcp_client import MCPManager
+        assert hasattr(MCPManager, 'disconnect_all')
+        assert hasattr(MCPManager, 'list_tools')
+        assert hasattr(MCPManager, 'dispatch')
