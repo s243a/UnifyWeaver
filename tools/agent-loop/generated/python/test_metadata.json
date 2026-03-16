@@ -3,7 +3,7 @@
   "tools": {"count": 4, "names": ["bash", "read", "write", "edit"]},
   "security": {"count": 4, "profiles": ["open", "cautious", "guarded", "paranoid"]},
   "backends": {"count": 8, "names": ["coro", "claude-code", "gemini", "claude", "openai", "openrouter", "ollama-api", "ollama-cli"]},
-  "commands": {"count": 26, "names": ["exit", "clear", "help", "status", "iterations", "backend", "save", "load", "sessions", "format", "export", "cost", "search", "stream", "model", "tokens", "multiline", "aliases", "templates", "history", "undo", "delete", "edit", "replay", "init", "reload"]},
+  "commands": {"count": 27, "names": ["exit", "clear", "help", "status", "iterations", "backend", "save", "load", "sessions", "format", "export", "cost", "search", "stream", "model", "tokens", "multiline", "aliases", "templates", "history", "undo", "delete", "edit", "replay", "init", "reload", "clear-cache"]},
   "destructive_tools": ["bash", "write", "edit"],
   "module_dependencies": {"agent_loop": ["config", "tools", "backends", "commands", "security", "costs"], "backends": ["costs", "config"], "config": ["backends"], "security": ["config"], "tools": ["security"]}
 }

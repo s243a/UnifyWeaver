@@ -22,8 +22,8 @@
 %%   - command_alias/2: first-argument string hash-indexed, all distinct
 
 %% Indexing hints (SWI-Prolog auto-indexes first argument):
-%%   slash_command/4: first-argument indexed (26 clauses)
-%%   command_alias/2: first-argument indexed (30 clauses)
+%%   slash_command/4: first-argument indexed (27 clauses)
+%%   command_alias/2: first-argument indexed (31 clauses)
 
 %% slash_command(+Name, +MatchType, +Options, +HelpText)
 slash_command(exit, exact, [aliases([quit]), help_display('/exit, /quit')], 'Exit the agent loop').
@@ -52,6 +52,7 @@ slash_command(edit, prefix_sp, [handler('_handle_edit_command'), comment('Edit m
 slash_command(replay, prefix_sp, [handler('_handle_replay_command'), comment('Replay from message'), help_display('/replay <idx>')], 'Re-send message at index').
 slash_command(init, exact_or_prefix_sp, [comment('Generate config file'), help_display('/init [path]')], 'Create example config file (default: uwsal.json)').
 slash_command(reload, exact, [comment('Reload config file'), help_display('/reload')], 'Reload config from disk (hot-reload model, backend, system_prompt)').
+slash_command('clear-cache', exact, [comment('Clear tool result cache'), help_display('/clear-cache')], 'Flush the tool result cache').
 
 %% command_alias(+Alias, +CanonicalName)
 command_alias("q", "quit").
@@ -74,6 +75,7 @@ command_alias("sonnet", "backend claude-sonnet").
 command_alias("haiku", "backend claude-haiku").
 command_alias("gpt", "backend openai").
 command_alias("local", "backend ollama").
+command_alias("cc", "clear-cache").
 command_alias("fmt", "format").
 command_alias("iter", "iterations").
 command_alias("i0", "iterations 0").
@@ -92,7 +94,7 @@ slash_command_group('Sessions', [save, load, sessions, search]).
 slash_command_group('Export & Costs', [export, cost, tokens]).
 slash_command_group('History', [history, delete, edit, replay, undo]).
 slash_command_group('Shortcuts', [aliases, templates]).
-slash_command_group('Config', [init, reload]).
+slash_command_group('Config', [init, reload, 'clear-cache']).
 
 %% command_action(+Command, +Action) — data-driven dispatch
 command_action(exit, exit).

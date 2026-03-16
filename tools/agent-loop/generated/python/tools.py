@@ -361,11 +361,30 @@ class ToolHandler:
                       "found. Install with: pkg install proot",
                       file=sys.stderr)
 
-        # Load plugins
+
+        self.tools = {
+            'bash': self._execute_bash,
+            'read': self._read_file,
+            'write': self._write_file,
+            'edit': self._edit_file,
+        }
+
+        self.destructive_tools = {'bash', 'write', 'edit'}
+
+        # Tool result cache
+        self.cache = ToolResultCache()
+
+        # MCP manager (initialized later from config)
+        self.mcp_manager = None
+
+        self._init_plugins()
+
+
+    def _init_plugins(self):
+        """Load plugins from default directory."""
         self.plugin_manager = PluginManager()
         plugin_count = self.plugin_manager.load_default()
         if plugin_count > 0:
-            # Register plugin tools as allowed and add dispatchers
             for tool in self.plugin_manager.list_tools():
                 name = tool["name"]
                 self.allowed_tools.append(name)
@@ -385,17 +404,19 @@ class ToolHandler:
             return self._execute_bash({"command": cmd})
         return handler
 
-        self.tools = {
-            'bash': self._execute_bash,
-            'read': self._read_file,
-            'write': self._write_file,
-            'edit': self._edit_file,
-        }
-
-        self.destructive_tools = {'bash', 'write', 'edit'}
-
     def execute(self, tool_call: ToolCall) -> ToolResult:
         """Execute a tool call and return the result."""
+        # Check cache first
+        cached = self.cache.get(tool_call.name, tool_call.arguments)
+        if cached is not None:
+            return cached
+
+        # MCP tool dispatch
+        if tool_call.name.startswith("mcp:"):
+            result = self._execute_mcp(tool_call)
+            self.cache.put(tool_call.name, tool_call.arguments, result)
+            return result
+
         if tool_call.name not in self.allowed_tools:
             return ToolResult(
                 success=False,
@@ -434,6 +455,7 @@ class ToolHandler:
                 tool_call.name, result.success,
                 args_summary=str(tool_call.arguments)[:256]
             )
+            self.cache.put(tool_call.name, tool_call.arguments, result)
             return result
         except Exception as e:
             self.audit.log_tool_call(tool_call.name, False, args_summary=str(e))
@@ -442,6 +464,16 @@ class ToolHandler:
                 output=f"Error executing {tool_call.name}: {e}",
                 tool_name=tool_call.name
             )
+
+    def _execute_mcp(self, tool_call: ToolCall) -> ToolResult:
+        """Execute a tool call via MCP server."""
+        if self.mcp_manager is None:
+            return ToolResult(success=False, output="No MCP servers configured", tool_name=tool_call.name)
+        result = self.mcp_manager.dispatch(tool_call.name, tool_call.arguments)
+        if result is not None:
+            import json as _mcp_json
+            return ToolResult(success=True, output=_mcp_json.dumps(result, indent=2), tool_name=tool_call.name)
+        return ToolResult(success=False, output=f"MCP tool not found: {tool_call.name}", tool_name=tool_call.name)
 
     def _confirm_execution(self, tool_call: ToolCall) -> bool:
         """Ask user to confirm execution of a destructive tool."""

@@ -660,6 +660,7 @@ Shortcuts:
 Config:
   /init [path]       - Create example config file (default: uwsal.json)
   /reload            - Reload config from disk (hot-reload model, backend, system_prompt)
+  /clear-cache       - Flush the tool result cache
 
 Multi-line Input:
   Start with ``` for code blocks
