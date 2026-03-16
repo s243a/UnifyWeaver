@@ -175,6 +175,7 @@ register_builtin_targets :-
 
     % R family
     register_target(r, r, [streaming, pipes, data_science, statistical, vectorization]),
+    register_target(typr, r, [streaming, pipes, data_science, statistical, vectorization, types, gradual_typing]),
 
     % Python family
     register_target(python, python, [streaming, pipes, libraries, ml, data_science]),
@@ -232,57 +233,31 @@ register_builtin_targets :-
 
 :- dynamic target_module/2.  % target_module(Name, Module)
 
-%% Link targets to their implementation modules
-register_target_modules :-
-    % Native
-    target_module(go, go_target),
-    target_module(rust, rust_target),
-    target_module(c, c_target),
-    
-    % .NET
-    target_module(csharp, csharp_target),
-    target_module(csharp_native, csharp_native_target),
-    target_module(fsharp, fsharp_target),
-    target_module(powershell, powershell_target),
-    
-    % JVM
-    target_module(java, java_target),
-    target_module(scala, scala_target),
-    target_module(kotlin, kotlin_target),
-    target_module(clojure, clojure_target),
-    target_module(jython, jython_target),
-    
-    % Shell
-    target_module(bash, bash_target),
-    target_module(awk, awk_target),
-    target_module(perl, perl_target),
-    
-    % Python
-    target_module(python, python_target),
-
-    % R
-    target_module(r, r_target),
-
-    % Ruby
-    target_module(ruby, ruby_target),
-
-    % Lua
-    target_module(lua, lua_target),
-
-    % JavaScript (to be implemented)
-    target_module(typescript, typescript_target),
-    
-    % Functional
-    target_module(haskell, haskell_target),
-    
-    % BEAM
-    target_module(elixir, elixir_target),
-    
-    % Low-level
-    target_module(llvm, llvm_target),
-    
-    % Database
-    target_module(sql, sql_target).
+target_module(go, go_target).
+target_module(rust, rust_target).
+target_module(c, c_target).
+target_module(csharp, csharp_target).
+target_module(csharp_native, csharp_native_target).
+target_module(fsharp, fsharp_target).
+target_module(powershell, powershell_target).
+target_module(java, java_target).
+target_module(scala, scala_target).
+target_module(kotlin, kotlin_target).
+target_module(clojure, clojure_target).
+target_module(jython, jython_target).
+target_module(bash, bash_target).
+target_module(awk, awk_target).
+target_module(perl, perl_target).
+target_module(python, python_target).
+target_module(r, r_target).
+target_module(typr, typr_target).
+target_module(ruby, ruby_target).
+target_module(lua, lua_target).
+target_module(typescript, typescript_target).
+target_module(haskell, haskell_target).
+target_module(elixir, elixir_target).
+target_module(llvm, llvm_target).
+target_module(sql, sql_target).
 
 %% compile_to_target(+Target, +Pred/Arity, +Options, -Code)
 %  Unified dispatch to target modules.
