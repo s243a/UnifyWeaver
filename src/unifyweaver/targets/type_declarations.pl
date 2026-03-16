@@ -170,30 +170,30 @@ resolve_type(pair(LeftType, RightType), rust, Concrete) :-
 resolve_type(record(Name, _Fields), rust, Concrete) :-
     atom_string(Name, Concrete).
 
-resolve_type(atom, typr, "String").
-resolve_type(string, typr, "String").
-resolve_type(integer, typr, "Int").
-resolve_type(float, typr, "Numeric").
-resolve_type(number, typr, "Numeric").
-resolve_type(boolean, typr, "Bool").
+resolve_type(atom, typr, "char").
+resolve_type(string, typr, "char").
+resolve_type(integer, typr, "int").
+resolve_type(float, typr, "num").
+resolve_type(number, typr, "num").
+resolve_type(boolean, typr, "bool").
 resolve_type(any, typr, "Any").
 resolve_type(list(Type), typr, Concrete) :-
     resolve_type(Type, typr, Inner),
-    format(string(Concrete), "List<~w>", [Inner]).
+    format(string(Concrete), "[#N, ~w]", [Inner]).
 resolve_type(maybe(Type), typr, Concrete) :-
     resolve_type(Type, typr, Inner),
-    format(string(Concrete), "Optional<~w>", [Inner]).
+    format(string(Concrete), "Option<~w>", [Inner]).
 resolve_type(map(KeyType, ValueType), typr, Concrete) :-
     resolve_type(KeyType, typr, Key),
     resolve_type(ValueType, typr, Value),
-    format(string(Concrete), "Map<~w, ~w>", [Key, Value]).
+    format(string(Concrete), "{ key: ~w, value: ~w}", [Key, Value]).
 resolve_type(set(Type), typr, Concrete) :-
     resolve_type(Type, typr, Inner),
-    format(string(Concrete), "Set<~w>", [Inner]).
+    format(string(Concrete), "[#N, ~w]", [Inner]).
 resolve_type(pair(LeftType, RightType), typr, Concrete) :-
     resolve_type(LeftType, typr, Left),
     resolve_type(RightType, typr, Right),
-    format(string(Concrete), "Tuple<~w, ~w>", [Left, Right]).
+    format(string(Concrete), "{ first: ~w, second: ~w}", [Left, Right]).
 resolve_type(record(Name, _Fields), typr, Concrete) :-
     atom_string(Name, Concrete).
 

@@ -28,16 +28,16 @@ test(explicit_mode_emits_declared_scalar_annotations) :-
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "function(start: String): List<String>")),
-    once(sub_string(Code, _, _, _, "function(start: String, target: String): Bool")).
+    once(sub_string(Code, _, _, _, "let tc_all <- fn(start: char): [#N, char]")),
+    once(sub_string(Code, _, _, _, "let tc_check <- fn(start: char, target: char): bool")).
 
 test(infer_mode_omits_scalar_parameter_annotations) :-
     clear_type_declarations,
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(infer)], Code)),
-    \+ sub_string(Code, _, _, _, "start: String"),
-    once(sub_string(Code, _, _, _, "function(start): List<String>")).
+    \+ sub_string(Code, _, _, _, "start: char"),
+    once(sub_string(Code, _, _, _, "let tc_all <- fn(start)")).
 
 test(explicit_any_is_preserved_in_infer_mode) :-
     clear_type_declarations,
@@ -53,8 +53,8 @@ test(per_predicate_typed_mode_overrides_call_option) :-
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     assertz(type_declarations:uw_typed_mode(tc/2, off)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
-    \+ sub_string(Code, _, _, _, ": String"),
-    \+ sub_string(Code, _, _, _, ": List<String>").
+    \+ sub_string(Code, _, _, _, ": char"),
+    \+ sub_string(Code, _, _, _, ": [#N, char]").
 
 test(target_registry_registers_typr_family) :-
     clear_type_declarations,
@@ -73,13 +73,34 @@ test(generic_predicates_receive_typed_signature) :-
     assertz(user:simple_fact(hello)),
     assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
     once(compile_predicate_to_typr(simple_fact/1, [typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "simple_fact <- function(arg1: String)")).
+    once(sub_string(Code, _, _, _, "let simple_fact <- fn(arg1: char): bool")),
+    once(sub_string(Code, _, _, _, "identical(arg1, \"hello\")")),
+    generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_non_recursive_path) :-
     clear_type_declarations,
     assertz(user:simple_fact(hello)),
     assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
     once(recursive_compiler:compile_recursive(simple_fact/1, [target(typr), typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "simple_fact <- function(arg1: String)")).
+    once(sub_string(Code, _, _, _, "let simple_fact <- fn(arg1: char): bool")),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(transitive_closure_template_is_valid_typr) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "while (length(queue) > 0)")),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(transitive_closure_seeds_known_base_facts) :-
+    clear_type_declarations,
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "_seed_edge_1 <- add_edge(\"a\", \"b\");")),
+    once(sub_string(Code, _, _, _, "_seed_edge_2 <- add_edge(\"b\", \"c\");")).
 
 :- end_tests(typr_target).
