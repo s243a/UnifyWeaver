@@ -62,20 +62,20 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + 122 integration tests |
+| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + OutputParser wiring + MCP lifecycle + 130 integration tests |
 
 ### Declarative Infrastructure
 
 | Metric | Count |
 |--------|-------|
-| `py_fragment/2` facts | 93 |
+| `py_fragment/2` facts | 94 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 37 |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 982 + 122 Rust integration (653+181 unit + 36 Prolog integration + 108 Python + 122 cargo test) |
+| Total tests | 999 + 130 Rust integration + 128 Python (999 Prolog unit + 36 Prolog integration + 128 Python + 130 cargo test) |
 
 ## Backends
 
@@ -743,7 +743,11 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Tool result caching | Y | Y | Complete (TTL-based, skips destructive tools, /clear-cache command) |
 | MCP server support | Y | Y | Complete (stdio JSON-RPC, tool discovery + dispatch, MCPManager) |
 | Cache/MCP wiring in ToolHandler | Y | Y | Complete (cache check/store + mcp: prefix dispatch) |
-| Integration tests (cargo test) | N | Y (122 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP) |
+| Tool approval UI | Y | Y | Complete (yolo/plan/auto_edit/default modes, interactive confirm) |
+| Streaming error recovery | Y | Y | Complete (retry with exponential backoff on connection/timeout errors) |
+| OutputParser wiring | Y | Y | Complete (JSON extraction from model responses, parse_response in loop) |
+| MCP server lifecycle | Y | Y | Complete (auto-connect on startup, disconnect on exit) |
+| Integration tests (cargo test) | N | Y (130 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser) |
 
 ## License
 

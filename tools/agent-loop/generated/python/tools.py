@@ -324,10 +324,12 @@ class ToolHandler:
         confirm_destructive: bool = True,
         working_dir: str | None = None,
         security: SecurityConfig | None = None,
-        audit: AuditLogger | None = None
+        audit: AuditLogger | None = None,
+        approval_mode: str = "default"
     ):
         self.allowed_tools = allowed_tools or ['bash', 'read', 'write', 'edit']
         self.confirm_destructive = confirm_destructive
+        self.approval_mode = approval_mode
         self.working_dir = working_dir or os.getcwd()
         self.security = security or SecurityConfig()
         self.audit = audit or AuditLogger(level='disabled')
@@ -380,6 +382,68 @@ class ToolHandler:
         self._init_plugins()
 
 
+    def check_approval(self, tool_name: str) -> bool:
+        """Check if a tool is approved to execute under the current approval mode.
+        Returns True if approved, False if blocked."""
+        mode = self.approval_mode
+        if mode == "yolo":
+            return True
+        if mode == "plan":
+            return tool_name == "read"
+        if mode == "auto_edit":
+            return tool_name in ("read", "edit", "write")
+        # default mode: read always approved, others go through confirm
+        if tool_name == "read":
+            return True
+        return True  # actual prompt happens in confirm_tool_execution
+
+    def confirm_tool_execution(self, tool_call: ToolCall) -> bool:
+        """Interactive confirmation for tool execution with argument preview.
+        Returns True if the user approves, False to skip."""
+        import sys
+        # Auto-approve in yolo mode
+        if self.approval_mode == "yolo" or not self.confirm_destructive:
+            return True
+        # Read is always safe
+        if tool_call.name == "read":
+            return True
+        # Plan mode blocks all non-read tools
+        if self.approval_mode == "plan":
+            print(f"  [plan mode] Blocked: {tool_call.name}", file=sys.stderr)
+            return False
+        # auto_edit mode: allow read/edit/write without prompt
+        if self.approval_mode == "auto_edit" and tool_call.name in ("edit", "write"):
+            return True
+
+        # Show tool details for confirmation
+        is_destructive = tool_call.name in ("bash", "write", "edit")
+        label = "DESTRUCTIVE" if is_destructive else "Tool"
+        print(f"  [{label}] {tool_call.name} tool:", file=sys.stderr)
+
+        # Show relevant arguments preview
+        if tool_call.name == "bash":
+            cmd = tool_call.arguments.get("command", "")
+            preview = cmd[:120] if len(cmd) > 120 else cmd
+            print(f"    command: {preview}", file=sys.stderr)
+        elif tool_call.name in ("write", "edit"):
+            path = tool_call.arguments.get("file_path", tool_call.arguments.get("path", ""))
+            print(f"    file: {path}", file=sys.stderr)
+        else:
+            # Show first argument for plugin/MCP tools
+            for key, val in tool_call.arguments.items():
+                preview = str(val)
+                preview = preview[:80] if len(preview) > 80 else preview
+                print(f"    {key}: {preview}", file=sys.stderr)
+                break
+
+        try:
+            sys.stderr.write("  Execute? [y/N] ")
+            sys.stderr.flush()
+            response = input().strip().lower()
+            return response in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
     def _init_plugins(self):
         """Load plugins from default directory."""
         self.plugin_manager = PluginManager()
@@ -406,6 +470,22 @@ class ToolHandler:
 
     def execute(self, tool_call: ToolCall) -> ToolResult:
         """Execute a tool call and return the result."""
+        # Check approval mode before executing
+        if not self.check_approval(tool_call.name):
+            return ToolResult(
+                success=False,
+                output=f"Tool '{tool_call.name}' blocked by approval mode '{self.approval_mode}'",
+                tool_name=tool_call.name
+            )
+
+        # Interactive confirmation (for default/auto_edit modes)
+        if not self.confirm_tool_execution(tool_call):
+            return ToolResult(
+                success=False,
+                output="User declined to execute tool",
+                tool_name=tool_call.name
+            )
+
         # Check cache first
         cached = self.cache.get(tool_call.name, tool_call.arguments)
         if cached is not None:
