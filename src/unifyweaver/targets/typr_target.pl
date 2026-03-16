@@ -38,7 +38,7 @@ compile_predicate_to_typr(PredIndicator, Options, Code) :-
         compile_typr_transitive_closure(Pred/Arity, BasePred, TypedMode, Code)
     ;   detect_transitive_closure(Module, Pred, Arity, BasePred)
     ->  compile_typr_transitive_closure(Pred/Arity, BasePred, TypedMode, Code)
-    ;   compile_predicate_to_r(PredIndicator, Options, Code)
+    ;   compile_generic_typr(PredIndicator, Options, TypedMode, Code)
     ).
 
 compile_typr_transitive_closure(Pred/Arity, BasePred, TypedMode, Code) :-
@@ -61,6 +61,12 @@ compile_typr_transitive_closure(Pred/Arity, BasePred, TypedMode, Code) :-
         check_return_annotation=CheckReturnAnnotation
     ], Code).
 
+compile_generic_typr(PredIndicator, Options, TypedMode, Code) :-
+    compile_predicate_to_r(PredIndicator, Options, RCode),
+    pred_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    typed_function_signature(Pred/Arity, none, TypedMode, UntypedSignature, TypedSignature),
+    replace_once(RCode, UntypedSignature, TypedSignature, Code).
+
 annotation_suffix(off, _TypeTerm, "") :- !.
 annotation_suffix(Mode, TypeTerm, Annotation) :-
     should_emit_annotation(Mode, TypeTerm),
@@ -77,12 +83,59 @@ should_emit_annotation(infer, TypeTerm) :-
     TypeTerm \= boolean.
 
 resolve_node_type(PredSpec, _BasePredSpec, TypeTerm) :-
-    predicate_arg_type(PredSpec, 1, TypeTerm),
+    resolved_type_term(PredSpec, none, 1, TypeTerm),
     !.
 resolve_node_type(_PredSpec, BasePredSpec, TypeTerm) :-
-    predicate_arg_type(BasePredSpec, 1, TypeTerm),
+    resolved_type_term(BasePredSpec, none, 1, TypeTerm),
     !.
 resolve_node_type(_PredSpec, _BasePredSpec, atom).
+
+resolved_type_term(PredSpec, _FallbackPredSpec, ArgIndex, TypeTerm) :-
+    predicate_arg_type(PredSpec, ArgIndex, TypeTerm),
+    !.
+resolved_type_term(_PredSpec, FallbackPredSpec, ArgIndex, TypeTerm) :-
+    FallbackPredSpec \== none,
+    predicate_arg_type(FallbackPredSpec, ArgIndex, TypeTerm).
+
+typed_function_signature(Pred/Arity, FallbackPredSpec, TypedMode, UntypedSignature, TypedSignature) :-
+    atom_string(Pred, PredStr),
+    build_untyped_arg_list(Arity, UntypedArgList),
+    build_typed_arg_list(Pred/Arity, FallbackPredSpec, Arity, TypedMode, TypedArgList),
+    format(string(UntypedSignature), '~w <- function(~w)', [PredStr, UntypedArgList]),
+    format(string(TypedSignature), '~w <- function(~w)', [PredStr, TypedArgList]).
+
+build_untyped_arg_list(Arity, ArgList) :-
+    findall(ArgName, (
+        between(1, Arity, Index),
+        format(string(ArgName), 'arg~w', [Index])
+    ), ArgNames),
+    atomic_list_concat(ArgNames, ', ', ArgList).
+
+build_typed_arg_list(PredSpec, FallbackPredSpec, Arity, TypedMode, ArgList) :-
+    findall(ArgName, (
+        between(1, Arity, Index),
+        typed_argument_name(PredSpec, FallbackPredSpec, Index, TypedMode, ArgName)
+    ), ArgNames),
+    atomic_list_concat(ArgNames, ', ', ArgList).
+
+typed_argument_name(PredSpec, FallbackPredSpec, Index, TypedMode, ArgName) :-
+    format(string(BaseName), 'arg~w', [Index]),
+    (   resolved_type_term(PredSpec, FallbackPredSpec, Index, TypeTerm)
+    ->  annotation_suffix(TypedMode, TypeTerm, Annotation),
+        string_concat(BaseName, Annotation, ArgName)
+    ;   ArgName = BaseName
+    ).
+
+replace_once(String, Find, Replace, Result) :-
+    string_length(Find, FindLen),
+    (   sub_string(String, Before, FindLen, After, Find)
+    ->  sub_string(String, 0, Before, _, Prefix),
+        Start is Before + FindLen,
+        sub_string(String, Start, After, 0, Suffix),
+        string_concat(Prefix, Replace, PrefixReplaced),
+        string_concat(PrefixReplaced, Suffix, Result)
+    ;   Result = String
+    ).
 
 normalize_base_pred(BasePred/_, BasePred) :- !.
 normalize_base_pred(BasePred, BasePred).

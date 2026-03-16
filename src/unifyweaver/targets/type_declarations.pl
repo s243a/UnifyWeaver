@@ -11,6 +11,7 @@
     resolve_typed_mode/4,
     build_type_context/3,
     predicate_arg_type/3,
+    resolved_arg_type/5,
     has_explicit_any/2,
     uw_typed/2,
     clear_type_declarations/0
@@ -39,6 +40,14 @@ resolve_typed_mode(PredSpec, Options, GlobalMode, Mode) :-
 predicate_arg_type(PredSpec, ArgIndex, TypeTerm) :-
     declared_uw_type(PredSpec, ArgIndex, Type0),
     resolve_domain_type(Type0, TypeTerm).
+
+resolved_arg_type(PredSpec, FallbackPredSpec, ArgIndex, TargetLang, ConcreteType) :-
+    (   predicate_arg_type(PredSpec, ArgIndex, AbstractType)
+    ->  true
+    ;   FallbackPredSpec \== none,
+        predicate_arg_type(FallbackPredSpec, ArgIndex, AbstractType)
+    ),
+    resolve_type(AbstractType, TargetLang, ConcreteType).
 
 has_explicit_any(PredSpec, ArgIndex) :-
     declared_uw_type(PredSpec, ArgIndex, any).
