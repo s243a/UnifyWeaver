@@ -1738,3 +1738,28 @@ fn test_phase23_budget_check_in_main() {
     assert!(main_src.contains("is_over_budget"), "main.rs should check budget");
     assert!(main_src.contains("token_budget"), "main.rs should reference token_budget");
 }
+
+#[test]
+fn test_phase24_streaming_counter_struct_in_main() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct StreamingTokenCounter"), "main.rs should have StreamingTokenCounter struct");
+}
+
+#[test]
+fn test_phase24_streaming_counter_on_token() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("fn on_token"), "StreamingTokenCounter should have on_token method");
+}
+
+#[test]
+fn test_phase24_streaming_counter_format_summary() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("fn format_summary"), "StreamingTokenCounter should have format_summary method");
+}
+
+#[test]
+fn test_phase24_streaming_counter_wired_in_loop() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("counter.on_token"), "main loop should use counter.on_token");
+    assert!(main_src.contains("[Streamed:"), "main loop should show streaming summary");
+}

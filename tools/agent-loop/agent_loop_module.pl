@@ -2501,6 +2501,8 @@ generate_rust_main :-
     write(S, '        return;\n'),
     write(S, '    }\n\n'),
     nl(S),
+    %% Streaming token counter struct
+    write_rust(S, streaming_token_counter),
     %% Main loop (expects `config`, `matches`, `session_manager` to be defined)
     write_rust(S, main_loop),
     write(S, '}\n'),
@@ -4296,7 +4298,10 @@ generate_agent_loop_main :-
     %% 6a. _print_status (lines 597-615)
     write_py(S, agent_loop_status_method),
     nl(S),
-    %% 6b. _process_message (lines 617-779)
+    %% 6b. StreamingTokenCounter helper class
+    write_py(S, streaming_token_counter),
+    nl(S),
+    %% 6c. _process_message (lines 617-779)
     write_py(S, agent_loop_process_message),
     nl(S),
     %% 6c. _send_streaming_with_retry
@@ -7089,6 +7094,36 @@ pub fn send_streaming(
         Err(e) => {
             (format!("Streaming error: {}", e), 0, 0)
         }
+    }
+}
+').
+
+rust_fragment(streaming_token_counter, '
+/// Counts tokens during streaming and tracks character count.
+pub struct StreamingTokenCounter {
+    pub token_count: usize,
+    pub char_count: usize,
+    pub show_live: bool,
+}
+
+impl StreamingTokenCounter {
+    pub fn new(show_live: bool) -> Self {
+        Self { token_count: 0, char_count: 0, show_live }
+    }
+
+    /// Called for each streamed token chunk. Prints it and updates count.
+    pub fn on_token(&mut self, token: &str) {
+        print!("{}", token);
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        self.char_count += token.len();
+        // Approximate token count: ~4 chars per token
+        self.token_count = std::cmp::max(1, self.char_count / 4);
+    }
+
+    /// Format a one-line summary of streaming stats.
+    pub fn format_summary(&self) -> String {
+        format!("~{} tokens, {} chars", self.token_count, self.char_count)
     }
 }
 ').
@@ -10094,6 +10129,31 @@ fn test_phase23_budget_check_in_main() {
     assert!(main_src.contains("is_over_budget"), "main.rs should check budget");
     assert!(main_src.contains("token_budget"), "main.rs should reference token_budget");
 }
+
+#[test]
+fn test_phase24_streaming_counter_struct_in_main() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("struct StreamingTokenCounter"), "main.rs should have StreamingTokenCounter struct");
+}
+
+#[test]
+fn test_phase24_streaming_counter_on_token() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("fn on_token"), "StreamingTokenCounter should have on_token method");
+}
+
+#[test]
+fn test_phase24_streaming_counter_format_summary() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("fn format_summary"), "StreamingTokenCounter should have format_summary method");
+}
+
+#[test]
+fn test_phase24_streaming_counter_wired_in_loop() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("counter.on_token"), "main loop should use counter.on_token");
+    assert!(main_src.contains("[Streamed:"), "main loop should show streaming summary");
+}
 ').
 
 rust_fragment(main_loop, '
@@ -10208,12 +10268,14 @@ rust_fragment(main_loop, '
         let response = if let Some(ref ab) = async_backend {
             if state.stream {
                 spinner.stop();
+                let mut counter = StreamingTokenCounter::new(state.show_tokens);
                 let response = ab.send_streaming_async(prompt, &ctx_snapshot, |token| {
-                    print!("{}", token);
-                    use std::io::Write;
-                    std::io::stdout().flush().ok();
+                    counter.on_token(&token);
                 }).await;
                 println!();
+                if state.show_tokens {
+                    println!("  [Streamed: {}]", counter.format_summary());
+                }
                 response
             } else {
                 let ab_ref = ab;
@@ -10314,12 +10376,14 @@ rust_fragment(main_loop, '
                         if state.stream {
                             spinner.stop();
                             print!("\\n");
+                            let mut counter = StreamingTokenCounter::new(state.show_tokens);
                             let response = ab.send_streaming_async(input, &ctx_snapshot, |token| {
-                                print!("{}", token);
-                                use std::io::Write;
-                                std::io::stdout().flush().ok();
+                                counter.on_token(&token);
                             }).await;
                             println!();
+                            if state.show_tokens {
+                                println!("  [Streamed: {}]", counter.format_summary());
+                            }
                             response
                         } else {
                             let ab_ref = ab;
@@ -17828,6 +17892,45 @@ Status:
 """)
 ').
 
+py_fragment(streaming_token_counter, '
+class StreamingTokenCounter:
+    """Counts tokens during streaming and optionally shows live status."""
+
+    def __init__(self, show_live: bool = True, cost_tracker=None, model: str = "unknown"):
+        self.token_count = 0
+        self.char_count = 0
+        self.show_live = show_live
+        self.cost_tracker = cost_tracker
+        self.model = model
+        self._last_status_len = 0
+
+    def on_token(self, token: str) -> None:
+        """Called for each streamed token chunk. Prints it and updates count."""
+        print(token, end="", flush=True)
+        self.char_count += len(token)
+        # Approximate token count: ~4 chars per token (GPT/Claude average)
+        self.token_count = max(1, self.char_count // 4)
+
+    def finish(self) -> dict:
+        """Called after streaming ends. Returns stats dict."""
+        return {
+            "approx_tokens": self.token_count,
+            "chars": self.char_count,
+        }
+
+    def format_summary(self) -> str:
+        """Format a one-line summary of streaming stats."""
+        parts = [f"~{self.token_count} tokens", f"{self.char_count} chars"]
+        if self.cost_tracker:
+            # Estimate cost based on output tokens only (input counted later from response)
+            pricing = self.cost_tracker.get_pricing(self.model)
+            if pricing:
+                est_cost = self.token_count * pricing.get(''output'', 0.0) / 1_000_000
+                if est_cost > 0:
+                    parts.append(f"~${est_cost:.4f}")
+        return ", ".join(parts)
+').
+
 py_fragment(agent_loop_process_message, '    def _process_message(self, user_input: str) -> None:
         """Process a user message and get response."""
         # Add to context
@@ -17859,12 +17962,20 @@ py_fragment(agent_loop_process_message, '    def _process_message(self, user_inp
                     spinner.stop()
                     spinner = None
                 print("\\nAssistant: ", end="", flush=True)
+                _counter = StreamingTokenCounter(
+                    show_live=self.show_tokens,
+                    cost_tracker=self.cost_tracker,
+                    model=getattr(self.backend, \'model\', \'unknown\'),
+                )
                 response = self._send_streaming_with_retry(
                     user_input,
                     self.context.get_context(),
-                    on_token=lambda t: print(t, end="", flush=True)
+                    on_token=_counter.on_token
                 )
+                _stream_stats = _counter.finish()
                 print()  # Newline after streaming
+                if self.show_tokens:
+                    print(f"  [Streamed: {_counter.format_summary()}]")
             else:
                 response = self.backend.send_message(
                     user_input,

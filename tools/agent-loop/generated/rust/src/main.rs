@@ -1206,6 +1206,34 @@ async fn main() {
 
 
 
+/// Counts tokens during streaming and tracks character count.
+pub struct StreamingTokenCounter {
+    pub token_count: usize,
+    pub char_count: usize,
+    pub show_live: bool,
+}
+
+impl StreamingTokenCounter {
+    pub fn new(show_live: bool) -> Self {
+        Self { token_count: 0, char_count: 0, show_live }
+    }
+
+    /// Called for each streamed token chunk. Prints it and updates count.
+    pub fn on_token(&mut self, token: &str) {
+        print!("{}", token);
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        self.char_count += token.len();
+        // Approximate token count: ~4 chars per token
+        self.token_count = std::cmp::max(1, self.char_count / 4);
+    }
+
+    /// Format a one-line summary of streaming stats.
+    pub fn format_summary(&self) -> String {
+        format!("~{} tokens, {} chars", self.token_count, self.char_count)
+    }
+}
+
     let backend = create_backend(&config);
     // Create async backend for API-type backends
     let async_backend: Option<AsyncApiBackend> = {
@@ -1317,12 +1345,14 @@ async fn main() {
         let response = if let Some(ref ab) = async_backend {
             if state.stream {
                 spinner.stop();
+                let mut counter = StreamingTokenCounter::new(state.show_tokens);
                 let response = ab.send_streaming_async(prompt, &ctx_snapshot, |token| {
-                    print!("{}", token);
-                    use std::io::Write;
-                    std::io::stdout().flush().ok();
+                    counter.on_token(&token);
                 }).await;
                 println!();
+                if state.show_tokens {
+                    println!("  [Streamed: {}]", counter.format_summary());
+                }
                 response
             } else {
                 let ab_ref = ab;
@@ -1423,12 +1453,14 @@ async fn main() {
                         if state.stream {
                             spinner.stop();
                             print!("\n");
+                            let mut counter = StreamingTokenCounter::new(state.show_tokens);
                             let response = ab.send_streaming_async(input, &ctx_snapshot, |token| {
-                                print!("{}", token);
-                                use std::io::Write;
-                                std::io::stdout().flush().ok();
+                                counter.on_token(&token);
                             }).await;
                             println!();
+                            if state.show_tokens {
+                                println!("  [Streamed: {}]", counter.format_summary());
+                            }
                             response
                         } else {
                             let ab_ref = ab;

@@ -730,6 +730,44 @@ Status:
   Cost: {cost_str}
 """)
 
+
+class StreamingTokenCounter:
+    """Counts tokens during streaming and optionally shows live status."""
+
+    def __init__(self, show_live: bool = True, cost_tracker=None, model: str = "unknown"):
+        self.token_count = 0
+        self.char_count = 0
+        self.show_live = show_live
+        self.cost_tracker = cost_tracker
+        self.model = model
+        self._last_status_len = 0
+
+    def on_token(self, token: str) -> None:
+        """Called for each streamed token chunk. Prints it and updates count."""
+        print(token, end="", flush=True)
+        self.char_count += len(token)
+        # Approximate token count: ~4 chars per token (GPT/Claude average)
+        self.token_count = max(1, self.char_count // 4)
+
+    def finish(self) -> dict:
+        """Called after streaming ends. Returns stats dict."""
+        return {
+            "approx_tokens": self.token_count,
+            "chars": self.char_count,
+        }
+
+    def format_summary(self) -> str:
+        """Format a one-line summary of streaming stats."""
+        parts = [f"~{self.token_count} tokens", f"{self.char_count} chars"]
+        if self.cost_tracker:
+            # Estimate cost based on output tokens only (input counted later from response)
+            pricing = self.cost_tracker.get_pricing(self.model)
+            if pricing:
+                est_cost = self.token_count * pricing.get('output', 0.0) / 1_000_000
+                if est_cost > 0:
+                    parts.append(f"~${est_cost:.4f}")
+        return ", ".join(parts)
+
     def _process_message(self, user_input: str) -> None:
         """Process a user message and get response."""
         # Add to context
@@ -761,12 +799,20 @@ Status:
                     spinner.stop()
                     spinner = None
                 print("\nAssistant: ", end="", flush=True)
+                _counter = StreamingTokenCounter(
+                    show_live=self.show_tokens,
+                    cost_tracker=self.cost_tracker,
+                    model=getattr(self.backend, 'model', 'unknown'),
+                )
                 response = self._send_streaming_with_retry(
                     user_input,
                     self.context.get_context(),
-                    on_token=lambda t: print(t, end="", flush=True)
+                    on_token=_counter.on_token
                 )
+                _stream_stats = _counter.finish()
                 print()  # Newline after streaming
+                if self.show_tokens:
+                    print(f"  [Streamed: {_counter.format_summary()}]")
             else:
                 response = self.backend.send_message(
                     user_input,

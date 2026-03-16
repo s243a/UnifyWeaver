@@ -303,6 +303,7 @@ run_tests :-
     test_phase23_session_autosave,
     test_phase23_schema_validation,
     test_phase23_token_budget,
+    test_phase24_streaming_token_counter,
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
@@ -3129,7 +3130,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 37),
+    assert_eq('Rust fragment count', RFCount, 38),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -5866,4 +5867,57 @@ test_phase23_token_budget :-
     assert_true('Rust checks budget in loop', (
         agent_loop_module:rust_fragment(main_loop, RM1),
         sub_atom(RM1, _, _, _, 'is_over_budget')
+    )).
+
+test_phase24_streaming_token_counter :-
+    format("~nPhase 24 — Streaming token counter:~n"),
+    %% Python StreamingTokenCounter class exists
+    assert_true('Python StreamingTokenCounter class', (
+        agent_loop_module:py_fragment(streaming_token_counter, PY1),
+        sub_atom(PY1, _, _, _, 'StreamingTokenCounter')
+    )),
+    %% Python has on_token method
+    assert_true('Python has on_token method', (
+        agent_loop_module:py_fragment(streaming_token_counter, PY2),
+        sub_atom(PY2, _, _, _, 'def on_token')
+    )),
+    %% Python has format_summary method
+    assert_true('Python has format_summary', (
+        agent_loop_module:py_fragment(streaming_token_counter, PY3),
+        sub_atom(PY3, _, _, _, 'def format_summary')
+    )),
+    %% Python _process_message uses StreamingTokenCounter
+    assert_true('Python _process_message uses counter', (
+        agent_loop_module:py_fragment(agent_loop_process_message, PM1),
+        sub_atom(PM1, _, _, _, 'StreamingTokenCounter')
+    )),
+    %% Python shows streaming summary
+    assert_true('Python shows streamed summary', (
+        agent_loop_module:py_fragment(agent_loop_process_message, PM2),
+        sub_atom(PM2, _, _, _, '[Streamed:')
+    )),
+    %% Rust StreamingTokenCounter struct exists
+    assert_true('Rust StreamingTokenCounter struct', (
+        agent_loop_module:rust_fragment(streaming_token_counter, RS1),
+        sub_atom(RS1, _, _, _, 'StreamingTokenCounter')
+    )),
+    %% Rust has on_token method
+    assert_true('Rust has on_token method', (
+        agent_loop_module:rust_fragment(streaming_token_counter, RS2),
+        sub_atom(RS2, _, _, _, 'fn on_token')
+    )),
+    %% Rust has format_summary method
+    assert_true('Rust has format_summary', (
+        agent_loop_module:rust_fragment(streaming_token_counter, RS3),
+        sub_atom(RS3, _, _, _, 'fn format_summary')
+    )),
+    %% Rust main_loop uses StreamingTokenCounter
+    assert_true('Rust main_loop uses counter', (
+        agent_loop_module:rust_fragment(main_loop, RL1),
+        sub_atom(RL1, _, _, _, 'StreamingTokenCounter')
+    )),
+    %% Rust shows streaming summary
+    assert_true('Rust shows streamed summary', (
+        agent_loop_module:rust_fragment(main_loop, RL2),
+        sub_atom(RL2, _, _, _, '[Streamed:')
     )).

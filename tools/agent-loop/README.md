@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + OutputParser wiring + MCP lifecycle + tool schema validation + token budget/rate limiting + 135 integration tests |
+| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + OutputParser wiring + MCP lifecycle + tool schema validation + token budget/rate limiting + streaming token counting + 139 integration tests |
 
 ### Declarative Infrastructure
 
@@ -70,12 +70,12 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|-------|
 | `py_fragment/2` facts | 94 |
 | `prolog_fragment/2` facts | 33 |
-| `rust_fragment/2` facts | 37 |
+| `rust_fragment/2` facts | 38 |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1015 + 135 Rust integration + 143 Python (1015 Prolog unit + 36 Prolog integration + 143 Python + 135 cargo test) |
+| Total tests | 1025 + 139 Rust integration + 148 Python (1025 Prolog unit + 36 Prolog integration + 148 Python + 139 cargo test) |
 
 ## Backends
 
@@ -747,7 +747,13 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Streaming error recovery | Y | Y | Complete (retry with exponential backoff on connection/timeout errors) |
 | OutputParser wiring | Y | Y | Complete (JSON extraction from model responses, parse_response in loop) |
 | MCP server lifecycle | Y | Y | Complete (auto-connect on startup, disconnect on exit) |
-| Integration tests (cargo test) | N | Y (130 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser) |
+| Context overflow notification | Y | Y | Complete (add_message returns trimmed count, prints warning) |
+| Config reload robustness | Y | Y | Complete (syncs approval_mode, reconnects MCP, re-creates backend) |
+| Session auto-save | Y | Y | Complete (saves context before exit) |
+| Tool schema validation | Y | Y | Complete (required param check from tool_spec before execution) |
+| Token budget / rate limiting | Y | Y | Complete (CostTracker.is_over_budget, interactive prompt) |
+| Streaming token counting | Y | Y | Complete (StreamingTokenCounter class/struct, live char/token count during streaming, summary after completion) |
+| Integration tests (cargo test) | N | Y (139 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter) |
 
 ## License
 
