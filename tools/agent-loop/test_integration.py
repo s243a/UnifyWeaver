@@ -1277,3 +1277,74 @@ class TestTokenBudget:
         src = open(agent_loop.__file__).read()
         assert "is_over_budget" in src
         assert "token_budget" in src
+
+
+class TestStreamingTokenCounter:
+    """Phase 24: Streaming token counter tests."""
+
+    def test_streaming_token_counter_importable(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "class StreamingTokenCounter" in src
+
+    def test_counter_on_token_counts_chars(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        # Get the class from the module
+        StreamingTokenCounter = getattr(agent_loop, "StreamingTokenCounter")
+        counter = StreamingTokenCounter(show_live=False, cost_tracker=None)
+        # Suppress print output
+        import io, sys
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            counter.on_token("Hello ")
+            counter.on_token("world!")
+            assert counter.char_count == 12
+            assert counter.token_count >= 1  # ~12/4 = 3
+        finally:
+            sys.stdout = old_stdout
+
+    def test_counter_finish_returns_stats(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        StreamingTokenCounter = getattr(agent_loop, "StreamingTokenCounter")
+        counter = StreamingTokenCounter(show_live=False)
+        import io, sys
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            counter.on_token("Test token data here")
+            stats = counter.finish()
+            assert "approx_tokens" in stats
+            assert "chars" in stats
+            assert stats["chars"] == 20
+        finally:
+            sys.stdout = old_stdout
+
+    def test_counter_format_summary(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        StreamingTokenCounter = getattr(agent_loop, "StreamingTokenCounter")
+        counter = StreamingTokenCounter(show_live=False)
+        import io, sys
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            counter.on_token("A" * 40)
+            summary = counter.format_summary()
+            assert "tokens" in summary
+            assert "chars" in summary
+            assert "40" in summary  # char count
+        finally:
+            sys.stdout = old_stdout
+
+    def test_process_message_uses_counter(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "StreamingTokenCounter" in src
+        assert "_counter.on_token" in src
+        assert "_counter.finish()" in src
+        assert "[Streamed:" in src
