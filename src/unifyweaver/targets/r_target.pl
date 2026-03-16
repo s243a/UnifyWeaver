@@ -223,6 +223,14 @@ resolve_val(VarMap, Var, Val) :-
     var(Var), lookup_var(Var, VarMap, Name), !,
     format(string(Val), '~w', [Name]).
 resolve_val(_, Val, StrVal) :-
+    atom(Val), !,
+    (   Val == true
+    ->  StrVal = 'TRUE'
+    ;   Val == false
+    ->  StrVal = 'FALSE'
+    ;   format(string(StrVal), '"~w"', [Val])
+    ).
+resolve_val(_, Val, StrVal) :-
     format(string(StrVal), '~w', [Val]).
 
 ensure_var(VarMap, Var, Name, VarMap) :-
