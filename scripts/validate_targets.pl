@@ -28,6 +28,8 @@
 :- use_module('src/unifyweaver/targets/scala_target', []).
 :- use_module('src/unifyweaver/targets/clojure_target', []).
 :- use_module('src/unifyweaver/targets/jython_target', []).
+:- use_module('src/unifyweaver/targets/rust_target', []).
+:- use_module('src/unifyweaver/targets/go_target', []).
 
 :- use_module(library(lists)).
 
@@ -117,22 +119,16 @@ run_validation :-
     assertz(user:parent(bob, pat)),
     assertz(user:parent(ann, sue)),
 
-    % Full-suite targets (all 5 patterns)
-    FullTargets = [ruby, perl, typescript, c, cpp, elixir, fsharp, haskell, java, lua, r],
+    % Full-suite targets (all 6 patterns: linear, list_sum, tail, multicall, mutual, transitive)
+    FullTargets = [ruby, perl, typescript, c, cpp, elixir, fsharp, haskell, java, lua, r,
+                   kotlin, scala, clojure, jython, rust, go],
     forall(
         member(Target, FullTargets),
         validate_target(Target)
     ),
 
-    % Targets with linear + transitive closure dispatch only (no multicall/mutual)
-    LinearTcTargets = [kotlin, scala, clojure, jython],
-    forall(
-        member(Target, LinearTcTargets),
-        validate_linear_tc(Target)
-    ),
-
     % Transitive-closure-only targets
-    TcOnlyTargets = [go, sql],
+    TcOnlyTargets = [sql],
     forall(
         member(Target, TcOnlyTargets),
         validate_tc_only(Target)
@@ -161,6 +157,13 @@ validate_target(Target) :-
     ->  true ; format('  ✗ linear list_sum: FAILED~n')
     ),
 
+    % Tail recursion: count (list accumulator)
+    atomic_list_concat(['count', Ext], CountFile),
+    (   catch(generate(Target, tail, count, 3, CountFile), E_tail,
+            (format('  ✗ tail count: ~w~n', [E_tail]), true))
+    ->  true ; format('  ✗ tail count: FAILED~n')
+    ),
+
     % Multicall: fib
     atomic_list_concat(['fib', Ext], FibFile),
     (   catch(generate(Target, multicall, fib, 2, FibFile), E3,
@@ -182,33 +185,7 @@ validate_target(Target) :-
     ->  true ; format('  ✗ transitive ancestor: not supported~n')
     ).
 
-%% Validate targets with linear + transitive closure support (Kotlin, Scala, Clojure, Jython)
-validate_linear_tc(Target) :-
-    target_ext(Target, Ext),
-    format('~n--- ~w (linear + transitive closure) ---~n', [Target]),
-
-    % Linear recursion: factorial
-    atomic_list_concat(['factorial', Ext], FacFile),
-    (   catch(generate(Target, linear, factorial, 2, FacFile), E,
-            (format('  ✗ linear factorial: ~w~n', [E]), true))
-    ->  true ; format('  ✗ linear factorial: FAILED~n')
-    ),
-
-    % Linear recursion: list_sum
-    atomic_list_concat(['list_sum', Ext], SumFile),
-    (   catch(generate(Target, linear, list_sum, 2, SumFile), E2,
-            (format('  ✗ linear list_sum: ~w~n', [E2]), true))
-    ->  true ; format('  ✗ linear list_sum: FAILED~n')
-    ),
-
-    % Transitive closure: ancestor
-    atomic_list_concat(['ancestor', Ext], TcFile),
-    (   catch(generate(Target, transitive, ancestor, 2, TcFile), E3,
-            (format('  ✗ transitive ancestor: ~w~n', [E3]), true))
-    ->  true ; format('  ✗ transitive ancestor: FAILED~n')
-    ).
-
-%% Validate transitive-closure-only targets (Go, SQL)
+%% Validate transitive-closure-only targets (SQL)
 validate_tc_only(Target) :-
     target_ext(Target, Ext),
     format('~n--- ~w (transitive closure only) ---~n', [Target]),
@@ -235,3 +212,4 @@ target_ext(kotlin, '.kt').
 target_ext(scala, '.scala').
 target_ext(clojure, '.clj').
 target_ext(jython, '.jy.py').
+target_ext(rust, '.rs').
