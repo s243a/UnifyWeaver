@@ -117,6 +117,18 @@ class AgentLoop:
             except Exception as e:
                 print(f"\n[Error: {e}]\n")
 
+        # Auto-save session on exit
+        if self.context.get_context() and self.session_manager:
+            try:
+                if self.session_id:
+                    self.session_manager.update_session(self.session_id, self.context)
+                    print(f"  [Session updated: {self.session_id}]")
+                else:
+                    sid = self.session_manager.save_session(self.context, self.backend.name)
+                    print(f"  [Session saved: {sid}]")
+            except Exception:
+                pass  # Don't fail on auto-save
+
         print("\nGoodbye!")
 
     def _print_header(self) -> None:
@@ -254,14 +266,42 @@ class AgentLoop:
                 if fresh is None:
                     fresh = get_default_config().agents.get(self.config.name, get_default_config().agents["default"])
                 changes = []
-                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile", "stream", "max_iterations"]:
+                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile", "stream", "max_iterations", "tool_cache_ttl", "token_budget"]:
                     old_val = getattr(self.config, key, None)
                     new_val = getattr(fresh, key, None)
                     if old_val != new_val:
                         setattr(self.config, key, new_val)
                         changes.append(f"{key}: {old_val} -> {new_val}")
-                if hasattr(self, "tool_handler") and hasattr(self.tool_handler, "cache"):
-                    self.tool_handler.cache.clear()
+                # Sync approval_mode to tool handler
+                if hasattr(self, "tools") and self.tools:
+                    if hasattr(fresh, "approval_mode"):
+                        self.tools.approval_mode = getattr(fresh, "approval_mode", "default")
+                # Clear tool cache on reload
+                if hasattr(self, "tools") and self.tools and hasattr(self.tools, "cache"):
+                    self.tools.cache.clear()
+                # Refresh MCP servers if config changed
+                new_mcp = getattr(fresh, "mcp_servers", []) or []
+                old_mcp = getattr(self.config, "mcp_servers", []) or []
+                if new_mcp != old_mcp and hasattr(self, "tools") and self.tools:
+                    if self.tools.mcp_manager:
+                        self.tools.mcp_manager.disconnect_all()
+                    if new_mcp:
+                        from mcp_client import MCPManager
+                        self.tools.mcp_manager = MCPManager(new_mcp)
+                        changes.append(f"mcp_servers: reconnected {len(new_mcp)} server(s)")
+                    else:
+                        self.tools.mcp_manager = None
+                        changes.append("mcp_servers: disconnected")
+                    self.config.mcp_servers = new_mcp
+                # Re-create backend if backend or model changed
+                backend_changed = any(c.startswith("backend:") or c.startswith("model:") for c in changes)
+                if backend_changed and self.config:
+                    try:
+                        from backends import create_backend_from_config
+                        self.backend = create_backend_from_config(fresh, "")
+                        changes.append(f"backend recreated: {self.backend.name}")
+                    except Exception as be:
+                        changes.append(f"backend reload failed: {be}")
                 if changes:
                     for c in changes: print(f"  Reloaded: {c}")
                 else:
@@ -693,7 +733,9 @@ Status:
     def _process_message(self, user_input: str) -> None:
         """Process a user message and get response."""
         # Add to context
-        self.context.add_message('user', user_input)
+        _trimmed = self.context.add_message('user', user_input)
+        if _trimmed and _trimmed > 0:
+            print(f"  [context] Trimmed {_trimmed} old message(s) to stay within limits")
 
         # Show that we're calling the backend
         use_spinner = self.display_mode == 'ncurses' and DisplayMode.supports_ncurses()
@@ -861,6 +903,18 @@ Status:
             if self.cost_tracker:
                 cost_info = f" | Est. cost: {self.cost_tracker.get_summary()['cost_formatted']}"
             print(f"  [Tokens: {token_info}{cost_info}]\n")
+
+        # Check token budget
+        budget = getattr(self.config, 'token_budget', 0.0) or 0.0
+        if self.cost_tracker and budget > 0 and self.cost_tracker.is_over_budget(budget):
+            remaining = self.cost_tracker.budget_remaining(budget)
+            print(f"  [Budget exceeded] Spent ${self.cost_tracker.total_cost:.4f} of ${budget:.4f} budget.")
+            try:
+                cont = input("  Continue? [y/N]: ").strip().lower()
+                if cont not in ('y', 'yes'):
+                    self.running = False
+            except (EOFError, KeyboardInterrupt):
+                self.running = False
 
     def _send_streaming_with_retry(self, message: str, context: list,
                                     on_token=None, max_retries: int = 3) -> "AgentResponse":

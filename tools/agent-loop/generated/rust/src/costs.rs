@@ -93,5 +93,21 @@ impl CostTracker {
             self.total_cost()
         )
     }
+
+    /// Check if total cost exceeds budget. Budget of 0.0 means unlimited.
+    pub fn is_over_budget(&self, budget: f64) -> bool {
+        if budget <= 0.0 {
+            return false;
+        }
+        self.total_cost() >= budget
+    }
+
+    /// Return remaining budget in USD. Budget of 0.0 returns -1.0 (unlimited).
+    pub fn budget_remaining(&self, budget: f64) -> f64 {
+        if budget <= 0.0 {
+            return -1.0;
+        }
+        (budget - self.total_cost()).max(0.0)
+    }
 }
 

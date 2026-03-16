@@ -269,6 +269,27 @@ impl ToolHandler {
             false
         }
     }
+
+    /// Validate tool call arguments against known schemas.
+    /// Returns Some(error_message) if validation fails, None if ok.
+    pub fn validate_tool_args(&self, tool_call: &ToolCall) -> Option<String> {
+        let required: &[&str] = match tool_call.name.as_str() {
+            "bash" => &["command"],
+            "read" => &["path"],
+            "write" => &["path", "content"],
+            "edit" => &["path", "old_string", "new_string"],
+            _ => return None, // No schema for plugin/MCP tools
+        };
+        let missing: Vec<&str> = required.iter()
+            .filter(|&&p| !tool_call.arguments.contains_key(p))
+            .copied()
+            .collect();
+        if missing.is_empty() {
+            None
+        } else {
+            Some(format!("Missing required parameter(s): {}", missing.join(", ")))
+        }
+    }
 }
 
 
@@ -280,6 +301,15 @@ impl ToolHandler {
             return ToolResult {
                 success: false,
                 output: format!("Tool '{}' blocked by approval mode '{}'", tool_call.name, self.approval_mode),
+                tool_name: tool_call.name.clone(),
+            };
+        }
+
+        // Validate required parameters
+        if let Some(err) = self.validate_tool_args(tool_call) {
+            return ToolResult {
+                success: false,
+                output: format!("[Validation] {}", err),
                 tool_name: tool_call.name.clone(),
             };
         }

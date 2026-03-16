@@ -1670,3 +1670,71 @@ fn test_phase22_output_parser_no_json() {
     let blocks = OutputParser::extract_json("No JSON here at all.");
     assert!(blocks.is_empty());
 }
+
+// ============================================================================
+// Phase 23 — Context overflow, schema validation, token budget
+// ============================================================================
+
+#[test]
+fn test_phase23_schema_validation_missing_param() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let args = HashMap::new(); // Empty — missing "command"
+    let tc = ToolCall { name: "bash".to_string(), arguments: args, id: "val_test".to_string() };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("Validation"), "Should contain Validation error: {}", result.output);
+    assert!(result.output.contains("command"), "Should mention missing param: {}", result.output);
+}
+
+#[test]
+fn test_phase23_schema_validation_passes() {
+    let handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let mut args = HashMap::new();
+    args.insert("command".to_string(), serde_json::json!("echo hi"));
+    let tc = ToolCall { name: "bash".to_string(), arguments: args, id: "val_ok".to_string() };
+    assert!(handler.validate_tool_args(&tc).is_none());
+}
+
+#[test]
+fn test_phase23_schema_validation_skips_unknown() {
+    let handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let tc = ToolCall { name: "custom_plugin".to_string(), arguments: HashMap::new(), id: "val_unk".to_string() };
+    assert!(handler.validate_tool_args(&tc).is_none());
+}
+
+#[test]
+fn test_phase23_budget_not_exceeded() {
+    let tracker = CostTracker::new();
+    assert!(!tracker.is_over_budget(0.0)); // unlimited
+    assert!(!tracker.is_over_budget(1.0)); // under budget
+}
+
+#[test]
+fn test_phase23_budget_exceeded() {
+    let mut tracker = CostTracker::new();
+    tracker.record_usage("opus", 100_000, 50_000);
+    // opus pricing: $15/M input, $75/M output
+    // cost = 100k * 15/1M + 50k * 75/1M = 1.5 + 3.75 = 5.25
+    assert!(tracker.is_over_budget(1.0));
+    assert!(!tracker.is_over_budget(10.0));
+}
+
+#[test]
+fn test_phase23_budget_remaining() {
+    let tracker = CostTracker::new();
+    assert_eq!(tracker.budget_remaining(0.0), -1.0); // unlimited
+    assert_eq!(tracker.budget_remaining(5.0), 5.0);
+}
+
+#[test]
+fn test_phase23_token_budget_in_config() {
+    let config = AgentConfig::default();
+    assert_eq!(config.token_budget, 0.0);
+}
+
+#[test]
+fn test_phase23_budget_check_in_main() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("is_over_budget"), "main.rs should check budget");
+    assert!(main_src.contains("token_budget"), "main.rs should reference token_budget");
+}

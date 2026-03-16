@@ -106,6 +106,8 @@ pub struct AgentConfig {
     pub tool_cache_ttl: i64,
     /// MCP server configs: [{name, command, args, env}]
     pub mcp_servers: Vec<serde_json::Value>,
+    /// Maximum cost budget in USD (0 = unlimited)
+    pub token_budget: f64,
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
@@ -138,6 +140,7 @@ impl Default for AgentConfig {
             paste_mode: "auto".to_string(),
             tool_cache_ttl: 60,
             mcp_servers: Vec::new(),
+            token_budget: 0.0,
             extra: std::collections::HashMap::new(),
         }
     }

@@ -1132,3 +1132,148 @@ class TestMCPLifecycle:
         assert hasattr(MCPManager, 'disconnect_all')
         assert hasattr(MCPManager, 'list_tools')
         assert hasattr(MCPManager, 'dispatch')
+
+
+# ============================================================================
+# TestContextOverflow — Phase 23 context overflow notification
+# ============================================================================
+
+class TestContextOverflow:
+    """Test context overflow notification."""
+
+    def test_add_message_returns_int(self):
+        from context import ContextManager
+        ctx = ContextManager(max_messages=50)
+        result = ctx.add_message("user", "hello")
+        assert isinstance(result, int)
+        assert result == 0
+
+    def test_add_message_returns_trimmed_count(self):
+        from context import ContextManager
+        ctx = ContextManager(max_messages=3)
+        ctx.add_message("user", "msg1")
+        ctx.add_message("assistant", "msg2")
+        ctx.add_message("user", "msg3")
+        trimmed = ctx.add_message("assistant", "msg4")
+        assert trimmed >= 1
+
+
+# ============================================================================
+# TestReloadRobustness — Phase 23 config reload enhancements
+# ============================================================================
+
+class TestReloadRobustness:
+    """Test config reload robustness in generated code."""
+
+    def test_reload_syncs_approval_mode(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "approval_mode" in src
+
+    def test_reload_refreshes_mcp(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "disconnect_all" in src
+
+    def test_reload_recreates_backend(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "create_backend_from_config" in src
+
+
+# ============================================================================
+# TestSchemaValidation — Phase 23 tool schema validation
+# ============================================================================
+
+class TestSchemaValidation:
+    """Test tool argument schema validation."""
+
+    def test_tool_handler_has_required_params(self):
+        from tools import ToolHandler
+        handler = ToolHandler()
+        assert hasattr(handler, 'tool_required_params')
+        assert 'bash' in handler.tool_required_params
+        assert 'command' in handler.tool_required_params['bash']
+
+    def test_validation_catches_missing_param(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="yolo")
+        tc = ToolCall(name="bash", arguments={})
+        result = handler.execute(tc)
+        assert not result.success
+        assert "Validation" in result.output
+        assert "command" in result.output
+
+    def test_validation_passes_valid_args(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="yolo")
+        tc = ToolCall(name="bash", arguments={"command": "echo hi"})
+        err = handler._validate_tool_args(tc)
+        assert err is None
+
+    def test_validation_skips_unknown_tools(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="yolo")
+        tc = ToolCall(name="custom_plugin", arguments={})
+        err = handler._validate_tool_args(tc)
+        assert err is None
+
+    def test_read_requires_path(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="yolo")
+        tc = ToolCall(name="read", arguments={})
+        result = handler.execute(tc)
+        assert not result.success
+        assert "path" in result.output
+
+    def test_write_requires_path_and_content(self):
+        from tools import ToolHandler
+        from backends.base import ToolCall
+        handler = ToolHandler(approval_mode="yolo")
+        tc = ToolCall(name="write", arguments={"path": "/tmp/x"})
+        result = handler.execute(tc)
+        assert not result.success
+        assert "content" in result.output
+
+
+# ============================================================================
+# TestTokenBudget — Phase 23 rate limiting / token budget
+# ============================================================================
+
+class TestTokenBudget:
+    """Test token budget tracking."""
+
+    def test_config_has_token_budget(self):
+        from config import AgentConfig
+        cfg = AgentConfig(name="test", backend="coro")
+        assert hasattr(cfg, 'token_budget')
+
+    def test_cost_tracker_is_over_budget(self):
+        from costs import CostTracker
+        tracker = CostTracker()
+        assert tracker.is_over_budget(0.0) is False  # unlimited
+        assert tracker.is_over_budget(1.0) is False  # under budget
+        tracker.total_cost = 1.5
+        assert tracker.is_over_budget(1.0) is True
+
+    def test_cost_tracker_budget_remaining(self):
+        from costs import CostTracker
+        tracker = CostTracker()
+        assert tracker.budget_remaining(0.0) == -1.0  # unlimited
+        assert tracker.budget_remaining(1.0) == 1.0
+        tracker.total_cost = 0.3
+        assert abs(tracker.budget_remaining(1.0) - 0.7) < 0.001
+
+    def test_budget_check_in_process_message(self):
+        import importlib
+        agent_loop = importlib.import_module("agent_loop")
+        src = open(agent_loop.__file__).read()
+        assert "is_over_budget" in src
+        assert "token_budget" in src

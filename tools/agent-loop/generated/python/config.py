@@ -111,6 +111,7 @@ class AgentConfig:
     paste_mode: str = "auto"  # Paste detection mode: auto, bracketed, timing, off
     tool_cache_ttl: int = 60  # Tool result cache TTL in seconds (0 = disabled)
     mcp_servers: list = field(default_factory=list)  # MCP server configs: [{name, command, args, env}]
+    token_budget: float = 0.0  # Maximum cost budget in USD (0 = unlimited)
     extra: dict = field(default_factory=dict)
 
 
@@ -169,6 +170,7 @@ def _load_agent_config(name: str, data: dict) -> AgentConfig:
         paste_mode=data.get('paste_mode', "auto"),
         tool_cache_ttl=data.get('tool_cache_ttl', 60),
         mcp_servers=data.get('mcp_servers', field(default_factory=list)),
+        token_budget=data.get('token_budget', 0.0),
         extra=data.get('extra', {})
     )
 

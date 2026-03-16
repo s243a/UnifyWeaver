@@ -487,6 +487,7 @@ agent_config_field(approval_mode,       'str',            '"yolo"',  "Tool appro
 agent_config_field(paste_mode,           'str',            '"auto"',  "Paste detection mode: auto, bracketed, timing, off").
 agent_config_field(tool_cache_ttl,      'int',            '60',      "Tool result cache TTL in seconds (0 = disabled)").
 agent_config_field(mcp_servers,         'list',           'field(default_factory=list)', "MCP server configs: [{name, command, args, env}]").
+agent_config_field(token_budget,        'float',          '0.0',     "Maximum cost budget in USD (0 = unlimited)").
 agent_config_field(extra,               'dict',           'field(default_factory=dict)', "").
 
 %% config_field_json_default(FieldName, JsonDefault)
@@ -913,14 +914,42 @@ py_command_body(reload, [
     '                if fresh is None:',
     '                    fresh = get_default_config().agents.get(self.config.name, get_default_config().agents["default"])',
     '                changes = []',
-    '                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile", "stream", "max_iterations"]:',
+    '                for key in ["backend", "model", "system_prompt", "approval_mode", "security_profile", "stream", "max_iterations", "tool_cache_ttl", "token_budget"]:',
     '                    old_val = getattr(self.config, key, None)',
     '                    new_val = getattr(fresh, key, None)',
     '                    if old_val != new_val:',
     '                        setattr(self.config, key, new_val)',
     '                        changes.append(f"{key}: {old_val} -> {new_val}")',
-    '                if hasattr(self, "tool_handler") and hasattr(self.tool_handler, "cache"):',
-    '                    self.tool_handler.cache.clear()',
+    '                # Sync approval_mode to tool handler',
+    '                if hasattr(self, "tools") and self.tools:',
+    '                    if hasattr(fresh, "approval_mode"):',
+    '                        self.tools.approval_mode = getattr(fresh, "approval_mode", "default")',
+    '                # Clear tool cache on reload',
+    '                if hasattr(self, "tools") and self.tools and hasattr(self.tools, "cache"):',
+    '                    self.tools.cache.clear()',
+    '                # Refresh MCP servers if config changed',
+    '                new_mcp = getattr(fresh, "mcp_servers", []) or []',
+    '                old_mcp = getattr(self.config, "mcp_servers", []) or []',
+    '                if new_mcp != old_mcp and hasattr(self, "tools") and self.tools:',
+    '                    if self.tools.mcp_manager:',
+    '                        self.tools.mcp_manager.disconnect_all()',
+    '                    if new_mcp:',
+    '                        from mcp_client import MCPManager',
+    '                        self.tools.mcp_manager = MCPManager(new_mcp)',
+    '                        changes.append(f"mcp_servers: reconnected {len(new_mcp)} server(s)")',
+    '                    else:',
+    '                        self.tools.mcp_manager = None',
+    '                        changes.append("mcp_servers: disconnected")',
+    '                    self.config.mcp_servers = new_mcp',
+    '                # Re-create backend if backend or model changed',
+    '                backend_changed = any(c.startswith("backend:") or c.startswith("model:") for c in changes)',
+    '                if backend_changed and self.config:',
+    '                    try:',
+    '                        from backends import create_backend_from_config',
+    '                        self.backend = create_backend_from_config(fresh, "")',
+    '                        changes.append(f"backend recreated: {self.backend.name}")',
+    '                    except Exception as be:',
+    '                        changes.append(f"backend reload failed: {be}")',
     '                if changes:',
     '                    for c in changes: print(f"  Reloaded: {c}")',
     '                else:',
@@ -2086,6 +2115,7 @@ rust_type_mapping('str | None', 'Option<String>').
 rust_type_mapping('int', 'i64').
 rust_type_mapping('int | None', 'Option<i64>').
 rust_type_mapping('bool', 'bool').
+rust_type_mapping('float', 'f64').
 rust_type_mapping('list[str]', 'Vec<String>').
 rust_type_mapping('list', 'Vec<serde_json::Value>').
 rust_type_mapping('dict', 'std::collections::HashMap<String, serde_json::Value>').
@@ -2151,6 +2181,10 @@ rust_default_value('str', Val, Quoted) :-
     ;
         format(atom(Quoted), '"~w".to_string()', [S])
     ).
+rust_default_value('float', Val, Val) :- number(Val), !.
+rust_default_value('float', ValAtom, ValStr) :-
+    atom(ValAtom), atom_number(ValAtom, _), !,
+    atom_string(ValAtom, ValStr).
 rust_default_value('list[str]', _, 'Vec::new()') :- !.
 rust_default_value('list', _, 'Vec::new()') :- !.
 rust_default_value('dict', _, 'std::collections::HashMap::new()') :- !.
@@ -3034,6 +3068,18 @@ py_fragment(cost_tracker_methods, '    def record_usage(self, model: str, input_
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost = 0.0
+
+    def is_over_budget(self, budget: float) -> bool:
+        """Check if total cost exceeds budget. Budget of 0 means unlimited."""
+        if budget <= 0:
+            return False
+        return self.total_cost >= budget
+
+    def budget_remaining(self, budget: float) -> float:
+        """Return remaining budget in USD. Budget of 0 means unlimited (returns -1)."""
+        if budget <= 0:
+            return -1.0
+        return max(0.0, budget - self.total_cost)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -4572,6 +4618,22 @@ impl CostTracker {
             self.total_cost()
         )
     }
+
+    /// Check if total cost exceeds budget. Budget of 0.0 means unlimited.
+    pub fn is_over_budget(&self, budget: f64) -> bool {
+        if budget <= 0.0 {
+            return false;
+        }
+        self.total_cost() >= budget
+    }
+
+    /// Return remaining budget in USD. Budget of 0.0 returns -1.0 (unlimited).
+    pub fn budget_remaining(&self, budget: f64) -> f64 {
+        if budget <= 0.0 {
+            return -1.0;
+        }
+        (budget - self.total_cost()).max(0.0)
+    }
 }
 
 ').
@@ -5990,6 +6052,27 @@ impl ToolHandler {
             false
         }
     }
+
+    /// Validate tool call arguments against known schemas.
+    /// Returns Some(error_message) if validation fails, None if ok.
+    pub fn validate_tool_args(&self, tool_call: &ToolCall) -> Option<String> {
+        let required: &[&str] = match tool_call.name.as_str() {
+            "bash" => &["command"],
+            "read" => &["path"],
+            "write" => &["path", "content"],
+            "edit" => &["path", "old_string", "new_string"],
+            _ => return None, // No schema for plugin/MCP tools
+        };
+        let missing: Vec<&str> = required.iter()
+            .filter(|&&p| !tool_call.arguments.contains_key(p))
+            .copied()
+            .collect();
+        if missing.is_empty() {
+            None
+        } else {
+            Some(format!("Missing required parameter(s): {}", missing.join(", ")))
+        }
+    }
 }
 
 ').
@@ -6003,6 +6086,15 @@ impl ToolHandler {
             return ToolResult {
                 success: false,
                 output: format!("Tool ''{}'' blocked by approval mode ''{}''", tool_call.name, self.approval_mode),
+                tool_name: tool_call.name.clone(),
+            };
+        }
+
+        // Validate required parameters
+        if let Some(err) = self.validate_tool_args(tool_call) {
+            return ToolResult {
+                success: false,
+                output: format!("[Validation] {}", err),
                 tool_name: tool_call.name.clone(),
             };
         }
@@ -9934,6 +10026,74 @@ fn test_phase22_output_parser_no_json() {
     let blocks = OutputParser::extract_json("No JSON here at all.");
     assert!(blocks.is_empty());
 }
+
+// ============================================================================
+// Phase 23 — Context overflow, schema validation, token budget
+// ============================================================================
+
+#[test]
+fn test_phase23_schema_validation_missing_param() {
+    let mut handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let args = HashMap::new(); // Empty — missing "command"
+    let tc = ToolCall { name: "bash".to_string(), arguments: args, id: "val_test".to_string() };
+    let result = handler.execute(&tc);
+    assert!(!result.success);
+    assert!(result.output.contains("Validation"), "Should contain Validation error: {}", result.output);
+    assert!(result.output.contains("command"), "Should mention missing param: {}", result.output);
+}
+
+#[test]
+fn test_phase23_schema_validation_passes() {
+    let handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let mut args = HashMap::new();
+    args.insert("command".to_string(), serde_json::json!("echo hi"));
+    let tc = ToolCall { name: "bash".to_string(), arguments: args, id: "val_ok".to_string() };
+    assert!(handler.validate_tool_args(&tc).is_none());
+}
+
+#[test]
+fn test_phase23_schema_validation_skips_unknown() {
+    let handler = ToolHandler::new(true, "open".to_string(), "yolo".to_string());
+    let tc = ToolCall { name: "custom_plugin".to_string(), arguments: HashMap::new(), id: "val_unk".to_string() };
+    assert!(handler.validate_tool_args(&tc).is_none());
+}
+
+#[test]
+fn test_phase23_budget_not_exceeded() {
+    let tracker = CostTracker::new();
+    assert!(!tracker.is_over_budget(0.0)); // unlimited
+    assert!(!tracker.is_over_budget(1.0)); // under budget
+}
+
+#[test]
+fn test_phase23_budget_exceeded() {
+    let mut tracker = CostTracker::new();
+    tracker.record_usage("opus", 100_000, 50_000);
+    // opus pricing: $15/M input, $75/M output
+    // cost = 100k * 15/1M + 50k * 75/1M = 1.5 + 3.75 = 5.25
+    assert!(tracker.is_over_budget(1.0));
+    assert!(!tracker.is_over_budget(10.0));
+}
+
+#[test]
+fn test_phase23_budget_remaining() {
+    let tracker = CostTracker::new();
+    assert_eq!(tracker.budget_remaining(0.0), -1.0); // unlimited
+    assert_eq!(tracker.budget_remaining(5.0), 5.0);
+}
+
+#[test]
+fn test_phase23_token_budget_in_config() {
+    let config = AgentConfig::default();
+    assert_eq!(config.token_budget, 0.0);
+}
+
+#[test]
+fn test_phase23_budget_check_in_main() {
+    let main_src = include_str!("../src/main.rs");
+    assert!(main_src.contains("is_over_budget"), "main.rs should check budget");
+    assert!(main_src.contains("token_budget"), "main.rs should reference token_budget");
+}
 ').
 
 rust_fragment(main_loop, '
@@ -10246,6 +10406,23 @@ rust_fragment(main_loop, '
                         cost_tracker.format_summary(),
                         context.estimate_tokens(),
                         context.len());
+                }
+
+                // Check token budget
+                let budget = config.token_budget;
+                if budget > 0.0 && cost_tracker.is_over_budget(budget) {
+                    eprintln!("  [Budget exceeded] Spent ${:.4} of ${:.4} budget.", cost_tracker.total_cost(), budget);
+                    eprint!("  Continue? [y/N] ");
+                    use std::io::Write;
+                    std::io::stderr().flush().ok();
+                    let mut answer = String::new();
+                    if std::io::stdin().read_line(&mut answer).is_ok() {
+                        if !answer.trim().eq_ignore_ascii_case("y") {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
             }
             Err(rustyline::error::ReadlineError::Interrupted) |
@@ -13042,8 +13219,8 @@ py_fragment(context_manager_class, 'class ContextManager:
         self._word_count = 0
 
     def add_message(self, role: str, content: str, tokens: int = 0,
-                    tool_call_id: str = "", tool_calls: list | None = None) -> None:
-        """Add a message to the context."""
+                    tool_call_id: str = "", tool_calls: list | None = None) -> int:
+        """Add a message to the context. Returns number of trimmed messages."""
         if tokens == 0:
             tokens = _estimate_tokens(content)
 
@@ -13054,10 +13231,11 @@ py_fragment(context_manager_class, 'class ContextManager:
         self._token_count += tokens
         self._char_count += len(content)
         self._word_count += _count_words(content)
-        self._trim_if_needed()
+        return self._trim_if_needed()
 
-    def _trim_if_needed(self) -> None:
-        """Remove old messages if any context limit is exceeded."""
+    def _trim_if_needed(self) -> int:
+        """Remove old messages if any context limit is exceeded. Returns count trimmed."""
+        before = len(self.messages)
         while len(self.messages) > self.max_messages:
             self._remove_oldest()
 
@@ -13071,6 +13249,7 @@ py_fragment(context_manager_class, 'class ContextManager:
         if self.max_words > 0:
             while self._word_count > self.max_words and len(self.messages) > 1:
                 self._remove_oldest()
+        return before - len(self.messages)
 
     def _remove_oldest(self) -> None:
         """Remove the oldest message and update counters."""
@@ -14026,6 +14205,16 @@ py_fragment(tools_handler_class_methods, '
         except (EOFError, KeyboardInterrupt):
             return False
 
+    def _validate_tool_args(self, tool_call: ToolCall) -> str | None:
+        """Validate tool call arguments against schema. Returns error message or None."""
+        required = self.tool_required_params.get(tool_call.name)
+        if required is None:
+            return None  # No schema for this tool (plugin/MCP)
+        missing = [p for p in required if p not in tool_call.arguments]
+        if missing:
+            return f"Missing required parameter(s): {'', ''.join(missing)}"
+        return None
+
     def _init_plugins(self):
         """Load plugins from default directory."""
         self.plugin_manager = PluginManager()
@@ -14067,6 +14256,15 @@ py_fragment(tools_handler_class_body, '
             return ToolResult(
                 success=False,
                 output="User declined to execute tool",
+                tool_name=tool_call.name
+            )
+
+        # Validate tool arguments against schema
+        validation_error = self._validate_tool_args(tool_call)
+        if validation_error:
+            return ToolResult(
+                success=False,
+                output=f"[Validation] {validation_error}",
                 tool_name=tool_call.name
             )
 
@@ -17230,6 +17428,18 @@ py_fragment(agent_loop_class_init, 'class AgentLoop:
             except Exception as e:
                 print(f"\\n[Error: {e}]\\n")
 
+        # Auto-save session on exit
+        if self.context.get_context() and self.session_manager:
+            try:
+                if self.session_id:
+                    self.session_manager.update_session(self.session_id, self.context)
+                    print(f"  [Session updated: {self.session_id}]")
+                else:
+                    sid = self.session_manager.save_session(self.context, self.backend.name)
+                    print(f"  [Session saved: {sid}]")
+            except Exception:
+                pass  # Don\'t fail on auto-save
+
         print("\\nGoodbye!")
 
     def _print_header(self) -> None:
@@ -17621,7 +17831,9 @@ Status:
 py_fragment(agent_loop_process_message, '    def _process_message(self, user_input: str) -> None:
         """Process a user message and get response."""
         # Add to context
-        self.context.add_message(\'user\', user_input)
+        _trimmed = self.context.add_message(\'user\', user_input)
+        if _trimmed and _trimmed > 0:
+            print(f"  [context] Trimmed {_trimmed} old message(s) to stay within limits")
 
         # Show that we\'re calling the backend
         use_spinner = self.display_mode == \'ncurses\' and DisplayMode.supports_ncurses()
@@ -17789,6 +18001,18 @@ py_fragment(agent_loop_process_message, '    def _process_message(self, user_inp
             if self.cost_tracker:
                 cost_info = f" | Est. cost: {self.cost_tracker.get_summary()[\'cost_formatted\']}"
             print(f"  [Tokens: {token_info}{cost_info}]\\n")
+
+        # Check token budget
+        budget = getattr(self.config, \'token_budget\', 0.0) or 0.0
+        if self.cost_tracker and budget > 0 and self.cost_tracker.is_over_budget(budget):
+            remaining = self.cost_tracker.budget_remaining(budget)
+            print(f"  [Budget exceeded] Spent ${self.cost_tracker.total_cost:.4f} of ${budget:.4f} budget.")
+            try:
+                cont = input("  Continue? [y/N]: ").strip().lower()
+                if cont not in (\'y\', \'yes\'):
+                    self.running = False
+            except (EOFError, KeyboardInterrupt):
+                self.running = False
 ').
 
 py_fragment(agent_loop_streaming_retry, '    def _send_streaming_with_retry(self, message: str, context: list,
@@ -18246,7 +18470,33 @@ generate_tool_dispatch(S) :-
     findall(DT, (component(agent_tools, DT, tool_handler, Cfg),
                  member(destructive(true), Cfg)), DTs),
     write_set_elements(S, DTs),
-    write(S, '}\n').
+    write(S, '}\n'),
+    %% Generate TOOL_REQUIRED_PARAMS dict from tool_spec facts
+    write(S, '\n        self.tool_required_params = {\n'),
+    generate_tool_required_params(S),
+    write(S, '        }\n').
+
+generate_tool_required_params(S) :-
+    findall(Name, tool_spec(Name, _), ToolNames),
+    generate_tool_required_params_entries(S, ToolNames).
+
+generate_tool_required_params_entries(_, []).
+generate_tool_required_params_entries(S, [Name|Rest]) :-
+    tool_spec(Name, Props),
+    member(parameters(Params), Props),
+    findall(PName, member(param(PName, _, required, _), Params), ReqNames),
+    format(S, '            \'~w\': [', [Name]),
+    write_py_string_list_inline(S, ReqNames),
+    write(S, '],\n'),
+    generate_tool_required_params_entries(S, Rest).
+
+write_py_string_list_inline(_, []).
+write_py_string_list_inline(S, [X]) :-
+    format(S, '\'~w\'', [X]).
+write_py_string_list_inline(S, [X|Rest]) :-
+    Rest \= [],
+    format(S, '\'~w\', ', [X]),
+    write_py_string_list_inline(S, Rest).
 
 write_set_elements(_, []).
 write_set_elements(S, [DT]) :-
