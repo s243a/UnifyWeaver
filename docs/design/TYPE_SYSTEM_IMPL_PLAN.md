@@ -24,6 +24,9 @@ ones but do not require them to be complete before starting.
    predicates in the `.pl` files). Append findings to the audit doc.
 4. Identify which targets use the `.pl` Prolog code-generation path vs.
    the Mustache template path (some targets use both).
+5. Verify target interface compatibility in `target_registry.pl`:
+   `compile_to_target/4` currently dispatches via `compile_predicate/3`, while
+   some targets expose only `compile_predicate_to_<lang>/3`.
 
 **Deliverable:** `docs/design/TYPE_HARDCODES_AUDIT.md`
 
@@ -37,9 +40,13 @@ and the `resolve_type/3` resolution predicate.
 **New files:**
 - `src/unifyweaver/targets/type_declarations.pl`
   - Defines `uw_type/3` as a dynamic predicate.
+  - Defines `uw_typed_mode/2` as a dynamic predicate.
   - Defines `uw_domain_type/2` as a dynamic predicate.
   - Implements `resolve_type(+AbstractType, +TargetLang, -ConcreteString)`
     for all primitive and composite types across all typed targets.
+  - Implements `resolve_typed_mode(+PredSpec, +Options, +GlobalMode, -Mode)`
+    using precedence:
+    `uw_typed_mode/2` > per-call option > global setting > target default.
   - Implements `build_type_context(+PredSpec, +TargetLang, -TypeContext)`
     which returns a dict of Mustache key-value pairs for type variables.
   - Implements `uw_typed/2` — succeeds if any `uw_type` fact exists for the
@@ -49,6 +56,8 @@ and the `resolve_type/3` resolution predicate.
 - `tests/type_declarations_test.pl`
   - Verify `resolve_type(integer, haskell, "Int")` succeeds.
   - Verify `resolve_type(atom, java, "String")` succeeds.
+  - Verify per-predicate `uw_typed_mode/2` overrides compile options and
+    global defaults.
   - Verify `build_type_context(edge/2, haskell, Ctx)` produces expected dict
     when `uw_type(edge/2, 1, atom)` is asserted.
   - Verify `build_type_context` returns empty / fallback when no `uw_type`
@@ -80,6 +89,42 @@ Mustache template, small `.pl` file). Make it the reference implementation.
 - Generate Haskell output with `uw_type(edge/2, 1, integer)` → output uses
   `Int` in type signatures.
 - Generated code compiles with GHC (integration test, optional/CI only).
+
+---
+
+## Phase 2.5 — TypR Target (typeR) Pilot
+
+**Goal:** Introduce TypR safely without regressing existing `r` output.
+
+**Changes:**
+1. Add `src/unifyweaver/targets/typr_target.pl` implementing standard interface:
+   - `target_info/1`
+   - `compile_predicate/3`
+   - optional legacy wrapper `compile_predicate_to_typr/3`
+2. Register `typr` in `src/unifyweaver/core/target_registry.pl`:
+   - family: `r`
+   - capabilities include typed support.
+3. Add option handling in TypR target:
+   - `typed_mode(off|infer|explicit)`
+   - default `typed_mode(infer)`
+   - allow global and per-call configuration
+   - honor per-predicate `uw_typed_mode/2` override
+4. Implement first-pass support for primitive and basic composite types:
+   - primitives: `atom`, `integer`, `float`, `boolean`, `string`
+   - composites: `list(T)`, `map(K,V)`, `set(T)`, `maybe(T)`
+5. Implement `any` policy:
+   - missing declaration => omit annotation
+   - explicit `any` declaration => emit `Any`
+6. Keep initial TypR templates/code paths separate from `r` even if the shared
+   type-resolution layer is reused.
+
+**Tests:**
+- TypR generation with no `uw_type` declarations in infer mode emits minimal
+  annotations.
+- Explicit `uw_type(..., any)` emits `Any`.
+- `uw_typed_mode(Pred/Arity, infer|explicit|off)` overrides global/per-call mode.
+- Existing `r` target output remains unchanged.
+- (Optional) Generated TypR transpiles and runs via TypR toolchain in CI smoke test.
 
 ---
 
@@ -158,6 +203,7 @@ Each target follows the same pattern as Phases 2–4:
    - For each target, generate the appropriate struct/class/data declaration.
    - The declaration is injected into the Mustache context as a
      `type_preamble` string block.
+   - This is the point where "typed preamble" becomes a real shared abstraction.
 2. Implement `uw_domain_type/2` resolution: check if target supports
    `newtype`-style wrappers (Haskell, Rust) and emit them; otherwise
    resolve to the underlying primitive.
@@ -173,6 +219,7 @@ Each target follows the same pattern as Phases 2–4:
    node IDs and float edge weights.
 2. Update the main `README.md` with a "Type Annotations" section.
 3. Add a `MIGRATION.md` note confirming backward compatibility.
+4. Add `docs/design/TYPR_TARGET_DESIGN.md` to the type system document index.
 
 ---
 

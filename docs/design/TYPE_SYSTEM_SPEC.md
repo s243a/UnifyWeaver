@@ -5,8 +5,9 @@
 This specification covers:
 
 - The syntax and semantics of Prolog-level type declarations for UnifyWeaver predicates.
+- The syntax and semantics of type-emission mode declarations.
 - The type vocabulary (primitive and composite types).
-- How type information flows from declaration → target Prolog layer → Mustache context → rendered code.
+- How type information flows from declaration → target Prolog layer → codegen context → rendered code.
 - Typed code-generation rules for Java, Haskell, Rust, C#, Kotlin, TypeScript, and F# targets.
 - Compatibility rules for untyped targets.
 
@@ -34,6 +35,43 @@ explicitly overridden:
 uw_type(tc/2, 1, integer).
 uw_type(tc/2, 2, integer).
 ```
+
+Type emission mode is controlled separately:
+
+```prolog
+% uw_typed_mode(+PredicateName/Arity, +Mode)
+uw_typed_mode(tc/2, infer).
+uw_typed_mode(weighted_edge/3, explicit).
+```
+
+Supported modes:
+
+- `off`
+- `infer`
+- `explicit`
+
+### 2.2 Annotation Presence Semantics
+
+Type declaration presence is semantically significant:
+
+- **No `uw_type/3` declaration for an argument**: target should omit the
+  annotation for that argument and allow target-native inference/fallback.
+- **Explicit `uw_type(..., any)` declaration**: target should emit its top type
+  (`Any`, `object`, etc.) when the target supports it.
+
+This distinction avoids conflating unknown types with intentional polymorphism.
+
+### 2.3 Typed Mode Precedence
+
+`typed_mode` may be set at more than one level. Resolution order is:
+
+1. per-predicate declaration via `uw_typed_mode/2`
+2. per-call compile option
+3. global compiler setting
+4. target default
+
+This allows a project-wide default while preserving local predicate-level
+control where needed.
 
 ### 2.1 Type Vocabulary
 
@@ -78,22 +116,24 @@ primitive-only targets, or emits a type alias/newtype where supported
 ## 3. Type Resolution Pipeline
 
 ```
-[Prolog source: uw_type/3 facts]
+[Prolog source: uw_type/3 facts + uw_typed_mode/2 facts]
         │
         ▼
-[Target .pl layer: resolve_type/3]
+[Target .pl layer]
   - Looks up uw_type for pred/arity/arg
+  - Resolves typed_mode using precedence rules
   - Falls back to uw_domain_type
-  - Falls back to `any`
+  - Falls back to omission for undeclared types
   - Maps abstract type → target-language type string
         │
         ▼
-[Mustache context dict]
+[Codegen context]
   node_type, edge_type, weight_type,
-  node_type_decl (import/using if needed), etc.
+  node_type_decl (import/using if needed),
+  typed_mode, type_preamble (when supported), etc.
         │
         ▼
-[Mustache template renders typed output]
+[Template or direct emitter renders output]
 ```
 
 The key predicate to implement in each `*_target.pl`:
@@ -112,11 +152,12 @@ resolve_type(any,     _,       fallback). % handled per-target
 
 ---
 
-## 4. Mustache Context Extensions
+## 4. Codegen Context Extensions
 
 The following new keys are added to the template rendering context when type
 information is present. All are optional — templates that do not reference them
-continue to work unchanged.
+continue to work unchanged, and direct emitters may consume the same logical
+values without going through Mustache.
 
 | Key | Example value (Haskell) | Example value (Java) |
 |---|---|---|
@@ -124,8 +165,10 @@ continue to work unchanged.
 | `edge_type` | `(String, String)` | `Map.Entry<String,String>` |
 | `weight_type` | `Double` | `Double` |
 | `typed` | `true`/`false` | `true`/`false` |
+| `typed_mode` | `infer` | `explicit` |
 | `node_type_import` | *(empty for primitives)* | `java.util.Map` |
 | `rel_type` | `Map String [String]` | `Map<String, List<String>>` |
+| `type_preamble` | `type EmployeeId = Int` | `record EmployeeId(...)` |
 
 Mustache sections allow conditional inclusion:
 
@@ -185,6 +228,25 @@ type Rel = Map.Map String [String]
 
 See Appendix A (to be expanded per target).
 
+### 5.5 R / TypR
+
+| Abstract | R | TypR (`typed_mode=infer`) | TypR (`typed_mode=explicit`) |
+|---|---|---|---|
+| `atom` | no annotation | optional annotation / inferred | explicit annotation |
+| `integer` | no annotation | optional annotation / inferred | explicit annotation |
+| `float` | no annotation | optional annotation / inferred | explicit annotation |
+| `boolean` | no annotation | optional annotation / inferred | explicit annotation |
+| `list(T)` | no annotation | may annotate if declared | explicit annotation |
+| `map(K,V)` | no annotation | may annotate if declared | explicit annotation |
+| `any` | no annotation | emit only when explicitly declared | emit only when explicitly declared |
+
+`r` remains untyped by default. `typr` is a separate target in the same runtime
+family and consumes `uw_type/3` optionally based on `typed_mode`.
+
+Initial implementation may keep R and TypR templates/code paths separate even
+when they share the same underlying type-resolution layer. Later convergence is
+allowed once TypR output shape stabilizes.
+
 ---
 
 ## 6. Fallback / Untyped Targets
@@ -192,12 +254,12 @@ See Appendix A (to be expanded per target).
 Targets in this list emit no type annotations and silently ignore `uw_type`
 facts:
 
-- Python (base), Ruby, Lua, Perl, Bash, AWK
+- Python (base), Ruby, Lua, Perl, Bash, AWK, R
 
 Targets that support optional type annotations emit them when `uw_type` is
 present, and omit them otherwise:
 
-- Python (mypy/mypyc/Codon variants), TypeScript
+- Python (mypy/mypyc/Codon variants), TypeScript, TypR
 
 ---
 
