@@ -23,10 +23,19 @@
     backend_factory/2,
     backend_factory_order/1,
     write_prolog_term/2,
-    module_dependency/3
+    module_dependency/3,
+    resolve_type/3,
+    compile_logic/3,
+    shared_logic/3,
+    logic_slot/3,
+    expand_expr/3,
+    expand_template/3
 ]).
 
 :- discontiguous generate_backend_full/3.
+:- discontiguous shared_logic/3.
+:- discontiguous logic_slot/3.
+:- discontiguous expand_expr/3.
 :- use_module(agent_loop_components).
 :- use_module(agent_loop_bindings).
 
@@ -1978,6 +1987,11 @@ expand_expr(rust, len_of(Expr), S) :-
     format(atom(S), "~w.len()", [Inner]).
 expand_expr(_, Atom, S) :- atom(Atom), atom_string(Atom, S).
 
+%% Bridge: compound expressions that are actually slots delegate to logic_slot/3
+expand_expr(Target, Expr, S) :-
+    compound(Expr),
+    logic_slot(Target, Expr, S), !.
+
 %% =============================================================================
 %% compile_logic/3 — Compile shared logic to target code
 %% =============================================================================
@@ -1997,10 +2011,20 @@ expand_template(Target, Template, Result) :-
 expand_template_str(_, Str, Str) :-
     \+ sub_string(Str, _, _, _, "~"), !.
 expand_template_str(Target, Str, Result) :-
+    %% Find the first ~ in the string
     sub_string(Str, Before, 1, _, "~"),
     sub_string(Str, 0, Before, _, Prefix),
     AfterStart is Before + 1,
     sub_string(Str, AfterStart, _, 0, Rest),
+    %% Check if it's a ~~ escape (next char is also ~)
+    (sub_string(Rest, 0, 1, _, "~") ->
+        %% ~~ escape: emit literal ~ and continue after both tildes
+        sub_string(Rest, 1, _, 0, AfterEscape),
+        expand_template_str(Target, AfterEscape, ExpandedRest),
+        string_concat(Prefix, "~", WithTilde),
+        string_concat(WithTilde, ExpandedRest, Result)
+    ;
+    %% Regular ~slot~ expansion
     (sub_string(Rest, End, 1, _, "~") ->
         sub_string(Rest, 0, End, _, SlotStr),
         AfterSlot is End + 1,
@@ -2019,6 +2043,295 @@ expand_template_str(Target, Str, Result) :-
     ;
         %% No closing tilde — keep as is
         Result = Str
+    )).
+
+%% =============================================================================
+%% resolve_type/3 — Abstract type vocabulary (inspired by TypR type_declarations)
+%% Maps abstract types in shared_logic signatures to concrete target types.
+%% =============================================================================
+
+resolve_type(python, int, "int").
+resolve_type(python, float, "float").
+resolve_type(python, string, "str").
+resolve_type(python, bool, "bool").
+resolve_type(python, void, "None").
+resolve_type(python, usize, "int").
+resolve_type(python, dict, "dict").
+resolve_type(python, set_of_string, "set[str]").
+resolve_type(python, list_of_dict, "list[dict]").
+resolve_type(python, optional(T), S) :-
+    resolve_type(python, T, Inner),
+    format(atom(S), "~w | None", [Inner]).
+
+resolve_type(rust, int, "i64").
+resolve_type(rust, float, "f64").
+resolve_type(rust, string, "&str").
+resolve_type(rust, bool, "bool").
+resolve_type(rust, void, "()").
+resolve_type(rust, usize, "usize").
+resolve_type(rust, dict, "std::collections::HashMap<String, serde_json::Value>").
+resolve_type(rust, set_of_string, "std::collections::HashSet<String>").
+resolve_type(rust, list_of_dict, "Vec<serde_json::Value>").
+resolve_type(rust, optional(T), S) :-
+    resolve_type(rust, T, Inner),
+    format(atom(S), "Option<~w>", [Inner]).
+
+%% =============================================================================
+%% Additional shared_logic/3 — Expand coverage to streaming, cache, retry, parser
+%% =============================================================================
+
+%% --- StreamingTokenCounter methods ---
+
+shared_logic(streaming, on_token, [
+    signature(on_token, [token], void),
+    doc("Process a streamed token chunk: print it, update char and token counts."),
+    container('StreamingTokenCounter'),
+    body_template("~print_flush(token)~\n~self_inc(char_count, str_len(token))~\n~self_assign(token_count, max_one(int_div(self_direct(char_count), 4)))~")
+]).
+
+shared_logic(streaming, format_summary, [
+    signature(format_summary, [], string),
+    doc("Format a one-line summary of streaming stats."),
+    container('StreamingTokenCounter'),
+    body_template("~return_val(streaming_summary(self_direct(token_count), self_direct(char_count)))~")
+]).
+
+%% --- ToolResultCache methods ---
+
+shared_logic(tool_cache, make_key, [
+    signature(make_key, [tool_name, args], string),
+    doc("Build a canonical cache key from tool name and arguments."),
+    container('ToolResultCache'),
+    body_template("~return_val(format_str(\"{}:{}\", [tool_name, canonical_json(args)]))~")
+]).
+
+shared_logic(tool_cache, cache_get_guard, [
+    signature(cache_get_guard, [tool_name], bool),
+    doc("Check if a tool should skip the cache (destructive tools)."),
+    container('ToolResultCache'),
+    body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
+]).
+
+shared_logic(tool_cache, cache_put_guard, [
+    signature(cache_put_guard, [tool_name], bool),
+    doc("Check if a tool result should not be cached (destructive tools)."),
+    container('ToolResultCache'),
+    body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
+]).
+
+%% --- Retry helpers ---
+
+shared_logic(retry, is_retryable_status, [
+    signature(is_retryable_status, [status], bool),
+    doc("Check if an HTTP status code is retryable (408, 429, 5xx)."),
+    container(none),
+    body_template("~return_val(matches_set(status, [408, 429, 500, 502, 503, 504]))~")
+]).
+
+shared_logic(retry, compute_delay, [
+    signature(compute_delay, [base_delay, exponential_base, attempt, max_delay], float),
+    doc("Calculate exponential backoff delay, capped at max_delay."),
+    container(none),
+    body_template("~return_val(min_val(mul(base_delay, pow(exponential_base, sub(attempt, 1))), max_delay))~")
+]).
+
+%% --- OutputParser dispatcher ---
+
+shared_logic(output_parser, extract_json_dispatch, [
+    signature(extract_json, [text], list_of_dict),
+    doc("Extract JSON blocks: try fenced code blocks first, fall back to bare objects."),
+    container('OutputParser'),
+    body_template("~assign(results, call_method(extract_fenced, [text]))~\nif ~not_empty(results)~:\n    ~return_val(results)~\n~return_val(call_method(extract_bare, [text]))~")
+]).
+
+%% =============================================================================
+%% Additional logic_slot/3 — Slots for expanded shared_logic coverage
+%% =============================================================================
+
+%% --- Print/IO slots ---
+logic_slot(python, print_flush(X), S) :-
+    format(atom(S), "print(~w, end=\"\", flush=True)", [X]).
+logic_slot(rust, print_flush(X), S) :-
+    format(atom(S), "print!(\"{}\", ~w); std::io::stdout().flush().ok()", [X]).
+
+%% --- String/collection slots ---
+logic_slot(python, str_len(X), S) :- format(atom(S), "len(~w)", [X]).
+logic_slot(rust, str_len(X), S) :- format(atom(S), "~w.len()", [X]).
+
+logic_slot(python, contains(Collection, Item), S) :-
+    expand_expr(python, Collection, CS),
+    expand_expr(python, Item, IS),
+    format(atom(S), "~w in ~w", [IS, CS]).
+logic_slot(rust, contains(Collection, Item), S) :-
+    expand_expr(rust, Collection, CS),
+    expand_expr(rust, Item, IS),
+    format(atom(S), "~w.contains(&~w)", [CS, IS]).
+
+logic_slot(python, not_empty(X), S) :-
+    expand_expr(python, X, XS), format(atom(S), "~w", [XS]).
+logic_slot(rust, not_empty(X), S) :-
+    expand_expr(rust, X, XS), format(atom(S), "!~w.is_empty()", [XS]).
+
+%% Direct struct field access (no () in Rust, same as Python self.field)
+logic_slot(python, self_direct(F), S) :- format(atom(S), "self.~w", [F]).
+logic_slot(rust, self_direct(F), S) :- format(atom(S), "self.~w", [F]).
+
+%% --- Assignment/mutation slots ---
+logic_slot(python, self_inc(Field, Expr), S) :-
+    logic_slot(python, self_field(Field), SF),
+    expand_expr(python, Expr, ES),
+    format(atom(S), "~w += ~w", [SF, ES]).
+logic_slot(rust, self_inc(Field, Expr), S) :-
+    expand_expr(rust, Expr, ES),
+    format(atom(S), "self.~w += ~w", [Field, ES]).
+
+logic_slot(python, self_assign(Field, Expr), S) :-
+    logic_slot(python, self_field(Field), SF),
+    expand_expr(python, Expr, ES),
+    format(atom(S), "~w = ~w", [SF, ES]).
+logic_slot(rust, self_assign(Field, Expr), S) :-
+    expand_expr(rust, Expr, ES),
+    format(atom(S), "self.~w = ~w", [Field, ES]).
+
+logic_slot(python, assign(Var, Expr), S) :-
+    expand_expr(python, Expr, ES),
+    format(atom(S), "~w = ~w", [Var, ES]).
+logic_slot(rust, assign(Var, Expr), S) :-
+    expand_expr(rust, Expr, ES),
+    format(atom(S), "let ~w = ~w", [Var, ES]).
+
+%% --- Arithmetic slots ---
+logic_slot(python, matches_set(X, List), S) :-
+    atomic_list_concat(List, ', ', Items),
+    format(atom(S), "~w in {~w}", [X, Items]).
+logic_slot(rust, matches_set(X, List), S) :-
+    atomic_list_concat(List, ' | ', Items),
+    format(atom(S), "matches!(~w, ~w)", [X, Items]).
+
+%% --- Format string slots ---
+logic_slot(python, format_str(Fmt, Args), S) :-
+    python_fstring(Fmt, Args, S).
+logic_slot(rust, format_str(Fmt, Args), S) :-
+    format_args_list(Args, rust, ArgStr),
+    format(atom(S), "format!(\"~w\", ~w)", [Fmt, ArgStr]).
+
+%% --- Method call slots ---
+logic_slot(python, call_method(Method, Args), S) :-
+    format_args_list(Args, python, ArgStr),
+    format(atom(S), "cls._~w(~w)", [Method, ArgStr]).
+logic_slot(rust, call_method(Method, Args), S) :-
+    format_args_list(Args, rust, ArgStr),
+    format(atom(S), "Self::~w(~w)", [Method, ArgStr]).
+
+logic_slot(python, canonical_json(X), S) :-
+    format(atom(S), "_json.dumps(~w, sort_keys=True, default=str)", [X]).
+logic_slot(rust, canonical_json(X), S) :-
+    format(atom(S), "serde_json::to_string(&~w).unwrap_or_default()", [X]).
+
+%% --- Streaming summary format (handles ~ prefix for "approx") ---
+logic_slot(python, streaming_summary(Tokens, Chars), S) :-
+    expand_expr(python, Tokens, TS),
+    expand_expr(python, Chars, CS),
+    format(atom(S), "f\"~~{~w} tokens, {~w} chars\"", [TS, CS]).
+logic_slot(rust, streaming_summary(Tokens, Chars), S) :-
+    expand_expr(rust, Tokens, TS),
+    expand_expr(rust, Chars, CS),
+    format(atom(S), "format!(\"~~{} tokens, {} chars\", ~w, ~w)", [TS, CS]).
+
+%% =============================================================================
+%% Additional expand_expr/3 — Expressions for expanded coverage
+%% =============================================================================
+
+expand_expr(python, int_div(A, B), S) :-
+    expand_expr(python, A, AStr),
+    expand_expr(python, B, BStr),
+    format(atom(S), "~w // ~w", [AStr, BStr]).
+expand_expr(rust, int_div(A, B), S) :-
+    expand_expr(rust, A, AStr),
+    expand_expr(rust, B, BStr),
+    format(atom(S), "~w / ~w", [AStr, BStr]).
+
+expand_expr(python, max_one(Expr), S) :-
+    expand_expr(python, Expr, Inner),
+    format(atom(S), "max(1, ~w)", [Inner]).
+expand_expr(rust, max_one(Expr), S) :-
+    expand_expr(rust, Expr, Inner),
+    format(atom(S), "std::cmp::max(1, ~w)", [Inner]).
+
+expand_expr(python, min_val(A, B), S) :-
+    expand_expr(python, A, AStr),
+    expand_expr(python, B, BStr),
+    format(atom(S), "min(~w, ~w)", [AStr, BStr]).
+expand_expr(rust, min_val(A, B), S) :-
+    expand_expr(rust, A, AStr),
+    expand_expr(rust, B, BStr),
+    format(atom(S), "(~w).min(~w)", [AStr, BStr]).
+
+expand_expr(python, mul(A, B), S) :-
+    expand_expr(python, A, AStr),
+    expand_expr(python, B, BStr),
+    format(atom(S), "~w * ~w", [AStr, BStr]).
+expand_expr(rust, mul(A, B), S) :-
+    expand_expr(rust, A, AStr),
+    expand_expr(rust, B, BStr),
+    format(atom(S), "~w * ~w", [AStr, BStr]).
+
+expand_expr(python, pow(Base, Exp), S) :-
+    expand_expr(python, Base, BStr),
+    expand_expr(python, Exp, EStr),
+    format(atom(S), "~w ** ~w", [BStr, EStr]).
+expand_expr(rust, pow(Base, Exp), S) :-
+    expand_expr(rust, Base, BStr),
+    expand_expr(rust, Exp, EStr),
+    format(atom(S), "~w.powi(~w as i32)", [BStr, EStr]).
+
+expand_expr(python, sub(A, B), S) :-
+    expand_expr(python, A, AStr),
+    expand_expr(python, B, BStr),
+    format(atom(S), "(~w - ~w)", [AStr, BStr]).
+expand_expr(rust, sub(A, B), S) :-
+    expand_expr(rust, A, AStr),
+    expand_expr(rust, B, BStr),
+    format(atom(S), "(~w - ~w)", [AStr, BStr]).
+
+expand_expr(_, N, S) :- number(N), number_codes(N, Codes), atom_codes(S, Codes).
+
+%% Bridge: new compound expressions that are slots
+expand_expr(Target, Expr, S) :-
+    compound(Expr),
+    logic_slot(Target, Expr, S), !.
+
+%% =============================================================================
+%% Helper predicates for format_str slot
+%% =============================================================================
+
+%% Format a list of args for a function call
+format_args_list([], _, "").
+format_args_list([A], Target, S) :- expand_expr(Target, A, S).
+format_args_list([A|Rest], Target, S) :-
+    Rest \= [],
+    expand_expr(Target, A, AStr),
+    format_args_list(Rest, Target, RestStr),
+    format(atom(S), "~w, ~w", [AStr, RestStr]).
+
+%% Python f-string: replace {} with {expr} for each arg
+python_fstring(Fmt, Args, S) :-
+    replace_placeholders(Fmt, Args, python, Filled),
+    format(atom(S), "f\"~w\"", [Filled]).
+
+replace_placeholders(Fmt, [], _, Fmt).
+replace_placeholders(Fmt, [Arg|Rest], Target, Result) :-
+    expand_expr(Target, Arg, ArgStr),
+    atom_string(Fmt, FmtStr),
+    (sub_string(FmtStr, Before, 2, _, "{}") ->
+        sub_string(FmtStr, 0, Before, _, Prefix),
+        After is Before + 2,
+        sub_string(FmtStr, After, _, 0, Suffix),
+        format(atom(Mid), "~w{~w}~w", [Prefix, ArgStr, Suffix]),
+        atom_string(Mid, MidStr),
+        replace_placeholders(MidStr, Rest, Target, Result)
+    ;
+        Result = Fmt
     ).
 
 %% =============================================================================
