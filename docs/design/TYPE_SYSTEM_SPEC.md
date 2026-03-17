@@ -82,9 +82,21 @@ Targets that use return-type constraints for compilation decisions may support:
 - `type_diagnostics(off)` — silent fallback/filtering
 - `type_diagnostics(warn)` — emit diagnostics but continue
 - `type_diagnostics(error)` — throw on a type-constraint violation
+- `type_diagnostics_report(Report)` — bind a structured report of recorded
+  violations without forcing warning or error mode
 
 Default should remain `off` so normal Prolog-style fallback behavior is
 preserved unless the caller explicitly requests stricter reporting.
+
+When `type_diagnostics_report(Report)` is present, `Report` should be bound to a
+list of dicts describing recorded violations. Current `r`-target fields are:
+
+- `target`
+- `predicate`
+- `action`
+- `expected`
+- `inferred`
+- `body`
 
 ### 2.3 Typed Mode Precedence
 
@@ -273,8 +285,8 @@ the same runtime family and consumes `uw_type/3` optionally based on
 
 When `uw_return_type/2` is present:
 
-- `typr` should use it to avoid falling back to `Any` on wrapped generic paths
-  where a concrete return type is known.
+- `typr` should use it to avoid falling back to `Any` where a concrete return
+  type is known, both on native-lowered generic paths and on wrapped fallbacks.
 - `r` should consume it by default for validation and result-shape fallback
   generation, while remaining usable with no type metadata at all.
 - `r` should allow this behavior to be disabled per compile call via
@@ -307,6 +319,16 @@ visited <- c(visited, next_node);
 
 This is preferable to relying on the compiler to infer whether a plain
 assignment is an introduction or an update.
+
+Current TypR lowering policy is intentionally mixed:
+
+- simple fact predicates lower directly to TypR
+- supported binding-shaped rule bodies lower directly to TypR
+- literal-guarded multi-clause predicates may lower to TypR `if` chains
+- more complex generic bodies may still fall back to wrapped R expressions
+
+This is acceptable as long as the shared type metadata and validation rules stay
+consistent across both paths.
 
 ---
 
