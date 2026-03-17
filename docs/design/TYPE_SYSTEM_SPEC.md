@@ -75,6 +75,17 @@ Return type declarations are also optional:
 - **Explicit `uw_return_type/2` declaration**: typed targets may annotate
   returns, and `r`-family targets may use it for validation or fallback logic.
 
+### 2.4 Optional Type Diagnostics
+
+Targets that use return-type constraints for compilation decisions may support:
+
+- `type_diagnostics(off)` — silent fallback/filtering
+- `type_diagnostics(warn)` — emit diagnostics but continue
+- `type_diagnostics(error)` — throw on a type-constraint violation
+
+Default should remain `off` so normal Prolog-style fallback behavior is
+preserved unless the caller explicitly requests stricter reporting.
+
 ### 2.3 Typed Mode Precedence
 
 `typed_mode` may be set at more than one level. Resolution order is:
@@ -268,6 +279,15 @@ When `uw_return_type/2` is present:
   generation, while remaining usable with no type metadata at all.
 - `r` should allow this behavior to be disabled per compile call via
   `type_constraints(false)`.
+
+When no explicit return type is present, targets may still use shallow
+return-type inference from inferable binding-shaped bodies to improve signatures
+or internal compatibility checks. This inference should be conservative:
+
+- it should prefer known binding output types
+- it should ignore non-inferable bodies rather than guessing
+- it should not change the requirement that plain `r` remains usable with no
+  type declarations
 
 Initial implementation may keep R and TypR templates/code paths separate even
 when they share the same underlying type-resolution layer. Later convergence is

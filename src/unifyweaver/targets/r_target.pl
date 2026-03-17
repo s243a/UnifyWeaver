@@ -8,6 +8,7 @@
 :- module(r_target, [
     compile_predicate/3,            % +Predicate, +Options, -RCode
     compile_predicate_to_r/3,       % +Predicate, +Options, -RCode
+    infer_clauses_return_type/2,    % +Clauses, -Type
     compile_facts_to_r/3,           % +Pred, +Arity, -RCode
     init_r_target/0,                % Initialize R target with bindings
     compile_r_pipeline/3,           % +Predicates, +Options, -RCode
@@ -23,6 +24,7 @@
 :- use_module('../bindings/r_bindings').
 :- use_module('../core/template_system').
 :- use_module('type_declarations').
+:- multifile prolog:message//1.
 
 % Track required packages/libraries
 :- dynamic required_r_package/1.
@@ -48,18 +50,19 @@ compile_predicate_to_r(PredIndicator, Options, RCode) :-
         Module = user
     ),
     effective_r_return_type(Pred/Arity, Options, ReturnType),
+    effective_type_diagnostics(Options, DiagnosticsMode),
     functor(Head, Pred, Arity),
     findall(Head-Body, clause(Module:Head, Body), Clauses),
     (   Clauses = []
     ->  format(string(RCode), '# No clauses found for ~w/~w', [Pred, Arity])
     ;   Clauses = [SingleHead-SingleBody]
-    ->  compile_rule(SingleHead, SingleBody, ReturnType, RCode)
-    ;   compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, RCode)
+    ->  compile_rule(SingleHead, SingleBody, ReturnType, DiagnosticsMode, RCode)
+    ;   compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, RCode)
     ).
 
 %% compile_multi_clause_r(+Pred, +Arity, +Clauses, -RCode)
 %  Compile multiple clauses into an R function with if/else if chain.
-compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, RCode) :-
+compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, RCode) :-
     % Generate standard arg names
     numlist(1, Arity, Indices),
     findall(ArgName, (
@@ -69,7 +72,7 @@ compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, RCode) :-
     atomic_list_concat(ArgNames, ', ', ArgList),
 
     % Compile each clause into an if/else if branch
-    compile_clause_branches(Clauses, ArgNames, ReturnType, Branches),
+    compile_clause_branches(Clauses, ArgNames, ReturnType, DiagnosticsMode, Branches),
     r_fallback_expression(ReturnType, Pred, FallbackExpr),
     (   Branches = []
     ->  format(string(RCode),
@@ -88,18 +91,19 @@ compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, RCode) :-
     ).
 
 %% compile_clause_branches(+Clauses, +ArgNames, -Branches)
-compile_clause_branches([], _, _, []).
-compile_clause_branches([Head-Body|Rest], ArgNames, ReturnType, Branches) :-
-    compile_clause_branches(Rest, ArgNames, ReturnType, RestBranches),
-    (   compile_clause_branch(Head, Body, ArgNames, ReturnType, Branch)
+compile_clause_branches([], _, _, _, []).
+compile_clause_branches([Head-Body|Rest], ArgNames, ReturnType, DiagnosticsMode, Branches) :-
+    compile_clause_branches(Rest, ArgNames, ReturnType, DiagnosticsMode, RestBranches),
+    (   compile_clause_branch(Head, Body, ArgNames, ReturnType, DiagnosticsMode, Branch)
     ->  Branches = [Branch|RestBranches]
     ;   Branches = RestBranches
     ).
 
 %% compile_clause_branch(+Head, +Body, +ArgNames, -Branch)
 %  Compile one clause into an if(...) { ... } branch.
-compile_clause_branch(Head, Body, ArgNames, ReturnType, Branch) :-
-    return_type_allows_body(ReturnType, Body),
+compile_clause_branch(Head, Body, ArgNames, ReturnType, DiagnosticsMode, Branch) :-
+    head_pred_spec(Head, PredSpec),
+    body_return_type_allowed(PredSpec, clause_filter, ReturnType, Body, DiagnosticsMode),
     Head =.. [_|HeadArgs],
     % Build condition from head argument patterns
     generate_head_condition(HeadArgs, ArgNames, Condition),
@@ -161,15 +165,16 @@ compile_collected_components(Code) :-
     ;   atomic_list_concat(CompCodes, '\n\n', Code)
     ).
 
-compile_rule(Head, Body, ReturnType, Code) :-
+compile_rule(Head, Body, ReturnType, DiagnosticsMode, Code) :-
     Head =.. [Pred|Args],
+    head_pred_spec(Head, PredSpec),
     
     % Generate variable mapping for arguments
     map_args(Args, 1, VarMap, ArgNames),
     atomic_list_concat(ArgNames, ', ', ArgList),
     
     % Compile body
-    (   return_type_allows_body(ReturnType, Body)
+    (   body_return_type_allowed(PredSpec, single_clause_fallback, ReturnType, Body, DiagnosticsMode)
     ->  compile_body(Body, VarMap, _, BodyCode)
     ;   r_fallback_expression(ReturnType, Pred, FallbackExpr),
         format(string(BodyCode), '    ~w', [FallbackExpr])
@@ -260,13 +265,23 @@ effective_r_return_type(PredSpec, _Options, ReturnType) :-
     !.
 effective_r_return_type(_PredSpec, _Options, none).
 
-return_type_allows_body(none, _Body) :-
+effective_type_diagnostics(Options, DiagnosticsMode) :-
+    option(type_diagnostics(DiagnosticsMode), Options, off).
+
+body_return_type_allowed(_PredSpec, _Action, none, _Body, _DiagnosticsMode) :-
     !.
-return_type_allows_body(ReturnType, Body) :-
+body_return_type_allowed(PredSpec, Action, ReturnType, Body, DiagnosticsMode) :-
     infer_body_return_type(Body, InferredType),
     !,
-    return_types_compatible(ReturnType, InferredType).
-return_type_allows_body(_ReturnType, _Body).
+    (   return_types_compatible(ReturnType, InferredType)
+    ->  true
+    ;   handle_type_diagnostic(
+            DiagnosticsMode,
+            r_type_constraint_violation(PredSpec, Action, ReturnType, InferredType, Body)
+        ),
+        fail
+    ).
+body_return_type_allowed(_PredSpec, _Action, _ReturnType, _Body, _DiagnosticsMode).
 
 return_types_compatible(any, _InferredType) :-
     !.
@@ -279,17 +294,44 @@ return_types_compatible(ReturnType, InferredType) :-
 
 infer_body_return_type(true, boolean) :-
     !.
+infer_body_return_type((Left, true), Type) :-
+    !,
+    infer_body_return_type(Left, Type).
 infer_body_return_type((_, Right), Type) :-
     !,
-    infer_body_return_type(Right, Type).
+    (   infer_body_return_type(Right, Type)
+    ->  true
+    ;   Right = (LeftRight, _),
+        infer_body_return_type(LeftRight, Type)
+    ).
 infer_body_return_type(_Module:Goal, Type) :-
     !,
     infer_body_return_type(Goal, Type).
+infer_body_return_type(filter(_, _, _), any) :-
+    !.
+infer_body_return_type(group_by(_, _, _), any) :-
+    !.
+infer_body_return_type(sort_by(_, _, _), any) :-
+    !.
 infer_body_return_type(Goal, Type) :-
     compound(Goal),
     functor(Goal, Pred, Arity),
     binding(r, Pred/Arity, _TargetName, _Inputs, Outputs, _Options),
     infer_binding_return_type(Outputs, Type).
+
+infer_clauses_return_type(Clauses, Type) :-
+    findall(ClauseType, (
+        member(_Head-Body, Clauses),
+        infer_body_return_type(Body, ClauseType)
+    ), [FirstType|RestTypes]),
+    all_same_return_type(RestTypes, FirstType),
+    Type = FirstType.
+
+all_same_return_type([], _).
+all_same_return_type([Type|Rest], ReferenceType) :-
+    return_types_compatible(ReferenceType, Type),
+    return_types_compatible(Type, ReferenceType),
+    all_same_return_type(Rest, ReferenceType).
 
 infer_binding_return_type([], boolean).
 infer_binding_return_type([BindingType|_], Type) :-
@@ -362,6 +404,21 @@ r_fallback_expression(ReturnType, Pred, Expr) :-
     ->  Expr = 'new.env(parent = emptyenv())'
     ;   format(string(Expr), 'stop("No matching clause for ~w")', [Pred])
     ).
+
+head_pred_spec(Head, Pred/Arity) :-
+    functor(Head, Pred, Arity).
+
+handle_type_diagnostic(off, _Diagnostic) :-
+    true.
+handle_type_diagnostic(warn, Diagnostic) :-
+    print_message(warning, Diagnostic).
+handle_type_diagnostic(error, Diagnostic) :-
+    throw(error(Diagnostic, context(r_target, 'Return type constraint violated during R compilation'))).
+
+prolog:message(r_type_constraint_violation(PredSpec, Action, ExpectedType, InferredType, Body)) -->
+    [ 'R target type constraint violation for ~p (~w): expected ~p, inferred ~p from body ~p'-
+      [PredSpec, Action, ExpectedType, InferredType, Body]
+    ].
 
 ensure_var(VarMap, Var, Name, VarMap) :-
     lookup_var(Var, VarMap, Name), !.

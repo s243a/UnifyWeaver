@@ -18,7 +18,9 @@ cleanup_typr_test :-
     retractall(user:tc(_, _)),
     retractall(user:simple_fact(_)),
     retractall(user:lower_name(_, _)),
-    retractall(user:classify_name(_, _)).
+    retractall(user:classify_name(_, _)),
+    retractall(user:inferred_lower(_, _)),
+    retractall(user:classify_name_guarded(_, _)).
 
 :- begin_tests(typr_target, [
     setup(setup_typr_test),
@@ -105,10 +107,29 @@ test(generic_multi_clause_predicates_reuse_r_backend) :-
     assertz(type_declarations:uw_type(classify_name/2, 1, atom)),
     assertz(type_declarations:uw_type(classify_name/2, 2, atom)),
     once(compile_predicate_to_typr(classify_name/2, [typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "let classify_name <- fn(arg1: char, arg2: char): Any")),
+    once(sub_string(Code, _, _, _, "let classify_name <- fn(arg1: char, arg2: char): char")),
     once(sub_string(Code, _, _, _, "else if")),
     once(sub_string(Code, _, _, _, "tolower(\"HI\")")),
     once(sub_string(Code, _, _, _, "tolower(\"BYE\")")),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(generic_body_predicates_infer_return_type_without_declaration) :-
+    clear_type_declarations,
+    assertz(user:(inferred_lower(Name, Lower) :- string_lower(Name, Lower), true)),
+    assertz(type_declarations:uw_type(inferred_lower/2, 1, atom)),
+    assertz(type_declarations:uw_type(inferred_lower/2, 2, atom)),
+    once(compile_predicate_to_typr(inferred_lower/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let inferred_lower <- fn(arg1: char, arg2: char): char")),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(generic_multi_clause_predicates_infer_guarded_return_type) :-
+    clear_type_declarations,
+    assertz(user:(classify_name_guarded(short, Lower) :- string_lower('HI', Lower), true)),
+    assertz(user:(classify_name_guarded(long, Lower) :- string_lower('BYE', Lower), true)),
+    assertz(type_declarations:uw_type(classify_name_guarded/2, 1, atom)),
+    assertz(type_declarations:uw_type(classify_name_guarded/2, 2, atom)),
+    once(compile_predicate_to_typr(classify_name_guarded/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let classify_name_guarded <- fn(arg1: char, arg2: char): char")),
     generated_typr_is_valid(Code, exit(0)).
 
 test(transitive_closure_template_is_valid_typr) :-
