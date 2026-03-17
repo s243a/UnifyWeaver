@@ -221,8 +221,8 @@ has_cmd ruby    && run_test "Ruby"   "fib(10)" "55" ruby "$DIR/fib.rb" 10       
 has_cmd perl    && run_test "Perl"   "fib(10)" "55" perl "$DIR/fib.pl" 10       || true
 has_cmd lua     && run_test "Lua"    "fib(10)" "55" lua "$DIR/fib.lua" 10       || true
 has_cmd python3 && run_test "Python" "fib(10)" "55" python3 "$DIR/fib.jy.py" 10 || true
-has_cmd node    && run_test "Node"   "fib(10)" "55" node "$DIR/fib.ts" 10       || true
 has_cmd Rscript && run_test "R"      "fib(10)" "55" Rscript "$DIR/fib.R" 10     || true
+has_cmd node    && run_test "Node"   "fib(10)" "55" node "$DIR/fib.ts" 10       || true
 
 if has_cmd gcc; then
     compile_and_test "C" "fib(10)" "55" gcc -o "$TMPDIR/fib_c" "$DIR/fib.c" -lm -- "$TMPDIR/fib_c" 10
@@ -262,6 +262,8 @@ has_cmd ruby    && run_test "Ruby"   "is_even(4)" "true" ruby "$DIR/even_odd.rb"
 has_cmd perl    && run_test "Perl"   "is_even(4)" "1"    perl "$DIR/even_odd.pl" is_even 4        || true
 has_cmd lua     && run_test "Lua"    "is_even(4)" "true" lua "$DIR/even_odd.lua" is_even 4        || true
 has_cmd python3 && run_test "Python" "is_even(4)" "True" python3 "$DIR/even_odd.jy.py" is_even 4  || true
+has_cmd Rscript && run_test "R"      "is_even(4)" "TRUE" Rscript "$DIR/even_odd.R" is_even 4     || true
+has_cmd node    && run_test "Node"   "is_even(4)" "true" node "$DIR/even_odd.ts" is_even 4       || true
 
 if has_cmd gcc; then
     compile_and_test "C" "is_even(4)" "1" gcc -o "$TMPDIR/eo_c" "$DIR/even_odd.c" -lm -- "$TMPDIR/eo_c" is_even 4
@@ -301,6 +303,7 @@ has_cmd ruby    && run_test "Ruby"   "count(5 items)" "5" ruby "$DIR/count.rb" 1
 has_cmd perl    && run_test "Perl"   "count(5 items)" "5" perl "$DIR/count.pl" 1,2,3,4,5       || true
 has_cmd lua     && run_test "Lua"    "count(5 items)" "5" lua "$DIR/count.lua" 1,2,3,4,5       || true
 has_cmd python3 && run_test "Python" "count(5 items)" "5" python3 "$DIR/count.jy.py" 1,2,3,4,5 || true
+has_cmd Rscript && run_test "R"      "count(5 items)" "5" Rscript "$DIR/count.R" 1,2,3,4,5     || true
 has_cmd node    && run_test "Node"   "count(5 items)" "5" node "$DIR/count.ts" 1,2,3,4,5       || true
 
 if has_cmd gcc; then
@@ -329,6 +332,47 @@ fi
 
 if has_cmd go; then
     go_test "count(5 items)" "5" "$DIR/count.go" "cnt_go" 1,2,3,4,5
+fi
+
+# ============================================================================
+# LIST_SUM: list_sum([1,2,3,4,5]) = 15 (linear recursion, list fold)
+# ============================================================================
+echo ""
+echo -e "${BOLD}--- list_sum([1,2,3,4,5]) = 15 [linear/list] ---${NC}"
+
+has_cmd ruby    && run_test "Ruby"   "list_sum(5)" "15" ruby "$DIR/list_sum.rb" 1,2,3,4,5       || true
+has_cmd perl    && run_test "Perl"   "list_sum(5)" "15" perl "$DIR/list_sum.pl" 1,2,3,4,5       || true
+has_cmd lua     && run_test "Lua"    "list_sum(5)" "15" lua "$DIR/list_sum.lua" 1,2,3,4,5       || true
+has_cmd python3 && run_test "Python" "list_sum(5)" "15" python3 "$DIR/list_sum.jy.py" 1,2,3,4,5 || true
+has_cmd Rscript && run_test "R"      "list_sum(5)" "15" Rscript "$DIR/list_sum.R" 1,2,3,4,5     || true
+has_cmd node    && run_test "Node"   "list_sum(5)" "15" node "$DIR/list_sum.ts" 1,2,3,4,5       || true
+
+if has_cmd gcc; then
+    compile_and_test "C" "list_sum(5)" "15" gcc -o "$TMPDIR/ls_c" "$DIR/list_sum.c" -lm -- "$TMPDIR/ls_c" 1,2,3,4,5
+fi
+
+if has_cmd g++; then
+    compile_and_test "C++" "list_sum(5)" "15" g++ -o "$TMPDIR/ls_cpp" "$DIR/list_sum.cpp" -- "$TMPDIR/ls_cpp" 1,2,3,4,5
+fi
+
+if has_cmd javac; then
+    java_test "list_sum(5)" "15" "$DIR/list_sum.java" 1,2,3,4,5
+fi
+
+if has_cmd kotlinc; then
+    kotlin_test "list_sum(5)" "15" "$DIR/list_sum.kt" "ls_kt.jar" 1,2,3,4,5
+fi
+
+if has_cmd scalac && [ -n "$SCALA_LIB" ] && [ -n "$SCALA3_LIB" ]; then
+    scala_test "list_sum(5)" "15" "$DIR/list_sum.scala" "scala_ls" 1,2,3,4,5
+fi
+
+if has_cmd rustc; then
+    rust_test "list_sum(5)" "15" "$DIR/list_sum.rs" "ls_rs" 1,2,3,4,5
+fi
+
+if has_cmd go; then
+    go_test "list_sum(5)" "15" "$DIR/list_sum.go" "ls_go" 1,2,3,4,5
 fi
 
 # ============================================================================
@@ -381,6 +425,8 @@ if $USE_PROOT; then
         check_result "F#" "fib(10)" "55" "$R"
         R=$(fsi_run "$PROOT_DIR/even_odd.fs" is_even 4)
         check_result "F#" "is_even(4)" "true" "$R"
+        R=$(fsi_run "$PROOT_DIR/list_sum.fs" 1,2,3,4,5)
+        check_result "F#" "list_sum(5)" "15" "$R"
 
         # Clojure
         echo ""
@@ -398,6 +444,8 @@ if $USE_PROOT; then
         check_result "Clojure" "fib(10)" "55" "$R"
         R=$(proot_run "cd $PROOT_DIR && java -cp '$CLJ_CP' clojure.main even_odd.clj 4")
         check_result "Clojure" "is_even(4)" "true" "$R"
+        R=$(proot_run "cd $PROOT_DIR && java -cp '$CLJ_CP' clojure.main list_sum.clj 1,2,3,4,5")
+        check_result "Clojure" "list_sum(5)" "15" "$R"
 
         # Elixir (proot)
         echo ""
@@ -408,6 +456,8 @@ if $USE_PROOT; then
         check_result "Elixir/pr" "fib(10)" "55" "$R"
         R=$(proot_run "cd $PROOT_DIR && elixir even_odd.ex is_even 4")
         check_result "Elixir/pr" "is_even(4)" "true" "$R"
+        R=$(proot_run "cd $PROOT_DIR && elixir list_sum.ex 1,2,3,4,5")
+        check_result "Elixir/pr" "list_sum(5)" "15" "$R"
     fi
 fi
 
