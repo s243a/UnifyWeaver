@@ -47,8 +47,10 @@ Rationale: clean UX, low migration risk, easy A/B validation.
 ### 2) Use Shared Type Metadata, Optional Consumption
 
 - Type declarations remain optional in Prolog (`uw_type/3`).
+- Return type declarations remain optional in Prolog (`uw_return_type/2`).
 - `typr` consumes type metadata when present.
-- `r` ignores it unless a future explicit typed-R mode is added.
+- `r` stays syntactically untyped, but may consume return-type metadata for
+  validation and fallback selection.
 
 ### 3) Three Annotation Modes for TypR
 
@@ -112,6 +114,7 @@ plain assignment in its AST and type-checking path.
 TypR generation should read normalized type metadata from the shared type layer:
 
 - `arg_type(Pred/Arity, Index, TypeTerm)`
+- `return_type(Pred/Arity, TypeTerm)`
 - `resolved_typed_mode(Pred/Arity, Mode)`
 - `has_explicit_any(Pred/Arity, Index)` (or equivalent derivation)
 
@@ -171,6 +174,15 @@ Completed:
    - per-predicate typed-mode override
    - target-registry dispatch
    - real TypR validation through the CLI
+6. Added `uw_return_type/2` consumption on wrapped generic TypR paths so
+   declared return types replace `Any` where possible.
+
+R-family note:
+
+- `r` does not require any type declarations.
+- If `uw_return_type/2` is present, `r` now uses it by default for simple
+  compile-time validation and typed fallback/result-shape generation.
+- This behavior can be disabled per compile with `type_constraints(false)`.
 
 Current implementation note:
 

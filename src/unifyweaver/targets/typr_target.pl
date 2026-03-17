@@ -193,9 +193,17 @@ typr_function_body(PredSpec, _TypedMode, Clauses, "bool", Body) :-
     fact_match_expression(PredSpec, Clauses, MatchExpr),
     !,
     format(string(Body), 'result <- @{ local({ ~w }) }@;\n\tresult', [MatchExpr]).
+typr_function_body(PredSpec, _TypedMode, _Clauses, ReturnType, Body) :-
+    typr_declared_return_type(PredSpec, ReturnType),
+    !,
+    wrapped_r_body_expression(PredSpec, WrappedExpr),
+    format(string(Body), 'result <- @{ ~w }@;\n\tresult', [WrappedExpr]).
 typr_function_body(PredSpec, _TypedMode, _Clauses, "Any", Body) :-
     wrapped_r_body_expression(PredSpec, WrappedExpr),
     format(string(Body), 'result <- @{ ~w }@;\n\tresult', [WrappedExpr]).
+
+typr_declared_return_type(PredSpec, ReturnType) :-
+    resolved_return_type(PredSpec, typr, ReturnType).
 
 all_fact_clauses([]).
 all_fact_clauses([_-true|Rest]) :-

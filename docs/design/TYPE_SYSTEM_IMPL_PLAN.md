@@ -34,12 +34,14 @@ ones but do not require them to be complete before starting.
 
 ## Phase 1 — Core Type Infrastructure in Prolog
 
-**Goal:** Add the `uw_type/3` and `uw_domain_type/2` declaration predicates
+**Goal:** Add the `uw_type/3`, `uw_return_type/2`, and `uw_domain_type/2`
+declaration predicates
 and the `resolve_type/3` resolution predicate.
 
 **New files:**
 - `src/unifyweaver/targets/type_declarations.pl`
   - Defines `uw_type/3` as a dynamic predicate.
+  - Defines `uw_return_type/2` as a dynamic predicate.
   - Defines `uw_typed_mode/2` as a dynamic predicate.
   - Defines `uw_domain_type/2` as a dynamic predicate.
   - Implements `resolve_type(+AbstractType, +TargetLang, -ConcreteString)`
@@ -49,6 +51,7 @@ and the `resolve_type/3` resolution predicate.
     `uw_typed_mode/2` > per-call option > global setting > target default.
   - Implements `build_type_context(+PredSpec, +TargetLang, -TypeContext)`
     which returns a dict of Mustache key-value pairs for type variables.
+  - Resolves predicate return types for targets that care about them.
   - Implements `uw_typed/2` — succeeds if any `uw_type` fact exists for the
     given predicate.
 
@@ -60,6 +63,7 @@ and the `resolve_type/3` resolution predicate.
     global defaults.
   - Verify `build_type_context(edge/2, haskell, Ctx)` produces expected dict
     when `uw_type(edge/2, 1, atom)` is asserted.
+  - Verify declared `uw_return_type/2` is reflected in type context.
   - Verify `build_type_context` returns empty / fallback when no `uw_type`
     facts exist.
 
@@ -136,6 +140,10 @@ bring-up.
 - typed-mode precedence support
 - simple fact predicate lowering
 - transitive-closure generation with compile-time fact seeding
+- `uw_return_type/2` support for wrapped generic TypR predicates so declared
+  return types replace weak `Any` fallbacks
+- `r`-target return-type constraints enabled by default when metadata exists,
+  with opt-out via `type_constraints(false)`
 
 **Remaining scope after Phase 2.5:**
 - broader lowering for generic non-recursive rule bodies

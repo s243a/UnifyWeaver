@@ -5,13 +5,16 @@
 
 :- module(type_declarations, [
     uw_type/3,
+    uw_return_type/2,
     uw_typed_mode/2,
     uw_domain_type/2,
     resolve_type/3,
     resolve_typed_mode/4,
     build_type_context/3,
     predicate_arg_type/3,
+    predicate_return_type/2,
     resolved_arg_type/5,
+    resolved_return_type/3,
     has_explicit_any/2,
     uw_typed/2,
     clear_type_declarations/0
@@ -21,16 +24,19 @@
 :- use_module(library(option)).
 
 :- dynamic uw_type/3.
+:- dynamic uw_return_type/2.
 :- dynamic uw_typed_mode/2.
 :- dynamic uw_domain_type/2.
 
 clear_type_declarations :-
     retractall(uw_type(_, _, _)),
+    retractall(uw_return_type(_, _)),
     retractall(uw_typed_mode(_, _)),
     retractall(uw_domain_type(_, _)).
 
 resolve_typed_mode(PredSpec, Options, GlobalMode, Mode) :-
-    (   declared_uw_typed_mode(PredSpec, Mode0)
+    normalize_pred_spec(PredSpec, NormalizedPredSpec),
+    (   declared_uw_typed_mode(NormalizedPredSpec, Mode0)
     ->  Mode = Mode0
     ;   option(typed_mode(Mode0), Options)
     ->  Mode = Mode0
@@ -38,7 +44,13 @@ resolve_typed_mode(PredSpec, Options, GlobalMode, Mode) :-
     ).
 
 predicate_arg_type(PredSpec, ArgIndex, TypeTerm) :-
-    declared_uw_type(PredSpec, ArgIndex, Type0),
+    normalize_pred_spec(PredSpec, NormalizedPredSpec),
+    declared_uw_type(NormalizedPredSpec, ArgIndex, Type0),
+    resolve_domain_type(Type0, TypeTerm).
+
+predicate_return_type(PredSpec, TypeTerm) :-
+    normalize_pred_spec(PredSpec, NormalizedPredSpec),
+    declared_uw_return_type(NormalizedPredSpec, Type0),
     resolve_domain_type(Type0, TypeTerm).
 
 resolved_arg_type(PredSpec, FallbackPredSpec, ArgIndex, TargetLang, ConcreteType) :-
@@ -49,11 +61,19 @@ resolved_arg_type(PredSpec, FallbackPredSpec, ArgIndex, TargetLang, ConcreteType
     ),
     resolve_type(AbstractType, TargetLang, ConcreteType).
 
+resolved_return_type(PredSpec, TargetLang, ConcreteType) :-
+    predicate_return_type(PredSpec, AbstractType),
+    resolve_type(AbstractType, TargetLang, ConcreteType).
+
 has_explicit_any(PredSpec, ArgIndex) :-
-    declared_uw_type(PredSpec, ArgIndex, any).
+    normalize_pred_spec(PredSpec, NormalizedPredSpec),
+    declared_uw_type(NormalizedPredSpec, ArgIndex, any).
 
 uw_typed(PredSpec, true) :-
-    declared_uw_type(PredSpec, _, _),
+    normalize_pred_spec(PredSpec, NormalizedPredSpec),
+    (   declared_uw_type(NormalizedPredSpec, _, _)
+    ;   declared_uw_return_type(NormalizedPredSpec, _)
+    ),
     !.
 uw_typed(_, false).
 
@@ -86,8 +106,13 @@ build_type_context(PredSpec, TargetLang, Context) :-
         EdgePairs = [edge_type=EdgeType]
     ;   EdgePairs = []
     ),
+    (   predicate_return_type(PredSpec, ReturnAbstract),
+        resolve_type(ReturnAbstract, TargetLang, ReturnType)
+    ->  ReturnPairs = [return_type=ReturnType]
+    ;   ReturnPairs = []
+    ),
     uw_typed(PredSpec, Typed),
-    append([[typed=Typed], NodePairs, WeightPairs, EdgePairs, ArgPairs], Context).
+    append([[typed=Typed], NodePairs, WeightPairs, EdgePairs, ReturnPairs, ArgPairs], Context).
 
 resolve_type(atom, haskell, "String").
 resolve_type(string, haskell, "String").
@@ -238,9 +263,17 @@ resolve_domain_type(Type, Resolved) :-
     resolve_domain_type(DomainType, Resolved).
 resolve_domain_type(Type, Type).
 
+normalize_pred_spec(_Module:PredSpec, PredSpec) :-
+    !.
+normalize_pred_spec(PredSpec, PredSpec).
+
 declared_uw_type(PredSpec, ArgIndex, Type) :-
     declaration_uw_type_module(Module),
     clause(Module:uw_type(PredSpec, ArgIndex, Type), true).
+
+declared_uw_return_type(PredSpec, Type) :-
+    declaration_uw_return_type_module(Module),
+    clause(Module:uw_return_type(PredSpec, Type), true).
 
 declared_uw_typed_mode(PredSpec, Mode) :-
     declaration_uw_typed_mode_module(Module),
@@ -270,6 +303,16 @@ declaration_uw_typed_mode_module(Module) :-
     Module \= user,
     module_has_local_uw_typed_mode_clauses(Module).
 
+declaration_uw_return_type_module(type_declarations) :-
+    module_has_local_uw_return_type_clauses(type_declarations).
+declaration_uw_return_type_module(user) :-
+    module_has_local_uw_return_type_clauses(user).
+declaration_uw_return_type_module(Module) :-
+    current_module(Module),
+    Module \= type_declarations,
+    Module \= user,
+    module_has_local_uw_return_type_clauses(Module).
+
 declaration_uw_domain_type_module(type_declarations) :-
     module_has_local_uw_domain_type_clauses(type_declarations).
 declaration_uw_domain_type_module(user) :-
@@ -289,6 +332,11 @@ module_has_local_uw_typed_mode_clauses(Module) :-
     predicate_property(Module:uw_typed_mode(_, _), number_of_clauses(Count)),
     Count > 0,
     \+ predicate_property(Module:uw_typed_mode(_, _), imported_from(_)).
+
+module_has_local_uw_return_type_clauses(Module) :-
+    predicate_property(Module:uw_return_type(_, _), number_of_clauses(Count)),
+    Count > 0,
+    \+ predicate_property(Module:uw_return_type(_, _), imported_from(_)).
 
 module_has_local_uw_domain_type_clauses(Module) :-
     predicate_property(Module:uw_domain_type(_, _), number_of_clauses(Count)),

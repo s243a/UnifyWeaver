@@ -44,6 +44,14 @@ uw_typed_mode(tc/2, infer).
 uw_typed_mode(weighted_edge/3, explicit).
 ```
 
+Return types are declared separately:
+
+```prolog
+% uw_return_type(+PredicateName/Arity, +TypeTerm)
+uw_return_type(tc/2, boolean).
+uw_return_type(lower_name/2, atom).
+```
+
 Supported modes:
 
 - `off`
@@ -60,6 +68,12 @@ Type declaration presence is semantically significant:
   (`Any`, `object`, etc.) when the target supports it.
 
 This distinction avoids conflating unknown types with intentional polymorphism.
+
+Return type declarations are also optional:
+
+- **No `uw_return_type/2` declaration**: target uses existing fallback behavior.
+- **Explicit `uw_return_type/2` declaration**: typed targets may annotate
+  returns, and `r`-family targets may use it for validation or fallback logic.
 
 ### 2.3 Typed Mode Precedence
 
@@ -116,11 +130,12 @@ primitive-only targets, or emits a type alias/newtype where supported
 ## 3. Type Resolution Pipeline
 
 ```
-[Prolog source: uw_type/3 facts + uw_typed_mode/2 facts]
+[Prolog source: uw_type/3 facts + uw_return_type/2 facts + uw_typed_mode/2 facts]
         │
         ▼
 [Target .pl layer]
   - Looks up uw_type for pred/arity/arg
+  - Looks up uw_return_type for pred/arity
   - Resolves typed_mode using precedence rules
   - Falls back to uw_domain_type
   - Falls back to omission for undeclared types
@@ -166,6 +181,7 @@ values without going through Mustache.
 | `weight_type` | `Double` | `Double` |
 | `typed` | `true`/`false` | `true`/`false` |
 | `typed_mode` | `infer` | `explicit` |
+| `return_type` | `bool` | `bool` / declared concrete type |
 | `node_type_import` | *(empty for primitives)* | `java.util.Map` |
 | `rel_type` | `Map String [String]` | `Map<String, List<String>>` |
 | `type_preamble` | `type EmployeeId = Int` | `record EmployeeId(...)` |
@@ -240,8 +256,18 @@ See Appendix A (to be expanded per target).
 | `map(K,V)` | no annotation | may annotate if declared | explicit annotation |
 | `any` | no annotation | emit only when explicitly declared | emit only when explicitly declared |
 
-`r` remains untyped by default. `typr` is a separate target in the same runtime
-family and consumes `uw_type/3` optionally based on `typed_mode`.
+`r` remains syntactically untyped by default. `typr` is a separate target in
+the same runtime family and consumes `uw_type/3` optionally based on
+`typed_mode`.
+
+When `uw_return_type/2` is present:
+
+- `typr` should use it to avoid falling back to `Any` on wrapped generic paths
+  where a concrete return type is known.
+- `r` should consume it by default for validation and result-shape fallback
+  generation, while remaining usable with no type metadata at all.
+- `r` should allow this behavior to be disabled per compile call via
+  `type_constraints(false)`.
 
 Initial implementation may keep R and TypR templates/code paths separate even
 when they share the same underlying type-resolution layer. Later convergence is

@@ -92,8 +92,9 @@ test(generic_body_predicates_reuse_r_backend) :-
     assertz(user:(lower_name(Name, Lower) :- string_lower(Name, Lower))),
     assertz(type_declarations:uw_type(lower_name/2, 1, atom)),
     assertz(type_declarations:uw_type(lower_name/2, 2, atom)),
+    assertz(type_declarations:uw_return_type(lower_name/2, atom)),
     once(compile_predicate_to_typr(lower_name/2, [typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "let lower_name <- fn(arg1: char, arg2: char): Any")),
+    once(sub_string(Code, _, _, _, "let lower_name <- fn(arg1: char, arg2: char): char")),
     once(sub_string(Code, _, _, _, "tolower(arg1)")),
     generated_typr_is_valid(Code, exit(0)).
 
@@ -104,6 +105,7 @@ test(generic_multi_clause_predicates_reuse_r_backend) :-
     assertz(type_declarations:uw_type(classify_name/2, 1, atom)),
     assertz(type_declarations:uw_type(classify_name/2, 2, atom)),
     once(compile_predicate_to_typr(classify_name/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let classify_name <- fn(arg1: char, arg2: char): Any")),
     once(sub_string(Code, _, _, _, "else if")),
     once(sub_string(Code, _, _, _, "tolower(\"HI\")")),
     once(sub_string(Code, _, _, _, "tolower(\"BYE\")")),
