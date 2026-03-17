@@ -5945,10 +5945,24 @@ test_declarative_test_gen :-
     assert_true('generate_declarative_tests defined', (
         predicate_property(agent_loop_module:generate_declarative_tests, defined)
     )),
-    %% shared_logic/3 facts exist
+    %% shared_logic/3 facts exist (12 after expansion)
     assert_true('shared_logic facts exist', (
         findall(M, agent_loop_module:shared_logic(_, M, _), Ms),
-        length(Ms, N), N >= 4
+        length(Ms, N), N >= 12
+    )),
+    %% resolve_type/3 defined for both targets
+    assert_true('resolve_type for python exists', (
+        agent_loop_module:resolve_type(python, int, _)
+    )),
+    assert_true('resolve_type for rust exists', (
+        agent_loop_module:resolve_type(rust, int, _)
+    )),
+    %% resolve_type handles optional/1 compound types
+    assert_true('resolve_type handles optional', (
+        agent_loop_module:resolve_type(python, optional(string), PS),
+        sub_atom(PS, _, _, _, 'None'),
+        agent_loop_module:resolve_type(rust, optional(string), RS),
+        sub_atom(RS, _, _, _, 'Option')
     )),
     %% compile_logic/3 defined
     assert_true('compile_logic/3 defined', (
@@ -6005,4 +6019,91 @@ test_shared_logic_infrastructure :-
     assert_true('rust guard uses float zero', (
         agent_loop_module:compile_logic(rust, is_over_budget, R),
         sub_atom(R, _, _, _, '<= 0.0')
+    )),
+    %% --- Expanded shared_logic parity tests (8 new methods) ---
+    %% on_token: Python uses print(..., flush=True), Rust uses print!/flush
+    assert_true('on_token py uses print flush', (
+        agent_loop_module:compile_logic(python, on_token, OTP),
+        sub_atom(OTP, _, _, _, 'flush=True'),
+        sub_atom(OTP, _, _, _, 'self.char_count +='),
+        sub_atom(OTP, _, _, _, 'self.token_count ='),
+        sub_atom(OTP, _, _, _, 'max(1,')
+    )),
+    assert_true('on_token rs uses print! macro', (
+        agent_loop_module:compile_logic(rust, on_token, OTR),
+        sub_atom(OTR, _, _, _, 'print!'),
+        sub_atom(OTR, _, _, _, 'self.char_count +='),
+        sub_atom(OTR, _, _, _, 'self.token_count ='),
+        sub_atom(OTR, _, _, _, 'std::cmp::max(1,')
+    )),
+    %% format_summary: Python f-string vs Rust format! macro
+    assert_true('format_summary py uses f-string', (
+        agent_loop_module:compile_logic(python, format_summary, FSP),
+        sub_atom(FSP, _, _, _, 'f"'),
+        sub_atom(FSP, _, _, _, 'self.token_count')
+    )),
+    assert_true('format_summary rs uses format! macro', (
+        agent_loop_module:compile_logic(rust, format_summary, FSR),
+        sub_atom(FSR, _, _, _, 'format!'),
+        sub_atom(FSR, _, _, _, 'self.token_count')
+    )),
+    %% is_retryable_status: Python set check vs Rust matches! macro
+    assert_true('is_retryable_status py uses set membership', (
+        agent_loop_module:compile_logic(python, is_retryable_status, IRP),
+        sub_atom(IRP, _, _, _, 'status in {'),
+        sub_atom(IRP, _, _, _, '429')
+    )),
+    assert_true('is_retryable_status rs uses matches! macro', (
+        agent_loop_module:compile_logic(rust, is_retryable_status, IRR),
+        sub_atom(IRR, _, _, _, 'matches!'),
+        sub_atom(IRR, _, _, _, '429')
+    )),
+    %% compute_delay: Python ** vs Rust .powi()
+    assert_true('compute_delay py uses ** operator', (
+        agent_loop_module:compile_logic(python, compute_delay, CDP),
+        sub_atom(CDP, _, _, _, '**'),
+        sub_atom(CDP, _, _, _, 'min(')
+    )),
+    assert_true('compute_delay rs uses .powi()', (
+        agent_loop_module:compile_logic(rust, compute_delay, CDR),
+        sub_atom(CDR, _, _, _, '.powi('),
+        sub_atom(CDR, _, _, _, '.min(')
+    )),
+    %% make_key: Python f-string + json.dumps vs Rust format! + serde_json
+    assert_true('make_key py uses json.dumps', (
+        agent_loop_module:compile_logic(python, make_key, MKP),
+        sub_atom(MKP, _, _, _, '_json.dumps')
+    )),
+    assert_true('make_key rs uses serde_json', (
+        agent_loop_module:compile_logic(rust, make_key, MKR),
+        sub_atom(MKR, _, _, _, 'serde_json::to_string')
+    )),
+    %% cache_get_guard: Python 'in' vs Rust .contains()
+    assert_true('cache_get_guard py uses in operator', (
+        agent_loop_module:compile_logic(python, cache_get_guard, CGP),
+        sub_atom(CGP, _, _, _, 'in self.skip_tools')
+    )),
+    assert_true('cache_get_guard rs uses .contains()', (
+        agent_loop_module:compile_logic(rust, cache_get_guard, CGR),
+        sub_atom(CGR, _, _, _, '.contains(')
+    )),
+    %% extract_json_dispatch: Both try fenced then bare
+    assert_true('extract_json_dispatch py uses cls._extract_fenced', (
+        agent_loop_module:compile_logic(python, extract_json_dispatch, EJP),
+        sub_atom(EJP, _, _, _, '_extract_fenced'),
+        sub_atom(EJP, _, _, _, '_extract_bare')
+    )),
+    assert_true('extract_json_dispatch rs uses Self::extract_fenced', (
+        agent_loop_module:compile_logic(rust, extract_json_dispatch, EJR),
+        sub_atom(EJR, _, _, _, 'extract_fenced'),
+        sub_atom(EJR, _, _, _, 'extract_bare')
+    )),
+    %% All 12 methods compile for both targets
+    assert_true('all 12 shared_logic compile for both targets', (
+        findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
+        include([M]>>(
+            agent_loop_module:compile_logic(python, M, _),
+            agent_loop_module:compile_logic(rust, M, _)
+        ), AllMs, OkMs),
+        length(OkMs, 12)
     )).

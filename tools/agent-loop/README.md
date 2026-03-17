@@ -71,12 +71,15 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 4 |
+| `shared_logic/3` facts | 12 |
+| `logic_slot/3` facts | 34 (17 python + 17 rust) |
+| `expand_expr/3` facts | 24 (12 python + 12 rust) |
+| `resolve_type/3` facts | 22 (11 python + 11 rust incl. `optional/1`) |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1039 + 220 declarative + 139 Rust + 148 Python (1039 Prolog unit + 220 auto-generated + 36 Prolog integration + 148 Python + 139 cargo test) |
+| Total tests | 1057 + 244 declarative + 139 Rust + 148 Python (1057 Prolog unit + 244 auto-generated + 36 Prolog integration + 148 Python + 139 cargo test) |
 
 ## Backends
 
@@ -501,7 +504,30 @@ logic_slot(rust,   guard_leq_zero(X), S) :- format(atom(S), "~w <= 0.0", [X]).
 % Code = "if budget <= 0.0 {\n    return false;\n..."
 ```
 
-Initial shared methods: `is_over_budget`, `budget_remaining`, `cache_clear`, `cache_len`. These validate the pattern without replacing existing fragments — the compiled output is tested for parity against what py_fragment/rust_fragment already produce.
+**TypR-inspired `resolve_type/3`** maps abstract types to concrete target types, providing a shared type vocabulary for signatures:
+
+```prolog
+resolve_type(python, int, "int").     resolve_type(rust, int, "i64").
+resolve_type(python, string, "str").  resolve_type(rust, string, "&str").
+resolve_type(python, optional(T), S) :-  % Compound types supported
+    resolve_type(python, T, Inner),
+    format(atom(S), "~w | None", [Inner]).
+resolve_type(rust, optional(T), S) :-
+    resolve_type(rust, T, Inner),
+    format(atom(S), "Option<~w>", [Inner]).
+```
+
+**12 shared methods** across 5 modules:
+
+| Module | Methods | Slots Used |
+|--------|---------|------------|
+| `costs` | `is_over_budget`, `budget_remaining` | `guard_leq_zero`, `return_val`, `self_field`, `max_zero` |
+| `tool_cache` | `cache_clear`, `cache_len`, `make_key`, `cache_get_guard`, `cache_put_guard` | `self_direct`, `contains`, `canonical_json`, `format_str` |
+| `streaming` | `on_token`, `format_summary` | `print_flush`, `self_inc`, `self_assign`, `str_len`, `int_div`, `streaming_summary` |
+| `retry` | `is_retryable_status`, `compute_delay` | `matches_set`, `min_val`, `mul`, `pow`, `sub` |
+| `output_parser` | `extract_json_dispatch` | `assign`, `call_method`, `not_empty` |
+
+The compiled output is tested for parity against what py_fragment/rust_fragment already produce. The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`).
 
 ### Hybrid generation example
 
