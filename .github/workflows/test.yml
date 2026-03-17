@@ -95,7 +95,7 @@ jobs:
     name: C# Query Runtime Smoke
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code
@@ -115,6 +115,14 @@ jobs:
           dotnet --version
           pwsh -v
 
-      - name: Run C# query runtime smoke runner
+      - name: Run C# query cache smoke slice (admission)
         run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice admission -KeepArtifacts
+
+      - name: Run C# query cache smoke slice (reuse)
+        run: |
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice reuse -SkipCodegen -KeepArtifacts
+
+      - name: Run C# query cache smoke slice (lru)
+        run: |
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice lru -SkipCodegen
