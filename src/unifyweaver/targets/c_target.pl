@@ -718,9 +718,9 @@ tail_recursion:compile_tail_pattern(c, PredStr, Arity, _BaseClauses, _RecClauses
 #include <stdlib.h>
 #include <string.h>
 
-int ~w(const int* items, int count) {
+int ~w(const int* items, int n_items) {
     int acc = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < n_items; i++) {
         int item = items[i];
         acc = ~w;
     }
@@ -729,13 +729,13 @@ int ~w(const int* items, int count) {
 
 int main(int argc, char* argv[]) {
     if (argc >= 2) {
-        int items[1024], count = 0;
+        int items[1024], n_items = 0;
         char* token = strtok(argv[1], ",");
-        while (token && count < 1024) {
-            items[count++] = atoi(token);
+        while (token && n_items < 1024) {
+            items[n_items++] = atoi(token);
             token = strtok(NULL, ",");
         }
-        printf("%d\\n", ~w(items, count));
+        printf("%d\\n", ~w(items, n_items));
     }
     return 0;
 }

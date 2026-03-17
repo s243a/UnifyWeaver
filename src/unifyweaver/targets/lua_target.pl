@@ -748,7 +748,7 @@ direct_translate_expr_lua(A, S) :- format(string(S), '~w', [A]).
 linear_recursion:compile_linear_pattern(lua, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, _MemoStrategy, LuaCode) :-
     (   Arity =:= 2 ->
         generate_fold_based_recursion_lua(PredStr, BaseClauses, RecClauses, MemoEnabled, LuaCode)
-    ;   generate_generic_linear_recursion_lua(PredStr, Arity, MemoEnabled, LuaCode)
+    ;   generate_generic_linear_recursion_lua(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, LuaCode)
     ).
 
 generate_fold_based_recursion_lua(PredStr, BaseClauses, RecClauses, MemoEnabled, LuaCode) :-
@@ -758,7 +758,7 @@ generate_fold_based_recursion_lua(PredStr, BaseClauses, RecClauses, MemoEnabled,
         generate_numeric_fold_lua(PredStr, BaseClauses, RecClauses, BaseInput, BaseOutput, MemoEnabled, LuaCode)
     ;   InputType = list ->
         generate_list_fold_lua(PredStr, BaseClauses, RecClauses, BaseInput, BaseOutput, MemoEnabled, LuaCode)
-    ;   generate_generic_linear_recursion_lua(PredStr, 2, MemoEnabled, LuaCode)
+    ;   generate_generic_linear_recursion_lua(PredStr, 2, BaseClauses, RecClauses, MemoEnabled, LuaCode)
     ).
 
 generate_numeric_fold_lua(PredStr, _BaseClauses, RecClauses, BaseInput, BaseOutput, MemoEnabled, LuaCode) :-
@@ -858,11 +858,58 @@ end
 ', [PredStr, PredStr, BaseOutput, BaseOutput, LFoldOp, PredStr])
     ).
 
-generate_generic_linear_recursion_lua(PredStr, Arity, MemoEnabled, LuaCode) :-
-    (   MemoEnabled = true ->
-        format(string(LuaCode),
+generate_generic_linear_recursion_lua(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, LuaCode) :-
+    % Try to extract base case and fold operation from clauses
+    (   linear_recursion:extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
+        RecClauses = [clause(RHead, RBody)|_],
+        RHead =.. [_|RArgs],
+        last(RArgs, _OutputVar),
+        linear_recursion:find_recursive_call(RBody, RecCall),
+        RecCall =.. [_|RecArgs],
+        last(RecArgs, AccVar),
+        linear_recursion:find_last_is_expression(RBody, _ is ActualFoldExpr)
+    ->
+        % Successfully extracted structure — generate proper recursive function
+        translate_fold_expr_lua(ActualFoldExpr, _, AccVar, LFoldOp),
+        (   MemoEnabled = true ->
+            format(string(LuaCode),
 '-- ~w/~w - generic linear recursion (Lua)
--- Note: generic fallback for arity ~~= 2 or unknown input type
+local ~w_memo = {}
+
+local function ~w(n)
+    if ~w_memo[n] then return ~w_memo[n] end
+    if n == ~w then return ~w end
+    local result = ~w(n - 1)
+    result = ~w
+    ~w_memo[n] = result
+    return result
+end
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, Arity, PredStr, PredStr, PredStr, PredStr, BaseInput, BaseOutput, PredStr, LFoldOp, PredStr, PredStr])
+        ;   format(string(LuaCode),
+'-- ~w/~w - generic linear recursion (Lua)
+local function ~w(n)
+    if n == ~w then return ~w end
+    local result = ~w(n - 1)
+    return ~w
+end
+
+if arg then
+    local n = tonumber(arg[1])
+    if n then print(~w(n)) end
+end
+', [PredStr, Arity, PredStr, BaseInput, BaseOutput, PredStr, LFoldOp, PredStr])
+        )
+    ;
+        % Fallback — cannot extract structure, generate counting stub
+        (   MemoEnabled = true ->
+            format(string(LuaCode),
+'-- ~w/~w - generic linear recursion (Lua)
+-- Note: generic fallback — could not extract fold operation
 local ~w_memo = {}
 
 local function ~w(n)
@@ -878,9 +925,9 @@ if arg then
     if n then print(~w(n)) end
 end
 ', [PredStr, Arity, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
-    ;   format(string(LuaCode),
+        ;   format(string(LuaCode),
 '-- ~w/~w - generic linear recursion (Lua)
--- Note: generic fallback for arity ~~= 2 or unknown input type
+-- Note: generic fallback — could not extract fold operation
 local function ~w(n)
     if n <= 0 then return 0 end
     return ~w(n - 1) + 1
@@ -891,6 +938,7 @@ if arg then
     if n then print(~w(n)) end
 end
 ', [PredStr, Arity, PredStr, PredStr, PredStr])
+        )
     ).
 
 % Translate fold expressions to Lua syntax
