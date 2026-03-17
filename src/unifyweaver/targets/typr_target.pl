@@ -313,13 +313,14 @@ native_typr_clause_body(PredSpec, [Head-Body], Code) :-
     (   Condition == 'TRUE'
     ->  Code = ClauseCode
     ;   pred_spec_name(PredSpec, PredName),
-        raw_block_expression(ClauseCode, BranchExpr),
+        branch_safe_typr_code(ClauseCode, BranchClauseCode),
+        indent_text(BranchClauseCode, "\t", BranchCode),
         format(string(Code),
 'if (~w) {
-	~w
+~w
 } else {
 	stop("No matching clause for ~w")
-}', [Condition, BranchExpr, PredName])
+}', [Condition, BranchCode, PredName])
     ).
 native_typr_clause_body(PredSpec, Clauses, Code) :-
     maplist(native_typr_clause_pair, Clauses, Branches),
@@ -328,9 +329,9 @@ native_typr_clause_body(PredSpec, Clauses, Code) :-
     branches_to_typr_if_chain(Branches, IfChain),
     format(string(Code), '~w else {\n\tstop("No matching clause for ~w")\n}', [IfChain, PredName]).
 
-native_typr_clause_pair(Head-Body, branch(Condition, BranchExpr)) :-
+native_typr_clause_pair(Head-Body, branch(Condition, ClauseCode)) :-
     native_typr_clause(Head, Body, Condition, ClauseCode),
-    raw_block_expression(ClauseCode, BranchExpr).
+    !.
 
 native_typr_clause(Head, Body, Condition, ClauseCode) :-
     Head =.. [Pred|HeadArgs],
@@ -392,9 +393,9 @@ native_typr_guarded_tail_sequence(Goals, VarMap0, PredName, LastExpr, Code, VarM
 native_typr_guarded_tail_sequence([], VarMap, PredName, LastExpr, PendingGuards, [], FinalExpr, VarMap) :-
     guard_tail_final_expression(PendingGuards, PredName, LastExpr, FinalExpr).
 native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, _LastExpr0, PendingGuards, [Line|RestLines], FinalExpr, VarMapOut) :-
-    native_typr_output_expr(Goal, VarMap0, VarMap1, OutVar, OutputExpr),
+    native_typr_output_expr(Goal, VarMap0, VarMap1, OutVar, OutputExpr, IntroKind),
     guard_condition_expression(PendingGuards, GuardExpr),
-    conditional_output_line(GuardExpr, PredName, OutVar, OutputExpr, Line),
+    conditional_output_line(GuardExpr, PredName, IntroKind, OutVar, OutputExpr, Line),
     native_typr_guarded_tail_sequence(Rest, VarMap1, PredName, OutVar, [], RestLines, FinalExpr, VarMapOut).
 native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, LastExpr, PendingGuards0, Lines, FinalExpr, VarMapOut) :-
     native_typr_guard_goal(Goal, VarMap0, GuardCondition),
@@ -405,31 +406,31 @@ native_typr_output_goal(_Module:Goal, VarMap0, VarMap, Line, FinalExpr) :-
     !,
     native_typr_output_goal(Goal, VarMap0, VarMap, Line, FinalExpr).
 native_typr_output_goal(Goal, VarMap0, VarMap, Line, FinalExpr) :-
-    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr),
-    format(string(Line), '~w <- ~w;', [FinalExpr, OutputExpr]).
+    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind),
+    typr_assignment_line(IntroKind, FinalExpr, OutputExpr, Line).
 
-native_typr_output_expr(_Module:Goal, VarMap0, VarMap, FinalExpr, OutputExpr) :-
+native_typr_output_expr(_Module:Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
-    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr).
-native_typr_output_expr(filter(DF, Expr, Out), VarMap0, VarMap, FinalExpr, OutputExpr) :-
+    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind).
+native_typr_output_expr(filter(DF, Expr, Out), VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
-    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
+    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_translate_r_expr(Expr, VarMap0, RExpr),
     format(string(OutputExpr), '@{ subset(~w, ~w) }@', [RDF, RExpr]).
-native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr) :-
+native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
-    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
+    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_resolve_value(VarMap0, Col, RCol),
     format(string(OutputExpr), '@{ ~w[order(~w[[~w]]), ] }@', [RDF, RDF, RCol]).
-native_typr_output_expr(group_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr) :-
+native_typr_output_expr(group_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
-    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
+    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_resolve_value(VarMap0, Col, RCol),
     format(string(OutputExpr), '@{ aggregate(. ~~ ~w, data=~w, FUN=list) }@', [RCol, RDF]).
-native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr) :-
+native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     functor(Goal, Pred, Arity),
     binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
@@ -440,7 +441,7 @@ native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr) :-
     append(InArgs, [OutArg], Args),
     maplist(typr_resolve_value(VarMap0), InArgs, ResolvedInArgs),
     atomic_list_concat(ResolvedInArgs, ', ', RArgsStr),
-    ensure_typr_var(VarMap0, OutArg, FinalExpr, VarMap),
+    ensure_typr_var(VarMap0, OutArg, FinalExpr, VarMap, IntroKind),
     format(string(OutputExpr), '@{ ~w(~w) }@', [TargetName, RArgsStr]).
 
 native_typr_guard_goal(_Module:Goal, VarMap, GuardCondition) :-
@@ -483,15 +484,23 @@ guard_condition_expression(Conditions, GuardExpr) :-
     Conditions \= [],
     atomic_list_concat(Conditions, ' && ', GuardExpr).
 
-conditional_output_line(none, _PredName, OutVar, OutputExpr, Line) :-
-    format(string(Line), '~w <- ~w;', [OutVar, OutputExpr]).
-conditional_output_line(GuardExpr, PredName, OutVar, OutputExpr, Line) :-
+typr_binding_prefix(existing, '').
+typr_binding_prefix(new, 'let ').
+
+typr_assignment_line(IntroKind, OutVar, OutputExpr, Line) :-
+    typr_binding_prefix(IntroKind, Prefix),
+    format(string(Line), '~w~w <- ~w;', [Prefix, OutVar, OutputExpr]).
+
+conditional_output_line(none, _PredName, IntroKind, OutVar, OutputExpr, Line) :-
+    typr_assignment_line(IntroKind, OutVar, OutputExpr, Line).
+conditional_output_line(GuardExpr, PredName, IntroKind, OutVar, OutputExpr, Line) :-
+    typr_binding_prefix(IntroKind, Prefix),
     format(string(Line),
-'~w <- if (~w) {
+'~w~w <- if (~w) {
 	~w
 } else {
 	stop("No matching clause for ~w")
-};', [OutVar, GuardExpr, OutputExpr, PredName]).
+};', [Prefix, OutVar, GuardExpr, OutputExpr, PredName]).
 
 guard_tail_final_expression([], _PredName, none, 'true').
 guard_tail_final_expression([], _PredName, LastExpr, LastExpr) :-
@@ -543,13 +552,15 @@ r_expr_op_map(\=, '!=').
 r_expr_op_map(and, '&').
 r_expr_op_map(or, '|').
 
-ensure_typr_var(VarMap, Var, Name, VarMap) :-
+ensure_typr_var(VarMap, Var, Name, VarMap, existing) :-
     lookup_typr_var(Var, VarMap, Name),
     !.
-ensure_typr_var(VarMap, Var, Name, [Var-Name|VarMap]) :-
+ensure_typr_var(VarMap, Var, Name, [Var-Name|VarMap], new) :-
     length(VarMap, ExistingCount),
     NextIndex is ExistingCount + 1,
     format(string(Name), 'v~w', [NextIndex]).
+ensure_typr_var(VarMap, Var, Name, VarMapOut) :-
+    ensure_typr_var(VarMap, Var, Name, VarMapOut, _).
 
 lookup_typr_var(Var, [StoredVar-Name|_], Name) :-
     Var == StoredVar,
@@ -579,10 +590,14 @@ typr_head_condition([HeadArg|Rest], Index, Conditions) :-
     typr_head_condition(Rest, NextIndex, RestConditions).
 
 branches_to_typr_if_chain([branch(Condition, Code)], IfChain) :-
-    format(string(IfChain), 'if (~w) {\n\t~w\n}', [Condition, Code]).
+    branch_safe_typr_code(Code, BranchCode),
+    indent_text(BranchCode, "\t", IndentedCode),
+    format(string(IfChain), 'if (~w) {\n~w\n}', [Condition, IndentedCode]).
 branches_to_typr_if_chain([branch(Condition, Code)|Rest], IfChain) :-
     branches_to_typr_if_chain(Rest, RestChain),
-    format(string(IfChain), 'if (~w) {\n\t~w\n} else ~w', [Condition, Code, RestChain]).
+    branch_safe_typr_code(Code, BranchCode),
+    indent_text(BranchCode, "\t", IndentedCode),
+    format(string(IfChain), 'if (~w) {\n~w\n} else ~w', [Condition, IndentedCode, RestChain]).
 
 pred_spec_name(_Module:Pred/_, PredName) :-
     !,
@@ -598,15 +613,26 @@ indent_text(Text, Prefix, Indented) :-
     ), IndentedLines),
     atomic_list_concat(IndentedLines, '\n', Indented).
 
+branch_safe_typr_code(Code, SafeCode) :-
+    split_string(Code, "\n", "", Lines),
+    maplist(branch_safe_typr_line, Lines, SafeLines),
+    atomic_list_concat(SafeLines, '\n', SafeCode).
+
+branch_safe_typr_line(Line, SafeLine) :-
+    (   sub_string(Line, 0, 4, _, "let ")
+    ->  SafeLine = Line
+    ;   sub_string(Line, _, _, _, " <- "),
+        sub_string(Line, _, 1, 0, ";")
+    ->  string_concat("let ", Line, SafeLine)
+    ;   SafeLine = Line
+    ).
+
 finalize_type_diagnostics_report(Options) :-
     (   memberchk(type_diagnostics_report(Report), Options),
         var(Report)
     ->  Report = []
     ;   true
     ).
-
-raw_block_expression(ClauseCode, RawExpr) :-
-    format(string(RawExpr), '@{ local({ ~w }) }@', [ClauseCode]).
 
 wrapped_r_body_expression(Module:Pred/Arity, Options, WrappedExpr) :-
     !,
