@@ -14,7 +14,9 @@ setup_r_test :-
 cleanup_r_test :-
     clear_type_declarations,
     retractall(user:choose_value(_, _)),
-    retractall(user:lower_number(_)).
+    retractall(user:lower_number(_)),
+    retractall(user:choose_with_guard(_, _)),
+    retractall(user:guarded_lower(_)).
 
 :- begin_tests(r_target, [
     setup(setup_r_test),
@@ -49,6 +51,37 @@ test(single_clause_uses_typed_fallback_on_incompatible_return) :-
     assertz(user:(lower_number(Value) :- string_lower('HI', Value))),
     assertz(type_declarations:uw_return_type(lower_number/1, number)),
     once(compile_predicate_to_r(lower_number/1, [], Code)),
+    \+ sub_string(Code, _, _, _, 'tolower("HI")'),
+    once(sub_string(Code, _, _, _, 'numeric()')).
+
+test(conjunction_with_trailing_true_uses_last_meaningful_return_type) :-
+    clear_type_declarations,
+    init_r_target,
+    assertz(user:(choose_with_guard(ok, Value) :- string_lower('HI', Value), true)),
+    assertz(user:(choose_with_guard(num, Value) :- to_numeric(7, Value), true)),
+    assertz(type_declarations:uw_return_type(choose_with_guard/2, number)),
+    once(compile_predicate_to_r(choose_with_guard/2, [], Code)),
+    once(sub_string(Code, _, _, _, 'as.numeric(7)')),
+    \+ sub_string(Code, _, _, _, 'tolower("HI")').
+
+test(type_diagnostics_error_throws_on_incompatible_single_clause) :-
+    clear_type_declarations,
+    init_r_target,
+    assertz(user:(guarded_lower(Value) :- string_lower('HI', Value), true)),
+    assertz(type_declarations:uw_return_type(guarded_lower/1, number)),
+    catch(
+        compile_predicate_to_r(guarded_lower/1, [type_diagnostics(error)], _),
+        error(r_type_constraint_violation(guarded_lower/1, single_clause_fallback, number, string, _), _),
+        Caught = true
+    ),
+    assertion(Caught == true).
+
+test(type_diagnostics_warn_preserves_fallback_behavior) :-
+    clear_type_declarations,
+    init_r_target,
+    assertz(user:(guarded_lower(Value) :- string_lower('HI', Value), true)),
+    assertz(type_declarations:uw_return_type(guarded_lower/1, number)),
+    once(compile_predicate_to_r(guarded_lower/1, [type_diagnostics(warn)], Code)),
     \+ sub_string(Code, _, _, _, 'tolower("HI")'),
     once(sub_string(Code, _, _, _, 'numeric()')).
 

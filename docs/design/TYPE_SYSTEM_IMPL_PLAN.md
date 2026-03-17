@@ -144,6 +144,10 @@ bring-up.
   return types replace weak `Any` fallbacks
 - `r`-target return-type constraints enabled by default when metadata exists,
   with opt-out via `type_constraints(false)`
+- optional `type_diagnostics(off|warn|error)` for return-type constraint
+  violations, defaulting to `off`
+- improved shallow return-type inference for inferable body shapes, including
+  conjunctions whose final goal is `true`
 
 **Remaining scope after Phase 2.5:**
 - broader lowering for generic non-recursive rule bodies
@@ -241,8 +245,10 @@ Each target follows the same pattern as Phases 2–4:
    `uw_type/3` declarations for a weighted directed graph with integer
    node IDs and float edge weights.
 2. Update the main `README.md` with a "Type Annotations" section.
-3. Add a `MIGRATION.md` note confirming backward compatibility.
-4. Add `docs/design/TYPR_TARGET_DESIGN.md` to the type system document index.
+3. Add an R/TypR example showing `uw_return_type/2`,
+   `type_constraints(false)`, and optional `type_diagnostics`.
+4. Add a `MIGRATION.md` note confirming backward compatibility.
+5. Add `docs/design/TYPR_TARGET_DESIGN.md` to the type system document index.
 
 **Status note:** The design docs should now describe TypR as an implemented
 initial target, not just a proposed rollout item.

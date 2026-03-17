@@ -133,6 +133,51 @@ All Python variants share the core `python_target` recursion support and add spe
 | Lightweight text processing | **AWK** |
 | Prolog dialect transpilation | **Prolog** |
 
+## Type Annotations
+
+UnifyWeaver supports optional predicate type metadata through Prolog facts.
+
+Argument types:
+
+```prolog
+uw_type(edge/2, 1, atom).
+uw_type(edge/2, 2, atom).
+```
+
+Return types:
+
+```prolog
+uw_return_type(lower_name/2, atom).
+```
+
+Typed targets such as `typr` consume this metadata directly.
+
+The plain `r` target does not require type metadata, but if
+`uw_return_type/2` is present it will use it by default for:
+
+- better fallback/result-shape generation
+- simple compile-time compatibility checks
+
+This behavior can be disabled per compile call:
+
+```prolog
+compile_predicate_to_r(lower_name/2, [type_constraints(false)], Code).
+```
+
+Optional diagnostics are also available:
+
+```prolog
+compile_predicate_to_r(lower_name/2, [type_diagnostics(warn)], Code).
+compile_predicate_to_r(lower_name/2, [type_diagnostics(error)], Code).
+```
+
+- `off` (default): silent fallback/filtering
+- `warn`: emit a warning and continue
+- `error`: throw on a type-constraint violation
+
+Worked example:
+- [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)
+
 ---
 
 ## Target Features

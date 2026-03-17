@@ -183,6 +183,14 @@ R-family note:
 - If `uw_return_type/2` is present, `r` now uses it by default for simple
   compile-time validation and typed fallback/result-shape generation.
 - This behavior can be disabled per compile with `type_constraints(false)`.
+- Optional diagnostics now exist for that behavior:
+  `type_diagnostics(off|warn|error)`, default `off`.
+
+Inference note:
+
+- wrapped generic TypR paths now use declared return types first
+- if no declaration exists, they may still use shallow inferred return types
+  from inferable binding-shaped bodies before falling back to `Any`
 
 Current implementation note:
 
