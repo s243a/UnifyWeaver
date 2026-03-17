@@ -326,6 +326,8 @@ Current TypR lowering policy is intentionally mixed:
 - supported binding-shaped rule bodies lower directly to TypR
 - guard-style zero-output command bindings may be folded into TypR clause
   conditions
+- multi-step native TypR control-flow chains may keep later guards and outputs
+  in native TypR when those guards depend on earlier bound values
 - supported dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
   may lower directly to TypR raw-expression assignments
 - literal-guarded multi-clause predicates may lower to TypR `if` chains

@@ -22,6 +22,7 @@ cleanup_typr_test :-
     retractall(user:inferred_lower(_, _)),
     retractall(user:classify_name_guarded(_, _)),
     retractall(user:guarded_name(_, _)),
+    retractall(user:mid_guard(_, _)),
     retractall(user:sort_rows(_, _)),
     retractall(user:filter_rows(_, _)),
     retractall(user:group_rows(_, _)),
@@ -155,6 +156,18 @@ test(guard_bindings_expand_native_clause_conditions) :-
     once(compile_predicate_to_typr(guarded_name/2, [typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "is.character(arg1)")),
     once(sub_string(Code, _, _, _, "tolower(arg1)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(sequential_guards_after_output_lower_natively) :-
+    clear_type_declarations,
+    assertz(user:(mid_guard(Name, Len) :- string_lower(Name, Lower), is_character(Lower), string_length(Lower, Len))),
+    assertz(type_declarations:uw_type(mid_guard/2, 1, atom)),
+    assertz(type_declarations:uw_type(mid_guard/2, 2, integer)),
+    once(compile_predicate_to_typr(mid_guard/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "tolower(arg1)")),
+    once(sub_string(Code, _, _, _, "is.character(v3)")),
+    once(sub_string(Code, _, _, _, "nchar(v3)")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

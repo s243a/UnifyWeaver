@@ -333,35 +333,32 @@ native_typr_clause_pair(Head-Body, branch(Condition, BranchExpr)) :-
     raw_block_expression(ClauseCode, BranchExpr).
 
 native_typr_clause(Head, Body, Condition, ClauseCode) :-
-    Head =.. [_|HeadArgs],
+    Head =.. [Pred|HeadArgs],
     build_head_varmap(HeadArgs, 1, VarMap),
     typr_head_condition(HeadArgs, 1, HeadConditions),
-    native_typr_goal_sequence(Body, VarMap, GoalConditions, ClauseCode),
+    atom_string(Pred, PredName),
+    native_typr_goal_sequence(Body, VarMap, PredName, GoalConditions, ClauseCode),
     append(HeadConditions, GoalConditions, Conditions),
     (   Conditions = []
     ->  Condition = 'TRUE'
     ;   atomic_list_concat(Conditions, ' && ', Condition)
     ).
 
-native_typr_goal_sequence(Body, VarMap, Conditions, Code) :-
+native_typr_goal_sequence(Body, VarMap, PredName, Conditions, Code) :-
     normalize_typr_goals(Body, Goals),
     Goals \= [],
-    native_typr_goals(
+    native_typr_prefix_goals(
         Goals,
         VarMap,
-        _VarMapOut,
+        PredName,
+        false,
+        none,
         Conditions,
-        HasOutput,
-        FinalKind,
-        FinalExpr,
-        Lines
+        PrefixLines,
+        TailCode,
+        _VarMapOut
     ),
-    (   HasOutput == true,
-        FinalKind == guard
-    ->  fail
-    ;   true
-    ),
-    append(Lines, [FinalExpr], BodyLines),
+    append(PrefixLines, [TailCode], BodyLines),
     atomic_list_concat(BodyLines, '\n', Code).
 
 normalize_typr_goals(true, []) :- !.
@@ -375,57 +372,64 @@ normalize_typr_goals(_Module:Goal, Goals) :-
     normalize_typr_goals(Goal, Goals).
 normalize_typr_goals(Goal, [Goal]).
 
-native_typr_goals([], VarMap, VarMap, [], false, guard, 'true', []).
-native_typr_goals([Goal|Rest], VarMap0, VarMap, Conditions, HasOutput, FinalKind, FinalExpr, Lines) :-
-    native_typr_goal(Goal, VarMap0, VarMap1, GoalConditions, GoalLines, GoalKind, GoalExpr),
-    native_typr_goals(Rest, VarMap1, VarMap, RestConditions, RestHasOutput, RestFinalKind, RestFinalExpr, RestLines),
-    append(GoalConditions, RestConditions, Conditions),
-    append(GoalLines, RestLines, Lines),
-    (   GoalKind == output
-    ->  HasOutput = true
-    ;   HasOutput = RestHasOutput
-    ),
-    (   Rest == []
-    ->  FinalKind = GoalKind,
-        FinalExpr = GoalExpr
-    ;   FinalKind = RestFinalKind,
-        FinalExpr = RestFinalExpr
-    ).
+native_typr_prefix_goals([], VarMap, _PredName, _SeenOutput, none, [], [], 'true', VarMap).
+native_typr_prefix_goals([], VarMap, _PredName, _SeenOutput, LastExpr, [], [], LastExpr, VarMap) :-
+    LastExpr \== none.
+native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, _SeenOutput, _LastExpr0, Conditions, [Line|RestLines], TailCode, VarMapOut) :-
+    native_typr_output_goal(Goal, VarMap0, VarMap1, Line, OutExpr),
+    native_typr_prefix_goals(Rest, VarMap1, PredName, true, OutExpr, Conditions, RestLines, TailCode, VarMapOut).
+native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, false, LastExpr, [GuardCondition|RestConditions], RestLines, TailCode, VarMapOut) :-
+    native_typr_guard_goal(Goal, VarMap0, GuardCondition),
+    native_typr_prefix_goals(Rest, VarMap0, PredName, false, LastExpr, RestConditions, RestLines, TailCode, VarMapOut).
+native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, true, LastExpr, [], [], TailCode, VarMapOut) :-
+    native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, LastExpr, TailCode, VarMapOut).
 
-native_typr_goal(_Module:Goal, VarMap0, VarMap, Conditions, Lines, GoalKind, FinalExpr) :-
+native_typr_guarded_tail_sequence(Goals, VarMap0, PredName, LastExpr, Code, VarMapOut) :-
+    native_typr_guarded_tail_sequence(Goals, VarMap0, PredName, LastExpr, [], Lines, FinalExpr, VarMapOut),
+    append(Lines, [FinalExpr], BodyLines),
+    atomic_list_concat(BodyLines, '\n', Code).
+
+native_typr_guarded_tail_sequence([], VarMap, PredName, LastExpr, PendingGuards, [], FinalExpr, VarMap) :-
+    guard_tail_final_expression(PendingGuards, PredName, LastExpr, FinalExpr).
+native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, _LastExpr0, PendingGuards, [Line|RestLines], FinalExpr, VarMapOut) :-
+    native_typr_output_expr(Goal, VarMap0, VarMap1, OutVar, OutputExpr),
+    guard_condition_expression(PendingGuards, GuardExpr),
+    conditional_output_line(GuardExpr, PredName, OutVar, OutputExpr, Line),
+    native_typr_guarded_tail_sequence(Rest, VarMap1, PredName, OutVar, [], RestLines, FinalExpr, VarMapOut).
+native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, LastExpr, PendingGuards0, Lines, FinalExpr, VarMapOut) :-
+    native_typr_guard_goal(Goal, VarMap0, GuardCondition),
+    append(PendingGuards0, [GuardCondition], PendingGuards),
+    native_typr_guarded_tail_sequence(Rest, VarMap0, PredName, LastExpr, PendingGuards, Lines, FinalExpr, VarMapOut).
+
+native_typr_output_goal(_Module:Goal, VarMap0, VarMap, Line, FinalExpr) :-
     !,
-    native_typr_goal(Goal, VarMap0, VarMap, Conditions, Lines, GoalKind, FinalExpr).
-native_typr_goal(filter(DF, Expr, Out), VarMap0, VarMap, [], [Line], output, FinalExpr) :-
+    native_typr_output_goal(Goal, VarMap0, VarMap, Line, FinalExpr).
+native_typr_output_goal(Goal, VarMap0, VarMap, Line, FinalExpr) :-
+    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr),
+    format(string(Line), '~w <- ~w;', [FinalExpr, OutputExpr]).
+
+native_typr_output_expr(_Module:Goal, VarMap0, VarMap, FinalExpr, OutputExpr) :-
+    !,
+    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr).
+native_typr_output_expr(filter(DF, Expr, Out), VarMap0, VarMap, FinalExpr, OutputExpr) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_translate_r_expr(Expr, VarMap0, RExpr),
-    format(string(Line), '~w <- @{ subset(~w, ~w) }@;', [FinalExpr, RDF, RExpr]).
-native_typr_goal(sort_by(DF, Col, Out), VarMap0, VarMap, [], [Line], output, FinalExpr) :-
+    format(string(OutputExpr), '@{ subset(~w, ~w) }@', [RDF, RExpr]).
+native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_resolve_value(VarMap0, Col, RCol),
-    format(string(Line), '~w <- @{ ~w[order(~w[[~w]]), ] }@;', [FinalExpr, RDF, RDF, RCol]).
-native_typr_goal(group_by(DF, Col, Out), VarMap0, VarMap, [], [Line], output, FinalExpr) :-
+    format(string(OutputExpr), '@{ ~w[order(~w[[~w]]), ] }@', [RDF, RDF, RCol]).
+native_typr_output_expr(group_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_resolve_value(VarMap0, Col, RCol),
-    format(string(Line), '~w <- @{ aggregate(. ~~ ~w, data=~w, FUN=list) }@;', [FinalExpr, RCol, RDF]).
-native_typr_goal(Goal, VarMap0, VarMap, [GuardCondition], [], guard, 'true') :-
-    functor(Goal, Pred, Arity),
-    binding(r, Pred/Arity, TargetName, Inputs, [], Options),
-    member(pattern(command), Options),
-    simple_r_binding_target(TargetName),
-    Goal =.. [_|Args],
-    length(Inputs, InCount),
-    length(InArgs, InCount),
-    append(InArgs, [], Args),
-    maplist(typr_resolve_value(VarMap0), InArgs, ResolvedInArgs),
-    typr_guard_expression(TargetName, ResolvedInArgs, GuardCondition),
-    VarMap = VarMap0.
-native_typr_goal(Goal, VarMap0, VarMap, [], [Line], output, FinalExpr) :-
+    format(string(OutputExpr), '@{ aggregate(. ~~ ~w, data=~w, FUN=list) }@', [RCol, RDF]).
+native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr) :-
     functor(Goal, Pred, Arity),
     binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
@@ -437,7 +441,22 @@ native_typr_goal(Goal, VarMap0, VarMap, [], [Line], output, FinalExpr) :-
     maplist(typr_resolve_value(VarMap0), InArgs, ResolvedInArgs),
     atomic_list_concat(ResolvedInArgs, ', ', RArgsStr),
     ensure_typr_var(VarMap0, OutArg, FinalExpr, VarMap),
-    format(string(Line), '~w <- @{ ~w(~w) }@;', [FinalExpr, TargetName, RArgsStr]).
+    format(string(OutputExpr), '@{ ~w(~w) }@', [TargetName, RArgsStr]).
+
+native_typr_guard_goal(_Module:Goal, VarMap, GuardCondition) :-
+    !,
+    native_typr_guard_goal(Goal, VarMap, GuardCondition).
+native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
+    functor(Goal, Pred, Arity),
+    binding(r, Pred/Arity, TargetName, Inputs, [], Options),
+    member(pattern(command), Options),
+    simple_r_binding_target(TargetName),
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [], Args),
+    maplist(typr_resolve_value(VarMap), InArgs, ResolvedInArgs),
+    typr_guard_expression(TargetName, ResolvedInArgs, GuardCondition).
 
 simple_r_binding_target(TargetName) :-
     atom(TargetName),
@@ -458,6 +477,38 @@ typr_guard_expression(TargetName, [], GuardCondition) :-
 typr_guard_expression(TargetName, ResolvedInArgs, GuardCondition) :-
     atomic_list_concat(ResolvedInArgs, ', ', RArgsStr),
     format(string(GuardCondition), '@{ ~w(~w) }@', [TargetName, RArgsStr]).
+
+guard_condition_expression([], none).
+guard_condition_expression(Conditions, GuardExpr) :-
+    Conditions \= [],
+    atomic_list_concat(Conditions, ' && ', GuardExpr).
+
+conditional_output_line(none, _PredName, OutVar, OutputExpr, Line) :-
+    format(string(Line), '~w <- ~w;', [OutVar, OutputExpr]).
+conditional_output_line(GuardExpr, PredName, OutVar, OutputExpr, Line) :-
+    format(string(Line),
+'~w <- if (~w) {
+	~w
+} else {
+	stop("No matching clause for ~w")
+};', [OutVar, GuardExpr, OutputExpr, PredName]).
+
+guard_tail_final_expression([], _PredName, none, 'true').
+guard_tail_final_expression([], _PredName, LastExpr, LastExpr) :-
+    LastExpr \== none.
+guard_tail_final_expression(PendingGuards, PredName, LastExpr, FinalExpr) :-
+    PendingGuards \= [],
+    guard_condition_expression(PendingGuards, GuardExpr),
+    (   LastExpr == none
+    ->  BaseExpr = 'true'
+    ;   BaseExpr = LastExpr
+    ),
+    format(string(FinalExpr),
+'if (~w) {
+	~w
+} else {
+	stop("No matching clause for ~w")
+}', [GuardExpr, BaseExpr, PredName]).
 
 typr_translate_r_expr(Var, VarMap, Resolved) :-
     var(Var),
