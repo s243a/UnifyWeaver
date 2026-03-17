@@ -335,17 +335,32 @@ native_typr_clause_pair(Head-Body, branch(Condition, BranchExpr)) :-
 native_typr_clause(Head, Body, Condition, ClauseCode) :-
     Head =.. [_|HeadArgs],
     build_head_varmap(HeadArgs, 1, VarMap),
-    typr_head_condition(HeadArgs, 1, Conditions),
+    typr_head_condition(HeadArgs, 1, HeadConditions),
+    native_typr_goal_sequence(Body, VarMap, GoalConditions, ClauseCode),
+    append(HeadConditions, GoalConditions, Conditions),
     (   Conditions = []
     ->  Condition = 'TRUE'
     ;   atomic_list_concat(Conditions, ' && ', Condition)
-    ),
-    native_typr_goal_sequence(Body, VarMap, ClauseCode).
+    ).
 
-native_typr_goal_sequence(Body, VarMap, Code) :-
+native_typr_goal_sequence(Body, VarMap, Conditions, Code) :-
     normalize_typr_goals(Body, Goals),
     Goals \= [],
-    native_typr_goals(Goals, VarMap, _VarMapOut, FinalExpr, Lines),
+    native_typr_goals(
+        Goals,
+        VarMap,
+        _VarMapOut,
+        Conditions,
+        HasOutput,
+        FinalKind,
+        FinalExpr,
+        Lines
+    ),
+    (   HasOutput == true,
+        FinalKind == guard
+    ->  fail
+    ;   true
+    ),
     append(Lines, [FinalExpr], BodyLines),
     atomic_list_concat(BodyLines, '\n', Code).
 
@@ -360,16 +375,57 @@ normalize_typr_goals(_Module:Goal, Goals) :-
     normalize_typr_goals(Goal, Goals).
 normalize_typr_goals(Goal, [Goal]).
 
-native_typr_goals([Goal], VarMap0, VarMap, FinalExpr, [Line]) :-
-    native_typr_goal(Goal, VarMap0, VarMap, Line, FinalExpr).
-native_typr_goals([Goal|Rest], VarMap0, VarMap, FinalExpr, [Line|RestLines]) :-
-    native_typr_goal(Goal, VarMap0, VarMap1, Line, _OutputExpr),
-    native_typr_goals(Rest, VarMap1, VarMap, FinalExpr, RestLines).
+native_typr_goals([], VarMap, VarMap, [], false, guard, 'true', []).
+native_typr_goals([Goal|Rest], VarMap0, VarMap, Conditions, HasOutput, FinalKind, FinalExpr, Lines) :-
+    native_typr_goal(Goal, VarMap0, VarMap1, GoalConditions, GoalLines, GoalKind, GoalExpr),
+    native_typr_goals(Rest, VarMap1, VarMap, RestConditions, RestHasOutput, RestFinalKind, RestFinalExpr, RestLines),
+    append(GoalConditions, RestConditions, Conditions),
+    append(GoalLines, RestLines, Lines),
+    (   GoalKind == output
+    ->  HasOutput = true
+    ;   HasOutput = RestHasOutput
+    ),
+    (   Rest == []
+    ->  FinalKind = GoalKind,
+        FinalExpr = GoalExpr
+    ;   FinalKind = RestFinalKind,
+        FinalExpr = RestFinalExpr
+    ).
 
-native_typr_goal(_Module:Goal, VarMap0, VarMap, Line, FinalExpr) :-
+native_typr_goal(_Module:Goal, VarMap0, VarMap, Conditions, Lines, GoalKind, FinalExpr) :-
     !,
-    native_typr_goal(Goal, VarMap0, VarMap, Line, FinalExpr).
-native_typr_goal(Goal, VarMap0, VarMap, Line, FinalExpr) :-
+    native_typr_goal(Goal, VarMap0, VarMap, Conditions, Lines, GoalKind, FinalExpr).
+native_typr_goal(filter(DF, Expr, Out), VarMap0, VarMap, [], [Line], output, FinalExpr) :-
+    !,
+    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
+    typr_resolve_value(VarMap0, DF, RDF),
+    typr_translate_r_expr(Expr, VarMap0, RExpr),
+    format(string(Line), '~w <- @{ subset(~w, ~w) }@;', [FinalExpr, RDF, RExpr]).
+native_typr_goal(sort_by(DF, Col, Out), VarMap0, VarMap, [], [Line], output, FinalExpr) :-
+    !,
+    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
+    typr_resolve_value(VarMap0, DF, RDF),
+    typr_resolve_value(VarMap0, Col, RCol),
+    format(string(Line), '~w <- @{ ~w[order(~w[[~w]]), ] }@;', [FinalExpr, RDF, RDF, RCol]).
+native_typr_goal(group_by(DF, Col, Out), VarMap0, VarMap, [], [Line], output, FinalExpr) :-
+    !,
+    ensure_typr_var(VarMap0, Out, FinalExpr, VarMap),
+    typr_resolve_value(VarMap0, DF, RDF),
+    typr_resolve_value(VarMap0, Col, RCol),
+    format(string(Line), '~w <- @{ aggregate(. ~~ ~w, data=~w, FUN=list) }@;', [FinalExpr, RCol, RDF]).
+native_typr_goal(Goal, VarMap0, VarMap, [GuardCondition], [], guard, 'true') :-
+    functor(Goal, Pred, Arity),
+    binding(r, Pred/Arity, TargetName, Inputs, [], Options),
+    member(pattern(command), Options),
+    simple_r_binding_target(TargetName),
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [], Args),
+    maplist(typr_resolve_value(VarMap0), InArgs, ResolvedInArgs),
+    typr_guard_expression(TargetName, ResolvedInArgs, GuardCondition),
+    VarMap = VarMap0.
+native_typr_goal(Goal, VarMap0, VarMap, [], [Line], output, FinalExpr) :-
     functor(Goal, Pred, Arity),
     binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
@@ -396,6 +452,45 @@ typr_resolve_value(VarMap, Var, Value) :-
     !.
 typr_resolve_value(_VarMap, Value, Literal) :-
     r_literal(Value, Literal).
+
+typr_guard_expression(TargetName, [], GuardCondition) :-
+    format(string(GuardCondition), '@{ ~w }@', [TargetName]).
+typr_guard_expression(TargetName, ResolvedInArgs, GuardCondition) :-
+    atomic_list_concat(ResolvedInArgs, ', ', RArgsStr),
+    format(string(GuardCondition), '@{ ~w(~w) }@', [TargetName, RArgsStr]).
+
+typr_translate_r_expr(Var, VarMap, Resolved) :-
+    var(Var),
+    lookup_typr_var(Var, VarMap, Resolved),
+    !.
+typr_translate_r_expr(Atom, _VarMap, Resolved) :-
+    atom(Atom),
+    !,
+    format(string(Resolved), '~w', [Atom]).
+typr_translate_r_expr(Text, _VarMap, Resolved) :-
+    string(Text),
+    !,
+    format(string(Resolved), '"~s"', [Text]).
+typr_translate_r_expr(Number, _VarMap, Resolved) :-
+    number(Number),
+    !,
+    format(string(Resolved), '~w', [Number]).
+typr_translate_r_expr(Expr, VarMap, Resolved) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    typr_translate_r_expr(Left, VarMap, LeftResolved),
+    typr_translate_r_expr(Right, VarMap, RightResolved),
+    r_expr_op_map(Op, ROp),
+    format(string(Resolved), '(~w ~w ~w)', [LeftResolved, ROp, RightResolved]).
+
+r_expr_op_map(>, '>').
+r_expr_op_map(<, '<').
+r_expr_op_map(>=, '>=').
+r_expr_op_map(=<, '<=').
+r_expr_op_map(==, '==').
+r_expr_op_map(\=, '!=').
+r_expr_op_map(and, '&').
+r_expr_op_map(or, '|').
 
 ensure_typr_var(VarMap, Var, Name, VarMap) :-
     lookup_typr_var(Var, VarMap, Name),

@@ -20,7 +20,12 @@ cleanup_typr_test :-
     retractall(user:lower_name(_, _)),
     retractall(user:classify_name(_, _)),
     retractall(user:inferred_lower(_, _)),
-    retractall(user:classify_name_guarded(_, _)).
+    retractall(user:classify_name_guarded(_, _)),
+    retractall(user:guarded_name(_, _)),
+    retractall(user:sort_rows(_, _)),
+    retractall(user:filter_rows(_, _)),
+    retractall(user:group_rows(_, _)),
+    retractall(user:numeric_input(_)).
 
 :- begin_tests(typr_target, [
     setup(setup_typr_test),
@@ -141,6 +146,50 @@ test(type_diagnostics_report_defaults_to_empty_for_native_typr_lowering) :-
     assertz(type_declarations:uw_type(lower_name/2, 2, atom)),
     once(compile_predicate_to_typr(lower_name/2, [typed_mode(explicit), type_diagnostics_report(Report)], _Code)),
     assertion(Report == []).
+
+test(guard_bindings_expand_native_clause_conditions) :-
+    clear_type_declarations,
+    assertz(user:(guarded_name(Name, Lower) :- is_character(Name), string_lower(Name, Lower))),
+    assertz(type_declarations:uw_type(guarded_name/2, 1, atom)),
+    assertz(type_declarations:uw_type(guarded_name/2, 2, atom)),
+    once(compile_predicate_to_typr(guarded_name/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "is.character(arg1)")),
+    once(sub_string(Code, _, _, _, "tolower(arg1)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(guard_only_predicates_infer_boolean_return_type) :-
+    clear_type_declarations,
+    assertz(user:(numeric_input(Value) :- is_numeric(Value))),
+    once(compile_predicate_to_typr(numeric_input/1, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let numeric_input <- fn(arg1): bool")),
+    once(sub_string(Code, _, _, _, "is.numeric(arg1)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(dataframe_sort_predicates_lower_natively) :-
+    clear_type_declarations,
+    assertz(user:(sort_rows(Input, Output) :- sort_by(Input, name, Output))),
+    once(compile_predicate_to_typr(sort_rows/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "order(arg1[[\"name\"]])")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(dataframe_filter_predicates_lower_natively) :-
+    clear_type_declarations,
+    assertz(user:(filter_rows(Input, Output) :- filter(Input, score > 10, Output))),
+    once(compile_predicate_to_typr(filter_rows/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "subset(arg1, (score > 10))")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(dataframe_group_predicates_lower_natively) :-
+    clear_type_declarations,
+    assertz(user:(group_rows(Input, Output) :- group_by(Input, category, Output))),
+    once(compile_predicate_to_typr(group_rows/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "aggregate(. ~ \"category\", data=arg1, FUN=list)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
 
 test(transitive_closure_template_is_valid_typr) :-
     clear_type_declarations,

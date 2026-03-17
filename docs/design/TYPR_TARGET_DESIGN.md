@@ -27,6 +27,9 @@ This document focuses on architecture and rollout choices specific to TypR.
    - transitive-closure generation
    - native lowering for a conservative subset of generic binding-shaped rule
      bodies
+   - guard-style command predicates lowered into clause conditions
+   - native lowering for the dataframe helpers `filter/3`, `sort_by/3`, and
+     `group_by/3`
 7. The remaining gap is broader lowering for arbitrary generic rule bodies
    beyond that current subset.
 
@@ -182,7 +185,10 @@ Completed:
 7. Added conservative native TypR lowering for generic rule bodies when the
    body is a supported chain of simple R bindings, including literal-guarded
    multi-clause predicates compiled into TypR `if` / `else if` chains.
-8. Added structured diagnostics aggregation on the `r` side via
+8. Extended that native subset to include guard-style command predicates in
+   clause conditions and direct lowering for the dataframe helpers
+   `filter/3`, `sort_by/3`, and `group_by/3`.
+9. Added structured diagnostics aggregation on the `r` side via
    `type_diagnostics_report(Report)`, which TypR can pass through on wrapped
    fallbacks and otherwise defaults to `[]` for native-lowered paths.
 
@@ -209,8 +215,9 @@ Current implementation note:
   current TypR surface language is too restrictive for the required BFS logic
   inside nested scopes
 - the native generic TypR path is intentionally conservative and currently
-  targets simple output-producing binding chains plus literal-guarded branch
-  selection; more complex bodies still fall back to wrapped R
+  targets simple output-producing binding chains, guard-style command
+  predicates, dataframe helper calls, and literal-guarded branch selection;
+  more complex bodies still fall back to wrapped R
 
 Follow-on work:
 

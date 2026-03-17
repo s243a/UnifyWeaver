@@ -192,8 +192,14 @@ compile_predicate_to_r(lower_name/2, [type_diagnostics_report(Report)], Code).
 
 TypR now uses the same shared return-type metadata and conservative inference
 layer. For simple binding-shaped predicates and literal-guarded multi-clause
-branches it lowers directly to native TypR syntax. More complex generic bodies
-still fall back to the wrapped R path.
+branches it lowers directly to native TypR syntax. That native subset now
+includes:
+
+- simple output-producing binding chains
+- guard-style command predicates such as `is_character/1`
+- dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
+
+More complex generic bodies still fall back to the wrapped R path.
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)

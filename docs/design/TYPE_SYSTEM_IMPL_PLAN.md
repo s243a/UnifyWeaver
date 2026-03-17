@@ -153,6 +153,8 @@ bring-up.
 - native TypR lowering for a conservative subset of generic non-recursive rule
   bodies:
   - simple output-producing binding chains
+  - guard-style command predicates lowered into clause conditions
+  - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
   - literal-guarded multi-clause branches built from those chains
 
 **Remaining scope after Phase 2.5:**
