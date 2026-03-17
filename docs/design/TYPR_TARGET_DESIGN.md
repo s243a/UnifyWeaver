@@ -30,6 +30,8 @@ This document focuses on architecture and rollout choices specific to TypR.
    - guard-style command predicates lowered into clause conditions
    - sequential native control-flow chains where earlier outputs feed later
      guards and outputs
+   - supported literal-headed branch bodies that keep those chains native by
+     using `let` for newly introduced locals inside TypR branches
    - native lowering for the dataframe helpers `filter/3`, `sort_by/3`, and
      `group_by/3`
 7. The remaining gap is broader lowering for arbitrary generic rule bodies
@@ -192,7 +194,10 @@ Completed:
    `filter/3`, `sort_by/3`, and `group_by/3`.
 9. Extended the native generic path further so sequential guard/output control
    flow can stay in TypR when a later guard depends on an earlier bound value.
-10. Added structured diagnostics aggregation on the `r` side via
+10. Extended native multi-clause TypR lowering so supported branch bodies stay
+    native and introduce new branch-local intermediates with `let` rather than
+    raw `local({ ... })` wrappers.
+11. Added structured diagnostics aggregation on the `r` side via
    `type_diagnostics_report(Report)`, which TypR can pass through on wrapped
    fallbacks and otherwise defaults to `[]` for native-lowered paths.
 
@@ -220,9 +225,10 @@ Current implementation note:
   inside nested scopes
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
-  predicates, sequential guard/output control-flow chains, dataframe helper
-  calls, and literal-guarded branch selection; more complex bodies still fall
-  back to wrapped R
+  predicates, sequential guard/output control-flow chains, native
+  literal-headed branch bodies built from those chains, dataframe helper calls,
+  and literal-guarded branch selection; more complex bodies still fall back to
+  wrapped R
 
 Follow-on work:
 

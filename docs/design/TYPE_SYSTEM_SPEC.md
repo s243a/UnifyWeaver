@@ -328,6 +328,8 @@ Current TypR lowering policy is intentionally mixed:
   conditions
 - multi-step native TypR control-flow chains may keep later guards and outputs
   in native TypR when those guards depend on earlier bound values
+- supported literal-headed branch bodies may also stay native when those chains
+  fit inside a TypR `if` branch with `let`-introduced intermediate locals
 - supported dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
   may lower directly to TypR raw-expression assignments
 - literal-guarded multi-clause predicates may lower to TypR `if` chains

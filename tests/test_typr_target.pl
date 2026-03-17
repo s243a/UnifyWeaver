@@ -23,6 +23,8 @@ cleanup_typr_test :-
     retractall(user:classify_name_guarded(_, _)),
     retractall(user:guarded_name(_, _)),
     retractall(user:mid_guard(_, _)),
+    retractall(user:multi_guard_chain(_, _)),
+    retractall(user:multi_clause_chain(_, _)),
     retractall(user:sort_rows(_, _)),
     retractall(user:filter_rows(_, _)),
     retractall(user:group_rows(_, _)),
@@ -168,6 +170,34 @@ test(sequential_guards_after_output_lower_natively) :-
     once(sub_string(Code, _, _, _, "tolower(arg1)")),
     once(sub_string(Code, _, _, _, "is.character(v3)")),
     once(sub_string(Code, _, _, _, "nchar(v3)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(multi_decision_guard_chains_use_let_for_new_intermediates) :-
+    clear_type_declarations,
+    assertz(user:(multi_guard_chain(Name, Out) :- string_lower(Name, Lower), is_character(Lower), string_length(Lower, Len), is_numeric(Len), string_upper(Lower, Upper), is_character(Upper), string_concat(Upper, '!', Out))),
+    assertz(type_declarations:uw_type(multi_guard_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(multi_guard_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(multi_guard_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let v3 <- @{ tolower(arg1) }@;")),
+    once(sub_string(Code, _, _, _, "let v4 <- if (@{ is.character(v3) }@)")),
+    once(sub_string(Code, _, _, _, "let v5 <- if (@{ is.numeric(v4) }@)")),
+    once(sub_string(Code, _, _, _, "arg2 <- if (@{ is.character(v5) }@)")),
+    \+ sub_string(Code, _, _, _, "local({"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(multi_clause_decision_chains_stay_native_in_branch_bodies) :-
+    clear_type_declarations,
+    assertz(user:(multi_clause_chain(short, Out) :- string_lower('HI', Lower), is_character(Lower), string_length(Lower, Len), is_numeric(Len), string_upper(Lower, Out))),
+    assertz(user:(multi_clause_chain(long, Out) :- string_lower('BYE', Lower), is_character(Lower), string_length(Lower, Len), is_numeric(Len), string_upper(Lower, Out))),
+    assertz(type_declarations:uw_type(multi_clause_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(multi_clause_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(multi_clause_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "else if")),
+    once(sub_string(Code, _, _, _, "let v2 <- @{ tolower(\"HI\") }@;")),
+    once(sub_string(Code, _, _, _, "let v3 <- if (@{ is.character(v2) }@)")),
+    \+ sub_string(Code, _, _, _, "local({"),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
