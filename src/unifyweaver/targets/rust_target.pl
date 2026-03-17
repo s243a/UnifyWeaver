@@ -4064,10 +4064,11 @@ extract_arith_rust((_, B), Op) :- extract_arith_rust(B, Op), !.
 extract_arith_rust(_, add_1).
 
 %% step_op_to_rust(+StepOp, -RustCode)
+%  Non-multifile version (used by legacy tail recursion path)
 step_op_to_rust(add_element, "result += item").
 step_op_to_rust(add_1, "result += 1").
 step_op_to_rust(mult_element, "result *= item").
-step_op_to_rust(_, "result += item").
+step_op_to_rust(sub_element, "result -= item").
 
 %% can_compile_tail_recursion_rust(+Pred/Arity)
 can_compile_tail_recursion_rust(Pred/Arity) :-
