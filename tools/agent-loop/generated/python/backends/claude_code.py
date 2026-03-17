@@ -121,32 +121,6 @@ class ClaudeCodeBackend(AgentBackend):
             tokens=tokens,
         )
 
-    def _describe_tool_call(self, tool_name: str, params: dict) -> str:
-        """Create a short description of a tool call."""
-        if tool_name == 'Read':
-            return f"reading {os.path.basename(params.get('file_path', '?'))}"
-        elif tool_name == 'Glob':
-            return f"searching {params.get('pattern', '?')}"
-        elif tool_name == 'Grep':
-            return f"grep {params.get('pattern', '?')}"
-        elif tool_name == 'Bash':
-            cmd = params.get('command', '?')
-            if len(cmd) > 72:
-                cmd = cmd[:69] + '...'
-            return f"$ {cmd}"
-        elif tool_name == 'Write':
-            return f"writing {os.path.basename(params.get('file_path', '?'))}"
-        elif tool_name == 'Edit':
-            return f"editing {os.path.basename(params.get('file_path', '?'))}"
-        elif tool_name == 'Task':
-            return f"agent: {params.get('description', '?')}"
-        elif tool_name == 'WebFetch':
-            return f"fetching {params.get('url', '?')}"
-        elif tool_name == 'WebSearch':
-            return f"searching: {params.get('query', '?')}"
-        else:
-            return tool_name
-
     def _format_prompt(self, message: str, context: list[dict]) -> str:
         """Format message with conversation context."""
         if not context:

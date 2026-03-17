@@ -304,13 +304,26 @@ run_tests :-
     test_phase23_schema_validation,
     test_phase23_token_budget,
     test_phase24_streaming_token_counter,
+    test_declarative_test_gen,
+    test_shared_logic_infrastructure,
+    %% Run generated declarative tests if available
+    (exists_file('generated/prolog/test_declarative.pl') ->
+        consult('generated/prolog/test_declarative'),
+        run_declarative_tests
+    ; format("~n[SKIP] generated/prolog/test_declarative.pl not found~n")),
     %% Report
     aggregate_all(count, test_passed(_), Passed),
     aggregate_all(count, test_failed(_), Failed),
-    format("~n=== Results: ~w passed, ~w failed ===~n", [Passed, Failed]),
+    %% Include declarative test counts if available
+    (aggregate_all(count, decl_test_passed(_), DPassed) -> true ; DPassed = 0),
+    (aggregate_all(count, decl_test_failed(_), DFailed) -> true ; DFailed = 0),
+    TotalPassed is Passed + DPassed,
+    TotalFailed is Failed + DFailed,
+    format("~n=== Results: ~w passed, ~w failed (incl. ~w declarative) ===~n",
+           [TotalPassed, TotalFailed, DPassed]),
     %% Clean up
     clear_all_bindings,
-    (Failed > 0 -> halt(1) ; true).
+    (TotalFailed > 0 -> halt(1) ; true).
 
 %% Assert helper
 assert_true(Name, Goal) :-
@@ -5920,4 +5933,76 @@ test_phase24_streaming_token_counter :-
     assert_true('Rust shows streamed summary', (
         agent_loop_module:rust_fragment(main_loop, RL2),
         sub_atom(RL2, _, _, _, '[Streamed:')
+    )).
+
+test_declarative_test_gen :-
+    format("~nDeclarative test generation:~n"),
+    %% generate_all(tests) clause exists
+    assert_true('generate_all(tests) defined', (
+        predicate_property(agent_loop_module:generate_all(_), defined)
+    )),
+    %% generate_declarative_tests/0 exists
+    assert_true('generate_declarative_tests defined', (
+        predicate_property(agent_loop_module:generate_declarative_tests, defined)
+    )),
+    %% shared_logic/3 facts exist
+    assert_true('shared_logic facts exist', (
+        findall(M, agent_loop_module:shared_logic(_, M, _), Ms),
+        length(Ms, N), N >= 4
+    )),
+    %% compile_logic/3 defined
+    assert_true('compile_logic/3 defined', (
+        predicate_property(agent_loop_module:compile_logic(_, _, _), defined)
+    )),
+    %% logic_slot/3 facts for python
+    assert_true('logic_slot for python exists', (
+        agent_loop_module:logic_slot(python, return_val(false), _)
+    )),
+    %% logic_slot/3 facts for rust
+    assert_true('logic_slot for rust exists', (
+        agent_loop_module:logic_slot(rust, return_val(false), _)
+    )).
+
+test_shared_logic_infrastructure :-
+    format("~nShared logic infrastructure:~n"),
+    %% is_over_budget compiles for python
+    assert_true('is_over_budget compiles to python', (
+        agent_loop_module:compile_logic(python, is_over_budget, PyCode),
+        atom(PyCode),
+        sub_atom(PyCode, _, _, _, 'self.total_cost')
+    )),
+    %% is_over_budget compiles for rust
+    assert_true('is_over_budget compiles to rust', (
+        agent_loop_module:compile_logic(rust, is_over_budget, RsCode),
+        atom(RsCode),
+        sub_atom(RsCode, _, _, _, 'self.total_cost()')
+    )),
+    %% budget_remaining compiles for python
+    assert_true('budget_remaining compiles to python', (
+        agent_loop_module:compile_logic(python, budget_remaining, PyCode2),
+        sub_atom(PyCode2, _, _, _, 'max(0.0')
+    )),
+    %% budget_remaining compiles for rust
+    assert_true('budget_remaining compiles to rust', (
+        agent_loop_module:compile_logic(rust, budget_remaining, RsCode2),
+        sub_atom(RsCode2, _, _, _, '.max(0.0)')
+    )),
+    %% cache_clear compiles for python
+    assert_true('cache_clear compiles to python', (
+        agent_loop_module:compile_logic(python, cache_clear, PyCode3),
+        sub_atom(PyCode3, _, _, _, 'self.cache')
+    )),
+    %% cache_clear compiles for rust
+    assert_true('cache_clear compiles to rust', (
+        agent_loop_module:compile_logic(rust, cache_clear, RsCode3),
+        sub_atom(RsCode3, _, _, _, 'self.cache()')
+    )),
+    %% Python uses <= 0 (int-style), Rust uses <= 0.0 (float-style)
+    assert_true('python guard uses int zero', (
+        agent_loop_module:compile_logic(python, is_over_budget, P),
+        sub_atom(P, _, _, _, '<= 0')
+    )),
+    assert_true('rust guard uses float zero', (
+        agent_loop_module:compile_logic(rust, is_over_budget, R),
+        sub_atom(R, _, _, _, '<= 0.0')
     )).
