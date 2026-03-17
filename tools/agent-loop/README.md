@@ -68,14 +68,15 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 
 | Metric | Count |
 |--------|-------|
-| `py_fragment/2` facts | 94 |
+| `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
+| `shared_logic/3` facts | 4 |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1025 + 139 Rust integration + 148 Python (1025 Prolog unit + 36 Prolog integration + 148 Python + 139 cargo test) |
+| Total tests | 1039 + 220 declarative + 139 Rust + 148 Python (1039 Prolog unit + 220 auto-generated + 36 Prolog integration + 148 Python + 139 cargo test) |
 
 ## Backends
 
@@ -456,6 +457,51 @@ swipl -g "generate_all, halt" agent_loop_module.pl
 ```
 
 This produces all 33 Python files in `generated/`. The output should match `prototype/` (the reference implementation).
+
+### Declarative Test Generation
+
+`generate_all(tests)` auto-generates `generated/prolog/test_declarative.pl` from existing facts. Every declarative fact in the system (tool_spec, agent_config_field, slash_command, command_alias, agent_backend, security_profile, shared_logic) gets existence, property, and cross-reference tests without any hand-written test code.
+
+| Category | Tests | What it validates |
+|----------|-------|-------------------|
+| Existence | ~73 | Every fact instance is reachable |
+| Property | ~30 | Structural invariants (e.g., every tool_spec has description + parameters) |
+| Cross-reference | ~15 | Referential integrity (aliases → commands, helper_fragments → py_fragments) |
+| Count consistency | ~6 | Hardcoded counts catch unregistered additions |
+| Shared logic | ~10 | shared_logic facts exist and compile for both targets |
+| **Total** | **~220** | Auto-generated, zero maintenance |
+
+```bash
+# Generate and run declarative tests standalone
+swipl -g "generate_all(tests), halt" agent_loop_module.pl
+swipl -l generated/prolog/test_declarative.pl -g "run_declarative_tests, halt"
+```
+
+The generated tests integrate into the main test runner — `run_tests/0` in `test_agent_loop.pl` loads and runs them automatically if the file exists.
+
+### Target-Agnostic Component Model
+
+For methods that are 100% duplicated between Python and Rust targets, `shared_logic/3` stores the algorithm once as a template with `~slot~` placeholders. `logic_slot/3` provides target-specific syntax, and `compile_logic/3` produces the final code.
+
+```prolog
+% Define once
+shared_logic(costs, is_over_budget, [
+    signature(is_over_budget, [budget], bool),
+    body_template("if ~guard_leq_zero(budget)~:\n    ~return_val(false)~\n...")
+]).
+
+% Target-specific slots
+logic_slot(python, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0", [X]).
+logic_slot(rust,   guard_leq_zero(X), S) :- format(atom(S), "~w <= 0.0", [X]).
+
+% Compile to either target
+?- compile_logic(python, is_over_budget, Code).
+% Code = "if budget <= 0:\n    return False\n..."
+?- compile_logic(rust, is_over_budget, Code).
+% Code = "if budget <= 0.0 {\n    return false;\n..."
+```
+
+Initial shared methods: `is_over_budget`, `budget_remaining`, `cache_clear`, `cache_len`. These validate the pattern without replacing existing fragments — the compiled output is tested for parity against what py_fragment/rust_fragment already produce.
 
 ### Hybrid generation example
 

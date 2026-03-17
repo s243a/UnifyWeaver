@@ -87,7 +87,7 @@ agent_backend(claude_code, [
     module_imports([json, os, subprocess]),
     class_docstring('Claude Code CLI backend with streaming JSON output.'),
     display_name('Claude Code ({self.model})'),
-    helper_fragments([stream_json_return, describe_tool_call_claude_code, format_prompt])
+    helper_fragments([stream_json_return, format_prompt])
 ]).
 
 agent_backend(gemini, [
@@ -103,7 +103,7 @@ agent_backend(gemini, [
     module_imports([json, os, subprocess, sys]),
     class_docstring('Gemini CLI backend with streaming JSON output.'),
     display_name('Gemini ({self.model})'),
-    helper_fragments([stream_json_return, describe_tool_call_gemini, format_prompt])
+    helper_fragments([stream_json_return, format_prompt])
 ]).
 
 agent_backend(claude_api, [
@@ -202,7 +202,7 @@ agent_backend(openrouter_api, [
     ]),
     class_docstring('OpenRouter API backend (OpenAI-compatible, no pip deps).'),
     display_name('OpenRouter ({self.model})'),
-    helper_fragments([supports_streaming_true, sse_streaming_openrouter, describe_tool_call_openrouter])
+    helper_fragments([supports_streaming_true, sse_streaming_openrouter])
 ]).
 
 %% =============================================================================
@@ -1548,7 +1548,8 @@ output_path(Lang, RelPath, FullPath) :-
 generate_all :-
     generate_all(python),
     generate_all(prolog),
-    generate_all(rust).
+    generate_all(rust),
+    generate_all(tests).
 
 generate_all(python) :-
     write('Generating Python target...'), nl,
@@ -1628,6 +1629,397 @@ generate_all(rust) :-
     generate_rust_integration_tests,
     generate_rust_makefile,
     write('Rust target done.'), nl.
+
+%% =============================================================================
+%% Declarative Test Generation — Auto-generate tests from facts
+%% =============================================================================
+
+generate_all(tests) :-
+    write('Generating declarative tests...'), nl,
+    generate_declarative_tests,
+    write('Declarative tests done.'), nl.
+
+generate_declarative_tests :-
+    output_path(prolog, 'test_declarative.pl', Path),
+    open(Path, write, S),
+    write_decl_test_header(S),
+    write_decl_existence_tests(S),
+    write_decl_property_tests(S),
+    write_decl_crossref_tests(S),
+    write_decl_count_tests(S),
+    write_decl_shared_logic_tests(S),
+    write_decl_test_runner(S),
+    close(S),
+    format('  Generated test_declarative.pl (~w)~n', [Path]).
+
+write_decl_test_header(S) :-
+    write(S, '%% Auto-generated declarative tests — do not edit manually.\n'),
+    write(S, '%% Regenerate with: swipl -g "generate_all(tests), halt" agent_loop_module.pl\n\n'),
+    write(S, ':- use_module(library(lists)).\n\n'),
+    write(S, ':- dynamic decl_test_passed/1, decl_test_failed/1.\n\n'),
+    write(S, 'decl_assert_true(Name, Goal) :-\n'),
+    write(S, '    (call(Goal) ->\n'),
+    write(S, '        assert(decl_test_passed(Name)),\n'),
+    write(S, '        format("  [PASS] ~w~n", [Name])\n'),
+    write(S, '    ;\n'),
+    write(S, '        assert(decl_test_failed(Name)),\n'),
+    write(S, '        format("  [FAIL] ~w~n", [Name])\n'),
+    write(S, '    ).\n\n'),
+    write(S, 'decl_assert_eq(Name, Got, Expected) :-\n'),
+    write(S, '    (Got == Expected ->\n'),
+    write(S, '        assert(decl_test_passed(Name)),\n'),
+    write(S, '        format("  [PASS] ~w~n", [Name])\n'),
+    write(S, '    ;\n'),
+    write(S, '        assert(decl_test_failed(Name)),\n'),
+    write(S, '        format("  [FAIL] ~w (expected ~w, got ~w)~n", [Name, Expected, Got])\n'),
+    write(S, '    ).\n\n').
+
+%% --- Existence tests: one per fact instance ---
+write_decl_existence_tests(S) :-
+    write(S, '%% =============================================================================\n'),
+    write(S, '%% Existence Tests\n'),
+    write(S, '%% =============================================================================\n\n'),
+    write(S, 'test_decl_existence :-\n'),
+    write(S, '    format("~nDeclarative existence tests:~n"),\n'),
+    %% tool_spec
+    forall(tool_spec(Name, _), (
+        format(atom(Label), 'tool_spec(~w) exists', [Name]),
+        format(S, '    decl_assert_true(\'~w\', agent_loop_module:tool_spec(~w, _)),~n', [Label, Name])
+    )),
+    %% agent_backend
+    forall(agent_backend(Name, _), (
+        format(atom(Label), 'agent_backend(~w) exists', [Name]),
+        format(S, '    decl_assert_true(\'~w\', agent_loop_module:agent_backend(~w, _)),~n', [Label, Name])
+    )),
+    %% security_profile
+    forall(security_profile(Name, _), (
+        format(atom(Label), 'security_profile(~w) exists', [Name]),
+        format(S, '    decl_assert_true(\'~w\', agent_loop_module:security_profile(~w, _)),~n', [Label, Name])
+    )),
+    %% agent_config_field — use findall to get all field names
+    findall(FName, agent_config_field(FName, _, _, _), Fields),
+    forall(member(F, Fields), (
+        format(atom(Label), 'agent_config_field(~w) exists', [F]),
+        format(S, '    decl_assert_true(\'~w\', agent_loop_module:agent_config_field(~w, _, _, _)),~n', [Label, F])
+    )),
+    %% slash_command — use name only (quote atoms with special chars)
+    findall(CName, slash_command(CName, _, _, _), Cmds),
+    forall(member(C, Cmds), (
+        format(atom(Label), 'slash_command(~w) exists', [C]),
+        format(S, '    decl_assert_true(\'~w\', agent_loop_module:slash_command(~q, _, _, _)),~n', [Label, C])
+    )),
+    %% End the predicate with true
+    write(S, '    true.\n\n').
+
+%% --- Property tests: structural invariants ---
+%% Each property check is a separate predicate to avoid variable sharing issues.
+write_decl_property_tests(S) :-
+    write(S, '%% =============================================================================\n'),
+    write(S, '%% Property Tests\n'),
+    write(S, '%% =============================================================================\n\n'),
+    %% Generate individual test predicates for tool_spec properties
+    forall(tool_spec(Name, _), (
+        format(atom(PredName), 'test_prop_tool_~w', [Name]),
+        format(S, '~w :-~n', [PredName]),
+        format(atom(L1), 'tool_spec(~w) has description', [Name]),
+        format(S, '    decl_assert_true(\'~w\', (agent_loop_module:tool_spec(~w, P), member(description(_), P))),~n', [L1, Name]),
+        format(atom(L2), 'tool_spec(~w) has parameters', [Name]),
+        format(S, '    decl_assert_true(\'~w\', (agent_loop_module:tool_spec(~w, P), member(parameters(_), P))).~n~n', [L2, Name])
+    )),
+    %% Generate individual test predicates for backend properties
+    forall(agent_backend(Name, _), (
+        format(atom(PredName), 'test_prop_backend_~w', [Name]),
+        format(S, '~w :-~n', [PredName]),
+        format(atom(L1), 'backend(~w) has type', [Name]),
+        format(S, '    decl_assert_true(\'~w\', (agent_loop_module:agent_backend(~w, P), member(type(_), P))),~n', [L1, Name]),
+        format(atom(L2), 'backend(~w) has class_name', [Name]),
+        format(S, '    decl_assert_true(\'~w\', (agent_loop_module:agent_backend(~w, P), member(class_name(_), P))).~n~n', [L2, Name])
+    )),
+    %% Generate individual test predicates for security profile properties
+    forall(security_profile(Name, _), (
+        format(atom(PredName), 'test_prop_security_~w', [Name]),
+        format(S, '~w :-~n', [PredName]),
+        format(atom(L1), 'security(~w) has path_validation', [Name]),
+        format(S, '    decl_assert_true(\'~w\', (agent_loop_module:security_profile(~w, P), member(path_validation(_), P))),~n', [L1, Name]),
+        format(atom(L2), 'security(~w) has audit_logging', [Name]),
+        format(S, '    decl_assert_true(\'~w\', (agent_loop_module:security_profile(~w, P), member(audit_logging(_), P))).~n~n', [L2, Name])
+    )),
+    %% Main property test predicate calls all sub-predicates
+    write(S, 'test_decl_properties :-\n'),
+    write(S, '    format("~nDeclarative property tests:~n"),\n'),
+    forall(tool_spec(Name, _), (
+        format(atom(PredName), 'test_prop_tool_~w', [Name]),
+        format(S, '    ~w,~n', [PredName])
+    )),
+    forall(agent_backend(Name, _), (
+        format(atom(PredName), 'test_prop_backend_~w', [Name]),
+        format(S, '    ~w,~n', [PredName])
+    )),
+    forall(security_profile(Name, _), (
+        format(atom(PredName), 'test_prop_security_~w', [Name]),
+        format(S, '    ~w,~n', [PredName])
+    )),
+    %% Every slash_command has valid match type
+    forall(slash_command(Name, MatchType, _, _), (
+        format(atom(Label), 'command(~w) has valid match type', [Name]),
+        format(S, '    decl_assert_true(\'~w\', member(~w, [exact, prefix, prefix_sp, exact_or_prefix_sp])),~n', [Label, MatchType])
+    )),
+    %% Every config field has non-empty type (individual predicates to avoid var sharing)
+    findall(FName, agent_config_field(FName, _, _, _), Fields),
+    forall(member(F, Fields), (
+        format(atom(PredName), 'test_prop_config_~w', [F]),
+        format(S, '    ~w,~n', [PredName])
+    )),
+    write(S, '    true.\n\n'),
+    %% Emit config property predicates
+    forall(member(F2, Fields), (
+        format(atom(PredName2), 'test_prop_config_~w', [F2]),
+        format(S, '~w :- decl_assert_true(\'config(~w) has type\', (agent_loop_module:agent_config_field(~w, T, _, _), T \\= \'\')).~n', [PredName2, F2, F2])
+    )),
+    nl(S).
+
+%% --- Cross-reference tests ---
+
+%% resolve_alias_target(+CmdStr, -SlashCmdName)
+%% Given a command alias target string, find the actual slash_command it refers to.
+resolve_alias_target(CmdStr, CmdName) :-
+    atom_string(CAtom, CmdStr),
+    %% Extract first word
+    (sub_atom(CAtom, Pos, _, _, ' ') ->
+        sub_atom(CAtom, 0, Pos, _, FirstWord)
+    ;
+        FirstWord = CAtom
+    ),
+    %% Check if it's a direct command
+    (slash_command(FirstWord, _, _, _) ->
+        CmdName = FirstWord
+    ;
+        %% Check if it's in a command's aliases list
+        (slash_command(RealCmd, _, Props, _),
+         member(aliases(AliasList), Props),
+         member(FirstWord, AliasList)) ->
+            CmdName = RealCmd
+        ;
+            CmdName = FirstWord  %% fallback — will fail the test
+    ).
+
+write_decl_crossref_tests(S) :-
+    write(S, '%% =============================================================================\n'),
+    write(S, '%% Cross-Reference Tests\n'),
+    write(S, '%% =============================================================================\n\n'),
+    write(S, 'test_decl_crossrefs :-\n'),
+    write(S, '    format("~nDeclarative cross-reference tests:~n"),\n'),
+    %% Every command_alias resolves to a valid slash_command
+    findall(Alias-Cmd, command_alias(Alias, Cmd), Aliases),
+    forall(member(A-C, Aliases), (
+        resolve_alias_target(C, CmdName),
+        format(atom(Label), 'alias(~w) -> command(~w)', [A, CmdName]),
+        format(S, '    decl_assert_true(\'~w\', agent_loop_module:slash_command(~q, _, _, _)),~n', [Label, CmdName])
+    )),
+    %% Every backend with helper_fragments has matching py_fragments
+    forall((agent_backend(BName, Props), member(helper_fragments(Frags), Props), Frags \= []), (
+        forall(member(Frag, Frags), (
+            format(atom(Label), 'backend(~w) helper fragment ~w exists', [BName, Frag]),
+            format(S, '    decl_assert_true(\'~w\', agent_loop_module:py_fragment(~w, _)),~n', [Label, Frag])
+        ))
+    )),
+    write(S, '    true.\n\n').
+
+%% --- Count consistency tests ---
+write_decl_count_tests(S) :-
+    write(S, '%% =============================================================================\n'),
+    write(S, '%% Count Consistency Tests\n'),
+    write(S, '%% =============================================================================\n\n'),
+    write(S, 'test_decl_counts :-\n'),
+    write(S, '    format("~nDeclarative count tests:~n"),\n'),
+    %% Count each fact type and emit hardcoded assertions
+    findall(_, tool_spec(_, _), Tools), length(Tools, NTools),
+    format(S, '    findall(N, agent_loop_module:tool_spec(N, _), Ts), length(Ts, TC),~n', []),
+    format(S, '    decl_assert_eq(\'tool_spec count\', TC, ~w),~n', [NTools]),
+    findall(_, agent_backend(_, _), Backends), length(Backends, NBackends),
+    format(S, '    findall(N, agent_loop_module:agent_backend(N, _), Bs), length(Bs, BC),~n', []),
+    format(S, '    decl_assert_eq(\'backend count\', BC, ~w),~n', [NBackends]),
+    findall(_, security_profile(_, _), Profiles), length(Profiles, NProfiles),
+    format(S, '    findall(N, agent_loop_module:security_profile(N, _), Ps), length(Ps, PC),~n', []),
+    format(S, '    decl_assert_eq(\'security_profile count\', PC, ~w),~n', [NProfiles]),
+    findall(_, agent_config_field(_, _, _, _), CfgFields), length(CfgFields, NCfg),
+    format(S, '    findall(N, agent_loop_module:agent_config_field(N, _, _, _), Cs), length(Cs, CC),~n', []),
+    format(S, '    decl_assert_eq(\'config_field count\', CC, ~w),~n', [NCfg]),
+    findall(_, slash_command(_, _, _, _), SlashCmds), length(SlashCmds, NCmds),
+    format(S, '    findall(N, agent_loop_module:slash_command(N, _, _, _), Ss), length(Ss, SC),~n', []),
+    format(S, '    decl_assert_eq(\'slash_command count\', SC, ~w),~n', [NCmds]),
+    findall(_, py_fragment(_, _), PyFrags), length(PyFrags, NPy),
+    format(S, '    findall(N, agent_loop_module:py_fragment(N, _), PFs), length(PFs, PFC),~n', []),
+    format(S, '    decl_assert_eq(\'py_fragment count\', PFC, ~w),~n', [NPy]),
+    findall(_, rust_fragment(_, _), RsFrags), length(RsFrags, NRs),
+    format(S, '    findall(N, agent_loop_module:rust_fragment(N, _), RFs), length(RFs, RFC),~n', []),
+    format(S, '    decl_assert_eq(\'rust_fragment count\', RFC, ~w),~n', [NRs]),
+    write(S, '    true.\n\n').
+
+%% --- Shared logic tests (for Feature 2) ---
+write_decl_shared_logic_tests(S) :-
+    write(S, '%% =============================================================================\n'),
+    write(S, '%% Shared Logic Tests\n'),
+    write(S, '%% =============================================================================\n\n'),
+    write(S, 'test_decl_shared_logic :-\n'),
+    write(S, '    format("~nDeclarative shared logic tests:~n"),\n'),
+    %% Test each shared_logic fact exists and compiles for both targets
+    findall(Method, shared_logic(_, Method, _), Methods),
+    (Methods = [] ->
+        write(S, '    true.  %% No shared_logic facts yet\n\n')
+    ;
+        forall(member(M, Methods), (
+            format(atom(L1), 'shared_logic(~w) exists', [M]),
+            format(S, '    decl_assert_true(\'~w\', agent_loop_module:shared_logic(_, ~w, _)),~n', [L1, M]),
+            format(atom(L2), 'shared_logic(~w) compiles for python', [M]),
+            format(S, '    decl_assert_true(\'~w\', agent_loop_module:compile_logic(python, ~w, _)),~n', [L2, M]),
+            format(atom(L3), 'shared_logic(~w) compiles for rust', [M]),
+            format(S, '    decl_assert_true(\'~w\', agent_loop_module:compile_logic(rust, ~w, _)),~n', [L3, M])
+        )),
+        write(S, '    true.\n\n')
+    ).
+
+%% --- Test runner ---
+write_decl_test_runner(S) :-
+    write(S, '%% =============================================================================\n'),
+    write(S, '%% Test Runner\n'),
+    write(S, '%% =============================================================================\n\n'),
+    write(S, 'run_declarative_tests :-\n'),
+    write(S, '    retractall(decl_test_passed(_)),\n'),
+    write(S, '    retractall(decl_test_failed(_)),\n'),
+    write(S, '    format("~n=== Declarative Tests (auto-generated) ===~n"),\n'),
+    write(S, '    test_decl_existence,\n'),
+    write(S, '    test_decl_properties,\n'),
+    write(S, '    test_decl_crossrefs,\n'),
+    write(S, '    test_decl_counts,\n'),
+    write(S, '    test_decl_shared_logic,\n'),
+    write(S, '    aggregate_all(count, decl_test_passed(_), Passed),\n'),
+    write(S, '    aggregate_all(count, decl_test_failed(_), Failed),\n'),
+    write(S, '    format("~n=== Declarative: ~w passed, ~w failed ===~n", [Passed, Failed]),\n'),
+    write(S, '    true.  %% Main runner handles halt\n').
+
+%% =============================================================================
+%% Shared Logic — Target-Neutral Method Templates
+%% =============================================================================
+%%
+%% shared_logic(+Component, +MethodName, +Properties)
+%% Stores algorithms once, compiled to target-specific code via logic_slot/3.
+%% This eliminates duplication between py_fragment and rust_fragment for
+%% methods with identical logic and only syntactic differences.
+
+shared_logic(costs, is_over_budget, [
+    signature(is_over_budget, [budget], bool),
+    doc("Check if total cost exceeds budget. Budget of 0 means unlimited."),
+    container('CostTracker'),
+    body_template("if ~guard_leq_zero(budget)~:\n    ~return_val(false)~\n~return_val(self_total_cost >= budget)~")
+]).
+
+shared_logic(costs, budget_remaining, [
+    signature(budget_remaining, [budget], float),
+    doc("Return remaining budget in USD. Budget of 0 means unlimited (returns -1)."),
+    container('CostTracker'),
+    body_template("if ~guard_leq_zero(budget)~:\n    ~return_val(-1.0)~\n~return_val(max_zero(budget - self_total_cost))~")
+]).
+
+shared_logic(tool_cache, cache_clear, [
+    signature(clear, [], void),
+    doc("Clear all cached tool results."),
+    container('ToolResultCache'),
+    body_template("~self_field(cache)~.clear()")
+]).
+
+shared_logic(tool_cache, cache_len, [
+    signature(len, [], int),
+    doc("Return number of cached entries."),
+    container('ToolResultCache'),
+    body_template("~return_val(len_of(self_field(cache)))~")
+]).
+
+%% =============================================================================
+%% Logic Slots — Target-specific syntax mappings
+%% =============================================================================
+
+%% Python slots
+logic_slot(python, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0", [X]).
+logic_slot(python, return_val(false), "return False").
+logic_slot(python, return_val(true), "return True").
+logic_slot(python, return_val(Expr), S) :-
+    Expr \= true, Expr \= false,
+    expand_expr(python, Expr, ExprStr),
+    format(atom(S), "return ~w", [ExprStr]).
+logic_slot(python, self_field(F), S) :- format(atom(S), "self.~w", [F]).
+
+%% Rust slots
+logic_slot(rust, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0.0", [X]).
+logic_slot(rust, return_val(false), "return false;").
+logic_slot(rust, return_val(true), "return true;").
+logic_slot(rust, return_val(Expr), S) :-
+    Expr \= true, Expr \= false,
+    expand_expr(rust, Expr, ExprStr),
+    format(atom(S), "~w", [ExprStr]).
+logic_slot(rust, self_field(F), S) :- format(atom(S), "self.~w()", [F]).
+
+%% Expression expansion
+expand_expr(python, self_total_cost >= budget, "self.total_cost >= budget").
+expand_expr(rust, self_total_cost >= budget, "self.total_cost() >= budget").
+expand_expr(python, max_zero(Expr), S) :-
+    expand_expr(python, Expr, Inner),
+    format(atom(S), "max(0.0, ~w)", [Inner]).
+expand_expr(rust, max_zero(Expr), S) :-
+    expand_expr(rust, Expr, Inner),
+    format(atom(S), "(~w).max(0.0)", [Inner]).
+expand_expr(python, budget - self_total_cost, "budget - self.total_cost").
+expand_expr(rust, budget - self_total_cost, "budget - self.total_cost()").
+expand_expr(python, len_of(Expr), S) :-
+    expand_expr(python, Expr, Inner),
+    format(atom(S), "len(~w)", [Inner]).
+expand_expr(rust, len_of(Expr), S) :-
+    expand_expr(rust, Expr, Inner),
+    format(atom(S), "~w.len()", [Inner]).
+expand_expr(_, Atom, S) :- atom(Atom), atom_string(Atom, S).
+
+%% =============================================================================
+%% compile_logic/3 — Compile shared logic to target code
+%% =============================================================================
+
+compile_logic(Target, MethodName, Code) :-
+    shared_logic(_, MethodName, Props),
+    member(body_template(Template), Props),
+    expand_template(Target, Template, Code).
+
+%% expand_template(+Target, +Template, -Result)
+%% Replace ~slot(args)~ markers with target-specific expansions.
+expand_template(Target, Template, Result) :-
+    atom_string(Template, TStr),
+    expand_template_str(Target, TStr, ResultStr),
+    atom_string(Result, ResultStr).
+
+expand_template_str(_, Str, Str) :-
+    \+ sub_string(Str, _, _, _, "~"), !.
+expand_template_str(Target, Str, Result) :-
+    sub_string(Str, Before, 1, _, "~"),
+    sub_string(Str, 0, Before, _, Prefix),
+    AfterStart is Before + 1,
+    sub_string(Str, AfterStart, _, 0, Rest),
+    (sub_string(Rest, End, 1, _, "~") ->
+        sub_string(Rest, 0, End, _, SlotStr),
+        AfterSlot is End + 1,
+        sub_string(Rest, AfterSlot, _, 0, Remaining),
+        term_string(SlotTerm, SlotStr),
+        (logic_slot(Target, SlotTerm, Replacement) ->
+            true
+        ;
+            %% Slot not found — keep literal
+            format(atom(Replacement), "~w", [SlotStr])
+        ),
+        atom_string(Replacement, RepStr),
+        string_concat(Prefix, RepStr, Partial),
+        expand_template_str(Target, Remaining, ExpandedRest),
+        string_concat(Partial, ExpandedRest, Result)
+    ;
+        %% No closing tilde — keep as is
+        Result = Str
+    ).
 
 %% =============================================================================
 %% Prolog Target — Generate a functional SWI-Prolog agent loop
