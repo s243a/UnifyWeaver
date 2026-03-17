@@ -16,11 +16,13 @@
 
 :- use_module(library(lists)).
 :- use_module(library(gensym)).
+:- use_module(library(option)).
 :- use_module(common_generator).
 :- use_module('../core/binding_registry').
 :- use_module('../core/component_registry').
 :- use_module('../bindings/r_bindings').
 :- use_module('../core/template_system').
+:- use_module('type_declarations').
 
 % Track required packages/libraries
 :- dynamic required_r_package/1.
@@ -39,24 +41,25 @@ init_r_target :-
 compile_predicate(PredIndicator, Options, RCode) :-
     compile_predicate_to_r(PredIndicator, Options, RCode).
 
-compile_predicate_to_r(PredIndicator, _Options, RCode) :-
+compile_predicate_to_r(PredIndicator, Options, RCode) :-
     (   PredIndicator = Module:Pred/Arity
     ->  true
     ;   PredIndicator = Pred/Arity,
         Module = user
     ),
+    effective_r_return_type(Pred/Arity, Options, ReturnType),
     functor(Head, Pred, Arity),
     findall(Head-Body, clause(Module:Head, Body), Clauses),
     (   Clauses = []
     ->  format(string(RCode), '# No clauses found for ~w/~w', [Pred, Arity])
     ;   Clauses = [SingleHead-SingleBody]
-    ->  compile_rule(SingleHead, SingleBody, RCode)
-    ;   compile_multi_clause_r(Pred, Arity, Clauses, RCode)
+    ->  compile_rule(SingleHead, SingleBody, ReturnType, RCode)
+    ;   compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, RCode)
     ).
 
 %% compile_multi_clause_r(+Pred, +Arity, +Clauses, -RCode)
 %  Compile multiple clauses into an R function with if/else if chain.
-compile_multi_clause_r(Pred, Arity, Clauses, RCode) :-
+compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, RCode) :-
     % Generate standard arg names
     numlist(1, Arity, Indices),
     findall(ArgName, (
@@ -66,26 +69,37 @@ compile_multi_clause_r(Pred, Arity, Clauses, RCode) :-
     atomic_list_concat(ArgNames, ', ', ArgList),
 
     % Compile each clause into an if/else if branch
-    compile_clause_branches(Clauses, ArgNames, Branches),
-    atomic_list_concat(Branches, ' else ', BranchCode),
-
-    format(string(RCode),
+    compile_clause_branches(Clauses, ArgNames, ReturnType, Branches),
+    r_fallback_expression(ReturnType, Pred, FallbackExpr),
+    (   Branches = []
+    ->  format(string(RCode),
+'~w <- function(~w) {
+    ~w
+}
+', [Pred, ArgList, FallbackExpr])
+    ;   atomic_list_concat(Branches, ' else ', BranchCode),
+        format(string(RCode),
 '~w <- function(~w) {
     ~w else {
-        stop("No matching clause for ~w")
+        ~w
     }
 }
-', [Pred, ArgList, BranchCode, Pred]).
+', [Pred, ArgList, BranchCode, FallbackExpr])
+    ).
 
 %% compile_clause_branches(+Clauses, +ArgNames, -Branches)
-compile_clause_branches([], _, []).
-compile_clause_branches([Head-Body|Rest], ArgNames, [Branch|RestBranches]) :-
-    compile_clause_branch(Head, Body, ArgNames, Branch),
-    compile_clause_branches(Rest, ArgNames, RestBranches).
+compile_clause_branches([], _, _, []).
+compile_clause_branches([Head-Body|Rest], ArgNames, ReturnType, Branches) :-
+    compile_clause_branches(Rest, ArgNames, ReturnType, RestBranches),
+    (   compile_clause_branch(Head, Body, ArgNames, ReturnType, Branch)
+    ->  Branches = [Branch|RestBranches]
+    ;   Branches = RestBranches
+    ).
 
 %% compile_clause_branch(+Head, +Body, +ArgNames, -Branch)
 %  Compile one clause into an if(...) { ... } branch.
-compile_clause_branch(Head, Body, ArgNames, Branch) :-
+compile_clause_branch(Head, Body, ArgNames, ReturnType, Branch) :-
+    return_type_allows_body(ReturnType, Body),
     Head =.. [_|HeadArgs],
     % Build condition from head argument patterns
     generate_head_condition(HeadArgs, ArgNames, Condition),
@@ -147,7 +161,7 @@ compile_collected_components(Code) :-
     ;   atomic_list_concat(CompCodes, '\n\n', Code)
     ).
 
-compile_rule(Head, Body, Code) :-
+compile_rule(Head, Body, ReturnType, Code) :-
     Head =.. [Pred|Args],
     
     % Generate variable mapping for arguments
@@ -155,7 +169,11 @@ compile_rule(Head, Body, Code) :-
     atomic_list_concat(ArgNames, ', ', ArgList),
     
     % Compile body
-    compile_body(Body, VarMap, _, BodyCode),
+    (   return_type_allows_body(ReturnType, Body)
+    ->  compile_body(Body, VarMap, _, BodyCode)
+    ;   r_fallback_expression(ReturnType, Pred, FallbackExpr),
+        format(string(BodyCode), '    ~w', [FallbackExpr])
+    ),
     
     format(string(Code),
 '~w <- function(~w) {
@@ -223,7 +241,127 @@ resolve_val(VarMap, Var, Val) :-
     var(Var), lookup_var(Var, VarMap, Name), !,
     format(string(Val), '~w', [Name]).
 resolve_val(_, Val, StrVal) :-
+    atom(Val), !,
+    (   Val == true
+    ->  StrVal = 'TRUE'
+    ;   Val == false
+    ->  StrVal = 'FALSE'
+    ;   format(string(StrVal), '"~w"', [Val])
+    ).
+resolve_val(_, Val, StrVal) :-
     format(string(StrVal), '~w', [Val]).
+
+effective_r_return_type(_PredSpec, Options, ReturnType) :-
+    option(type_constraints(false), Options),
+    !,
+    ReturnType = none.
+effective_r_return_type(PredSpec, _Options, ReturnType) :-
+    predicate_return_type(PredSpec, ReturnType),
+    !.
+effective_r_return_type(_PredSpec, _Options, none).
+
+return_type_allows_body(none, _Body) :-
+    !.
+return_type_allows_body(ReturnType, Body) :-
+    infer_body_return_type(Body, InferredType),
+    !,
+    return_types_compatible(ReturnType, InferredType).
+return_type_allows_body(_ReturnType, _Body).
+
+return_types_compatible(any, _InferredType) :-
+    !.
+return_types_compatible(_ReturnType, any) :-
+    !.
+return_types_compatible(ReturnType, InferredType) :-
+    resolve_type(ReturnType, r, ReturnConcrete),
+    resolve_type(InferredType, r, InferredConcrete),
+    ReturnConcrete == InferredConcrete.
+
+infer_body_return_type(true, boolean) :-
+    !.
+infer_body_return_type((_, Right), Type) :-
+    !,
+    infer_body_return_type(Right, Type).
+infer_body_return_type(_Module:Goal, Type) :-
+    !,
+    infer_body_return_type(Goal, Type).
+infer_body_return_type(Goal, Type) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(r, Pred/Arity, _TargetName, _Inputs, Outputs, _Options),
+    infer_binding_return_type(Outputs, Type).
+
+infer_binding_return_type([], boolean).
+infer_binding_return_type([BindingType|_], Type) :-
+    normalize_binding_type(BindingType, Type).
+
+normalize_binding_type(int, integer).
+normalize_binding_type(integer, integer).
+normalize_binding_type(float, float).
+normalize_binding_type(number, number).
+normalize_binding_type(logical, boolean).
+normalize_binding_type(boolean, boolean).
+normalize_binding_type(string, string).
+normalize_binding_type(atom, atom).
+normalize_binding_type(any, any).
+normalize_binding_type(list(Type), list(Normalized)) :-
+    normalize_binding_type(Type, Normalized).
+normalize_binding_type(maybe(Type), maybe(Normalized)) :-
+    normalize_binding_type(Type, Normalized).
+normalize_binding_type(map(KeyType, ValueType), map(NormalizedKey, NormalizedValue)) :-
+    normalize_binding_type(KeyType, NormalizedKey),
+    normalize_binding_type(ValueType, NormalizedValue).
+normalize_binding_type(set(Type), set(Normalized)) :-
+    normalize_binding_type(Type, Normalized).
+normalize_binding_type(pair(LeftType, RightType), pair(NormalizedLeft, NormalizedRight)) :-
+    normalize_binding_type(LeftType, NormalizedLeft),
+    normalize_binding_type(RightType, NormalizedRight).
+normalize_binding_type(record(Name, Fields), record(Name, Fields)).
+
+r_fallback_expression(none, Pred, Expr) :-
+    format(string(Expr), 'stop("No matching clause for ~w")', [Pred]).
+r_fallback_expression(boolean, _Pred, 'FALSE') :-
+    !.
+r_fallback_expression(any, _Pred, 'NULL') :-
+    !.
+r_fallback_expression(atom, _Pred, 'character()') :-
+    !.
+r_fallback_expression(string, _Pred, 'character()') :-
+    !.
+r_fallback_expression(integer, _Pred, 'integer()') :-
+    !.
+r_fallback_expression(float, _Pred, 'numeric()') :-
+    !.
+r_fallback_expression(number, _Pred, 'numeric()') :-
+    !.
+r_fallback_expression(maybe(_), _Pred, 'NA') :-
+    !.
+r_fallback_expression(list(_), _Pred, 'list()') :-
+    !.
+r_fallback_expression(set(_), _Pred, 'list()') :-
+    !.
+r_fallback_expression(pair(_, _), _Pred, 'list()') :-
+    !.
+r_fallback_expression(map(_, _), _Pred, 'new.env(parent = emptyenv())') :-
+    !.
+r_fallback_expression(record(_, _), _Pred, 'list()') :-
+    !.
+r_fallback_expression(ReturnType, Pred, Expr) :-
+    resolve_type(ReturnType, r, ResolvedType),
+    (   ResolvedType == 'character'
+    ->  Expr = 'character()'
+    ;   ResolvedType == 'integer'
+    ->  Expr = 'integer()'
+    ;   ResolvedType == 'numeric'
+    ->  Expr = 'numeric()'
+    ;   ResolvedType == 'logical'
+    ->  Expr = 'FALSE'
+    ;   ResolvedType == 'list'
+    ->  Expr = 'list()'
+    ;   ResolvedType == 'environment'
+    ->  Expr = 'new.env(parent = emptyenv())'
+    ;   format(string(Expr), 'stop("No matching clause for ~w")', [Pred])
+    ).
 
 ensure_var(VarMap, Var, Name, VarMap) :-
     lookup_var(Var, VarMap, Name), !.

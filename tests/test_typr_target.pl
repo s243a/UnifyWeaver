@@ -16,7 +16,9 @@ cleanup_typr_test :-
     clear_type_declarations,
     retractall(user:edge(_, _)),
     retractall(user:tc(_, _)),
-    retractall(user:simple_fact(_)).
+    retractall(user:simple_fact(_)),
+    retractall(user:lower_name(_, _)),
+    retractall(user:classify_name(_, _)).
 
 :- begin_tests(typr_target, [
     setup(setup_typr_test),
@@ -83,6 +85,30 @@ test(recursive_compiler_supports_typr_non_recursive_path) :-
     assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
     once(recursive_compiler:compile_recursive(simple_fact/1, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let simple_fact <- fn(arg1: char): bool")),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(generic_body_predicates_reuse_r_backend) :-
+    clear_type_declarations,
+    assertz(user:(lower_name(Name, Lower) :- string_lower(Name, Lower))),
+    assertz(type_declarations:uw_type(lower_name/2, 1, atom)),
+    assertz(type_declarations:uw_type(lower_name/2, 2, atom)),
+    assertz(type_declarations:uw_return_type(lower_name/2, atom)),
+    once(compile_predicate_to_typr(lower_name/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let lower_name <- fn(arg1: char, arg2: char): char")),
+    once(sub_string(Code, _, _, _, "tolower(arg1)")),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(generic_multi_clause_predicates_reuse_r_backend) :-
+    clear_type_declarations,
+    assertz(user:(classify_name(short, Lower) :- string_lower('HI', Lower))),
+    assertz(user:(classify_name(long, Lower) :- string_lower('BYE', Lower))),
+    assertz(type_declarations:uw_type(classify_name/2, 1, atom)),
+    assertz(type_declarations:uw_type(classify_name/2, 2, atom)),
+    once(compile_predicate_to_typr(classify_name/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let classify_name <- fn(arg1: char, arg2: char): Any")),
+    once(sub_string(Code, _, _, _, "else if")),
+    once(sub_string(Code, _, _, _, "tolower(\"HI\")")),
+    once(sub_string(Code, _, _, _, "tolower(\"BYE\")")),
     generated_typr_is_valid(Code, exit(0)).
 
 test(transitive_closure_template_is_valid_typr) :-

@@ -35,14 +35,30 @@ test(build_type_context_declared_types) :-
     clear_type_declarations,
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    assertz(type_declarations:uw_return_type(edge/2, boolean)),
     once(build_type_context(edge/2, haskell, Context)),
     once(member(node_type="String", Context)),
     once(member(edge_type="(String, String)", Context)),
+    once(member(return_type="Bool", Context)),
     once(member(typed=true, Context)).
 
 test(build_type_context_untyped) :-
     clear_type_declarations,
     once(build_type_context(edge/2, haskell, Context)),
     assertion(Context == [typed=false]).
+
+test(resolved_return_type_uses_domain_alias) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_domain_type(identifier, atom)),
+    assertz(type_declarations:uw_return_type(label/1, identifier)),
+    once(resolved_return_type(label/1, typr, ReturnType)),
+    assertion(ReturnType == "char").
+
+test(return_type_only_marks_predicate_typed) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_return_type(label/1, atom)),
+    once(build_type_context(label/1, typr, Context)),
+    once(member(typed=true, Context)),
+    once(member(return_type="char", Context)).
 
 :- end_tests(type_declarations).
