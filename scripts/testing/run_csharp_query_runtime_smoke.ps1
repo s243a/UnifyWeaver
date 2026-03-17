@@ -7,6 +7,9 @@
 #   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1
 #   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -KeepArtifacts
 #   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke
+#   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -CacheSlice admission
+#   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -CacheSlice reuse
+#   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -CacheSlice lru
 #
 # Notes:
 # - Requires SWI-Prolog and dotnet (net9.0 SDK) on PATH (or in common SWI locations).
@@ -19,6 +22,10 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$ProjectFilter = "*",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("admission", "reuse", "lru")]
+    [string]$CacheSlice,
 
     [Parameter(Mandatory = $false)]
     [switch]$KeepArtifacts,
@@ -66,6 +73,37 @@ function Get-GeneratedQueryProjects {
     return @(Get-ChildItem -Path $RootPath -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object {
         $_.Name -like $NameFilter -and (Test-Path (Join-Path $_.FullName "expected_rows.txt"))
     } | Sort-Object -Property FullName -Unique)
+}
+
+function Test-ProjectMatchesCacheSlice {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.DirectoryInfo]$ProjectDir,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Slice
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Slice)) {
+        return $true
+    }
+
+    $expectedPath = Join-Path $ProjectDir.FullName "expected_rows.txt"
+    if (-not (Test-Path $expectedPath)) {
+        return $false
+    }
+
+    $expectedRows = Get-Content -Path $expectedPath
+    $hasAdmissions = @($expectedRows | Where-Object { $_ -match '^CACHE_ADMISSIONS:' }).Count -gt 0
+    $hasReuseHit = @($expectedRows | Where-Object { $_ -match '^CACHE_HIT:' }).Count -gt 0
+    $hasEvictions = @($expectedRows | Where-Object { $_ -match '^CACHE_EVICTIONS:' }).Count -gt 0
+
+    switch ($Slice) {
+        "admission" { return $hasAdmissions }
+        "reuse" { return $hasReuseHit }
+        "lru" { return $hasEvictions }
+        default { throw "Unknown cache slice '$Slice'." }
+    }
 }
 
 function Find-SwiplExe {
@@ -208,9 +246,14 @@ if (-not $SkipCodegen) {
 Assert-DotnetAvailable
 
 $projects = Get-GeneratedQueryProjects -RootPath $outputPath -NameFilter $ProjectFilter
+$projects = @($projects | Where-Object { Test-ProjectMatchesCacheSlice -ProjectDir $_ -Slice $CacheSlice })
 
 if (-not $projects) {
-    throw "No generated query projects found in '$outputPath' (expected directories containing expected_rows.txt)."
+    if ([string]::IsNullOrWhiteSpace($CacheSlice)) {
+        throw "No generated query projects found in '$outputPath' (expected directories containing expected_rows.txt)."
+    }
+
+    throw "No generated query projects found in '$outputPath' for cache slice '$CacheSlice' (project filter '$ProjectFilter')."
 }
 
 $failures = 0
