@@ -98,6 +98,7 @@ test(generic_body_predicates_reuse_r_backend) :-
     once(compile_predicate_to_typr(lower_name/2, [typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let lower_name <- fn(arg1: char, arg2: char): char")),
     once(sub_string(Code, _, _, _, "tolower(arg1)")),
+    \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
 test(generic_multi_clause_predicates_reuse_r_backend) :-
@@ -111,6 +112,7 @@ test(generic_multi_clause_predicates_reuse_r_backend) :-
     once(sub_string(Code, _, _, _, "else if")),
     once(sub_string(Code, _, _, _, "tolower(\"HI\")")),
     once(sub_string(Code, _, _, _, "tolower(\"BYE\")")),
+    \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
 test(generic_body_predicates_infer_return_type_without_declaration) :-
@@ -131,6 +133,14 @@ test(generic_multi_clause_predicates_infer_guarded_return_type) :-
     once(compile_predicate_to_typr(classify_name_guarded/2, [typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let classify_name_guarded <- fn(arg1: char, arg2: char): char")),
     generated_typr_is_valid(Code, exit(0)).
+
+test(type_diagnostics_report_defaults_to_empty_for_native_typr_lowering) :-
+    clear_type_declarations,
+    assertz(user:(lower_name(Name, Lower) :- string_lower(Name, Lower))),
+    assertz(type_declarations:uw_type(lower_name/2, 1, atom)),
+    assertz(type_declarations:uw_type(lower_name/2, 2, atom)),
+    once(compile_predicate_to_typr(lower_name/2, [typed_mode(explicit), type_diagnostics_report(Report)], _Code)),
+    assertion(Report == []).
 
 test(transitive_closure_template_is_valid_typr) :-
     clear_type_declarations,

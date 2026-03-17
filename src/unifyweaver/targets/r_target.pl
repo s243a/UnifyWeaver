@@ -54,15 +54,17 @@ compile_predicate_to_r(PredIndicator, Options, RCode) :-
     functor(Head, Pred, Arity),
     findall(Head-Body, clause(Module:Head, Body), Clauses),
     (   Clauses = []
-    ->  format(string(RCode), '# No clauses found for ~w/~w', [Pred, Arity])
+    ->  format(string(RCode), '# No clauses found for ~w/~w', [Pred, Arity]),
+        DiagnosticsRev = []
     ;   Clauses = [SingleHead-SingleBody]
-    ->  compile_rule(SingleHead, SingleBody, ReturnType, DiagnosticsMode, RCode)
-    ;   compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, RCode)
-    ).
+    ->  compile_rule(SingleHead, SingleBody, ReturnType, DiagnosticsMode, DiagnosticsRev, [], RCode)
+    ;   compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, DiagnosticsRev, [], RCode)
+    ),
+    bind_type_diagnostics_report(Options, DiagnosticsRev).
 
 %% compile_multi_clause_r(+Pred, +Arity, +Clauses, -RCode)
 %  Compile multiple clauses into an R function with if/else if chain.
-compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, RCode) :-
+compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, Diagnostics0, Diagnostics, RCode) :-
     % Generate standard arg names
     numlist(1, Arity, Indices),
     findall(ArgName, (
@@ -72,7 +74,7 @@ compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, RCode)
     atomic_list_concat(ArgNames, ', ', ArgList),
 
     % Compile each clause into an if/else if branch
-    compile_clause_branches(Clauses, ArgNames, ReturnType, DiagnosticsMode, Branches),
+    compile_clause_branches(Clauses, ArgNames, ReturnType, DiagnosticsMode, Diagnostics0, Diagnostics, Branches),
     r_fallback_expression(ReturnType, Pred, FallbackExpr),
     (   Branches = []
     ->  format(string(RCode),
@@ -91,27 +93,43 @@ compile_multi_clause_r(Pred, Arity, Clauses, ReturnType, DiagnosticsMode, RCode)
     ).
 
 %% compile_clause_branches(+Clauses, +ArgNames, -Branches)
-compile_clause_branches([], _, _, _, []).
-compile_clause_branches([Head-Body|Rest], ArgNames, ReturnType, DiagnosticsMode, Branches) :-
-    compile_clause_branches(Rest, ArgNames, ReturnType, DiagnosticsMode, RestBranches),
-    (   compile_clause_branch(Head, Body, ArgNames, ReturnType, DiagnosticsMode, Branch)
+compile_clause_branches([], _, _, _, Diagnostics, Diagnostics, []).
+compile_clause_branches([Head-Body|Rest], ArgNames, ReturnType, DiagnosticsMode, Diagnostics0, Diagnostics, Branches) :-
+    compile_clause_branch_status(
+        Head,
+        Body,
+        ArgNames,
+        ReturnType,
+        DiagnosticsMode,
+        Diagnostics0,
+        Diagnostics1,
+        Status,
+        Branch
+    ),
+    (   Status == include
     ->  Branches = [Branch|RestBranches]
     ;   Branches = RestBranches
-    ).
+    ),
+    compile_clause_branches(Rest, ArgNames, ReturnType, DiagnosticsMode, Diagnostics1, Diagnostics, RestBranches).
 
 %% compile_clause_branch(+Head, +Body, +ArgNames, -Branch)
 %  Compile one clause into an if(...) { ... } branch.
-compile_clause_branch(Head, Body, ArgNames, ReturnType, DiagnosticsMode, Branch) :-
+compile_clause_branch_status(Head, Body, ArgNames, ReturnType, DiagnosticsMode, Diagnostics0, Diagnostics, Status, Branch) :-
     head_pred_spec(Head, PredSpec),
-    body_return_type_allowed(PredSpec, clause_filter, ReturnType, Body, DiagnosticsMode),
-    Head =.. [_|HeadArgs],
-    % Build condition from head argument patterns
-    generate_head_condition(HeadArgs, ArgNames, Condition),
-    % Build VarMap mapping head variables to arg names
-    build_head_varmap(HeadArgs, ArgNames, VarMap),
-    % Compile body with the VarMap
-    compile_body(Body, VarMap, _, BodyCode),
-    format(string(Branch), 'if (~w) {\n~s\n    }', [Condition, BodyCode]).
+    body_return_type_status(PredSpec, clause_filter, ReturnType, Body, DiagnosticsMode, Diagnostics0, Diagnostics, BodyStatus),
+    (   BodyStatus == allow
+    ->  Head =.. [_|HeadArgs],
+        % Build condition from head argument patterns
+        generate_head_condition(HeadArgs, ArgNames, Condition),
+        % Build VarMap mapping head variables to arg names
+        build_head_varmap(HeadArgs, ArgNames, VarMap),
+        % Compile body with the VarMap
+        compile_body(Body, VarMap, _, BodyCode),
+        format(string(Branch), 'if (~w) {\n~s\n    }', [Condition, BodyCode]),
+        Status = include
+    ;   Branch = "",
+        Status = skip
+    ).
 
 %% generate_head_condition(+HeadArgs, +ArgNames, -Condition)
 %  Build R condition string from head argument patterns.
@@ -165,7 +183,7 @@ compile_collected_components(Code) :-
     ;   atomic_list_concat(CompCodes, '\n\n', Code)
     ).
 
-compile_rule(Head, Body, ReturnType, DiagnosticsMode, Code) :-
+compile_rule(Head, Body, ReturnType, DiagnosticsMode, Diagnostics0, Diagnostics, Code) :-
     Head =.. [Pred|Args],
     head_pred_spec(Head, PredSpec),
     
@@ -174,7 +192,8 @@ compile_rule(Head, Body, ReturnType, DiagnosticsMode, Code) :-
     atomic_list_concat(ArgNames, ', ', ArgList),
     
     % Compile body
-    (   body_return_type_allowed(PredSpec, single_clause_fallback, ReturnType, Body, DiagnosticsMode)
+    body_return_type_status(PredSpec, single_clause_fallback, ReturnType, Body, DiagnosticsMode, Diagnostics0, Diagnostics, Status),
+    (   Status == allow
     ->  compile_body(Body, VarMap, _, BodyCode)
     ;   r_fallback_expression(ReturnType, Pred, FallbackExpr),
         format(string(BodyCode), '    ~w', [FallbackExpr])
@@ -268,20 +287,34 @@ effective_r_return_type(_PredSpec, _Options, none).
 effective_type_diagnostics(Options, DiagnosticsMode) :-
     option(type_diagnostics(DiagnosticsMode), Options, off).
 
-body_return_type_allowed(_PredSpec, _Action, none, _Body, _DiagnosticsMode) :-
+body_return_type_status(_PredSpec, _Action, none, _Body, _DiagnosticsMode, Diagnostics, Diagnostics, allow) :-
     !.
-body_return_type_allowed(PredSpec, Action, ReturnType, Body, DiagnosticsMode) :-
+body_return_type_status(PredSpec, Action, ReturnType, Body, DiagnosticsMode, Diagnostics0, Diagnostics, Status) :-
     infer_body_return_type(Body, InferredType),
     !,
     (   return_types_compatible(ReturnType, InferredType)
-    ->  true
-    ;   handle_type_diagnostic(
-            DiagnosticsMode,
-            r_type_constraint_violation(PredSpec, Action, ReturnType, InferredType, Body)
+    ->  Diagnostics = Diagnostics0,
+        Status = allow
+    ;   Diagnostic = r_type_constraint_violation(PredSpec, Action, ReturnType, InferredType, Body),
+        record_type_diagnostic(
+            type_diagnostic{
+                target: r,
+                predicate: PredSpec,
+                action: Action,
+                expected: ReturnType,
+                inferred: InferredType,
+                body: Body
+            },
+            Diagnostics0,
+            Diagnostics
         ),
-        fail
+        handle_type_diagnostic(
+            DiagnosticsMode,
+            Diagnostic
+        ),
+        Status = reject
     ).
-body_return_type_allowed(_PredSpec, _Action, _ReturnType, _Body, _DiagnosticsMode).
+body_return_type_status(_PredSpec, _Action, _ReturnType, _Body, _DiagnosticsMode, Diagnostics, Diagnostics, allow).
 
 return_types_compatible(any, _InferredType) :-
     !.
@@ -332,6 +365,8 @@ all_same_return_type([Type|Rest], ReferenceType) :-
     return_types_compatible(ReferenceType, Type),
     return_types_compatible(Type, ReferenceType),
     all_same_return_type(Rest, ReferenceType).
+
+record_type_diagnostic(Diagnostic, [Diagnostic|Diagnostics], Diagnostics).
 
 infer_binding_return_type([], boolean).
 infer_binding_return_type([BindingType|_], Type) :-
@@ -414,6 +449,12 @@ handle_type_diagnostic(warn, Diagnostic) :-
     print_message(warning, Diagnostic).
 handle_type_diagnostic(error, Diagnostic) :-
     throw(error(Diagnostic, context(r_target, 'Return type constraint violated during R compilation'))).
+
+bind_type_diagnostics_report(Options, DiagnosticsRev) :-
+    (   memberchk(type_diagnostics_report(Report), Options)
+    ->  reverse(DiagnosticsRev, Report)
+    ;   true
+    ).
 
 prolog:message(r_type_constraint_violation(PredSpec, Action, ExpectedType, InferredType, Body)) -->
     [ 'R target type constraint violation for ~p (~w): expected ~p, inferred ~p from body ~p'-

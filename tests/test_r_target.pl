@@ -16,7 +16,8 @@ cleanup_r_test :-
     retractall(user:choose_value(_, _)),
     retractall(user:lower_number(_)),
     retractall(user:choose_with_guard(_, _)),
-    retractall(user:guarded_lower(_)).
+    retractall(user:guarded_lower(_)),
+    retractall(user:report_lower(_)).
 
 :- begin_tests(r_target, [
     setup(setup_r_test),
@@ -84,5 +85,23 @@ test(type_diagnostics_warn_preserves_fallback_behavior) :-
     once(compile_predicate_to_r(guarded_lower/1, [type_diagnostics(warn)], Code)),
     \+ sub_string(Code, _, _, _, 'tolower("HI")'),
     once(sub_string(Code, _, _, _, 'numeric()')).
+
+test(type_diagnostics_report_collects_structured_entries) :-
+    clear_type_declarations,
+    init_r_target,
+    assertz(user:(report_lower(Value) :- string_lower('HI', Value), true)),
+    assertz(type_declarations:uw_return_type(report_lower/1, number)),
+    once(compile_predicate_to_r(report_lower/1, [type_diagnostics_report(Report)], _Code)),
+    Report = [Diagnostic],
+    get_dict(target, Diagnostic, Target),
+    get_dict(predicate, Diagnostic, PredSpec),
+    get_dict(action, Diagnostic, Action),
+    get_dict(expected, Diagnostic, Expected),
+    get_dict(inferred, Diagnostic, Inferred),
+    assertion(Target == r),
+    assertion(PredSpec == report_lower/1),
+    assertion(Action == single_clause_fallback),
+    assertion(Expected == number),
+    assertion(Inferred == string).
 
 :- end_tests(r_target).

@@ -175,6 +175,26 @@ compile_predicate_to_r(lower_name/2, [type_diagnostics(error)], Code).
 - `warn`: emit a warning and continue
 - `error`: throw on a type-constraint violation
 
+Structured diagnostics can also be collected without warning or throwing:
+
+```prolog
+compile_predicate_to_r(lower_name/2, [type_diagnostics_report(Report)], Code).
+```
+
+`Report` is bound to a list of dicts with keys such as:
+
+- `target`
+- `predicate`
+- `action`
+- `expected`
+- `inferred`
+- `body`
+
+TypR now uses the same shared return-type metadata and conservative inference
+layer. For simple binding-shaped predicates and literal-guarded multi-clause
+branches it lowers directly to native TypR syntax. More complex generic bodies
+still fall back to the wrapped R path.
+
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)
 

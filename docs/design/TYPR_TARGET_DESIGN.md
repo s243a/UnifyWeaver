@@ -25,7 +25,10 @@ This document focuses on architecture and rollout choices specific to TypR.
    - shared type mapping
    - simple fact predicates
    - transitive-closure generation
-7. The remaining gap is broader lowering for arbitrary generic rule bodies.
+   - native lowering for a conservative subset of generic binding-shaped rule
+     bodies
+7. The remaining gap is broader lowering for arbitrary generic rule bodies
+   beyond that current subset.
 
 Implication: TypR design must support both generation styles and should not
 assume a Mustache-only pipeline.
@@ -174,8 +177,14 @@ Completed:
    - per-predicate typed-mode override
    - target-registry dispatch
    - real TypR validation through the CLI
-6. Added `uw_return_type/2` consumption on wrapped generic TypR paths so
+6. Added `uw_return_type/2` consumption on generic TypR paths so
    declared return types replace `Any` where possible.
+7. Added conservative native TypR lowering for generic rule bodies when the
+   body is a supported chain of simple R bindings, including literal-guarded
+   multi-clause predicates compiled into TypR `if` / `else if` chains.
+8. Added structured diagnostics aggregation on the `r` side via
+   `type_diagnostics_report(Report)`, which TypR can pass through on wrapped
+   fallbacks and otherwise defaults to `[]` for native-lowered paths.
 
 R-family note:
 
@@ -185,10 +194,12 @@ R-family note:
 - This behavior can be disabled per compile with `type_constraints(false)`.
 - Optional diagnostics now exist for that behavior:
   `type_diagnostics(off|warn|error)`, default `off`.
+- Structured report collection is also available via
+  `type_diagnostics_report(Report)`.
 
 Inference note:
 
-- wrapped generic TypR paths now use declared return types first
+- generic TypR paths now use declared return types first
 - if no declaration exists, they may still use shallow inferred return types
   from inferable binding-shaped bodies before falling back to `Any`
 
@@ -197,10 +208,13 @@ Current implementation note:
 - transitive closure uses valid TypR syntax plus inline raw-R IIFEs where the
   current TypR surface language is too restrictive for the required BFS logic
   inside nested scopes
+- the native generic TypR path is intentionally conservative and currently
+  targets simple output-producing binding chains plus literal-guarded branch
+  selection; more complex bodies still fall back to wrapped R
 
 Follow-on work:
 
-1. Extend TypR beyond simple fact predicates and the transitive-closure pilot.
+1. Extend TypR beyond the current conservative native generic subset.
 2. Add broader lowering for generic non-recursive rule bodies.
 3. Audit opportunities to share templates or code-generation helpers with `r`
    without making TypR the mandatory path.

@@ -34,9 +34,13 @@ The important part of the generated signature becomes:
 
 ```typr
 let lower_name <- fn(arg1: char, arg2: char): char {
-    ...
+    arg2 <- @{ tolower(arg1) }@;
+    arg2
 };
 ```
+
+For this kind of simple output-producing binding chain, TypR now lowers
+directly to native TypR syntax instead of routing through the wrapped R path.
 
 ## Plain R Behavior
 
@@ -84,6 +88,29 @@ Recommended usage:
 - `off` for normal compilation
 - `warn` when auditing generated R behavior
 - `error` when a return-type rule is meant to be an enforced compiler invariant
+
+Collect structured diagnostics without warning or throwing:
+
+```prolog
+?- compile_predicate_to_r(
+       my_pred/2,
+       [type_diagnostics_report(Report)],
+       Code
+   ).
+```
+
+Example report entry shape:
+
+```prolog
+type_diagnostic{
+    target: r,
+    predicate: my_pred/2,
+    action: single_clause_fallback,
+    expected: number,
+    inferred: string,
+    body: (string_lower('HI', Value), true)
+}
+```
 
 ## Why This Matters
 

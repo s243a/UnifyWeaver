@@ -140,17 +140,24 @@ bring-up.
 - typed-mode precedence support
 - simple fact predicate lowering
 - transitive-closure generation with compile-time fact seeding
-- `uw_return_type/2` support for wrapped generic TypR predicates so declared
-  return types replace weak `Any` fallbacks
+- `uw_return_type/2` support for TypR generic predicates so declared return
+  types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,
   with opt-out via `type_constraints(false)`
 - optional `type_diagnostics(off|warn|error)` for return-type constraint
   violations, defaulting to `off`
+- optional `type_diagnostics_report(Report)` collection for structured
+  diagnostics without changing warning/error mode
 - improved shallow return-type inference for inferable body shapes, including
   conjunctions whose final goal is `true`
+- native TypR lowering for a conservative subset of generic non-recursive rule
+  bodies:
+  - simple output-producing binding chains
+  - literal-guarded multi-clause branches built from those chains
 
 **Remaining scope after Phase 2.5:**
-- broader lowering for generic non-recursive rule bodies
+- broader lowering for generic non-recursive rule bodies beyond the current
+  native TypR subset
 - richer typed preamble generation for domain/record-heavy use cases
 
 ---
@@ -246,7 +253,8 @@ Each target follows the same pattern as Phases 2–4:
    node IDs and float edge weights.
 2. Update the main `README.md` with a "Type Annotations" section.
 3. Add an R/TypR example showing `uw_return_type/2`,
-   `type_constraints(false)`, and optional `type_diagnostics`.
+   `type_constraints(false)`, optional `type_diagnostics`, and
+   `type_diagnostics_report(Report)`.
 4. Add a `MIGRATION.md` note confirming backward compatibility.
 5. Add `docs/design/TYPR_TARGET_DESIGN.md` to the type system document index.
 
