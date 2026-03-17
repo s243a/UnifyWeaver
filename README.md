@@ -197,6 +197,8 @@ includes:
 
 - simple output-producing binding chains
 - guard-style command predicates such as `is_character/1`
+- multi-step native control-flow chains where an earlier output feeds a later
+  guard and output
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
 
 More complex generic bodies still fall back to the wrapped R path.
