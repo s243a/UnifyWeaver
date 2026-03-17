@@ -346,6 +346,12 @@ infer_body_return_type(group_by(_, _, _), any) :-
     !.
 infer_body_return_type(sort_by(_, _, _), any) :-
     !.
+infer_body_return_type(Goal, boolean) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(r, Pred/Arity, _TargetName, _Inputs, [], Options),
+    member(pattern(command), Options),
+    !.
 infer_body_return_type(Goal, Type) :-
     compound(Goal),
     functor(Goal, Pred, Arity),
