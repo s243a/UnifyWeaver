@@ -156,6 +156,8 @@ bring-up.
   - guard-style command predicates lowered into clause conditions
   - sequential native control-flow chains where earlier outputs feed later
     guards and outputs
+  - simple comparison and boolean guard expressions over already-bound
+    intermediates in those chains
   - supported literal-headed multi-clause branch bodies that keep those chains
     native by using `let` for new intermediate locals
   - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
