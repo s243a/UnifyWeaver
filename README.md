@@ -211,8 +211,8 @@ includes:
 - guarded disjunction-style multi-result chains where each native alternative
   binds the same later variables before later native steps continue from those
   selected results
-- one-level nested guarded alternatives inside supported semicolon branches,
-  including nested multi-result selections, where the nested branch still
+- two-level nested guarded alternatives inside supported semicolon branches,
+  including nested multi-result selections, where each nested branch still
   selects the same later result set natively
 - supported literal-headed branch bodies built from those chains, with `let`
   used for new intermediate TypR locals

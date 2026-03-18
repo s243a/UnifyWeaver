@@ -168,8 +168,8 @@ bring-up.
   - guarded disjunction-style multi-result chains where each alternative binds
     the same later variables before later native steps continue from those
     selected results
-  - one-level nested guarded alternatives inside supported semicolon branches
-    where the nested branch still selects the same later result set,
+  - two-level nested guarded alternatives inside supported semicolon branches
+    where each nested branch still selects the same later result set,
     including nested multi-result selections
   - supported literal-headed multi-clause branch bodies that keep those chains
     native by using `let` for new intermediate locals
