@@ -480,7 +480,8 @@ native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputL
     typr_disjunction_alternatives(Goal, Alternatives),
     Alternatives = [_|[_|_]],
     typr_disjunction_shared_output_vars(Alternatives, VarMap0, SharedVars),
-    length(SharedVars, 2),
+    length(SharedVars, SharedCount),
+    SharedCount > 1,
     reserve_typr_internal_var(VarMap0, ContainerToken, ContainerName, VarMap1, new),
     ensure_typr_vars(SharedVars, VarMap1, SharedNamePairs, VarMap2),
     remove_var_mapping(ContainerToken, VarMap2, VarMapOut),
@@ -780,11 +781,28 @@ ensure_typr_var(VarMap, Var, Name, VarMap, existing) :-
     lookup_typr_var(Var, VarMap, Name),
     !.
 ensure_typr_var(VarMap, Var, Name, [Var-Name|VarMap], new) :-
-    length(VarMap, ExistingCount),
-    NextIndex is ExistingCount + 1,
+    next_typr_var_index(VarMap, NextIndex),
     format(string(Name), 'v~w', [NextIndex]).
 ensure_typr_var(VarMap, Var, Name, VarMapOut) :-
     ensure_typr_var(VarMap, Var, Name, VarMapOut, _).
+
+next_typr_var_index([], 1).
+next_typr_var_index(VarMap, NextIndex) :-
+    findall(Index, (
+        member(_-Name, VarMap),
+        typr_name_index(Name, Index)
+    ), Indices),
+    max_list(Indices, MaxIndex),
+    NextIndex is MaxIndex + 1.
+
+typr_name_index(Name, Index) :-
+    string(Name),
+    (   sub_string(Name, 0, 3, _, "arg")
+    ->  sub_string(Name, 3, _, 0, Digits)
+    ;   sub_string(Name, 0, 1, _, "v"),
+        sub_string(Name, 1, _, 0, Digits)
+    ),
+    number_string(Index, Digits).
 
 lookup_typr_var(Var, [StoredVar-Name|_], Name) :-
     Var == StoredVar,
