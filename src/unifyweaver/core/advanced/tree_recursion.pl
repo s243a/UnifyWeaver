@@ -130,7 +130,7 @@ compile_tree_recursion(Pred/Arity, Options, Code) :-
     ),
     format('  Target: ~w~n', [Target]),
 
-    % Detect pattern type
+    % Detect pattern type (fibonacci checked first — more specific)
     (   is_fibonacci_pattern(Pred/Arity) ->
         Pattern = fibonacci
     ;   is_binary_tree_pattern(Pred/Arity) ->
@@ -151,11 +151,14 @@ compile_tree_recursion(Pred/Arity, Options, Code) :-
 
 %% is_fibonacci_pattern(+Pred/Arity)
 %  Detect fibonacci-like pattern: f(N, F) with two recursive calls on N-1, N-2
+%  Checks ALL clauses, not just the first (base cases have Body=true).
 is_fibonacci_pattern(Pred/2) :-
     functor(Head, Pred, 2),
     user:clause(Head, Body),
+    Body \= true,
     % Look for pattern: N1 is N - 1, N2 is N - 2, recursive calls
-    contains_fibonacci_structure(Body, Pred).
+    contains_fibonacci_structure(Body, Pred),
+    !.
 
 contains_fibonacci_structure(Body, Pred) :-
     % Extract goals
@@ -165,26 +168,39 @@ contains_fibonacci_structure(Body, Pred) :-
     findall(1, (member(G, Goals), functor(G, Pred, _)), RecCalls),
     length(RecCalls, 2),
 
-    % Should have N-1 and N-2 computations (or similar)
-    member(_ is _ - 1, Goals),
-    member(_ is _ - 2, Goals).
+    % Should have N-1 and N-2 computations (or similar).
+    % SWI-Prolog stores N-1 as N+(-1) internally, so match both forms.
+    member(_ is Expr1, Goals), is_decrement_by(Expr1, 1),
+    member(_ is Expr2, Goals), is_decrement_by(Expr2, 2).
+
+%% is_decrement_by(+Expr, +K) - matches N-K or N+(-K)
+is_decrement_by(_ - K, K) :- integer(K), !.
+is_decrement_by(_ + NK, K) :- integer(NK), NK < 0, K is -NK.
 
 %% is_binary_tree_pattern(+Pred/Arity)
 %  Detect binary tree pattern: operates on list-based trees [V, L, R]
+%  Checks ALL clauses for one with a list-structured first argument.
 is_binary_tree_pattern(Pred/Arity) :-
     Arity >= 2,
     functor(Head, Pred, Arity),
     user:clause(Head, Body),
+    Body \= true,
 
     % Check if first argument is tree structure [V, L, R]
     arg(1, Head, TreeArg),
-    is_list_tree_argument(TreeArg, Body, Pred).
+    is_list_tree_argument(TreeArg, Body, Pred),
+    !.
 
-is_list_tree_argument([_V, _L, _R], Body, Pred) :-
-    % Should have recursive calls on L and R
+is_list_tree_argument(TreeArg, Body, Pred) :-
+    % TreeArg must already be a list structure (not an unbound variable)
+    nonvar(TreeArg),
+    TreeArg = [_V, _L, _R],
     count_recursive_calls_to(Body, Pred, Count),
     Count >= 2.
-is_list_tree_argument([_|_], _, _) :- !.  % Could be tree structure
+is_list_tree_argument(TreeArg, _, _) :-
+    nonvar(TreeArg),
+    TreeArg = [_|_],
+    !.
 
 %% ============================================
 %% BASH CODE GENERATORS (registered as multifile)

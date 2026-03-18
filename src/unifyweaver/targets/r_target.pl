@@ -692,18 +692,13 @@ get_pred_name(Pred/_Arity, Pred).
 :- multifile tree_recursion:compile_tree_pattern/6.
 
 %% R fibonacci-like tree recursion
-tree_recursion:compile_tree_pattern(r, fibonacci, Pred, _Arity, UseMemo, RCode) :-
+tree_recursion:compile_tree_pattern(r, fibonacci, Pred, _Arity, _UseMemo, RCode) :-
     atom_string(Pred, PredStr),
-    (   UseMemo = true ->
-        MemoDecl = '~w_memo <- new.env(hash=TRUE, parent=emptyenv())'
-    ;   MemoDecl = '# Memoization disabled'
-    ),
-    (   UseMemo = true ->
-        format(string(MemoDeclFormatted), MemoDecl, [PredStr])
-    ;   MemoDeclFormatted = MemoDecl
-    ),
+    % Always create memo env — the template code always uses it
+    format(string(MemoDeclFormatted), '~w_memo <- new.env(hash=TRUE, parent=emptyenv())', [PredStr]),
 
     TemplateLines = [
+        "#!/usr/bin/env Rscript",
         "# {{pred}}/2 - tree recursive pattern (Fibonacci-like in R)",
         "{{memo_decl}}",
         "",
@@ -713,18 +708,24 @@ tree_recursion:compile_tree_pattern(r, fibonacci, Pred, _Arity, UseMemo, RCode) 
         "",
         "    # Check memo",
         "    key <- as.character(n)",
-        "    if (!is.null({{{pred}}_memo[[key]]})) {",
-        "        result <- {{{pred}}_memo[[key]]}",
+        "    if (!is.null({{pred}}_memo[[key]])) {",
+        "        result <- {{pred}}_memo[[key]]",
         "    } else {",
         "        # Recursive calls",
         "        result <- {{pred}}(n - 1) + {{pred}}(n - 2)",
-        "        {{{pred}}_memo[[key]]} <- result",
+        "        {{pred}}_memo[[key]] <- result",
         "    }",
         "",
         "    if (!is.null(expected)) {",
         "        return(result == expected)",
         "    }",
         "    return(result)",
+        "}",
+        "",
+        "# CLI entry point",
+        "args <- commandArgs(trailingOnly = TRUE)",
+        "if (length(args) >= 1) {",
+        "    cat({{pred}}(as.integer(args[1])), \"\\n\")",
         "}"
     ],
     atomic_list_concat(TemplateLines, '\n', Template),

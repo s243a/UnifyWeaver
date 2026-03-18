@@ -537,7 +537,7 @@ local function ~w(n, expected)
         if _memo then _memo[key] = result end
     end
     
-    if expected ~~~= nil then
+    if expected ~~= nil then
         return result == expected
     end
     return result
