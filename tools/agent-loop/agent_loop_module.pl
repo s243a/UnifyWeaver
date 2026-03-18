@@ -36,6 +36,7 @@
 :- discontiguous shared_logic/3.
 :- discontiguous logic_slot/3.
 :- discontiguous expand_expr/3.
+:- discontiguous resolve_type/3.
 :- use_module(agent_loop_components).
 :- use_module(agent_loop_bindings).
 
@@ -1932,6 +1933,7 @@ shared_logic(costs, budget_remaining, [
     body_template("if ~guard_leq_zero(budget)~:\n    ~return_val(-1.0)~\n~return_val(max_zero(budget - self_total_cost))~")
 ]).
 
+
 shared_logic(tool_cache, cache_clear, [
     signature(clear, [], void),
     doc("Clear all cached tool results."),
@@ -1939,6 +1941,7 @@ shared_logic(tool_cache, cache_clear, [
     mutable,
     field_map(python, ['self.cache'-'self._cache']),
     field_map(rust, ['self.cache()'-'self.cache']),
+    field_map(elixir, ['state.cache.clear()'-'%{state | cache: %{}}']),
     body_template("~self_field(cache)~.clear()")
 ]).
 
@@ -2196,6 +2199,120 @@ emit_shared_method(S, rust, MethodName) :-
         format(S, '    }~n~n', [])
     ).
 
+%% --- Elixir emitter ---
+%%
+%% Elixir methods are module functions. State is passed as first arg and
+%% returned for mutable methods (immutable update pattern).
+%% Container maps to module name (e.g., CostTracker → AgentLoop.CostTracker).
+%% private → defp; public → def.
+%% Mutable methods: body wrapped to return updated state.
+%% @spec annotations generated from signature types.
+
+emit_shared_method(S, elixir, MethodName) :-
+    shared_logic(_, MethodName, Props),
+    member(signature(Name, Args, RetType), Props),
+    member(doc(Doc), Props),
+    compile_logic(elixir, MethodName, Body),
+    member(container(Container), Props),
+    %% Determine visibility
+    (member(private, Props) -> DefKw = 'defp' ; DefKw = 'def'),
+    %% Format typed args for @spec
+    format_elixir_spec_args(Props, Args, SpecArgs),
+    resolve_type(elixir, RetType, ElixirRetType),
+    %% Determine if mutable (state-returning)
+    (member(mutable, Props) -> Mutable = true ; Mutable = false),
+    (Container = none ->
+        %% Standalone module function (no state)
+        format(S, '  @doc "~w"~n', [Doc]),
+        (Args = [] ->
+            format(S, '  @spec ~w() :: ~w~n', [Name, ElixirRetType]),
+            format(S, '  ~w ~w do~n', [DefKw, Name])
+        ;
+            format(S, '  @spec ~w(~w) :: ~w~n', [Name, SpecArgs, ElixirRetType]),
+            atomic_list_concat(Args, ', ', ArgsStr),
+            format(S, '  ~w ~w(~w) do~n', [DefKw, Name, ArgsStr])
+        )
+    ; member(associated, Props) ->
+        %% Module function (no state parameter)
+        format(S, '  @doc "~w"~n', [Doc]),
+        (Args = [] ->
+            format(S, '  @spec ~w() :: ~w~n', [Name, ElixirRetType]),
+            format(S, '  ~w ~w do~n', [DefKw, Name])
+        ;
+            format(S, '  @spec ~w(~w) :: ~w~n', [Name, SpecArgs, ElixirRetType]),
+            atomic_list_concat(Args, ', ', ArgsStr),
+            format(S, '  ~w ~w(~w) do~n', [DefKw, Name, ArgsStr])
+        )
+    ;
+        %% Instance method — state is first argument
+        (Mutable = true ->
+            format(S, '  @doc "~w"~n', [Doc]),
+            (Args = [] ->
+                format(S, '  @spec ~w(t()) :: t()~n', [Name]),
+                format(S, '  ~w ~w(%__MODULE__{} = state) do~n', [DefKw, Name])
+            ;
+                format(S, '  @spec ~w(t(), ~w) :: t()~n', [Name, SpecArgs]),
+                atomic_list_concat(Args, ', ', ArgsStr),
+                format(S, '  ~w ~w(%__MODULE__{} = state, ~w) do~n', [DefKw, Name, ArgsStr])
+            )
+        ;
+            format(S, '  @doc "~w"~n', [Doc]),
+            (Args = [] ->
+                format(S, '  @spec ~w(t()) :: ~w~n', [Name, ElixirRetType]),
+                format(S, '  ~w ~w(%__MODULE__{} = state) do~n', [DefKw, Name])
+            ;
+                format(S, '  @spec ~w(t(), ~w) :: ~w~n', [Name, SpecArgs, ElixirRetType]),
+                atomic_list_concat(Args, ', ', ArgsStr),
+                format(S, '  ~w ~w(%__MODULE__{} = state, ~w) do~n', [DefKw, Name, ArgsStr])
+            )
+        )
+    ),
+    %% Apply field_map rewrites if present
+    atom_string(Body, BodyStr0),
+    (member(field_map(elixir, Map), Props) ->
+        apply_field_map(BodyStr0, Map, BodyStr1)
+    ;
+        BodyStr1 = BodyStr0
+    ),
+    %% Apply Elixir fixup (if X: → if X do/end)
+    elixir_fixup_body(BodyStr1, BodyStr2),
+    %% Chain state updates for mutable methods: %{state | ...} → state = %{state | ...}
+    (Mutable = true ->
+        elixir_chain_state(BodyStr2, BodyStr)
+    ;
+        BodyStr = BodyStr2
+    ),
+    %% Emit body lines
+    split_string(BodyStr, "\n", "", Lines),
+    forall(member(Line, Lines), (
+        format(S, '    ~w~n', [Line])
+    )),
+    format(S, '  end~n~n', []).
+
+%% Format Elixir @spec argument types
+format_elixir_spec_args(Props, Args, ArgsStr) :-
+    (member(arg_types(Types), Props) ->
+        format_elixir_typed_list(Types, ArgsStr)
+    ;
+        length(Args, N),
+        make_any_list(N, ArgsStr)
+    ).
+
+format_elixir_typed_list([], "").
+format_elixir_typed_list([T], S) :- resolve_type(elixir, T, S).
+format_elixir_typed_list([T|Ts], S) :-
+    Ts \= [],
+    resolve_type(elixir, T, TS),
+    format_elixir_typed_list(Ts, Rest),
+    format(atom(S), "~w, ~w", [TS, Rest]).
+
+make_any_list(0, "").
+make_any_list(1, "any()").
+make_any_list(N, S) :-
+    N > 1, N1 is N - 1,
+    make_any_list(N1, Rest),
+    format(atom(S), "any(), ~w", [Rest]).
+
 %% apply_field_map(+Str, +Map, -Result)
 %% Applies a list of From-To string replacements to Str.
 apply_field_map(Str, [], Str).
@@ -2311,12 +2428,83 @@ rust_maybe_semicolon(LS, Fixed) :-
         atom_string(Fixed, WithSemi)
     ).
 
+%% elixir_chain_state/2 — Chain %{state | ...} updates for mutable Elixir methods.
+%% Non-last %{state | ...} lines get "state = " prepended so they rebind state.
+elixir_chain_state(Str, Result) :-
+    split_string(Str, "\n", "", Lines),
+    reverse(Lines, RevLines),
+    elixir_chain_lines(RevLines, true, RevResult),
+    reverse(RevResult, ResultLines),
+    atomic_list_concat(ResultLines, '\n', Result).
+
+elixir_chain_lines([], _, []).
+elixir_chain_lines([Line|Rest], IsLast, [Fixed|FixedRest]) :-
+    atom_string(LineAtom, Line),
+    (IsLast = false, sub_string(Line, 0, _, _, "%{state |") ->
+        atom_concat('state = ', LineAtom, Fixed)
+    ;
+        Fixed = LineAtom
+    ),
+    %% After first line (which is last in original), all subsequent are non-last
+    (sub_string(Line, 0, _, _, "%{state |") ->
+        elixir_chain_lines(Rest, false, FixedRest)
+    ;
+        elixir_chain_lines(Rest, IsLast, FixedRest)
+    ).
+
+%% elixir_fixup_body/2 — Convert Python-style if/else blocks to Elixir do/end
+%% Handles: "if X:" → "if X do" + "end", with "else" insertion when there's
+%% code after the block (early-return pattern).
+elixir_fixup_body(Str, Result) :-
+    split_string(Str, "\n", "", Lines),
+    elixir_fixup_lines(Lines, 0, FixedLines),
+    atomic_list_concat(FixedLines, '\n', Result).
+
+elixir_fixup_lines([], 0, []) :- !.
+elixir_fixup_lines([], BlockIndent, ["end"]) :- BlockIndent > 0, !.
+elixir_fixup_lines([Line|Rest], InBlock, Out) :-
+    atom_string(Line, LS),
+    (InBlock > 0, \+ line_indented(LS, InBlock) ->
+        %% Block ended — remaining lines become else branch
+        %% Indent the else-body lines by the block indent
+        elixir_fixup_lines(Rest, 0, RestFixed),
+        atom_string(IndentedLine, LS),
+        format(atom(IndentedFirst), "    ~w", [IndentedLine]),
+        maplist([L, IL]>>(format(atom(IL), "    ~w", [L])), RestFixed, IndentedRest),
+        append(["else", IndentedFirst | IndentedRest], ["end"], Out)
+    ;
+        elixir_fixup_single(LS, FixedLine, NewBlock),
+        (NewBlock > 0 ->
+            elixir_fixup_lines(Rest, NewBlock, RestOut)
+        ;
+            elixir_fixup_lines(Rest, InBlock, RestOut)
+        ),
+        Out = [FixedLine | RestOut]
+    ).
+
+elixir_fixup_single(LS, Fixed, NewBlock) :-
+    %% Check for "if X:" pattern
+    (sub_string(LS, _, 1, 0, ":"),
+     string_concat(Spaces, Core, LS),
+     atom_string(SpA, Spaces), atom_codes(SpA, SpCodes),
+     (SpCodes = [] ; maplist(=(0' ), SpCodes)),
+     sub_string(Core, 0, 3, _, "if ") ->
+        %% Convert "if X:" → "if X do"
+        sub_string(LS, 0, _, 1, Prefix),
+        string_concat(Prefix, " do", FS),
+        atom_string(Fixed, FS),
+        NewBlock = 4
+    ;
+        atom_string(Fixed, LS),
+        NewBlock = 0
+    ).
+
 %% write_shared_block(+Stream, +Target, +Module)
 %% Emit all shared_logic methods for a module as a block with header comment.
 write_shared_block(S, Target, Module) :-
     findall(M, shared_logic(Module, M, _), Methods),
     (Methods \= [] ->
-        (Target = python ->
+        ((Target = python ; Target = elixir) ->
             format(S, '~n# --- shared_logic: ~w (generated from compile_logic) ---~n~n', [Module])
         ;
             format(S, '~n// --- shared_logic: ~w (generated from compile_logic) ---~n~n', [Module])
@@ -2333,6 +2521,9 @@ write_shared_block_py(S, Module) :- write_shared_block(S, python, Module).
 
 %% write_shared_block_rust(+Stream, +Module) — convenience for Rust target
 write_shared_block_rust(S, Module) :- write_shared_block(S, rust, Module).
+
+%% write_shared_block_elixir(+Stream, +Module) — convenience for Elixir target
+write_shared_block_elixir(S, Module) :- write_shared_block(S, elixir, Module).
 
 %% expand_template(+Target, +Template, -Result)
 %% Replace ~slot(args)~ markers with target-specific expansions.
@@ -2467,6 +2658,8 @@ shared_logic(costs, reset, [
     signature(reset, [], void),
     doc("Reset all cost tracking state."),
     container('CostTracker'),
+    mutable,
+    field_map(elixir, ['state.records.clear()'-'%{state | records: []}']),
     body_template("~self_direct(records)~.clear()\n~self_assign(total_input_tokens, 0)~\n~self_assign(total_output_tokens, 0)~\n~self_assign(total_cost, 0.0)~")
 ]).
 
@@ -2491,7 +2684,9 @@ shared_logic(context, context_clear, [
     signature(clear, [], void),
     doc("Clear all messages from context."),
     container('ContextManager'),
+    mutable,
     py_extra_body("self._token_count = 0\nself._char_count = 0\nself._word_count = 0"),
+    field_map(elixir, ['state.messages.clear()'-'%{state | messages: []}']),
     body_template("~self_direct(messages)~.clear()")
 ]).
 
@@ -2655,6 +2850,148 @@ logic_slot(rust, streaming_summary(Tokens, Chars), S) :-
     format(atom(S), "format!(\"~~{} tokens, {} chars\", ~w, ~w)", [TS, CS]).
 
 %% =============================================================================
+%% Elixir Logic Slots
+%% =============================================================================
+%%
+%% Elixir design: modules with structs (not GenServer). State is passed as
+%% first argument and returned (immutable updates via %{state | field: val}).
+%% container('CostTracker') → AgentLoop.CostTracker module with %__MODULE__{} struct
+%% container(none) → module-level function
+%% private → defp instead of def
+%% mutable → function returns updated state struct
+%% associated → module function, no state parameter
+
+%% --- Core slots ---
+logic_slot(elixir, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0", [X]).
+logic_slot(elixir, return_val(false), "false").
+logic_slot(elixir, return_val(true), "true").
+logic_slot(elixir, return_val(Expr), S) :-
+    Expr \= true, Expr \= false,
+    expand_expr(elixir, Expr, ExprStr),
+    format(atom(S), "~w", [ExprStr]).
+
+%% self_field: in Elixir, struct fields accessed via state.field
+logic_slot(elixir, self_field(F), S) :- format(atom(S), "state.~w", [F]).
+logic_slot(elixir, self_direct(F), S) :- format(atom(S), "state.~w", [F]).
+logic_slot(elixir, self_method(M), S) :- format(atom(S), "~w(state)", [M]).
+
+%% --- Print/IO slots ---
+logic_slot(elixir, print_flush(X), S) :-
+    format(atom(S), "IO.write(~w)", [X]).
+
+%% --- String/collection slots ---
+logic_slot(elixir, str_len(X), S) :- format(atom(S), "String.length(~w)", [X]).
+
+logic_slot(elixir, contains(Collection, Item), S) :-
+    expand_expr(elixir, Collection, CS),
+    expand_expr(elixir, Item, IS),
+    format(atom(S), "MapSet.member?(~w, ~w)", [CS, IS]).
+
+logic_slot(elixir, not_empty(X), S) :-
+    expand_expr(elixir, X, XS), format(atom(S), "~w != []", [XS]).
+
+%% --- Assignment/mutation slots (Elixir: immutable updates) ---
+logic_slot(elixir, self_inc(Field, Expr), S) :-
+    expand_expr(elixir, Expr, ES),
+    format(atom(S), "%{state | ~w: state.~w + ~w}", [Field, Field, ES]).
+logic_slot(elixir, self_assign(Field, Expr), S) :-
+    expand_expr(elixir, Expr, ES),
+    format(atom(S), "%{state | ~w: ~w}", [Field, ES]).
+logic_slot(elixir, assign(Var, Expr), S) :-
+    expand_expr(elixir, Expr, ES),
+    format(atom(S), "~w = ~w", [Var, ES]).
+
+%% --- Set membership ---
+logic_slot(elixir, matches_set(X, List), S) :-
+    atomic_list_concat(List, ', ', Items),
+    format(atom(S), "~w in [~w]", [X, Items]).
+
+%% --- Format string slots ---
+logic_slot(elixir, format_str(Fmt, Args), S) :-
+    elixir_interpolation(Fmt, Args, S).
+logic_slot(elixir, canonical_json(X), S) :-
+    format(atom(S), "Jason.encode!(~w)", [X]).
+
+%% --- Method call slots ---
+logic_slot(elixir, call_method(Method, Args), S) :-
+    format_args_list(Args, elixir, ArgStr),
+    format(atom(S), "~w(~w)", [Method, ArgStr]).
+
+%% --- Empty check ---
+logic_slot(elixir, is_empty_check(X), S) :-
+    expand_expr(elixir, X, XS),
+    format(atom(S), "Enum.empty?(~w)", [XS]).
+
+%% --- Streaming summary ---
+logic_slot(elixir, streaming_summary(Tokens, Chars), S) :-
+    expand_expr(elixir, Tokens, TS),
+    expand_expr(elixir, Chars, CS),
+    format(atom(S), "\"#{~w} tokens, #{~w} chars\"", [TS, CS]).
+
+%% =============================================================================
+%% Elixir expand_expr/3
+%% =============================================================================
+
+expand_expr(elixir, self_total_cost >= budget, "state.total_cost >= budget").
+expand_expr(elixir, max_zero(Expr), S) :-
+    expand_expr(elixir, Expr, Inner),
+    format(atom(S), "max(0.0, ~w)", [Inner]).
+expand_expr(elixir, budget - self_total_cost, "budget - state.total_cost").
+expand_expr(elixir, len_of(Expr), S) :-
+    expand_expr(elixir, Expr, Inner),
+    format(atom(S), "length(~w)", [Inner]).
+expand_expr(elixir, int_div(A, B), S) :-
+    expand_expr(elixir, A, AStr),
+    expand_expr(elixir, B, BStr),
+    format(atom(S), "div(~w, ~w)", [AStr, BStr]).
+expand_expr(elixir, max_one(Expr), S) :-
+    expand_expr(elixir, Expr, Inner),
+    format(atom(S), "max(1, ~w)", [Inner]).
+expand_expr(elixir, min_val(A, B), S) :-
+    expand_expr(elixir, A, AStr),
+    expand_expr(elixir, B, BStr),
+    format(atom(S), "min(~w, ~w)", [AStr, BStr]).
+expand_expr(elixir, mul(A, B), S) :-
+    expand_expr(elixir, A, AStr),
+    expand_expr(elixir, B, BStr),
+    format(atom(S), "~w * ~w", [AStr, BStr]).
+expand_expr(elixir, pow(Base, Exp), S) :-
+    expand_expr(elixir, Base, BStr),
+    expand_expr(elixir, Exp, EStr),
+    format(atom(S), ":math.pow(~w, ~w)", [BStr, EStr]).
+expand_expr(elixir, sub(A, B), S) :-
+    expand_expr(elixir, A, AStr),
+    expand_expr(elixir, B, BStr),
+    format(atom(S), "(~w - ~w)", [AStr, BStr]).
+expand_expr(elixir, as_float(X), S) :-
+    expand_expr(elixir, X, Inner),
+    format(atom(S), "(~w * 1.0)", [Inner]).
+expand_expr(elixir, div_float(A, B), S) :-
+    expand_expr(elixir, A, AStr),
+    expand_expr(elixir, B, BStr),
+    format(atom(S), "(~w / ~w)", [AStr, BStr]).
+
+%% =============================================================================
+%% Elixir resolve_type/3
+%% =============================================================================
+
+resolve_type(elixir, int, "integer()").
+resolve_type(elixir, float, "float()").
+resolve_type(elixir, string, "String.t()").
+resolve_type(elixir, bool, "boolean()").
+resolve_type(elixir, void, ":ok").
+resolve_type(elixir, usize, "non_neg_integer()").
+resolve_type(elixir, dict, "map()").
+resolve_type(elixir, set_of_string, "MapSet.t()").
+resolve_type(elixir, owned_string, "String.t()").
+resolve_type(elixir, list_of_dict, "[map()]").
+resolve_type(elixir, ref(T), S) :-
+    resolve_type(elixir, T, S).
+resolve_type(elixir, optional(T), S) :-
+    resolve_type(elixir, T, Inner),
+    format(atom(S), "~w | nil", [Inner]).
+
+%% =============================================================================
 %% Additional expand_expr/3 — Expressions for expanded coverage
 %% =============================================================================
 
@@ -2750,6 +3087,25 @@ format_args_list([A|Rest], Target, S) :-
 python_fstring(Fmt, Args, S) :-
     replace_placeholders(Fmt, Args, python, Filled),
     format(atom(S), "f\"~w\"", [Filled]).
+
+elixir_interpolation(Fmt, Args, S) :-
+    replace_elixir_placeholders(Fmt, Args, Filled),
+    format(atom(S), "\"~w\"", [Filled]).
+
+replace_elixir_placeholders(Fmt, [], Fmt).
+replace_elixir_placeholders(Fmt, [Arg|Rest], Result) :-
+    expand_expr(elixir, Arg, ArgStr),
+    atom_string(Fmt, FmtStr),
+    (sub_string(FmtStr, Before, 2, _, "{}") ->
+        sub_string(FmtStr, 0, Before, _, Prefix),
+        After is Before + 2,
+        sub_string(FmtStr, After, _, 0, Suffix),
+        format(atom(Mid), "~w#{~w}~w", [Prefix, ArgStr, Suffix]),
+        atom_string(Mid, MidStr),
+        replace_elixir_placeholders(MidStr, Rest, Result)
+    ;
+        Result = Fmt
+    ).
 
 replace_placeholders(Fmt, [], _, Fmt).
 replace_placeholders(Fmt, [Arg|Rest], Target, Result) :-
