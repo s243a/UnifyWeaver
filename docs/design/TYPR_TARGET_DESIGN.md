@@ -37,11 +37,13 @@ This document focuses on architecture and rollout choices specific to TypR.
    - structured split-and-recombine chains where those guarded derived values
      later feed a combined output
    - guarded disjunction-style alternative-assignment chains where each
-     alternative binds either the same later intermediate or the final output
-     directly before later native steps continue from the selected result
+     alternative may introduce different branch-local intermediates before
+     binding either the same later intermediate or the final output directly,
+     and later native steps continue from the selected result
    - guarded disjunction-style multi-result chains where each alternative
-     binds the same later variables before later native steps continue from
-     those selected results
+     may introduce different branch-local intermediates before binding the
+     same later variables, and later native steps continue from those
+     selected results
    - two-level nested guarded alternatives inside supported semicolon
      branches where each nested branch still selects the same later result
      set, including nested multi-result selections
@@ -245,6 +247,10 @@ Completed:
 21. Confirmed that the same guarded-alternative path also covers a second
     nested guarded layer when each nested branch still preserves the same
     later result set and later native steps continue from those values.
+22. Confirmed that the same guarded-alternative path also covers supported
+    branch-local intermediates inside each alternative, provided the
+    alternatives still converge on the same later result variable or result
+    set before later native steps continue.
 
 R-family note:
 
@@ -275,9 +281,11 @@ Current implementation note:
   fan-out chains where one earlier value feeds multiple later outputs or
   conditions, structured split-and-recombine chains where guarded derived
   values later feed a combined output, guarded disjunction-style
-  alternative-assignment chains where each alternative binds either the same
-  later intermediate or the final output directly, guarded disjunction-style
-  multi-result chains where each alternative binds the same later variables,
+  alternative-assignment chains where each alternative may introduce
+  branch-local intermediates before binding either the same later
+  intermediate or the final output directly, guarded disjunction-style
+  multi-result chains where each alternative may introduce branch-local
+  intermediates before binding the same later variables,
   two-level nested guarded alternatives inside supported semicolon branches
   where each nested branch still selects the same later result set,
   native literal-headed branch bodies built from those chains,
