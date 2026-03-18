@@ -42,6 +42,8 @@ This document focuses on architecture and rollout choices specific to TypR.
    - guarded disjunction-style multi-result chains where each alternative
      binds the same later variables before later native steps continue from
      those selected results
+   - one-level nested guarded alternatives inside supported semicolon
+     branches where the nested branch still selects the same later result
    - supported literal-headed branch bodies that keep those chains native by
      using `let` for newly introduced locals inside TypR branches
    - native lowering for the dataframe helpers `filter/3`, `sort_by/3`, and
@@ -233,6 +235,9 @@ Completed:
 18. Generalized that multi-result guarded-alternative path so supported
     semicolon alternatives may now preserve any shared later-variable set and
     continue native TypR lowering from those selected results.
+19. Extended the guarded-alternative path again so a supported semicolon
+    branch may itself contain one nested guarded alternative, provided that
+    nested branch still selects the same later result natively.
 
 R-family note:
 
@@ -266,6 +271,8 @@ Current implementation note:
   alternative-assignment chains where each alternative binds either the same
   later intermediate or the final output directly, guarded disjunction-style
   multi-result chains where each alternative binds the same later variables,
+  one-level nested guarded alternatives inside supported semicolon branches
+  where the nested branch still selects the same later result,
   native literal-headed branch bodies built from those chains,
   dataframe helper calls, and literal-guarded branch selection; more complex
   bodies still fall back to wrapped R

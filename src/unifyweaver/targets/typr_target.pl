@@ -522,8 +522,8 @@ typr_alternative_output_vars(Alternative, OutputVars) :-
 
 collect_typr_goal_output_vars([], []).
 collect_typr_goal_output_vars([Goal|Rest], OutputVars) :-
-    (   typr_goal_output_var(Goal, OutputVar)
-    ->  OutputVars = [OutputVar|RestOutputs]
+    (   typr_goal_output_vars(Goal, GoalOutputVars)
+    ->  append(GoalOutputVars, RestOutputs, OutputVars)
     ;   OutputVars = RestOutputs
     ),
     collect_typr_goal_output_vars(Rest, RestOutputs).
@@ -535,13 +535,38 @@ typr_alternative_output_var(Alternative, OutputVar) :-
     typr_goal_output_var(Goal, OutputVar),
     !.
 
+typr_goal_output_vars(_Module:Goal, OutputVars) :-
+    !,
+    typr_goal_output_vars(Goal, OutputVars).
+typr_goal_output_vars(Goal, OutputVars) :-
+    typr_disjunction_alternatives(Goal, Alternatives),
+    Alternatives = [_|[_|_]],
+    typr_disjunction_goal_output_vars(Alternatives, OutputVars),
+    !.
+typr_goal_output_vars(Goal, [OutputVar]) :-
+    typr_goal_output_var_simple(Goal, OutputVar).
+
 typr_goal_output_var(_Module:Goal, OutputVar) :-
     !,
     typr_goal_output_var(Goal, OutputVar).
-typr_goal_output_var(filter(_, _, OutputVar), OutputVar).
-typr_goal_output_var(sort_by(_, _, OutputVar), OutputVar).
-typr_goal_output_var(group_by(_, _, OutputVar), OutputVar).
 typr_goal_output_var(Goal, OutputVar) :-
+    typr_goal_output_vars(Goal, [OutputVar]),
+    !.
+typr_goal_output_var(Goal, OutputVar) :-
+    typr_goal_output_var_simple(Goal, OutputVar).
+
+typr_disjunction_goal_output_vars([Alternative|Rest], OutputVars) :-
+    typr_alternative_output_vars(Alternative, FirstOutputVars),
+    foldl(intersect_output_vars, Rest, FirstOutputVars, OutputVars),
+    OutputVars \= [].
+
+typr_goal_output_var_simple(_Module:Goal, OutputVar) :-
+    !,
+    typr_goal_output_var_simple(Goal, OutputVar).
+typr_goal_output_var_simple(filter(_, _, OutputVar), OutputVar).
+typr_goal_output_var_simple(sort_by(_, _, OutputVar), OutputVar).
+typr_goal_output_var_simple(group_by(_, _, OutputVar), OutputVar).
+typr_goal_output_var_simple(Goal, OutputVar) :-
     functor(Goal, Pred, Arity),
     binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
