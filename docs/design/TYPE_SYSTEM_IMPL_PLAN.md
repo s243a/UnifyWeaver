@@ -165,6 +165,9 @@ bring-up.
   - guarded disjunction-style alternative-assignment chains where each
     alternative binds either the same later intermediate or the final output
     directly before later native steps continue from the selected result
+  - guarded disjunction-style multi-result chains where each alternative binds
+    the same two later variables before later native steps continue from both
+    selected results
   - supported literal-headed multi-clause branch bodies that keep those chains
     native by using `let` for new intermediate locals
   - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
