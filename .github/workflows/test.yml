@@ -98,6 +98,7 @@ jobs:
     timeout-minutes: 45
     env:
       CSHARP_QUERY_SMOKE_OUTPUT_DIR: tmp/csharp_query_smoke_ci
+      CSHARP_QUERY_SMOKE_SUMMARY_PATH: tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.md
 
     steps:
       - name: Checkout code
@@ -119,7 +120,7 @@ jobs:
 
       - name: Run C# query cache smoke sequence
         run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_sequence.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR"
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_sequence.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR" -SummaryPath "$CSHARP_QUERY_SMOKE_SUMMARY_PATH"
 
       - name: Upload C# query smoke artifacts on failure
         if: failure()
@@ -133,10 +134,12 @@ jobs:
       - name: Summarize C# query cache smoke slices
         if: always()
         run: |
-          {
-            echo "## C# Query Runtime Smoke"
-            echo ""
-            echo "- Cache slices: admission, reuse, lru"
-            echo "- Output dir: \`$CSHARP_QUERY_SMOKE_OUTPUT_DIR\`"
-            echo "- Failure artifacts: uploaded from \`$CSHARP_QUERY_SMOKE_OUTPUT_DIR\` when the smoke job fails"
-          } >> "$GITHUB_STEP_SUMMARY"
+          if (Test-Path "$CSHARP_QUERY_SMOKE_SUMMARY_PATH") {
+            Get-Content "$CSHARP_QUERY_SMOKE_SUMMARY_PATH" | Out-File -FilePath "$GITHUB_STEP_SUMMARY" -Encoding utf8 -Append
+          } else {
+            {
+              echo "## C# Query Runtime Smoke"
+              echo ""
+              echo "- Summary file not found at \`$CSHARP_QUERY_SMOKE_SUMMARY_PATH\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }

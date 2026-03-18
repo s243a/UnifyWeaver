@@ -6,6 +6,7 @@
 #   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1
 #   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1 -OutputDir tmp/csharp_query_smoke_ci
 #   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1 -KeepArtifacts
+#   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1 -SummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.md
 #
 # Notes:
 # - Requires the same prerequisites as run_csharp_query_runtime_smoke.ps1.
@@ -20,12 +21,95 @@ param(
     [string]$ProjectFilter = "*",
 
     [Parameter(Mandatory = $false)]
+    [string]$SummaryPath,
+
+    [Parameter(Mandatory = $false)]
     [switch]$KeepArtifacts
 )
 
 $ErrorActionPreference = "Stop"
 
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $runnerPath = Join-Path $PSScriptRoot "run_csharp_query_runtime_smoke.ps1"
+$resolvedOutputDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) {
+    [System.IO.Path]::GetFullPath($OutputDir)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDir))
+}
+$displaySummaryPath = if ([string]::IsNullOrWhiteSpace($SummaryPath)) {
+    Join-Path $OutputDir "cache_smoke_sequence_summary.md"
+} else {
+    $SummaryPath
+}
+$resolvedSummaryPath = if ([System.IO.Path]::IsPathRooted($displaySummaryPath)) {
+    [System.IO.Path]::GetFullPath($displaySummaryPath)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $projectRoot $displaySummaryPath))
+}
+
+function Format-Duration {
+    param(
+        [Parameter(Mandatory = $true)]
+        [TimeSpan]$Duration
+    )
+
+    return ("{0:F1}s" -f $Duration.TotalSeconds)
+}
+
+function Write-CacheSmokeSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayOutputDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DisplaySummaryPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectFilterValue,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$KeepArtifactsAfterSequence,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$SliceResults,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$HasFailure
+    )
+
+    $summaryDir = Split-Path -Parent $Path
+    if ($summaryDir) {
+        New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null
+    }
+
+    $lines = @(
+        "## C# Query Runtime Smoke",
+        "",
+        "- Overall result: $(if ($HasFailure) { "FAIL" } else { "PASS" })",
+        "- Output dir: `"$DisplayOutputDir`"",
+        "- Summary path: `"$DisplaySummaryPath`"",
+        "- Project filter: `"$ProjectFilterValue`"",
+        "- Keep artifacts after sequence: $(if ($KeepArtifactsAfterSequence) { "true" } else { "false" })",
+        "",
+        "| Slice | Status | Duration |",
+        "| --- | --- | --- |"
+    )
+
+    foreach ($sliceResult in $SliceResults) {
+        $lines += "| $($sliceResult.Slice) | $($sliceResult.Status) | $(Format-Duration -Duration $sliceResult.Duration) |"
+    }
+
+    $failedSlice = $SliceResults | Where-Object { $_.Status -eq "FAIL" } | Select-Object -First 1
+    if ($failedSlice) {
+        $lines += ""
+        $lines += "Failure detail: `"$($failedSlice.Error)`""
+    }
+
+    Set-Content -Path $Path -Value $lines
+}
 
 function Invoke-CacheSmokeSlice {
     param(
@@ -40,7 +124,7 @@ function Invoke-CacheSmokeSlice {
     )
 
     $runnerArgs = @{
-        OutputDir = $OutputDir
+        OutputDir = $resolvedOutputDir
         ProjectFilter = $ProjectFilter
         CacheSlice = $Slice
     }
@@ -57,6 +141,65 @@ function Invoke-CacheSmokeSlice {
     & $runnerPath @runnerArgs
 }
 
-Invoke-CacheSmokeSlice -Slice "admission" -KeepArtifactsForSlice
-Invoke-CacheSmokeSlice -Slice "reuse" -SkipCodegen -KeepArtifactsForSlice
-Invoke-CacheSmokeSlice -Slice "lru" -SkipCodegen -KeepArtifactsForSlice:$KeepArtifacts
+New-Item -ItemType Directory -Force -Path $resolvedOutputDir | Out-Null
+
+$sliceSpecs = @(
+    @{
+        Slice = "admission"
+        SkipCodegen = $false
+        KeepArtifactsForSlice = $true
+    },
+    @{
+        Slice = "reuse"
+        SkipCodegen = $true
+        KeepArtifactsForSlice = $true
+    },
+    @{
+        Slice = "lru"
+        SkipCodegen = $true
+        KeepArtifactsForSlice = [bool]$KeepArtifacts
+    }
+)
+
+$sliceResults = @()
+$sequenceFailure = $null
+
+foreach ($sliceSpec in $sliceSpecs) {
+    $sliceStart = Get-Date
+    $sliceStatus = "PASS"
+    $sliceError = $null
+
+    try {
+        Invoke-CacheSmokeSlice -Slice $sliceSpec.Slice -SkipCodegen:$sliceSpec.SkipCodegen -KeepArtifactsForSlice:$sliceSpec.KeepArtifactsForSlice
+    } catch {
+        $sliceStatus = "FAIL"
+        $sliceError = $_.Exception.Message
+        $sequenceFailure = $_
+    } finally {
+        $sliceResults += [pscustomobject]@{
+            Slice = $sliceSpec.Slice
+            Status = $sliceStatus
+            Duration = ((Get-Date) - $sliceStart)
+            Error = $sliceError
+        }
+    }
+
+    if ($sequenceFailure) {
+        break
+    }
+}
+
+Write-CacheSmokeSummary `
+    -Path $resolvedSummaryPath `
+    -DisplayOutputDir $OutputDir `
+    -DisplaySummaryPath $displaySummaryPath `
+    -ProjectFilterValue $ProjectFilter `
+    -KeepArtifactsAfterSequence ([bool]$KeepArtifacts) `
+    -SliceResults $sliceResults `
+    -HasFailure ([bool]$sequenceFailure)
+
+Write-Host "Wrote cache smoke summary: $resolvedSummaryPath"
+
+if ($sequenceFailure) {
+    throw $sequenceFailure.Exception
+}
