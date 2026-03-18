@@ -117,17 +117,9 @@ jobs:
           dotnet --version
           pwsh -v
 
-      - name: Run C# query cache smoke slice (admission)
+      - name: Run C# query cache smoke sequence
         run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR" -CacheSlice admission -KeepArtifacts
-
-      - name: Run C# query cache smoke slice (reuse)
-        run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR" -CacheSlice reuse -SkipCodegen -KeepArtifacts
-
-      - name: Run C# query cache smoke slice (lru)
-        run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR" -CacheSlice lru -SkipCodegen
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_sequence.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR"
 
       - name: Upload C# query smoke artifacts on failure
         if: failure()
