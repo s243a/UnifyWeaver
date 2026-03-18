@@ -335,11 +335,13 @@ Current TypR lowering policy is intentionally mixed:
 - structured split-and-recombine chains may also stay native when those guarded
   derived values later feed a combined output
 - guarded disjunction-style alternative-assignment chains may also stay native
-  when each alternative binds either the same later intermediate or the final
-  output directly and later native steps continue from that selected result
+  when each alternative may introduce different branch-local intermediates
+  before binding either the same later intermediate or the final output
+  directly, and later native steps continue from that selected result
 - guarded disjunction-style multi-result chains may also stay native when each
-  alternative binds the same later variables and later native steps continue
-  from those selected results
+  alternative may introduce different branch-local intermediates before
+  binding the same later variables, and later native steps continue from those
+  selected results
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select

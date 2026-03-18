@@ -206,11 +206,12 @@ includes:
 - structured split-and-recombine chains where guarded derived values are later
   combined into a final native output
 - guarded disjunction-style alternative-assignment chains where each native
-  alternative binds either the same later intermediate or the final output
-  directly before later native steps continue from the selected result
+  alternative may introduce different branch-local intermediates before
+  binding either the same later intermediate or the final output directly,
+  and later native steps continue from the selected result
 - guarded disjunction-style multi-result chains where each native alternative
-  binds the same later variables before later native steps continue from those
-  selected results
+  may introduce different branch-local intermediates before binding the same
+  later variables, and later native steps continue from those selected results
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively
