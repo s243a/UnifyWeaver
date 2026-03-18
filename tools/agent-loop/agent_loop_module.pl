@@ -2245,6 +2245,7 @@ resolve_type(python, void, "None").
 resolve_type(python, usize, "int").
 resolve_type(python, dict, "dict").
 resolve_type(python, set_of_string, "set[str]").
+resolve_type(python, owned_string, "str").
 resolve_type(python, list_of_dict, "list[dict]").
 resolve_type(python, optional(T), S) :-
     resolve_type(python, T, Inner),
@@ -2258,6 +2259,7 @@ resolve_type(rust, void, "()").
 resolve_type(rust, usize, "usize").
 resolve_type(rust, dict, "std::collections::HashMap<String, serde_json::Value>").
 resolve_type(rust, set_of_string, "std::collections::HashSet<String>").
+resolve_type(rust, owned_string, "String").
 resolve_type(rust, list_of_dict, "Vec<serde_json::Value>").
 resolve_type(rust, optional(T), S) :-
     resolve_type(rust, T, Inner),
@@ -2279,7 +2281,7 @@ shared_logic(streaming, on_token, [
 ]).
 
 shared_logic(streaming, format_summary, [
-    signature(format_summary, [], string),
+    signature(format_summary, [], owned_string),
     doc("Format a one-line summary of streaming stats."),
     container('StreamingTokenCounter'),
     body_template("~return_val(streaming_summary(self_direct(token_count), self_direct(char_count)))~")
@@ -2967,6 +2969,10 @@ generate_rust_costs :-
     %% Emit pricing table via component registry
     agent_loop_components:emit_rust_cost_facts(S, [target(rust)]),
     write_rust(S, costs_tracker),
+    %% Emit shared_logic methods (replacing former fragment methods)
+    emit_shared_method(S, rust, is_over_budget),
+    emit_shared_method(S, rust, budget_remaining),
+    write(S, '}\n'),
     close(S),
     format('  Generated rust/src/costs.rs~n', []).
 
@@ -3177,6 +3183,12 @@ generate_rust_context :-
     ]),
     write(S, 'use crate::types::*;\n\n'),
     write_rust(S, context_manager),
+    %% Emit shared_logic methods (replacing former fragment methods)
+    emit_shared_method(S, rust, context_clear),
+    emit_shared_method(S, rust, context_len),
+    emit_shared_method(S, rust, context_is_empty),
+    emit_shared_method(S, rust, estimate_tokens),
+    write(S, '}\n'),
     close(S),
     format('  Generated rust/src/context.rs~n', []).
 
@@ -3481,6 +3493,9 @@ generate_rust_main :-
     nl(S),
     %% Streaming token counter struct
     write_rust(S, streaming_token_counter),
+    %% Emit shared_logic method for streaming (replacing former fragment method)
+    emit_shared_method(S, rust, format_summary),
+    write(S, '}\n\n'),
     %% Main loop (expects `config`, `matches`, `session_manager` to be defined)
     write_rust(S, main_loop),
     write(S, '}\n'),
@@ -4045,25 +4060,6 @@ py_fragment(cost_tracker_methods, '    def record_usage(self, model: str, input_
             f"Cost: {summary[\'cost_formatted\']}"
         )
 
-    def reset(self) -> None:
-        """Reset all tracking."""
-        self.records.clear()
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.total_cost = 0.0
-
-    def is_over_budget(self, budget: float) -> bool:
-        """Check if total cost exceeds budget. Budget of 0 means unlimited."""
-        if budget <= 0:
-            return False
-        return self.total_cost >= budget
-
-    def budget_remaining(self, budget: float) -> float:
-        """Return remaining budget in USD. Budget of 0 means unlimited (returns -1)."""
-        if budget <= 0:
-            return -1.0
-        return max(0.0, budget - self.total_cost)
-
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
@@ -4208,6 +4204,11 @@ generate_costs :-
     write_py(S, cost_usage_record),
     write_py(S, cost_tracker_class_def),
     write_py(S, cost_tracker_methods),
+    %% Emit shared_logic methods (replacing former fragment methods)
+    emit_shared_method(S, python, reset),
+    emit_shared_method(S, python, is_over_budget),
+    emit_shared_method(S, python, budget_remaining),
+    write(S, '\n'),
     write_py(S, cost_openrouter),
     close(S),
     format('  Generated costs.py~n', []).
@@ -5605,23 +5606,6 @@ impl CostTracker {
         )
     }
 
-    /// Check if total cost exceeds budget. Budget of 0.0 means unlimited.
-    pub fn is_over_budget(&self, budget: f64) -> bool {
-        if budget <= 0.0 {
-            return false;
-        }
-        self.total_cost() >= budget
-    }
-
-    /// Return remaining budget in USD. Budget of 0.0 returns -1.0 (unlimited).
-    pub fn budget_remaining(&self, budget: f64) -> f64 {
-        if budget <= 0.0 {
-            return -1.0;
-        }
-        (budget - self.total_cost()).max(0.0)
-    }
-}
-
 ').
 
 %% =============================================================================
@@ -6077,18 +6061,6 @@ impl ContextManager {
         &self.messages
     }
 
-    pub fn clear(&mut self) {
-        self.messages.clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.messages.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
-    }
-
     /// Character count for a single message, including tool call estimates.
     fn message_char_count(m: &Message) -> usize {
         let mut n = m.content.len();
@@ -6113,11 +6085,6 @@ impl ContextManager {
         self.messages.iter()
             .map(|m| m.content.split_whitespace().count())
             .sum()
-    }
-
-    /// Estimated token count (chars / 4 heuristic).
-    pub fn estimate_tokens(&self) -> usize {
-        self.char_count() / 4
     }
 
     /// Trim messages to stay within all configured limits.
@@ -6256,7 +6223,6 @@ impl ContextManager {
         }
         out
     }
-}
 
 ').
 
@@ -8102,11 +8068,6 @@ impl StreamingTokenCounter {
         self.token_count = std::cmp::max(1, self.char_count / 4);
     }
 
-    /// Format a one-line summary of streaming stats.
-    pub fn format_summary(&self) -> String {
-        format!("~{} tokens, {} chars", self.token_count, self.char_count)
-    }
-}
 ').
 
 rust_fragment(config_loader_types, '

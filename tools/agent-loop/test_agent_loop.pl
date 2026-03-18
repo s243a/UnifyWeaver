@@ -5856,15 +5856,15 @@ test_phase23_token_budget :-
     assert_true('token_budget config field', (
         agent_loop_module:agent_config_field(token_budget, _, _, _)
     )),
-    %% Python CostTracker has is_over_budget
+    %% Python CostTracker has is_over_budget (via shared_logic)
     assert_true('Python CostTracker has is_over_budget', (
-        agent_loop_module:py_fragment(cost_tracker_methods, CT1),
-        sub_atom(CT1, _, _, _, 'is_over_budget')
+        agent_loop_module:compile_logic(python, is_over_budget, Code1),
+        sub_atom(Code1, _, _, _, 'total_cost')
     )),
-    %% Python CostTracker has budget_remaining
+    %% Python CostTracker has budget_remaining (via shared_logic)
     assert_true('Python CostTracker has budget_remaining', (
-        agent_loop_module:py_fragment(cost_tracker_methods, CT2),
-        sub_atom(CT2, _, _, _, 'budget_remaining')
+        agent_loop_module:compile_logic(python, budget_remaining, Code2),
+        sub_atom(Code2, _, _, _, 'budget')
     )),
     %% Python _process_message checks budget
     assert_true('Python checks budget in loop', (
@@ -5919,10 +5919,10 @@ test_phase24_streaming_token_counter :-
         agent_loop_module:rust_fragment(streaming_token_counter, RS2),
         sub_atom(RS2, _, _, _, 'fn on_token')
     )),
-    %% Rust has format_summary method
+    %% Rust has format_summary method (via shared_logic)
     assert_true('Rust has format_summary', (
-        agent_loop_module:rust_fragment(streaming_token_counter, RS3),
-        sub_atom(RS3, _, _, _, 'fn format_summary')
+        agent_loop_module:compile_logic(rust, format_summary, Code3),
+        sub_atom(Code3, _, _, _, 'token_count')
     )),
     %% Rust main_loop uses StreamingTokenCounter
     assert_true('Rust main_loop uses counter', (
