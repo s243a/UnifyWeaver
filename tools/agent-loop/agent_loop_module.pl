@@ -1918,6 +1918,7 @@ write_decl_test_runner(S) :-
 
 shared_logic(costs, is_over_budget, [
     signature(is_over_budget, [budget], bool),
+    arg_types([float]),
     doc("Check if total cost exceeds budget. Budget of 0 means unlimited."),
     container('CostTracker'),
     body_template("if ~guard_leq_zero(budget)~:\n    ~return_val(false)~\n~return_val(self_total_cost >= budget)~")
@@ -1925,6 +1926,7 @@ shared_logic(costs, is_over_budget, [
 
 shared_logic(costs, budget_remaining, [
     signature(budget_remaining, [budget], float),
+    arg_types([float]),
     doc("Return remaining budget in USD. Budget of 0 means unlimited (returns -1)."),
     container('CostTracker'),
     body_template("if ~guard_leq_zero(budget)~:\n    ~return_val(-1.0)~\n~return_val(max_zero(budget - self_total_cost))~")
@@ -1965,7 +1967,7 @@ logic_slot(rust, return_val(true), "return true;").
 logic_slot(rust, return_val(Expr), S) :-
     Expr \= true, Expr \= false,
     expand_expr(rust, Expr, ExprStr),
-    format(atom(S), "~w", [ExprStr]).
+    format(atom(S), "return ~w;", [ExprStr]).
 logic_slot(rust, self_field(F), S) :- format(atom(S), "self.~w()", [F]).
 
 %% Expression expansion
@@ -2000,6 +2002,191 @@ compile_logic(Target, MethodName, Code) :-
     shared_logic(_, MethodName, Props),
     member(body_template(Template), Props),
     expand_template(Target, Template, Code).
+
+%% =============================================================================
+%% emit_shared_method/3 — Emit a complete method from shared_logic to a stream
+%% =============================================================================
+
+%% emit_shared_method(+Stream, +Target, +MethodName)
+%% Writes a properly formatted method (with signature, doc, body) from shared_logic.
+emit_shared_method(S, python, MethodName) :-
+    shared_logic(_, MethodName, Props),
+    member(signature(Name, Args, _RetType), Props),
+    member(doc(Doc), Props),
+    compile_logic(python, MethodName, Body),
+    %% Build argument list
+    (Args = [] ->
+        format(S, '    def ~w(self):~n', [Name])
+    ;
+        atomic_list_concat(Args, ', ', ArgsStr),
+        format(S, '    def ~w(self, ~w):~n', [Name, ArgsStr])
+    ),
+    format(S, '        """~w"""~n', [Doc]),
+    %% Emit body lines with proper indentation
+    atom_string(Body, BodyStr),
+    split_string(BodyStr, "\n", "", Lines),
+    forall(member(Line, Lines), (
+        format(S, '        ~w~n', [Line])
+    )),
+    nl(S).
+
+emit_shared_method(S, rust, MethodName) :-
+    shared_logic(_, MethodName, Props),
+    member(signature(Name, Args, RetType), Props),
+    member(doc(Doc), Props),
+    compile_logic(rust, MethodName, Body),
+    %% Build argument list with resolved types from signature
+    format(S, '    /// ~w~n', [Doc]),
+    format_rust_typed_args(Props, Args, ArgsStr),
+    %% Determine mutability: void return or explicit mutable flag → &mut self
+    (( RetType = void ; member(mutable, Props) ) ->
+        MutSelf = '&mut self'
+    ;
+        MutSelf = '&self'
+    ),
+    (RetType = void ->
+        (Args = [] ->
+            format(S, '    pub fn ~w(~w) {~n', [Name, MutSelf])
+        ;
+            format(S, '    pub fn ~w(~w, ~w) {~n', [Name, MutSelf, ArgsStr])
+        )
+    ;
+        resolve_type(rust, RetType, RType),
+        (Args = [] ->
+            format(S, '    pub fn ~w(~w) -> ~w {~n', [Name, MutSelf, RType])
+        ;
+            format(S, '    pub fn ~w(~w, ~w) -> ~w {~n', [Name, MutSelf, ArgsStr, RType])
+        )
+    ),
+    %% Emit body lines with Rust syntax (convert Python "if X:" to Rust "if X {")
+    atom_string(Body, BodyStr),
+    rust_fixup_body(BodyStr, FixedStr),
+    split_string(FixedStr, "\n", "", Lines),
+    forall(member(Line, Lines), (
+        format(S, '        ~w~n', [Line])
+    )),
+    format(S, '    }~n~n', []).
+
+%% Format Rust function arguments with types from signature props
+format_rust_typed_args(Props, Args, ArgsStr) :-
+    (member(arg_types(Types), Props) ->
+        format_rust_args_typed(Args, Types, ArgsStr)
+    ;
+        format_rust_args_default(Args, ArgsStr)
+    ).
+
+format_rust_args_typed([], [], "").
+format_rust_args_typed([A], [T], S) :-
+    resolve_type(rust, T, RT),
+    format(atom(S), "~w: ~w", [A, RT]).
+format_rust_args_typed([A|As], [T|Ts], S) :-
+    As \= [],
+    resolve_type(rust, T, RT),
+    format_rust_args_typed(As, Ts, Rest),
+    format(atom(S), "~w: ~w, ~w", [A, RT, Rest]).
+
+format_rust_args_default([], "").
+format_rust_args_default([A], S) :- format(atom(S), "~w: &str", [A]).
+format_rust_args_default([A|As], S) :-
+    As \= [],
+    format_rust_args_default(As, Rest),
+    format(atom(S), "~w: &str, ~w", [A, Rest]).
+
+%% Convert Python-style body to Rust-style:
+%%   - "if X:" → "if X {"  with "}" closing after indented block
+%%   - Add ";" to statement lines
+rust_fixup_body(Str, Result) :-
+    split_string(Str, "\n", "", Lines),
+    rust_fixup_lines(Lines, 0, FixedLines),
+    atomic_list_concat(FixedLines, '\n', Result).
+
+rust_fixup_lines([], 0, []) :- !.
+rust_fixup_lines([], BlockIndent, ["}"]) :- BlockIndent > 0, !.
+rust_fixup_lines([Line|Rest], InBlock, Out) :-
+    atom_string(Line, LS),
+    %% Check if we need to close a block (indentation dropped)
+    (InBlock > 0, \+ line_indented(LS, InBlock) ->
+        %% Close the block, then process this line at outer level
+        rust_fixup_lines([Line|Rest], 0, RestOut),
+        Out = ["}" | RestOut]
+    ;
+        %% Process this line
+        rust_fixup_single(LS, InBlock, FixedLine, NewBlock),
+        (NewBlock > 0 ->
+            rust_fixup_lines(Rest, NewBlock, RestOut)
+        ;
+            rust_fixup_lines(Rest, InBlock, RestOut)
+        ),
+        Out = [FixedLine | RestOut]
+    ).
+
+%% Check if a line is indented by at least N spaces
+line_indented(Str, N) :-
+    string_length(Str, Len), Len >= N,
+    sub_string(Str, 0, N, _, Prefix),
+    atom_string(SpAtom, Prefix),
+    atom_codes(SpAtom, Codes),
+    maplist(=(0' ), Codes).
+
+%% Process a single line: handle "if X:" and add semicolons
+rust_fixup_single(LS, _InBlock, Fixed, NewBlock) :-
+    %% Check for "if X:" pattern (with optional leading spaces)
+    (sub_string(LS, _, 1, 0, ":"),
+     %% Find "if " somewhere after leading spaces
+     string_concat(Spaces, Core, LS),
+     atom_string(SpA, Spaces), atom_codes(SpA, SpCodes),
+     (SpCodes = [] ; maplist(=(0' ), SpCodes)),
+     sub_string(Core, 0, 3, _, "if ") ->
+        %% Convert "if X:" → "if X {"
+        sub_string(LS, 0, _, 1, Prefix),
+        string_concat(Prefix, " {", FS),
+        atom_string(Fixed, FS),
+        NewBlock = 4
+    ;
+        %% Regular line — add semicolon if it's a statement
+        rust_maybe_semicolon(LS, Fixed),
+        NewBlock = 0
+    ).
+
+%% Add semicolons to Rust statement lines
+rust_maybe_semicolon(LS, Fixed) :-
+    string_length(LS, Len),
+    (Len =:= 0 ->
+        Fixed = ''
+    ; sub_string(LS, _, 1, 0, "{") ->
+        atom_string(Fixed, LS)
+    ; sub_string(LS, _, 1, 0, "}") ->
+        atom_string(Fixed, LS)
+    ; sub_string(LS, _, 1, 0, ";") ->
+        atom_string(Fixed, LS)
+    ;
+        %% Strip trailing spaces for clean output
+        string_concat(LS, ";", WithSemi),
+        atom_string(Fixed, WithSemi)
+    ).
+
+%% write_shared_block(+Stream, +Target, +Module)
+%% Emit all shared_logic methods for a module as a block with header comment.
+write_shared_block(S, Target, Module) :-
+    findall(M, shared_logic(Module, M, _), Methods),
+    (Methods \= [] ->
+        (Target = python ->
+            format(S, '~n# --- shared_logic: ~w (generated from compile_logic) ---~n~n', [Module])
+        ;
+            format(S, '~n// --- shared_logic: ~w (generated from compile_logic) ---~n~n', [Module])
+        ),
+        forall(member(Method, Methods), (
+            emit_shared_method(S, Target, Method)
+        ))
+    ;
+        true  %% No methods for this module — skip silently
+    ).
+
+%% write_shared_block_py(+Stream, +Module) — convenience for Python target
+write_shared_block_py(S, Module) :- write_shared_block(S, python, Module).
+
+%% write_shared_block_rust(+Stream, +Module) — convenience for Rust target
+write_shared_block_rust(S, Module) :- write_shared_block(S, rust, Module).
 
 %% expand_template(+Target, +Template, -Result)
 %% Replace ~slot(args)~ markers with target-specific expansions.
@@ -2084,6 +2271,8 @@ resolve_type(rust, optional(T), S) :-
 
 shared_logic(streaming, on_token, [
     signature(on_token, [token], void),
+    arg_types([string]),
+    mutable,
     doc("Process a streamed token chunk: print it, update char and token counts."),
     container('StreamingTokenCounter'),
     body_template("~print_flush(token)~\n~self_inc(char_count, str_len(token))~\n~self_assign(token_count, max_one(int_div(self_direct(char_count), 4)))~")
@@ -2100,6 +2289,7 @@ shared_logic(streaming, format_summary, [
 
 shared_logic(tool_cache, make_key, [
     signature(make_key, [tool_name, args], string),
+    arg_types([string, dict]),
     doc("Build a canonical cache key from tool name and arguments."),
     container('ToolResultCache'),
     body_template("~return_val(format_str(\"{}:{}\", [tool_name, canonical_json(args)]))~")
@@ -2107,6 +2297,7 @@ shared_logic(tool_cache, make_key, [
 
 shared_logic(tool_cache, cache_get_guard, [
     signature(cache_get_guard, [tool_name], bool),
+    arg_types([string]),
     doc("Check if a tool should skip the cache (destructive tools)."),
     container('ToolResultCache'),
     body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
@@ -2114,15 +2305,74 @@ shared_logic(tool_cache, cache_get_guard, [
 
 shared_logic(tool_cache, cache_put_guard, [
     signature(cache_put_guard, [tool_name], bool),
+    arg_types([string]),
     doc("Check if a tool result should not be cached (destructive tools)."),
     container('ToolResultCache'),
     body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
+]).
+
+%% --- Cost tracker additional methods ---
+
+shared_logic(costs, reset, [
+    signature(reset, [], void),
+    doc("Reset all cost tracking state."),
+    container('CostTracker'),
+    body_template("~self_direct(records)~.clear()\n~self_assign(total_input_tokens, 0)~\n~self_assign(total_output_tokens, 0)~\n~self_assign(total_cost, 0.0)~")
+]).
+
+shared_logic(costs, cost_compute, [
+    signature(cost_compute, [tokens, price_per_million], float),
+    arg_types([int, float]),
+    doc("Compute cost from token count and price per 1M tokens."),
+    container(none),
+    body_template("~return_val(div_float(mul(tokens, price_per_million), 1000000.0))~")
+]).
+
+%% --- Context manager methods ---
+
+shared_logic(context, estimate_tokens, [
+    signature(estimate_tokens, [], usize),
+    doc("Estimate token count using chars/4 heuristic."),
+    container('ContextManager'),
+    body_template("~return_val(int_div(self_method(char_count), 4))~")
+]).
+
+shared_logic(context, context_clear, [
+    signature(clear, [], void),
+    doc("Clear all messages from context."),
+    container('ContextManager'),
+    body_template("~self_direct(messages)~.clear()")
+]).
+
+shared_logic(context, context_len, [
+    signature(len, [], usize),
+    doc("Return number of messages in context."),
+    container('ContextManager'),
+    body_template("~return_val(len_of(self_direct(messages)))~")
+]).
+
+shared_logic(context, context_is_empty, [
+    signature(is_empty, [], bool),
+    doc("Check if context has no messages."),
+    container('ContextManager'),
+    body_template("~return_val(is_empty_check(self_direct(messages)))~")
+]).
+
+%% --- MCP client method ---
+
+shared_logic(mcp, next_request_id, [
+    signature(next_request_id, [], int),
+    mutable,
+    doc("Increment and return the next JSON-RPC request ID."),
+    container('MCPClient'),
+    body_template("~self_inc(request_id, 1)~\n~return_val(self_direct(request_id))~")
 ]).
 
 %% --- Retry helpers ---
 
 shared_logic(retry, is_retryable_status, [
     signature(is_retryable_status, [status], bool),
+    arg_types([int]),
     doc("Check if an HTTP status code is retryable (408, 429, 5xx)."),
     container(none),
     body_template("~return_val(matches_set(status, [408, 429, 500, 502, 503, 504]))~")
@@ -2130,6 +2380,7 @@ shared_logic(retry, is_retryable_status, [
 
 shared_logic(retry, compute_delay, [
     signature(compute_delay, [base_delay, exponential_base, attempt, max_delay], float),
+    arg_types([float, float, int, float]),
     doc("Calculate exponential backoff delay, capped at max_delay."),
     container(none),
     body_template("~return_val(min_val(mul(base_delay, pow(exponential_base, sub(attempt, 1))), max_delay))~")
@@ -2139,6 +2390,7 @@ shared_logic(retry, compute_delay, [
 
 shared_logic(output_parser, extract_json_dispatch, [
     signature(extract_json, [text], list_of_dict),
+    arg_types([string]),
     doc("Extract JSON blocks: try fenced code blocks first, fall back to bare objects."),
     container('OutputParser'),
     body_template("~assign(results, call_method(extract_fenced, [text]))~\nif ~not_empty(results)~:\n    ~return_val(results)~\n~return_val(call_method(extract_bare, [text]))~")
@@ -2228,6 +2480,18 @@ logic_slot(python, canonical_json(X), S) :-
 logic_slot(rust, canonical_json(X), S) :-
     format(atom(S), "serde_json::to_string(&~w).unwrap_or_default()", [X]).
 
+%% --- Method call on self (getter-style) ---
+logic_slot(python, self_method(M), S) :- format(atom(S), "self.~w()", [M]).
+logic_slot(rust, self_method(M), S) :- format(atom(S), "self.~w()", [M]).
+
+%% --- Empty check ---
+logic_slot(python, is_empty_check(X), S) :-
+    expand_expr(python, X, XS),
+    format(atom(S), "len(~w) == 0", [XS]).
+logic_slot(rust, is_empty_check(X), S) :-
+    expand_expr(rust, X, XS),
+    format(atom(S), "~w.is_empty()", [XS]).
+
 %% --- Streaming summary format (handles ~ prefix for "approx") ---
 logic_slot(python, streaming_summary(Tokens, Chars), S) :-
     expand_expr(python, Tokens, TS),
@@ -2293,6 +2557,15 @@ expand_expr(rust, sub(A, B), S) :-
     expand_expr(rust, A, AStr),
     expand_expr(rust, B, BStr),
     format(atom(S), "(~w - ~w)", [AStr, BStr]).
+
+expand_expr(python, div_float(A, B), S) :-
+    expand_expr(python, A, AStr),
+    expand_expr(python, B, BStr),
+    format(atom(S), "(~w / ~w)", [AStr, BStr]).
+expand_expr(rust, div_float(A, B), S) :-
+    expand_expr(rust, A, AStr),
+    expand_expr(rust, B, BStr),
+    format(atom(S), "(~w as f64 / ~w)", [AStr, BStr]).
 
 expand_expr(_, N, S) :- number(N), number_codes(N, Codes), atom_codes(S, Codes).
 
@@ -3503,6 +3776,9 @@ generate_simple_module(FileName, FragmentName) :-
     close(S),
     %% Extract just the filename for display
     format('  Generated ~w~n', [FileName]).
+
+%% generate_simple_module/3 — reserved for future shared_logic wiring
+%% (currently disabled to avoid duplicate method definitions)
 
 %% =============================================================================
 %% Generator: backends/__init__.py

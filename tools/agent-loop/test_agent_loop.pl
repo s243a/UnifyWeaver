@@ -6098,12 +6098,12 @@ test_shared_logic_infrastructure :-
         sub_atom(EJR, _, _, _, 'extract_fenced'),
         sub_atom(EJR, _, _, _, 'extract_bare')
     )),
-    %% All 12 methods compile for both targets
-    assert_true('all 12 shared_logic compile for both targets', (
+    %% All 19 methods compile for both targets
+    assert_true('all 19 shared_logic compile for both targets', (
         findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
         include([M]>>(
             agent_loop_module:compile_logic(python, M, _),
             agent_loop_module:compile_logic(rust, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 12)
+        length(OkMs, 19)
     )).
