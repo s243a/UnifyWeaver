@@ -377,7 +377,7 @@ native_typr_prefix_goals([], VarMap, _PredName, _SeenOutput, none, [], [], 'true
 native_typr_prefix_goals([], VarMap, _PredName, _SeenOutput, LastExpr, [], [], LastExpr, VarMap) :-
     LastExpr \== none.
 native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, _SeenOutput, _LastExpr0, Conditions, [Line|RestLines], TailCode, VarMapOut) :-
-    native_typr_output_goal(Goal, VarMap0, VarMap1, Line, OutExpr),
+    native_typr_output_goal(Goal, VarMap0, PredName, VarMap1, Line, OutExpr),
     native_typr_prefix_goals(Rest, VarMap1, PredName, true, OutExpr, Conditions, RestLines, TailCode, VarMapOut).
 native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, false, LastExpr, [GuardCondition|RestConditions], RestLines, TailCode, VarMapOut) :-
     native_typr_guard_goal(Goal, VarMap0, GuardCondition),
@@ -393,7 +393,7 @@ native_typr_guarded_tail_sequence(Goals, VarMap0, PredName, LastExpr, Code, VarM
 native_typr_guarded_tail_sequence([], VarMap, PredName, LastExpr, PendingGuards, [], FinalExpr, VarMap) :-
     guard_tail_final_expression(PendingGuards, PredName, LastExpr, FinalExpr).
 native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, _LastExpr0, PendingGuards, [Line|RestLines], FinalExpr, VarMapOut) :-
-    native_typr_output_expr(Goal, VarMap0, VarMap1, OutVar, OutputExpr, IntroKind),
+    native_typr_output_expr(Goal, VarMap0, PredName, VarMap1, OutVar, OutputExpr, IntroKind),
     guard_condition_expression(PendingGuards, GuardExpr),
     conditional_output_line(GuardExpr, PredName, IntroKind, OutVar, OutputExpr, Line),
     native_typr_guarded_tail_sequence(Rest, VarMap1, PredName, OutVar, [], RestLines, FinalExpr, VarMapOut).
@@ -402,35 +402,39 @@ native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, LastExpr, Pend
     append(PendingGuards0, [GuardCondition], PendingGuards),
     native_typr_guarded_tail_sequence(Rest, VarMap0, PredName, LastExpr, PendingGuards, Lines, FinalExpr, VarMapOut).
 
-native_typr_output_goal(_Module:Goal, VarMap0, VarMap, Line, FinalExpr) :-
+native_typr_output_goal(_Module:Goal, VarMap0, PredName, VarMap, Line, FinalExpr) :-
     !,
-    native_typr_output_goal(Goal, VarMap0, VarMap, Line, FinalExpr).
-native_typr_output_goal(Goal, VarMap0, VarMap, Line, FinalExpr) :-
-    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind),
+    native_typr_output_goal(Goal, VarMap0, PredName, VarMap, Line, FinalExpr).
+native_typr_output_goal(Goal, VarMap0, PredName, VarMap, Line, FinalExpr) :-
+    native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind),
     typr_assignment_line(IntroKind, FinalExpr, OutputExpr, Line).
 
-native_typr_output_expr(_Module:Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+native_typr_output_expr(_Module:Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
-    native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind).
-native_typr_output_expr(filter(DF, Expr, Out), VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind).
+native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    typr_disjunction_alternatives(Goal, Alternatives),
+    native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind),
+    !.
+native_typr_output_expr(filter(DF, Expr, Out), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_translate_r_expr(Expr, VarMap0, RExpr),
     format(string(OutputExpr), '@{ subset(~w, ~w) }@', [RDF, RExpr]).
-native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_resolve_value(VarMap0, Col, RCol),
     format(string(OutputExpr), '@{ ~w[order(~w[[~w]]), ] }@', [RDF, RDF, RCol]).
-native_typr_output_expr(group_by(DF, Col, Out), VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+native_typr_output_expr(group_by(DF, Col, Out), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
     typr_resolve_value(VarMap0, DF, RDF),
     typr_resolve_value(VarMap0, Col, RCol),
     format(string(OutputExpr), '@{ aggregate(. ~~ ~w, data=~w, FUN=list) }@', [RCol, RDF]).
-native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+native_typr_output_expr(Goal, VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     functor(Goal, Pred, Arity),
     binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
@@ -443,6 +447,70 @@ native_typr_output_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind)
     atomic_list_concat(ResolvedInArgs, ', ', RArgsStr),
     ensure_typr_var(VarMap0, OutArg, FinalExpr, VarMap, IntroKind),
     format(string(OutputExpr), '@{ ~w(~w) }@', [TargetName, RArgsStr]).
+
+typr_disjunction_alternatives((Left ; Right), Alternatives) :-
+    !,
+    typr_disjunction_alternatives(Left, LeftAlternatives),
+    typr_disjunction_alternatives(Right, RightAlternatives),
+    append(LeftAlternatives, RightAlternatives, Alternatives).
+typr_disjunction_alternatives(Goal, [Goal]).
+
+native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    Alternatives = [_|[_|_]],
+    typr_disjunction_shared_output_var(Alternatives, VarMap0, SharedVar),
+    ensure_typr_var(VarMap0, SharedVar, FinalExpr, VarMap, IntroKind),
+    maplist(native_typr_alternative_branch(VarMap0, PredName, SharedVar), Alternatives, Branches),
+    branches_to_typr_output_if_chain(Branches, PredName, OutputExpr).
+
+typr_disjunction_shared_output_var([Alternative|Rest], VarMap, SharedVar) :-
+    typr_alternative_output_var(Alternative, SharedVar),
+    var(SharedVar),
+    \+ varmap_contains_var(VarMap, SharedVar),
+    maplist(typr_alternative_output_var_matches(SharedVar), Rest).
+
+typr_alternative_output_var_matches(ExpectedVar, Alternative) :-
+    typr_alternative_output_var(Alternative, ActualVar),
+    ActualVar == ExpectedVar.
+
+typr_alternative_output_var(Alternative, OutputVar) :-
+    normalize_typr_goals(Alternative, Goals),
+    reverse(Goals, ReversedGoals),
+    member(Goal, ReversedGoals),
+    typr_goal_output_var(Goal, OutputVar),
+    !.
+
+typr_goal_output_var(_Module:Goal, OutputVar) :-
+    !,
+    typr_goal_output_var(Goal, OutputVar).
+typr_goal_output_var(filter(_, _, OutputVar), OutputVar).
+typr_goal_output_var(sort_by(_, _, OutputVar), OutputVar).
+typr_goal_output_var(group_by(_, _, OutputVar), OutputVar).
+typr_goal_output_var(Goal, OutputVar) :-
+    functor(Goal, Pred, Arity),
+    binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
+    Outputs = [_],
+    simple_r_binding_target(TargetName),
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(Outputs, OutCount),
+    length(InArgs, InCount),
+    length(OutArgs, OutCount),
+    append(InArgs, OutArgs, Args),
+    OutArgs = [OutputVar].
+
+native_typr_alternative_branch(VarMap0, PredName, SharedVar, Alternative, branch(Condition, BranchCode)) :-
+    typr_alternative_output_var_matches(SharedVar, Alternative),
+    native_typr_goal_sequence(Alternative, VarMap0, PredName, Conditions, BranchCode),
+    (   Conditions = []
+    ->  Condition = 'TRUE'
+    ;   atomic_list_concat(Conditions, ' && ', Condition)
+    ).
+
+varmap_contains_var([StoredVar-_|_], Var) :-
+    Var == StoredVar,
+    !.
+varmap_contains_var([_|Rest], Var) :-
+    varmap_contains_var(Rest, Var).
 
 native_typr_guard_goal(_Module:Goal, VarMap, GuardCondition) :-
     !,
@@ -618,6 +686,22 @@ branches_to_typr_if_chain([branch(Condition, Code)|Rest], IfChain) :-
     indent_text(BranchCode, "\t", IndentedCode),
     format(string(IfChain), 'if (~w) {\n~w\n} else ~w', [Condition, IndentedCode, RestChain]).
 
+branches_to_typr_output_if_chain([branch(Condition, Code)], PredName, OutputExpr) :-
+    branch_safe_typr_code(Code, BranchCode),
+    indent_text(BranchCode, "\t", IndentedCode),
+    format(string(OutputExpr),
+'if (~w) {
+~w
+} else {
+	stop("No matching clause for ~w")
+}', [Condition, IndentedCode, PredName]).
+branches_to_typr_output_if_chain([branch(Condition, Code)|Rest], PredName, OutputExpr) :-
+    Rest \= [],
+    branch_safe_typr_code(Code, BranchCode),
+    indent_text(BranchCode, "\t", IndentedCode),
+    branches_to_typr_output_if_chain(Rest, PredName, RestChain),
+    format(string(OutputExpr), 'if (~w) {\n~w\n} else ~w', [Condition, IndentedCode, RestChain]).
+
 pred_spec_name(_Module:Pred/_, PredName) :-
     !,
     atom_string(Pred, PredName).
@@ -638,13 +722,26 @@ branch_safe_typr_code(Code, SafeCode) :-
     atomic_list_concat(SafeLines, '\n', SafeCode).
 
 branch_safe_typr_line(Line, SafeLine) :-
-    (   sub_string(Line, 0, 4, _, "let ")
+    leading_layout(Line, Layout, Content),
+    (   sub_string(Content, 0, 4, _, "let ")
     ->  SafeLine = Line
-    ;   sub_string(Line, _, _, _, " <- "),
-        sub_string(Line, _, 1, 0, ";")
-    ->  string_concat("let ", Line, SafeLine)
+    ;   sub_string(Content, _, _, _, " <- "),
+        sub_string(Content, _, 1, 0, ";")
+    ->  format(string(SafeLine), '~wlet ~w', [Layout, Content])
     ;   SafeLine = Line
     ).
+
+leading_layout(Line, Layout, Content) :-
+    string_codes(Line, Codes),
+    take_layout_codes(Codes, LayoutCodes, ContentCodes),
+    string_codes(Layout, LayoutCodes),
+    string_codes(Content, ContentCodes).
+
+take_layout_codes([Code|Rest], [Code|LayoutCodes], ContentCodes) :-
+    code_type(Code, space),
+    !,
+    take_layout_codes(Rest, LayoutCodes, ContentCodes).
+take_layout_codes(ContentCodes, [], ContentCodes).
 
 finalize_type_diagnostics_report(Options) :-
     (   memberchk(type_diagnostics_report(Report), Options),

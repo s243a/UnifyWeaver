@@ -31,6 +31,8 @@ cleanup_typr_test :-
     retractall(user:fanout_clause_chain(_, _)),
     retractall(user:split_recombine_chain(_, _)),
     retractall(user:split_recombine_clause_chain(_, _)),
+    retractall(user:alternative_assign_chain(_, _)),
+    retractall(user:alternative_assign_clause_chain(_, _)),
     retractall(user:sort_rows(_, _)),
     retractall(user:filter_rows(_, _)),
     retractall(user:group_rows(_, _)),
@@ -285,6 +287,34 @@ test(split_recombine_branch_bodies_stay_native) :-
     once(sub_string(Code, _, _, _, "let v4 <- if (@{ v3 > 1 }@)")),
     once(sub_string(Code, _, _, _, "let v6 <- if (@{ v5 < 10 }@)")),
     once(sub_string(Code, _, _, _, "arg2 <- if (@{ v7 < 20 }@)")),
+    \+ sub_string(Code, _, _, _, "local({"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(disjunction_alternative_assignments_lower_natively) :-
+    clear_type_declarations,
+    assertz(user:(alternative_assign_chain(Name, Out) :- string_lower(Name, Lower), string_length(Lower, Len), ((>(Len, 3), string_upper(Lower, Upper), string_concat(Upper, '!', Mid)); (=<(Len, 3), string_concat(Lower, '?', Mid))), string_concat(Mid, '#', Out))),
+    assertz(type_declarations:uw_type(alternative_assign_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(alternative_assign_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(alternative_assign_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let v5 <- if (@{ v4 > 3 }@)")),
+    once(sub_string(Code, _, _, _, "let v6 <- @{ paste0(v5, \"!\") }@;")),
+    once(sub_string(Code, _, _, _, "else if (@{ v4 <= 3 }@)")),
+    once(sub_string(Code, _, _, _, "arg2 <- @{ paste0(v5, \"#\") }@;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(disjunction_alternative_assignments_stay_native_in_branch_bodies) :-
+    clear_type_declarations,
+    assertz(user:(alternative_assign_clause_chain(short, Out) :- string_lower('Hello', Lower), string_length(Lower, Len), ((>(Len, 3), string_upper(Lower, Upper), string_concat(Upper, '!', Mid)); (=<(Len, 3), string_concat(Lower, '?', Mid))), string_concat(Mid, '#', Out))),
+    assertz(user:(alternative_assign_clause_chain(tiny, Out) :- string_lower('Yo', Lower), string_length(Lower, Len), ((>(Len, 3), string_upper(Lower, Upper), string_concat(Upper, '!', Mid)); (=<(Len, 3), string_concat(Lower, '?', Mid))), string_concat(Mid, '#', Out))),
+    assertz(type_declarations:uw_type(alternative_assign_clause_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(alternative_assign_clause_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(alternative_assign_clause_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "else if")),
+    once(sub_string(Code, _, _, _, "let v4 <- if (@{ v3 > 3 }@)")),
+    once(sub_string(Code, _, _, _, "let v5 <- @{ paste0(v4, \"!\") }@;")),
+    once(sub_string(Code, _, _, _, "let arg2 <- @{ paste0(v4, \"#\") }@;")),
     \+ sub_string(Code, _, _, _, "local({"),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).

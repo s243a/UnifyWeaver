@@ -205,6 +205,9 @@ includes:
   derived outputs or conditions
 - structured split-and-recombine chains where guarded derived values are later
   combined into a final native output
+- guarded disjunction-style alternative-assignment chains where each native
+  alternative binds the same later intermediate before later native steps
+  continue from the selected result
 - supported literal-headed branch bodies built from those chains, with `let`
   used for new intermediate TypR locals
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
