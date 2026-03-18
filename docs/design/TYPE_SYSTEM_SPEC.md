@@ -340,10 +340,10 @@ Current TypR lowering policy is intentionally mixed:
 - guarded disjunction-style multi-result chains may also stay native when each
   alternative binds the same later variables and later native steps continue
   from those selected results
-- one-level nested guarded alternatives may also stay native when a supported
-  semicolon branch contains another guarded alternative that selects the same
-  later result, including nested multi-result selections over the same later
-  result set
+- two-level nested guarded alternatives may also stay native when a supported
+  semicolon branch contains another guarded alternative whose nested branch may
+  itself contain one more guarded alternative, provided those branches select
+  the same later result set, including nested multi-result selections
 - supported literal-headed branch bodies may also stay native when those chains
   fit inside a TypR `if` branch with `let`-introduced intermediate locals
 - supported dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
