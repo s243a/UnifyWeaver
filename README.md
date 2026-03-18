@@ -212,6 +212,9 @@ includes:
 - guarded disjunction-style multi-result chains where each native alternative
   may introduce different branch-local intermediates before binding the same
   later variables, and later native steps continue from those selected results
+- multiple sequential branch/rejoin segments in the same native body,
+  including multi-result rejoin chains that continue through later native
+  steps after each rejoin
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively
