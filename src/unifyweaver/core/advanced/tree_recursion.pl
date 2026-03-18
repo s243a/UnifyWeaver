@@ -382,7 +382,58 @@ test_tree_recursion :-
             writeln('  ✓ Compiled to output/advanced/tree_fib.exs (elixir)'),
             compile_tree_recursion(test_tree_fib/2, [target(fsharp)], FibCode1Fs),
             write_bash_file('output/advanced/tree_fib.fs', FibCode1Fs),
-            writeln('  ✓ Compiled to output/advanced/tree_fib.fs (fsharp)')
+            writeln('  ✓ Compiled to output/advanced/tree_fib.fs (fsharp)'),
+            % Additional targets
+            (   compile_tree_recursion(test_tree_fib/2, [target(ruby)], FibRuby) ->
+                write_bash_file('output/advanced/tree_fib.rb', FibRuby),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.rb (ruby)')
+            ;   writeln('  ⊘ ruby tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(perl)], FibPerl) ->
+                write_bash_file('output/advanced/tree_fib.pl', FibPerl),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.pl (perl)')
+            ;   writeln('  ⊘ perl tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(jython)], FibPy) ->
+                write_bash_file('output/advanced/tree_fib.jy.py', FibPy),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.jy.py (python)')
+            ;   writeln('  ⊘ python tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(typescript)], FibTs) ->
+                write_bash_file('output/advanced/tree_fib.ts', FibTs),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.ts (typescript)')
+            ;   writeln('  ⊘ typescript tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(cpp)], FibCpp) ->
+                write_bash_file('output/advanced/tree_fib.cpp', FibCpp),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.cpp (cpp)')
+            ;   writeln('  ⊘ cpp tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(kotlin)], FibKt) ->
+                write_bash_file('output/advanced/tree_fib.kt', FibKt),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.kt (kotlin)')
+            ;   writeln('  ⊘ kotlin tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(scala)], FibScala) ->
+                write_bash_file('output/advanced/tree_fib.scala', FibScala),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.scala (scala)')
+            ;   writeln('  ⊘ scala tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(rust)], FibRust) ->
+                write_bash_file('output/advanced/tree_fib.rs', FibRust),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.rs (rust)')
+            ;   writeln('  ⊘ rust tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(go)], FibGo) ->
+                write_bash_file('output/advanced/tree_fib.go', FibGo),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.go (go)')
+            ;   writeln('  ⊘ go tree_fib skipped')
+            ),
+            (   compile_tree_recursion(test_tree_fib/2, [target(clojure)], FibClj) ->
+                write_bash_file('output/advanced/tree_fib.clj', FibClj),
+                writeln('  ✓ Compiled to output/advanced/tree_fib.clj (clojure)')
+            ;   writeln('  ⊘ clojure tree_fib skipped')
+            )
         ;   writeln('  ✗ FAIL - cannot compile fibonacci tree pattern')
         )
     ;   writeln('  ✗ FAIL - fibonacci not detected as tree recursive')

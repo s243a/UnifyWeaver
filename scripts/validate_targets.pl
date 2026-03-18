@@ -30,6 +30,7 @@
 :- use_module('src/unifyweaver/targets/jython_target', []).
 :- use_module('src/unifyweaver/targets/rust_target', []).
 :- use_module('src/unifyweaver/targets/go_target', []).
+:- use_module('src/unifyweaver/targets/powershell_target', []).
 
 :- use_module(library(lists)).
 
@@ -128,7 +129,7 @@ run_validation :-
     ),
 
     % Transitive-closure-only targets
-    TcOnlyTargets = [sql],
+    TcOnlyTargets = [sql, powershell],
     forall(
         member(Target, TcOnlyTargets),
         validate_tc_only(Target)
@@ -213,3 +214,4 @@ target_ext(scala, '.scala').
 target_ext(clojure, '.clj').
 target_ext(jython, '.jy.py').
 target_ext(rust, '.rs').
+target_ext(powershell, '.ps1').

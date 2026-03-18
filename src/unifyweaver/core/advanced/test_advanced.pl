@@ -37,6 +37,13 @@
 :- use_module('../../targets/ruby_target', []).
 :- use_module('../../targets/perl_target', []).
 :- use_module('../../targets/typescript_target', []).
+:- use_module('../../targets/jython_target', []).
+:- use_module('../../targets/cpp_target', []).
+:- use_module('../../targets/kotlin_target', []).
+:- use_module('../../targets/scala_target', []).
+:- use_module('../../targets/rust_target', []).
+:- use_module('../../targets/go_target', []).
+:- use_module('../../targets/clojure_target', []).
 
 %% Main test runner
 test_all_advanced :-
