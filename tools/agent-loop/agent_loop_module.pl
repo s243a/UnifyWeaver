@@ -1936,6 +1936,7 @@ shared_logic(tool_cache, cache_clear, [
     signature(clear, [], void),
     doc("Clear all cached tool results."),
     container('ToolResultCache'),
+    field_map(python, ['self.cache'-'self._cache']),
     body_template("~self_field(cache)~.clear()")
 ]).
 
@@ -1943,6 +1944,7 @@ shared_logic(tool_cache, cache_len, [
     signature(len, [], int),
     doc("Return number of cached entries."),
     container('ToolResultCache'),
+    field_map(python, ['self.cache'-'self._cache']),
     body_template("~return_val(len_of(self_field(cache)))~")
 ]).
 
@@ -2009,63 +2011,166 @@ compile_logic(Target, MethodName, Code) :-
 
 %% emit_shared_method(+Stream, +Target, +MethodName)
 %% Writes a properly formatted method (with signature, doc, body) from shared_logic.
+%%
+%% Supported properties:
+%%   container(none)  → standalone function (no self/&self)
+%%   classmethod      → Python @classmethod with cls instead of self
+%%   mutable          → Rust &mut self even for non-void return
+%%   rust_use(Items)  → inject `use` statements before body (Rust only)
+%%   field_map(Target, Map) → target-specific field name rewrites
+%%   py_extra_body(Code)    → extra Python body lines appended after template
+%%
+%% --- Python emitter ---
 emit_shared_method(S, python, MethodName) :-
     shared_logic(_, MethodName, Props),
     member(signature(Name, Args, _RetType), Props),
     member(doc(Doc), Props),
     compile_logic(python, MethodName, Body),
-    %% Build argument list
-    (Args = [] ->
-        format(S, '    def ~w(self):~n', [Name])
+    %% Determine receiver: none, cls, or self
+    member(container(Container), Props),
+    (Container = none ->
+        %% Standalone function (no indentation, no self)
+        (Args = [] ->
+            format(S, 'def ~w():~n', [Name])
+        ;
+            atomic_list_concat(Args, ', ', ArgsStr),
+            format(S, 'def ~w(~w):~n', [Name, ArgsStr])
+        ),
+        format(S, '    """~w"""~n', [Doc]),
+        Indent = '    '
+    ; member(classmethod, Props) ->
+        %% Class method with @classmethod decorator
+        format(S, '    @classmethod~n', []),
+        (Args = [] ->
+            format(S, '    def ~w(cls):~n', [Name])
+        ;
+            atomic_list_concat(Args, ', ', ArgsStr),
+            format(S, '    def ~w(cls, ~w):~n', [Name, ArgsStr])
+        ),
+        format(S, '        """~w"""~n', [Doc]),
+        Indent = '        '
     ;
-        atomic_list_concat(Args, ', ', ArgsStr),
-        format(S, '    def ~w(self, ~w):~n', [Name, ArgsStr])
+        %% Instance method (default)
+        (Args = [] ->
+            format(S, '    def ~w(self):~n', [Name])
+        ;
+            atomic_list_concat(Args, ', ', ArgsStr),
+            format(S, '    def ~w(self, ~w):~n', [Name, ArgsStr])
+        ),
+        format(S, '        """~w"""~n', [Doc]),
+        Indent = '        '
     ),
-    format(S, '        """~w"""~n', [Doc]),
-    %% Emit body lines with proper indentation
-    atom_string(Body, BodyStr),
+    %% Apply field_map rewrites if present
+    atom_string(Body, BodyStr0),
+    (member(field_map(python, Map), Props) ->
+        apply_field_map(BodyStr0, Map, BodyStr)
+    ;
+        BodyStr = BodyStr0
+    ),
+    %% Emit body lines
     split_string(BodyStr, "\n", "", Lines),
     forall(member(Line, Lines), (
-        format(S, '        ~w~n', [Line])
+        format(S, '~w~w~n', [Indent, Line])
     )),
+    %% Emit extra Python body if present
+    (member(py_extra_body(Extra), Props) ->
+        split_string(Extra, "\n", "", ExtraLines),
+        forall(member(EL, ExtraLines), (
+            format(S, '~w~w~n', [Indent, EL])
+        ))
+    ; true),
     nl(S).
 
+%% --- Rust emitter ---
 emit_shared_method(S, rust, MethodName) :-
     shared_logic(_, MethodName, Props),
     member(signature(Name, Args, RetType), Props),
     member(doc(Doc), Props),
     compile_logic(rust, MethodName, Body),
-    %% Build argument list with resolved types from signature
+    member(container(Container), Props),
     format(S, '    /// ~w~n', [Doc]),
     format_rust_typed_args(Props, Args, ArgsStr),
-    %% Determine mutability: void return or explicit mutable flag → &mut self
-    (( RetType = void ; member(mutable, Props) ) ->
-        MutSelf = '&mut self'
-    ;
-        MutSelf = '&self'
-    ),
-    (RetType = void ->
-        (Args = [] ->
-            format(S, '    pub fn ~w(~w) {~n', [Name, MutSelf])
+    (Container = none ->
+        %% Standalone function (no self)
+        (RetType = void ->
+            (Args = [] ->
+                format(S, 'pub fn ~w() {~n', [Name])
+            ;
+                format(S, 'pub fn ~w(~w) {~n', [Name, ArgsStr])
+            )
         ;
-            format(S, '    pub fn ~w(~w, ~w) {~n', [Name, MutSelf, ArgsStr])
-        )
+            resolve_type(rust, RetType, RType),
+            (Args = [] ->
+                format(S, 'pub fn ~w() -> ~w {~n', [Name, RType])
+            ;
+                format(S, 'pub fn ~w(~w) -> ~w {~n', [Name, ArgsStr, RType])
+            )
+        ),
+        Indent = '    '
     ;
-        resolve_type(rust, RetType, RType),
-        (Args = [] ->
-            format(S, '    pub fn ~w(~w) -> ~w {~n', [Name, MutSelf, RType])
+        %% Method on struct (with self)
+        (( RetType = void ; member(mutable, Props) ) ->
+            MutSelf = '&mut self'
         ;
-            format(S, '    pub fn ~w(~w, ~w) -> ~w {~n', [Name, MutSelf, ArgsStr, RType])
-        )
+            MutSelf = '&self'
+        ),
+        (RetType = void ->
+            (Args = [] ->
+                format(S, '    pub fn ~w(~w) {~n', [Name, MutSelf])
+            ;
+                format(S, '    pub fn ~w(~w, ~w) {~n', [Name, MutSelf, ArgsStr])
+            )
+        ;
+            resolve_type(rust, RetType, RType),
+            (Args = [] ->
+                format(S, '    pub fn ~w(~w) -> ~w {~n', [Name, MutSelf, RType])
+            ;
+                format(S, '    pub fn ~w(~w, ~w) -> ~w {~n', [Name, MutSelf, ArgsStr, RType])
+            )
+        ),
+        Indent = '        '
     ),
-    %% Emit body lines with Rust syntax (convert Python "if X:" to Rust "if X {")
-    atom_string(Body, BodyStr),
+    %% Emit use statements if present
+    (member(rust_use(Uses), Props) ->
+        forall(member(U, Uses), (
+            format(S, '~wuse ~w;~n', [Indent, U])
+        ))
+    ; true),
+    %% Apply field_map rewrites if present
+    atom_string(Body, BodyStr0),
+    (member(field_map(rust, Map), Props) ->
+        apply_field_map(BodyStr0, Map, BodyStr)
+    ;
+        BodyStr = BodyStr0
+    ),
+    %% Emit body with Rust syntax fixup
     rust_fixup_body(BodyStr, FixedStr),
     split_string(FixedStr, "\n", "", Lines),
     forall(member(Line, Lines), (
-        format(S, '        ~w~n', [Line])
+        format(S, '~w~w~n', [Indent, Line])
     )),
-    format(S, '    }~n~n', []).
+    (Container = none ->
+        format(S, '}~n~n', [])
+    ;
+        format(S, '    }~n~n', [])
+    ).
+
+%% apply_field_map(+Str, +Map, -Result)
+%% Applies a list of From-To string replacements to Str.
+apply_field_map(Str, [], Str).
+apply_field_map(Str, [From-To|Rest], Result) :-
+    atom_string(From, FromS),
+    atom_string(To, ToS),
+    split_string(Str, "", "", _),  %% ensure string
+    (sub_string(Str, Before, _, After, FromS) ->
+        sub_string(Str, 0, Before, _, Prefix),
+        sub_string(Str, _, After, 0, Suffix),
+        string_concat(Prefix, ToS, Tmp),
+        string_concat(Tmp, Suffix, Str1),
+        apply_field_map(Str1, [From-To|Rest], Result)  %% recurse for multiple occurrences
+    ;
+        apply_field_map(Str, Rest, Result)
+    ).
 
 %% Format Rust function arguments with types from signature props
 format_rust_typed_args(Props, Args, ArgsStr) :-
@@ -2275,6 +2380,7 @@ shared_logic(streaming, on_token, [
     signature(on_token, [token], void),
     arg_types([string]),
     mutable,
+    rust_use(['std::io::Write']),
     doc("Process a streamed token chunk: print it, update char and token counts."),
     container('StreamingTokenCounter'),
     body_template("~print_flush(token)~\n~self_inc(char_count, str_len(token))~\n~self_assign(token_count, max_one(int_div(self_direct(char_count), 4)))~")
@@ -2302,6 +2408,7 @@ shared_logic(tool_cache, cache_get_guard, [
     arg_types([string]),
     doc("Check if a tool should skip the cache (destructive tools)."),
     container('ToolResultCache'),
+    field_map(python, ['self.skip_tools'-'self._skip_tools']),
     body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
 ]).
 
@@ -2310,6 +2417,7 @@ shared_logic(tool_cache, cache_put_guard, [
     arg_types([string]),
     doc("Check if a tool result should not be cached (destructive tools)."),
     container('ToolResultCache'),
+    field_map(python, ['self.skip_tools'-'self._skip_tools']),
     body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
 ]).
 
@@ -2343,6 +2451,7 @@ shared_logic(context, context_clear, [
     signature(clear, [], void),
     doc("Clear all messages from context."),
     container('ContextManager'),
+    py_extra_body("self._token_count = 0\nself._char_count = 0\nself._word_count = 0"),
     body_template("~self_direct(messages)~.clear()")
 ]).
 
@@ -2393,6 +2502,7 @@ shared_logic(retry, compute_delay, [
 shared_logic(output_parser, extract_json_dispatch, [
     signature(extract_json, [text], list_of_dict),
     arg_types([string]),
+    classmethod,
     doc("Extract JSON blocks: try fenced code blocks first, fall back to bare objects."),
     container('OutputParser'),
     body_template("~assign(results, call_method(extract_fenced, [text]))~\nif ~not_empty(results)~:\n    ~return_val(results)~\n~return_val(call_method(extract_bare, [text]))~")
@@ -3410,6 +3520,8 @@ generate_rust_main :-
     nl(S),
     %% Retry logic with exponential backoff
     write_rust(S, retry_logic),
+    %% Emit shared_logic standalone function (replacing former fragment code)
+    emit_shared_method(S, rust, is_retryable_status),
     nl(S),
     %% Templates and skills
     write_rust(S, template_manager),
@@ -3493,7 +3605,8 @@ generate_rust_main :-
     nl(S),
     %% Streaming token counter struct
     write_rust(S, streaming_token_counter),
-    %% Emit shared_logic method for streaming (replacing former fragment method)
+    %% Emit shared_logic methods for streaming (replacing former fragment methods)
+    emit_shared_method(S, rust, on_token),
     emit_shared_method(S, rust, format_summary),
     write(S, '}\n\n'),
     %% Main loop (expects `config`, `matches`, `session_manager` to be defined)
@@ -3778,7 +3891,14 @@ generate_module(security_proxy)     :- generate_simple_module('security/proxy.py
 generate_module(security_path_proxy):- generate_simple_module('security/path_proxy.py', security_path_proxy_module).
 generate_module(security_proot_sandbox) :- generate_simple_module('security/proot_sandbox.py', security_proot_sandbox_module).
 generate_module(async_backend)       :- generate_simple_module('async_backend.py', async_backend_module).
-generate_module(output_parser)       :- generate_simple_module('output_parser.py', output_parser).
+generate_module(output_parser)       :-
+    output_path(python, 'output_parser.py', Path),
+    open(Path, write, S),
+    write_py(S, output_parser),
+    %% Emit shared_logic classmethod (replacing former fragment method)
+    emit_shared_method(S, python, extract_json_dispatch),
+    close(S),
+    format('  Generated output_parser.py~n', []).
 generate_module(mcp_client)          :- generate_simple_module('mcp_client.py', mcp_client).
 generate_module(agent_loop_main)     :- generate_agent_loop_main.
 generate_module(readme)             :- generate_readme.
@@ -4258,8 +4378,10 @@ generate_context :-
     %% Helper functions (imperative — embedded)
     write_py(S, context_helpers),
     write(S, '\n\n'),
-    %% ContextManager class (imperative — embedded)
+    %% ContextManager class (imperative — embedded, with shared_logic clear method)
     write_py(S, context_manager_class),
+    emit_shared_method(S, python, context_clear),
+    write_py(S, context_manager_class_tail),
     write(S, '\n'),
     close(S),
     format('  Generated context.py~n', []).
@@ -5281,7 +5403,9 @@ generate_agent_loop_main :-
     write_py(S, agent_loop_status_method),
     nl(S),
     %% 6b. StreamingTokenCounter helper class
-    write_py(S, streaming_token_counter),
+    write_py(S, streaming_token_counter_head),
+    emit_shared_method(S, python, on_token),
+    write_py(S, streaming_token_counter_tail),
     nl(S),
     %% 6c. _process_message (lines 617-779)
     write_py(S, agent_loop_process_message),
@@ -8058,16 +8182,6 @@ impl StreamingTokenCounter {
         Self { token_count: 0, char_count: 0, show_live }
     }
 
-    /// Called for each streamed token chunk. Prints it and updates count.
-    pub fn on_token(&mut self, token: &str) {
-        print!("{}", token);
-        use std::io::Write;
-        std::io::stdout().flush().ok();
-        self.char_count += token.len();
-        // Approximate token count: ~4 chars per token
-        self.token_count = std::cmp::max(1, self.char_count / 4);
-    }
-
 ').
 
 rust_fragment(config_loader_types, '
@@ -8857,11 +8971,6 @@ impl Default for RetryConfig {
             jitter: true,
         }
     }
-}
-
-/// Check if an HTTP status code is retryable.
-pub fn is_retryable_status(status: u16) -> bool {
-    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
 }
 
 /// Simple pseudo-random jitter based on system time.
@@ -13415,14 +13524,6 @@ class OutputParser:
         return results
 
     @classmethod
-    def extract_json(cls, text: str) -> list[dict]:
-        """Extract all JSON blocks from text (fenced first, then bare)."""
-        results = cls._extract_fenced(text)
-        if results:
-            return results
-        return cls._extract_bare(text)
-
-    @classmethod
     def parse_response(cls, text: str, expected_keys: list[str] | None = None) -> ParsedOutput:
         """Parse response, optionally validating expected top-level keys."""
         blocks = cls.extract_json(text)
@@ -14351,13 +14452,9 @@ py_fragment(context_manager_class, 'class ContextManager:
         lines.append("</conversation>")
         return "\\n".join(lines)
 
-    def clear(self) -> None:
-        """Clear all messages from context."""
-        self.messages.clear()
-        self._token_count = 0
-        self._char_count = 0
-        self._word_count = 0
+').
 
+py_fragment(context_manager_class_tail, '
     @property
     def token_count(self) -> int:
         """Current total token count."""
@@ -18834,7 +18931,7 @@ Status:
 """)
 ').
 
-py_fragment(streaming_token_counter, '
+py_fragment(streaming_token_counter_head, '
 class StreamingTokenCounter:
     """Counts tokens during streaming and optionally shows live status."""
 
@@ -18846,13 +18943,9 @@ class StreamingTokenCounter:
         self.model = model
         self._last_status_len = 0
 
-    def on_token(self, token: str) -> None:
-        """Called for each streamed token chunk. Prints it and updates count."""
-        print(token, end="", flush=True)
-        self.char_count += len(token)
-        # Approximate token count: ~4 chars per token (GPT/Claude average)
-        self.token_count = max(1, self.char_count // 4)
+').
 
+py_fragment(streaming_token_counter_tail, '
     def finish(self) -> dict:
         """Called after streaming ends. Returns stats dict."""
         return {

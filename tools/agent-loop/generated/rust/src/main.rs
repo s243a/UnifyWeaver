@@ -159,11 +159,6 @@ impl Default for RetryConfig {
     }
 }
 
-/// Check if an HTTP status code is retryable.
-pub fn is_retryable_status(status: u16) -> bool {
-    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
-}
-
 /// Simple pseudo-random jitter based on system time.
 fn jitter_factor() -> f64 {
     let nanos = std::time::SystemTime::now()
@@ -233,6 +228,11 @@ where
     }
     Err(format!("Failed after {} attempts: {}", config.max_attempts, last_err))
 }
+    /// Check if an HTTP status code is retryable (408, 429, 5xx).
+pub fn is_retryable_status(status: i64) -> bool {
+    return matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
+}
+
 
 
 use std::collections::HashMap;
@@ -1218,13 +1218,11 @@ impl StreamingTokenCounter {
         Self { token_count: 0, char_count: 0, show_live }
     }
 
-    /// Called for each streamed token chunk. Prints it and updates count.
+    /// Process a streamed token chunk: print it, update char and token counts.
     pub fn on_token(&mut self, token: &str) {
-        print!("{}", token);
         use std::io::Write;
-        std::io::stdout().flush().ok();
+        print!("{}", token); std::io::stdout().flush().ok();
         self.char_count += token.len();
-        // Approximate token count: ~4 chars per token
         self.token_count = std::cmp::max(1, self.char_count / 4);
     }
 
