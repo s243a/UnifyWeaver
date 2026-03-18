@@ -1230,9 +1230,11 @@ impl StreamingTokenCounter {
 
     /// Format a one-line summary of streaming stats.
     pub fn format_summary(&self) -> String {
-        format!("~{} tokens, {} chars", self.token_count, self.char_count)
+        return format!("~{} tokens, {} chars", self.token_count, self.char_count);
     }
+
 }
+
 
     let backend = create_backend(&config);
     // Create async backend for API-type backends

@@ -101,25 +101,6 @@ class CostTracker:
             f"Cost: {summary['cost_formatted']}"
         )
 
-    def reset(self) -> None:
-        """Reset all tracking."""
-        self.records.clear()
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.total_cost = 0.0
-
-    def is_over_budget(self, budget: float) -> bool:
-        """Check if total cost exceeds budget. Budget of 0 means unlimited."""
-        if budget <= 0:
-            return False
-        return self.total_cost >= budget
-
-    def budget_remaining(self, budget: float) -> float:
-        """Return remaining budget in USD. Budget of 0 means unlimited (returns -1)."""
-        if budget <= 0:
-            return -1.0
-        return max(0.0, budget - self.total_cost)
-
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
@@ -178,6 +159,26 @@ class CostTracker:
             self.pricing[model] = pricing
             return True
         return False
+
+
+    def reset(self):
+        """Reset all cost tracking state."""
+        self.records.clear()
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost = 0.0
+
+    def is_over_budget(self, budget):
+        """Check if total cost exceeds budget. Budget of 0 means unlimited."""
+        if budget <= 0:
+            return False
+        return self.total_cost >= budget
+
+    def budget_remaining(self, budget):
+        """Return remaining budget in USD. Budget of 0 means unlimited (returns -1)."""
+        if budget <= 0:
+            return -1.0
+        return max(0.0, budget - self.total_cost)
 
 
 # --- OpenRouter pricing ---

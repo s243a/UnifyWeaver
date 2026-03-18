@@ -74,7 +74,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `shared_logic/3` facts | 19 |
 | `logic_slot/3` facts | 40 (20 python + 20 rust) |
 | `expand_expr/3` facts | 26 (13 python + 13 rust) |
-| `resolve_type/3` facts | 22 (11 python + 11 rust incl. `optional/1`) |
+| `resolve_type/3` facts | 24 (12 python + 12 rust incl. `optional/1`, `owned_string`) |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
@@ -529,7 +529,20 @@ resolve_type(rust, optional(T), S) :-
 | `context` | `estimate_tokens`, `context_clear`, `context_len`, `context_is_empty` | `self_method`, `self_direct`, `len_of`, `is_empty_check`, `int_div` |
 | `mcp` | `next_request_id` | `self_inc`, `self_direct` |
 
-The compiled output is tested for parity against what py_fragment/rust_fragment already produce. The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
+The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
+
+**8 methods are actively wired** — emitted from `compile_logic` during generation, replacing former fragment code:
+
+| Method | Python | Rust | Notes |
+|--------|--------|------|-------|
+| `is_over_budget` | Wired | Wired | Removed from both fragments |
+| `budget_remaining` | Wired | Wired | Removed from both fragments |
+| `reset` | Wired | N/A | Removed from py_fragment; no Rust fragment existed |
+| `context_clear` | — | Wired | Python fragment has extra counter resets |
+| `context_len` | — | Wired | No Python method existed |
+| `context_is_empty` | — | Wired | No Python method existed |
+| `estimate_tokens` | — | Wired | Python has different function signature |
+| `format_summary` | — | Wired | Python fragment has extra cost logic |
 
 ### Hybrid generation example
 

@@ -92,18 +92,6 @@ impl ContextManager {
         &self.messages
     }
 
-    pub fn clear(&mut self) {
-        self.messages.clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.messages.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
-    }
-
     /// Character count for a single message, including tool call estimates.
     fn message_char_count(m: &Message) -> usize {
         let mut n = m.content.len();
@@ -128,11 +116,6 @@ impl ContextManager {
         self.messages.iter()
             .map(|m| m.content.split_whitespace().count())
             .sum()
-    }
-
-    /// Estimated token count (chars / 4 heuristic).
-    pub fn estimate_tokens(&self) -> usize {
-        self.char_count() / 4
     }
 
     /// Trim messages to stay within all configured limits.
@@ -271,5 +254,25 @@ impl ContextManager {
         }
         out
     }
-}
 
+    /// Clear all messages from context.
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+
+    /// Return number of messages in context.
+    pub fn len(&self) -> usize {
+        return self.messages.len();
+    }
+
+    /// Check if context has no messages.
+    pub fn is_empty(&self) -> bool {
+        return self.messages.is_empty();
+    }
+
+    /// Estimate token count using chars/4 heuristic.
+    pub fn estimate_tokens(&self) -> usize {
+        return self.char_count() / 4;
+    }
+
+}
