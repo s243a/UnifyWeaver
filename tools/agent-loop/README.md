@@ -531,18 +531,23 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**8 methods are actively wired** — emitted from `compile_logic` during generation, replacing former fragment code:
+**13 methods are actively wired** — emitted from `compile_logic` during generation, replacing former fragment code:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
 | `is_over_budget` | Wired | Wired | Removed from both fragments |
 | `budget_remaining` | Wired | Wired | Removed from both fragments |
 | `reset` | Wired | N/A | Removed from py_fragment; no Rust fragment existed |
-| `context_clear` | — | Wired | Python fragment has extra counter resets |
+| `context_clear` | Wired | Wired | Python uses `py_extra_body` for counter resets |
 | `context_len` | — | Wired | No Python method existed |
 | `context_is_empty` | — | Wired | No Python method existed |
 | `estimate_tokens` | — | Wired | Python has different function signature |
+| `on_token` | Wired | Wired | Rust uses `rust_use` for `std::io::Write` import |
 | `format_summary` | — | Wired | Python fragment has extra cost logic |
+| `extract_json_dispatch` | Wired | — | Python uses `classmethod` property |
+| `is_retryable_status` | — | Wired | Rust standalone function via `container(none)` |
+
+The emitter supports: `container(none)` for standalone functions, `classmethod` for Python `@classmethod`, `rust_use(Items)` for Rust `use` imports, `field_map(Target, Map)` for target-specific field rewrites, and `py_extra_body(Code)` for Python-specific body extensions.
 
 ### Hybrid generation example
 

@@ -5884,19 +5884,19 @@ test_phase23_token_budget :-
 
 test_phase24_streaming_token_counter :-
     format("~nPhase 24 — Streaming token counter:~n"),
-    %% Python StreamingTokenCounter class exists
+    %% Python StreamingTokenCounter class exists (split into head/tail)
     assert_true('Python StreamingTokenCounter class', (
-        agent_loop_module:py_fragment(streaming_token_counter, PY1),
+        agent_loop_module:py_fragment(streaming_token_counter_head, PY1),
         sub_atom(PY1, _, _, _, 'StreamingTokenCounter')
     )),
-    %% Python has on_token method
+    %% Python has on_token method (via shared_logic)
     assert_true('Python has on_token method', (
-        agent_loop_module:py_fragment(streaming_token_counter, PY2),
-        sub_atom(PY2, _, _, _, 'def on_token')
+        agent_loop_module:compile_logic(python, on_token, OT1),
+        sub_atom(OT1, _, _, _, 'char_count')
     )),
-    %% Python has format_summary method
+    %% Python has format_summary method (in tail fragment)
     assert_true('Python has format_summary', (
-        agent_loop_module:py_fragment(streaming_token_counter, PY3),
+        agent_loop_module:py_fragment(streaming_token_counter_tail, PY3),
         sub_atom(PY3, _, _, _, 'def format_summary')
     )),
     %% Python _process_message uses StreamingTokenCounter
@@ -5914,10 +5914,10 @@ test_phase24_streaming_token_counter :-
         agent_loop_module:rust_fragment(streaming_token_counter, RS1),
         sub_atom(RS1, _, _, _, 'StreamingTokenCounter')
     )),
-    %% Rust has on_token method
+    %% Rust has on_token method (via shared_logic)
     assert_true('Rust has on_token method', (
-        agent_loop_module:rust_fragment(streaming_token_counter, RS2),
-        sub_atom(RS2, _, _, _, 'fn on_token')
+        agent_loop_module:compile_logic(rust, on_token, OT2),
+        sub_atom(OT2, _, _, _, 'char_count')
     )),
     %% Rust has format_summary method (via shared_logic)
     assert_true('Rust has format_summary', (

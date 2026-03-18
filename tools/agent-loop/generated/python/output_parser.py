@@ -67,14 +67,6 @@ class OutputParser:
         return results
 
     @classmethod
-    def extract_json(cls, text: str) -> list[dict]:
-        """Extract all JSON blocks from text (fenced first, then bare)."""
-        results = cls._extract_fenced(text)
-        if results:
-            return results
-        return cls._extract_bare(text)
-
-    @classmethod
     def parse_response(cls, text: str, expected_keys: list[str] | None = None) -> ParsedOutput:
         """Parse response, optionally validating expected top-level keys."""
         blocks = cls.extract_json(text)
@@ -85,3 +77,11 @@ class OutputParser:
                 if missing:
                     errors.append(f"Block {i}: missing keys {missing}")
         return ParsedOutput(json_blocks=blocks, raw_text=text, errors=errors)
+    @classmethod
+    def extract_json(cls, text):
+        """Extract JSON blocks: try fenced code blocks first, fall back to bare objects."""
+        results = cls._extract_fenced(text)
+        if results:
+            return results
+        return cls._extract_bare(text)
+

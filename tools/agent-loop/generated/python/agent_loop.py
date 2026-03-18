@@ -742,12 +742,12 @@ class StreamingTokenCounter:
         self.model = model
         self._last_status_len = 0
 
-    def on_token(self, token: str) -> None:
-        """Called for each streamed token chunk. Prints it and updates count."""
+    def on_token(self, token):
+        """Process a streamed token chunk: print it, update char and token counts."""
         print(token, end="", flush=True)
         self.char_count += len(token)
-        # Approximate token count: ~4 chars per token (GPT/Claude average)
         self.token_count = max(1, self.char_count // 4)
+
 
     def finish(self) -> dict:
         """Called after streaming ends. Returns stats dict."""

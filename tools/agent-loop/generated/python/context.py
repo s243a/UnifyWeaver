@@ -192,12 +192,13 @@ class ContextManager:
         lines.append("</conversation>")
         return "\n".join(lines)
 
-    def clear(self) -> None:
+    def clear(self):
         """Clear all messages from context."""
         self.messages.clear()
         self._token_count = 0
         self._char_count = 0
         self._word_count = 0
+
 
     @property
     def token_count(self) -> int:
