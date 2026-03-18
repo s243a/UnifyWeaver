@@ -342,9 +342,9 @@ test_decl_counts :-
     findall(N, agent_loop_module:slash_command(N, _, _, _), Ss), length(Ss, SC),
     decl_assert_eq('slash_command count', SC, 27),
     findall(N, agent_loop_module:py_fragment(N, _), PFs), length(PFs, PFC),
-    decl_assert_eq('py_fragment count', PFC, 98),
+    decl_assert_eq('py_fragment count', PFC, 101),
     findall(N, agent_loop_module:rust_fragment(N, _), RFs), length(RFs, RFC),
-    decl_assert_eq('rust_fragment count', RFC, 39),
+    decl_assert_eq('rust_fragment count', RFC, 40),
     true.
 
 %% =============================================================================
@@ -374,12 +374,9 @@ test_decl_shared_logic :-
     decl_assert_true('shared_logic(make_key) exists', agent_loop_module:shared_logic(_, make_key, _)),
     decl_assert_true('shared_logic(make_key) compiles for python', agent_loop_module:compile_logic(python, make_key, _)),
     decl_assert_true('shared_logic(make_key) compiles for rust', agent_loop_module:compile_logic(rust, make_key, _)),
-    decl_assert_true('shared_logic(cache_get_guard) exists', agent_loop_module:shared_logic(_, cache_get_guard, _)),
-    decl_assert_true('shared_logic(cache_get_guard) compiles for python', agent_loop_module:compile_logic(python, cache_get_guard, _)),
-    decl_assert_true('shared_logic(cache_get_guard) compiles for rust', agent_loop_module:compile_logic(rust, cache_get_guard, _)),
-    decl_assert_true('shared_logic(cache_put_guard) exists', agent_loop_module:shared_logic(_, cache_put_guard, _)),
-    decl_assert_true('shared_logic(cache_put_guard) compiles for python', agent_loop_module:compile_logic(python, cache_put_guard, _)),
-    decl_assert_true('shared_logic(cache_put_guard) compiles for rust', agent_loop_module:compile_logic(rust, cache_put_guard, _)),
+    decl_assert_true('shared_logic(should_skip) exists', agent_loop_module:shared_logic(_, should_skip, _)),
+    decl_assert_true('shared_logic(should_skip) compiles for python', agent_loop_module:compile_logic(python, should_skip, _)),
+    decl_assert_true('shared_logic(should_skip) compiles for rust', agent_loop_module:compile_logic(rust, should_skip, _)),
     decl_assert_true('shared_logic(reset) exists', agent_loop_module:shared_logic(_, reset, _)),
     decl_assert_true('shared_logic(reset) compiles for python', agent_loop_module:compile_logic(python, reset, _)),
     decl_assert_true('shared_logic(reset) compiles for rust', agent_loop_module:compile_logic(rust, reset, _)),

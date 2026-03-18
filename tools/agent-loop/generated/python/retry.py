@@ -16,6 +16,11 @@ class RetryError(Exception):
         self.last_error = last_error
         self.attempts = attempts
 
+def compute_delay(base_delay, exponential_base, attempt, max_delay):
+    """Calculate exponential backoff delay, capped at max_delay."""
+    return min(base_delay * exponential_base ** (attempt - 1), max_delay)
+
+
 
 def retry(
     max_attempts: int = 3,
@@ -61,10 +66,7 @@ def retry(
                         )
 
                     # Calculate delay with exponential backoff
-                    delay = min(
-                        base_delay * (exponential_base ** (attempt - 1)),
-                        max_delay
-                    )
+                    delay = compute_delay(base_delay, exponential_base, attempt, max_delay)
 
                     # Add jitter
                     if jitter:
@@ -145,17 +147,11 @@ API_RETRYABLE_ERRORS = (
     OSError,
 )
 
-# For use with requests library
-def is_retryable_status(status_code: int) -> bool:
-    """Check if an HTTP status code is retryable."""
-    return status_code in (
-        408,  # Request Timeout
-        429,  # Too Many Requests
-        500,  # Internal Server Error
-        502,  # Bad Gateway
-        503,  # Service Unavailable
-        504,  # Gateway Timeout
-    )
+
+def is_retryable_status(status):
+    """Check if an HTTP status code is retryable (408, 429, 5xx)."""
+    return status in {408, 429, 500, 502, 503, 504}
+
 
 
 class RetryableAPIError(Exception):
