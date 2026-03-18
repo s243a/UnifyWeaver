@@ -32,6 +32,8 @@ This document focuses on architecture and rollout choices specific to TypR.
      guards and outputs
    - simple comparison and boolean guard expressions over already-bound
      intermediates in those chains
+   - structured fan-out chains where one earlier bound value feeds multiple
+     later derived outputs or conditions
    - supported literal-headed branch bodies that keep those chains native by
      using `let` for newly introduced locals inside TypR branches
    - native lowering for the dataframe helpers `filter/3`, `sort_by/3`, and
@@ -202,7 +204,10 @@ Completed:
 11. Extended the native guard path again so simple comparison and boolean
     expressions over already-bound intermediates can stay native in both
     top-level control-flow chains and supported branch bodies.
-12. Added structured diagnostics aggregation on the `r` side via
+12. Captured structured native fan-out chains as part of the supported TypR
+    subset, where one earlier bound value feeds multiple later outputs or
+    conditions without falling back to wrapped R.
+13. Added structured diagnostics aggregation on the `r` side via
    `type_diagnostics_report(Report)`, which TypR can pass through on wrapped
    fallbacks and otherwise defaults to `[]` for native-lowered paths.
 
@@ -231,10 +236,11 @@ Current implementation note:
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
   predicates, sequential guard/output control-flow chains, simple comparison
-  and boolean guard expressions over already-bound intermediates, native
-  literal-headed branch bodies built from those chains, dataframe helper calls,
-  and literal-guarded branch selection; more complex bodies still fall back to
-  wrapped R
+  and boolean guard expressions over already-bound intermediates, structured
+  fan-out chains where one earlier value feeds multiple later outputs or
+  conditions, native literal-headed branch bodies built from those chains,
+  dataframe helper calls, and literal-guarded branch selection; more complex
+  bodies still fall back to wrapped R
 
 Follow-on work:
 
