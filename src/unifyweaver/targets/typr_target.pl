@@ -346,6 +346,9 @@ native_typr_clause(Head, Body, Condition, ClauseCode) :-
     ).
 
 native_typr_goal_sequence(Body, VarMap, PredName, Conditions, Code) :-
+    native_typr_goal_sequence(Body, VarMap, PredName, Conditions, Code, _VarMapOut).
+
+native_typr_goal_sequence(Body, VarMap, PredName, Conditions, Code, VarMapOut) :-
     normalize_typr_goals(Body, Goals),
     Goals \= [],
     native_typr_prefix_goals(
@@ -357,7 +360,7 @@ native_typr_goal_sequence(Body, VarMap, PredName, Conditions, Code) :-
         Conditions,
         PrefixLines,
         TailCode,
-        _VarMapOut
+        VarMapOut
     ),
     append(PrefixLines, [TailCode], BodyLines),
     atomic_list_concat(BodyLines, '\n', Code).
@@ -376,6 +379,10 @@ normalize_typr_goals(Goal, [Goal]).
 native_typr_prefix_goals([], VarMap, _PredName, _SeenOutput, none, [], [], 'true', VarMap).
 native_typr_prefix_goals([], VarMap, _PredName, _SeenOutput, LastExpr, [], [], LastExpr, VarMap) :-
     LastExpr \== none.
+native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, _SeenOutput, _LastExpr0, Conditions, GoalLines, TailCode, VarMapOut) :-
+    native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMap1, OutputLines, OutExpr),
+    append(OutputLines, RestLines, GoalLines),
+    native_typr_prefix_goals(Rest, VarMap1, PredName, true, OutExpr, Conditions, RestLines, TailCode, VarMapOut).
 native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, _SeenOutput, _LastExpr0, Conditions, [Line|RestLines], TailCode, VarMapOut) :-
     native_typr_output_goal(Goal, VarMap0, PredName, VarMap1, Line, OutExpr),
     native_typr_prefix_goals(Rest, VarMap1, PredName, true, OutExpr, Conditions, RestLines, TailCode, VarMapOut).
@@ -392,6 +399,10 @@ native_typr_guarded_tail_sequence(Goals, VarMap0, PredName, LastExpr, Code, VarM
 
 native_typr_guarded_tail_sequence([], VarMap, PredName, LastExpr, PendingGuards, [], FinalExpr, VarMap) :-
     guard_tail_final_expression(PendingGuards, PredName, LastExpr, FinalExpr).
+native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, _LastExpr0, [], GoalLines, FinalExpr, VarMapOut) :-
+    native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMap1, OutputLines, OutExpr),
+    append(OutputLines, RestLines, GoalLines),
+    native_typr_guarded_tail_sequence(Rest, VarMap1, PredName, OutExpr, [], RestLines, FinalExpr, VarMapOut).
 native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, _LastExpr0, PendingGuards, [Line|RestLines], FinalExpr, VarMapOut) :-
     native_typr_output_expr(Goal, VarMap0, PredName, VarMap1, OutVar, OutputExpr, IntroKind),
     guard_condition_expression(PendingGuards, GuardExpr),
@@ -462,11 +473,35 @@ native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, Fin
     maplist(native_typr_alternative_branch(VarMap0, PredName, SharedVar), Alternatives, Branches),
     branches_to_typr_output_if_chain(Branches, PredName, OutputExpr).
 
+native_typr_multi_result_output_goal(_Module:Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr) :-
+    !,
+    native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr).
+native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr) :-
+    typr_disjunction_alternatives(Goal, Alternatives),
+    Alternatives = [_|[_|_]],
+    typr_disjunction_shared_output_vars(Alternatives, VarMap0, SharedVars),
+    length(SharedVars, 2),
+    reserve_typr_internal_var(VarMap0, ContainerToken, ContainerName, VarMap1, new),
+    ensure_typr_vars(SharedVars, VarMap1, SharedNamePairs, VarMap2),
+    remove_var_mapping(ContainerToken, VarMap2, VarMapOut),
+    maplist(native_typr_multi_result_branch(VarMap0, PredName, SharedVars), Alternatives, Branches),
+    branches_to_typr_output_if_chain(Branches, PredName, ContainerExpr),
+    typr_assignment_line(new, ContainerName, ContainerExpr, ContainerLine),
+    build_typr_extraction_lines(ContainerName, SharedNamePairs, ExtractionLines),
+    append([ContainerLine], ExtractionLines, OutputLines),
+    last(SharedNamePairs, _-FinalExpr).
+
 typr_disjunction_shared_output_var([Alternative|Rest], VarMap, SharedVar) :-
     typr_alternative_output_var(Alternative, SharedVar),
     var(SharedVar),
     typr_disjunction_output_var_allowed(VarMap, SharedVar),
     maplist(typr_alternative_output_var_matches(SharedVar), Rest).
+
+typr_disjunction_shared_output_vars([Alternative|Rest], VarMap, SharedVars) :-
+    typr_alternative_output_vars(Alternative, FirstOutputVars0),
+    exclude_varmap_vars(VarMap, FirstOutputVars0, FirstOutputVars),
+    foldl(intersect_output_vars, Rest, FirstOutputVars, SharedVars),
+    SharedVars \= [].
 
 typr_disjunction_output_var_allowed(VarMap, SharedVar) :-
     \+ varmap_contains_var(VarMap, SharedVar),
@@ -478,6 +513,19 @@ typr_disjunction_output_var_allowed(VarMap, SharedVar) :-
 typr_alternative_output_var_matches(ExpectedVar, Alternative) :-
     typr_alternative_output_var(Alternative, ActualVar),
     ActualVar == ExpectedVar.
+
+typr_alternative_output_vars(Alternative, OutputVars) :-
+    normalize_typr_goals(Alternative, Goals),
+    collect_typr_goal_output_vars(Goals, OutputVars0),
+    unique_vars_by_identity(OutputVars0, OutputVars).
+
+collect_typr_goal_output_vars([], []).
+collect_typr_goal_output_vars([Goal|Rest], OutputVars) :-
+    (   typr_goal_output_var(Goal, OutputVar)
+    ->  OutputVars = [OutputVar|RestOutputs]
+    ;   OutputVars = RestOutputs
+    ),
+    collect_typr_goal_output_vars(Rest, RestOutputs).
 
 typr_alternative_output_var(Alternative, OutputVar) :-
     normalize_typr_goals(Alternative, Goals),
@@ -513,11 +561,93 @@ native_typr_alternative_branch(VarMap0, PredName, SharedVar, Alternative, branch
     ;   atomic_list_concat(Conditions, ' && ', Condition)
     ).
 
+native_typr_multi_result_branch(VarMap0, PredName, SharedVars, Alternative, branch(Condition, BranchCode)) :-
+    native_typr_goal_sequence(Alternative, VarMap0, PredName, Conditions, BranchCode0, BranchVarMap),
+    shared_output_list_expr(SharedVars, BranchVarMap, SharedListExpr),
+    replace_final_expression(BranchCode0, SharedListExpr, BranchCode),
+    (   Conditions = []
+    ->  Condition = 'TRUE'
+    ;   atomic_list_concat(Conditions, ' && ', Condition)
+    ).
+
 varmap_contains_var([StoredVar-_|_], Var) :-
     Var == StoredVar,
     !.
 varmap_contains_var([_|Rest], Var) :-
     varmap_contains_var(Rest, Var).
+
+exclude_varmap_vars(_VarMap, [], []).
+exclude_varmap_vars(VarMap, [Var|Rest], Filtered) :-
+    (   varmap_contains_var(VarMap, Var)
+    ->  exclude_varmap_vars(VarMap, Rest, Filtered)
+    ;   Filtered = [Var|FilteredRest],
+        exclude_varmap_vars(VarMap, Rest, FilteredRest)
+    ).
+
+intersect_output_vars(Alternative, Candidates0, Candidates) :-
+    typr_alternative_output_vars(Alternative, OutputVars),
+    include_vars_by_identity(Candidates0, OutputVars, Candidates).
+
+include_vars_by_identity([], _Allowed, []).
+include_vars_by_identity([Var|Rest], Allowed, Included) :-
+    (   var_member_by_identity(Var, Allowed)
+    ->  Included = [Var|IncludedRest]
+    ;   Included = IncludedRest
+    ),
+    include_vars_by_identity(Rest, Allowed, IncludedRest).
+
+unique_vars_by_identity([], []).
+unique_vars_by_identity([Var|Rest], Unique) :-
+    unique_vars_by_identity(Rest, RestUnique),
+    (   var_member_by_identity(Var, RestUnique)
+    ->  Unique = RestUnique
+    ;   Unique = [Var|RestUnique]
+    ).
+
+var_member_by_identity(Var, [Candidate|_]) :-
+    Var == Candidate,
+    !.
+var_member_by_identity(Var, [_|Rest]) :-
+    var_member_by_identity(Var, Rest).
+
+reserve_typr_internal_var(VarMap0, Token, Name, VarMap, IntroKind) :-
+    ensure_typr_var(VarMap0, Token, Name, VarMap, IntroKind).
+
+ensure_typr_vars([], VarMap, [], VarMap).
+ensure_typr_vars([Var|Rest], VarMap0, [Var-Name|RestPairs], VarMapOut) :-
+    ensure_typr_var(VarMap0, Var, Name, VarMap1, _),
+    ensure_typr_vars(Rest, VarMap1, RestPairs, VarMapOut).
+
+remove_var_mapping(_Var, [], []).
+remove_var_mapping(Var, [StoredVar-Name|Rest], Filtered) :-
+    (   Var == StoredVar
+    ->  Filtered = FilteredRest
+    ;   Filtered = [StoredVar-Name|FilteredRest]
+    ),
+    remove_var_mapping(Var, Rest, FilteredRest).
+
+shared_output_list_expr(SharedVars, VarMap, ListExpr) :-
+    findall(Name, (
+        member(SharedVar, SharedVars),
+        lookup_typr_var(SharedVar, VarMap, Name)
+    ), SharedNames),
+    atomic_list_concat(SharedNames, ', ', SharedNamesText),
+    format(string(ListExpr), '@{ list(~w) }@', [SharedNamesText]).
+
+replace_final_expression(Code, NewFinalExpr, RewrittenCode) :-
+    split_string(Code, "\n", "", Lines),
+    append(PrefixLines, [_OldFinalExpr], Lines),
+    append(PrefixLines, [NewFinalExpr], RewrittenLines),
+    atomic_list_concat(RewrittenLines, '\n', RewrittenCode).
+
+build_typr_extraction_lines(ContainerName, SharedNamePairs, Lines) :-
+    build_typr_extraction_lines(ContainerName, SharedNamePairs, 1, Lines).
+
+build_typr_extraction_lines(_ContainerName, [], _Index, []).
+build_typr_extraction_lines(ContainerName, [_Var-Name|Rest], Index, [Line|RestLines]) :-
+    format(string(Line), 'let ~w <- @{ .subset2(~w, ~w) }@;', [Name, ContainerName, Index]),
+    NextIndex is Index + 1,
+    build_typr_extraction_lines(ContainerName, Rest, NextIndex, RestLines).
 
 native_typr_guard_goal(_Module:Goal, VarMap, GuardCondition) :-
     !,

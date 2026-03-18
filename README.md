@@ -208,6 +208,9 @@ includes:
 - guarded disjunction-style alternative-assignment chains where each native
   alternative binds either the same later intermediate or the final output
   directly before later native steps continue from the selected result
+- guarded disjunction-style multi-result chains where each native alternative
+  binds the same two later variables before later native steps continue from
+  both selected results
 - supported literal-headed branch bodies built from those chains, with `let`
   used for new intermediate TypR locals
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
