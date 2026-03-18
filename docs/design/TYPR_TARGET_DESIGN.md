@@ -34,6 +34,8 @@ This document focuses on architecture and rollout choices specific to TypR.
      intermediates in those chains
    - structured fan-out chains where one earlier bound value feeds multiple
      later derived outputs or conditions
+   - structured split-and-recombine chains where those guarded derived values
+     later feed a combined output
    - supported literal-headed branch bodies that keep those chains native by
      using `let` for newly introduced locals inside TypR branches
    - native lowering for the dataframe helpers `filter/3`, `sort_by/3`, and
@@ -207,7 +209,10 @@ Completed:
 12. Captured structured native fan-out chains as part of the supported TypR
     subset, where one earlier bound value feeds multiple later outputs or
     conditions without falling back to wrapped R.
-13. Added structured diagnostics aggregation on the `r` side via
+13. Captured structured native split-and-recombine chains as part of the
+    supported TypR subset, where guarded derived values later feed a combined
+    native output without falling back to wrapped R.
+14. Added structured diagnostics aggregation on the `r` side via
    `type_diagnostics_report(Report)`, which TypR can pass through on wrapped
    fallbacks and otherwise defaults to `[]` for native-lowered paths.
 
@@ -238,9 +243,10 @@ Current implementation note:
   predicates, sequential guard/output control-flow chains, simple comparison
   and boolean guard expressions over already-bound intermediates, structured
   fan-out chains where one earlier value feeds multiple later outputs or
-  conditions, native literal-headed branch bodies built from those chains,
-  dataframe helper calls, and literal-guarded branch selection; more complex
-  bodies still fall back to wrapped R
+  conditions, structured split-and-recombine chains where guarded derived
+  values later feed a combined output, native literal-headed branch bodies
+  built from those chains, dataframe helper calls, and literal-guarded branch
+  selection; more complex bodies still fall back to wrapped R
 
 Follow-on work:
 
