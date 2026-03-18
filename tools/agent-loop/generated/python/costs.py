@@ -181,6 +181,12 @@ class CostTracker:
         return max(0.0, budget - self.total_cost)
 
 
+
+def cost_compute(tokens, price_per_million):
+    """Compute cost from token count and price per 1M tokens."""
+    return (float(tokens) * price_per_million / 1.0e+06)
+
+
 # --- OpenRouter pricing ---
 
 _OPENROUTER_CACHE_DIR = Path(os.environ.get(

@@ -209,9 +209,10 @@ class ToolResultCache:
             return
         key = self._make_key(tool_name, args)
         self._cache[key] = (_time.monotonic(), result)
-
-    def clear(self) -> None:
+    def clear(self):
+        """Clear all cached tool results."""
         self._cache.clear()
+
 
     def size(self) -> int:
         return len(self._cache)

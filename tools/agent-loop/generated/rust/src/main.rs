@@ -233,6 +233,11 @@ pub fn is_retryable_status(status: i64) -> bool {
     return matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
 }
 
+    /// Calculate exponential backoff delay, capped at max_delay.
+pub fn compute_delay(base_delay: f64, exponential_base: f64, attempt: i64, max_delay: f64) -> f64 {
+    return (base_delay * exponential_base.powi((attempt - 1) as i32)).min(max_delay);
+}
+
 
 
 use std::collections::HashMap;
