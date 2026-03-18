@@ -211,6 +211,8 @@ includes:
 - guarded disjunction-style multi-result chains where each native alternative
   binds the same later variables before later native steps continue from those
   selected results
+- one-level nested guarded alternatives inside supported semicolon branches
+  where the nested branch still selects the same later result natively
 - supported literal-headed branch bodies built from those chains, with `let`
   used for new intermediate TypR locals
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`

@@ -168,6 +168,8 @@ bring-up.
   - guarded disjunction-style multi-result chains where each alternative binds
     the same later variables before later native steps continue from those
     selected results
+  - one-level nested guarded alternatives inside supported semicolon branches
+    where the nested branch still selects the same later result
   - supported literal-headed multi-clause branch bodies that keep those chains
     native by using `let` for new intermediate locals
   - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
