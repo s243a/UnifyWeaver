@@ -516,7 +516,7 @@ if [ -d "$ADVDIR" ]; then
     has_cmd perl    && [ -f "$ADVDIR/tree_fib.pl" ]    && run_test "Perl"   "tree_fib(10)" "55" perl "$ADVDIR/tree_fib.pl" 10       || true
     has_cmd lua     && [ -f "$ADVDIR/tree_fib.lua" ]   && run_test "Lua"    "tree_fib(10)" "55" lua "$ADVDIR/tree_fib.lua" 10       || true
     has_cmd python3 && [ -f "$ADVDIR/tree_fib.jy.py" ] && run_test "Python" "tree_fib(10)" "55" python3 "$ADVDIR/tree_fib.jy.py" 10 || true
-    # R tree_fib generates binary_tree (tree-sum) pattern, not fibonacci — skip
+    has_cmd Rscript && [ -f "$ADVDIR/tree_fib.R" ]     && run_test "R"      "tree_fib(10)" "55" Rscript "$ADVDIR/tree_fib.R" 10     || true
     has_cmd node    && [ -f "$ADVDIR/tree_fib.ts" ]    && run_test "Node"   "tree_fib(10)" "55" node "$ADVDIR/tree_fib.ts" 10       || true
 
     if has_cmd gcc && [ -f "$ADVDIR/tree_fib.c" ]; then
@@ -580,10 +580,9 @@ if [ -d "$ADVDIR" ]; then
         scala_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.scala" "scala_dfib" 10
     fi
 
-    # Rust fib_direct: known codegen bug — variable identity lost in findall copy
-    # if has_cmd rustc && [ -f "$ADVDIR/fib_direct.rs" ]; then
-    #     rust_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.rs" "dfib_rs" 10
-    # fi
+    if has_cmd rustc && [ -f "$ADVDIR/fib_direct.rs" ]; then
+        rust_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.rs" "dfib_rs" 10
+    fi
 
     if has_cmd go && [ -f "$ADVDIR/fib_direct.go" ]; then
         go_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.go" "dfib_go" 10
