@@ -26,7 +26,7 @@ object {{pred_cap}}Query {
 
     while (queue.nonEmpty) {
       val current = queue.dequeue()
-      baseRelation.getOrElse(current, Set()).foreach { next =>
+      baseRelation.getOrElse(current, Set.empty[String]).foreach { next =>
         if (!visited.contains(next)) {
           visited += next
           queue.enqueue(next)
@@ -45,7 +45,7 @@ object {{pred_cap}}Query {
     visited += start
     while (queue.nonEmpty) {
       val current = queue.dequeue()
-      baseRelation.getOrElse(current, Set()).foreach { next =>
+      baseRelation.getOrElse(current, Set.empty[String]).foreach { next =>
         if (next == target) return true
         if (!visited.contains(next)) {
           visited += next
@@ -58,13 +58,13 @@ object {{pred_cap}}Query {
 
   def main(args: Array[String]): Unit = {
     Iterator.continually(StdIn.readLine()).takeWhile(_ != null).filter(_.nonEmpty).foreach { line =>
-      val parts = line.split(\":\")
+      val parts = line.split(":")
       if (parts.length >= 2) addFact(parts(0).trim, parts(1).trim)
     }
     args.toList match {
-      case Nil => System.err.println(\"Usage: scala {{pred_cap}}Query <start> [target]\"); sys.exit(1)
-      case start :: Nil => findAll(start).foreach(r => println(s\"$start:$r\"))
-      case start :: target :: _ => if (check(start, target)) println(s\"$start:$target\") else sys.exit(1)
+      case Nil => System.err.println("Usage: scala {{pred_cap}}Query <start> [target]"); sys.exit(1)
+      case start :: Nil => findAll(start).foreach(r => println(s"$start:$r"))
+      case start :: target :: _ => if (check(start, target)) println(s"$start:$target") else sys.exit(1)
     }
   }
 }

@@ -144,6 +144,55 @@ go_test() {
     compile_and_test "Go" "$program" "$expected" go build -o "$TMPDIR/$bin" "$source" -- "$TMPDIR/$bin" "$@"
 }
 
+# pipe_test <lang> <program> <expected> <stdin_data> <command...>
+# Like run_test but pipes stdin_data into the command
+pipe_test() {
+    local lang="$1" program="$2" expected="$3" stdin_data="$4"
+    shift 4
+    local result
+    result=$(echo -e "$stdin_data" | "$@" 2>&1) || true
+    check_result "$lang" "$program" "$expected" "$result"
+}
+
+# pipe_compile_test <lang> <program> <expected> <stdin_data> <compile_cmd> -- <run_cmd>
+# Like compile_and_test but pipes stdin_data into the run command
+pipe_compile_test() {
+    local lang="$1" program="$2" expected="$3" stdin_data="$4"
+    shift 4
+    local compile_args=()
+    while [ "$1" != "--" ]; do compile_args+=("$1"); shift; done
+    shift  # skip --
+    if "${compile_args[@]}" 2>/dev/null; then
+        local result
+        result=$(echo -e "$stdin_data" | "$@" 2>&1) || true
+        check_result "$lang" "$program" "$expected" "$result"
+    else
+        check_result "$lang" "$program" "$expected" "compile_error"
+    fi
+}
+
+# java_pkg_test <program_label> <expected> <source_file> <stdin_data> <args...>
+# Like java_test but strips 'package ...' line and supports stdin piping
+java_pkg_test() {
+    local program="$1" expected="$2" source="$3" stdin_data="$4"
+    shift 4
+    local jclass
+    jclass=$(grep -o 'class [A-Za-z_]*' "$source" 2>/dev/null | head -1 | awk '{print $2}')
+    if [ -z "$jclass" ]; then
+        check_result "Java" "$program" "$expected" "no_class_found"
+        return
+    fi
+    # Strip package declaration for simple compilation
+    sed '/^package /d' "$source" > "$TMPDIR/${jclass}.java" 2>/dev/null || true
+    if javac "$TMPDIR/${jclass}.java" 2>/dev/null; then
+        local result
+        result=$(echo -e "$stdin_data" | java -cp "$TMPDIR" "$jclass" "$@" 2>&1) || true
+        check_result "Java" "$program" "$expected" "$result"
+    else
+        check_result "Java" "$program" "$expected" "compile_error"
+    fi
+}
+
 echo ""
 echo "╔════════════════════════════════════════════════════════╗"
 echo "║  RUNTIME TESTING — Compile & Execute                   ║"
@@ -376,6 +425,97 @@ if has_cmd go; then
 fi
 
 # ============================================================================
+# ANCESTOR: ancestor(tom, dave) = tom:dave (transitive closure)
+# ============================================================================
+echo ""
+echo -e "${BOLD}--- ancestor(tom,dave) = tom:dave [transitive] ---${NC}"
+
+ANCESTOR_FACTS="tom:bob\nbob:charlie\ncharlie:dave"
+
+has_cmd ruby    && pipe_test "Ruby"   "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" ruby "$DIR/ancestor.rb" tom dave        || true
+has_cmd perl    && pipe_test "Perl"   "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" perl "$DIR/ancestor.pl" tom dave        || true
+has_cmd lua     && pipe_test "Lua"    "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" lua "$DIR/ancestor.lua" tom dave        || true
+has_cmd python3 && pipe_test "Python" "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" python3 "$DIR/ancestor.jy.py" tom dave || true
+has_cmd Rscript && pipe_test "R"      "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" Rscript "$DIR/ancestor.R" tom dave     || true
+if has_cmd node; then
+    R=$(echo -e "$ANCESTOR_FACTS" | node "$DIR/ancestor.ts" tom dave 2>/dev/null) || true
+    check_result "Node" "ancestor(tom,dave)" "tom:dave" "$R"
+fi
+
+if has_cmd gcc; then
+    pipe_compile_test "C" "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" gcc -o "$TMPDIR/anc_c" "$DIR/ancestor.c" -lm -- "$TMPDIR/anc_c" tom dave
+fi
+
+if has_cmd g++; then
+    pipe_compile_test "C++" "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" g++ -o "$TMPDIR/anc_cpp" "$DIR/ancestor.cpp" -- "$TMPDIR/anc_cpp" tom dave
+fi
+
+if has_cmd javac; then
+    java_pkg_test "ancestor(tom,dave)" "tom:dave" "$DIR/ancestor.java" "$ANCESTOR_FACTS" tom dave
+fi
+
+if has_cmd kotlinc; then
+    # Strip package declaration for Kotlin ancestor
+    sed '/^package /d' "$DIR/ancestor.kt" > "$TMPDIR/ancestor_kt.kt" 2>/dev/null || true
+    if kotlinc "$TMPDIR/ancestor_kt.kt" -include-runtime -d "$TMPDIR/anc_kt.jar" 2>/dev/null; then
+        R=$(echo -e "$ANCESTOR_FACTS" | java -jar "$TMPDIR/anc_kt.jar" tom dave 2>&1) || true
+        check_result "Kotlin" "ancestor(tom,dave)" "tom:dave" "$R"
+    else
+        check_result "Kotlin" "ancestor(tom,dave)" "tom:dave" "compile_error"
+    fi
+fi
+
+if has_cmd scalac && [ -n "$SCALA_LIB" ] && [ -n "$SCALA3_LIB" ]; then
+    sed '/^package /d' "$DIR/ancestor.scala" > "$TMPDIR/ancestor_sc.scala" 2>/dev/null || true
+    mkdir -p "$TMPDIR/scala_anc"
+    if scalac "$TMPDIR/ancestor_sc.scala" -d "$TMPDIR/scala_anc" 2>/dev/null; then
+        R=$(echo -e "$ANCESTOR_FACTS" | java -cp "$TMPDIR/scala_anc:$SCALA_LIB:$SCALA3_LIB" ANCESTORQuery tom dave 2>&1) || true
+        check_result "Scala" "ancestor(tom,dave)" "tom:dave" "$R"
+    else
+        check_result "Scala" "ancestor(tom,dave)" "tom:dave" "compile_error"
+    fi
+fi
+
+if has_cmd rustc; then
+    pipe_compile_test "Rust" "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" rustc -o "$TMPDIR/anc_rs" "$DIR/ancestor.rs" -- "$TMPDIR/anc_rs" tom dave
+fi
+
+if has_cmd go; then
+    pipe_compile_test "Go" "ancestor(tom,dave)" "tom:dave" "$ANCESTOR_FACTS" go build -o "$TMPDIR/anc_go" "$DIR/ancestor.go" -- "$TMPDIR/anc_go" tom dave
+fi
+
+# ============================================================================
+# TREE_FIB(10) = 55 (tree recursion — advanced output, limited targets)
+# ============================================================================
+ADVDIR="output/advanced"
+if [ -d "$ADVDIR" ]; then
+    echo ""
+    echo -e "${BOLD}--- tree_fib(10) = 55 [tree recursion] ---${NC}"
+
+    has_cmd lua && [ -f "$ADVDIR/tree_fib.lua" ] && run_test "Lua" "tree_fib(10)" "55" lua "$ADVDIR/tree_fib.lua" 10 || true
+
+    if has_cmd gcc && [ -f "$ADVDIR/tree_fib.c" ]; then
+        compile_and_test "C" "tree_fib(10)" "55" gcc -o "$TMPDIR/tfib_c" "$ADVDIR/tree_fib.c" -lm -- "$TMPDIR/tfib_c" 10
+    fi
+
+    # R tree_fib is a tree-sum (different pattern), skip — no numeric CLI
+
+    # ============================================================================
+    # FIB_DIRECT(10) = 55 (direct multicall — advanced output, limited targets)
+    # ============================================================================
+    echo ""
+    echo -e "${BOLD}--- fib_direct(10) = 55 [direct multicall] ---${NC}"
+
+    has_cmd lua && [ -f "$ADVDIR/fib_direct.lua" ] && run_test "Lua" "fib_direct(10)" "55" lua "$ADVDIR/fib_direct.lua" 10 || true
+
+    if has_cmd gcc && [ -f "$ADVDIR/fib_direct.c" ]; then
+        compile_and_test "C" "fib_direct(10)" "55" gcc -o "$TMPDIR/dfib_c" "$ADVDIR/fib_direct.c" -lm -- "$TMPDIR/dfib_c" 10
+    fi
+
+    has_cmd Rscript && [ -f "$ADVDIR/fib_direct.R" ] && run_test "R" "fib_direct(10)" "55" Rscript "$ADVDIR/fib_direct.R" 10 || true
+fi
+
+# ============================================================================
 # PROOT DEBIAN TESTS (Termux only, optional)
 # ============================================================================
 USE_PROOT=false
@@ -405,6 +545,19 @@ if $USE_PROOT; then
         check_result "Haskell" "is_even(4)" "True" "$R"
         R=$(proot_run "cd $PROOT_DIR && ghc -o count_hs count.hs -no-keep-hi-files -no-keep-o-files 2>/dev/null && ./count_hs 1,2,3,4,5")
         check_result "Haskell" "count(5 items)" "5" "$R"
+        R=$(proot_run "cd $PROOT_DIR && ghc -o anc_hs ancestor.hs -no-keep-hi-files -no-keep-o-files 2>/dev/null && echo -e 'tom:bob\nbob:charlie\ncharlie:dave' | ./anc_hs tom dave")
+        check_result "Haskell" "ancestor(tom,dave)" "tom:dave" "$R"
+
+        # Haskell advanced patterns (tree_fib, fib_direct)
+        PROOT_ADV="$(cd "$(dirname "$0")/.." && pwd)/output/advanced"
+        if [ -f "$PROOT_ADV/tree_fib.hs" ]; then
+            R=$(proot_run "cd $PROOT_ADV && ghc -o tfib_hs tree_fib.hs -no-keep-hi-files -no-keep-o-files 2>/dev/null && ./tfib_hs 10")
+            check_result "Haskell" "tree_fib(10)" "55" "$R"
+        fi
+        if [ -f "$PROOT_ADV/fib_direct.hs" ]; then
+            R=$(proot_run "cd $PROOT_ADV && ghc -o dfib_hs fib_direct.hs -no-keep-hi-files -no-keep-o-files 2>/dev/null && ./dfib_hs 10")
+            check_result "Haskell" "fib_direct(10)" "55" "$R"
+        fi
 
         # F# (dotnet fsi) — rewrite [<EntryPoint>] to fsi.CommandLineArgs for script mode
         echo ""
@@ -427,6 +580,23 @@ if $USE_PROOT; then
         check_result "F#" "is_even(4)" "true" "$R"
         R=$(fsi_run "$PROOT_DIR/list_sum.fs" 1,2,3,4,5)
         check_result "F#" "list_sum(5)" "15" "$R"
+        # F# ancestor: needs stdin piping — use direct fsi invocation
+        R=$(proot-distro login debian -- bash -c "
+            sed 's/\[<EntryPoint>\]//' '$PROOT_DIR/ancestor.fs' | \
+            sed 's/let main argv =/let argv = fsi.CommandLineArgs.[1..] in ignore (/' | \
+            sed 's/^    0$/    0)/' | \
+            sed 's/^        1$/        1)/' > /tmp/_fsi_anc.fsx && \
+            echo -e 'tom:bob\nbob:charlie\ncharlie:dave' | ~/.dotnet/dotnet fsi /tmp/_fsi_anc.fsx tom dave" 2>&1 | grep -v '^Warning:\|^>' | tail -1)
+        check_result "F#" "ancestor(tom,dave)" "tom:dave" "$R"
+        # F# advanced patterns
+        if [ -f "$PROOT_ADV/tree_fib.fs" ]; then
+            R=$(fsi_run "$PROOT_ADV/tree_fib.fs" 10)
+            check_result "F#" "tree_fib(10)" "55" "$R"
+        fi
+        if [ -f "$PROOT_ADV/fib_direct.fs" ]; then
+            R=$(fsi_run "$PROOT_ADV/fib_direct.fs" 10)
+            check_result "F#" "fib_direct(10)" "55" "$R"
+        fi
 
         # Clojure
         echo ""
@@ -446,6 +616,8 @@ if $USE_PROOT; then
         check_result "Clojure" "is_even(4)" "true" "$R"
         R=$(proot_run "cd $PROOT_DIR && java -cp '$CLJ_CP' clojure.main list_sum.clj 1,2,3,4,5")
         check_result "Clojure" "list_sum(5)" "15" "$R"
+        R=$(proot_run "cd $PROOT_DIR && echo -e 'tom:bob\nbob:charlie\ncharlie:dave' | java -cp '$CLJ_CP' clojure.main ancestor.clj tom dave")
+        check_result "Clojure" "ancestor(tom,dave)" "tom:dave" "$R"
 
         # Elixir (proot)
         echo ""
@@ -458,6 +630,17 @@ if $USE_PROOT; then
         check_result "Elixir/pr" "is_even(4)" "true" "$R"
         R=$(proot_run "cd $PROOT_DIR && elixir list_sum.ex 1,2,3,4,5")
         check_result "Elixir/pr" "list_sum(5)" "15" "$R"
+        R=$(proot_run "cd $PROOT_DIR && echo -e 'tom:bob\nbob:charlie\ncharlie:dave' | elixir ancestor.ex tom dave")
+        check_result "Elixir/pr" "ancestor(tom,dave)" "tom:dave" "$R"
+        # Elixir advanced patterns
+        if [ -f "$PROOT_ADV/tree_fib.exs" ]; then
+            R=$(proot_run "cd $PROOT_ADV && elixir tree_fib.exs 10")
+            check_result "Elixir/pr" "tree_fib(10)" "55" "$R"
+        fi
+        if [ -f "$PROOT_ADV/fib_direct.exs" ]; then
+            R=$(proot_run "cd $PROOT_ADV && elixir fib_direct.exs 10")
+            check_result "Elixir/pr" "fib_direct(10)" "55" "$R"
+        fi
     fi
 fi
 

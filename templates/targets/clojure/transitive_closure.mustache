@@ -38,14 +38,14 @@
 (defn -main [& args]
   (doseq [line (line-seq (java.io.BufferedReader. *in*))]
     (when (seq line)
-      (let [[from to] (clojure.string/split line #\":\")]
+      (let [[from to] (clojure.string/split line #":")]
         (when (and from to)
           (add-fact (clojure.string/trim from) (clojure.string/trim to))))))
   (case (count args)
-    0 (do (binding [*out* *err*] (println \"Usage: clojure {{pred}}_query.clj <start> [target]\"))
+    0 (do (binding [*out* *err*] (println "Usage: clojure {{pred}}_query.clj <start> [target]"))
           (System/exit 1))
     1 (doseq [r (find-all (first args))]
-        (println (str (first args) \":\" r)))
+        (println (str (first args) ":" r)))
     (if (check-path (first args) (second args))
-      (println (str (first args) \":\" (second args)))
+      (println (str (first args) ":" (second args)))
       (System/exit 1))))
