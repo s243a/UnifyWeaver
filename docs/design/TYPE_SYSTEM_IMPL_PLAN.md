@@ -158,6 +158,8 @@ bring-up.
     guards and outputs
   - simple comparison and boolean guard expressions over already-bound
     intermediates in those chains
+  - structured fan-out chains where one earlier bound value feeds multiple
+    later derived outputs or conditions
   - supported literal-headed multi-clause branch bodies that keep those chains
     native by using `let` for new intermediate locals
   - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`

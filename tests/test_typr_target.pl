@@ -27,6 +27,8 @@ cleanup_typr_test :-
     retractall(user:multi_clause_chain(_, _)),
     retractall(user:comparison_guard_chain(_, _)),
     retractall(user:comparison_clause_chain(_, _)),
+    retractall(user:fanout_chain(_, _)),
+    retractall(user:fanout_clause_chain(_, _)),
     retractall(user:sort_rows(_, _)),
     retractall(user:filter_rows(_, _)),
     retractall(user:group_rows(_, _)),
@@ -226,6 +228,34 @@ test(comparison_guard_branch_bodies_stay_native) :-
     once(sub_string(Code, _, _, _, "else if")),
     once(sub_string(Code, _, _, _, "let v3 <- @{ nchar(v2) }@;")),
     once(sub_string(Code, _, _, _, "if (@{ v3 > 1 }@)")),
+    \+ sub_string(Code, _, _, _, "local({"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(fanout_chains_reuse_one_intermediate_across_multiple_later_outputs) :-
+    clear_type_declarations,
+    assertz(user:(fanout_chain(Name, Out) :- string_lower(Name, Lower), string_length(Lower, Len), >(Len, 1), string_upper(Lower, Upper), string_concat(Lower, '?', Tagged), string_length(Tagged, TaggedLen), <(TaggedLen, 20), string_concat(Upper, Tagged, Out))),
+    assertz(type_declarations:uw_type(fanout_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(fanout_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(fanout_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let v3 <- @{ tolower(arg1) }@;")),
+    once(sub_string(Code, _, _, _, "let v5 <- if (@{ v4 > 1 }@)")),
+    once(sub_string(Code, _, _, _, "let v6 <- @{ paste0(v3, \"?\") }@;")),
+    once(sub_string(Code, _, _, _, "arg2 <- if (@{ v7 < 20 }@)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(fanout_branch_bodies_stay_native) :-
+    clear_type_declarations,
+    assertz(user:(fanout_clause_chain(short, Out) :- string_lower('HI', Lower), string_length(Lower, Len), >(Len, 1), string_upper(Lower, Upper), string_concat(Lower, '?', Tagged), string_concat(Upper, Tagged, Out))),
+    assertz(user:(fanout_clause_chain(long, Out) :- string_lower('BYE', Lower), string_length(Lower, Len), >(Len, 2), string_upper(Lower, Upper), string_concat(Lower, '?', Tagged), string_concat(Upper, Tagged, Out))),
+    assertz(type_declarations:uw_type(fanout_clause_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(fanout_clause_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(fanout_clause_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "else if")),
+    once(sub_string(Code, _, _, _, "let v4 <- if (@{ v3 > 1 }@)")),
+    once(sub_string(Code, _, _, _, "let v5 <- @{ paste0(v2, \"?\") }@;")),
+    once(sub_string(Code, _, _, _, "let arg2 <- @{ paste0(v4, v5) }@;")),
     \+ sub_string(Code, _, _, _, "local({"),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
