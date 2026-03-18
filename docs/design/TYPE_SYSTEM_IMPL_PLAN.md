@@ -163,8 +163,8 @@ bring-up.
   - structured split-and-recombine chains where those guarded derived values
     later feed a combined output
   - guarded disjunction-style alternative-assignment chains where each
-    alternative binds the same later intermediate before later native steps
-    continue from the selected result
+    alternative binds either the same later intermediate or the final output
+    directly before later native steps continue from the selected result
   - supported literal-headed multi-clause branch bodies that keep those chains
     native by using `let` for new intermediate locals
   - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`

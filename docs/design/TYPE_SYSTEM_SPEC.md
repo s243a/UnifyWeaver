@@ -335,8 +335,8 @@ Current TypR lowering policy is intentionally mixed:
 - structured split-and-recombine chains may also stay native when those guarded
   derived values later feed a combined output
 - guarded disjunction-style alternative-assignment chains may also stay native
-  when each alternative binds the same later intermediate and later native
-  steps continue from that selected result
+  when each alternative binds either the same later intermediate or the final
+  output directly and later native steps continue from that selected result
 - supported literal-headed branch bodies may also stay native when those chains
   fit inside a TypR `if` branch with `let`-introduced intermediate locals
 - supported dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`

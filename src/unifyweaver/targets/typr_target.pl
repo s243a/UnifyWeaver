@@ -465,8 +465,15 @@ native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, Fin
 typr_disjunction_shared_output_var([Alternative|Rest], VarMap, SharedVar) :-
     typr_alternative_output_var(Alternative, SharedVar),
     var(SharedVar),
-    \+ varmap_contains_var(VarMap, SharedVar),
+    typr_disjunction_output_var_allowed(VarMap, SharedVar),
     maplist(typr_alternative_output_var_matches(SharedVar), Rest).
+
+typr_disjunction_output_var_allowed(VarMap, SharedVar) :-
+    \+ varmap_contains_var(VarMap, SharedVar),
+    !.
+typr_disjunction_output_var_allowed(VarMap, SharedVar) :-
+    lookup_typr_var(SharedVar, VarMap, ArgName),
+    sub_string(ArgName, 0, 3, _, "arg").
 
 typr_alternative_output_var_matches(ExpectedVar, Alternative) :-
     typr_alternative_output_var(Alternative, ActualVar),
