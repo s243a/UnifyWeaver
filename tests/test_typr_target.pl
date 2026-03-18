@@ -25,6 +25,8 @@ cleanup_typr_test :-
     retractall(user:mid_guard(_, _)),
     retractall(user:multi_guard_chain(_, _)),
     retractall(user:multi_clause_chain(_, _)),
+    retractall(user:comparison_guard_chain(_, _)),
+    retractall(user:comparison_clause_chain(_, _)),
     retractall(user:sort_rows(_, _)),
     retractall(user:filter_rows(_, _)),
     retractall(user:group_rows(_, _)),
@@ -197,6 +199,33 @@ test(multi_clause_decision_chains_stay_native_in_branch_bodies) :-
     once(sub_string(Code, _, _, _, "else if")),
     once(sub_string(Code, _, _, _, "let v2 <- @{ tolower(\"HI\") }@;")),
     once(sub_string(Code, _, _, _, "let v3 <- if (@{ is.character(v2) }@)")),
+    \+ sub_string(Code, _, _, _, "local({"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(comparison_guard_chains_lower_natively) :-
+    clear_type_declarations,
+    assertz(user:(comparison_guard_chain(Name, Out) :- string_lower(Name, Lower), string_length(Lower, Len), >(Len, 1), string_upper(Lower, Upper), string_length(Upper, UpperLen), <(UpperLen, 10), string_concat(Upper, '!', Out))),
+    assertz(type_declarations:uw_type(comparison_guard_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(comparison_guard_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(comparison_guard_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let v4 <- @{ nchar(v3) }@;")),
+    once(sub_string(Code, _, _, _, "if (@{ v4 > 1 }@)")),
+    once(sub_string(Code, _, _, _, "let v6 <- @{ nchar(v5) }@;")),
+    once(sub_string(Code, _, _, _, "if (@{ v6 < 10 }@)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(comparison_guard_branch_bodies_stay_native) :-
+    clear_type_declarations,
+    assertz(user:(comparison_clause_chain(short, Out) :- string_lower('HI', Lower), string_length(Lower, Len), >(Len, 1), string_upper(Lower, Out))),
+    assertz(user:(comparison_clause_chain(long, Out) :- string_lower('BYE', Lower), string_length(Lower, Len), >(Len, 2), string_upper(Lower, Out))),
+    assertz(type_declarations:uw_type(comparison_clause_chain/2, 1, atom)),
+    assertz(type_declarations:uw_type(comparison_clause_chain/2, 2, atom)),
+    once(compile_predicate_to_typr(comparison_clause_chain/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "else if")),
+    once(sub_string(Code, _, _, _, "let v3 <- @{ nchar(v2) }@;")),
+    once(sub_string(Code, _, _, _, "if (@{ v3 > 1 }@)")),
     \+ sub_string(Code, _, _, _, "local({"),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).

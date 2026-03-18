@@ -448,6 +448,9 @@ native_typr_guard_goal(_Module:Goal, VarMap, GuardCondition) :-
     !,
     native_typr_guard_goal(Goal, VarMap, GuardCondition).
 native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
+    typr_native_guard_expr(Goal, VarMap, GuardCondition),
+    !.
+native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
     functor(Goal, Pred, Arity),
     binding(r, Pred/Arity, TargetName, Inputs, [], Options),
     member(pattern(command), Options),
@@ -458,6 +461,14 @@ native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
     append(InArgs, [], Args),
     maplist(typr_resolve_value(VarMap), InArgs, ResolvedInArgs),
     typr_guard_expression(TargetName, ResolvedInArgs, GuardCondition).
+
+typr_native_guard_expr(Expr, VarMap, GuardCondition) :-
+    compound(Expr),
+    Expr =.. [Op, _Left, _Right],
+    r_expr_op_map(Op, _),
+    typr_translate_r_expr(Expr, VarMap, ResolvedExpr0),
+    typr_top_level_guard_expr(ResolvedExpr0, ResolvedExpr),
+    format(string(GuardCondition), '@{ ~w }@', [ResolvedExpr]).
 
 simple_r_binding_target(TargetName) :-
     atom(TargetName),
@@ -543,10 +554,18 @@ typr_translate_r_expr(Expr, VarMap, Resolved) :-
     r_expr_op_map(Op, ROp),
     format(string(Resolved), '(~w ~w ~w)', [LeftResolved, ROp, RightResolved]).
 
+typr_top_level_guard_expr(ResolvedExpr0, ResolvedExpr) :-
+    (   sub_string(ResolvedExpr0, 0, 1, _, "("),
+        sub_string(ResolvedExpr0, _, 1, 0, ")")
+    ->  sub_string(ResolvedExpr0, 1, _, 1, ResolvedExpr)
+    ;   ResolvedExpr = ResolvedExpr0
+    ).
+
 r_expr_op_map(>, '>').
 r_expr_op_map(<, '<').
 r_expr_op_map(>=, '>=').
 r_expr_op_map(=<, '<=').
+r_expr_op_map(=:=, '==').
 r_expr_op_map(==, '==').
 r_expr_op_map(\=, '!=').
 r_expr_op_map(and, '&').

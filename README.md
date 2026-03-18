@@ -199,6 +199,8 @@ includes:
 - guard-style command predicates such as `is_character/1`
 - multi-step native control-flow chains where an earlier output feeds a later
   guard and output
+- simple comparison and boolean guard expressions over already-bound
+  intermediates
 - supported literal-headed branch bodies built from those chains, with `let`
   used for new intermediate TypR locals
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
