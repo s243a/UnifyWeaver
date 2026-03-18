@@ -609,7 +609,15 @@ impl ToolResultCache {
         let key = Self::make_key(tool_name, args);
         self.cache.insert(key, (Instant::now(), result));
     }
+    /// Clear all cached tool results.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+    }
 
-    pub fn clear(&mut self) { self.cache.clear(); }
-    pub fn len(&self) -> usize { self.cache.len() }
+    /// Return number of cached entries.
+    pub fn len(&self) -> usize {
+        return self.cache.len();
+    }
+
+
 }

@@ -73,7 +73,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `rust_fragment/2` facts | 38 |
 | `shared_logic/3` facts | 19 |
 | `logic_slot/3` facts | 40 (20 python + 20 rust) |
-| `expand_expr/3` facts | 26 (13 python + 13 rust) |
+| `expand_expr/3` facts | 28 (14 python + 14 rust) |
 | `resolve_type/3` facts | 24 (12 python + 12 rust incl. `optional/1`, `owned_string`) |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
@@ -531,7 +531,7 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**13 methods are actively wired** — emitted from `compile_logic` during generation, replacing former fragment code:
+**15 methods are actively wired** — emitted from `compile_logic` during generation, replacing former fragment code:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
@@ -546,8 +546,12 @@ The `~~` escape in templates emits literal `~` (for display strings like `~42 to
 | `format_summary` | — | Wired | Python fragment has extra cost logic |
 | `extract_json_dispatch` | Wired | — | Python uses `classmethod` property |
 | `is_retryable_status` | — | Wired | Rust standalone function via `container(none)` |
+| `cache_clear` | Wired | Wired | Uses `field_map` for both targets, `mutable` for Rust |
+| `cache_len` | — | Wired | Python uses `size()` name (stays as fragment) |
+| `cost_compute` | Wired | Wired | Standalone function via `container(none)`, uses `as_float` |
+| `compute_delay` | — | Wired | Rust standalone; Python logic embedded in retry decorator |
 
-The emitter supports: `container(none)` for standalone functions, `classmethod` for Python `@classmethod`, `rust_use(Items)` for Rust `use` imports, `field_map(Target, Map)` for target-specific field rewrites, and `py_extra_body(Code)` for Python-specific body extensions.
+The emitter supports: `container(none)` for standalone functions, `classmethod` for Python `@classmethod`, `rust_use(Items)` for Rust `use` imports, `field_map(Target, Map)` for target-specific field rewrites, `py_extra_body(Code)` for Python-specific body extensions, and `as_float` for cross-type arithmetic.
 
 ### Hybrid generation example
 

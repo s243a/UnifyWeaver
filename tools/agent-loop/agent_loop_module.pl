@@ -1936,15 +1936,18 @@ shared_logic(tool_cache, cache_clear, [
     signature(clear, [], void),
     doc("Clear all cached tool results."),
     container('ToolResultCache'),
+    mutable,
     field_map(python, ['self.cache'-'self._cache']),
+    field_map(rust, ['self.cache()'-'self.cache']),
     body_template("~self_field(cache)~.clear()")
 ]).
 
 shared_logic(tool_cache, cache_len, [
-    signature(len, [], int),
+    signature(len, [], usize),
     doc("Return number of cached entries."),
     container('ToolResultCache'),
     field_map(python, ['self.cache'-'self._cache']),
+    field_map(rust, ['self.cache()'-'self.cache']),
     body_template("~return_val(len_of(self_field(cache)))~")
 ]).
 
@@ -2435,7 +2438,7 @@ shared_logic(costs, cost_compute, [
     arg_types([int, float]),
     doc("Compute cost from token count and price per 1M tokens."),
     container(none),
-    body_template("~return_val(div_float(mul(tokens, price_per_million), 1000000.0))~")
+    body_template("~return_val(div_float(mul(as_float(tokens), price_per_million), 1000000.0))~")
 ]).
 
 %% --- Context manager methods ---
@@ -2590,7 +2593,7 @@ logic_slot(rust, call_method(Method, Args), S) :-
 logic_slot(python, canonical_json(X), S) :-
     format(atom(S), "_json.dumps(~w, sort_keys=True, default=str)", [X]).
 logic_slot(rust, canonical_json(X), S) :-
-    format(atom(S), "serde_json::to_string(&~w).unwrap_or_default()", [X]).
+    format(atom(S), "serde_json::to_string(~w).unwrap_or_default()", [X]).
 
 %% --- Method call on self (getter-style) ---
 logic_slot(python, self_method(M), S) :- format(atom(S), "self.~w()", [M]).
@@ -2670,6 +2673,13 @@ expand_expr(rust, sub(A, B), S) :-
     expand_expr(rust, B, BStr),
     format(atom(S), "(~w - ~w)", [AStr, BStr]).
 
+expand_expr(python, as_float(X), S) :-
+    expand_expr(python, X, Inner),
+    format(atom(S), "float(~w)", [Inner]).
+expand_expr(rust, as_float(X), S) :-
+    expand_expr(rust, X, Inner),
+    format(atom(S), "(~w as f64)", [Inner]).
+
 expand_expr(python, div_float(A, B), S) :-
     expand_expr(python, A, AStr),
     expand_expr(python, B, BStr),
@@ -2677,7 +2687,7 @@ expand_expr(python, div_float(A, B), S) :-
 expand_expr(rust, div_float(A, B), S) :-
     expand_expr(rust, A, AStr),
     expand_expr(rust, B, BStr),
-    format(atom(S), "(~w as f64 / ~w)", [AStr, BStr]).
+    format(atom(S), "((~w) as f64 / ~w)", [AStr, BStr]).
 
 expand_expr(_, N, S) :- number(N), number_codes(N, Codes), atom_codes(S, Codes).
 
@@ -3082,7 +3092,8 @@ generate_rust_costs :-
     %% Emit shared_logic methods (replacing former fragment methods)
     emit_shared_method(S, rust, is_over_budget),
     emit_shared_method(S, rust, budget_remaining),
-    write(S, '}\n'),
+    write(S, '}\n\n'),
+    emit_shared_method(S, rust, cost_compute),
     close(S),
     format('  Generated rust/src/costs.rs~n', []).
 
@@ -3399,6 +3410,9 @@ generate_rust_tool_handler :-
     write_rust(S, tool_handler_validation),
     write_rust(S, tool_handler_dispatch),
     write_rust(S, tool_result_cache),
+    emit_shared_method(S, rust, cache_clear),
+    emit_shared_method(S, rust, cache_len),
+    write_rust(S, tool_result_cache_tail),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
 
@@ -3522,6 +3536,7 @@ generate_rust_main :-
     write_rust(S, retry_logic),
     %% Emit shared_logic standalone function (replacing former fragment code)
     emit_shared_method(S, rust, is_retryable_status),
+    emit_shared_method(S, rust, compute_delay),
     nl(S),
     %% Templates and skills
     write_rust(S, template_manager),
@@ -4328,6 +4343,8 @@ generate_costs :-
     emit_shared_method(S, python, reset),
     emit_shared_method(S, python, is_over_budget),
     emit_shared_method(S, python, budget_remaining),
+    write(S, '\n\n'),
+    emit_shared_method(S, python, cost_compute),
     write(S, '\n'),
     write_py(S, cost_openrouter),
     close(S),
@@ -4680,6 +4697,8 @@ generate_tools_module :-
     write(S, '\n\n'),
     %% ToolResultCache class
     write_py(S, tool_result_cache),
+    emit_shared_method(S, python, cache_clear),
+    write_py(S, tool_result_cache_tail),
     write(S, '\n\n'),
     %% PluginManager class
     write_py(S, plugin_manager_class),
@@ -8618,9 +8637,10 @@ impl ToolResultCache {
         let key = Self::make_key(tool_name, args);
         self.cache.insert(key, (Instant::now(), result));
     }
+').
 
-    pub fn clear(&mut self) { self.cache.clear(); }
-    pub fn len(&self) -> usize { self.cache.len() }
+%% Rust tool_result_cache tail — closing brace after shared_logic methods
+rust_fragment(tool_result_cache_tail, '
 }
 ').
 
@@ -13338,10 +13358,10 @@ class ToolResultCache:
             return
         key = self._make_key(tool_name, args)
         self._cache[key] = (_time.monotonic(), result)
+').
 
-    def clear(self) -> None:
-        self._cache.clear()
-
+%% Python tool_result_cache tail — size method (not shared_logic, uses 'size' not 'len')
+py_fragment(tool_result_cache_tail, '
     def size(self) -> int:
         return len(self._cache)
 ').

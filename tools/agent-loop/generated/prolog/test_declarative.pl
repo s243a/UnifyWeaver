@@ -342,9 +342,9 @@ test_decl_counts :-
     findall(N, agent_loop_module:slash_command(N, _, _, _), Ss), length(Ss, SC),
     decl_assert_eq('slash_command count', SC, 27),
     findall(N, agent_loop_module:py_fragment(N, _), PFs), length(PFs, PFC),
-    decl_assert_eq('py_fragment count', PFC, 95),
+    decl_assert_eq('py_fragment count', PFC, 98),
     findall(N, agent_loop_module:rust_fragment(N, _), RFs), length(RFs, RFC),
-    decl_assert_eq('rust_fragment count', RFC, 38),
+    decl_assert_eq('rust_fragment count', RFC, 39),
     true.
 
 %% =============================================================================
