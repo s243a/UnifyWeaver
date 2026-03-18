@@ -43,25 +43,25 @@ class {{pred_cap}}Query:
         return False
 
 
-if __name__ == \"__main__\":
+if __name__ == "__main__":
     query = {{pred_cap}}Query()
 
     # Read {{base}} facts from stdin (format: from:to)
     for line in sys.stdin:
         line = line.strip()
-        if \":\" in line:
-            from_node, to_node = line.split(\":\", 1)
+        if ":" in line:
+            from_node, to_node = line.split(":", 1)
             query.add_fact(from_node.strip(), to_node.strip())
 
     args = sys.argv[1:]
     if len(args) == 1:
         for r in query.find_all(args[0]):
-            print(f\"{args[0]}:{r}\")
+            print(f"{args[0]}:{r}")
     elif len(args) == 2:
         if query.check(args[0], args[1]):
-            print(f\"{args[0]}:{args[1]}\")
+            print(f"{args[0]}:{args[1]}")
         else:
             sys.exit(1)
     else:
-        print(f\"Usage: {sys.argv[0]} <start> [target]\", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <start> [target]", file=sys.stderr)
         sys.exit(1)

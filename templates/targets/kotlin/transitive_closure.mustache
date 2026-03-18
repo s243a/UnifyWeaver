@@ -56,12 +56,12 @@ object {{pred_cap}}Query {
 
 fun main(args: Array<String>) {
     generateSequence(::readLine).filter { it.isNotBlank() }.forEach { line ->
-        val parts = line.split(\":\")
+        val parts = line.split(":")
         if (parts.size >= 2) {{pred_cap}}Query.addFact(parts[0].trim(), parts[1].trim())
     }
     when {
-        args.isEmpty() -> { System.err.println(\"Usage: kotlin {{pred_cap}}QueryKt <start> [target]\"); kotlin.system.exitProcess(1) }
-        args.size == 1 -> {{pred_cap}}Query.findAll(args[0]).forEach { println(\"${args[0]}:$it\") }
-        else -> if ({{pred_cap}}Query.check(args[0], args[1])) println(\"${args[0]}:${args[1]}\") else kotlin.system.exitProcess(1)
+        args.isEmpty() -> { System.err.println("Usage: kotlin {{pred_cap}}QueryKt <start> [target]"); kotlin.system.exitProcess(1) }
+        args.size == 1 -> {{pred_cap}}Query.findAll(args[0]).forEach { println("${args[0]}:$it") }
+        else -> if ({{pred_cap}}Query.check(args[0], args[1])) println("${args[0]}:${args[1]}") else kotlin.system.exitProcess(1)
     }
 }

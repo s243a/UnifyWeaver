@@ -60,20 +60,20 @@ $query = [{{pred}}Query]::new()
 # Read {{base}} facts from stdin (format: from:to)
 $input | ForEach-Object {
     $line = $_.Trim()
-    if ($line -match \"^([^:]+):(.+)$\") {
+    if ($line -match "^([^:]+):(.+)$") {
         $query.AddFact($Matches[1].Trim(), $Matches[2].Trim())
     }
 }
 
 if ($args.Count -eq 1) {
-    $query.FindAll($args[0]) | ForEach-Object { \"$($args[0]):$_\" }
+    $query.FindAll($args[0]) | ForEach-Object { "$($args[0]):$_" }
 } elseif ($args.Count -eq 2) {
     if ($query.Check($args[0], $args[1])) {
-        \"$($args[0]):$($args[1])\"
+        "$($args[0]):$($args[1])"
     } else {
         exit 1
     }
 } else {
-    Write-Error \"Usage: $($MyInvocation.MyCommand.Name) <start> [target]\"
+    Write-Error "Usage: $($MyInvocation.MyCommand.Name) <start> [target]"
     exit 1
 }
