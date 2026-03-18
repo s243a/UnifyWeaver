@@ -96,6 +96,8 @@ jobs:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      CSHARP_QUERY_SMOKE_OUTPUT_DIR: tmp/csharp_query_smoke_ci
 
     steps:
       - name: Checkout code
@@ -117,12 +119,32 @@ jobs:
 
       - name: Run C# query cache smoke slice (admission)
         run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice admission -KeepArtifacts
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR" -CacheSlice admission -KeepArtifacts
 
       - name: Run C# query cache smoke slice (reuse)
         run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice reuse -SkipCodegen -KeepArtifacts
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR" -CacheSlice reuse -SkipCodegen -KeepArtifacts
 
       - name: Run C# query cache smoke slice (lru)
         run: |
-          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice lru -SkipCodegen
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir "$CSHARP_QUERY_SMOKE_OUTPUT_DIR" -CacheSlice lru -SkipCodegen
+
+      - name: Upload C# query smoke artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-query-smoke-artifacts
+          path: ${{ env.CSHARP_QUERY_SMOKE_OUTPUT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summarize C# query cache smoke slices
+        if: always()
+        run: |
+          {
+            echo "## C# Query Runtime Smoke"
+            echo ""
+            echo "- Cache slices: admission, reuse, lru"
+            echo "- Output dir: \`$CSHARP_QUERY_SMOKE_OUTPUT_DIR\`"
+            echo "- Failure artifacts: uploaded from \`$CSHARP_QUERY_SMOKE_OUTPUT_DIR\` when the smoke job fails"
+          } >> "$GITHUB_STEP_SUMMARY"
