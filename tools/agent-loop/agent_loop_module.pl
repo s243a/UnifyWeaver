@@ -2026,10 +2026,16 @@ compile_logic(Target, MethodName, Code) :-
 %% --- Python emitter ---
 emit_shared_method(S, python, MethodName) :-
     shared_logic(_, MethodName, Props),
-    member(signature(Name, Args, _RetType), Props),
+    member(signature(Name0, Args, _RetType), Props),
     member(doc(Doc), Props),
     compile_logic(python, MethodName, Body),
-    %% Determine receiver: none, cls, or self
+    %% Apply private prefix if present
+    (member(private, Props) ->
+        atom_concat('_', Name0, Name)
+    ;
+        Name = Name0
+    ),
+    %% Determine receiver: none, associated, cls, or self
     member(container(Container), Props),
     (Container = none ->
         %% Standalone function (no indentation, no self)
@@ -2053,12 +2059,23 @@ emit_shared_method(S, python, MethodName) :-
         format(S, '        """~w"""~n', [Doc]),
         Indent = '        '
     ;
-        %% Instance method (default)
-        (Args = [] ->
-            format(S, '    def ~w(self):~n', [Name])
+        %% Instance method (default) — associated methods skip 'self'
+        (member(associated, Props) ->
+            %% Static method (no self receiver, inside class)
+            format(S, '    @staticmethod~n', []),
+            (Args = [] ->
+                format(S, '    def ~w():~n', [Name])
+            ;
+                atomic_list_concat(Args, ', ', ArgsStr),
+                format(S, '    def ~w(~w):~n', [Name, ArgsStr])
+            )
         ;
-            atomic_list_concat(Args, ', ', ArgsStr),
-            format(S, '    def ~w(self, ~w):~n', [Name, ArgsStr])
+            (Args = [] ->
+                format(S, '    def ~w(self):~n', [Name])
+            ;
+                atomic_list_concat(Args, ', ', ArgsStr),
+                format(S, '    def ~w(self, ~w):~n', [Name, ArgsStr])
+            )
         ),
         format(S, '        """~w"""~n', [Doc]),
         Indent = '        '
@@ -2091,27 +2108,48 @@ emit_shared_method(S, rust, MethodName) :-
     member(doc(Doc), Props),
     compile_logic(rust, MethodName, Body),
     member(container(Container), Props),
-    format(S, '    /// ~w~n', [Doc]),
+    %% Determine visibility
+    (member(private, Props) -> Vis = '' ; Vis = 'pub '),
     format_rust_typed_args(Props, Args, ArgsStr),
     (Container = none ->
-        %% Standalone function (no self)
+        %% Standalone function (no self, top-level)
+        format(S, '/// ~w~n', [Doc]),
         (RetType = void ->
             (Args = [] ->
-                format(S, 'pub fn ~w() {~n', [Name])
+                format(S, '~wfn ~w() {~n', [Vis, Name])
             ;
-                format(S, 'pub fn ~w(~w) {~n', [Name, ArgsStr])
+                format(S, '~wfn ~w(~w) {~n', [Vis, Name, ArgsStr])
             )
         ;
             resolve_type(rust, RetType, RType),
             (Args = [] ->
-                format(S, 'pub fn ~w() -> ~w {~n', [Name, RType])
+                format(S, '~wfn ~w() -> ~w {~n', [Vis, Name, RType])
             ;
-                format(S, 'pub fn ~w(~w) -> ~w {~n', [Name, ArgsStr, RType])
+                format(S, '~wfn ~w(~w) -> ~w {~n', [Vis, Name, ArgsStr, RType])
             )
         ),
         Indent = '    '
+    ; member(associated, Props) ->
+        %% Associated function (no self, inside impl block)
+        format(S, '    /// ~w~n', [Doc]),
+        (RetType = void ->
+            (Args = [] ->
+                format(S, '    ~wfn ~w() {~n', [Vis, Name])
+            ;
+                format(S, '    ~wfn ~w(~w) {~n', [Vis, Name, ArgsStr])
+            )
+        ;
+            resolve_type(rust, RetType, RType),
+            (Args = [] ->
+                format(S, '    ~wfn ~w() -> ~w {~n', [Vis, Name, RType])
+            ;
+                format(S, '    ~wfn ~w(~w) -> ~w {~n', [Vis, Name, ArgsStr, RType])
+            )
+        ),
+        Indent = '        '
     ;
         %% Method on struct (with self)
+        format(S, '    /// ~w~n', [Doc]),
         (( RetType = void ; member(mutable, Props) ) ->
             MutSelf = '&mut self'
         ;
@@ -2119,16 +2157,16 @@ emit_shared_method(S, rust, MethodName) :-
         ),
         (RetType = void ->
             (Args = [] ->
-                format(S, '    pub fn ~w(~w) {~n', [Name, MutSelf])
+                format(S, '    ~wfn ~w(~w) {~n', [Vis, Name, MutSelf])
             ;
-                format(S, '    pub fn ~w(~w, ~w) {~n', [Name, MutSelf, ArgsStr])
+                format(S, '    ~wfn ~w(~w, ~w) {~n', [Vis, Name, MutSelf, ArgsStr])
             )
         ;
             resolve_type(rust, RetType, RType),
             (Args = [] ->
-                format(S, '    pub fn ~w(~w) -> ~w {~n', [Name, MutSelf, RType])
+                format(S, '    ~wfn ~w(~w) -> ~w {~n', [Vis, Name, MutSelf, RType])
             ;
-                format(S, '    pub fn ~w(~w, ~w) -> ~w {~n', [Name, MutSelf, ArgsStr, RType])
+                format(S, '    ~wfn ~w(~w, ~w) -> ~w {~n', [Vis, Name, MutSelf, ArgsStr, RType])
             )
         ),
         Indent = '        '
@@ -2355,6 +2393,8 @@ resolve_type(python, dict, "dict").
 resolve_type(python, set_of_string, "set[str]").
 resolve_type(python, owned_string, "str").
 resolve_type(python, list_of_dict, "list[dict]").
+resolve_type(python, ref(T), S) :-
+    resolve_type(python, T, S).
 resolve_type(python, optional(T), S) :-
     resolve_type(python, T, Inner),
     format(atom(S), "~w | None", [Inner]).
@@ -2369,6 +2409,9 @@ resolve_type(rust, dict, "std::collections::HashMap<String, serde_json::Value>")
 resolve_type(rust, set_of_string, "std::collections::HashSet<String>").
 resolve_type(rust, owned_string, "String").
 resolve_type(rust, list_of_dict, "Vec<serde_json::Value>").
+resolve_type(rust, ref(T), S) :-
+    resolve_type(rust, T, Inner),
+    format(atom(S), "&~w", [Inner]).
 resolve_type(rust, optional(T), S) :-
     resolve_type(rust, T, Inner),
     format(atom(S), "Option<~w>", [Inner]).
@@ -2399,28 +2442,22 @@ shared_logic(streaming, format_summary, [
 %% --- ToolResultCache methods ---
 
 shared_logic(tool_cache, make_key, [
-    signature(make_key, [tool_name, args], string),
-    arg_types([string, dict]),
+    signature(make_key, [tool_name, args], owned_string),
+    arg_types([string, ref(dict)]),
+    private,
+    associated,
     doc("Build a canonical cache key from tool name and arguments."),
     container('ToolResultCache'),
     body_template("~return_val(format_str(\"{}:{}\", [tool_name, canonical_json(args)]))~")
 ]).
 
-shared_logic(tool_cache, cache_get_guard, [
-    signature(cache_get_guard, [tool_name], bool),
+shared_logic(tool_cache, should_skip, [
+    signature(should_skip, [tool_name], bool),
     arg_types([string]),
+    private,
     doc("Check if a tool should skip the cache (destructive tools)."),
     container('ToolResultCache'),
-    field_map(python, ['self.skip_tools'-'self._skip_tools']),
-    body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
-]).
-
-shared_logic(tool_cache, cache_put_guard, [
-    signature(cache_put_guard, [tool_name], bool),
-    arg_types([string]),
-    doc("Check if a tool result should not be cached (destructive tools)."),
-    container('ToolResultCache'),
-    field_map(python, ['self.skip_tools'-'self._skip_tools']),
+    field_map(rust, ['contains(&tool_name)'-'contains(tool_name)']),
     body_template("~return_val(contains(self_direct(skip_tools), tool_name))~")
 ]).
 
@@ -3410,6 +3447,9 @@ generate_rust_tool_handler :-
     write_rust(S, tool_handler_validation),
     write_rust(S, tool_handler_dispatch),
     write_rust(S, tool_result_cache),
+    emit_shared_method(S, rust, make_key),
+    emit_shared_method(S, rust, should_skip),
+    write_rust(S, tool_result_cache_body),
     emit_shared_method(S, rust, cache_clear),
     emit_shared_method(S, rust, cache_len),
     write_rust(S, tool_result_cache_tail),
@@ -3896,7 +3936,7 @@ generate_module(aliases)            :- generate_aliases.
 generate_module(export)             :- generate_simple_module('export.py', export_module).
 generate_module(history)            :- generate_simple_module('history.py', history_module).
 generate_module(multiline)          :- generate_simple_module('multiline.py', multiline_module).
-generate_module(retry)              :- generate_simple_module('retry.py', retry_module).
+generate_module(retry)              :- generate_retry_module.
 generate_module(search)             :- generate_simple_module('search.py', search_module).
 generate_module(sessions)           :- generate_simple_module('sessions.py', sessions_module).
 generate_module(skills)             :- generate_simple_module('skills.py', skills_module).
@@ -3929,6 +3969,23 @@ generate_simple_module(FileName, FragmentName) :-
 
 %% generate_simple_module/3 — reserved for future shared_logic wiring
 %% (currently disabled to avoid duplicate method definitions)
+
+%% =============================================================================
+%% Generator: retry.py (custom — interleaves fragments with shared_logic)
+%% =============================================================================
+
+generate_retry_module :-
+    output_path(python, 'retry.py', Path),
+    open(Path, write, S),
+    write_py(S, retry_module_head),
+    emit_shared_method(S, python, compute_delay),
+    write(S, '\n'),
+    write_py(S, retry_module_tail),
+    write(S, '\n'),
+    emit_shared_method(S, python, is_retryable_status),
+    write_py(S, retry_module_end),
+    close(S),
+    format('  Generated retry.py~n', []).
 
 %% =============================================================================
 %% Generator: backends/__init__.py
@@ -4697,6 +4754,9 @@ generate_tools_module :-
     write(S, '\n\n'),
     %% ToolResultCache class
     write_py(S, tool_result_cache),
+    emit_shared_method(S, python, make_key),
+    emit_shared_method(S, python, should_skip),
+    write_py(S, tool_result_cache_body),
     emit_shared_method(S, python, cache_clear),
     write_py(S, tool_result_cache_tail),
     write(S, '\n\n'),
@@ -8615,14 +8675,12 @@ impl ToolResultCache {
         skip.insert("edit".to_string());
         Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip }
     }
+').
 
-    fn make_key(tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> String {
-        let canonical = serde_json::to_string(args).unwrap_or_default();
-        format!("{}:{}", tool_name, canonical)
-    }
-
+%% Rust tool_result_cache body — get/put methods (after make_key insertion point)
+rust_fragment(tool_result_cache_body, '
     pub fn get(&self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> Option<&ToolResult> {
-        if self.skip_tools.contains(tool_name) { return None; }
+        if self.should_skip(tool_name) { return None; }
         let key = Self::make_key(tool_name, args);
         if let Some((ts, result)) = self.cache.get(&key) {
             if ts.elapsed() < self.ttl {
@@ -8633,7 +8691,7 @@ impl ToolResultCache {
     }
 
     pub fn put(&mut self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>, result: ToolResult) {
-        if self.skip_tools.contains(tool_name) { return; }
+        if self.should_skip(tool_name) { return; }
         let key = Self::make_key(tool_name, args);
         self.cache.insert(key, (Instant::now(), result));
     }
@@ -13335,13 +13393,12 @@ class ToolResultCache:
         self.ttl = ttl
         self.skip_tools = skip_tools or {"bash", "write", "edit"}
         self._cache: dict[str, tuple[float, object]] = {}
+').
 
-    def _make_key(self, tool_name: str, args: dict) -> str:
-        canonical = _json.dumps(args, sort_keys=True, default=str)
-        return f"{tool_name}:{canonical}"
-
+%% Python tool_result_cache body — get/put methods (after make_key insertion point)
+py_fragment(tool_result_cache_body, '
     def get(self, tool_name: str, args: dict):
-        if tool_name in self.skip_tools:
+        if self._should_skip(tool_name):
             return None
         key = self._make_key(tool_name, args)
         entry = self._cache.get(key)
@@ -13354,7 +13411,7 @@ class ToolResultCache:
         return result
 
     def put(self, tool_name: str, args: dict, result) -> None:
-        if tool_name in self.skip_tools:
+        if self._should_skip(tool_name):
             return
         key = self._make_key(tool_name, args)
         self._cache[key] = (_time.monotonic(), result)
@@ -16547,7 +16604,7 @@ def paste_mode() -> str:
 
     return "\\n".join(lines)').
 
-py_fragment(retry_module, '"""Retry logic for transient failures."""
+py_fragment(retry_module_head, '"""Retry logic for transient failures."""
 
 import time
 import random
@@ -16565,7 +16622,10 @@ class RetryError(Exception):
         self.last_error = last_error
         self.attempts = attempts
 
+').
 
+%% retry_module_tail — retry decorator and retry_call (after compute_delay insertion)
+py_fragment(retry_module_tail, '
 def retry(
     max_attempts: int = 3,
     base_delay: float = 1.0,
@@ -16610,10 +16670,7 @@ def retry(
                         )
 
                     # Calculate delay with exponential backoff
-                    delay = min(
-                        base_delay * (exponential_base ** (attempt - 1)),
-                        max_delay
-                    )
+                    delay = compute_delay(base_delay, exponential_base, attempt, max_delay)
 
                     # Add jitter
                     if jitter:
@@ -16694,18 +16751,10 @@ API_RETRYABLE_ERRORS = (
     OSError,
 )
 
-# For use with requests library
-def is_retryable_status(status_code: int) -> bool:
-    """Check if an HTTP status code is retryable."""
-    return status_code in (
-        408,  # Request Timeout
-        429,  # Too Many Requests
-        500,  # Internal Server Error
-        502,  # Bad Gateway
-        503,  # Service Unavailable
-        504,  # Gateway Timeout
-    )
+').
 
+%% retry_module_end — RetryableAPIError class (after shared_logic compute_delay + is_retryable_status)
+py_fragment(retry_module_end, '
 
 class RetryableAPIError(Exception):
     """Exception for retryable API errors."""

@@ -71,7 +71,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 19 |
+| `shared_logic/3` facts | 18 |
 | `logic_slot/3` facts | 40 (20 python + 20 rust) |
 | `expand_expr/3` facts | 28 (14 python + 14 rust) |
 | `resolve_type/3` facts | 24 (12 python + 12 rust incl. `optional/1`, `owned_string`) |
@@ -517,7 +517,7 @@ resolve_type(rust, optional(T), S) :-
     format(atom(S), "Option<~w>", [Inner]).
 ```
 
-**19 shared methods** across 7 modules:
+**18 shared methods** across 7 modules:
 
 | Module | Methods | Slots Used |
 |--------|---------|------------|
@@ -531,27 +531,29 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**15 methods are actively wired** — emitted from `compile_logic` during generation, replacing former fragment code:
+**All 18 shared_logic methods are actively wired** — emitted from `compile_logic` during generation, replacing former fragment code:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
 | `is_over_budget` | Wired | Wired | Removed from both fragments |
 | `budget_remaining` | Wired | Wired | Removed from both fragments |
-| `reset` | Wired | N/A | Removed from py_fragment; no Rust fragment existed |
+| `reset` | Wired | — | Removed from py_fragment; no Rust fragment existed |
 | `context_clear` | Wired | Wired | Python uses `py_extra_body` for counter resets |
 | `context_len` | — | Wired | No Python method existed |
 | `context_is_empty` | — | Wired | No Python method existed |
 | `estimate_tokens` | — | Wired | Python has different function signature |
 | `on_token` | Wired | Wired | Rust uses `rust_use` for `std::io::Write` import |
 | `format_summary` | — | Wired | Python fragment has extra cost logic |
-| `extract_json_dispatch` | Wired | — | Python uses `classmethod` property |
-| `is_retryable_status` | — | Wired | Rust standalone function via `container(none)` |
-| `cache_clear` | Wired | Wired | Uses `field_map` for both targets, `mutable` for Rust |
+| `extract_json_dispatch` | Wired | — | Python `@classmethod` |
+| `is_retryable_status` | Wired | Wired | Standalone via `container(none)`; Python retry module split |
+| `cache_clear` | Wired | Wired | `field_map` + `mutable` |
 | `cache_len` | — | Wired | Python uses `size()` name (stays as fragment) |
-| `cost_compute` | Wired | Wired | Standalone function via `container(none)`, uses `as_float` |
-| `compute_delay` | — | Wired | Rust standalone; Python logic embedded in retry decorator |
+| `cost_compute` | Wired | Wired | Standalone, uses `as_float` for cross-type math |
+| `compute_delay` | Wired | Wired | Standalone; Python retry module split for insertion |
+| `make_key` | Wired | Wired | `@staticmethod` (Python) / associated fn (Rust), `private` |
+| `should_skip` | Wired | Wired | `private`, replaces inline guard in `get`/`put` |
 
-The emitter supports: `container(none)` for standalone functions, `classmethod` for Python `@classmethod`, `rust_use(Items)` for Rust `use` imports, `field_map(Target, Map)` for target-specific field rewrites, `py_extra_body(Code)` for Python-specific body extensions, and `as_float` for cross-type arithmetic.
+The emitter supports: `container(none)` for standalone functions, `classmethod` for Python `@classmethod`, `associated` for Rust associated functions / Python `@staticmethod`, `private` for non-public methods, `rust_use(Items)` for Rust `use` imports, `field_map(Target, Map)` for target-specific field rewrites, `py_extra_body(Code)` for Python-specific body extensions, `ref(T)` for Rust reference types, and `as_float` for cross-type arithmetic.
 
 ### Hybrid generation example
 

@@ -3143,7 +3143,7 @@ test_rust_fragments :-
     %% Count rust fragments
     findall(N, agent_loop_module:rust_fragment(N, _), RFs),
     length(RFs, RFCount),
-    assert_eq('Rust fragment count', RFCount, 39),
+    assert_eq('Rust fragment count', RFCount, 40),
     %% Check each fragment exists and has content
     assert_true('config_types has CliArgument', (
         agent_loop_module:rust_fragment(config_types, C1),
@@ -6078,13 +6078,13 @@ test_shared_logic_infrastructure :-
         agent_loop_module:compile_logic(rust, make_key, MKR),
         sub_atom(MKR, _, _, _, 'serde_json::to_string')
     )),
-    %% cache_get_guard: Python 'in' vs Rust .contains()
-    assert_true('cache_get_guard py uses in operator', (
-        agent_loop_module:compile_logic(python, cache_get_guard, CGP),
+    %% should_skip: Python 'in' vs Rust .contains()
+    assert_true('should_skip py uses in operator', (
+        agent_loop_module:compile_logic(python, should_skip, CGP),
         sub_atom(CGP, _, _, _, 'in self.skip_tools')
     )),
-    assert_true('cache_get_guard rs uses .contains()', (
-        agent_loop_module:compile_logic(rust, cache_get_guard, CGR),
+    assert_true('should_skip rs uses .contains()', (
+        agent_loop_module:compile_logic(rust, should_skip, CGR),
         sub_atom(CGR, _, _, _, '.contains(')
     )),
     %% extract_json_dispatch: Both try fenced then bare
@@ -6098,12 +6098,12 @@ test_shared_logic_infrastructure :-
         sub_atom(EJR, _, _, _, 'extract_fenced'),
         sub_atom(EJR, _, _, _, 'extract_bare')
     )),
-    %% All 19 methods compile for both targets
-    assert_true('all 19 shared_logic compile for both targets', (
+    %% All 18 methods compile for both targets
+    assert_true('all 18 shared_logic compile for both targets', (
         findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
         include([M]>>(
             agent_loop_module:compile_logic(python, M, _),
             agent_loop_module:compile_logic(rust, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 19)
+        length(OkMs, 18)
     )).

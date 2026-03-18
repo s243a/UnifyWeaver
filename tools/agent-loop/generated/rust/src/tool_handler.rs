@@ -587,14 +587,19 @@ impl ToolResultCache {
         skip.insert("edit".to_string());
         Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip }
     }
-
+    /// Build a canonical cache key from tool name and arguments.
     fn make_key(tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> String {
-        let canonical = serde_json::to_string(args).unwrap_or_default();
-        format!("{}:{}", tool_name, canonical)
+        return format!("{}:{}", tool_name, serde_json::to_string(args).unwrap_or_default());
     }
 
+    /// Check if a tool should skip the cache (destructive tools).
+    fn should_skip(&self, tool_name: &str) -> bool {
+        return self.skip_tools.contains(tool_name);
+    }
+
+
     pub fn get(&self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> Option<&ToolResult> {
-        if self.skip_tools.contains(tool_name) { return None; }
+        if self.should_skip(tool_name) { return None; }
         let key = Self::make_key(tool_name, args);
         if let Some((ts, result)) = self.cache.get(&key) {
             if ts.elapsed() < self.ttl {
@@ -605,7 +610,7 @@ impl ToolResultCache {
     }
 
     pub fn put(&mut self, tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>, result: ToolResult) {
-        if self.skip_tools.contains(tool_name) { return; }
+        if self.should_skip(tool_name) { return; }
         let key = Self::make_key(tool_name, args);
         self.cache.insert(key, (Instant::now(), result));
     }

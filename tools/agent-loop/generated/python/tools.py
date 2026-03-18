@@ -186,13 +186,18 @@ class ToolResultCache:
         self.ttl = ttl
         self.skip_tools = skip_tools or {"bash", "write", "edit"}
         self._cache: dict[str, tuple[float, object]] = {}
+    @staticmethod
+    def _make_key(tool_name, args):
+        """Build a canonical cache key from tool name and arguments."""
+        return f"{tool_name}:{_json.dumps(args, sort_keys=True, default=str)}"
 
-    def _make_key(self, tool_name: str, args: dict) -> str:
-        canonical = _json.dumps(args, sort_keys=True, default=str)
-        return f"{tool_name}:{canonical}"
+    def _should_skip(self, tool_name):
+        """Check if a tool should skip the cache (destructive tools)."""
+        return tool_name in self.skip_tools
+
 
     def get(self, tool_name: str, args: dict):
-        if tool_name in self.skip_tools:
+        if self._should_skip(tool_name):
             return None
         key = self._make_key(tool_name, args)
         entry = self._cache.get(key)
@@ -205,7 +210,7 @@ class ToolResultCache:
         return result
 
     def put(self, tool_name: str, args: dict, result) -> None:
-        if tool_name in self.skip_tools:
+        if self._should_skip(tool_name):
             return
         key = self._make_key(tool_name, args)
         self._cache[key] = (_time.monotonic(), result)
