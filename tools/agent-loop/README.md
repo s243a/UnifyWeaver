@@ -71,15 +71,15 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 12 |
-| `logic_slot/3` facts | 34 (17 python + 17 rust) |
-| `expand_expr/3` facts | 24 (12 python + 12 rust) |
+| `shared_logic/3` facts | 19 |
+| `logic_slot/3` facts | 40 (20 python + 20 rust) |
+| `expand_expr/3` facts | 26 (13 python + 13 rust) |
 | `resolve_type/3` facts | 22 (11 python + 11 rust incl. `optional/1`) |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1057 + 244 declarative + 139 Rust + 148 Python (1057 Prolog unit + 244 auto-generated + 36 Prolog integration + 148 Python + 139 cargo test) |
+| Total tests | 1057 + 265 declarative + 139 Rust + 148 Python (1057 Prolog unit + 265 auto-generated + 36 Prolog integration + 148 Python + 139 cargo test) |
 
 ## Backends
 
@@ -517,17 +517,19 @@ resolve_type(rust, optional(T), S) :-
     format(atom(S), "Option<~w>", [Inner]).
 ```
 
-**12 shared methods** across 5 modules:
+**19 shared methods** across 7 modules:
 
 | Module | Methods | Slots Used |
 |--------|---------|------------|
-| `costs` | `is_over_budget`, `budget_remaining` | `guard_leq_zero`, `return_val`, `self_field`, `max_zero` |
+| `costs` | `is_over_budget`, `budget_remaining`, `reset`, `cost_compute` | `guard_leq_zero`, `return_val`, `self_field`, `max_zero`, `self_direct`, `self_assign`, `div_float`, `mul` |
 | `tool_cache` | `cache_clear`, `cache_len`, `make_key`, `cache_get_guard`, `cache_put_guard` | `self_direct`, `contains`, `canonical_json`, `format_str` |
 | `streaming` | `on_token`, `format_summary` | `print_flush`, `self_inc`, `self_assign`, `str_len`, `int_div`, `streaming_summary` |
 | `retry` | `is_retryable_status`, `compute_delay` | `matches_set`, `min_val`, `mul`, `pow`, `sub` |
 | `output_parser` | `extract_json_dispatch` | `assign`, `call_method`, `not_empty` |
+| `context` | `estimate_tokens`, `context_clear`, `context_len`, `context_is_empty` | `self_method`, `self_direct`, `len_of`, `is_empty_check`, `int_div` |
+| `mcp` | `next_request_id` | `self_inc`, `self_direct` |
 
-The compiled output is tested for parity against what py_fragment/rust_fragment already produce. The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`).
+The compiled output is tested for parity against what py_fragment/rust_fragment already produce. The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
 ### Hybrid generation example
 
