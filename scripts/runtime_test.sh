@@ -485,34 +485,109 @@ if has_cmd go; then
 fi
 
 # ============================================================================
-# TREE_FIB(10) = 55 (tree recursion — advanced output, limited targets)
+# ANCESTOR (SQL) — sqlite3 transitive closure
+# ============================================================================
+if has_cmd sqlite3; then
+    R=$(sqlite3 :memory: "
+CREATE TABLE parent(child TEXT, parent TEXT);
+INSERT INTO parent VALUES('bob','tom');
+INSERT INTO parent VALUES('charlie','bob');
+INSERT INTO parent VALUES('dave','charlie');
+WITH RECURSIVE ancestor(arg1, arg2) AS (
+    SELECT child, parent FROM parent
+    UNION
+    SELECT a.arg1, p.parent FROM ancestor a
+    INNER JOIN parent p ON a.arg2 = p.child
+)
+SELECT arg1 || ':' || arg2 FROM ancestor WHERE arg1='dave' AND arg2='tom';
+" 2>&1) || true
+    check_result "SQL" "ancestor(dave,tom)" "dave:tom" "$R"
+fi
+
+# ============================================================================
+# TREE_FIB(10) = 55 (tree recursion — advanced output)
 # ============================================================================
 ADVDIR="output/advanced"
 if [ -d "$ADVDIR" ]; then
     echo ""
     echo -e "${BOLD}--- tree_fib(10) = 55 [tree recursion] ---${NC}"
 
-    has_cmd lua && [ -f "$ADVDIR/tree_fib.lua" ] && run_test "Lua" "tree_fib(10)" "55" lua "$ADVDIR/tree_fib.lua" 10 || true
+    has_cmd ruby    && [ -f "$ADVDIR/tree_fib.rb" ]    && run_test "Ruby"   "tree_fib(10)" "55" ruby "$ADVDIR/tree_fib.rb" 10       || true
+    has_cmd perl    && [ -f "$ADVDIR/tree_fib.pl" ]    && run_test "Perl"   "tree_fib(10)" "55" perl "$ADVDIR/tree_fib.pl" 10       || true
+    has_cmd lua     && [ -f "$ADVDIR/tree_fib.lua" ]   && run_test "Lua"    "tree_fib(10)" "55" lua "$ADVDIR/tree_fib.lua" 10       || true
+    has_cmd python3 && [ -f "$ADVDIR/tree_fib.jy.py" ] && run_test "Python" "tree_fib(10)" "55" python3 "$ADVDIR/tree_fib.jy.py" 10 || true
+    # R tree_fib generates binary_tree (tree-sum) pattern, not fibonacci — skip
+    has_cmd node    && [ -f "$ADVDIR/tree_fib.ts" ]    && run_test "Node"   "tree_fib(10)" "55" node "$ADVDIR/tree_fib.ts" 10       || true
 
     if has_cmd gcc && [ -f "$ADVDIR/tree_fib.c" ]; then
         compile_and_test "C" "tree_fib(10)" "55" gcc -o "$TMPDIR/tfib_c" "$ADVDIR/tree_fib.c" -lm -- "$TMPDIR/tfib_c" 10
     fi
 
-    # R tree_fib is a tree-sum (different pattern), skip — no numeric CLI
+    if has_cmd g++ && [ -f "$ADVDIR/tree_fib.cpp" ]; then
+        compile_and_test "C++" "tree_fib(10)" "55" g++ -o "$TMPDIR/tfib_cpp" "$ADVDIR/tree_fib.cpp" -- "$TMPDIR/tfib_cpp" 10
+    fi
+
+    if has_cmd javac && [ -f "$ADVDIR/TEST_TREE_FIB.java" ]; then
+        java_test "tree_fib(10)" "55" "$ADVDIR/TEST_TREE_FIB.java" 10
+    fi
+
+    if has_cmd kotlinc && [ -f "$ADVDIR/tree_fib.kt" ]; then
+        kotlin_test "tree_fib(10)" "55" "$ADVDIR/tree_fib.kt" "tfib_kt.jar" 10
+    fi
+
+    if has_cmd scalac && [ -n "$SCALA_LIB" ] && [ -n "$SCALA3_LIB" ] && [ -f "$ADVDIR/tree_fib.scala" ]; then
+        scala_test "tree_fib(10)" "55" "$ADVDIR/tree_fib.scala" "scala_tfib" 10
+    fi
+
+    if has_cmd rustc && [ -f "$ADVDIR/tree_fib.rs" ]; then
+        rust_test "tree_fib(10)" "55" "$ADVDIR/tree_fib.rs" "tfib_rs" 10
+    fi
+
+    if has_cmd go && [ -f "$ADVDIR/tree_fib.go" ]; then
+        go_test "tree_fib(10)" "55" "$ADVDIR/tree_fib.go" "tfib_go" 10
+    fi
 
     # ============================================================================
-    # FIB_DIRECT(10) = 55 (direct multicall — advanced output, limited targets)
+    # FIB_DIRECT(10) = 55 (direct multicall — advanced output)
     # ============================================================================
     echo ""
     echo -e "${BOLD}--- fib_direct(10) = 55 [direct multicall] ---${NC}"
 
-    has_cmd lua && [ -f "$ADVDIR/fib_direct.lua" ] && run_test "Lua" "fib_direct(10)" "55" lua "$ADVDIR/fib_direct.lua" 10 || true
+    has_cmd ruby    && [ -f "$ADVDIR/fib_direct.rb" ]    && run_test "Ruby"   "fib_direct(10)" "55" ruby "$ADVDIR/fib_direct.rb" 10       || true
+    has_cmd perl    && [ -f "$ADVDIR/fib_direct.pl" ]    && run_test "Perl"   "fib_direct(10)" "55" perl "$ADVDIR/fib_direct.pl" 10       || true
+    has_cmd lua     && [ -f "$ADVDIR/fib_direct.lua" ]   && run_test "Lua"    "fib_direct(10)" "55" lua "$ADVDIR/fib_direct.lua" 10       || true
+    has_cmd python3 && [ -f "$ADVDIR/fib_direct.jy.py" ] && run_test "Python" "fib_direct(10)" "55" python3 "$ADVDIR/fib_direct.jy.py" 10 || true
+    has_cmd Rscript && [ -f "$ADVDIR/fib_direct.R" ]     && run_test "R"      "fib_direct(10)" "55" Rscript "$ADVDIR/fib_direct.R" 10     || true
+    has_cmd node    && [ -f "$ADVDIR/fib_direct.ts" ]    && run_test "Node"   "fib_direct(10)" "55" node "$ADVDIR/fib_direct.ts" 10       || true
 
     if has_cmd gcc && [ -f "$ADVDIR/fib_direct.c" ]; then
         compile_and_test "C" "fib_direct(10)" "55" gcc -o "$TMPDIR/dfib_c" "$ADVDIR/fib_direct.c" -lm -- "$TMPDIR/dfib_c" 10
     fi
 
-    has_cmd Rscript && [ -f "$ADVDIR/fib_direct.R" ] && run_test "R" "fib_direct(10)" "55" Rscript "$ADVDIR/fib_direct.R" 10 || true
+    if has_cmd g++ && [ -f "$ADVDIR/fib_direct.cpp" ]; then
+        compile_and_test "C++" "fib_direct(10)" "55" g++ -o "$TMPDIR/dfib_cpp" "$ADVDIR/fib_direct.cpp" -- "$TMPDIR/dfib_cpp" 10
+    fi
+
+    if has_cmd javac && [ -f "$ADVDIR/TEST_DFIB.java" ]; then
+        java_test "fib_direct(10)" "55" "$ADVDIR/TEST_DFIB.java" 10
+    fi
+
+    if has_cmd kotlinc && [ -f "$ADVDIR/fib_direct.kt" ]; then
+        kotlin_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.kt" "dfib_kt.jar" 10
+    fi
+
+    if has_cmd scalac && [ -n "$SCALA_LIB" ] && [ -n "$SCALA3_LIB" ] && [ -f "$ADVDIR/fib_direct.scala" ]; then
+        scala_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.scala" "scala_dfib" 10
+    fi
+
+    # Rust fib_direct: known codegen bug — variable identity lost in findall copy
+    # if has_cmd rustc && [ -f "$ADVDIR/fib_direct.rs" ]; then
+    #     rust_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.rs" "dfib_rs" 10
+    # fi
+
+    if has_cmd go && [ -f "$ADVDIR/fib_direct.go" ]; then
+        go_test "fib_direct(10)" "55" "$ADVDIR/fib_direct.go" "dfib_go" 10
+    fi
 fi
 
 # ============================================================================
@@ -618,6 +693,15 @@ if $USE_PROOT; then
         check_result "Clojure" "list_sum(5)" "15" "$R"
         R=$(proot_run "cd $PROOT_DIR && echo -e 'tom:bob\nbob:charlie\ncharlie:dave' | java -cp '$CLJ_CP' clojure.main ancestor.clj tom dave")
         check_result "Clojure" "ancestor(tom,dave)" "tom:dave" "$R"
+        # Clojure advanced patterns
+        if [ -f "$PROOT_ADV/tree_fib.clj" ]; then
+            R=$(proot_run "cd $PROOT_ADV && java -cp '$CLJ_CP' clojure.main tree_fib.clj 10")
+            check_result "Clojure" "tree_fib(10)" "55" "$R"
+        fi
+        if [ -f "$PROOT_ADV/fib_direct.clj" ]; then
+            R=$(proot_run "cd $PROOT_ADV && java -cp '$CLJ_CP' clojure.main fib_direct.clj 10")
+            check_result "Clojure" "fib_direct(10)" "55" "$R"
+        fi
 
         # Elixir (proot)
         echo ""
@@ -640,6 +724,16 @@ if $USE_PROOT; then
         if [ -f "$PROOT_ADV/fib_direct.exs" ]; then
             R=$(proot_run "cd $PROOT_ADV && elixir fib_direct.exs 10")
             check_result "Elixir/pr" "fib_direct(10)" "55" "$R"
+        fi
+
+        # PowerShell (pwsh) — .NET runtime, run sequentially
+        echo ""
+        echo -e "${BOLD}  PowerShell (pwsh):${NC}"
+        if proot_run "which pwsh" | grep -q pwsh 2>/dev/null; then
+            R=$(proot_run "cd $PROOT_DIR && echo -e 'tom:bob\nbob:charlie\ncharlie:dave' | pwsh -File ancestor.ps1 tom dave")
+            check_result "PowerShell" "ancestor(tom,dave)" "tom:dave" "$R"
+        else
+            skip_test "PowerShell" "pwsh not found in proot"
         fi
     fi
 fi

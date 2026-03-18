@@ -416,6 +416,58 @@ test_direct_multi_call :-
     ;   writeln('  ✗ FAIL - F# compilation failed')
     ),
 
+    % Additional targets
+    (   compile_direct_multi_call(test_dfib/2, [target(ruby)], RubyCode) ->
+        write_output_file('output/advanced/fib_direct.rb', RubyCode),
+        writeln('  ✓ Compiled fib_direct.rb (ruby)')
+    ;   writeln('  ⊘ ruby fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(perl)], PerlCode) ->
+        write_output_file('output/advanced/fib_direct.pl', PerlCode),
+        writeln('  ✓ Compiled fib_direct.pl (perl)')
+    ;   writeln('  ⊘ perl fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(jython)], PyCode) ->
+        write_output_file('output/advanced/fib_direct.jy.py', PyCode),
+        writeln('  ✓ Compiled fib_direct.jy.py (python)')
+    ;   writeln('  ⊘ python fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(typescript)], TsCode) ->
+        write_output_file('output/advanced/fib_direct.ts', TsCode),
+        writeln('  ✓ Compiled fib_direct.ts (typescript)')
+    ;   writeln('  ⊘ typescript fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(cpp)], CppCode) ->
+        write_output_file('output/advanced/fib_direct.cpp', CppCode),
+        writeln('  ✓ Compiled fib_direct.cpp (cpp)')
+    ;   writeln('  ⊘ cpp fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(kotlin)], KtCode) ->
+        write_output_file('output/advanced/fib_direct.kt', KtCode),
+        writeln('  ✓ Compiled fib_direct.kt (kotlin)')
+    ;   writeln('  ⊘ kotlin fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(scala)], ScCode) ->
+        write_output_file('output/advanced/fib_direct.scala', ScCode),
+        writeln('  ✓ Compiled fib_direct.scala (scala)')
+    ;   writeln('  ⊘ scala fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(rust)], RsCode) ->
+        write_output_file('output/advanced/fib_direct.rs', RsCode),
+        writeln('  ✓ Compiled fib_direct.rs (rust)')
+    ;   writeln('  ⊘ rust fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(go)], GoCode) ->
+        write_output_file('output/advanced/fib_direct.go', GoCode),
+        writeln('  ✓ Compiled fib_direct.go (go)')
+    ;   writeln('  ⊘ go fib_direct skipped')
+    ),
+    (   compile_direct_multi_call(test_dfib/2, [target(clojure)], CljCode) ->
+        write_output_file('output/advanced/fib_direct.clj', CljCode),
+        writeln('  ✓ Compiled fib_direct.clj (clojure)')
+    ;   writeln('  ⊘ clojure fib_direct skipped')
+    ),
+
     format('~n=== Tests Complete ===~n', []).
 
 %% Helper to write output files
