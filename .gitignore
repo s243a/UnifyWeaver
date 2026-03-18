@@ -121,6 +121,9 @@ tmp/
 lib/
 # Exception: Flutter project lib/ directories contain generated source code
 !examples/*/lib/
+# Exception: Generated Elixir target contains source in lib/
+!tools/agent-loop/generated/elixir/lib/
+!tools/agent-loop/generated/elixir/lib/**
 
 # ONNX models (download locally, too large for git)
 models/
