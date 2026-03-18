@@ -203,6 +203,8 @@ includes:
   intermediates
 - structured fan-out chains where one earlier bound value feeds multiple later
   derived outputs or conditions
+- structured split-and-recombine chains where guarded derived values are later
+  combined into a final native output
 - supported literal-headed branch bodies built from those chains, with `let`
   used for new intermediate TypR locals
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
