@@ -45,6 +45,7 @@ cleanup_typr_test :-
     retractall(user:if_then_else_guard_continuation_clause(_, _)),
     retractall(user:if_then_else_asymmetric_rejoin(_, _)),
     retractall(user:if_then_else_asymmetric_rejoin_clause(_, _)),
+    retractall(user:factorial_acc(_, _, _)),
     retractall(user:alternative_assign_chain(_, _)),
     retractall(user:alternative_assign_clause_chain(_, _)),
     retractall(user:direct_output_choice(_, _)),
@@ -135,6 +136,26 @@ test(recursive_compiler_supports_typr_non_recursive_path) :-
     assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
     once(recursive_compiler:compile_recursive(simple_fact/1, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let simple_fact <- fn(arg1: char): bool")),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_tail_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:factorial_acc(0, Acc, Acc)),
+    assertz(user:(factorial_acc(N, Acc, Result) :-
+        N > 0,
+        N1 is N - 1,
+        Acc1 is Acc * N,
+        factorial_acc(N1, Acc1, Result)
+    )),
+    assertz(type_declarations:uw_type(factorial_acc/3, 1, integer)),
+    assertz(type_declarations:uw_type(factorial_acc/3, 2, integer)),
+    assertz(type_declarations:uw_type(factorial_acc/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(factorial_acc/3, integer)),
+    once(recursive_compiler:compile_recursive(factorial_acc/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let factorial_acc <- fn(arg1: int, arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "while (!identical(current_input, 0))")),
+    once(sub_string(Code, _, _, _, "current_acc = step_2;")),
+    \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
 test(generic_body_predicates_reuse_r_backend) :-

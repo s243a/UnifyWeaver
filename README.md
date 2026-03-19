@@ -227,6 +227,9 @@ includes:
   guard-only control flow for later native steps or binds a later
   intermediate, the final output directly, or the later result set needed by
   subsequent native steps
+- accumulator-style tail-recursive predicates such as `factorial_acc/3`,
+  lowered to TypR functions that use raw-expression loop bodies instead of
+  relabeled standalone R scripts
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively

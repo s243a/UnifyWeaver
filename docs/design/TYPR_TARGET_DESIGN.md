@@ -54,6 +54,9 @@ This document focuses on architecture and rollout choices specific to TypR.
      guard-only control flow for later native steps or binds a later
      intermediate, the final output directly, or the later result set needed
      by subsequent native steps
+   - accumulator-style tail-recursive predicates that match the currently
+     supported shared tail-recursion shape, emitted as TypR functions with
+     raw-expression loop bodies
    - multiple sequential branch/rejoin segments in the same native body,
      including repeated multi-result rejoin chains that feed later native
      steps after each rejoin
@@ -68,7 +71,7 @@ This document focuses on architecture and rollout choices specific to TypR.
    - native lowering for the dataframe helpers `filter/3`, `sort_by/3`, and
      `group_by/3`
 7. The remaining gap is broader lowering for arbitrary generic rule bodies
-   beyond that current subset.
+   and broader recursive patterns beyond that current subset.
 
 Implication: TypR design must support both generation styles and should not
 assume a Mustache-only pipeline.
@@ -323,7 +326,8 @@ Current implementation note:
   partial-rejoin chains where an earlier rejoin preserves only part of the
   later state before later native steps expand it, two-level nested guarded
   alternatives inside supported semicolon branches where each nested branch
-  still selects the same later result set,
+  still selects the same later result set, accumulator-style tail-recursive
+  predicates compiled to raw-expression loop bodies inside TypR functions,
   native literal-headed branch bodies built from those chains,
   dataframe helper calls, and literal-guarded branch selection; more complex
   bodies still fall back to wrapped R
