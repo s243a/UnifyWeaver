@@ -169,6 +169,9 @@ bring-up.
   - guarded disjunction-style multi-result chains where each alternative binds
     the same later variables after any branch-local intermediates, before
     later native steps continue from those selected results
+  - multiple sequential branch/rejoin segments in the same native body,
+    including repeated multi-result rejoin chains that feed later native
+    steps after each rejoin
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections

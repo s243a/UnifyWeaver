@@ -342,6 +342,9 @@ Current TypR lowering policy is intentionally mixed:
   alternative may introduce different branch-local intermediates before
   binding the same later variables, and later native steps continue from those
   selected results
+- multiple sequential branch/rejoin segments may also stay native when each
+  rejoin preserves the later result variables needed by subsequent native
+  steps, including repeated multi-result selection and rejoin
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select

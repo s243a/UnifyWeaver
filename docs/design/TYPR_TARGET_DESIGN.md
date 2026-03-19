@@ -44,6 +44,9 @@ This document focuses on architecture and rollout choices specific to TypR.
      may introduce different branch-local intermediates before binding the
      same later variables, and later native steps continue from those
      selected results
+   - multiple sequential branch/rejoin segments in the same native body,
+     including repeated multi-result rejoin chains that feed later native
+     steps after each rejoin
    - two-level nested guarded alternatives inside supported semicolon
      branches where each nested branch still selects the same later result
      set, including nested multi-result selections
@@ -251,6 +254,10 @@ Completed:
     branch-local intermediates inside each alternative, provided the
     alternatives still converge on the same later result variable or result
     set before later native steps continue.
+23. Confirmed that the same native guarded-alternative and multi-result path
+    also covers multiple sequential branch/rejoin segments in one
+    non-recursive body, including repeated multi-result selection followed by
+    later native steps after each rejoin.
 
 R-family note:
 
@@ -285,7 +292,9 @@ Current implementation note:
   branch-local intermediates before binding either the same later
   intermediate or the final output directly, guarded disjunction-style
   multi-result chains where each alternative may introduce branch-local
-  intermediates before binding the same later variables,
+  intermediates before binding the same later variables, multiple sequential
+  branch/rejoin segments in the same body including repeated multi-result
+  rejoin chains,
   two-level nested guarded alternatives inside supported semicolon branches
   where each nested branch still selects the same later result set,
   native literal-headed branch bodies built from those chains,
