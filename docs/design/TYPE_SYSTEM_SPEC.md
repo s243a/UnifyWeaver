@@ -350,8 +350,8 @@ Current TypR lowering policy is intentionally mixed:
   shared values, and a later guarded rejoin continues from that expanded state
 - Prolog `if -> then ; else` chains may also stay native when the then/else
   branches bind either the same later intermediate, the final output directly,
-  or the same later result set before later native steps continue from the
-  selected values
+  the same later result set, or guard-only control flow before later native
+  steps continue from the selected values
 - Prolog `if -> then` chains may also stay native when the then branch either
   contributes guard-only control flow for later native steps or binds a later
   intermediate, the final output directly, or the later result set needed by

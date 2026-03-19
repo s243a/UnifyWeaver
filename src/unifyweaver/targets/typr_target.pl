@@ -625,6 +625,29 @@ native_typr_if_then_guard_condition(IfGoal, ThenGoal, VarMap, GuardCondition) :-
     Conditions \= [],
     combine_typr_conditions(Conditions, GuardCondition).
 
+native_typr_if_then_else_guard_condition(IfGoal, ThenGoal, ElseGoal, VarMap, GuardCondition) :-
+    native_typr_guard_sequence(IfGoal, VarMap, IfConditions),
+    IfConditions \= [],
+    combine_typr_conditions(IfConditions, IfCondition),
+    native_typr_optional_guard_condition(ThenGoal, VarMap, ThenCondition),
+    native_typr_optional_guard_condition(ElseGoal, VarMap, ElseCondition),
+    typr_condition_expr_text(IfCondition, IfExpr),
+    typr_condition_expr_text(ThenCondition, ThenExpr),
+    typr_condition_expr_text(ElseCondition, ElseExpr),
+    format(
+        string(GuardCondition),
+        '@{ ifelse(~w, ~w, ~w) }@',
+        [IfExpr, ThenExpr, ElseExpr]
+    ).
+
+native_typr_optional_guard_condition(Body, VarMap, GuardCondition) :-
+    normalize_typr_goals(Body, Goals),
+    (   Goals = []
+    ->  GuardCondition = 'TRUE'
+    ;   maplist(native_typr_guard_goal_with_varmap(VarMap), Goals, Conditions),
+        combine_typr_conditions(Conditions, GuardCondition)
+    ).
+
 native_typr_guard_sequence(Body, VarMap, Conditions) :-
     normalize_typr_goals(Body, Goals),
     Goals \= [],
@@ -912,6 +935,10 @@ native_typr_guard_goal(_Module:Goal, VarMap, GuardCondition) :-
     !,
     native_typr_guard_goal(Goal, VarMap, GuardCondition).
 native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
+    typr_if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    native_typr_if_then_else_guard_condition(IfGoal, ThenGoal, ElseGoal, VarMap, GuardCondition),
+    !.
+native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
     typr_if_then_goal(Goal, IfGoal, ThenGoal),
     native_typr_if_then_guard_condition(IfGoal, ThenGoal, VarMap, GuardCondition),
     !.
@@ -967,12 +994,17 @@ combine_typr_conditions([], 'TRUE').
 combine_typr_conditions([Condition], Condition) :-
     !.
 combine_typr_conditions(Conditions, Combined) :-
-    maplist(raw_guard_expr_text, Conditions, RawExprs),
+    maplist(typr_condition_expr_text, Conditions, RawExprs),
     !,
     atomic_list_concat(RawExprs, ' && ', InnerExpr),
     format(string(Combined), '@{ ~w }@', [InnerExpr]).
 combine_typr_conditions(Conditions, Combined) :-
     atomic_list_concat(Conditions, ' && ', Combined).
+
+typr_condition_expr_text(Condition, Expr) :-
+    raw_guard_expr_text(Condition, Expr),
+    !.
+typr_condition_expr_text(Condition, Condition).
 
 raw_guard_expr_text(Condition, Expr) :-
     string(Condition),

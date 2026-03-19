@@ -219,8 +219,9 @@ includes:
   part of the later state, subsequent native steps derive additional shared
   values, and a later rejoin still stays native
 - Prolog `if -> then ; else` chains where the branches bind either the same
-  later intermediate, the final output directly, or the same later result set
-  before later native steps continue from the selected values
+  later intermediate, the final output directly, the same later result set,
+  or guard-only control flow before later native steps continue from the
+  selected values
 - Prolog `if -> then` chains where the `then` branch either contributes
   guard-only control flow for later native steps or binds a later
   intermediate, the final output directly, or the later result set needed by
