@@ -918,9 +918,34 @@ shared_output_list_expr(SharedVars, VarMap, ListExpr) :-
 
 replace_final_expression(Code, NewFinalExpr, RewrittenCode) :-
     split_string(Code, "\n", "", Lines),
-    append(PrefixLines, [_OldFinalExpr], Lines),
-    append(PrefixLines, [NewFinalExpr], RewrittenLines),
-    atomic_list_concat(RewrittenLines, '\n', RewrittenCode).
+    (   wrapped_guard_body_lines(Lines, HeaderLine, BodyLines, ElseLine, StopLine, ClosingLine)
+    ->  atomic_list_concat(BodyLines, '\n', BodyCode),
+        replace_final_expression(BodyCode, NewFinalExpr, RewrittenBodyCode),
+        atomic_list_concat(
+            [HeaderLine, RewrittenBodyCode, ElseLine, StopLine, ClosingLine],
+            '\n',
+            RewrittenCode
+        )
+    ;   append(PrefixLines, [OldFinalExpr], Lines),
+        OldFinalExpr \= "}",
+        append(PrefixLines, [NewFinalExpr], RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenCode)
+    ).
+
+wrapped_guard_body_lines(
+    [HeaderLine|RestLines],
+    HeaderLine,
+    BodyLines,
+    ElseLine,
+    StopLine,
+    ClosingLine
+) :-
+    sub_string(HeaderLine, 0, 4, _, "if ("),
+    append(BodyAndElseLines, [StopLine, ClosingLine], RestLines),
+    append(BodyLines, [ElseLine], BodyAndElseLines),
+    ElseLine = "} else {",
+    sub_string(StopLine, _, _, _, "stop(\"No matching clause for "),
+    ClosingLine = "}".
 
 build_typr_extraction_lines(ContainerName, SharedNamePairs, Lines) :-
     build_typr_extraction_lines(ContainerName, SharedNamePairs, 1, Lines).

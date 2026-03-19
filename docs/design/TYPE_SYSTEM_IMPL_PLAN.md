@@ -178,7 +178,8 @@ bring-up.
   - Prolog `if -> then ; else` chains where the branches bind either the same
     later intermediate, the final output directly, the same later result set,
     or guard-only control flow before later native steps continue from the
-    selected values
+    selected values, including cases where one branch introduces additional
+    branch-local intermediates before producing that shared later result set
   - Prolog `if -> then` chains where the then branch either contributes
     guard-only control flow for later native steps or binds a later
     intermediate, the final output directly, or the later result set needed
