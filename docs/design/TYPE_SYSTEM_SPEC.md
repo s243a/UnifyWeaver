@@ -352,9 +352,10 @@ Current TypR lowering policy is intentionally mixed:
   branches bind either the same later intermediate, the final output directly,
   or the same later result set before later native steps continue from the
   selected values
-- Prolog `if -> then` chains may also stay native when the then branch binds
-  either a later intermediate, the final output directly, or the later result
-  set needed by subsequent native steps
+- Prolog `if -> then` chains may also stay native when the then branch either
+  contributes guard-only control flow for later native steps or binds a later
+  intermediate, the final output directly, or the later result set needed by
+  subsequent native steps
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select

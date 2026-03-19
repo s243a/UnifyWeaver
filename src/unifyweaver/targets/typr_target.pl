@@ -239,10 +239,7 @@ fact_clause_expression(_PredSpec, Head, Expr) :-
         fact_arg_condition(Index, HeadArg, Condition)
     ), Conditions0),
     exclude(=(true), Conditions0, Conditions),
-    (   Conditions = []
-    ->  Expr = 'TRUE'
-    ;   atomic_list_concat(Conditions, ' && ', Expr)
-    ).
+    combine_typr_conditions(Conditions, Expr).
 
 fact_arg_condition(_Index, HeadArg, true) :-
     var(HeadArg),
@@ -340,10 +337,7 @@ native_typr_clause(Head, Body, Condition, ClauseCode) :-
     atom_string(Pred, PredName),
     native_typr_goal_sequence(Body, VarMap, PredName, GoalConditions, ClauseCode),
     append(HeadConditions, GoalConditions, Conditions),
-    (   Conditions = []
-    ->  Condition = 'TRUE'
-    ;   atomic_list_concat(Conditions, ' && ', Condition)
-    ).
+    combine_typr_conditions(Conditions, Condition).
 
 native_typr_goal_sequence(Body, VarMap, PredName, Conditions, Code) :-
     native_typr_goal_sequence(Body, VarMap, PredName, Conditions, Code, _VarMapOut).
@@ -624,6 +618,21 @@ native_typr_if_then_multi_result_output_goal(
     append([ContainerLine], ExtractionLines, OutputLines),
     last(SharedNamePairs, _-FinalExpr).
 
+native_typr_if_then_guard_condition(IfGoal, ThenGoal, VarMap, GuardCondition) :-
+    native_typr_guard_sequence(IfGoal, VarMap, IfConditions),
+    native_typr_guard_sequence(ThenGoal, VarMap, ThenConditions),
+    append(IfConditions, ThenConditions, Conditions),
+    Conditions \= [],
+    combine_typr_conditions(Conditions, GuardCondition).
+
+native_typr_guard_sequence(Body, VarMap, Conditions) :-
+    normalize_typr_goals(Body, Goals),
+    Goals \= [],
+    maplist(native_typr_guard_goal_with_varmap(VarMap), Goals, Conditions).
+
+native_typr_guard_goal_with_varmap(VarMap, Goal, GuardCondition) :-
+    native_typr_guard_goal(Goal, VarMap, GuardCondition).
+
 native_typr_if_then_else_multi_result_output_goal(
     IfGoal,
     ThenGoal,
@@ -787,25 +796,19 @@ typr_goal_output_var_simple(Goal, OutputVar) :-
 native_typr_alternative_branch(VarMap0, PredName, SharedVar, Alternative, branch(Condition, BranchCode)) :-
     typr_alternative_output_var_matches(SharedVar, Alternative),
     native_typr_goal_sequence(Alternative, VarMap0, PredName, Conditions, BranchCode),
-    (   Conditions = []
-    ->  Condition = 'TRUE'
-    ;   atomic_list_concat(Conditions, ' && ', Condition)
-    ).
+    combine_typr_conditions(Conditions, Condition).
 
 native_typr_multi_result_branch(VarMap0, PredName, SharedVars, Alternative, branch(Condition, BranchCode)) :-
     native_typr_goal_sequence(Alternative, VarMap0, PredName, Conditions, BranchCode0, BranchVarMap),
     shared_output_list_expr(SharedVars, BranchVarMap, SharedListExpr),
     replace_final_expression(BranchCode0, SharedListExpr, BranchCode),
-    (   Conditions = []
-    ->  Condition = 'TRUE'
-    ;   atomic_list_concat(Conditions, ' && ', Condition)
-    ).
+    combine_typr_conditions(Conditions, Condition).
 
 native_typr_local_goal_sequence(Body, VarMap0, PredName, Code, VarMapOut) :-
     native_typr_goal_sequence(Body, VarMap0, PredName, Conditions, RawCode, VarMapOut),
     (   Conditions = []
     ->  Code = RawCode
-    ;   atomic_list_concat(Conditions, ' && ', GuardExpr),
+    ;   combine_typr_conditions(Conditions, GuardExpr),
         branch_safe_typr_code(RawCode, SafeRawCode),
         indent_text(SafeRawCode, "\t", IndentedCode),
         format(
@@ -824,10 +827,7 @@ native_typr_if_condition(IfGoal, VarMap, IfCondition) :-
         member(Goal, Goals),
         native_typr_guard_goal(Goal, VarMap, Condition)
     ), Conditions),
-    (   Conditions = []
-    ->  IfCondition = 'TRUE'
-    ;   atomic_list_concat(Conditions, ' && ', IfCondition)
-    ).
+    combine_typr_conditions(Conditions, IfCondition).
 
 varmap_contains_var([StoredVar-_|_], Var) :-
     Var == StoredVar,
@@ -912,6 +912,10 @@ native_typr_guard_goal(_Module:Goal, VarMap, GuardCondition) :-
     !,
     native_typr_guard_goal(Goal, VarMap, GuardCondition).
 native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
+    typr_if_then_goal(Goal, IfGoal, ThenGoal),
+    native_typr_if_then_guard_condition(IfGoal, ThenGoal, VarMap, GuardCondition),
+    !.
+native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
     typr_native_guard_expr(Goal, VarMap, GuardCondition),
     !.
 native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
@@ -957,7 +961,24 @@ typr_guard_expression(TargetName, ResolvedInArgs, GuardCondition) :-
 guard_condition_expression([], none).
 guard_condition_expression(Conditions, GuardExpr) :-
     Conditions \= [],
-    atomic_list_concat(Conditions, ' && ', GuardExpr).
+    combine_typr_conditions(Conditions, GuardExpr).
+
+combine_typr_conditions([], 'TRUE').
+combine_typr_conditions([Condition], Condition) :-
+    !.
+combine_typr_conditions(Conditions, Combined) :-
+    maplist(raw_guard_expr_text, Conditions, RawExprs),
+    !,
+    atomic_list_concat(RawExprs, ' && ', InnerExpr),
+    format(string(Combined), '@{ ~w }@', [InnerExpr]).
+combine_typr_conditions(Conditions, Combined) :-
+    atomic_list_concat(Conditions, ' && ', Combined).
+
+raw_guard_expr_text(Condition, Expr) :-
+    string(Condition),
+    sub_string(Condition, 0, 3, _, "@{ "),
+    sub_string(Condition, _, 3, 0, " }@"),
+    sub_string(Condition, 3, _, 3, Expr).
 
 typr_binding_prefix(existing, '').
 typr_binding_prefix(new, 'let ').
