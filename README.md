@@ -218,6 +218,9 @@ includes:
 - asymmetric partial-rejoin chains where alternatives first converge on only
   part of the later state, subsequent native steps derive additional shared
   values, and a later rejoin still stays native
+- Prolog `if -> then ; else` chains where the branches bind either the same
+  later intermediate, the final output directly, or the same later result set
+  before later native steps continue from the selected values
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively
