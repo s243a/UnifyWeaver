@@ -338,8 +338,16 @@ compile_tc_from_template(Target, Pred, BasePred, ExtraDict, Code) :-
     atom_string(Pred, PredStr),
     atom_string(BasePred, BaseStr),
     atom_string(Target, TargetStr),
-    format(string(TemplatePath), 'templates/targets/~w/transitive_closure.mustache', [TargetStr]),
-    read_file_to_string(TemplatePath, Template, []),
+    format(string(RelPath), 'templates/targets/~w/transitive_closure.mustache', [TargetStr]),
+    %  Try relative path first (native), then VFS path (swipl-wasm)
+    format(string(VfsPath), '/user/templates/targets/~w/transitive_closure.mustache', [TargetStr]),
+    (   exists_file(RelPath)
+    ->  read_file_to_string(RelPath, Template, [])
+    ;   exists_file(VfsPath)
+    ->  read_file_to_string(VfsPath, Template, [])
+    ;   format(user_error, 'Template not found: ~w (tried ~w)~n', [RelPath, VfsPath]),
+        fail
+    ),
     append([pred=PredStr, base=BaseStr], ExtraDict, Dict),
     template_system:render_template(Template, Dict, Code).
 
