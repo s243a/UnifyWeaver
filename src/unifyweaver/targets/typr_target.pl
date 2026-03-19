@@ -424,6 +424,20 @@ native_typr_output_expr(_Module:Goal, VarMap0, PredName, VarMap, FinalExpr, Outp
     !,
     native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind).
 native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    typr_if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    native_typr_if_then_else_output_expr(
+        IfGoal,
+        ThenGoal,
+        ElseGoal,
+        VarMap0,
+        PredName,
+        VarMap,
+        FinalExpr,
+        OutputExpr,
+        IntroKind
+    ),
+    !.
+native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     typr_disjunction_alternatives(Goal, Alternatives),
     native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind),
     !.
@@ -466,6 +480,33 @@ typr_disjunction_alternatives((Left ; Right), Alternatives) :-
     append(LeftAlternatives, RightAlternatives, Alternatives).
 typr_disjunction_alternatives(Goal, [Goal]).
 
+typr_if_then_else_goal((IfGoal -> ThenGoal ; ElseGoal), IfGoal, ThenGoal, ElseGoal) :-
+    !.
+typr_if_then_else_goal(;(->(IfGoal, ThenGoal), ElseGoal), IfGoal, ThenGoal, ElseGoal) :-
+    !.
+
+native_typr_if_then_else_output_expr(
+    IfGoal,
+    ThenGoal,
+    ElseGoal,
+    VarMap0,
+    PredName,
+    VarMap,
+    FinalExpr,
+    OutputExpr,
+    IntroKind
+) :-
+    native_typr_if_condition(IfGoal, VarMap0, IfCondition),
+    typr_if_then_else_shared_output_var(ThenGoal, ElseGoal, VarMap0, SharedVar),
+    ensure_typr_var(VarMap0, SharedVar, FinalExpr, VarMap, IntroKind),
+    native_typr_local_goal_sequence(ThenGoal, VarMap0, PredName, ThenCode, _ThenVarMap),
+    native_typr_local_goal_sequence(ElseGoal, VarMap0, PredName, ElseCode, _ElseVarMap),
+    branches_to_typr_output_if_chain(
+        [branch(IfCondition, ThenCode), branch('TRUE', ElseCode)],
+        PredName,
+        OutputExpr
+    ).
+
 native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     Alternatives = [_|[_|_]],
     typr_disjunction_shared_output_var(Alternatives, VarMap0, SharedVar),
@@ -476,6 +517,19 @@ native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, Fin
 native_typr_multi_result_output_goal(_Module:Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr) :-
     !,
     native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr).
+native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr) :-
+    typr_if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    native_typr_if_then_else_multi_result_output_goal(
+        IfGoal,
+        ThenGoal,
+        ElseGoal,
+        VarMap0,
+        PredName,
+        VarMapOut,
+        OutputLines,
+        FinalExpr
+    ),
+    !.
 native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr) :-
     typr_disjunction_alternatives(Goal, Alternatives),
     Alternatives = [_|[_|_]],
@@ -492,16 +546,62 @@ native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputL
     append([ContainerLine], ExtractionLines, OutputLines),
     last(SharedNamePairs, _-FinalExpr).
 
+native_typr_if_then_else_multi_result_output_goal(
+    IfGoal,
+    ThenGoal,
+    ElseGoal,
+    VarMap0,
+    PredName,
+    VarMapOut,
+    OutputLines,
+    FinalExpr
+) :-
+    native_typr_if_condition(IfGoal, VarMap0, IfCondition),
+    typr_if_then_else_shared_output_vars(ThenGoal, ElseGoal, VarMap0, SharedVars),
+    length(SharedVars, SharedCount),
+    SharedCount > 1,
+    reserve_typr_internal_var(VarMap0, ContainerToken, ContainerName, VarMap1, new),
+    ensure_typr_vars(SharedVars, VarMap1, SharedNamePairs, VarMap2),
+    remove_var_mapping(ContainerToken, VarMap2, VarMapOut),
+    native_typr_local_goal_sequence(ThenGoal, VarMap0, PredName, ThenCode0, ThenVarMap),
+    native_typr_local_goal_sequence(ElseGoal, VarMap0, PredName, ElseCode0, ElseVarMap),
+    shared_output_list_expr(SharedVars, ThenVarMap, ThenListExpr),
+    shared_output_list_expr(SharedVars, ElseVarMap, ElseListExpr),
+    replace_final_expression(ThenCode0, ThenListExpr, ThenCode),
+    replace_final_expression(ElseCode0, ElseListExpr, ElseCode),
+    branches_to_typr_output_if_chain(
+        [branch(IfCondition, ThenCode), branch('TRUE', ElseCode)],
+        PredName,
+        ContainerExpr
+    ),
+    typr_assignment_line(new, ContainerName, ContainerExpr, ContainerLine),
+    build_typr_extraction_lines(ContainerName, SharedNamePairs, ExtractionLines),
+    append([ContainerLine], ExtractionLines, OutputLines),
+    last(SharedNamePairs, _-FinalExpr).
+
 typr_disjunction_shared_output_var([Alternative|Rest], VarMap, SharedVar) :-
     typr_alternative_output_var(Alternative, SharedVar),
     var(SharedVar),
     typr_disjunction_output_var_allowed(VarMap, SharedVar),
     maplist(typr_alternative_output_var_matches(SharedVar), Rest).
 
+typr_if_then_else_shared_output_var(ThenGoal, ElseGoal, VarMap, SharedVar) :-
+    typr_alternative_output_var(ThenGoal, SharedVar),
+    var(SharedVar),
+    typr_disjunction_output_var_allowed(VarMap, SharedVar),
+    typr_alternative_output_var(ElseGoal, ElseVar),
+    ElseVar == SharedVar.
+
 typr_disjunction_shared_output_vars([Alternative|Rest], VarMap, SharedVars) :-
     typr_alternative_output_vars(Alternative, FirstOutputVars0),
     exclude_varmap_vars(VarMap, FirstOutputVars0, FirstOutputVars),
     foldl(intersect_output_vars, Rest, FirstOutputVars, SharedVars),
+    SharedVars \= [].
+
+typr_if_then_else_shared_output_vars(ThenGoal, ElseGoal, VarMap, SharedVars) :-
+    typr_alternative_output_vars(ThenGoal, ThenOutputVars0),
+    exclude_varmap_vars(VarMap, ThenOutputVars0, ThenOutputVars),
+    intersect_output_vars(ElseGoal, ThenOutputVars, SharedVars),
     SharedVars \= [].
 
 typr_disjunction_output_var_allowed(VarMap, SharedVar) :-
@@ -539,6 +639,10 @@ typr_goal_output_vars(_Module:Goal, OutputVars) :-
     !,
     typr_goal_output_vars(Goal, OutputVars).
 typr_goal_output_vars(Goal, OutputVars) :-
+    typr_if_then_else_goal(Goal, _IfGoal, ThenGoal, ElseGoal),
+    typr_if_then_else_goal_output_vars(ThenGoal, ElseGoal, OutputVars),
+    !.
+typr_goal_output_vars(Goal, OutputVars) :-
     typr_disjunction_alternatives(Goal, Alternatives),
     Alternatives = [_|[_|_]],
     typr_disjunction_goal_output_vars(Alternatives, OutputVars),
@@ -558,6 +662,11 @@ typr_goal_output_var(Goal, OutputVar) :-
 typr_disjunction_goal_output_vars([Alternative|Rest], OutputVars) :-
     typr_alternative_output_vars(Alternative, FirstOutputVars),
     foldl(intersect_output_vars, Rest, FirstOutputVars, OutputVars),
+    OutputVars \= [].
+
+typr_if_then_else_goal_output_vars(ThenGoal, ElseGoal, OutputVars) :-
+    typr_alternative_output_vars(ThenGoal, ThenOutputVars),
+    intersect_output_vars(ElseGoal, ThenOutputVars, OutputVars),
     OutputVars \= [].
 
 typr_goal_output_var_simple(_Module:Goal, OutputVar) :-
@@ -594,6 +703,34 @@ native_typr_multi_result_branch(VarMap0, PredName, SharedVars, Alternative, bran
     (   Conditions = []
     ->  Condition = 'TRUE'
     ;   atomic_list_concat(Conditions, ' && ', Condition)
+    ).
+
+native_typr_local_goal_sequence(Body, VarMap0, PredName, Code, VarMapOut) :-
+    native_typr_goal_sequence(Body, VarMap0, PredName, Conditions, RawCode, VarMapOut),
+    (   Conditions = []
+    ->  Code = RawCode
+    ;   atomic_list_concat(Conditions, ' && ', GuardExpr),
+        branch_safe_typr_code(RawCode, SafeRawCode),
+        indent_text(SafeRawCode, "\t", IndentedCode),
+        format(
+            string(Code),
+'if (~w) {
+~w
+} else {
+	stop("No matching clause for ~w")
+}', [GuardExpr, IndentedCode, PredName]
+        )
+    ).
+
+native_typr_if_condition(IfGoal, VarMap, IfCondition) :-
+    normalize_typr_goals(IfGoal, Goals),
+    findall(Condition, (
+        member(Goal, Goals),
+        native_typr_guard_goal(Goal, VarMap, Condition)
+    ), Conditions),
+    (   Conditions = []
+    ->  IfCondition = 'TRUE'
+    ;   atomic_list_concat(Conditions, ' && ', IfCondition)
     ).
 
 varmap_contains_var([StoredVar-_|_], Var) :-

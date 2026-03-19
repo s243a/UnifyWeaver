@@ -348,6 +348,10 @@ Current TypR lowering policy is intentionally mixed:
 - asymmetric partial-rejoin chains may also stay native when an earlier rejoin
   preserves only part of the later state, subsequent native steps derive more
   shared values, and a later guarded rejoin continues from that expanded state
+- Prolog `if -> then ; else` chains may also stay native when the then/else
+  branches bind either the same later intermediate, the final output directly,
+  or the same later result set before later native steps continue from the
+  selected values
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select

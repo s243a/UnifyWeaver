@@ -175,6 +175,9 @@ bring-up.
   - asymmetric partial-rejoin chains where an earlier rejoin preserves only
     part of the later state, more shared values are derived afterward, and a
     later guarded rejoin still stays native
+  - Prolog `if -> then ; else` chains where the branches bind either the same
+    later intermediate, the final output directly, or the same later result
+    set before later native steps continue from the selected values
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections
