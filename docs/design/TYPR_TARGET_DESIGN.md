@@ -47,7 +47,8 @@ This document focuses on architecture and rollout choices specific to TypR.
    - Prolog `if -> then ; else` chains where the branches bind either the
      same later intermediate, the final output directly, or the same later
      result set before later native steps continue from the selected values
-   - Prolog `if -> then` chains where the then branch binds either a later
+   - Prolog `if -> then` chains where the then branch either contributes
+     guard-only control flow for later native steps or binds a later
      intermediate, the final output directly, or the later result set needed
      by subsequent native steps
    - multiple sequential branch/rejoin segments in the same native body,
@@ -308,7 +309,8 @@ Current implementation note:
   intermediates before binding the same later variables, Prolog
   `if -> then ; else` chains where the branches bind either the same later
   intermediate, the final output directly, or the same later result set,
-  Prolog `if -> then` chains where the then branch binds either a later
+  Prolog `if -> then` chains where the then branch either contributes
+  guard-only control flow for later native steps or binds a later
   intermediate, the final output directly, or the later result set needed by
   subsequent native steps, multiple sequential branch/rejoin segments in the
   same body including repeated multi-result rejoin chains, asymmetric
