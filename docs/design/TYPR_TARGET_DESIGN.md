@@ -47,6 +47,9 @@ This document focuses on architecture and rollout choices specific to TypR.
    - multiple sequential branch/rejoin segments in the same native body,
      including repeated multi-result rejoin chains that feed later native
      steps after each rejoin
+   - asymmetric partial-rejoin chains where an earlier rejoin preserves only
+     part of the later state, more shared values are derived afterward, and
+     a later guarded rejoin still stays native
    - two-level nested guarded alternatives inside supported semicolon
      branches where each nested branch still selects the same later result
      set, including nested multi-result selections
@@ -258,6 +261,10 @@ Completed:
     also covers multiple sequential branch/rejoin segments in one
     non-recursive body, including repeated multi-result selection followed by
     later native steps after each rejoin.
+24. Confirmed that the same native path also covers asymmetric partial
+    rejoins, where an earlier guarded rejoin preserves only part of the later
+    state and subsequent native steps derive additional shared values before a
+    later guarded rejoin.
 
 R-family note:
 
@@ -294,7 +301,8 @@ Current implementation note:
   multi-result chains where each alternative may introduce branch-local
   intermediates before binding the same later variables, multiple sequential
   branch/rejoin segments in the same body including repeated multi-result
-  rejoin chains,
+  rejoin chains, asymmetric partial-rejoin chains where an earlier rejoin
+  preserves only part of the later state before later native steps expand it,
   two-level nested guarded alternatives inside supported semicolon branches
   where each nested branch still selects the same later result set,
   native literal-headed branch bodies built from those chains,

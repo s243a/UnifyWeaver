@@ -172,6 +172,9 @@ bring-up.
   - multiple sequential branch/rejoin segments in the same native body,
     including repeated multi-result rejoin chains that feed later native
     steps after each rejoin
+  - asymmetric partial-rejoin chains where an earlier rejoin preserves only
+    part of the later state, more shared values are derived afterward, and a
+    later guarded rejoin still stays native
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections
