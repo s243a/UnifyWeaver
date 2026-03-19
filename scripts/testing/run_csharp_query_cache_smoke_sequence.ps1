@@ -7,10 +7,12 @@
 #   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1 -OutputDir tmp/csharp_query_smoke_ci
 #   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1 -KeepArtifacts
 #   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1 -SummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.md
+#   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_sequence.ps1 -NoSummaryOutput
 #
 # Notes:
 # - Requires the same prerequisites as run_csharp_query_runtime_smoke.ps1.
 # - The final lru slice removes generated projects unless -KeepArtifacts is set.
+# - The generated markdown summary is printed to stdout unless -NoSummaryOutput is set.
 
 [CmdletBinding()]
 param(
@@ -24,7 +26,10 @@ param(
     [string]$SummaryPath,
 
     [Parameter(Mandatory = $false)]
-    [switch]$KeepArtifacts
+    [switch]$KeepArtifacts,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoSummaryOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -197,6 +202,15 @@ Write-CacheSmokeSummary `
     -KeepArtifactsAfterSequence ([bool]$KeepArtifacts) `
     -SliceResults $sliceResults `
     -HasFailure ([bool]$sequenceFailure)
+
+if (-not $NoSummaryOutput) {
+    Write-Host ""
+    Write-Host "=== C# query cache smoke summary ==="
+    Get-Content -Path $resolvedSummaryPath | ForEach-Object {
+        Write-Host $_
+    }
+    Write-Host ""
+}
 
 Write-Host "Wrote cache smoke summary: $resolvedSummaryPath"
 
