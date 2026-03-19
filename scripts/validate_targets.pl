@@ -31,6 +31,7 @@
 :- use_module('src/unifyweaver/targets/rust_target', []).
 :- use_module('src/unifyweaver/targets/go_target', []).
 :- use_module('src/unifyweaver/targets/powershell_target', []).
+:- use_module('src/unifyweaver/targets/typr_target', []).
 
 :- use_module(library(lists)).
 
@@ -128,6 +129,9 @@ run_validation :-
         validate_target(Target)
     ),
 
+    % TypR (supports linear, tail, multicall, transitive — no mutual yet)
+    validate_typr,
+
     % Transitive-closure-only targets
     TcOnlyTargets = [sql, powershell],
     forall(
@@ -196,6 +200,31 @@ validate_tc_only(Target) :-
     ->  true ; format('  ✗ transitive ancestor: FAILED~n')
     ).
 
+%% Validate TypR target (linear, tail, multicall, transitive — no mutual)
+validate_typr :-
+    format('~n--- typr ---~n', []),
+    (   catch(generate(typr, linear, factorial, 2, 'factorial.typr'), E1,
+            (format('  ✗ linear factorial: ~w~n', [E1]), true))
+    ->  true ; format('  ✗ linear factorial: FAILED~n')
+    ),
+    (   catch(generate(typr, linear, list_sum, 2, 'list_sum.typr'), E2,
+            (format('  ✗ linear list_sum: ~w~n', [E2]), true))
+    ->  true ; format('  ✗ linear list_sum: FAILED~n')
+    ),
+    (   catch(generate(typr, tail, count, 3, 'count.typr'), E3,
+            (format('  ✗ tail count: ~w~n', [E3]), true))
+    ->  true ; format('  ✗ tail count: FAILED~n')
+    ),
+    (   catch(generate(typr, multicall, fib, 2, 'fib.typr'), E4,
+            (format('  ✗ multicall fib: ~w~n', [E4]), true))
+    ->  true ; format('  ✗ multicall fib: FAILED~n')
+    ),
+    (   catch(generate(typr, transitive, ancestor, 2, 'ancestor.typr'), E5,
+            (format('  ✗ transitive ancestor: ~w~n', [E5]), true))
+    ->  true ; format('  ✗ transitive ancestor: not supported~n')
+    ).
+
+target_ext(typr, '.typr').
 target_ext(ruby, '.rb').
 target_ext(perl, '.pl').
 target_ext(typescript, '.ts').

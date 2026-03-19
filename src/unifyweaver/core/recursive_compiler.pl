@@ -177,6 +177,8 @@ compile_advanced(elixir, Pred/Arity, FinalOptions, GeneratedCode) :-
     elixir_target:compile_predicate_to_elixir(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
 compile_advanced(r, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(r)|FinalOptions], GeneratedCode).
+compile_advanced(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(typr)|FinalOptions], GeneratedCode).
 compile_advanced(python, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(python)|FinalOptions], GeneratedCode).
 compile_advanced(go, Pred/Arity, _FinalOptions, _GeneratedCode) :-
