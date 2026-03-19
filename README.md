@@ -215,6 +215,9 @@ includes:
 - multiple sequential branch/rejoin segments in the same native body,
   including multi-result rejoin chains that continue through later native
   steps after each rejoin
+- asymmetric partial-rejoin chains where alternatives first converge on only
+  part of the later state, subsequent native steps derive additional shared
+  values, and a later rejoin still stays native
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively
