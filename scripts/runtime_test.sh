@@ -606,7 +606,7 @@ if $USE_PROOT; then
         skip_test "proot" "proot-distro not found"
     else
         PROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)/output/validation"
-        proot_run() { proot-distro login debian -- bash -c "$1" 2>&1 | grep -v '^Warning:' | tail -1; }
+        proot_run() { proot-distro login debian -- bash -c "$1" 2>&1 | grep -v -e '^Warning:' -e '^proot warning:' -e $'\x1b' | tail -1; }
 
         # Haskell (ghc)
         echo ""

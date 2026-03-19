@@ -35,17 +35,18 @@
             (into visited nexts)
             (into (rest queue) (remove visited nexts))))))))
 
-(defn -main [& args]
+(defn load-facts []
   (doseq [line (line-seq (java.io.BufferedReader. *in*))]
     (when (seq line)
       (let [[from to] (clojure.string/split line #":")]
         (when (and from to)
-          (add-fact (clojure.string/trim from) (clojure.string/trim to))))))
-  (case (count args)
-    0 (do (binding [*out* *err*] (println "Usage: clojure {{pred}}_query.clj <start> [target]"))
-          (System/exit 1))
-    1 (doseq [r (find-all (first args))]
-        (println (str (first args) ":" r)))
-    (if (check-path (first args) (second args))
-      (println (str (first args) ":" (second args)))
+          (add-fact (clojure.string/trim from) (clojure.string/trim to)))))))
+
+(when (seq *command-line-args*)
+  (load-facts)
+  (case (count *command-line-args*)
+    1 (doseq [r (find-all (first *command-line-args*))]
+        (println (str (first *command-line-args*) ":" r)))
+    (if (check-path (first *command-line-args*) (second *command-line-args*))
+      (println (str (first *command-line-args*) ":" (second *command-line-args*)))
       (System/exit 1))))
