@@ -438,6 +438,19 @@ native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, 
     ),
     !.
 native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    typr_if_then_goal(Goal, IfGoal, ThenGoal),
+    native_typr_if_then_output_expr(
+        IfGoal,
+        ThenGoal,
+        VarMap0,
+        PredName,
+        VarMap,
+        FinalExpr,
+        OutputExpr,
+        IntroKind
+    ),
+    !.
+native_typr_output_expr(Goal, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     typr_disjunction_alternatives(Goal, Alternatives),
     native_typr_disjunction_output_expr(Alternatives, VarMap0, PredName, VarMap, FinalExpr, OutputExpr, IntroKind),
     !.
@@ -484,6 +497,10 @@ typr_if_then_else_goal((IfGoal -> ThenGoal ; ElseGoal), IfGoal, ThenGoal, ElseGo
     !.
 typr_if_then_else_goal(;(->(IfGoal, ThenGoal), ElseGoal), IfGoal, ThenGoal, ElseGoal) :-
     !.
+typr_if_then_goal((IfGoal -> ThenGoal), IfGoal, ThenGoal) :-
+    !.
+typr_if_then_goal(->(IfGoal, ThenGoal), IfGoal, ThenGoal) :-
+    !.
 
 native_typr_if_then_else_output_expr(
     IfGoal,
@@ -503,6 +520,26 @@ native_typr_if_then_else_output_expr(
     native_typr_local_goal_sequence(ElseGoal, VarMap0, PredName, ElseCode, _ElseVarMap),
     branches_to_typr_output_if_chain(
         [branch(IfCondition, ThenCode), branch('TRUE', ElseCode)],
+        PredName,
+        OutputExpr
+    ).
+
+native_typr_if_then_output_expr(
+    IfGoal,
+    ThenGoal,
+    VarMap0,
+    PredName,
+    VarMap,
+    FinalExpr,
+    OutputExpr,
+    IntroKind
+) :-
+    native_typr_if_condition(IfGoal, VarMap0, IfCondition),
+    typr_if_then_output_var(ThenGoal, VarMap0, OutputVar),
+    ensure_typr_var(VarMap0, OutputVar, FinalExpr, VarMap, IntroKind),
+    native_typr_local_goal_sequence(ThenGoal, VarMap0, PredName, ThenCode, _ThenVarMap),
+    branches_to_typr_output_if_chain(
+        [branch(IfCondition, ThenCode)],
         PredName,
         OutputExpr
     ).
@@ -531,6 +568,18 @@ native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputL
     ),
     !.
 native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr) :-
+    typr_if_then_goal(Goal, IfGoal, ThenGoal),
+    native_typr_if_then_multi_result_output_goal(
+        IfGoal,
+        ThenGoal,
+        VarMap0,
+        PredName,
+        VarMapOut,
+        OutputLines,
+        FinalExpr
+    ),
+    !.
+native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputLines, FinalExpr) :-
     typr_disjunction_alternatives(Goal, Alternatives),
     Alternatives = [_|[_|_]],
     typr_disjunction_shared_output_vars(Alternatives, VarMap0, SharedVars),
@@ -541,6 +590,35 @@ native_typr_multi_result_output_goal(Goal, VarMap0, PredName, VarMapOut, OutputL
     remove_var_mapping(ContainerToken, VarMap2, VarMapOut),
     maplist(native_typr_multi_result_branch(VarMap0, PredName, SharedVars), Alternatives, Branches),
     branches_to_typr_output_if_chain(Branches, PredName, ContainerExpr),
+    typr_assignment_line(new, ContainerName, ContainerExpr, ContainerLine),
+    build_typr_extraction_lines(ContainerName, SharedNamePairs, ExtractionLines),
+    append([ContainerLine], ExtractionLines, OutputLines),
+    last(SharedNamePairs, _-FinalExpr).
+
+native_typr_if_then_multi_result_output_goal(
+    IfGoal,
+    ThenGoal,
+    VarMap0,
+    PredName,
+    VarMapOut,
+    OutputLines,
+    FinalExpr
+) :-
+    native_typr_if_condition(IfGoal, VarMap0, IfCondition),
+    typr_if_then_output_vars(ThenGoal, VarMap0, OutputVars),
+    length(OutputVars, OutputCount),
+    OutputCount > 1,
+    reserve_typr_internal_var(VarMap0, ContainerToken, ContainerName, VarMap1, new),
+    ensure_typr_vars(OutputVars, VarMap1, SharedNamePairs, VarMap2),
+    remove_var_mapping(ContainerToken, VarMap2, VarMapOut),
+    native_typr_local_goal_sequence(ThenGoal, VarMap0, PredName, ThenCode0, ThenVarMap),
+    shared_output_list_expr(OutputVars, ThenVarMap, ThenListExpr),
+    replace_final_expression(ThenCode0, ThenListExpr, ThenCode),
+    branches_to_typr_output_if_chain(
+        [branch(IfCondition, ThenCode)],
+        PredName,
+        ContainerExpr
+    ),
     typr_assignment_line(new, ContainerName, ContainerExpr, ContainerLine),
     build_typr_extraction_lines(ContainerName, SharedNamePairs, ExtractionLines),
     append([ContainerLine], ExtractionLines, OutputLines),
@@ -592,6 +670,11 @@ typr_if_then_else_shared_output_var(ThenGoal, ElseGoal, VarMap, SharedVar) :-
     typr_alternative_output_var(ElseGoal, ElseVar),
     ElseVar == SharedVar.
 
+typr_if_then_output_var(ThenGoal, VarMap, OutputVar) :-
+    typr_alternative_output_var(ThenGoal, OutputVar),
+    var(OutputVar),
+    typr_disjunction_output_var_allowed(VarMap, OutputVar).
+
 typr_disjunction_shared_output_vars([Alternative|Rest], VarMap, SharedVars) :-
     typr_alternative_output_vars(Alternative, FirstOutputVars0),
     exclude_varmap_vars(VarMap, FirstOutputVars0, FirstOutputVars),
@@ -603,6 +686,11 @@ typr_if_then_else_shared_output_vars(ThenGoal, ElseGoal, VarMap, SharedVars) :-
     exclude_varmap_vars(VarMap, ThenOutputVars0, ThenOutputVars),
     intersect_output_vars(ElseGoal, ThenOutputVars, SharedVars),
     SharedVars \= [].
+
+typr_if_then_output_vars(ThenGoal, VarMap, OutputVars) :-
+    typr_alternative_output_vars(ThenGoal, ThenOutputVars0),
+    exclude_varmap_vars(VarMap, ThenOutputVars0, OutputVars),
+    OutputVars \= [].
 
 typr_disjunction_output_var_allowed(VarMap, SharedVar) :-
     \+ varmap_contains_var(VarMap, SharedVar),
@@ -643,6 +731,10 @@ typr_goal_output_vars(Goal, OutputVars) :-
     typr_if_then_else_goal_output_vars(ThenGoal, ElseGoal, OutputVars),
     !.
 typr_goal_output_vars(Goal, OutputVars) :-
+    typr_if_then_goal(Goal, _IfGoal, ThenGoal),
+    typr_if_then_goal_output_vars(ThenGoal, OutputVars),
+    !.
+typr_goal_output_vars(Goal, OutputVars) :-
     typr_disjunction_alternatives(Goal, Alternatives),
     Alternatives = [_|[_|_]],
     typr_disjunction_goal_output_vars(Alternatives, OutputVars),
@@ -667,6 +759,10 @@ typr_disjunction_goal_output_vars([Alternative|Rest], OutputVars) :-
 typr_if_then_else_goal_output_vars(ThenGoal, ElseGoal, OutputVars) :-
     typr_alternative_output_vars(ThenGoal, ThenOutputVars),
     intersect_output_vars(ElseGoal, ThenOutputVars, OutputVars),
+    OutputVars \= [].
+
+typr_if_then_goal_output_vars(ThenGoal, OutputVars) :-
+    typr_alternative_output_vars(ThenGoal, OutputVars),
     OutputVars \= [].
 
 typr_goal_output_var_simple(_Module:Goal, OutputVar) :-

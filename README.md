@@ -221,6 +221,9 @@ includes:
 - Prolog `if -> then ; else` chains where the branches bind either the same
   later intermediate, the final output directly, or the same later result set
   before later native steps continue from the selected values
+- Prolog `if -> then` chains where the `then` branch binds either a later
+  intermediate, the final output directly, or the later result set needed by
+  subsequent native steps
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively

@@ -47,6 +47,9 @@ This document focuses on architecture and rollout choices specific to TypR.
    - Prolog `if -> then ; else` chains where the branches bind either the
      same later intermediate, the final output directly, or the same later
      result set before later native steps continue from the selected values
+   - Prolog `if -> then` chains where the then branch binds either a later
+     intermediate, the final output directly, or the later result set needed
+     by subsequent native steps
    - multiple sequential branch/rejoin segments in the same native body,
      including repeated multi-result rejoin chains that feed later native
      steps after each rejoin
@@ -305,12 +308,14 @@ Current implementation note:
   intermediates before binding the same later variables, Prolog
   `if -> then ; else` chains where the branches bind either the same later
   intermediate, the final output directly, or the same later result set,
-  multiple sequential branch/rejoin segments in the same body including
-  repeated multi-result rejoin chains, asymmetric partial-rejoin chains where
-  an earlier rejoin preserves only part of the later state before later
-  native steps expand it, two-level nested guarded alternatives inside
-  supported semicolon branches where each nested branch still selects the
-  same later result set,
+  Prolog `if -> then` chains where the then branch binds either a later
+  intermediate, the final output directly, or the later result set needed by
+  subsequent native steps, multiple sequential branch/rejoin segments in the
+  same body including repeated multi-result rejoin chains, asymmetric
+  partial-rejoin chains where an earlier rejoin preserves only part of the
+  later state before later native steps expand it, two-level nested guarded
+  alternatives inside supported semicolon branches where each nested branch
+  still selects the same later result set,
   native literal-headed branch bodies built from those chains,
   dataframe helper calls, and literal-guarded branch selection; more complex
   bodies still fall back to wrapped R
