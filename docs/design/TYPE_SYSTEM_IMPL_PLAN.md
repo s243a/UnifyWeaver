@@ -187,6 +187,9 @@ bring-up.
   - accumulator-style tail-recursive predicates lowered to TypR-valid
     functions with raw-expression loop bodies for the currently supported
     tail-recursion shape
+  - conservative arity-2 numeric linear-recursive predicates lowered to
+    TypR-valid functions with raw-expression fold/loop bodies for the
+    currently supported single-base linear-recursion shape
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections
