@@ -72,7 +72,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 26 |
+| `shared_logic/3` facts | 30 |
 | `logic_slot/3` facts | ~75 (20 python + 20 rust + ~35 elixir) |
 | `expand_expr/3` facts | ~50 (14 python + 14 rust + ~22 elixir) |
 | `resolve_type/3` facts | 36 (12 python + 12 rust + 12 elixir incl. `optional/1`, `owned_string`) |
@@ -519,7 +519,7 @@ resolve_type(rust, optional(T), S) :-
     format(atom(S), "Option<~w>", [Inner]).
 ```
 
-**26 shared methods** across 7 modules (compiled for Python, Rust, and Elixir):
+**30 shared methods** across 9 modules (compiled for Python, Rust, and Elixir):
 
 | Module | Methods | Slots Used |
 |--------|---------|------------|
@@ -530,10 +530,12 @@ resolve_type(rust, optional(T), S) :-
 | `output_parser` | `extract_json_dispatch` | `assign`, `call_method`, `not_empty` |
 | `context` | `estimate_tokens`, `context_clear`, `context_len`, `context_is_empty`, `context_add`, `context_last_message` | `self_method`, `self_direct`, `len_of`, `is_empty_check`, `int_div`, `self_list_append`, `list_last`, `none_val` |
 | `mcp` | `next_request_id` | `self_inc`, `self_direct` |
+| `sessions` | `session_path`, `session_exists` | `path_join`, `path_exists`, `format_str` |
+| `tools` | `is_tool_destructive`, `is_tool_safe` | `matches_str_set`, `eq_str` |
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**All 26 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, and Elixir targets:
+**All 30 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, and Elixir targets:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
@@ -854,6 +856,12 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Token budget / rate limiting | Y | Y | Complete (CostTracker.is_over_budget, interactive prompt) |
 | Streaming token counting | Y | Y | Complete (StreamingTokenCounter class/struct, live char/token count during streaming, summary after completion) |
 | Integration tests (cargo test) | N | Y (139 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter) |
+
+## Future Work (Elixir Target)
+
+- **DynamicSupervisor / Registry** — Replace static supervision tree with DynamicSupervisor for on-demand GenServer spawning and Registry for named process lookup (more production-ready OTP patterns)
+- **Phoenix / Plug integration** — Generate a basic HTTP API or LiveView dashboard from existing tool_spec/slash_command/agent_backend facts, exposing agent operations over HTTP
+- **Telemetry / Logger** — Emit `:telemetry` events from GenServer callbacks and generate `Logger` calls from `audit_logging` security profile fields, enabling observability without code changes
 
 ## License
 

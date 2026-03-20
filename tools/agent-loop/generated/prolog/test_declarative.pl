@@ -457,6 +457,22 @@ test_decl_shared_logic :-
     decl_assert_true('shared_logic(total_tokens) compiles for python', agent_loop_module:compile_logic(python, total_tokens, _)),
     decl_assert_true('shared_logic(total_tokens) compiles for rust', agent_loop_module:compile_logic(rust, total_tokens, _)),
     decl_assert_true('shared_logic(total_tokens) compiles for elixir', agent_loop_module:compile_logic(elixir, total_tokens, _)),
+    decl_assert_true('shared_logic(session_path) exists', agent_loop_module:shared_logic(_, session_path, _)),
+    decl_assert_true('shared_logic(session_path) compiles for python', agent_loop_module:compile_logic(python, session_path, _)),
+    decl_assert_true('shared_logic(session_path) compiles for rust', agent_loop_module:compile_logic(rust, session_path, _)),
+    decl_assert_true('shared_logic(session_path) compiles for elixir', agent_loop_module:compile_logic(elixir, session_path, _)),
+    decl_assert_true('shared_logic(session_exists) exists', agent_loop_module:shared_logic(_, session_exists, _)),
+    decl_assert_true('shared_logic(session_exists) compiles for python', agent_loop_module:compile_logic(python, session_exists, _)),
+    decl_assert_true('shared_logic(session_exists) compiles for rust', agent_loop_module:compile_logic(rust, session_exists, _)),
+    decl_assert_true('shared_logic(session_exists) compiles for elixir', agent_loop_module:compile_logic(elixir, session_exists, _)),
+    decl_assert_true('shared_logic(is_tool_destructive) exists', agent_loop_module:shared_logic(_, is_tool_destructive, _)),
+    decl_assert_true('shared_logic(is_tool_destructive) compiles for python', agent_loop_module:compile_logic(python, is_tool_destructive, _)),
+    decl_assert_true('shared_logic(is_tool_destructive) compiles for rust', agent_loop_module:compile_logic(rust, is_tool_destructive, _)),
+    decl_assert_true('shared_logic(is_tool_destructive) compiles for elixir', agent_loop_module:compile_logic(elixir, is_tool_destructive, _)),
+    decl_assert_true('shared_logic(is_tool_safe) exists', agent_loop_module:shared_logic(_, is_tool_safe, _)),
+    decl_assert_true('shared_logic(is_tool_safe) compiles for python', agent_loop_module:compile_logic(python, is_tool_safe, _)),
+    decl_assert_true('shared_logic(is_tool_safe) compiles for rust', agent_loop_module:compile_logic(rust, is_tool_safe, _)),
+    decl_assert_true('shared_logic(is_tool_safe) compiles for elixir', agent_loop_module:compile_logic(elixir, is_tool_safe, _)),
     true.
 
 %% =============================================================================
