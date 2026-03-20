@@ -425,6 +425,22 @@ test_decl_shared_logic :-
     decl_assert_true('shared_logic(extract_json_dispatch) compiles for python', agent_loop_module:compile_logic(python, extract_json_dispatch, _)),
     decl_assert_true('shared_logic(extract_json_dispatch) compiles for rust', agent_loop_module:compile_logic(rust, extract_json_dispatch, _)),
     decl_assert_true('shared_logic(extract_json_dispatch) compiles for elixir', agent_loop_module:compile_logic(elixir, extract_json_dispatch, _)),
+    decl_assert_true('shared_logic(record_usage) exists', agent_loop_module:shared_logic(_, record_usage, _)),
+    decl_assert_true('shared_logic(record_usage) compiles for python', agent_loop_module:compile_logic(python, record_usage, _)),
+    decl_assert_true('shared_logic(record_usage) compiles for rust', agent_loop_module:compile_logic(rust, record_usage, _)),
+    decl_assert_true('shared_logic(record_usage) compiles for elixir', agent_loop_module:compile_logic(elixir, record_usage, _)),
+    decl_assert_true('shared_logic(cache_get) exists', agent_loop_module:shared_logic(_, cache_get, _)),
+    decl_assert_true('shared_logic(cache_get) compiles for python', agent_loop_module:compile_logic(python, cache_get, _)),
+    decl_assert_true('shared_logic(cache_get) compiles for rust', agent_loop_module:compile_logic(rust, cache_get, _)),
+    decl_assert_true('shared_logic(cache_get) compiles for elixir', agent_loop_module:compile_logic(elixir, cache_get, _)),
+    decl_assert_true('shared_logic(cache_put) exists', agent_loop_module:shared_logic(_, cache_put, _)),
+    decl_assert_true('shared_logic(cache_put) compiles for python', agent_loop_module:compile_logic(python, cache_put, _)),
+    decl_assert_true('shared_logic(cache_put) compiles for rust', agent_loop_module:compile_logic(rust, cache_put, _)),
+    decl_assert_true('shared_logic(cache_put) compiles for elixir', agent_loop_module:compile_logic(elixir, cache_put, _)),
+    decl_assert_true('shared_logic(context_add) exists', agent_loop_module:shared_logic(_, context_add, _)),
+    decl_assert_true('shared_logic(context_add) compiles for python', agent_loop_module:compile_logic(python, context_add, _)),
+    decl_assert_true('shared_logic(context_add) compiles for rust', agent_loop_module:compile_logic(rust, context_add, _)),
+    decl_assert_true('shared_logic(context_add) compiles for elixir', agent_loop_module:compile_logic(elixir, context_add, _)),
     true.
 
 %% =============================================================================

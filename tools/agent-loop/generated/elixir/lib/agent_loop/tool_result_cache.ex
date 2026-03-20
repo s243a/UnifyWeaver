@@ -44,4 +44,16 @@ defmodule AgentLoop.ToolResultCache do
     MapSet.member?(state.skip_tools, tool_name)
   end
 
+  @doc "Look up a cached result by key. Returns nil if not found."
+  @spec get(t(), String.t()) :: String.t() | nil
+  def get(%__MODULE__{} = state, key) do
+    Map.get(state.cache, key)
+  end
+
+  @doc "Store a result in the cache."
+  @spec put(t(), String.t(), String.t()) :: t()
+  def put(%__MODULE__{} = state, key, value) do
+    %{state | cache: Map.put(state.cache, key, value)}
+  end
+
 end

@@ -12,10 +12,16 @@ defmodule AgentLoop.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger]]
+    [
+      extra_applications: [:logger],
+      mod: {AgentLoop.Application, []}
+    ]
   end
 
   defp deps do
-    [{:jason, "~> 1.4"}]
+    [
+      {:jason, "~> 1.4"},
+      {:toml, "~> 0.7"}
+    ]
   end
 end

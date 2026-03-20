@@ -58,4 +58,10 @@ defmodule AgentLoop.ContextManager do
     Enum.empty?(state.messages)
   end
 
+  @doc "Append a message to the context history."
+  @spec add_message(t(), map()) :: t()
+  def add_message(%__MODULE__{} = state, message) do
+    %{state | messages: state.messages ++ [message]}
+  end
+
 end
