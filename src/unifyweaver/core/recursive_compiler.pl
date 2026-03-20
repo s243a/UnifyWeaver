@@ -26,7 +26,7 @@
 :- use_module('../targets/clojure_target', [compile_predicate_to_clojure/3]).
 :- use_module('../targets/jython_target', [compile_predicate_to_jython/3]).
 :- use_module('../targets/elixir_target', [compile_predicate_to_elixir/3]).
-:- use_module('../targets/typr_target', [compile_predicate_to_typr/3]).
+:- use_module('../targets/typr_target', [compile_predicate_to_typr/3, compile_recursive_predicate_to_typr/3]).
 :- use_module('../targets/r_target', []).        % registers multifile tail/linear patterns for R
 :- use_module('../targets/c_target', []).        % registers multifile tail/linear patterns for C
 :- use_module('../targets/haskell_target', []).  % registers multifile tail/linear patterns for Haskell
@@ -177,6 +177,8 @@ compile_advanced(elixir, Pred/Arity, FinalOptions, GeneratedCode) :-
     elixir_target:compile_predicate_to_elixir(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
 compile_advanced(r, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(r)|FinalOptions], GeneratedCode).
+compile_advanced(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
+    compile_recursive_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_advanced(python, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(python)|FinalOptions], GeneratedCode).
 compile_advanced(go, Pred/Arity, _FinalOptions, _GeneratedCode) :-

@@ -358,6 +358,10 @@ Current TypR lowering policy is intentionally mixed:
   contributes guard-only control flow for later native steps or binds a later
   intermediate, the final output directly, or the later result set needed by
   subsequent native steps
+- accumulator-style tail-recursive predicates may also lower to TypR-valid
+  functions when they match the conservative tail-recursion shape currently
+  supported by the shared recursion compiler, using raw-expression loop bodies
+  inside TypR rather than relabeled standalone R output
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select

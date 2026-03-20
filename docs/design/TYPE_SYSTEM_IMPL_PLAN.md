@@ -184,6 +184,9 @@ bring-up.
     guard-only control flow for later native steps or binds a later
     intermediate, the final output directly, or the later result set needed
     by subsequent native steps
+  - accumulator-style tail-recursive predicates lowered to TypR-valid
+    functions with raw-expression loop bodies for the currently supported
+    tail-recursion shape
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections
