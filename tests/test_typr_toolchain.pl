@@ -273,6 +273,64 @@ test(multistate_nary_list_linear_recursive_output_checks_with_typr, [condition(t
     ),
     retractall(user:count_weighted(_, _, _)).
 
+test(asymmetric_nary_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:asym_rec_a(_Base, 0, 1)),
+    assertz(user:(asym_rec_a(Base, N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        asym_rec_a(Base, N1, Prev),
+        ( Base > 1 ->
+            Step is Base * Prev,
+            Result is Step + 1
+        ;   Temp is Prev + 2,
+            Result is Temp + Prev
+        )
+    )),
+    assertz(type_declarations:uw_type(asym_rec_a/3, 1, integer)),
+    assertz(type_declarations:uw_type(asym_rec_a/3, 2, integer)),
+    assertz(type_declarations:uw_type(asym_rec_a/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(asym_rec_a/3, integer)),
+    once(recursive_compiler:compile_recursive(asym_rec_a/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:asym_rec_a(_, _, _)).
+
+test(asymmetric_nary_list_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:asym_rec_c(_, [], 0)),
+    assertz(user:(asym_rec_c(X, [Y|T], N) :-
+        asym_rec_c(X, T, N1),
+        ( X == Y ->
+            Delta is N1 + 1,
+            N is Delta + 1
+        ;   Extra is N1 + 2,
+            N is Extra + N1
+        )
+    )),
+    assertz(type_declarations:uw_type(asym_rec_c/3, 1, integer)),
+    assertz(type_declarations:uw_type(asym_rec_c/3, 2, list(integer))),
+    assertz(type_declarations:uw_type(asym_rec_c/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(asym_rec_c/3, integer)),
+    once(recursive_compiler:compile_recursive(asym_rec_c/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:asym_rec_c(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-
