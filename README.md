@@ -233,6 +233,9 @@ includes:
 - conservative arity-2 numeric linear-recursive predicates such as
   `factorial_linear/2`, lowered to TypR functions that use raw-expression
   fold/loop bodies instead of wrapped-R fallback
+- conservative arity-2 list linear-recursive predicates such as
+  `list_length/2`, lowered to TypR functions that use raw-expression
+  fold/loop bodies instead of wrapped-R fallback
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively

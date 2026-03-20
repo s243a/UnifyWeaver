@@ -60,6 +60,9 @@ This document focuses on architecture and rollout choices specific to TypR.
    - conservative arity-2 numeric linear-recursive predicates that match the
      currently supported single-base fold shape, emitted as TypR functions
      with raw-expression fold/loop bodies
+   - conservative arity-2 list linear-recursive predicates that match the
+     currently supported empty-list fold shape, emitted as TypR functions
+     with raw-expression fold/loop bodies
    - multiple sequential branch/rejoin segments in the same native body,
      including repeated multi-result rejoin chains that feed later native
      steps after each rejoin
@@ -332,6 +335,8 @@ Current implementation note:
   still selects the same later result set, accumulator-style tail-recursive
   predicates compiled to raw-expression loop bodies inside TypR functions,
   conservative arity-2 numeric linear-recursive predicates compiled to
+  raw-expression fold/loop bodies inside TypR functions,
+  conservative arity-2 list linear-recursive predicates compiled to
   raw-expression fold/loop bodies inside TypR functions,
   native literal-headed branch bodies built from those chains,
   dataframe helper calls, and literal-guarded branch selection; more complex
