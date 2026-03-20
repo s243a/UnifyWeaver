@@ -362,14 +362,16 @@ Current TypR lowering policy is intentionally mixed:
   functions when they match the conservative tail-recursion shape currently
   supported by the shared recursion compiler, using raw-expression loop bodies
   inside TypR rather than relabeled standalone R output
-- conservative arity-2 numeric linear-recursive predicates may also lower to
-  TypR-valid functions when they match the currently supported single-base,
-  single-recursive-clause fold shape, using raw-expression fold/loop bodies
+- conservative single-recursive-call numeric linear-recursive predicates may
+  also lower to TypR-valid functions when they match the currently supported
+  single-base, single-recursive-clause fold shape with one recursion-driving
+  argument and invariant context args, using raw-expression fold/loop bodies
   inside TypR rather than wrapped-R fallback
-- conservative arity-2 list linear-recursive predicates may also lower to
-  TypR-valid functions when they match the currently supported empty-list
-  base-case fold shape, using raw-expression fold/loop bodies inside TypR
-  rather than wrapped-R fallback
+- conservative single-recursive-call list linear-recursive predicates may
+  also lower to TypR-valid functions when they match the currently supported
+  empty-list base-case fold shape with one recursion-driving list argument
+  and invariant context args, using raw-expression fold/loop bodies inside
+  TypR rather than wrapped-R fallback
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select

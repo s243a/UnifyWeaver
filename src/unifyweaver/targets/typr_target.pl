@@ -96,9 +96,8 @@ single_linear_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause)
     RecClauses = [RecClause].
 
 compile_typr_linear_recursive_numeric(_Module:Pred/Arity, TypedMode, Clauses, Code) :-
-    Arity =:= 2,
     single_linear_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause),
-    linear_recursive_numeric_spec(Pred, BaseClause, RecClause, LoopSpec),
+    linear_recursive_numeric_spec(Pred, Arity, BaseClause, RecClause, LoopSpec),
     build_typed_arg_list(Pred/Arity, none, Arity, TypedMode, TypedArgList),
     generic_typr_return_type(Pred/Arity, Clauses, ReturnType),
     build_typr_linear_recursive_body(Pred, LoopSpec, Body),
@@ -114,9 +113,8 @@ let ~w <- fn(~w): ~w {
 ', [PredStr, Arity, PredStr, TypedArgList, ReturnType, IndentedBody]).
 
 compile_typr_linear_recursive_list(_Module:Pred/Arity, TypedMode, Clauses, Code) :-
-    Arity =:= 2,
     single_linear_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause),
-    linear_recursive_list_spec(Pred, BaseClause, RecClause, LoopSpec),
+    linear_recursive_list_spec(Pred, Arity, BaseClause, RecClause, LoopSpec),
     build_typed_arg_list(Pred/Arity, none, Arity, TypedMode, TypedArgList),
     generic_typr_return_type(Pred/Arity, Clauses, ReturnType),
     build_typr_linear_recursive_list_body(LoopSpec, Body),
@@ -133,64 +131,204 @@ let ~w <- fn(~w): ~w {
 
 linear_recursive_numeric_spec(
     Pred,
+    Arity,
     BaseHead-BaseBody,
     RecHead-RecBody,
     linear_loop_spec{
         base_input_literal: BaseInputLiteral,
-        base_output_literal: BaseOutputLiteral,
+        base_output_expr: BaseOutputExpr,
         recursive_guard_expr: RecursiveGuardExpr,
         seq_expr: SeqExpr,
-        fold_expr: FoldExpr
+        fold_expr: FoldExpr,
+        input_arg_name: InputArgName,
+        output_arg_name: OutputArgName,
+        result_name: ResultName
     }
 ) :-
     BaseBody == true,
-    BaseHead =.. [_BasePredName, BaseInput, BaseOutput],
-    number(BaseInput),
-    number(BaseOutput),
-    RecHead =.. [_RecPredName, InputVar, OutputVar],
-    var(InputVar),
-    var(OutputVar),
+    BaseHead =.. [_BasePredName|BaseArgs],
+    RecHead =.. [_RecPredName|RecHeadArgs],
     split_body_at_recursive_call(RecBody, Pred, PreGoals, RecCall, PostGoals),
-    RecCall =.. [_PredName, _NextInput, RecResultVar],
+    RecCall =.. [_PredName|RecCallArgs],
+    linear_recursive_arg_spec(
+        Arity,
+        BaseArgs,
+        RecHeadArgs,
+        RecCallArgs,
+        BaseOutput,
+        OutputVar,
+        RecResultVar,
+        DriverPos,
+        BaseInput,
+        InputVar,
+        _RecInputArg,
+        BaseInvariantVarMap,
+        RecInvariantVarMap,
+        InputArgName,
+        OutputArgName,
+        ResultName
+    ),
+    number(BaseInput),
+    var(InputVar),
     normalize_typr_goals(PostGoals, [OutputVar is FoldTerm]),
-    extract_step_info([clause(RecHead, RecBody)], InputVar, Step, Direction),
-    linear_recursive_guard_expr(PreGoals, InputVar, RecursiveGuardExpr),
-    typr_translate_r_expr(FoldTerm, [InputVar-"current", RecResultVar-"acc"], FoldExpr),
+    extract_typr_linear_step_info(RecBody, DriverPos, RecCallArgs, InputVar, Step, Direction),
+    append([InputVar-"current", RecResultVar-"acc"], RecInvariantVarMap, FoldVarMap),
+    append([InputVar-"current_input"], RecInvariantVarMap, GuardVarMap),
+    linear_recursive_guard_expr(PreGoals, GuardVarMap, RecursiveGuardExpr),
+    typr_translate_r_expr(FoldTerm, FoldVarMap, FoldExpr),
+    typr_translate_r_expr(BaseOutput, BaseInvariantVarMap, BaseOutputExpr),
     r_literal(BaseInput, BaseInputLiteral),
-    r_literal(BaseOutput, BaseOutputLiteral),
     typr_linear_seq_expr(BaseInput, Step, Direction, SeqExpr).
 
 linear_recursive_list_spec(
     Pred,
+    Arity,
     BaseHead-BaseBody,
     RecHead-RecBody,
     list_loop_spec{
-        base_output_literal: BaseOutputLiteral,
-        fold_expr: FoldExpr
+        base_output_expr: BaseOutputExpr,
+        fold_expr: FoldExpr,
+        input_arg_name: InputArgName,
+        output_arg_name: OutputArgName,
+        result_name: ResultName
     }
 ) :-
     BaseBody == true,
-    BaseHead =.. [_BasePredName, BaseInput, BaseOutput],
+    BaseHead =.. [_BasePredName|BaseArgs],
+    RecHead =.. [_RecPredName|RecHeadArgs],
+    split_body_at_recursive_call(RecBody, Pred, PreGoals, RecCall, PostGoals),
+    RecCall =.. [_PredName|RecCallArgs],
+    linear_recursive_arg_spec(
+        Arity,
+        BaseArgs,
+        RecHeadArgs,
+        RecCallArgs,
+        BaseOutput,
+        OutputVar,
+        RecResultVar,
+        _DriverPos,
+        BaseInput,
+        InputPattern,
+        RecInputArg,
+        BaseInvariantVarMap,
+        RecInvariantVarMap,
+        InputArgName,
+        OutputArgName,
+        ResultName
+    ),
     BaseInput == [],
-    number(BaseOutput),
-    RecHead =.. [_RecPredName, InputPattern, OutputVar],
     InputPattern = [HeadVar|TailVar],
     var(TailVar),
-    var(OutputVar),
-    split_body_at_recursive_call(RecBody, Pred, PreGoals, RecCall, PostGoals),
     PreGoals == true,
-    RecCall =.. [_PredName, RecInputArg, RecResultVar],
     RecInputArg == TailVar,
     normalize_typr_goals(PostGoals, [OutputVar is FoldTerm]),
-    typr_translate_r_expr(FoldTerm, [HeadVar-"current", RecResultVar-"acc"], FoldExpr),
-    r_literal(BaseOutput, BaseOutputLiteral).
+    append([HeadVar-"current", RecResultVar-"acc"], RecInvariantVarMap, FoldVarMap),
+    typr_translate_r_expr(FoldTerm, FoldVarMap, FoldExpr),
+    typr_translate_r_expr(BaseOutput, BaseInvariantVarMap, BaseOutputExpr).
 
-linear_recursive_guard_expr(true, _InputVar, 'TRUE') :-
+linear_recursive_arg_spec(
+    Arity,
+    BaseArgs,
+    RecHeadArgs,
+    RecCallArgs,
+    BaseOutput,
+    OutputVar,
+    RecResultVar,
+    DriverPos,
+    BaseInput,
+    DriverHeadArg,
+    DriverRecArg,
+    BaseInvariantVarMap,
+    RecInvariantVarMap,
+    InputArgName,
+    OutputArgName,
+    ResultName
+) :-
+    Arity >= 2,
+    OutputPos is Arity,
+    nth1(OutputPos, BaseArgs, BaseOutput),
+    nth1(OutputPos, RecHeadArgs, OutputVar),
+    var(OutputVar),
+    nth1(OutputPos, RecCallArgs, RecResultVar),
+    var(RecResultVar),
+    single_linear_recursive_driver_pos(Arity, RecHeadArgs, RecCallArgs, DriverPos),
+    nth1(DriverPos, BaseArgs, BaseInput),
+    nth1(DriverPos, RecHeadArgs, DriverHeadArg),
+    nth1(DriverPos, RecCallArgs, DriverRecArg),
+    linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
+    base_linear_invariants_ok(BaseArgs, RecHeadArgs, InvariantPositions),
+    build_linear_recursive_varmap(BaseArgs, InvariantPositions, BaseInvariantVarMap),
+    build_linear_recursive_varmap(RecHeadArgs, InvariantPositions, RecInvariantVarMap),
+    format(string(InputArgName), 'arg~w', [DriverPos]),
+    format(string(OutputArgName), 'arg~w', [OutputPos]),
+    linear_recursive_result_name(Arity, ResultName).
+
+single_linear_recursive_driver_pos(Arity, RecHeadArgs, RecCallArgs, DriverPos) :-
+    InputLast is Arity - 1,
+    findall(Pos, (
+        between(1, InputLast, Pos),
+        linear_recursive_changed_arg(RecHeadArgs, RecCallArgs, Pos)
+    ), DriverPositions),
+    DriverPositions = [DriverPos].
+
+linear_recursive_changed_arg(HeadArgs, CallArgs, Pos) :-
+    nth1(Pos, HeadArgs, HeadArg),
+    nth1(Pos, CallArgs, CallArg),
+    \+ linear_recursive_same_arg(HeadArg, CallArg).
+
+linear_recursive_same_arg(Left, Right) :-
+    Left == Right,
     !.
-linear_recursive_guard_expr(PreGoals, InputVar, GuardExpr) :-
+linear_recursive_same_arg(Left, Right) :-
+    nonvar(Left),
+    nonvar(Right),
+    Left =@= Right.
+
+linear_recursive_invariant_positions(Arity, DriverPos, Positions) :-
+    InputLast is Arity - 1,
+    findall(Pos, (
+        between(1, InputLast, Pos),
+        Pos =\= DriverPos
+    ), Positions).
+
+base_linear_invariants_ok(_BaseArgs, _RecHeadArgs, []).
+base_linear_invariants_ok(BaseArgs, RecHeadArgs, [Pos|Rest]) :-
+    nth1(Pos, BaseArgs, BaseArg),
+    nth1(Pos, RecHeadArgs, RecArg),
+    linear_recursive_base_invariant_ok(BaseArg, RecArg),
+    base_linear_invariants_ok(BaseArgs, RecHeadArgs, Rest).
+
+linear_recursive_base_invariant_ok(BaseArg, _RecArg) :-
+    var(BaseArg),
+    !.
+linear_recursive_base_invariant_ok(BaseArg, RecArg) :-
+    nonvar(RecArg),
+    BaseArg =@= RecArg.
+
+build_linear_recursive_varmap(Args, Positions, VarMap) :-
+    build_linear_recursive_varmap(Args, Positions, [], RevVarMap),
+    reverse(RevVarMap, VarMap).
+
+build_linear_recursive_varmap(_Args, [], VarMap, VarMap).
+build_linear_recursive_varmap(Args, [Pos|Rest], VarMap0, VarMap) :-
+    nth1(Pos, Args, Var),
+    (   var(Var)
+    ->  format(string(ArgName), 'arg~w', [Pos]),
+        VarMap1 = [Var-ArgName|VarMap0]
+    ;   VarMap1 = VarMap0
+    ),
+    build_linear_recursive_varmap(Args, Rest, VarMap1, VarMap).
+
+linear_recursive_result_name(Arity, ResultName) :-
+    ResultIndex is Arity + 1,
+    format(string(ResultName), 'v~w', [ResultIndex]).
+
+linear_recursive_guard_expr(true, _VarMap, 'TRUE') :-
+    !.
+linear_recursive_guard_expr(PreGoals, VarMap, GuardExpr) :-
     normalize_typr_goals(PreGoals, Goals0),
     exclude(linear_recursive_step_goal, Goals0, GuardGoals),
-    maplist(linear_recursive_guard_condition([InputVar-"current_input"]), GuardGoals, GuardConditions),
+    maplist(linear_recursive_guard_condition(VarMap), GuardGoals, GuardConditions),
     combine_typr_conditions(GuardConditions, GuardExpr).
 
 linear_recursive_step_goal(Goal) :-
@@ -218,24 +356,30 @@ build_typr_linear_recursive_body(
     Pred,
     linear_loop_spec{
         base_input_literal: BaseInputLiteral,
-        base_output_literal: BaseOutputLiteral,
+        base_output_expr: BaseOutputExpr,
         recursive_guard_expr: RecursiveGuardExpr,
         seq_expr: SeqExpr,
-        fold_expr: FoldExpr
+        fold_expr: FoldExpr,
+        input_arg_name: InputArgName,
+        output_arg_name: OutputArgName,
+        result_name: ResultName
     },
     Body
 ) :-
     linear_recursive_guard_lines(RecursiveGuardExpr, Pred, GuardLines),
-    format(string(BaseLine), '        ~w', [BaseOutputLiteral]),
-    format(string(AccInitLine), '        acc = ~w;', [BaseOutputLiteral]),
+    format(string(BaseLine), '        ~w', [BaseOutputExpr]),
+    format(string(AccInitLine), '        acc = ~w;', [BaseOutputExpr]),
     format(string(LoopLine), '        for (current in ~w) {', [SeqExpr]),
     format(string(AccStepLine), '            acc = ~w;', [FoldExpr]),
     format(string(BaseCaseIfLine), '    if (identical(current_input, ~w)) {', [BaseInputLiteral]),
+    format(string(ResultIntroLine), 'let ~w <- @{', [ResultName]),
+    format(string(CurrentInputLine), '    current_input = ~w;', [InputArgName]),
+    format(string(AssignResultLine), '~w <- ~w;', [OutputArgName, ResultName]),
     atomic_list_concat(
         [
-            'let v3 <- @{',
+            ResultIntroLine,
             'local({',
-            '    current_input = arg1;',
+            CurrentInputLine,
             BaseCaseIfLine,
             BaseLine,
             '    } else {'
@@ -261,8 +405,8 @@ build_typr_linear_recursive_body(
             '    }',
             '})',
             '}@;',
-            'arg2 <- v3;',
-            'arg2'
+            AssignResultLine,
+            OutputArgName
         ],
         RawLines
     ),
@@ -270,19 +414,25 @@ build_typr_linear_recursive_body(
 
 build_typr_linear_recursive_list_body(
     list_loop_spec{
-        base_output_literal: BaseOutputLiteral,
-        fold_expr: FoldExpr
+        base_output_expr: BaseOutputExpr,
+        fold_expr: FoldExpr,
+        input_arg_name: InputArgName,
+        output_arg_name: OutputArgName,
+        result_name: ResultName
     },
     Body
 ) :-
-    format(string(BaseLine), '        ~w', [BaseOutputLiteral]),
-    format(string(AccInitLine), '        acc = ~w;', [BaseOutputLiteral]),
+    format(string(BaseLine), '        ~w', [BaseOutputExpr]),
+    format(string(AccInitLine), '        acc = ~w;', [BaseOutputExpr]),
     format(string(AccStepLine), '            acc = ~w;', [FoldExpr]),
+    format(string(ResultIntroLine), 'let ~w <- @{', [ResultName]),
+    format(string(CurrentInputLine), '    current_input = ~w;', [InputArgName]),
+    format(string(AssignResultLine), '~w <- ~w;', [OutputArgName, ResultName]),
     atomic_list_concat(
         [
-            'let v3 <- @{',
+            ResultIntroLine,
             'local({',
-            '    current_input = arg1;',
+            CurrentInputLine,
             '    if (length(current_input) == 0) {',
             BaseLine,
             '    } else {',
@@ -294,12 +444,38 @@ build_typr_linear_recursive_list_body(
             '    }',
             '})',
             '}@;',
-            'arg2 <- v3;',
-            'arg2'
+            AssignResultLine,
+            OutputArgName
         ],
         '\n',
         Body
     ).
+
+extract_typr_linear_step_info(RecBody, DriverPos, RecCallArgs, InputVar, Step, Direction) :-
+    nth1(DriverPos, RecCallArgs, RecInputVar),
+    normalize_typr_goals(RecBody, Goals),
+    member(RecInputVar is StepExpr, Goals),
+    extract_typr_linear_step_from_expr(StepExpr, InputVar, Step, Direction),
+    !.
+
+extract_typr_linear_step_from_expr(A - B, InputVar, Step, down) :-
+    A == InputVar,
+    integer(B),
+    B > 0,
+    !,
+    Step = B.
+extract_typr_linear_step_from_expr(A + B, InputVar, Step, up) :-
+    A == InputVar,
+    integer(B),
+    B > 0,
+    !,
+    Step = B.
+extract_typr_linear_step_from_expr(A + B, InputVar, Step, down) :-
+    A == InputVar,
+    integer(B),
+    B < 0,
+    !,
+    Step is abs(B).
 
 linear_recursive_guard_lines('TRUE', _Pred, []) :-
     !.
@@ -1486,8 +1662,8 @@ guard_tail_final_expression(PendingGuards, PredName, LastExpr, FinalExpr) :-
 
 typr_translate_r_expr(Var, VarMap, Resolved) :-
     var(Var),
-    lookup_typr_var(Var, VarMap, Resolved),
-    !.
+    !,
+    lookup_typr_var(Var, VarMap, Resolved).
 typr_translate_r_expr(Atom, _VarMap, Resolved) :-
     atom(Atom),
     !,

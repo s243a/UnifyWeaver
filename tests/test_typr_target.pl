@@ -48,6 +48,8 @@ cleanup_typr_test :-
     retractall(user:factorial_acc(_, _, _)),
     retractall(user:factorial_linear(_, _)),
     retractall(user:list_length(_, _)),
+    retractall(user:power(_, _, _)),
+    retractall(user:list_length_from(_, _, _)),
     retractall(user:alternative_assign_chain(_, _)),
     retractall(user:alternative_assign_clause_chain(_, _)),
     retractall(user:direct_output_choice(_, _)),
@@ -195,6 +197,48 @@ test(recursive_compiler_supports_typr_list_linear_recursion_path) :-
     once(sub_string(Code, _, _, _, "if (length(current_input) == 0)")),
     once(sub_string(Code, _, _, _, "for (current in rev(current_input))")),
     once(sub_string(Code, _, _, _, "acc = (acc + 1);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_nary_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:power(_Base, 0, 1)),
+    assertz(user:(power(Base, N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        power(Base, N1, Prev),
+        Result is Base * Prev
+    )),
+    assertz(type_declarations:uw_type(power/3, 1, integer)),
+    assertz(type_declarations:uw_type(power/3, 2, integer)),
+    assertz(type_declarations:uw_type(power/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(power/3, integer)),
+    once(recursive_compiler:compile_recursive(power/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let power <- fn(arg1: int, arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "for (current in seq(current_input, 1))")),
+    once(sub_string(Code, _, _, _, "acc = (arg1 * acc);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_nary_list_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:list_length_from(Base, [], Base)),
+    assertz(user:(list_length_from(Base, [_|T], N) :-
+        list_length_from(Base, T, N1),
+        N is N1 + 1
+    )),
+    assertz(type_declarations:uw_type(list_length_from/3, 1, integer)),
+    assertz(type_declarations:uw_type(list_length_from/3, 2, list(any))),
+    assertz(type_declarations:uw_type(list_length_from/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(list_length_from/3, integer)),
+    once(recursive_compiler:compile_recursive(list_length_from/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let list_length_from <- fn(arg1: int, arg2: [#N, Any], arg3: int): int")),
+    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "if (length(current_input) == 0)")),
+    once(sub_string(Code, _, _, _, "acc = (acc + 1);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
