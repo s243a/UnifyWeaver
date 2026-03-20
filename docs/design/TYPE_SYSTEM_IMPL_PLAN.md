@@ -187,12 +187,14 @@ bring-up.
   - accumulator-style tail-recursive predicates lowered to TypR-valid
     functions with raw-expression loop bodies for the currently supported
     tail-recursion shape
-  - conservative arity-2 numeric linear-recursive predicates lowered to
-    TypR-valid functions with raw-expression fold/loop bodies for the
-    currently supported single-base linear-recursion shape
-  - conservative arity-2 list linear-recursive predicates lowered to
-    TypR-valid functions with raw-expression fold/loop bodies for the
-    currently supported empty-list linear-recursion shape
+  - conservative single-recursive-call numeric linear-recursive predicates
+    lowered to TypR-valid functions with raw-expression fold/loop bodies for
+    the currently supported single-base shape with one recursion-driving
+    argument and invariant context args
+  - conservative single-recursive-call list linear-recursive predicates
+    lowered to TypR-valid functions with raw-expression fold/loop bodies for
+    the currently supported empty-list shape with one recursion-driving list
+    argument and invariant context args
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections
