@@ -195,6 +195,10 @@ bring-up.
     lowered to TypR-valid functions with raw-expression fold/loop bodies for
     the currently supported empty-list shape with one recursion-driving list
     argument and invariant context args
+  - guarded post-recursive result selection inside those same single-recursive-
+    call numeric and list linear-recursive shapes when the later result is
+    chosen by a supported `if -> then ; else` over TypR-translatable
+    expressions
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections

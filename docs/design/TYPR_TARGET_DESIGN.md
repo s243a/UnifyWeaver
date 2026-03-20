@@ -65,6 +65,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      that match the currently supported empty-list fold shape with one
      recursion-driving list argument and invariant context args, emitted as
      TypR functions with raw-expression fold/loop bodies
+   - guarded post-recursive result selection inside those same single-
+     recursive-call numeric and list linear-recursive shapes when the later
+     result is chosen by a supported `if -> then ; else` expression over
+     TypR-translatable branch results
    - multiple sequential branch/rejoin segments in the same native body,
      including repeated multi-result rejoin chains that feed later native
      steps after each rejoin
@@ -340,6 +344,8 @@ Current implementation note:
   compiled to raw-expression fold/loop bodies inside TypR functions,
   conservative single-recursive-call list linear-recursive predicates
   compiled to raw-expression fold/loop bodies inside TypR functions,
+  guarded post-recursive result selection inside those same single-recursive-
+  call numeric and list linear-recursive shapes,
   native literal-headed branch bodies built from those chains,
   dataframe helper calls, and literal-guarded branch selection; more complex
   bodies still fall back to wrapped R

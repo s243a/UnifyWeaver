@@ -372,6 +372,10 @@ Current TypR lowering policy is intentionally mixed:
   empty-list base-case fold shape with one recursion-driving list argument
   and invariant context args, using raw-expression fold/loop bodies inside
   TypR rather than wrapped-R fallback
+- guarded post-recursive result selection may also stay native inside those
+  same single-recursive-call numeric and list linear-recursive shapes when
+  the recursive result is recombined through a supported `if -> then ; else`
+  choice over TypR-translatable expressions
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select
