@@ -46,6 +46,7 @@ cleanup_typr_test :-
     retractall(user:if_then_else_asymmetric_rejoin(_, _)),
     retractall(user:if_then_else_asymmetric_rejoin_clause(_, _)),
     retractall(user:factorial_acc(_, _, _)),
+    retractall(user:factorial_linear(_, _)),
     retractall(user:alternative_assign_chain(_, _)),
     retractall(user:alternative_assign_clause_chain(_, _)),
     retractall(user:direct_output_choice(_, _)),
@@ -155,6 +156,26 @@ test(recursive_compiler_supports_typr_tail_recursion_path) :-
     once(sub_string(Code, _, _, _, "let factorial_acc <- fn(arg1: int, arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "while (!identical(current_input, 0))")),
     once(sub_string(Code, _, _, _, "current_acc = step_2;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:factorial_linear(0, 1)),
+    assertz(user:(factorial_linear(N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        factorial_linear(N1, Prev),
+        Result is N * Prev
+    )),
+    assertz(type_declarations:uw_type(factorial_linear/2, 1, integer)),
+    assertz(type_declarations:uw_type(factorial_linear/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(factorial_linear/2, integer)),
+    once(recursive_compiler:compile_recursive(factorial_linear/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let factorial_linear <- fn(arg1: int, arg2: int): int")),
+    once(sub_string(Code, _, _, _, "for (current in seq(current_input, 1))")),
+    once(sub_string(Code, _, _, _, "acc = (current * acc);")),
+    once(sub_string(Code, _, _, _, "stop(\"No matching recursive clause for factorial_linear\")")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

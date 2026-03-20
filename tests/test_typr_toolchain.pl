@@ -71,6 +71,30 @@ test(tail_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     ),
     retractall(user:factorial_acc(_, _, _)).
 
+test(linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:factorial_linear(0, 1)),
+    assertz(user:(factorial_linear(N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        factorial_linear(N1, Prev),
+        Result is N * Prev
+    )),
+    assertz(type_declarations:uw_type(factorial_linear/2, 1, integer)),
+    assertz(type_declarations:uw_type(factorial_linear/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(factorial_linear/2, integer)),
+    once(recursive_compiler:compile_recursive(factorial_linear/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:factorial_linear(_, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-
