@@ -238,9 +238,11 @@ includes:
   one recursion-driving list argument and invariant context args, such as
   `list_length/2` and `list_length_from/3`, lowered to TypR functions that
   use raw-expression fold/loop bodies instead of wrapped-R fallback
-- guarded post-recursive result selection in those same linear-recursive
-  shapes, such as `power_if/3` and `count_occ/3`, where the recursive result
-  is recombined through a native TypR `if` expression instead of wrapped-R
+- guarded post-recursive recombination in those same linear-recursive
+  shapes, including multi-state branch-local recombination such as
+  `power_if/3`, `count_occ/3`, `power_multistate/3`, and `count_weighted/3`,
+  where the recursive result and later selected intermediate values are
+  recombined through native TypR `if` expressions instead of wrapped-R
   fallback
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still

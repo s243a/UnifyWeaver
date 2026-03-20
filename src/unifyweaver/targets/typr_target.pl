@@ -345,10 +345,73 @@ linear_recursive_output_expr(PostGoals, OutputVar, VarMap, OutputExpr) :-
     linear_recursive_branch_output_expr(ElseGoal, OutputVar, VarMap, ElseExpr),
     native_typr_if_condition(IfGoal, VarMap, IfCondition),
     format(string(OutputExpr), 'if (~w) { ~w } else { ~w }', [IfCondition, ThenExpr, ElseExpr]).
+linear_recursive_output_expr(PostGoals, OutputVar, VarMap, OutputExpr) :-
+    normalize_typr_goals(PostGoals, Goals),
+    linear_recursive_post_goals_varmap(Goals, VarMap, ResolvedVarMap),
+    lookup_typr_var(OutputVar, ResolvedVarMap, OutputExpr).
 
 linear_recursive_branch_output_expr(Goal, OutputVar, VarMap, OutputExpr) :-
     normalize_typr_goals(Goal, [OutputVar is FoldTerm]),
     typr_translate_r_expr(FoldTerm, VarMap, OutputExpr).
+
+linear_recursive_post_goals_varmap([], VarMap, VarMap).
+linear_recursive_post_goals_varmap([Goal|Rest], VarMap0, VarMap) :-
+    linear_recursive_post_goal_varmap(Goal, VarMap0, VarMap1),
+    linear_recursive_post_goals_varmap(Rest, VarMap1, VarMap).
+
+linear_recursive_post_goal_varmap(Goal, VarMap0, VarMap) :-
+    Goal = (Var is Expr),
+    !,
+    typr_translate_r_expr(Expr, VarMap0, ResolvedExpr),
+    update_typr_expr_varmap(VarMap0, Var, ResolvedExpr, VarMap).
+linear_recursive_post_goal_varmap(Goal, VarMap0, VarMap) :-
+    typr_if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    !,
+    native_typr_if_condition(IfGoal, VarMap0, IfCondition),
+    normalize_typr_goals(ThenGoal, ThenGoals),
+    normalize_typr_goals(ElseGoal, ElseGoals),
+    linear_recursive_post_goals_varmap(ThenGoals, VarMap0, ThenVarMap),
+    linear_recursive_post_goals_varmap(ElseGoals, VarMap0, ElseVarMap),
+    varmap_changed_vars(VarMap0, ThenVarMap, ThenChangedVars0),
+    varmap_changed_vars(VarMap0, ElseVarMap, ElseChangedVars0),
+    unique_vars_by_identity(ThenChangedVars0, ThenChangedVars),
+    unique_vars_by_identity(ElseChangedVars0, ElseChangedVars),
+    include_vars_by_identity(ThenChangedVars, ElseChangedVars, SharedChangedVars),
+    SharedChangedVars \= [],
+    merge_linear_recursive_branch_vars(
+        SharedChangedVars,
+        IfCondition,
+        ThenVarMap,
+        ElseVarMap,
+        VarMap0,
+        VarMap
+    ).
+
+merge_linear_recursive_branch_vars([], _IfCondition, _ThenVarMap, _ElseVarMap, VarMap, VarMap).
+merge_linear_recursive_branch_vars([Var|Rest], IfCondition, ThenVarMap, ElseVarMap, VarMap0, VarMap) :-
+    lookup_typr_var(Var, ThenVarMap, ThenExpr),
+    lookup_typr_var(Var, ElseVarMap, ElseExpr),
+    format(string(MergedExpr), '(if (~w) { ~w } else { ~w })', [IfCondition, ThenExpr, ElseExpr]),
+    update_typr_expr_varmap(VarMap0, Var, MergedExpr, VarMap1),
+    merge_linear_recursive_branch_vars(Rest, IfCondition, ThenVarMap, ElseVarMap, VarMap1, VarMap).
+
+update_typr_expr_varmap(VarMap0, Var, Expr, [Var-Expr|FilteredVarMap]) :-
+    remove_var_mapping(Var, VarMap0, FilteredVarMap).
+
+varmap_changed_vars(VarMap0, VarMap1, ChangedVars) :-
+    varmap_changed_vars(VarMap0, VarMap1, [], RevChangedVars),
+    reverse(RevChangedVars, ChangedVars).
+
+varmap_changed_vars(_VarMap0, [], ChangedVars, ChangedVars).
+varmap_changed_vars(VarMap0, [Var-Expr1|Rest], ChangedVars0, ChangedVars) :-
+    (   lookup_typr_var(Var, VarMap0, Expr0)
+    ->  (   Expr0 \= Expr1
+        ->  ChangedVars1 = [Var|ChangedVars0]
+        ;   ChangedVars1 = ChangedVars0
+        )
+    ;   ChangedVars1 = [Var|ChangedVars0]
+    ),
+    varmap_changed_vars(VarMap0, Rest, ChangedVars1, ChangedVars).
 
 typr_linear_seq_expr(BaseInput, Step, down, SeqExpr) :-
     !,
