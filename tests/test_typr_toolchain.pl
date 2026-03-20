@@ -213,6 +213,66 @@ test(guarded_nary_list_linear_recursive_output_checks_with_typr, [condition(typr
     ),
     retractall(user:count_occ(_, _, _)).
 
+test(multistate_nary_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:power_multistate(_Base, 0, 1)),
+    assertz(user:(power_multistate(Base, N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        power_multistate(Base, N1, Prev),
+        ( Base > 1 ->
+            Step is Base * Prev,
+            Offset is Step + 1
+        ;   Step is Prev,
+            Offset is Step + 2
+        ),
+        Result is Offset + Step
+    )),
+    assertz(type_declarations:uw_type(power_multistate/3, 1, integer)),
+    assertz(type_declarations:uw_type(power_multistate/3, 2, integer)),
+    assertz(type_declarations:uw_type(power_multistate/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(power_multistate/3, integer)),
+    once(recursive_compiler:compile_recursive(power_multistate/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:power_multistate(_, _, _)).
+
+test(multistate_nary_list_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:count_weighted(_, [], 0)),
+    assertz(user:(count_weighted(X, [Y|T], N) :-
+        count_weighted(X, T, N1),
+        ( X == Y ->
+            Delta is N1 + 1,
+            Adjust is Delta + 1
+        ;   Delta is N1,
+            Adjust is Delta + 2
+        ),
+        N is Adjust + Delta
+    )),
+    assertz(type_declarations:uw_type(count_weighted/3, 1, integer)),
+    assertz(type_declarations:uw_type(count_weighted/3, 2, list(integer))),
+    assertz(type_declarations:uw_type(count_weighted/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(count_weighted/3, integer)),
+    once(recursive_compiler:compile_recursive(count_weighted/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:count_weighted(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

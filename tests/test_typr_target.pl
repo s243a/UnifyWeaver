@@ -50,7 +50,9 @@ cleanup_typr_test :-
     retractall(user:list_length(_, _)),
     retractall(user:power(_, _, _)),
     retractall(user:power_if(_, _, _)),
+    retractall(user:power_multistate(_, _, _)),
     retractall(user:count_occ(_, _, _)),
+    retractall(user:count_weighted(_, _, _)),
     retractall(user:list_length_from(_, _, _)),
     retractall(user:alternative_assign_chain(_, _)),
     retractall(user:alternative_assign_clause_chain(_, _)),
@@ -280,6 +282,60 @@ test(recursive_compiler_supports_typr_guarded_nary_list_linear_recursion_path) :
     once(sub_string(Code, _, _, _, "let count_occ <- fn(arg1: int, arg2: [#N, int], arg3: int): int")),
     once(sub_string(Code, _, _, _, "current_input = arg2;")),
     once(sub_string(Code, _, _, _, "acc = if (@{ arg1 == current }@) { (acc + 1) } else { acc };")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_multistate_nary_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:power_multistate(_Base, 0, 1)),
+    assertz(user:(power_multistate(Base, N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        power_multistate(Base, N1, Prev),
+        ( Base > 1 ->
+            Step is Base * Prev,
+            Offset is Step + 1
+        ;   Step is Prev,
+            Offset is Step + 2
+        ),
+        Result is Offset + Step
+    )),
+    assertz(type_declarations:uw_type(power_multistate/3, 1, integer)),
+    assertz(type_declarations:uw_type(power_multistate/3, 2, integer)),
+    assertz(type_declarations:uw_type(power_multistate/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(power_multistate/3, integer)),
+    once(recursive_compiler:compile_recursive(power_multistate/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let power_multistate <- fn(arg1: int, arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "if (@{ arg1 > 1 }@) { (arg1 * acc) } else { acc }")),
+    once(sub_string(Code, _, _, _, "if (@{ arg1 > 1 }@) { ((arg1 * acc) + 1) } else { (acc + 2) }")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_multistate_nary_list_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:count_weighted(_, [], 0)),
+    assertz(user:(count_weighted(X, [Y|T], N) :-
+        count_weighted(X, T, N1),
+        ( X == Y ->
+            Delta is N1 + 1,
+            Adjust is Delta + 1
+        ;   Delta is N1,
+            Adjust is Delta + 2
+        ),
+        N is Adjust + Delta
+    )),
+    assertz(type_declarations:uw_type(count_weighted/3, 1, integer)),
+    assertz(type_declarations:uw_type(count_weighted/3, 2, list(integer))),
+    assertz(type_declarations:uw_type(count_weighted/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(count_weighted/3, integer)),
+    once(recursive_compiler:compile_recursive(count_weighted/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let count_weighted <- fn(arg1: int, arg2: [#N, int], arg3: int): int")),
+    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { (acc + 1) } else { acc }")),
+    once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { ((acc + 1) + 1) } else { (acc + 2) }")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
