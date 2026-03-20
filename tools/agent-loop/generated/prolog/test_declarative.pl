@@ -441,6 +441,22 @@ test_decl_shared_logic :-
     decl_assert_true('shared_logic(context_add) compiles for python', agent_loop_module:compile_logic(python, context_add, _)),
     decl_assert_true('shared_logic(context_add) compiles for rust', agent_loop_module:compile_logic(rust, context_add, _)),
     decl_assert_true('shared_logic(context_add) compiles for elixir', agent_loop_module:compile_logic(elixir, context_add, _)),
+    decl_assert_true('shared_logic(streaming_reset) exists', agent_loop_module:shared_logic(_, streaming_reset, _)),
+    decl_assert_true('shared_logic(streaming_reset) compiles for python', agent_loop_module:compile_logic(python, streaming_reset, _)),
+    decl_assert_true('shared_logic(streaming_reset) compiles for rust', agent_loop_module:compile_logic(rust, streaming_reset, _)),
+    decl_assert_true('shared_logic(streaming_reset) compiles for elixir', agent_loop_module:compile_logic(elixir, streaming_reset, _)),
+    decl_assert_true('shared_logic(cache_has_key) exists', agent_loop_module:shared_logic(_, cache_has_key, _)),
+    decl_assert_true('shared_logic(cache_has_key) compiles for python', agent_loop_module:compile_logic(python, cache_has_key, _)),
+    decl_assert_true('shared_logic(cache_has_key) compiles for rust', agent_loop_module:compile_logic(rust, cache_has_key, _)),
+    decl_assert_true('shared_logic(cache_has_key) compiles for elixir', agent_loop_module:compile_logic(elixir, cache_has_key, _)),
+    decl_assert_true('shared_logic(context_last_message) exists', agent_loop_module:shared_logic(_, context_last_message, _)),
+    decl_assert_true('shared_logic(context_last_message) compiles for python', agent_loop_module:compile_logic(python, context_last_message, _)),
+    decl_assert_true('shared_logic(context_last_message) compiles for rust', agent_loop_module:compile_logic(rust, context_last_message, _)),
+    decl_assert_true('shared_logic(context_last_message) compiles for elixir', agent_loop_module:compile_logic(elixir, context_last_message, _)),
+    decl_assert_true('shared_logic(total_tokens) exists', agent_loop_module:shared_logic(_, total_tokens, _)),
+    decl_assert_true('shared_logic(total_tokens) compiles for python', agent_loop_module:compile_logic(python, total_tokens, _)),
+    decl_assert_true('shared_logic(total_tokens) compiles for rust', agent_loop_module:compile_logic(rust, total_tokens, _)),
+    decl_assert_true('shared_logic(total_tokens) compiles for elixir', agent_loop_module:compile_logic(elixir, total_tokens, _)),
     true.
 
 %% =============================================================================

@@ -56,4 +56,10 @@ defmodule AgentLoop.ToolResultCache do
     %{state | cache: Map.put(state.cache, key, value)}
   end
 
+  @doc "Check if a key exists in the cache."
+  @spec has_key(t(), any()) :: boolean()
+  def has_key(%__MODULE__{} = state, key) do
+    Map.has_key?(state.cache, key)
+  end
+
 end

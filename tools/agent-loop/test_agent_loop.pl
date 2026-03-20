@@ -6098,12 +6098,36 @@ test_shared_logic_infrastructure :-
         sub_atom(EJR, _, _, _, 'extract_fenced'),
         sub_atom(EJR, _, _, _, 'extract_bare')
     )),
-    %% All 22 methods compile for both targets
-    assert_true('all 22 shared_logic compile for both targets', (
+    %% All 26 methods compile for all three targets
+    assert_true('all 26 shared_logic compile for all targets', (
         findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
         include([M]>>(
             agent_loop_module:compile_logic(python, M, _),
-            agent_loop_module:compile_logic(rust, M, _)
+            agent_loop_module:compile_logic(rust, M, _),
+            agent_loop_module:compile_logic(elixir, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 22)
+        length(OkMs, 26)
+    )),
+    %% --- Elixir structure validation ---
+    assert_true('elixir mix.exs exists', (
+        exists_file('generated/elixir/mix.exs')
+    )),
+    assert_true('elixir has 18 lib modules', (
+        expand_file_name('generated/elixir/lib/agent_loop/*.ex', Files),
+        length(Files, 18)
+    )),
+    assert_true('elixir has 13 test files', (
+        expand_file_name('generated/elixir/test/*.exs', TestFiles),
+        length(TestFiles, 13)
+    )),
+    assert_true('elixir_server facts count is 5', (
+        findall(S, agent_loop_module:elixir_server(S, _), Srvs),
+        length(Srvs, 5)
+    )),
+    assert_true('application.ex contains all supervised servers', (
+        read_file_to_string('generated/elixir/lib/agent_loop/application.ex', AppContent, []),
+        forall(agent_loop_module:elixir_server(Srv, _), (
+            atom_string(Srv, SrvStr),
+            sub_string(AppContent, _, _, _, SrvStr)
+        ))
     )).

@@ -2011,6 +2011,42 @@ expand_expr(rust, map_get(Collection, Key), S) :-
     expand_expr(rust, Key, KS),
     format(atom(S), "~w.get(&~w).cloned()", [CS, KS]).
 
+%% --- Map has_key ---
+expand_expr(python, map_has_key(Collection, Key), S) :-
+    expand_expr(python, Collection, CS),
+    expand_expr(python, Key, KS),
+    format(atom(S), "~w in ~w", [KS, CS]).
+expand_expr(rust, map_has_key(Collection, Key), S) :-
+    expand_expr(rust, Collection, CS),
+    expand_expr(rust, Key, KS),
+    format(atom(S), "~w.contains_key(&~w)", [CS, KS]).
+
+%% --- List last element ---
+expand_expr(python, list_last(Expr), S) :-
+    expand_expr(python, Expr, Inner),
+    format(atom(S), "~w[-1]", [Inner]).
+expand_expr(rust, list_last(Expr), S) :-
+    expand_expr(rust, Expr, Inner),
+    format(atom(S), "~w.last().cloned()", [Inner]).
+
+%% --- Addition ---
+expand_expr(python, add(A, B), S) :-
+    expand_expr(python, A, AS),
+    expand_expr(python, B, BS),
+    format(atom(S), "(~w + ~w)", [AS, BS]).
+expand_expr(rust, add(A, B), S) :-
+    expand_expr(rust, A, AS),
+    expand_expr(rust, B, BS),
+    format(atom(S), "(~w + ~w)", [AS, BS]).
+
+%% --- Literal values ---
+expand_expr(_, literal(V), S) :- atom_string(V, S).
+
+%% --- None/nil ---
+expand_expr(python, none_val, "None").
+expand_expr(rust, none_val, "None").
+expand_expr(elixir, none_val, "nil").
+
 expand_expr(_, Atom, S) :- atom(Atom), atom_string(Atom, S).
 
 %% Bridge: compound expressions that are actually slots delegate to logic_slot/3
@@ -2797,6 +2833,39 @@ shared_logic(context, context_add, [
     body_template("~self_list_append(messages, message)~")
 ]).
 
+%% --- StreamingTokenCounter: reset ---
+shared_logic(streaming, streaming_reset, [
+    signature(reset, [], void),
+    mutable,
+    doc("Reset streaming counters to zero."),
+    container('StreamingTokenCounter'),
+    body_template("~self_assign(token_count, literal(0))~\n~self_assign(char_count, literal(0))~")
+]).
+
+%% --- ToolResultCache: has_key ---
+shared_logic(tool_cache, cache_has_key, [
+    signature(has_key, [key], bool),
+    doc("Check if a key exists in the cache."),
+    container('ToolResultCache'),
+    body_template("~return_val(map_has_key(self_direct(cache), key))~")
+]).
+
+%% --- ContextManager: last_message ---
+shared_logic(context, context_last_message, [
+    signature(last_message, [], optional(dict)),
+    doc("Get the last message from history, or nil if empty."),
+    container('ContextManager'),
+    body_template("if ~is_empty_check(self_direct(messages))~:\n    ~return_val(none_val)~\n~return_val(list_last(self_direct(messages)))~")
+]).
+
+%% --- CostTracker: total_tokens ---
+shared_logic(costs, total_tokens, [
+    signature(total_tokens, [], int),
+    doc("Return total token count (input + output)."),
+    container('CostTracker'),
+    body_template("~return_val(add(self_direct(total_input_tokens), self_direct(total_output_tokens)))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -3059,6 +3128,23 @@ expand_expr(elixir, map_get(Collection, Key), S) :-
     expand_expr(elixir, Collection, CS),
     expand_expr(elixir, Key, KS),
     format(atom(S), "Map.get(~w, ~w)", [CS, KS]).
+
+%% --- Map has_key ---
+expand_expr(elixir, map_has_key(Collection, Key), S) :-
+    expand_expr(elixir, Collection, CS),
+    expand_expr(elixir, Key, KS),
+    format(atom(S), "Map.has_key?(~w, ~w)", [CS, KS]).
+
+%% --- List last element ---
+expand_expr(elixir, list_last(Expr), S) :-
+    expand_expr(elixir, Expr, Inner),
+    format(atom(S), "List.last(~w)", [Inner]).
+
+%% --- Addition ---
+expand_expr(elixir, add(A, B), S) :-
+    expand_expr(elixir, A, AS),
+    expand_expr(elixir, B, BS),
+    format(atom(S), "(~w + ~w)", [AS, BS]).
 
 %% =============================================================================
 %% Elixir resolve_type/3
@@ -4197,6 +4283,9 @@ generate_all(elixir) :-
     %% GenServer wrappers
     generate_elixir_cost_server,
     generate_elixir_context_server,
+    generate_elixir_cache_server,
+    generate_elixir_streaming_server,
+    generate_elixir_mcp_server,
     %% Application + supervision
     generate_elixir_application,
     %% ExUnit tests
@@ -4608,6 +4697,14 @@ elixir_config_default(Default, ElixirVal) :-
 %% Elixir Application Module (OTP Supervision)
 %% =============================================================================
 
+%% elixir_server(ServerModule, WrappedModule)
+%% Declarative facts for GenServer wrappers that should be supervised.
+elixir_server('CostServer', 'CostTracker').
+elixir_server('ContextServer', 'ContextManager').
+elixir_server('CacheServer', 'ToolResultCache').
+elixir_server('StreamingServer', 'StreamingTokenCounter').
+elixir_server('MCPServer', 'MCPClient').
+
 generate_elixir_application :-
     output_path(elixir, 'application.ex', Path),
     open(Path, write, S),
@@ -4615,14 +4712,18 @@ generate_elixir_application :-
     write(S, 'defmodule AgentLoop.Application do\n'),
     write(S, '  @moduledoc """\n'),
     write(S, '  OTP Application for AgentLoop.\n'),
-    write(S, '  Starts a supervision tree with CostServer and ContextServer.\n'),
+    write(S, '  Starts a supervision tree with all registered GenServers.\n'),
     write(S, '  """\n\n'),
     write(S, '  use Application\n\n'),
     write(S, '  @impl true\n'),
     write(S, '  def start(_type, _args) do\n'),
     write(S, '    children = [\n'),
-    write(S, '      {AgentLoop.CostServer, name: AgentLoop.CostServer},\n'),
-    write(S, '      {AgentLoop.ContextServer, name: AgentLoop.ContextServer}\n'),
+    findall(Srv, elixir_server(Srv, _), Servers),
+    length(Servers, SrvCount),
+    forall((elixir_server(Srv, _), nth1(Idx, Servers, Srv)), (
+        format(S, '      {AgentLoop.~w, name: AgentLoop.~w}', [Srv, Srv]),
+        (Idx < SrvCount -> write(S, ',\n') ; write(S, '\n'))
+    )),
     write(S, '    ]\n\n'),
     write(S, '    opts = [strategy: :one_for_one, name: AgentLoop.Supervisor]\n'),
     write(S, '    Supervisor.start_link(children, opts)\n'),
@@ -4882,6 +4983,173 @@ generate_elixir_context_server :-
     close(S),
     format('  Generated elixir/lib/agent_loop/context_server.ex~n', []).
 
+%% --- ToolResultCache GenServer ---
+generate_elixir_cache_server :-
+    output_path(elixir, 'cache_server.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.CacheServer', 'GenServer wrapper for ToolResultCache'),
+    write(S, 'defmodule AgentLoop.CacheServer do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  GenServer wrapping AgentLoop.ToolResultCache for OTP integration.\n'),
+    write(S, '  Provides concurrent-safe tool result caching.\n'),
+    write(S, '  """\n\n'),
+    write(S, '  use GenServer\n\n'),
+    write(S, '  alias AgentLoop.ToolResultCache\n\n'),
+    write(S, '  # --- Client API ---\n\n'),
+    write(S, '  def start_link(opts \\\\ []) do\n'),
+    write(S, '    GenServer.start_link(__MODULE__, %ToolResultCache{}, opts)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Look up a cached result by key."\n'),
+    write(S, '  def get(server, key) do\n'),
+    write(S, '    GenServer.call(server, {:get, key})\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Store a result in the cache."\n'),
+    write(S, '  def put(server, key, value) do\n'),
+    write(S, '    GenServer.call(server, {:put, key, value})\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Check if a key exists in the cache."\n'),
+    write(S, '  def has_key?(server, key) do\n'),
+    write(S, '    GenServer.call(server, {:has_key, key})\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Clear the cache."\n'),
+    write(S, '  def clear(server) do\n'),
+    write(S, '    GenServer.call(server, :clear)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Return cache size."\n'),
+    write(S, '  def len(server) do\n'),
+    write(S, '    GenServer.call(server, :len)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Get current state snapshot."\n'),
+    write(S, '  def get_state(server) do\n'),
+    write(S, '    GenServer.call(server, :get_state)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  # --- Server Callbacks ---\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def init(state), do: {:ok, state}\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call({:get, key}, _from, state) do\n'),
+    write(S, '    {:reply, ToolResultCache.get(state, key), state}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call({:put, key, value}, _from, state) do\n'),
+    write(S, '    {:reply, :ok, ToolResultCache.put(state, key, value)}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call({:has_key, key}, _from, state) do\n'),
+    write(S, '    {:reply, ToolResultCache.has_key(state, key), state}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:clear, _from, _state) do\n'),
+    write(S, '    {:reply, :ok, ToolResultCache.clear(%ToolResultCache{})}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:len, _from, state) do\n'),
+    write(S, '    {:reply, ToolResultCache.len(state), state}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:get_state, _from, state) do\n'),
+    write(S, '    {:reply, state, state}\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/cache_server.ex~n', []).
+
+%% --- StreamingTokenCounter GenServer ---
+generate_elixir_streaming_server :-
+    output_path(elixir, 'streaming_server.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.StreamingServer', 'GenServer wrapper for StreamingTokenCounter'),
+    write(S, 'defmodule AgentLoop.StreamingServer do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  GenServer wrapping AgentLoop.StreamingTokenCounter for OTP integration.\n'),
+    write(S, '  Tracks token and character counts during streaming responses.\n'),
+    write(S, '  """\n\n'),
+    write(S, '  use GenServer\n\n'),
+    write(S, '  alias AgentLoop.StreamingTokenCounter\n\n'),
+    write(S, '  # --- Client API ---\n\n'),
+    write(S, '  def start_link(opts \\\\ []) do\n'),
+    write(S, '    GenServer.start_link(__MODULE__, %StreamingTokenCounter{}, opts)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Process a streaming token."\n'),
+    write(S, '  def on_token(server, token) do\n'),
+    write(S, '    GenServer.call(server, {:on_token, token})\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Get formatted summary string."\n'),
+    write(S, '  def format_summary(server) do\n'),
+    write(S, '    GenServer.call(server, :format_summary)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Reset counters to zero."\n'),
+    write(S, '  def reset(server) do\n'),
+    write(S, '    GenServer.call(server, :reset)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Get current state snapshot."\n'),
+    write(S, '  def get_state(server) do\n'),
+    write(S, '    GenServer.call(server, :get_state)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  # --- Server Callbacks ---\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def init(state), do: {:ok, state}\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call({:on_token, token}, _from, state) do\n'),
+    write(S, '    new_state = StreamingTokenCounter.on_token(state, token)\n'),
+    write(S, '    {:reply, :ok, new_state}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:format_summary, _from, state) do\n'),
+    write(S, '    {:reply, StreamingTokenCounter.format_summary(state), state}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:reset, _from, _state) do\n'),
+    write(S, '    {:reply, :ok, StreamingTokenCounter.reset(%StreamingTokenCounter{})}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:get_state, _from, state) do\n'),
+    write(S, '    {:reply, state, state}\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/streaming_server.ex~n', []).
+
+%% --- MCPClient GenServer ---
+generate_elixir_mcp_server :-
+    output_path(elixir, 'mcp_server.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.MCPServer', 'GenServer wrapper for MCPClient'),
+    write(S, 'defmodule AgentLoop.MCPServer do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  GenServer wrapping AgentLoop.MCPClient for OTP integration.\n'),
+    write(S, '  Manages MCP connection state and request ID sequencing.\n'),
+    write(S, '  """\n\n'),
+    write(S, '  use GenServer\n\n'),
+    write(S, '  alias AgentLoop.MCPClient\n\n'),
+    write(S, '  # --- Client API ---\n\n'),
+    write(S, '  def start_link(opts \\\\ []) do\n'),
+    write(S, '    GenServer.start_link(__MODULE__, %MCPClient{}, opts)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Get next request ID and advance counter."\n'),
+    write(S, '  def next_request_id(server) do\n'),
+    write(S, '    GenServer.call(server, :next_request_id)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Get current state snapshot."\n'),
+    write(S, '  def get_state(server) do\n'),
+    write(S, '    GenServer.call(server, :get_state)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  # --- Server Callbacks ---\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def init(state), do: {:ok, state}\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:next_request_id, _from, state) do\n'),
+    write(S, '    {id, new_state} = MCPClient.next_request_id(state)\n'),
+    write(S, '    {:reply, id, new_state}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:get_state, _from, state) do\n'),
+    write(S, '    {:reply, state, state}\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/mcp_server.ex~n', []).
+
 %% =============================================================================
 %% Elixir ExUnit Test Generation
 %% =============================================================================
@@ -4899,7 +5167,10 @@ generate_elixir_tests :-
     generate_elixir_pricing_test(TestDir),
     generate_elixir_tools_test(TestDir),
     generate_elixir_security_test(TestDir),
-    generate_elixir_config_test(TestDir).
+    generate_elixir_config_test(TestDir),
+    generate_elixir_cache_server_test(TestDir),
+    generate_elixir_streaming_server_test(TestDir),
+    generate_elixir_mcp_server_test(TestDir).
 
 generate_elixir_test_helper(Dir) :-
     atom_concat(Dir, 'test_helper.exs', Path),
@@ -5184,6 +5455,95 @@ generate_elixir_config_test(Dir) :-
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/test/config_test.exs~n', []).
+
+generate_elixir_cache_server_test(Dir) :-
+    atom_concat(Dir, 'cache_server_test.exs', Path),
+    open(Path, write, S),
+    write(S, 'defmodule AgentLoop.CacheServerTest do\n'),
+    write(S, '  use ExUnit.Case, async: true\n\n'),
+    write(S, '  alias AgentLoop.CacheServer\n\n'),
+    write(S, '  setup do\n'),
+    write(S, '    {:ok, pid} = CacheServer.start_link()\n'),
+    write(S, '    %{server: pid}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "get returns nil for missing key", %{server: s} do\n'),
+    write(S, '    assert CacheServer.get(s, "missing") == nil\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "put and get round-trip", %{server: s} do\n'),
+    write(S, '    CacheServer.put(s, "k1", "v1")\n'),
+    write(S, '    assert CacheServer.get(s, "k1") == "v1"\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "has_key? after put", %{server: s} do\n'),
+    write(S, '    refute CacheServer.has_key?(s, "k2")\n'),
+    write(S, '    CacheServer.put(s, "k2", "v2")\n'),
+    write(S, '    assert CacheServer.has_key?(s, "k2")\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "len tracks cache size", %{server: s} do\n'),
+    write(S, '    assert CacheServer.len(s) == 0\n'),
+    write(S, '    CacheServer.put(s, "a", "1")\n'),
+    write(S, '    assert CacheServer.len(s) == 1\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "clear empties the cache", %{server: s} do\n'),
+    write(S, '    CacheServer.put(s, "a", "1")\n'),
+    write(S, '    CacheServer.clear(s)\n'),
+    write(S, '    assert CacheServer.len(s) == 0\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/test/cache_server_test.exs~n', []).
+
+generate_elixir_streaming_server_test(Dir) :-
+    atom_concat(Dir, 'streaming_server_test.exs', Path),
+    open(Path, write, S),
+    write(S, 'defmodule AgentLoop.StreamingServerTest do\n'),
+    write(S, '  use ExUnit.Case, async: true\n\n'),
+    write(S, '  alias AgentLoop.StreamingServer\n\n'),
+    write(S, '  setup do\n'),
+    write(S, '    {:ok, pid} = StreamingServer.start_link()\n'),
+    write(S, '    %{server: pid}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "initial summary is zero", %{server: s} do\n'),
+    write(S, '    summary = StreamingServer.format_summary(s)\n'),
+    write(S, '    assert summary =~ "0 tokens"\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "on_token increments counters", %{server: s} do\n'),
+    write(S, '    StreamingServer.on_token(s, "hello")\n'),
+    write(S, '    state = StreamingServer.get_state(s)\n'),
+    write(S, '    assert state.token_count == 1\n'),
+    write(S, '    assert state.char_count == 5\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "reset clears counters", %{server: s} do\n'),
+    write(S, '    StreamingServer.on_token(s, "hi")\n'),
+    write(S, '    StreamingServer.reset(s)\n'),
+    write(S, '    state = StreamingServer.get_state(s)\n'),
+    write(S, '    assert state.token_count == 0\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/test/streaming_server_test.exs~n', []).
+
+generate_elixir_mcp_server_test(Dir) :-
+    atom_concat(Dir, 'mcp_server_test.exs', Path),
+    open(Path, write, S),
+    write(S, 'defmodule AgentLoop.MCPServerTest do\n'),
+    write(S, '  use ExUnit.Case, async: true\n\n'),
+    write(S, '  alias AgentLoop.MCPServer\n\n'),
+    write(S, '  setup do\n'),
+    write(S, '    {:ok, pid} = MCPServer.start_link()\n'),
+    write(S, '    %{server: pid}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "next_request_id increments", %{server: s} do\n'),
+    write(S, '    {id1, _} = MCPServer.next_request_id(s)\n'),
+    write(S, '    {id2, _} = MCPServer.next_request_id(s)\n'),
+    write(S, '    assert id2 > id1\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "get_state returns MCPClient struct", %{server: s} do\n'),
+    write(S, '    state = MCPServer.get_state(s)\n'),
+    write(S, '    assert %AgentLoop.MCPClient{} = state\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/test/mcp_server_test.exs~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.
