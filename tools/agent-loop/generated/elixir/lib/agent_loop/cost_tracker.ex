@@ -57,4 +57,11 @@ defmodule AgentLoop.CostTracker do
     ((tokens * 1.0) * price_per_million / 1.0e+06)
   end
 
+  @doc "Record a usage entry and update running totals."
+  @spec record_usage(t(), integer(), integer(), String.t()) :: t()
+  def record_usage(%__MODULE__{} = state, input_tokens, output_tokens, model) do
+    state = %{state | total_input_tokens: state.total_input_tokens + input_tokens}
+    %{state | total_output_tokens: state.total_output_tokens + output_tokens}
+  end
+
 end

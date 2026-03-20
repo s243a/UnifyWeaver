@@ -2000,6 +2000,17 @@ expand_expr(python, len_of(Expr), S) :-
 expand_expr(rust, len_of(Expr), S) :-
     expand_expr(rust, Expr, Inner),
     format(atom(S), "~w.len()", [Inner]).
+
+%% --- Map access ---
+expand_expr(python, map_get(Collection, Key), S) :-
+    expand_expr(python, Collection, CS),
+    expand_expr(python, Key, KS),
+    format(atom(S), "~w.get(~w)", [CS, KS]).
+expand_expr(rust, map_get(Collection, Key), S) :-
+    expand_expr(rust, Collection, CS),
+    expand_expr(rust, Key, KS),
+    format(atom(S), "~w.get(&~w).cloned()", [CS, KS]).
+
 expand_expr(_, Atom, S) :- atom(Atom), atom_string(Atom, S).
 
 %% Bridge: compound expressions that are actually slots delegate to logic_slot/3
@@ -2748,6 +2759,44 @@ shared_logic(output_parser, extract_json_dispatch, [
     body_template("~assign(results, call_method(extract_fenced, [text]))~\nif ~not_empty(results)~:\n    ~return_val(results)~\n~return_val(call_method(extract_bare, [text]))~")
 ]).
 
+%% --- CostTracker: record a usage entry ---
+shared_logic(costs, record_usage, [
+    signature(record_usage, [input_tokens, output_tokens, model], void),
+    arg_types([int, int, string]),
+    mutable,
+    doc("Record a usage entry and update running totals."),
+    container('CostTracker'),
+    body_template("~self_inc(total_input_tokens, input_tokens)~\n~self_inc(total_output_tokens, output_tokens)~")
+]).
+
+%% --- ToolResultCache: lookup and store ---
+shared_logic(tool_cache, cache_get, [
+    signature(get, [key], optional(string)),
+    arg_types([string]),
+    doc("Look up a cached result by key. Returns nil if not found."),
+    container('ToolResultCache'),
+    body_template("~return_val(map_get(self_direct(cache), key))~")
+]).
+
+shared_logic(tool_cache, cache_put, [
+    signature(put, [key, value], void),
+    arg_types([string, string]),
+    mutable,
+    doc("Store a result in the cache."),
+    container('ToolResultCache'),
+    body_template("~self_map_put(cache, key, value)~")
+]).
+
+%% --- ContextManager: add_message ---
+shared_logic(context, context_add, [
+    signature(add_message, [message], void),
+    arg_types([dict]),
+    mutable,
+    doc("Append a message to the context history."),
+    container('ContextManager'),
+    body_template("~self_list_append(messages, message)~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -2803,6 +2852,25 @@ logic_slot(python, assign(Var, Expr), S) :-
 logic_slot(rust, assign(Var, Expr), S) :-
     expand_expr(rust, Expr, ES),
     format(atom(S), "let ~w = ~w", [Var, ES]).
+
+%% --- Map/collection mutation slots ---
+logic_slot(python, self_map_put(Field, Key, Value), S) :-
+    logic_slot(python, self_field(Field), SF),
+    expand_expr(python, Key, KS),
+    expand_expr(python, Value, VS),
+    format(atom(S), "~w[~w] = ~w", [SF, KS, VS]).
+logic_slot(rust, self_map_put(Field, Key, Value), S) :-
+    expand_expr(rust, Key, KS),
+    expand_expr(rust, Value, VS),
+    format(atom(S), "self.~w.insert(~w, ~w)", [Field, KS, VS]).
+
+logic_slot(python, self_list_append(Field, Item), S) :-
+    logic_slot(python, self_field(Field), SF),
+    expand_expr(python, Item, IS),
+    format(atom(S), "~w.append(~w)", [SF, IS]).
+logic_slot(rust, self_list_append(Field, Item), S) :-
+    expand_expr(rust, Item, IS),
+    format(atom(S), "self.~w.push(~w)", [Field, IS]).
 
 %% --- Arithmetic slots ---
 logic_slot(python, matches_set(X, List), S) :-
@@ -2906,6 +2974,16 @@ logic_slot(elixir, assign(Var, Expr), S) :-
     expand_expr(elixir, Expr, ES),
     format(atom(S), "~w = ~w", [Var, ES]).
 
+%% --- Map/collection mutation slots (Elixir: immutable struct updates) ---
+logic_slot(elixir, self_map_put(Field, Key, Value), S) :-
+    expand_expr(elixir, Key, KS),
+    expand_expr(elixir, Value, VS),
+    format(atom(S), "%{state | ~w: Map.put(state.~w, ~w, ~w)}", [Field, Field, KS, VS]).
+
+logic_slot(elixir, self_list_append(Field, Item), S) :-
+    expand_expr(elixir, Item, IS),
+    format(atom(S), "%{state | ~w: state.~w ++ [~w]}", [Field, Field, IS]).
+
 %% --- Set membership ---
 logic_slot(elixir, matches_set(X, List), S) :-
     atomic_list_concat(List, ', ', Items),
@@ -2975,6 +3053,12 @@ expand_expr(elixir, div_float(A, B), S) :-
     expand_expr(elixir, A, AStr),
     expand_expr(elixir, B, BStr),
     format(atom(S), "(~w / ~w)", [AStr, BStr]).
+
+%% --- Map access ---
+expand_expr(elixir, map_get(Collection, Key), S) :-
+    expand_expr(elixir, Collection, CS),
+    expand_expr(elixir, Key, KS),
+    format(atom(S), "Map.get(~w, ~w)", [CS, KS]).
 
 %% =============================================================================
 %% Elixir resolve_type/3
@@ -4107,9 +4191,14 @@ generate_all(elixir) :-
     generate_elixir_pricing,
     generate_elixir_tools,
     generate_elixir_backends,
+    %% Security & config
+    generate_elixir_security,
+    generate_elixir_config,
     %% GenServer wrappers
     generate_elixir_cost_server,
     generate_elixir_context_server,
+    %% Application + supervision
+    generate_elixir_application,
     %% ExUnit tests
     generate_elixir_tests,
     write('Elixir target done.'), nl.
@@ -4137,10 +4226,16 @@ generate_elixir_mix_exs :-
     write(S, '    ]\n'),
     write(S, '  end\n\n'),
     write(S, '  def application do\n'),
-    write(S, '    [extra_applications: [:logger]]\n'),
+    write(S, '    [\n'),
+    write(S, '      extra_applications: [:logger],\n'),
+    write(S, '      mod: {AgentLoop.Application, []}\n'),
+    write(S, '    ]\n'),
     write(S, '  end\n\n'),
     write(S, '  defp deps do\n'),
-    write(S, '    [{:jason, "~> 1.4"}]\n'),
+    write(S, '    [\n'),
+    write(S, '      {:jason, "~> 1.4"},\n'),
+    write(S, '      {:toml, "~> 0.7"}\n'),
+    write(S, '    ]\n'),
     write(S, '  end\n'),
     write(S, 'end\n'),
     close(S),
@@ -4302,6 +4397,239 @@ generate_elixir_retry :-
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/lib/agent_loop/retry.ex~n', []).
+
+%% =============================================================================
+%% Elixir Security Module
+%% =============================================================================
+
+generate_elixir_security :-
+    output_path(elixir, 'security.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.Security', 'Security profiles, blocked paths, and command filtering'),
+    write(S, 'defmodule AgentLoop.Security do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  Security configuration — profiles, path restrictions, and command pattern filtering.\n'),
+    write(S, '  Profiles: open, cautious, guarded, paranoid.\n'),
+    write(S, '  """\n\n'),
+    %% --- Security profiles ---
+    write(S, '  @type profile :: %{\n'),
+    write(S, '    name: atom(),\n'),
+    write(S, '    description: String.t(),\n'),
+    write(S, '    path_validation: boolean(),\n'),
+    write(S, '    command_blocklist: boolean(),\n'),
+    write(S, '    audit_logging: atom()\n'),
+    write(S, '  }\n\n'),
+    write(S, '  @profiles %{\n'),
+    forall(security_profile(Name, Props), (
+        (member(description(Desc), Props) -> true ; Desc = ''),
+        (member(path_validation(PV), Props) -> true ; PV = false),
+        (member(command_blocklist(CB), Props) -> true ; CB = false),
+        (member(audit_logging(AL), Props) -> true ; AL = disabled),
+        (member(command_proxying(CP), Props) -> true ; CP = disabled),
+        (member(network_isolation(NI), Props) -> true ; NI = none),
+        format(S, '    ~w: %{name: :~w, description: "~w", path_validation: ~w, command_blocklist: ~w, audit_logging: :~w, command_proxying: :~w, network_isolation: :~w},~n',
+            [Name, Name, Desc, PV, CB, AL, CP, NI])
+    )),
+    write(S, '  }\n\n'),
+    %% --- Blocked paths ---
+    write(S, '  @blocked_paths [\n'),
+    forall(blocked_path(BP), (
+        format(S, '    "~w",~n', [BP])
+    )),
+    write(S, '  ]\n\n'),
+    %% --- Blocked path prefixes ---
+    write(S, '  @blocked_path_prefixes [\n'),
+    forall(blocked_path_prefix(BPP), (
+        format(S, '    "~w",~n', [BPP])
+    )),
+    write(S, '  ]\n\n'),
+    %% --- Blocked home patterns ---
+    write(S, '  @blocked_home_patterns [\n'),
+    forall(blocked_home_pattern(BHP), (
+        format(S, '    "~w",~n', [BHP])
+    )),
+    write(S, '  ]\n\n'),
+    %% --- Blocked command patterns ---
+    write(S, '  @blocked_command_patterns [\n'),
+    forall(blocked_command_pattern(Pattern, Reason), (
+        format(S, '    {~q, "~w"},~n', [Pattern, Reason])
+    )),
+    write(S, '  ]\n\n'),
+    %% --- Regex lists ---
+    forall(regex_list(ListName, Patterns), (
+        format(S, '  @~w [~n', [ListName]),
+        forall(member(P, Patterns), (
+            format(S, '    ~w,~n', [P])
+        )),
+        write(S, '  ]\n\n')
+    )),
+    %% --- API functions ---
+    write(S, '  @doc "Get a security profile by name."\n'),
+    write(S, '  @spec profile(atom()) :: profile() | nil\n'),
+    write(S, '  def profile(name), do: Map.get(@profiles, name)\n\n'),
+    write(S, '  @doc "List all profile names."\n'),
+    write(S, '  @spec profile_names() :: [atom()]\n'),
+    write(S, '  def profile_names, do: Map.keys(@profiles)\n\n'),
+    write(S, '  @doc "Check if a path is blocked."\n'),
+    write(S, '  @spec path_blocked?(String.t()) :: boolean()\n'),
+    write(S, '  def path_blocked?(path) do\n'),
+    write(S, '    path in @blocked_paths or\n'),
+    write(S, '      Enum.any?(@blocked_path_prefixes, &String.starts_with?(path, &1))\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Check if a path matches a blocked home pattern."\n'),
+    write(S, '  @spec home_path_blocked?(String.t()) :: boolean()\n'),
+    write(S, '  def home_path_blocked?(rel_path) do\n'),
+    write(S, '    Enum.any?(@blocked_home_patterns, &String.starts_with?(rel_path, &1))\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Check if a command matches any blocked pattern."\n'),
+    write(S, '  @spec command_blocked?(String.t()) :: {boolean(), String.t() | nil}\n'),
+    write(S, '  def command_blocked?(command) do\n'),
+    write(S, '    case Enum.find(@blocked_command_patterns, fn {pat, _} -> Regex.match?(~r/#{pat}/, command) end) do\n'),
+    write(S, '      {_, reason} -> {true, reason}\n'),
+    write(S, '      nil -> {false, nil}\n'),
+    write(S, '    end\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/security.ex~n', []).
+
+%% =============================================================================
+%% Elixir Config Loader
+%% =============================================================================
+
+generate_elixir_config :-
+    output_path(elixir, 'config.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.Config', 'Configuration loading and agent resolution'),
+    write(S, 'defmodule AgentLoop.Config do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  Configuration loading — searches config paths, resolves agent settings,\n'),
+    write(S, '  and looks up API keys from environment variables.\n'),
+    write(S, '  """\n\n'),
+    %% --- Config search paths ---
+    write(S, '  @config_search_paths [\n'),
+    forall(config_search_path(CSP, Priority), (
+        format(S, '    {"~w", :~w},~n', [CSP, Priority])
+    )),
+    write(S, '  ]\n\n'),
+    %% --- API key env vars ---
+    write(S, '  @api_key_env_vars %{\n'),
+    forall(api_key_env_var(Backend, EnvVar), (
+        format(S, '    ~w: "~w",~n', [Backend, EnvVar])
+    )),
+    write(S, '  }\n\n'),
+    %% --- Default agent config ---
+    write(S, '  @default_config %{\n'),
+    forall(agent_config_field(FieldName, _Type, Default, _Doc), (
+        (Default \= none ->
+            elixir_config_default(Default, ElixirDefault),
+            format(S, '    ~w: ~w,~n', [FieldName, ElixirDefault])
+        ; true)
+    )),
+    write(S, '  }\n\n'),
+    %% --- Loop config ---
+    (loop_config(LCProps) ->
+        write(S, '  @loop_config %{\n'),
+        forall(member(LCProp, LCProps), (
+            LCProp =.. [Key, Val],
+            format(S, '    ~w: ~w,~n', [Key, Val])
+        )),
+        write(S, '  }\n\n')
+    ; true),
+    %% --- API functions ---
+    write(S, '  @doc "Return config search paths in priority order."\n'),
+    write(S, '  @spec search_paths() :: [{String.t(), atom()}]\n'),
+    write(S, '  def search_paths, do: @config_search_paths\n\n'),
+    write(S, '  @doc "Return default agent configuration."\n'),
+    write(S, '  @spec defaults() :: map()\n'),
+    write(S, '  def defaults, do: @default_config\n\n'),
+    write(S, '  @doc "Return loop configuration."\n'),
+    write(S, '  @spec loop_config() :: map()\n'),
+    write(S, '  def loop_config, do: @loop_config\n\n'),
+    write(S, '  @doc "Look up API key environment variable for a backend."\n'),
+    write(S, '  @spec api_key_env(atom()) :: String.t() | nil\n'),
+    write(S, '  def api_key_env(backend), do: Map.get(@api_key_env_vars, backend)\n\n'),
+    write(S, '  @doc "Resolve API key from environment for a backend."\n'),
+    write(S, '  @spec resolve_api_key(atom()) :: String.t() | nil\n'),
+    write(S, '  def resolve_api_key(backend) do\n'),
+    write(S, '    case api_key_env(backend) do\n'),
+    write(S, '      nil -> nil\n'),
+    write(S, '      env_var -> System.get_env(env_var)\n'),
+    write(S, '    end\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Load config from the first existing search path."\n'),
+    write(S, '  @spec load() :: {:ok, map()} | {:error, :not_found}\n'),
+    write(S, '  def load do\n'),
+    write(S, '    @config_search_paths\n'),
+    write(S, '    |> Enum.map(fn {path, _} -> expand_path(path) end)\n'),
+    write(S, '    |> Enum.find(&File.exists?/1)\n'),
+    write(S, '    |> case do\n'),
+    write(S, '      nil -> {:error, :not_found}\n'),
+    write(S, '      path ->\n'),
+    write(S, '        with {:ok, content} <- File.read(path),\n'),
+    write(S, '             {:ok, parsed} <- Jason.decode(content) do\n'),
+    write(S, '          {:ok, Map.merge(@default_config, atomize_keys(parsed))}\n'),
+    write(S, '        end\n'),
+    write(S, '    end\n'),
+    write(S, '  end\n\n'),
+    write(S, '  defp expand_path("~/" <> rest), do: Path.join(System.user_home!(), rest)\n'),
+    write(S, '  defp expand_path(path), do: path\n\n'),
+    write(S, '  defp atomize_keys(map) when is_map(map) do\n'),
+    write(S, '    Map.new(map, fn {k, v} -> {String.to_existing_atom(k), v} end)\n'),
+    write(S, '  rescue\n'),
+    write(S, '    ArgumentError -> map\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/config.ex~n', []).
+
+%% elixir_config_default(+PrologDefault, -ElixirDefault)
+%% Convert Prolog config default values to Elixir syntax.
+elixir_config_default('None', nil).
+elixir_config_default('False', false).
+elixir_config_default('True', true).
+elixir_config_default(Default, ElixirVal) :-
+    Default \= 'None', Default \= 'False', Default \= 'True',
+    atom_string(Default, DS),
+    %% Check if it's a quoted string like '"continue"'
+    (sub_string(DS, 0, 1, _, "\"") ->
+        ElixirVal = Default
+    %% Check if it's a Python field(default_factory=...) — emit []
+    ; sub_string(DS, _, _, _, "default_factory") ->
+        (sub_string(DS, _, _, _, "list") -> ElixirVal = '[]'
+        ; sub_string(DS, _, _, _, "dict") -> ElixirVal = '%{}'
+        ; ElixirVal = '[]')
+    %% Numeric or other — pass through
+    ;
+        ElixirVal = Default
+    ).
+
+%% =============================================================================
+%% Elixir Application Module (OTP Supervision)
+%% =============================================================================
+
+generate_elixir_application :-
+    output_path(elixir, 'application.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.Application', 'OTP Application with supervision tree'),
+    write(S, 'defmodule AgentLoop.Application do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  OTP Application for AgentLoop.\n'),
+    write(S, '  Starts a supervision tree with CostServer and ContextServer.\n'),
+    write(S, '  """\n\n'),
+    write(S, '  use Application\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def start(_type, _args) do\n'),
+    write(S, '    children = [\n'),
+    write(S, '      {AgentLoop.CostServer, name: AgentLoop.CostServer},\n'),
+    write(S, '      {AgentLoop.ContextServer, name: AgentLoop.ContextServer}\n'),
+    write(S, '    ]\n\n'),
+    write(S, '    opts = [strategy: :one_for_one, name: AgentLoop.Supervisor]\n'),
+    write(S, '    Supervisor.start_link(children, opts)\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/application.ex~n', []).
 
 %% =============================================================================
 %% Elixir Data Layer — Pricing, Tools, Backends
@@ -4569,7 +4897,9 @@ generate_elixir_tests :-
     generate_elixir_tool_cache_test(TestDir),
     generate_elixir_retry_test(TestDir),
     generate_elixir_pricing_test(TestDir),
-    generate_elixir_tools_test(TestDir).
+    generate_elixir_tools_test(TestDir),
+    generate_elixir_security_test(TestDir),
+    generate_elixir_config_test(TestDir).
 
 generate_elixir_test_helper(Dir) :-
     atom_concat(Dir, 'test_helper.exs', Path),
@@ -4794,6 +5124,66 @@ generate_elixir_tools_test(Dir) :-
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/test/tools_test.exs~n', []).
+
+generate_elixir_security_test(Dir) :-
+    atom_concat(Dir, 'security_test.exs', Path),
+    open(Path, write, S),
+    write(S, 'defmodule AgentLoop.SecurityTest do\n'),
+    write(S, '  use ExUnit.Case, async: true\n\n'),
+    write(S, '  alias AgentLoop.Security\n\n'),
+    write(S, '  test "profile_names returns all profiles" do\n'),
+    write(S, '    names = Security.profile_names()\n'),
+    write(S, '    assert :open in names\n'),
+    write(S, '    assert :cautious in names\n'),
+    write(S, '    assert :guarded in names\n'),
+    write(S, '    assert :paranoid in names\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "profile returns valid profile struct" do\n'),
+    write(S, '    profile = Security.profile(:cautious)\n'),
+    write(S, '    assert profile != nil\n'),
+    write(S, '    assert profile.name == :cautious\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "profile returns nil for unknown" do\n'),
+    write(S, '    assert Security.profile(:nonexistent) == nil\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "path_blocked? detects blocked paths" do\n'),
+    write(S, '    assert Security.path_blocked?("/etc/shadow")\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "path_blocked? allows normal paths" do\n'),
+    write(S, '    refute Security.path_blocked?("/home/user/code.py")\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "home_path_blocked? detects blocked home patterns" do\n'),
+    write(S, '    assert Security.home_path_blocked?(".ssh/id_rsa")\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/test/security_test.exs~n', []).
+
+generate_elixir_config_test(Dir) :-
+    atom_concat(Dir, 'config_test.exs', Path),
+    open(Path, write, S),
+    write(S, 'defmodule AgentLoop.ConfigTest do\n'),
+    write(S, '  use ExUnit.Case, async: true\n\n'),
+    write(S, '  alias AgentLoop.Config\n\n'),
+    write(S, '  test "search_paths returns non-empty list" do\n'),
+    write(S, '    paths = Config.search_paths()\n'),
+    write(S, '    assert length(paths) > 0\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "defaults returns map with known keys" do\n'),
+    write(S, '    defaults = Config.defaults()\n'),
+    write(S, '    assert is_map(defaults)\n'),
+    write(S, '    assert Map.has_key?(defaults, :max_iterations)\n'),
+    write(S, '    assert Map.has_key?(defaults, :timeout)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "api_key_env returns env var for known backend" do\n'),
+    write(S, '    assert Config.api_key_env(:claude) == "ANTHROPIC_API_KEY"\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "api_key_env returns nil for unknown backend" do\n'),
+    write(S, '    assert Config.api_key_env(:unknown) == nil\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/test/config_test.exs~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.
