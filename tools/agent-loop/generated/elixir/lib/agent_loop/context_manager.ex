@@ -64,4 +64,14 @@ defmodule AgentLoop.ContextManager do
     %{state | messages: state.messages ++ [message]}
   end
 
+  @doc "Get the last message from history, or nil if empty."
+  @spec last_message(t()) :: map() | nil
+  def last_message(%__MODULE__{} = state) do
+    if Enum.empty?(state.messages) do
+        nil
+    else
+        List.last(state.messages)
+    end
+  end
+
 end

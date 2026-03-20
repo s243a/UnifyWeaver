@@ -64,4 +64,10 @@ defmodule AgentLoop.CostTracker do
     %{state | total_output_tokens: state.total_output_tokens + output_tokens}
   end
 
+  @doc "Return total token count (input + output)."
+  @spec total_tokens(t()) :: integer()
+  def total_tokens(%__MODULE__{} = state) do
+    (state.total_input_tokens + state.total_output_tokens)
+  end
+
 end

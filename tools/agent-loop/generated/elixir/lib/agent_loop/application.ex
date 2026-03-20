@@ -5,7 +5,7 @@
 defmodule AgentLoop.Application do
   @moduledoc """
   OTP Application for AgentLoop.
-  Starts a supervision tree with CostServer and ContextServer.
+  Starts a supervision tree with all registered GenServers.
   """
 
   use Application
@@ -14,7 +14,10 @@ defmodule AgentLoop.Application do
   def start(_type, _args) do
     children = [
       {AgentLoop.CostServer, name: AgentLoop.CostServer},
-      {AgentLoop.ContextServer, name: AgentLoop.ContextServer}
+      {AgentLoop.ContextServer, name: AgentLoop.ContextServer},
+      {AgentLoop.CacheServer, name: AgentLoop.CacheServer},
+      {AgentLoop.StreamingServer, name: AgentLoop.StreamingServer},
+      {AgentLoop.MCPServer, name: AgentLoop.MCPServer}
     ]
 
     opts = [strategy: :one_for_one, name: AgentLoop.Supervisor]
