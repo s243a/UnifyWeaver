@@ -13,6 +13,7 @@
 # - Requires the same prerequisites as run_csharp_query_runtime_smoke.ps1.
 # - The final lru slice removes generated projects unless -KeepArtifacts is set.
 # - The generated markdown summary is printed to stdout unless -NoSummaryOutput is set.
+# - A JSON companion summary is written alongside the markdown summary.
 
 [CmdletBinding()]
 param(
@@ -51,6 +52,8 @@ $resolvedSummaryPath = if ([System.IO.Path]::IsPathRooted($displaySummaryPath)) 
 } else {
     [System.IO.Path]::GetFullPath((Join-Path $projectRoot $displaySummaryPath))
 }
+$displayJsonSummaryPath = [System.IO.Path]::ChangeExtension($displaySummaryPath, ".json")
+$resolvedJsonSummaryPath = [System.IO.Path]::ChangeExtension($resolvedSummaryPath, ".json")
 
 function Format-Duration {
     param(
@@ -61,16 +64,16 @@ function Format-Duration {
     return ("{0:F1}s" -f $Duration.TotalSeconds)
 }
 
-function Write-CacheSmokeSummary {
+function New-CacheSmokeSummaryData {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
         [Parameter(Mandatory = $true)]
         [string]$DisplayOutputDir,
 
         [Parameter(Mandatory = $true)]
         [string]$DisplaySummaryPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayJsonSummaryPath,
 
         [Parameter(Mandatory = $true)]
         [string]$ProjectFilterValue,
@@ -85,6 +88,40 @@ function Write-CacheSmokeSummary {
         [bool]$HasFailure
     )
 
+    $failedSlice = $SliceResults | Where-Object { $_.Status -eq "FAIL" } | Select-Object -First 1
+    $normalizedSliceResults = @(
+        foreach ($sliceResult in $SliceResults) {
+            [ordered]@{
+                slice = $sliceResult.Slice
+                status = $sliceResult.Status
+                duration = (Format-Duration -Duration $sliceResult.Duration)
+                durationSeconds = [Math]::Round($sliceResult.Duration.TotalSeconds, 1)
+                error = $sliceResult.Error
+            }
+        }
+    )
+
+    return [pscustomobject][ordered]@{
+        overallResult = if ($HasFailure) { "FAIL" } else { "PASS" }
+        outputDir = $DisplayOutputDir
+        summaryPath = $DisplaySummaryPath
+        jsonSummaryPath = $DisplayJsonSummaryPath
+        projectFilter = $ProjectFilterValue
+        keepArtifactsAfterSequence = $KeepArtifactsAfterSequence
+        slices = $normalizedSliceResults
+        failureDetail = if ($failedSlice) { $failedSlice.Error } else { $null }
+    }
+}
+
+function Write-CacheSmokeSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$SummaryData
+    )
+
     $summaryDir = Split-Path -Parent $Path
     if ($summaryDir) {
         New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null
@@ -93,27 +130,44 @@ function Write-CacheSmokeSummary {
     $lines = @(
         "## C# Query Runtime Smoke",
         "",
-        "- Overall result: $(if ($HasFailure) { "FAIL" } else { "PASS" })",
-        "- Output dir: `"$DisplayOutputDir`"",
-        "- Summary path: `"$DisplaySummaryPath`"",
-        "- Project filter: `"$ProjectFilterValue`"",
-        "- Keep artifacts after sequence: $(if ($KeepArtifactsAfterSequence) { "true" } else { "false" })",
+        "- Overall result: $($SummaryData.overallResult)",
+        "- Output dir: `"$($SummaryData.outputDir)`"",
+        "- Summary path: `"$($SummaryData.summaryPath)`"",
+        "- JSON summary path: `"$($SummaryData.jsonSummaryPath)`"",
+        "- Project filter: `"$($SummaryData.projectFilter)`"",
+        "- Keep artifacts after sequence: $(if ($SummaryData.keepArtifactsAfterSequence) { "true" } else { "false" })",
         "",
         "| Slice | Status | Duration |",
         "| --- | --- | --- |"
     )
 
-    foreach ($sliceResult in $SliceResults) {
-        $lines += "| $($sliceResult.Slice) | $($sliceResult.Status) | $(Format-Duration -Duration $sliceResult.Duration) |"
+    foreach ($sliceResult in $SummaryData.slices) {
+        $lines += "| $($sliceResult.slice) | $($sliceResult.status) | $($sliceResult.duration) |"
     }
 
-    $failedSlice = $SliceResults | Where-Object { $_.Status -eq "FAIL" } | Select-Object -First 1
-    if ($failedSlice) {
+    if ($SummaryData.failureDetail) {
         $lines += ""
-        $lines += "Failure detail: `"$($failedSlice.Error)`""
+        $lines += "Failure detail: `"$($SummaryData.failureDetail)`""
     }
 
     Set-Content -Path $Path -Value $lines
+}
+
+function Write-CacheSmokeJsonSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$SummaryData
+    )
+
+    $summaryDir = Split-Path -Parent $Path
+    if ($summaryDir) {
+        New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null
+    }
+
+    $SummaryData | ConvertTo-Json -Depth 6 | Set-Content -Path $Path
 }
 
 function Invoke-CacheSmokeSlice {
@@ -194,14 +248,22 @@ foreach ($sliceSpec in $sliceSpecs) {
     }
 }
 
-Write-CacheSmokeSummary `
-    -Path $resolvedSummaryPath `
+$summaryData = New-CacheSmokeSummaryData `
     -DisplayOutputDir $OutputDir `
     -DisplaySummaryPath $displaySummaryPath `
+    -DisplayJsonSummaryPath $displayJsonSummaryPath `
     -ProjectFilterValue $ProjectFilter `
     -KeepArtifactsAfterSequence ([bool]$KeepArtifacts) `
     -SliceResults $sliceResults `
     -HasFailure ([bool]$sequenceFailure)
+
+Write-CacheSmokeSummary `
+    -Path $resolvedSummaryPath `
+    -SummaryData $summaryData
+
+Write-CacheSmokeJsonSummary `
+    -Path $resolvedJsonSummaryPath `
+    -SummaryData $summaryData
 
 if (-not $NoSummaryOutput) {
     Write-Host ""
@@ -213,6 +275,7 @@ if (-not $NoSummaryOutput) {
 }
 
 Write-Host "Wrote cache smoke summary: $resolvedSummaryPath"
+Write-Host "Wrote cache smoke JSON summary: $resolvedJsonSummaryPath"
 
 if ($sequenceFailure) {
     throw $sequenceFailure.Exception
