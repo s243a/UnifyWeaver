@@ -372,6 +372,10 @@ Current TypR lowering policy is intentionally mixed:
   empty-list base-case fold shape with one recursion-driving list argument
   and invariant context args, using raw-expression fold/loop bodies inside
   TypR rather than wrapped-R fallback
+- conservative arity-2 numeric multi-call tree-recursive predicates may also
+  lower to TypR-valid functions when they match the currently supported
+  memoized helper shape for `fib/2`-style recursion, using raw-expression
+  helper bodies inside TypR rather than wrapped-R fallback
 - guarded post-recursive recombination may also stay native inside those
   same single-recursive-call numeric and list linear-recursive shapes when
   the recursive result and later branch-local selected intermediate values
