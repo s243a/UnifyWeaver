@@ -99,6 +99,7 @@ jobs:
     env:
       CSHARP_QUERY_SMOKE_OUTPUT_DIR: tmp/csharp_query_smoke_ci
       CSHARP_QUERY_SMOKE_SUMMARY_PATH: tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.md
+      CSHARP_QUERY_SMOKE_JSON_SUMMARY_PATH: tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json
 
     steps:
       - name: Checkout code
@@ -128,6 +129,15 @@ jobs:
         with:
           name: csharp-query-smoke-artifacts
           path: ${{ env.CSHARP_QUERY_SMOKE_OUTPUT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload C# query smoke JSON summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-query-smoke-summary-json
+          path: ${{ env.CSHARP_QUERY_SMOKE_JSON_SUMMARY_PATH }}
           if-no-files-found: ignore
           retention-days: 7
 
