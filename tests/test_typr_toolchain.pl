@@ -95,6 +95,28 @@ test(linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) 
     ),
     retractall(user:factorial_linear(_, _)).
 
+test(list_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:list_length([], 0)),
+    assertz(user:(list_length([_|T], N) :-
+        list_length(T, N1),
+        N is N1 + 1
+    )),
+    assertz(type_declarations:uw_type(list_length/2, 1, list(any))),
+    assertz(type_declarations:uw_type(list_length/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(list_length/2, integer)),
+    once(recursive_compiler:compile_recursive(list_length/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:list_length(_, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

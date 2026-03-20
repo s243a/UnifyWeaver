@@ -47,6 +47,7 @@ cleanup_typr_test :-
     retractall(user:if_then_else_asymmetric_rejoin_clause(_, _)),
     retractall(user:factorial_acc(_, _, _)),
     retractall(user:factorial_linear(_, _)),
+    retractall(user:list_length(_, _)),
     retractall(user:alternative_assign_chain(_, _)),
     retractall(user:alternative_assign_clause_chain(_, _)),
     retractall(user:direct_output_choice(_, _)),
@@ -176,6 +177,24 @@ test(recursive_compiler_supports_typr_linear_recursion_path) :-
     once(sub_string(Code, _, _, _, "for (current in seq(current_input, 1))")),
     once(sub_string(Code, _, _, _, "acc = (current * acc);")),
     once(sub_string(Code, _, _, _, "stop(\"No matching recursive clause for factorial_linear\")")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_list_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:list_length([], 0)),
+    assertz(user:(list_length([_|T], N) :-
+        list_length(T, N1),
+        N is N1 + 1
+    )),
+    assertz(type_declarations:uw_type(list_length/2, 1, list(any))),
+    assertz(type_declarations:uw_type(list_length/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(list_length/2, integer)),
+    once(recursive_compiler:compile_recursive(list_length/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let list_length <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "if (length(current_input) == 0)")),
+    once(sub_string(Code, _, _, _, "for (current in rev(current_input))")),
+    once(sub_string(Code, _, _, _, "acc = (acc + 1);")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

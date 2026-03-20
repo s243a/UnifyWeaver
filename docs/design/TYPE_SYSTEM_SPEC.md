@@ -366,6 +366,10 @@ Current TypR lowering policy is intentionally mixed:
   TypR-valid functions when they match the currently supported single-base,
   single-recursive-clause fold shape, using raw-expression fold/loop bodies
   inside TypR rather than wrapped-R fallback
+- conservative arity-2 list linear-recursive predicates may also lower to
+  TypR-valid functions when they match the currently supported empty-list
+  base-case fold shape, using raw-expression fold/loop bodies inside TypR
+  rather than wrapped-R fallback
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select
