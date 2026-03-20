@@ -165,6 +165,54 @@ test(nary_list_linear_recursive_output_checks_with_typr, [condition(typr_cli_ava
     ),
     retractall(user:list_length_from(_, _, _)).
 
+test(guarded_nary_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:power_if(_Base, 0, 1)),
+    assertz(user:(power_if(Base, N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        power_if(Base, N1, Prev),
+        ( Base > 1 -> Result is Base * Prev ; Result is Prev )
+    )),
+    assertz(type_declarations:uw_type(power_if/3, 1, integer)),
+    assertz(type_declarations:uw_type(power_if/3, 2, integer)),
+    assertz(type_declarations:uw_type(power_if/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(power_if/3, integer)),
+    once(recursive_compiler:compile_recursive(power_if/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:power_if(_, _, _)).
+
+test(guarded_nary_list_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:count_occ(_, [], 0)),
+    assertz(user:(count_occ(X, [Y|T], N) :-
+        count_occ(X, T, N1),
+        ( X == Y -> N is N1 + 1 ; N is N1 )
+    )),
+    assertz(type_declarations:uw_type(count_occ/3, 1, integer)),
+    assertz(type_declarations:uw_type(count_occ/3, 2, list(integer))),
+    assertz(type_declarations:uw_type(count_occ/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(count_occ/3, integer)),
+    once(recursive_compiler:compile_recursive(count_occ/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:count_occ(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

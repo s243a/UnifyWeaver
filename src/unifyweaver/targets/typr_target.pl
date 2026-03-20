@@ -170,12 +170,11 @@ linear_recursive_numeric_spec(
     ),
     number(BaseInput),
     var(InputVar),
-    normalize_typr_goals(PostGoals, [OutputVar is FoldTerm]),
     extract_typr_linear_step_info(RecBody, DriverPos, RecCallArgs, InputVar, Step, Direction),
     append([InputVar-"current", RecResultVar-"acc"], RecInvariantVarMap, FoldVarMap),
     append([InputVar-"current_input"], RecInvariantVarMap, GuardVarMap),
     linear_recursive_guard_expr(PreGoals, GuardVarMap, RecursiveGuardExpr),
-    typr_translate_r_expr(FoldTerm, FoldVarMap, FoldExpr),
+    linear_recursive_output_expr(PostGoals, OutputVar, FoldVarMap, FoldExpr),
     typr_translate_r_expr(BaseOutput, BaseInvariantVarMap, BaseOutputExpr),
     r_literal(BaseInput, BaseInputLiteral),
     typr_linear_seq_expr(BaseInput, Step, Direction, SeqExpr).
@@ -221,9 +220,8 @@ linear_recursive_list_spec(
     var(TailVar),
     PreGoals == true,
     RecInputArg == TailVar,
-    normalize_typr_goals(PostGoals, [OutputVar is FoldTerm]),
     append([HeadVar-"current", RecResultVar-"acc"], RecInvariantVarMap, FoldVarMap),
-    typr_translate_r_expr(FoldTerm, FoldVarMap, FoldExpr),
+    linear_recursive_output_expr(PostGoals, OutputVar, FoldVarMap, FoldExpr),
     typr_translate_r_expr(BaseOutput, BaseInvariantVarMap, BaseOutputExpr).
 
 linear_recursive_arg_spec(
@@ -336,6 +334,21 @@ linear_recursive_step_goal(Goal) :-
 
 linear_recursive_guard_condition(VarMap, Goal, GuardCondition) :-
     native_typr_guard_goal(Goal, VarMap, GuardCondition).
+
+linear_recursive_output_expr(PostGoals, OutputVar, VarMap, OutputExpr) :-
+    normalize_typr_goals(PostGoals, [OutputVar is FoldTerm]),
+    !,
+    typr_translate_r_expr(FoldTerm, VarMap, OutputExpr).
+linear_recursive_output_expr(PostGoals, OutputVar, VarMap, OutputExpr) :-
+    typr_if_then_else_goal(PostGoals, IfGoal, ThenGoal, ElseGoal),
+    linear_recursive_branch_output_expr(ThenGoal, OutputVar, VarMap, ThenExpr),
+    linear_recursive_branch_output_expr(ElseGoal, OutputVar, VarMap, ElseExpr),
+    native_typr_if_condition(IfGoal, VarMap, IfCondition),
+    format(string(OutputExpr), 'if (~w) { ~w } else { ~w }', [IfCondition, ThenExpr, ElseExpr]).
+
+linear_recursive_branch_output_expr(Goal, OutputVar, VarMap, OutputExpr) :-
+    normalize_typr_goals(Goal, [OutputVar is FoldTerm]),
+    typr_translate_r_expr(FoldTerm, VarMap, OutputExpr).
 
 typr_linear_seq_expr(BaseInput, Step, down, SeqExpr) :-
     !,
