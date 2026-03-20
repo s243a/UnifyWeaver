@@ -51,8 +51,10 @@ cleanup_typr_test :-
     retractall(user:power(_, _, _)),
     retractall(user:power_if(_, _, _)),
     retractall(user:power_multistate(_, _, _)),
+    retractall(user:asym_rec_a(_, _, _)),
     retractall(user:count_occ(_, _, _)),
     retractall(user:count_weighted(_, _, _)),
+    retractall(user:asym_rec_c(_, _, _)),
     retractall(user:list_length_from(_, _, _)),
     retractall(user:alternative_assign_chain(_, _)),
     retractall(user:alternative_assign_clause_chain(_, _)),
@@ -336,6 +338,56 @@ test(recursive_compiler_supports_typr_multistate_nary_list_linear_recursion_path
     once(sub_string(Code, _, _, _, "current_input = arg2;")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { (acc + 1) } else { acc }")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { ((acc + 1) + 1) } else { (acc + 2) }")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_asymmetric_nary_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:asym_rec_a(_Base, 0, 1)),
+    assertz(user:(asym_rec_a(Base, N, Result) :-
+        N > 0,
+        N1 is N - 1,
+        asym_rec_a(Base, N1, Prev),
+        ( Base > 1 ->
+            Step is Base * Prev,
+            Result is Step + 1
+        ;   Temp is Prev + 2,
+            Result is Temp + Prev
+        )
+    )),
+    assertz(type_declarations:uw_type(asym_rec_a/3, 1, integer)),
+    assertz(type_declarations:uw_type(asym_rec_a/3, 2, integer)),
+    assertz(type_declarations:uw_type(asym_rec_a/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(asym_rec_a/3, integer)),
+    once(recursive_compiler:compile_recursive(asym_rec_a/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let asym_rec_a <- fn(arg1: int, arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "if (@{ arg1 > 1 }@) { ((arg1 * acc) + 1) } else { ((acc + 2) + acc) }")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_asymmetric_nary_list_linear_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:asym_rec_c(_, [], 0)),
+    assertz(user:(asym_rec_c(X, [Y|T], N) :-
+        asym_rec_c(X, T, N1),
+        ( X == Y ->
+            Delta is N1 + 1,
+            N is Delta + 1
+        ;   Extra is N1 + 2,
+            N is Extra + N1
+        )
+    )),
+    assertz(type_declarations:uw_type(asym_rec_c/3, 1, integer)),
+    assertz(type_declarations:uw_type(asym_rec_c/3, 2, list(integer))),
+    assertz(type_declarations:uw_type(asym_rec_c/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(asym_rec_c/3, integer)),
+    once(recursive_compiler:compile_recursive(asym_rec_c/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let asym_rec_c <- fn(arg1: int, arg2: [#N, int], arg3: int): int")),
+    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { ((acc + 1) + 1) } else { ((acc + 2) + acc) }")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).

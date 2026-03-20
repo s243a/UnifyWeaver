@@ -377,6 +377,10 @@ Current TypR lowering policy is intentionally mixed:
   the recursive result and later branch-local selected intermediate values
   are recombined through supported `if -> then ; else` choices over
   TypR-translatable expressions
+- asymmetric post-recursive recombination may also stay native inside those
+  same single-recursive-call numeric and list linear-recursive shapes when
+  different branch-local intermediates feed a shared later output expression
+  that can still be normalized into TypR-translatable branch results
 - two-level nested guarded alternatives may also stay native when a supported
   semicolon branch contains another guarded alternative whose nested branch may
   itself contain one more guarded alternative, provided those branches select

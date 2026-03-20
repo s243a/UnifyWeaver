@@ -199,6 +199,10 @@ bring-up.
     call numeric and list linear-recursive shapes when the later result and
     branch-local selected intermediate values are chosen by supported
     `if -> then ; else` choices over TypR-translatable expressions
+  - asymmetric post-recursive recombination inside those same single-
+    recursive-call numeric and list linear-recursive shapes when different
+    branch-local intermediates still feed a shared later TypR-translatable
+    result expression
   - two-level nested guarded alternatives inside supported semicolon branches
     where each nested branch still selects the same later result set,
     including nested multi-result selections

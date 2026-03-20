@@ -244,6 +244,10 @@ includes:
   where the recursive result and later selected intermediate values are
   recombined through native TypR `if` expressions instead of wrapped-R
   fallback
+- asymmetric post-recursive recombination in those same linear-recursive
+  shapes, such as `asym_rec_a/3` and `asym_rec_c/3`, where different
+  branch-local intermediates feed a shared later result expression and still
+  stay native in TypR
 - two-level nested guarded alternatives inside supported semicolon branches,
   including nested multi-result selections, where each nested branch still
   selects the same later result set natively

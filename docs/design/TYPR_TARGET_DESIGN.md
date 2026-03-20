@@ -69,6 +69,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      call numeric and list linear-recursive shapes when the later result and
      branch-local selected intermediate values are chosen by supported
      `if -> then ; else` expressions over TypR-translatable branch results
+   - asymmetric post-recursive recombination inside those same single-
+     recursive-call numeric and list linear-recursive shapes when different
+     branch-local intermediates still feed a shared later TypR-translatable
+     result expression
    - multiple sequential branch/rejoin segments in the same native body,
      including repeated multi-result rejoin chains that feed later native
      steps after each rejoin
@@ -347,6 +351,8 @@ Current implementation note:
   guarded post-recursive recombination inside those same single-recursive-
   call numeric and list linear-recursive shapes, including multi-state
   branch-local recombination after the recursive call,
+  asymmetric post-recursive recombination inside those same single-recursive-
+  call numeric and list linear-recursive shapes,
   native literal-headed branch bodies built from those chains,
   dataframe helper calls, and literal-guarded branch selection; more complex
   bodies still fall back to wrapped R
