@@ -195,6 +195,9 @@ bring-up.
     lowered to TypR-valid functions with raw-expression fold/loop bodies for
     the currently supported empty-list shape with one recursion-driving list
     argument and invariant context args
+  - conservative arity-2 numeric multi-call tree-recursive predicates
+    lowered to TypR-valid functions with raw-expression memoized helper
+    bodies for the currently supported `fib/2`-style shape
   - guarded post-recursive recombination inside those same single-recursive-
     call numeric and list linear-recursive shapes when the later result and
     branch-local selected intermediate values are chosen by supported

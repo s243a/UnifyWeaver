@@ -117,6 +117,33 @@ test(list_linear_recursive_output_checks_with_typr, [condition(typr_cli_availabl
     ),
     retractall(user:list_length(_, _)).
 
+test(tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:fib(0, 0)),
+    assertz(user:fib(1, 1)),
+    assertz(user:(fib(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        fib(N1, F1),
+        fib(N2, F2),
+        F is F1 + F2
+    )),
+    assertz(type_declarations:uw_type(fib/2, 1, integer)),
+    assertz(type_declarations:uw_type(fib/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(fib/2, integer)),
+    once(recursive_compiler:compile_recursive(fib/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:fib(_, _)).
+
 test(nary_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:power(_Base, 0, 1)),

@@ -238,6 +238,9 @@ includes:
   one recursion-driving list argument and invariant context args, such as
   `list_length/2` and `list_length_from/3`, lowered to TypR functions that
   use raw-expression fold/loop bodies instead of wrapped-R fallback
+- conservative arity-2 numeric multi-call tree-recursive predicates such as
+  `fib/2`, lowered to TypR functions that use raw-expression memoized helper
+  bodies inside TypR instead of wrapped-R fallback
 - guarded post-recursive recombination in those same linear-recursive
   shapes, including multi-state branch-local recombination such as
   `power_if/3`, `count_occ/3`, `power_multistate/3`, and `count_weighted/3`,

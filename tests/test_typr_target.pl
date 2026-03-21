@@ -47,6 +47,7 @@ cleanup_typr_test :-
     retractall(user:if_then_else_asymmetric_rejoin_clause(_, _)),
     retractall(user:factorial_acc(_, _, _)),
     retractall(user:factorial_linear(_, _)),
+    retractall(user:fib(_, _)),
     retractall(user:list_length(_, _)),
     retractall(user:power(_, _, _)),
     retractall(user:power_if(_, _, _)),
@@ -203,6 +204,30 @@ test(recursive_compiler_supports_typr_list_linear_recursion_path) :-
     once(sub_string(Code, _, _, _, "if (length(current_input) == 0)")),
     once(sub_string(Code, _, _, _, "for (current in rev(current_input))")),
     once(sub_string(Code, _, _, _, "acc = (acc + 1);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_tree_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:fib(0, 0)),
+    assertz(user:fib(1, 1)),
+    assertz(user:(fib(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        fib(N1, F1),
+        fib(N2, F2),
+        F is F1 + F2
+    )),
+    assertz(type_declarations:uw_type(fib/2, 1, integer)),
+    assertz(type_declarations:uw_type(fib/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(fib/2, integer)),
+    once(recursive_compiler:compile_recursive(fib/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let fib <- fn(arg1: int, arg2: int): int")),
+    once(sub_string(Code, _, _, _, "fib_memo <- new.env(hash=TRUE, parent=emptyenv())")),
+    once(sub_string(Code, _, _, _, "fib_impl <- function(current_input)")),
+    once(sub_string(Code, _, _, _, "call_1 = fib_impl(step_1);")),
+    once(sub_string(Code, _, _, _, "result = (call_1 + call_2);")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
