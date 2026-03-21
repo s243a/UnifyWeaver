@@ -24,6 +24,12 @@ defmodule AgentLoop.Sessions do
     File.exists?(Path.join(state.sessions_dir, "#{session_id}.json"))
   end
 
+  @doc "Build the filename for a session (id + .json extension)."
+  @spec session_filename(String.t()) :: String.t()
+  def session_filename(session_id) do
+    "#{session_id}.json"
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

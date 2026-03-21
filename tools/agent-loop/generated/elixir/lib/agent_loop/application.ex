@@ -17,7 +17,8 @@ defmodule AgentLoop.Application do
       {AgentLoop.ContextServer, name: AgentLoop.ContextServer},
       {AgentLoop.CacheServer, name: AgentLoop.CacheServer},
       {AgentLoop.StreamingServer, name: AgentLoop.StreamingServer},
-      {AgentLoop.MCPServer, name: AgentLoop.MCPServer}
+      {AgentLoop.MCPServer, name: AgentLoop.MCPServer},
+      {AgentLoop.MCPManagerServer, name: AgentLoop.MCPManagerServer}
     ]
 
     opts = [strategy: :one_for_one, name: AgentLoop.Supervisor]
