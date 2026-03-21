@@ -413,6 +413,71 @@ structural_tree_recursive_spec(
     ),
     typr_goals_to_body(PostGoals, PostBody),
     linear_recursive_output_expr(PostBody, OutputVar, VarMap, ResultExpr).
+structural_tree_recursive_spec(
+    Pred,
+    Arity,
+    BaseClauses,
+    RecHead-RecBody,
+    structural_tree_spec{
+        base_output_expr: BaseOutputExpr,
+        guard_expr: 'TRUE',
+        step_lines: StepLines,
+        call_lines: [],
+        result_expr: "branch_result",
+        input_arg_name: _InputArgName,
+        output_arg_name: OutputArgName,
+        result_name: ResultName,
+        helper_name: HelperName,
+        helper_param_list: HelperParamList,
+        helper_call_arg_list: HelperCallArgList
+    }
+) :-
+    RecHead =.. [_PredName|RecHeadArgs],
+    typr_if_then_else_goal(RecBody, IfGoal, ThenGoal, ElseGoal),
+    normalize_typr_goals(ThenGoal, ThenGoals),
+    split_typr_multicall_goals(Pred, ThenGoals, _ThenPreGoals0, ThenRecCalls, _ThenPostGoals0),
+    structural_tree_arg_spec(
+        Arity,
+        BaseClauses,
+        RecHeadArgs,
+        ThenRecCalls,
+        BaseOutputExpr,
+        OutputVar,
+        DriverPos,
+        ValueVar,
+        LeftVar,
+        RightVar,
+        RecInvariantVarMap,
+        InputArgName,
+        OutputArgName,
+        ResultName
+    ),
+    PreVarMap0 = [ValueVar-"value", LeftVar-"left", RightVar-"right"|RecInvariantVarMap],
+    atom_string(Pred, PredStr),
+    format(string(HelperName), '~w_impl', [PredStr]),
+    structural_tree_helper_param_lists(
+        Arity,
+        DriverPos,
+        RecHeadArgs,
+        InputArgName,
+        PreVarMap0,
+        HelperParamList,
+        HelperCallArgList
+    ),
+    structural_tree_if_branch_step_lines(
+        Pred,
+        IfGoal,
+        ThenGoal,
+        ElseGoal,
+        PreVarMap0,
+        HelperName,
+        DriverPos,
+        Arity,
+        LeftVar,
+        RightVar,
+        OutputVar,
+        StepLines
+    ).
 
 structural_tree_arg_spec(
     Arity,
@@ -513,6 +578,22 @@ structural_tree_helper_call_plan(
         CallLines
     ).
 
+structural_tree_helper_param_lists(
+    Arity,
+    DriverPos,
+    RecHeadArgs,
+    InputArgName,
+    VarMap0,
+    HelperParamList,
+    HelperCallArgList
+) :-
+    linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
+    structural_tree_helper_invariant_names(RecHeadArgs, InvariantPositions, VarMap0, InvariantNames),
+    append(["current_tree"], InvariantNames, HelperParams),
+    atomic_list_concat(HelperParams, ', ', HelperParamList),
+    append([InputArgName], InvariantNames, HelperCallArgs),
+    atomic_list_concat(HelperCallArgs, ', ', HelperCallArgList).
+
 structural_tree_helper_invariant_names(_RecHeadArgs, [], _VarMap, []).
 structural_tree_helper_invariant_names(RecHeadArgs, [Pos|Rest], VarMap, [Name|RestNames]) :-
     nth1(Pos, RecHeadArgs, HeadArg),
@@ -557,6 +638,89 @@ structural_tree_call_invariant_exprs(CallArgs, [Pos|Rest], VarMap, [Expr|RestExp
     typr_translate_r_expr(CallArg, VarMap, Expr),
     structural_tree_call_invariant_exprs(CallArgs, Rest, VarMap, RestExprs).
 
+structural_tree_if_branch_step_lines(
+    Pred,
+    IfGoal,
+    ThenGoal,
+    ElseGoal,
+    VarMap0,
+    HelperName,
+    DriverPos,
+    Arity,
+    LeftVar,
+    RightVar,
+    OutputVar,
+    Lines
+) :-
+    native_typr_if_condition(IfGoal, VarMap0, IfCondition0),
+    typr_condition_expr_text(IfCondition0, IfCondition),
+    structural_tree_branch_body_lines(
+        Pred,
+        ThenGoal,
+        VarMap0,
+        HelperName,
+        DriverPos,
+        Arity,
+        LeftVar,
+        RightVar,
+        OutputVar,
+        ThenLines
+    ),
+    structural_tree_branch_body_lines(
+        Pred,
+        ElseGoal,
+        VarMap0,
+        HelperName,
+        DriverPos,
+        Arity,
+        LeftVar,
+        RightVar,
+        OutputVar,
+        ElseLines
+    ),
+    indent_lines(ThenLines, '    ', IndentedThenLines),
+    indent_lines(ElseLines, '    ', IndentedElseLines),
+    format(string(IfLine), '        if (~w) {', [IfCondition]),
+    append([IfLine|IndentedThenLines], ['        } else {'|IndentedElseLines], Lines0),
+    append(Lines0, ['        };'], Lines).
+
+structural_tree_branch_body_lines(
+    Pred,
+    BranchGoal,
+    VarMap0,
+    HelperName,
+    DriverPos,
+    Arity,
+    LeftVar,
+    RightVar,
+    OutputVar,
+    Lines
+) :-
+    OutputPos is Arity,
+    linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
+    normalize_typr_goals(BranchGoal, Goals),
+    split_typr_multicall_goals(Pred, Goals, PreGoals, RecCalls, PostGoals),
+    typr_goals_to_body(PreGoals, PreBody),
+    compile_tail_recursive_pre_goals(PreBody, VarMap0, PreVarMap, GuardConditions, StepLines),
+    tail_recursive_pre_branch_lines(GuardConditions, StepLines, BranchPreLines),
+    build_structural_tree_call_lines(
+        RecCalls,
+        HelperName,
+        DriverPos,
+        OutputPos,
+        LeftVar,
+        RightVar,
+        InvariantPositions,
+        PreVarMap,
+        VarMap,
+        CallLines
+    ),
+    typr_goals_to_body(PostGoals, PostBody),
+    linear_recursive_output_expr(PostBody, OutputVar, VarMap, BranchResultExpr),
+    format(string(ResultLine), '        branch_result = ~w;', [BranchResultExpr]),
+    append(BranchPreLines, CallLines, Lines0),
+    append(Lines0, [ResultLine], Lines).
+
 add_structural_tree_value_var(ValueVar, VarMap, [ValueVar-"value"|VarMap]) :-
     var(ValueVar),
     !.
@@ -588,16 +752,25 @@ contains_recursive_goal(Pred, [Goal|_]) :-
 contains_recursive_goal(Pred, [_|Rest]) :-
     contains_recursive_goal(Pred, Rest).
 
-goal_calls_predicate(Pred, _Module:Goal) :-
+goal_calls_predicate(Pred, Goal0) :-
+    nonvar(Goal0),
+    Goal0 = _Module:Goal,
     !,
     goal_calls_predicate(Pred, Goal).
 goal_calls_predicate(Pred, Goal) :-
+    nonvar(Goal),
     compound(Goal),
     functor(Goal, Pred, _).
 
 recursive_goal_count(Pred, Body, Count) :-
-    normalize_typr_goals(Body, Goals),
-    include(goal_calls_predicate(Pred), Goals, RecGoals),
+    findall(
+        Goal,
+        (
+            sub_term(Goal, Body),
+            goal_calls_predicate(Pred, Goal)
+        ),
+        RecGoals
+    ),
     length(RecGoals, Count).
 
 typr_goals_to_body([], true).
@@ -1408,7 +1581,9 @@ detect_transitive_closure(Module, Pred, 2, BasePred) :-
     transitive_closure_pattern(Pred, BaseBodies, RecursiveBodies, BasePred).
 
 calls_predicate(Pred, Arity, Goal) :-
-    contains_goal(Goal, SubGoal),
+    sub_term(SubGoal, Goal),
+    nonvar(SubGoal),
+    compound(SubGoal),
     functor(SubGoal, Pred, Arity).
 
 contains_goal((Left, _Right), Goal) :-
