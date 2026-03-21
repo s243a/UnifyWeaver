@@ -203,7 +203,8 @@ bring-up.
     the currently supported `[]` / `[V, L, R]` shape with invariant context
     args and limited native guards, local `is` steps, threaded invariant-
     context updates before the two subtree calls, per-subtree invariant-
-    context updates for the left and right recursive calls, guarded
+    context updates for the left and right recursive calls, branch-local
+    recursive-call aliases before the two subtree calls, guarded
     pre-recursive branching before the two subtree calls, or asymmetric
     branch-local prework that is reconciled later by a guarded result
     expression
