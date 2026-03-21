@@ -6100,30 +6100,30 @@ test_shared_logic_infrastructure :-
         sub_atom(EJR, _, _, _, 'extract_bare')
     )),
     %% All 30 methods compile for all three targets
-    assert_true('all 30 shared_logic compile for all targets', (
+    assert_true('all 36 shared_logic compile for all targets', (
         findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
         include([M]>>(
             agent_loop_module:compile_logic(python, M, _),
             agent_loop_module:compile_logic(rust, M, _),
             agent_loop_module:compile_logic(elixir, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 30)
+        length(OkMs, 36)
     )),
     %% --- Elixir structure validation ---
     assert_true('elixir mix.exs exists', (
         exists_file('generated/elixir/mix.exs')
     )),
-    assert_true('elixir has 19 lib modules', (
+    assert_true('elixir has 20 lib modules', (
         expand_file_name('generated/elixir/lib/agent_loop/*.ex', Files),
-        length(Files, 19)
+        length(Files, 20)
     )),
-    assert_true('elixir has 15 test files', (
+    assert_true('elixir has 16 test files', (
         expand_file_name('generated/elixir/test/*.exs', TestFiles),
-        length(TestFiles, 15)
+        length(TestFiles, 16)
     )),
-    assert_true('elixir_server facts count is 5', (
+    assert_true('elixir_server facts count is 6', (
         findall(S, agent_loop_module:elixir_server(S, _), Srvs),
-        length(Srvs, 5)
+        length(Srvs, 6)
     )),
     assert_true('application.ex contains all supervised servers', (
         read_file_to_string('generated/elixir/lib/agent_loop/application.ex', AppContent, []),
@@ -6201,12 +6201,12 @@ test_shared_logic_infrastructure :-
 %% =============================================================================
 %%
 %% Verify that compile_logic/3 produces semantically consistent code across
-%% Python, Rust, Elixir, and Prolog for all 30 shared_logic methods.
+%% Python, Rust, Elixir, and Prolog for all 36 shared_logic methods.
 
 test_cross_target_integration :-
     format("~nCross-target integration tests:~n"),
     %% All 30 methods compile for all 4 targets
-    assert_true('all 30 shared_logic compile for 4 targets (py/rs/ex/pl)', (
+    assert_true('all 36 shared_logic compile for 4 targets (py/rs/ex/pl)', (
         findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
         include([M]>>(
             agent_loop_module:compile_logic(python, M, _),
@@ -6214,7 +6214,7 @@ test_cross_target_integration :-
             agent_loop_module:compile_logic(elixir, M, _),
             agent_loop_module:compile_logic(prolog, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 30)
+        length(OkMs, 36)
     )),
     %% Prolog compile_logic produces Result = ... pattern for return methods
     assert_true('prolog is_over_budget has Result unification', (

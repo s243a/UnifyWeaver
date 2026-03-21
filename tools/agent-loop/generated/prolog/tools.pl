@@ -71,6 +71,29 @@ tool_description(openrouter_api, write, writing, path, basename).
 tool_description(openrouter_api, edit, editing, path, basename).
 tool_description(openrouter_api, bash, $, command, truncate(72)).
 
+
+%% --- shared_logic: tools (generated from compile_logic) ---
+
+%% Check if a tool name is in the destructive set (bash, write, edit).
+is_destructive(Tool_name, Result) :-
+    Result = memberchk(tool_name, ["bash", "write", "edit"])
+
+%% Check if a tool is read-only (safe without approval).
+is_safe(Tool_name, Result) :-
+    Result = tool_name == "read"
+
+%% Check if a tool is in the user-approved set.
+is_approved(Tool_name, Approved_set, Result) :-
+    Result = memberchk(tool_name, approved_set)
+
+%% Check if a tool requires user approval (destructive and not safe).
+tool_needs_approval(Tool_name, Result) :-
+    (eq_str(tool_name, read) ->
+        Result = false
+    ;
+    Result = memberchk(tool_name, ["bash", "write", "edit"])
+    )
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

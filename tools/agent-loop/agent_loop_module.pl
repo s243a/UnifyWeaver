@@ -1949,7 +1949,9 @@ write_decl_shared_logic_tests(S) :-
             format(atom(L3), 'shared_logic(~w) compiles for rust', [M]),
             format(S, '    decl_assert_true(\'~w\', agent_loop_module:compile_logic(rust, ~w, _)),~n', [L3, M]),
             format(atom(L4), 'shared_logic(~w) compiles for elixir', [M]),
-            format(S, '    decl_assert_true(\'~w\', agent_loop_module:compile_logic(elixir, ~w, _)),~n', [L4, M])
+            format(S, '    decl_assert_true(\'~w\', agent_loop_module:compile_logic(elixir, ~w, _)),~n', [L4, M]),
+            format(atom(L5), 'shared_logic(~w) compiles for prolog', [M]),
+            format(S, '    decl_assert_true(\'~w\', agent_loop_module:compile_logic(prolog, ~w, _)),~n', [L5, M])
         )),
         write(S, '    true.\n\n')
     ).
@@ -2544,7 +2546,8 @@ emit_shared_method(S, prolog, MethodName) :-
 
 %% Capitalize Prolog argument names (budget → Budget)
 prolog_capitalize_args(ArgsStr, Result) :-
-    split_string(ArgsStr, ", ", "", Parts),
+    split_string(ArgsStr, ", ", "", Parts0),
+    exclude([P]>>(P = ""), Parts0, Parts),
     maplist([P, Cap]>>(
         string_chars(P, [H|T]),
         upcase_atom(H, UH),
@@ -2553,49 +2556,73 @@ prolog_capitalize_args(ArgsStr, Result) :-
     atomic_list_concat(CapParts, ', ', Result).
 
 %% Prolog fixup: convert imperative if/return patterns to Prolog (Cond -> Then ; Else)
+%% Prolog fixup: convert imperative if/return patterns to Prolog conditionals
+%% Pattern: "if COND:\n    THEN\nELSE" → "(COND ->\n    THEN\n;\n    ELSE\n)"
+%% Handles: single-line then, unindented else, no else (uses "; true)")
+%% Also handles nested if/return patterns via recursive fixup
 prolog_fixup_body(In, Out) :-
-    %% Replace "if X:" patterns with Prolog conditional
     split_string(In, "\n", "", Lines),
     prolog_fixup_lines(Lines, FixedLines),
     atomics_to_text(FixedLines, "\n", Out).
 
 prolog_fixup_lines([], []).
 prolog_fixup_lines([Line|Rest], Result) :-
-    %% Check if line starts with "if " and ends with ":"
-    (  sub_string(Line, 0, _, _, "if "),
-       sub_string(Line, _, 1, 0, ":")
+    (  is_if_line(Line, Cond)
     ->
-       %% Extract condition
-       sub_string(Line, 3, _, 1, Cond),
-       %% Next line is the "then" branch (indented)
-       (Rest = [ThenLine|Rest2] ->
-           string_concat("    ", ThenBody, ThenLine) -> true ; ThenBody = ThenLine,
-           %% Remaining lines form the "else" branch
-           (Rest2 = [ElseLine|Rest3] ->
-               (string_concat("    ", _, ElseLine) ->
-                   %% Still indented — skip
-                   prolog_fixup_lines(Rest2, ElseResult),
-                   Result = [Line|ElseResult]
-               ;
-                   %% Unindented = else branch
-                   format(atom(CondLine), "(~w ->", [Cond]),
-                   format(atom(ThenPart), "    ~w", [ThenBody]),
-                   Result = [CondLine, ThenPart, "; true)" | FixedRest],
-                   prolog_fixup_lines([ElseLine|Rest3], FixedRest)
-               )
-           ;
-               format(atom(CondLine), "(~w ->", [Cond]),
-               format(atom(ThenPart), "    ~w", [ThenBody]),
-               Result = [CondLine, ThenPart, "; true)"]
-           )
+       %% Collect indented then-body lines
+       collect_indented(Rest, ThenLines, AfterThen),
+       (ThenLines = [] ->
+           %% Malformed — pass through
+           prolog_fixup_lines(Rest, RestFixed),
+           Result = [Line|RestFixed]
        ;
-           Result = [Line],
-           prolog_fixup_lines(Rest, _)
+           %% Strip leading indent from then-body
+           maplist(strip_indent, ThenLines, StrippedThen),
+           %% Recursively fixup nested if/return in then-body
+           prolog_fixup_lines(StrippedThen, FixedThen),
+           %% Check if there are else lines (unindented continuation)
+           format(atom(CondLine), "(~w ->", [Cond]),
+           indent_lines(FixedThen, IndentedThen),
+           (AfterThen = [] ->
+               append([CondLine|IndentedThen], ["; true)"], Result)
+           ;
+               %% Remaining lines are the else/continuation
+               prolog_fixup_lines(AfterThen, FixedElse),
+               append([CondLine|IndentedThen], [";"|FixedElse2], Result),
+               append(FixedElse, [")"], FixedElse2)
+           )
        )
     ;
        prolog_fixup_lines(Rest, RestFixed),
        Result = [Line|RestFixed]
     ).
+
+%% Check if a line is "if COND:" and extract COND
+is_if_line(Line, Cond) :-
+    sub_string(Line, 0, _, _, "if "),
+    sub_string(Line, _, 1, 0, ":"),
+    sub_string(Line, 3, _, 1, Cond).
+
+%% Collect lines with 4-space indent; stop at first unindented line
+collect_indented([], [], []).
+collect_indented([Line|Rest], [Line|Indented], After) :-
+    sub_string(Line, 0, 4, _, "    "), !,
+    collect_indented(Rest, Indented, After).
+collect_indented(Lines, [], Lines).
+
+%% Strip 4-space leading indent
+strip_indent(Line, Stripped) :-
+    (sub_string(Line, 0, 4, _, "    ") ->
+        sub_string(Line, 4, _, 0, Stripped)
+    ;
+        Stripped = Line
+    ).
+
+%% Add 4-space indent to each line
+indent_lines([], []).
+indent_lines([L|Ls], [IL|ILs]) :-
+    format(atom(IL), "    ~w", [L]),
+    indent_lines(Ls, ILs).
 
 atomics_to_text([], _, "").
 atomics_to_text([X], _, X).
@@ -2825,6 +2852,8 @@ write_shared_block(S, Target, Module) :-
     (Methods \= [] ->
         ((Target = python ; Target = elixir) ->
             format(S, '~n# --- shared_logic: ~w (generated from compile_logic) ---~n~n', [Module])
+        ; Target = prolog ->
+            format(S, '~n%% --- shared_logic: ~w (generated from compile_logic) ---~n~n', [Module])
         ;
             format(S, '~n// --- shared_logic: ~w (generated from compile_logic) ---~n~n', [Module])
         ),
@@ -3165,6 +3194,58 @@ shared_logic(tools, is_tool_safe, [
     doc("Check if a tool is read-only (safe without approval)."),
     container(none),
     body_template("~return_val(eq_str(tool_name, read))~")
+]).
+
+%% --- Context trimming helpers ---
+shared_logic(context, context_needs_trim, [
+    signature(context_needs_trim, [max_tokens], bool),
+    arg_types([int]),
+    doc("Check if context token count exceeds the budget for trimming."),
+    container('ContextManager'),
+    body_template("if ~guard_leq_zero(max_tokens)~:\n    ~return_val(false)~\n~return_val(self_field(estimated_tokens) >= max_tokens)~"),
+    field_map(elixir, ['self.estimated_tokens'-'state.estimated_tokens']),
+    field_map(prolog, ['self.estimated_tokens'-'State.estimated_tokens'])
+]).
+
+shared_logic(context, context_message_count, [
+    signature(context_message_count, [], int),
+    doc("Return the number of messages in the context window."),
+    container('ContextManager'),
+    body_template("~return_val(len_of(self_direct(messages)))~")
+]).
+
+%% --- Tool dispatch helpers ---
+shared_logic(tools, is_tool_approved, [
+    signature(is_approved, [tool_name, approved_set], bool),
+    arg_types([string, set_of_string]),
+    doc("Check if a tool is in the user-approved set."),
+    container(none),
+    body_template("~return_val(contains(approved_set, tool_name))~")
+]).
+
+shared_logic(tools, tool_needs_approval, [
+    signature(tool_needs_approval, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if a tool requires user approval (destructive and not safe)."),
+    container(none),
+    body_template("if ~eq_str(tool_name, read)~:\n    ~return_val(false)~\n~return_val(matches_str_set(tool_name, [bash, write, edit]))~")
+]).
+
+%% --- Session helpers ---
+shared_logic(sessions, session_filename, [
+    signature(session_filename, [session_id], string),
+    arg_types([string]),
+    doc("Build the filename for a session (id + .json extension)."),
+    container(none),
+    body_template("~return_val(format_str(\"{}.json\", [session_id]))~")
+]).
+
+%% --- Cache helpers ---
+shared_logic(tool_cache, cache_count, [
+    signature(cache_count, [], int),
+    doc("Return the number of cached tool results."),
+    container('ToolResultCache'),
+    body_template("~return_val(len_of(self_direct(cache)))~")
 ]).
 
 %% =============================================================================
@@ -3844,6 +3925,7 @@ generate_prolog_costs :-
         dependencies([module(costs)])
     ]),
     agent_loop_components:emit_cost_facts(S, [target(prolog)]),
+    write_shared_block_prolog(S, costs),
     write_prolog(S, cost_tracker_impl),
     close(S),
     format('  Generated prolog/costs.pl~n', []).
@@ -3894,6 +3976,7 @@ generate_prolog_tools :-
         comment('JIT multi-arg indexing: tool_description/5 benefits from (arg1, arg2) indexing')
     ]),
     agent_loop_components:emit_tool_facts(S, [target(prolog)]),
+    write_shared_block_prolog(S, tools),
     write_prolog(S, tools_execute_dispatch),
     write_prolog(S, tools_schema),
     write_prolog(S, tools_describe),
@@ -4006,6 +4089,14 @@ generate_prolog_agent_loop :-
                  current_backend/1, current_format/1, streaming/1,
                  context_max_tokens/1, context_max_messages/1])
     ]),
+    %% Shared logic utility predicates (context, streaming, cache, mcp, retry, output_parser, sessions)
+    write_shared_block_prolog(S, context),
+    write_shared_block_prolog(S, streaming),
+    write_shared_block_prolog(S, tool_cache),
+    write_shared_block_prolog(S, mcp),
+    write_shared_block_prolog(S, retry),
+    write_shared_block_prolog(S, output_parser),
+    write_shared_block_prolog(S, sessions),
     %% Agent loop implementation via prolog_fragment
     write_prolog(S, agent_loop_init_state),
     write_prolog(S, agent_loop_entry),
@@ -4771,6 +4862,7 @@ generate_all(elixir) :-
     generate_elixir_cache_server,
     generate_elixir_streaming_server,
     generate_elixir_mcp_server,
+    generate_elixir_mcp_manager_server,
     %% Application + supervision
     generate_elixir_application,
     %% ExUnit tests
@@ -5398,6 +5490,7 @@ elixir_server('ContextServer', 'ContextManager').
 elixir_server('CacheServer', 'ToolResultCache').
 elixir_server('StreamingServer', 'StreamingTokenCounter').
 elixir_server('MCPServer', 'MCPClient').
+elixir_server('MCPManagerServer', 'MCPManager').
 
 generate_elixir_application :-
     output_path(elixir, 'application.ex', Path),
@@ -5844,6 +5937,76 @@ generate_elixir_mcp_server :-
     close(S),
     format('  Generated elixir/lib/agent_loop/mcp_server.ex~n', []).
 
+%% --- MCPManagerServer GenServer ---
+generate_elixir_mcp_manager_server :-
+    output_path(elixir, 'mcp_manager_server.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.MCPManagerServer', 'GenServer wrapper for MCPManager'),
+    write(S, 'defmodule AgentLoop.MCPManagerServer do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  GenServer wrapping AgentLoop.MCPManager for OTP integration.\n'),
+    write(S, '  Manages multiple MCP server connections and routes tool calls.\n'),
+    write(S, '  """\n\n'),
+    write(S, '  use GenServer\n\n'),
+    write(S, '  alias AgentLoop.MCPManager\n\n'),
+    write(S, '  # --- Client API ---\n\n'),
+    write(S, '  def start_link(opts \\\\ []) do\n'),
+    write(S, '    GenServer.start_link(__MODULE__, %MCPManager{}, opts)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Add and connect to an MCP server."\n'),
+    write(S, '  def add_server(server, name, command, env \\\\ %{}) do\n'),
+    write(S, '    GenServer.call(server, {:add_server, name, command, env})\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "List all available tools across servers."\n'),
+    write(S, '  def list_tools(server) do\n'),
+    write(S, '    GenServer.call(server, :list_tools)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Dispatch a tool call to the appropriate server."\n'),
+    write(S, '  def dispatch(server, tool_name, arguments) do\n'),
+    write(S, '    GenServer.call(server, {:dispatch, tool_name, arguments})\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Disconnect all servers."\n'),
+    write(S, '  def disconnect_all(server) do\n'),
+    write(S, '    GenServer.call(server, :disconnect_all)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Get current state snapshot."\n'),
+    write(S, '  def get_state(server) do\n'),
+    write(S, '    GenServer.call(server, :get_state)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  # --- Server Callbacks ---\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def init(state), do: {:ok, state}\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call({:add_server, name, command, env}, _from, state) do\n'),
+    write(S, '    case MCPManager.add_server(state, name, command, env) do\n'),
+    write(S, '      {:ok, new_state} -> {:reply, :ok, new_state}\n'),
+    write(S, '      {:error, reason} -> {:reply, {:error, reason}, state}\n'),
+    write(S, '    end\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:list_tools, _from, state) do\n'),
+    write(S, '    {:reply, MCPManager.list_tools(state), state}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call({:dispatch, tool_name, arguments}, _from, state) do\n'),
+    write(S, '    case MCPManager.dispatch(state, tool_name, arguments) do\n'),
+    write(S, '      {:ok, result, new_state} -> {:reply, {:ok, result}, new_state}\n'),
+    write(S, '      {:error, reason} -> {:reply, {:error, reason}, state}\n'),
+    write(S, '    end\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:disconnect_all, _from, state) do\n'),
+    write(S, '    MCPManager.disconnect_all(state)\n'),
+    write(S, '    {:reply, :ok, %MCPManager{}}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @impl true\n'),
+    write(S, '  def handle_call(:get_state, _from, state) do\n'),
+    write(S, '    {:reply, state, state}\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/mcp_manager_server.ex~n', []).
+
 %% =============================================================================
 %% Elixir ExUnit Test Generation
 %% =============================================================================
@@ -5866,7 +6029,8 @@ generate_elixir_tests :-
     generate_elixir_streaming_server_test(TestDir),
     generate_elixir_mcp_server_test(TestDir),
     generate_elixir_output_parser_test(TestDir),
-    generate_elixir_sessions_test(TestDir).
+    generate_elixir_sessions_test(TestDir),
+    generate_elixir_mcp_manager_server_test(TestDir).
 
 generate_elixir_test_helper(Dir) :-
     atom_concat(Dir, 'test_helper.exs', Path),
@@ -6310,6 +6474,30 @@ generate_elixir_sessions_test(Dir) :-
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/test/sessions_test.exs~n', []).
+
+%% --- MCPManagerServer tests ---
+generate_elixir_mcp_manager_server_test(Dir) :-
+    atom_concat(Dir, 'mcp_manager_server_test.exs', Path),
+    open(Path, write, S),
+    write(S, 'defmodule AgentLoop.MCPManagerServerTest do\n'),
+    write(S, '  use ExUnit.Case, async: true\n\n'),
+    write(S, '  alias AgentLoop.MCPManagerServer\n\n'),
+    write(S, '  setup do\n'),
+    write(S, '    {:ok, pid} = MCPManagerServer.start_link()\n'),
+    write(S, '    %{server: pid}\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "list_tools returns empty list initially", %{server: s} do\n'),
+    write(S, '    assert MCPManagerServer.list_tools(s) == []\n'),
+    write(S, '  end\n\n'),
+    write(S, '  test "get_state returns MCPManager struct", %{server: s} do\n'),
+    write(S, '    state = MCPManagerServer.get_state(s)\n'),
+    write(S, '    assert %AgentLoop.MCPManager{} = state\n'),
+    write(S, '    assert state.servers == %{}\n'),
+    write(S, '    assert state.tools == %{}\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/test/mcp_manager_server_test.exs~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.

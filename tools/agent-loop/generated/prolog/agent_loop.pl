@@ -25,6 +25,148 @@
 :- dynamic streaming/1.
 :- dynamic context_max_tokens/1.
 :- dynamic context_max_messages/1.
+
+%% --- shared_logic: context (generated from compile_logic) ---
+
+%% Estimate token count using chars/4 heuristic.
+estimate_tokens(State, Result) :-
+    Result = (char_count(State, MethodResult) // 4)
+
+%% Clear all messages from context.
+clear(State, State1) :-
+    State.messages.clear()
+
+%% Return number of messages in context.
+len(State, Result) :-
+    Result = length(State.messages, Len)
+
+%% Check if context has no messages.
+is_empty(State, Result) :-
+    Result = State.messages == []
+
+%% Append a message to the context history.
+add_message(State, Message, State1) :-
+    append(State.messages, [message], NewList), put_dict(messages, State, NewList, State1)
+
+%% Get the last message from history, or nil if empty.
+last_message(State, Result) :-
+    (State.messages == [] ->
+        Result = none
+    ;
+    Result = last(State.messages, Last)
+    )
+
+%% Check if context token count exceeds the budget for trimming.
+context_needs_trim(State, Max_tokens, Result) :-
+    (max_tokens =< 0 ->
+        Result = false
+    ;
+    return_val(self_field(estimated_tokens) >= max_tokens)
+    )
+
+%% Return the number of messages in the context window.
+context_message_count(State, Result) :-
+    Result = length(State.messages, Len)
+
+
+%% --- shared_logic: streaming (generated from compile_logic) ---
+
+%% Process a streamed token chunk: print it, update char and token counts.
+on_token(State, Token, State1) :-
+    write(token), flush_output
+    NewVal is State.char_count + atom_length(token, Len), put_dict(char_count, State, NewVal, State1)
+    put_dict(token_count, State, max(1, (State.char_count // 4)), State1)
+
+%% Format a one-line summary of streaming stats.
+format_summary(State, Result) :-
+    Result = format(atom(Summary), "~State.token_count tokens, State.char_count chars", [State.token_count, State.char_count])
+
+%% Reset streaming counters to zero.
+reset(State, State1) :-
+    put_dict(token_count, State, 0, State1)
+    put_dict(char_count, State, 0, State1)
+
+
+%% --- shared_logic: tool_cache (generated from compile_logic) ---
+
+%% Clear all cached tool results.
+clear(State, State1) :-
+    State.cache.clear()
+
+%% Return number of cached entries.
+len(State, Result) :-
+    Result = length(State.cache, Len)
+
+%% Build a canonical cache key from tool name and arguments.
+make_key(State, Tool_name, Args, Result) :-
+    Result = format(atom(Formatted), "{}:{}", [tool_name, atom_json_term(args, JsonStr, [])])
+
+%% Check if a tool should skip the cache (destructive tools).
+should_skip(State, Tool_name, Result) :-
+    Result = memberchk(tool_name, State.skip_tools)
+
+%% Look up a cached result by key. Returns nil if not found.
+get(State, Key, Result) :-
+    Result = get_dict(key, State.cache, Val)
+
+%% Store a result in the cache.
+put(State, Key, Value, State1) :-
+    put_dict(key, State.cache, value, NewMap), put_dict(cache, State, NewMap, State1)
+
+%% Check if a key exists in the cache.
+has_key(State, Key, Result) :-
+    Result = get_dict(key, State.cache, _)
+
+%% Return the number of cached tool results.
+cache_count(State, Result) :-
+    Result = length(State.cache, Len)
+
+
+%% --- shared_logic: mcp (generated from compile_logic) ---
+
+%% Increment and return the next JSON-RPC request ID.
+next_request_id(State, State1) :-
+    NewVal is State.request_id + 1, put_dict(request_id, State, NewVal, State1)
+    Result = State.request_id
+
+
+%% --- shared_logic: retry (generated from compile_logic) ---
+
+%% Check if an HTTP status code is retryable (408, 429, 5xx).
+is_retryable_status(Status, Result) :-
+    Result = memberchk(status, [408, 429, 500, 502, 503, 504])
+
+%% Calculate exponential backoff delay, capped at max_delay.
+compute_delay(Base_delay, Exponential_base, Attempt, Max_delay, Result) :-
+    Result = min((base_delay * (exponential_base ** (attempt - 1))), max_delay)
+
+
+%% --- shared_logic: output_parser (generated from compile_logic) ---
+
+%% Extract JSON blocks: try fenced code blocks first, fall back to bare objects.
+extract_json(State, Text, Result) :-
+    results = extract_fenced(text, MethodResult)
+    (results \= [] ->
+        Result = results
+    ;
+    Result = extract_bare(text, MethodResult)
+    )
+
+
+%% --- shared_logic: sessions (generated from compile_logic) ---
+
+%% Build the filesystem path for a session file.
+session_path(State, Session_id, Result) :-
+    Result = directory_file_path(State.sessions_dir, format(atom(Formatted), "{}.json", [session_id]), Path)
+
+%% Check if a session file exists on disk.
+session_exists(State, Session_id, Result) :-
+    Result = exists_file(directory_file_path(State.sessions_dir, format(atom(Formatted), "{}.json", [session_id]), Path))
+
+%% Build the filename for a session (id + .json extension).
+session_filename(Session_id, Result) :-
+    Result = format(atom(Formatted), "{}.json", [session_id])
+
 conversation([]).
 max_iterations(0).
 current_format(plain).

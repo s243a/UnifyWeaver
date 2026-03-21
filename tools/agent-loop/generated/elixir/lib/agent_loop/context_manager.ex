@@ -74,4 +74,20 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Check if context token count exceeds the budget for trimming."
+  @spec context_needs_trim(t(), integer()) :: boolean()
+  def context_needs_trim(%__MODULE__{} = state, max_tokens) do
+    if max_tokens <= 0 do
+        false
+    else
+        return_val(self_field(estimated_tokens) >= max_tokens)
+    end
+  end
+
+  @doc "Return the number of messages in the context window."
+  @spec context_message_count(t()) :: integer()
+  def context_message_count(%__MODULE__{} = state) do
+    Enum.count(state.messages)
+  end
+
 end

@@ -39,6 +39,45 @@ model_pricing("llama3", 0.0, 0.0).
 model_pricing("codellama", 0.0, 0.0).
 model_pricing("mistral", 0.0, 0.0).
 
+%% --- shared_logic: costs (generated from compile_logic) ---
+
+%% Check if total cost exceeds budget. Budget of 0 means unlimited.
+is_over_budget(State, Budget, Result) :-
+    (budget =< 0 ->
+        Result = false
+    ;
+    Result = State.total_cost >= Budget
+    )
+
+%% Return remaining budget in USD. Budget of 0 means unlimited (returns -1).
+budget_remaining(State, Budget, Result) :-
+    (budget =< 0 ->
+        Result = -1.0
+    ;
+    Result = max(0.0, Budget - State.total_cost)
+    )
+
+%% Reset all cost tracking state.
+reset(State, State1) :-
+    State.records.clear()
+    put_dict(total_input_tokens, State, 0, State1)
+    put_dict(total_output_tokens, State, 0, State1)
+    put_dict(total_cost, State, 0.0, State1)
+
+%% Compute cost from token count and price per 1M tokens.
+cost_compute(Tokens, Price_per_million, Result) :-
+    Result = ((float(tokens) * price_per_million) / 1.0e+06)
+
+%% Record a usage entry and update running totals.
+record_usage(State, Input_tokens, Output_tokens, Model, State1) :-
+    NewVal is State.total_input_tokens + input_tokens, put_dict(total_input_tokens, State, NewVal, State1)
+    NewVal is State.total_output_tokens + output_tokens, put_dict(total_output_tokens, State, NewVal, State1)
+
+%% Return total token count (input + output).
+total_tokens(State, Result) :-
+    Result = (State.total_input_tokens + State.total_output_tokens)
+
+
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)
 

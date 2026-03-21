@@ -62,4 +62,10 @@ defmodule AgentLoop.ToolResultCache do
     Map.has_key?(state.cache, key)
   end
 
+  @doc "Return the number of cached tool results."
+  @spec cache_count(t()) :: integer()
+  def cache_count(%__MODULE__{} = state) do
+    Enum.count(state.cache)
+  end
+
 end

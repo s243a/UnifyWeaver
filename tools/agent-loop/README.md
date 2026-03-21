@@ -63,7 +63,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
 | Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + OutputParser wiring + MCP lifecycle + tool schema validation + token budget/rate limiting + streaming token counting + 139 integration tests |
-| Elixir | `generated/elixir/` (19 lib modules + 15 test files) | Structs + shared_logic methods + data layer (pricing/tools/backends) + security profiles + config loader + sessions (save/load/list/delete) + output parser (extract_fenced/extract_bare/parse_response) + MCP client (connect/send_request/discover_tools/call_tool/disconnect) + MCPManager + OTP Application + 5 GenServer wrappers (CostServer, ContextServer, CacheServer, StreamingServer, MCPServer) + supervision tree + ExUnit tests (51 test cases) |
+| Elixir | `generated/elixir/` (20 lib modules + 16 test files) | Structs + shared_logic methods + data layer (pricing/tools/backends) + security profiles + config loader + sessions (save/load/list/delete) + output parser (extract_fenced/extract_bare/parse_response) + MCP client (connect/send_request/discover_tools/call_tool/disconnect) + MCPManager + MCPManagerServer + OTP Application + 6 GenServer wrappers (CostServer, ContextServer, CacheServer, StreamingServer, MCPServer, MCPManagerServer) + supervision tree + ExUnit tests (53 test cases) |
 
 ### Declarative Infrastructure
 
@@ -72,16 +72,16 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 30 |
+| `shared_logic/3` facts | 36 |
 | `logic_slot/3` facts | ~75 (20 python + 20 rust + ~35 elixir) |
 | `expand_expr/3` facts | ~50 (14 python + 14 rust + ~22 elixir) |
-| `resolve_type/3` facts | 36 (12 python + 12 rust + 12 elixir incl. `optional/1`, `owned_string`) |
+| `resolve_type/3` facts | 64 (14 python + 19 rust + 17 elixir + 14 prolog incl. `optional/1`, `owned_string`) |
 | `elixir_server/2` facts | 5 (data-driven OTP supervision) |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1079 + 328 declarative + 139 Rust + 148 Python (1079 Prolog unit + 328 auto-generated + 51 Elixir ExUnit + 36 Prolog integration + 148 Python + 139 cargo test) |
+| Total tests | 1079 + 388 declarative + 139 Rust + 148 Python (1079 Prolog unit + 388 auto-generated + 53 Elixir ExUnit + 36 Prolog integration + 148 Python + 139 cargo test) |
 
 ## Backends
 
@@ -473,7 +473,7 @@ This produces all 33 Python files in `generated/`. The output should match `prot
 | Property | ~30 | Structural invariants (e.g., every tool_spec has description + parameters) |
 | Cross-reference | ~15 | Referential integrity (aliases → commands, helper_fragments → py_fragments) |
 | Count consistency | ~6 | Hardcoded counts catch unregistered additions |
-| Shared logic | ~104 | shared_logic facts exist and compile for all 3 targets (python, rust, elixir) |
+| Shared logic | ~216 | shared_logic facts exist and compile for all 4 targets (python, rust, elixir, prolog) |
 | **Total** | **~296** | Auto-generated, zero maintenance |
 
 ```bash
@@ -535,7 +535,7 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**All 30 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
+**All 36 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
