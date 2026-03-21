@@ -108,6 +108,10 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - Writes two summaries for the sequence:
     - markdown: `cache_smoke_sequence_summary.md`
     - JSON: `cache_smoke_sequence_summary.json`
+  - Both summaries include top-level run metadata:
+    - `generatedAtUtc`
+    - `totalDuration`
+    - `totalDurationSeconds` (JSON)
   - Common options:
     - `-OutputDir tmp/csharp_query_smoke_ci`
     - `-KeepArtifacts`
@@ -127,6 +131,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - Produces:
       - `tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.md`
       - `tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json`
+    - Markdown summary now includes:
+      - `Generated at (UTC): ...`
+      - `Total duration: ...`
   - Re-run a single slice against existing generated projects:
     - `pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice reuse -SkipCodegen -KeepArtifacts`
 - CI behavior:
