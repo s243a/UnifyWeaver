@@ -244,10 +244,12 @@ includes:
 - conservative `N`-ary structural tree-recursive predicates with one
   tree-driving argument and invariant context args, such as `tree_sum/2`,
   `tree_height/2`, `weighted_tree_sum/3`, `weighted_tree_affine_sum/4`,
-  `tree_sum_prework/2`, and `weighted_tree_sum_prework/3`, lowered to TypR
+  `tree_sum_prework/2`, `weighted_tree_sum_prework/3`,
+  `tree_sum_branch/2`, and `weighted_tree_sum_branch/3`, lowered to TypR
   functions that use raw-expression structural helper bodies over `[]` /
-  `[V, L, R]` trees, including limited native guards and local `is` steps
-  before the two subtree calls, instead of wrapped-R fallback
+  `[V, L, R]` trees, including limited native guards, local `is` steps,
+  and guarded pre-recursive branching before the two subtree calls, instead
+  of wrapped-R fallback
 - guarded post-recursive recombination in those same linear-recursive
   shapes, including multi-state branch-local recombination such as
   `power_if/3`, `count_occ/3`, `power_multistate/3`, and `count_weighted/3`,
