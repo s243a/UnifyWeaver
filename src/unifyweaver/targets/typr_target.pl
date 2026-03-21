@@ -359,6 +359,8 @@ structural_tree_recursive_spec(
     RecHead-RecBody,
     structural_tree_spec{
         base_output_expr: BaseOutputExpr,
+        guard_expr: GuardExpr,
+        step_lines: StepLines,
         result_expr: ResultExpr,
         input_arg_name: InputArgName,
         output_arg_name: OutputArgName,
@@ -369,7 +371,6 @@ structural_tree_recursive_spec(
     RecHead =.. [_PredName|RecHeadArgs],
     normalize_typr_goals(RecBody, Goals),
     split_typr_multicall_goals(Pred, Goals, PreGoals, RecCalls, PostGoals),
-    PreGoals == [],
     structural_tree_arg_spec(
         Arity,
         BaseClauses,
@@ -386,6 +387,10 @@ structural_tree_recursive_spec(
         OutputArgName,
         ResultName
     ),
+    typr_goals_to_body(PreGoals, PreBody),
+    PreVarMap0 = [ValueVar-"value", LeftVar-"left", RightVar-"right"|RecInvariantVarMap],
+    compile_tail_recursive_pre_goals(PreBody, PreVarMap0, PreVarMap, GuardConditions, StepLines),
+    raw_guard_expr(GuardConditions, GuardExpr),
     structural_tree_call_varmap(
         Arity,
         DriverPos,
@@ -393,13 +398,12 @@ structural_tree_recursive_spec(
         RecCalls,
         LeftVar,
         RightVar,
-        RecInvariantVarMap,
+        PreVarMap,
         VarMap
     ),
-    add_structural_tree_value_var(ValueVar, VarMap, VarMap1),
     typr_goals_to_body(PostGoals, PostBody),
     normalize_typr_goals(PostBody, [OutputVar is AggExpr]),
-    typr_translate_r_expr(AggExpr, VarMap1, ResultExpr),
+    typr_translate_r_expr(AggExpr, VarMap, ResultExpr),
     atom_string(Pred, PredStr),
     format(string(HelperName), '~w_impl', [PredStr]).
 
@@ -895,6 +899,8 @@ build_typr_structural_tree_recursive_body(
     Pred,
     structural_tree_spec{
         base_output_expr: BaseOutputExpr,
+        guard_expr: GuardExpr,
+        step_lines: StepLines,
         result_expr: ResultExpr,
         input_arg_name: InputArgName,
         output_arg_name: OutputArgName,
@@ -907,7 +913,7 @@ build_typr_structural_tree_recursive_body(
     format(string(HelperLine), '    ~w <- function(current_tree) {', [HelperName]),
     format(string(HelperCallLine), '    ~w(~w)', [HelperName, InputArgName]),
     format(string(AssignResultLine), '~w <- ~w;', [OutputArgName, ResultName]),
-    structural_tree_dispatch_lines(Pred, HelperName, BaseOutputExpr, ResultExpr, DispatchLines),
+    structural_tree_dispatch_lines(Pred, HelperName, BaseOutputExpr, GuardExpr, StepLines, ResultExpr, DispatchLines),
     append(
         [
             ResultIntroLine,
@@ -931,19 +937,24 @@ build_typr_structural_tree_recursive_body(
     ),
     atomic_list_concat(RawLines, '\n', Body).
 
-structural_tree_dispatch_lines(Pred, HelperName, BaseOutputExpr, ResultExpr, Lines) :-
+structural_tree_dispatch_lines(Pred, HelperName, BaseOutputExpr, GuardExpr, StepLines, ResultExpr, Lines) :-
     format(string(BaseLine), '            ~w', [BaseOutputExpr]),
     format(string(ResultLine), '            result = ~w;', [ResultExpr]),
     format(string(StopLine), '            stop("No matching recursive clause for ~w")', [Pred]),
     format(string(LeftCallLine), '            left_result = ~w(left);', [HelperName]),
     format(string(RightCallLine), '            right_result = ~w(right);', [HelperName]),
-    Lines = [
+    structural_tree_guard_lines(GuardExpr, Pred, GuardLines),
+    indent_lines(StepLines, '    ', IndentedStepLines),
+    append([
         '        if (length(current_tree) == 0) {',
         BaseLine,
         '        } else if (length(current_tree) == 3) {',
         '            value = .subset2(current_tree, 1);',
         '            left = .subset2(current_tree, 2);',
-        '            right = .subset2(current_tree, 3);',
+        '            right = .subset2(current_tree, 3);'
+    ], GuardLines, Lines0),
+    append(Lines0, IndentedStepLines, Lines1),
+    append(Lines1, [
         LeftCallLine,
         RightCallLine,
         ResultLine,
@@ -951,7 +962,22 @@ structural_tree_dispatch_lines(Pred, HelperName, BaseOutputExpr, ResultExpr, Lin
         '        } else {',
         StopLine,
         '        }'
-    ].
+    ], Lines).
+
+structural_tree_guard_lines('TRUE', _PredName, []) :-
+    !.
+structural_tree_guard_lines(GuardExpr, PredName, [
+    IfLine,
+    StopLine,
+    '            };'
+]) :-
+    format_string('            if (!(~w)) {', [GuardExpr], IfLine),
+    format_string('                stop("No matching recursive clause for ~w")', [PredName], StopLine).
+
+indent_lines([], _Prefix, []).
+indent_lines([Line|Rest], Prefix, [IndentedLine|IndentedRest]) :-
+    string_concat(Prefix, Line, IndentedLine),
+    indent_lines(Rest, Prefix, IndentedRest).
 
 tree_recursive_dispatch_lines(BaseCases, GuardExpr, StepLines, CallLines, ResultExpr, MemoName, Lines) :-
     format(string(MemoCheckLine), '        if (exists(key, envir=~w, inherits=FALSE)) {', [MemoName]),
