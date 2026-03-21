@@ -376,6 +376,10 @@ Current TypR lowering policy is intentionally mixed:
   lower to TypR-valid functions when they match the currently supported
   memoized helper shape for `fib/2`-style recursion, using raw-expression
   helper bodies inside TypR rather than wrapped-R fallback
+- conservative arity-2 structural tree-recursive predicates may also lower
+  to TypR-valid functions when they match the currently supported `[]` /
+  `[V, L, R]` shape with two recursive subtree calls and a TypR-translatable
+  result expression such as `tree_sum/2` or `tree_height/2`
 - guarded post-recursive recombination may also stay native inside those
   same single-recursive-call numeric and list linear-recursive shapes when
   the recursive result and later branch-local selected intermediate values

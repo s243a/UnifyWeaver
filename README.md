@@ -241,6 +241,10 @@ includes:
 - conservative arity-2 numeric multi-call tree-recursive predicates such as
   `fib/2`, lowered to TypR functions that use raw-expression memoized helper
   bodies inside TypR instead of wrapped-R fallback
+- conservative arity-2 structural tree-recursive predicates such as
+  `tree_sum/2` and `tree_height/2`, lowered to TypR functions that use
+  raw-expression structural helper bodies over `[]` / `[V, L, R]` trees
+  inside TypR instead of wrapped-R fallback
 - guarded post-recursive recombination in those same linear-recursive
   shapes, including multi-state branch-local recombination such as
   `power_if/3`, `count_occ/3`, `power_multistate/3`, and `count_weighted/3`,

@@ -198,6 +198,9 @@ bring-up.
   - conservative arity-2 numeric multi-call tree-recursive predicates
     lowered to TypR-valid functions with raw-expression memoized helper
     bodies for the currently supported `fib/2`-style shape
+  - conservative arity-2 structural tree-recursive predicates lowered to
+    TypR-valid functions with raw-expression structural helper bodies for
+    the currently supported `[]` / `[V, L, R]` shape
   - guarded post-recursive recombination inside those same single-recursive-
     call numeric and list linear-recursive shapes when the later result and
     branch-local selected intermediate values are chosen by supported
