@@ -85,6 +85,12 @@ function New-CacheSmokeSummaryData {
         [object[]]$SliceResults,
 
         [Parameter(Mandatory = $true)]
+        [TimeSpan]$TotalDuration,
+
+        [Parameter(Mandatory = $true)]
+        [string]$GeneratedAtUtc,
+
+        [Parameter(Mandatory = $true)]
         [bool]$HasFailure
     )
 
@@ -103,6 +109,9 @@ function New-CacheSmokeSummaryData {
 
     return [pscustomobject][ordered]@{
         overallResult = if ($HasFailure) { "FAIL" } else { "PASS" }
+        generatedAtUtc = $GeneratedAtUtc
+        totalDuration = (Format-Duration -Duration $TotalDuration)
+        totalDurationSeconds = [Math]::Round($TotalDuration.TotalSeconds, 1)
         outputDir = $DisplayOutputDir
         summaryPath = $DisplaySummaryPath
         jsonSummaryPath = $DisplayJsonSummaryPath
@@ -131,6 +140,8 @@ function Write-CacheSmokeSummary {
         "## C# Query Runtime Smoke",
         "",
         "- Overall result: $($SummaryData.overallResult)",
+        "- Generated at (UTC): `"$($SummaryData.generatedAtUtc)`"",
+        "- Total duration: $($SummaryData.totalDuration)",
         "- Output dir: `"$($SummaryData.outputDir)`"",
         "- Summary path: `"$($SummaryData.summaryPath)`"",
         "- JSON summary path: `"$($SummaryData.jsonSummaryPath)`"",
@@ -222,6 +233,7 @@ $sliceSpecs = @(
 
 $sliceResults = @()
 $sequenceFailure = $null
+$sequenceStart = Get-Date
 
 foreach ($sliceSpec in $sliceSpecs) {
     $sliceStart = Get-Date
@@ -248,6 +260,7 @@ foreach ($sliceSpec in $sliceSpecs) {
     }
 }
 
+$sequenceEnd = Get-Date
 $summaryData = New-CacheSmokeSummaryData `
     -DisplayOutputDir $OutputDir `
     -DisplaySummaryPath $displaySummaryPath `
@@ -255,6 +268,8 @@ $summaryData = New-CacheSmokeSummaryData `
     -ProjectFilterValue $ProjectFilter `
     -KeepArtifactsAfterSequence ([bool]$KeepArtifacts) `
     -SliceResults $sliceResults `
+    -TotalDuration ($sequenceEnd - $sequenceStart) `
+    -GeneratedAtUtc ($sequenceEnd.ToUniversalTime().ToString("o")) `
     -HasFailure ([bool]$sequenceFailure)
 
 Write-CacheSmokeSummary `
