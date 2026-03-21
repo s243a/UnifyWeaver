@@ -379,9 +379,11 @@ Current TypR lowering policy is intentionally mixed:
 - conservative `N`-ary structural tree-recursive predicates may also lower
   to TypR-valid functions when they match the currently supported `[]` /
   `[V, L, R]` shape with one tree-driving argument, invariant context args,
-  two recursive subtree calls, and a TypR-translatable result expression
-  such as `tree_sum/2`, `tree_height/2`, `weighted_tree_sum/3`, or
-  `weighted_tree_affine_sum/4`
+  two recursive subtree calls, limited native guards and local `is` steps
+  before those subtree calls, and a TypR-translatable result expression
+  such as `tree_sum/2`, `tree_height/2`, `weighted_tree_sum/3`,
+  `weighted_tree_affine_sum/4`, `tree_sum_prework/2`, or
+  `weighted_tree_sum_prework/3`
 - guarded post-recursive recombination may also stay native inside those
   same single-recursive-call numeric and list linear-recursive shapes when
   the recursive result and later branch-local selected intermediate values

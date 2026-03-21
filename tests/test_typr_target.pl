@@ -50,8 +50,10 @@ cleanup_typr_test :-
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
+    retractall(user:tree_sum_prework(_, _)),
     retractall(user:weighted_tree_sum(_, _, _)),
     retractall(user:weighted_tree_affine_sum(_, _, _, _)),
+    retractall(user:weighted_tree_sum_prework(_, _, _)),
     retractall(user:list_length(_, _)),
     retractall(user:power(_, _, _)),
     retractall(user:power_if(_, _, _)),
@@ -273,6 +275,27 @@ test(recursive_compiler_supports_typr_structural_tree_height_path) :-
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
+test(recursive_compiler_supports_typr_structural_tree_prework_path) :-
+    clear_type_declarations,
+    assertz(user:tree_sum_prework([], 0)),
+    assertz(user:(tree_sum_prework([V, L, R], Sum) :-
+        V >= 0,
+        W is V + 1,
+        tree_sum_prework(L, LS),
+        tree_sum_prework(R, RS),
+        Sum is W + LS + RS
+    )),
+    assertz(type_declarations:uw_type(tree_sum_prework/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum_prework/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum_prework/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum_prework/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let tree_sum_prework <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "if (!(value >= 0)) {")),
+    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
+    once(sub_string(Code, _, _, _, "result = ((step_1 + left_result) + right_result);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
 test(recursive_compiler_supports_typr_nary_structural_tree_recursion_path) :-
     clear_type_declarations,
     assertz(user:weighted_tree_sum([], _Scale, 0)),
@@ -290,6 +313,29 @@ test(recursive_compiler_supports_typr_nary_structural_tree_recursion_path) :-
     once(sub_string(Code, _, _, _, "weighted_tree_sum_impl <- function(current_tree)")),
     once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_impl(left);")),
     once(sub_string(Code, _, _, _, "result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_nary_structural_tree_prework_path) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_sum_prework([], _Scale, 0)),
+    assertz(user:(weighted_tree_sum_prework([V, L, R], Scale, Sum) :-
+        Scale > 0,
+        W is V * Scale,
+        weighted_tree_sum_prework(L, Scale, LS),
+        weighted_tree_sum_prework(R, Scale, RS),
+        Sum is W + LS + RS
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_sum_prework/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_sum_prework/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_sum_prework/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_sum_prework/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_sum_prework/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let weighted_tree_sum_prework <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "if (!(arg2 > 0)) {")),
+    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
+    once(sub_string(Code, _, _, _, "result = ((step_1 + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
