@@ -140,9 +140,9 @@ let ~w <- fn(~w): ~w {
 ', [PredStr, Arity, PredStr, TypedArgList, ReturnType, IndentedBody]).
 
 compile_typr_tree_recursive_structural(_Module:Pred/Arity, TypedMode, Clauses, Code) :-
-    Arity =:= 2,
+    Arity >= 2,
     single_tree_recursive_clause_set(Pred, Arity, Clauses, BaseClauses, RecClause),
-    structural_tree_recursive_spec(Pred, BaseClauses, RecClause, TreeSpec),
+    structural_tree_recursive_spec(Pred, Arity, BaseClauses, RecClause, TreeSpec),
     build_typed_arg_list(Pred/Arity, none, Arity, TypedMode, TypedArgList),
     generic_typr_return_type(Pred/Arity, Clauses, ReturnType),
     build_typr_structural_tree_recursive_body(Pred, TreeSpec, Body),
@@ -354,6 +354,7 @@ tree_recursive_base_case_spec(Head-Body, base_case(InputLiteral, OutputExpr)) :-
 
 structural_tree_recursive_spec(
     Pred,
+    Arity,
     BaseClauses,
     RecHead-RecBody,
     structural_tree_spec{
@@ -365,48 +366,153 @@ structural_tree_recursive_spec(
         helper_name: HelperName
     }
 ) :-
-    structural_tree_base_case_spec(BaseClauses, BaseOutputExpr),
-    RecHead =.. [_PredName, TreeArg, OutputVar],
-    TreeArg = [ValueVar, LeftVar, RightVar],
-    var(OutputVar),
+    RecHead =.. [_PredName|RecHeadArgs],
     normalize_typr_goals(RecBody, Goals),
     split_typr_multicall_goals(Pred, Goals, PreGoals, RecCalls, PostGoals),
     PreGoals == [],
-    structural_tree_call_varmap(RecCalls, LeftVar, RightVar, VarMap),
+    structural_tree_arg_spec(
+        Arity,
+        BaseClauses,
+        RecHeadArgs,
+        RecCalls,
+        BaseOutputExpr,
+        OutputVar,
+        DriverPos,
+        ValueVar,
+        LeftVar,
+        RightVar,
+        RecInvariantVarMap,
+        InputArgName,
+        OutputArgName,
+        ResultName
+    ),
+    structural_tree_call_varmap(
+        Arity,
+        DriverPos,
+        RecHeadArgs,
+        RecCalls,
+        LeftVar,
+        RightVar,
+        RecInvariantVarMap,
+        VarMap
+    ),
     add_structural_tree_value_var(ValueVar, VarMap, VarMap1),
     typr_goals_to_body(PostGoals, PostBody),
     normalize_typr_goals(PostBody, [OutputVar is AggExpr]),
     typr_translate_r_expr(AggExpr, VarMap1, ResultExpr),
-    InputArgName = "arg1",
-    OutputArgName = "arg2",
-    linear_recursive_result_name(2, ResultName),
     atom_string(Pred, PredStr),
     format(string(HelperName), '~w_impl', [PredStr]).
 
-structural_tree_base_case_spec([Head-Body], BaseOutputExpr) :-
+structural_tree_arg_spec(
+    Arity,
+    BaseClauses,
+    RecHeadArgs,
+    RecCalls,
+    BaseOutputExpr,
+    OutputVar,
+    DriverPos,
+    ValueVar,
+    LeftVar,
+    RightVar,
+    RecInvariantVarMap,
+    InputArgName,
+    OutputArgName,
+    ResultName
+) :-
+    OutputPos is Arity,
+    nth1(OutputPos, RecHeadArgs, OutputVar),
+    var(OutputVar),
+    structural_tree_driver_pos(Arity, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar),
+    linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
+    structural_tree_base_case_spec(
+        BaseClauses,
+        DriverPos,
+        OutputPos,
+        InvariantPositions,
+        RecHeadArgs,
+        BaseOutputExpr
+    ),
+    build_linear_recursive_varmap(RecHeadArgs, InvariantPositions, RecInvariantVarMap),
+    format(string(InputArgName), 'arg~w', [DriverPos]),
+    format(string(OutputArgName), 'arg~w', [OutputPos]),
+    linear_recursive_result_name(Arity, ResultName).
+
+structural_tree_driver_pos(Arity, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar) :-
+    InputLast is Arity - 1,
+    structural_tree_driver_pos(1, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar).
+
+structural_tree_driver_pos(Pos, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar) :-
+    Pos =< InputLast,
+    nth1(Pos, RecHeadArgs, TreeArg),
+    TreeArg = [ValueVar, LeftVar, RightVar],
+    var(LeftVar),
+    var(RightVar),
+    structural_tree_recursive_inputs(RecCalls, Pos, LeftVar, RightVar),
+    !,
+    DriverPos = Pos.
+structural_tree_driver_pos(Pos, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar) :-
+    Pos < InputLast,
+    NextPos is Pos + 1,
+    structural_tree_driver_pos(NextPos, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar).
+
+structural_tree_recursive_inputs([FirstCall, SecondCall], DriverPos, LeftVar, RightVar) :-
+    FirstCall =.. [_PredName|FirstArgs],
+    SecondCall =.. [_PredName2|SecondArgs],
+    nth1(DriverPos, FirstArgs, FirstInput),
+    nth1(DriverPos, SecondArgs, SecondInput),
+    (   FirstInput == LeftVar,
+        SecondInput == RightVar
+    ;   FirstInput == RightVar,
+        SecondInput == LeftVar
+    ).
+
+structural_tree_base_case_spec(BaseClauses, DriverPos, OutputPos, InvariantPositions, RecHeadArgs, BaseOutputExpr) :-
+    BaseClauses = [Head-Body],
     Body == true,
-    Head =.. [_PredName, BaseTree, BaseOutput],
+    Head =.. [_PredName|BaseArgs],
+    nth1(DriverPos, BaseArgs, BaseTree),
     BaseTree == [],
-    r_literal(BaseOutput, BaseOutputExpr).
+    base_linear_invariants_ok(BaseArgs, RecHeadArgs, InvariantPositions),
+    build_linear_recursive_varmap(BaseArgs, InvariantPositions, BaseInvariantVarMap),
+    nth1(OutputPos, BaseArgs, BaseOutput),
+    typr_translate_r_expr(BaseOutput, BaseInvariantVarMap, BaseOutputExpr).
 
-structural_tree_call_varmap(RecCalls, LeftVar, RightVar, VarMap) :-
+structural_tree_call_varmap(Arity, DriverPos, RecHeadArgs, RecCalls, LeftVar, RightVar, RecInvariantVarMap, VarMap) :-
+    OutputPos is Arity,
+    linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
     RecCalls = [FirstCall, SecondCall],
-    structural_tree_call_pair(FirstCall, LeftVar, left_result, SecondCall, RightVar, right_result, VarMap),
-    !.
-structural_tree_call_varmap(RecCalls, LeftVar, RightVar, VarMap) :-
-    RecCalls = [FirstCall, SecondCall],
-    structural_tree_call_pair(FirstCall, RightVar, right_result, SecondCall, LeftVar, left_result, VarMap).
-
-structural_tree_call_pair(FirstCall, FirstInput, FirstName, SecondCall, SecondInput, SecondName, VarMap) :-
-    FirstCall =.. [_PredName, FirstInputArg, FirstOutputVar],
-    SecondCall =.. [_PredName2, SecondInputArg, SecondOutputVar],
-    FirstInputArg == FirstInput,
-    SecondInputArg == SecondInput,
+    FirstCall =.. [_PredName|FirstArgs],
+    SecondCall =.. [_PredName2|SecondArgs],
+    structural_tree_call_invariants_ok(RecHeadArgs, FirstArgs, SecondArgs, InvariantPositions),
+    nth1(OutputPos, FirstArgs, FirstOutputVar),
+    nth1(OutputPos, SecondArgs, SecondOutputVar),
     var(FirstOutputVar),
     var(SecondOutputVar),
-    format(string(FirstResolvedName), '~w', [FirstName]),
-    format(string(SecondResolvedName), '~w', [SecondName]),
-    VarMap = [FirstOutputVar-FirstResolvedName, SecondOutputVar-SecondResolvedName].
+    nth1(DriverPos, FirstArgs, FirstInput),
+    nth1(DriverPos, SecondArgs, SecondInput),
+    (   FirstInput == LeftVar,
+        SecondInput == RightVar
+    ->  FirstResolvedName = "left_result",
+        SecondResolvedName = "right_result"
+    ;   FirstInput == RightVar,
+        SecondInput == LeftVar
+    ->  FirstResolvedName = "right_result",
+        SecondResolvedName = "left_result"
+    ),
+    VarMap = [
+        FirstOutputVar-FirstResolvedName,
+        SecondOutputVar-SecondResolvedName
+        | RecInvariantVarMap
+    ].
+
+structural_tree_call_invariants_ok(_RecHeadArgs, _FirstArgs, _SecondArgs, []).
+structural_tree_call_invariants_ok(RecHeadArgs, FirstArgs, SecondArgs, [Pos|Rest]) :-
+    nth1(Pos, RecHeadArgs, HeadArg),
+    nth1(Pos, FirstArgs, FirstArg),
+    nth1(Pos, SecondArgs, SecondArg),
+    linear_recursive_same_arg(HeadArg, FirstArg),
+    linear_recursive_same_arg(HeadArg, SecondArg),
+    structural_tree_call_invariants_ok(RecHeadArgs, FirstArgs, SecondArgs, Rest).
 
 add_structural_tree_value_var(ValueVar, VarMap, [ValueVar-"value"|VarMap]) :-
     var(ValueVar),

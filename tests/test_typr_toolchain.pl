@@ -190,6 +190,55 @@ test(structural_tree_height_output_checks_with_typr, [condition(typr_cli_availab
     ),
     retractall(user:tree_height(_, _)).
 
+test(nary_structural_tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_sum([], _Scale, 0)),
+    assertz(user:(weighted_tree_sum([V, L, R], Scale, Sum) :-
+        weighted_tree_sum(L, Scale, LS),
+        weighted_tree_sum(R, Scale, RS),
+        Sum is (V * Scale) + LS + RS
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_sum/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_sum/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_sum/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_sum/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_sum/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:weighted_tree_sum(_, _, _)).
+
+test(nary_structural_tree_recursive_nonleading_driver_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_affine_sum(_Scale, _Offset, [], 0)),
+    assertz(user:(weighted_tree_affine_sum(Scale, Offset, [V, L, R], Sum) :-
+        weighted_tree_affine_sum(Scale, Offset, L, LS),
+        weighted_tree_affine_sum(Scale, Offset, R, RS),
+        Sum is ((V * Scale) + Offset) + LS + RS
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_affine_sum/4, 1, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_affine_sum/4, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_affine_sum/4, 3, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_affine_sum/4, 4, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_affine_sum/4, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_affine_sum/4, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:weighted_tree_affine_sum(_, _, _, _)).
+
 test(nary_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:power(_Base, 0, 1)),
