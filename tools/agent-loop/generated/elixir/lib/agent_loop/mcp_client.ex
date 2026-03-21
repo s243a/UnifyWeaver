@@ -31,4 +31,113 @@ defmodule AgentLoop.MCPClient do
     state.request_id
   end
 
+  @doc "Connect to MCP server via stdio subprocess"
+  @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
+  def connect(%__MODULE__{} = client) do
+    port = Port.open({:spawn_executable, hd(client.command)},
+      [:binary, :exit_status, {:args, tl(client.command)},
+       {:env, Enum.map(client.env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}])
+    client = %{client | port: port}
+    case send_request(client, "initialize", %{}) do
+      {:ok, _resp, client} -> {:ok, client}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Send a JSON-RPC 2.0 request"
+  @spec send_request(t(), String.t(), map()) :: {:ok, map(), t()} | {:error, String.t()}
+  def send_request(%__MODULE__{} = client, method, params) do
+    id = client.request_id + 1
+    client = %{client | request_id: id}
+    payload = Jason.encode!(%{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params})
+    Port.command(client.port, payload <> "\n")
+    receive do
+      {^(client.port), {:data, data}} ->
+        case Jason.decode(data) do
+          {:ok, %{"result" => result}} -> {:ok, result, client}
+          {:ok, %{"error" => error}} -> {:error, inspect(error)}
+          _ -> {:error, "Invalid JSON-RPC response"}
+        end
+    after
+      5_000 -> {:error, "MCP request timeout"}
+    end
+  end
+
+  @doc "Discover available tools from MCP server"
+  @spec discover_tools(t()) :: {:ok, [map()], t()} | {:error, String.t()}
+  def discover_tools(%__MODULE__{} = client) do
+    case send_request(client, "tools/list", %{}) do
+      {:ok, %{"tools" => tools}, client} -> {:ok, tools, client}
+      {:ok, _, client} -> {:ok, [], client}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Call a tool on the MCP server"
+  @spec call_tool(t(), String.t(), map()) :: {:ok, map(), t()} | {:error, String.t()}
+  def call_tool(%__MODULE__{} = client, tool_name, arguments) do
+    send_request(client, "tools/call", %{"name" => tool_name, "arguments" => arguments})
+  end
+
+  @doc "Disconnect from MCP server"
+  @spec disconnect(t()) :: :ok
+  def disconnect(%__MODULE__{} = client) do
+    if client.port, do: Port.close(client.port)
+    :ok
+  end
+end
+
+defmodule AgentLoop.MCPManager do
+  @moduledoc "Manages multiple MCP server connections and routes tool calls."
+
+  defstruct servers: %{}, tools: %{}
+
+  @type t :: %__MODULE__{servers: map(), tools: map()}
+
+  @doc "Add and connect to an MCP server"
+  @spec add_server(t(), String.t(), [String.t()], map()) :: {:ok, t()} | {:error, String.t()}
+  def add_server(%__MODULE__{} = mgr, name, command, env \\ %{}) do
+    client = %AgentLoop.MCPClient{name: name, command: command, env: env}
+    case AgentLoop.MCPClient.connect(client) do
+      {:ok, client} ->
+        case AgentLoop.MCPClient.discover_tools(client) do
+          {:ok, tools, client} ->
+            tool_map = Map.new(tools, fn t -> {t["name"], name} end)
+            mgr = %{mgr | servers: Map.put(mgr.servers, name, client),
+                          tools: Map.merge(mgr.tools, tool_map)}
+            {:ok, mgr}
+          {:error, reason} -> {:error, reason}
+        end
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "List all available tools across servers"
+  @spec list_tools(t()) :: [String.t()]
+  def list_tools(%__MODULE__{} = mgr), do: Map.keys(mgr.tools)
+
+  @doc "Dispatch a tool call to the appropriate server"
+  @spec dispatch(t(), String.t(), map()) :: {:ok, map(), t()} | {:error, String.t()}
+  def dispatch(%__MODULE__{} = mgr, tool_name, arguments) do
+    case Map.get(mgr.tools, tool_name) do
+      nil -> {:error, "Unknown tool: #{tool_name}"}
+      server_name ->
+        client = Map.get(mgr.servers, server_name)
+        case AgentLoop.MCPClient.call_tool(client, tool_name, arguments) do
+          {:ok, result, client} ->
+            mgr = %{mgr | servers: Map.put(mgr.servers, server_name, client)}
+            {:ok, result, mgr}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  @doc "Disconnect all servers"
+  @spec disconnect_all(t()) :: :ok
+  def disconnect_all(%__MODULE__{} = mgr) do
+    Enum.each(mgr.servers, fn {_name, client} ->
+      AgentLoop.MCPClient.disconnect(client)
+    end)
+    :ok
+  end
 end

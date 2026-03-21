@@ -63,7 +63,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
 | Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + OutputParser wiring + MCP lifecycle + tool schema validation + token budget/rate limiting + streaming token counting + 139 integration tests |
-| Elixir | `generated/elixir/` (18 lib modules + 13 test files) | Structs + shared_logic methods + data layer (pricing/tools/backends) + security profiles + config loader + OTP Application + 5 GenServer wrappers (CostServer, ContextServer, CacheServer, StreamingServer, MCPServer) + supervision tree + ExUnit tests (42 test cases) |
+| Elixir | `generated/elixir/` (19 lib modules + 15 test files) | Structs + shared_logic methods + data layer (pricing/tools/backends) + security profiles + config loader + sessions (save/load/list/delete) + output parser (extract_fenced/extract_bare/parse_response) + MCP client (connect/send_request/discover_tools/call_tool/disconnect) + MCPManager + OTP Application + 5 GenServer wrappers (CostServer, ContextServer, CacheServer, StreamingServer, MCPServer) + supervision tree + ExUnit tests (51 test cases) |
 
 ### Declarative Infrastructure
 
@@ -81,7 +81,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1062 + 312 declarative + 139 Rust + 148 Python (1062 Prolog unit + 312 auto-generated + 42 Elixir ExUnit + 36 Prolog integration + 148 Python + 139 cargo test) |
+| Total tests | 1079 + 328 declarative + 139 Rust + 148 Python (1079 Prolog unit + 328 auto-generated + 51 Elixir ExUnit + 36 Prolog integration + 148 Python + 139 cargo test) |
 
 ## Backends
 
@@ -535,7 +535,7 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**All 30 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, and Elixir targets:
+**All 30 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
@@ -862,6 +862,9 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 - **DynamicSupervisor / Registry** — Replace static supervision tree with DynamicSupervisor for on-demand GenServer spawning and Registry for named process lookup (more production-ready OTP patterns)
 - **Phoenix / Plug integration** — Generate a basic HTTP API or LiveView dashboard from existing tool_spec/slash_command/agent_backend facts, exposing agent operations over HTTP
 - **Telemetry / Logger** — Emit `:telemetry` events from GenServer callbacks and generate `Logger` calls from `audit_logging` security profile fields, enabling observability without code changes
+- **Umbrella app structure** — Split `agent_loop` into sub-apps (`agent_loop_core` for structs/shared_logic, `agent_loop_otp` for GenServers/supervision, `agent_loop_data` for pricing/tools/backends) for better modularity and independent compilation
+- **Property-based testing** — Generate StreamData/PropCheck tests from `shared_logic` signatures automatically — e.g., `budget_remaining(state, budget) >= 0` for all positive budgets, `cache_put` then `cache_get` round-trips
+- **Behaviour modules** — Extract `AgentBackend` behaviour from `agent_backend` facts with `@callback` specs, enabling polymorphic dispatch across backends (coro, claude, openai, etc.) via Elixir protocols or behaviours
 
 ## License
 
