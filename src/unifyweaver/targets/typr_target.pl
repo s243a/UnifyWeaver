@@ -433,6 +433,7 @@ structural_tree_arg_spec(
     OutputPos is Arity,
     nth1(OutputPos, RecHeadArgs, OutputVar),
     var(OutputVar),
+    RecCalls = [_, _],
     structural_tree_driver_pos(Arity, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar),
     linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
     structural_tree_base_case_spec(
@@ -452,30 +453,19 @@ structural_tree_driver_pos(Arity, RecHeadArgs, RecCalls, DriverPos, ValueVar, Le
     InputLast is Arity - 1,
     structural_tree_driver_pos(1, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar).
 
-structural_tree_driver_pos(Pos, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar) :-
+structural_tree_driver_pos(Pos, InputLast, RecHeadArgs, _RecCalls, DriverPos, ValueVar, LeftVar, RightVar) :-
     Pos =< InputLast,
     nth1(Pos, RecHeadArgs, TreeArg),
+    nonvar(TreeArg),
     TreeArg = [ValueVar, LeftVar, RightVar],
     var(LeftVar),
     var(RightVar),
-    structural_tree_recursive_inputs(RecCalls, Pos, LeftVar, RightVar),
     !,
     DriverPos = Pos.
 structural_tree_driver_pos(Pos, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar) :-
     Pos < InputLast,
     NextPos is Pos + 1,
     structural_tree_driver_pos(NextPos, InputLast, RecHeadArgs, RecCalls, DriverPos, ValueVar, LeftVar, RightVar).
-
-structural_tree_recursive_inputs([FirstCall, SecondCall], DriverPos, LeftVar, RightVar) :-
-    FirstCall =.. [_PredName|FirstArgs],
-    SecondCall =.. [_PredName2|SecondArgs],
-    nth1(DriverPos, FirstArgs, FirstInput),
-    nth1(DriverPos, SecondArgs, SecondInput),
-    (   FirstInput == LeftVar,
-        SecondInput == RightVar
-    ;   FirstInput == RightVar,
-        SecondInput == LeftVar
-    ).
 
 structural_tree_base_case_spec(BaseClauses, DriverPos, OutputPos, InvariantPositions, RecHeadArgs, BaseOutputExpr) :-
     BaseClauses = [Head-Body],
@@ -529,8 +519,11 @@ structural_tree_helper_invariant_names(RecHeadArgs, [Pos|Rest], VarMap, [Name|Re
     lookup_typr_var(HeadArg, VarMap, Name),
     structural_tree_helper_invariant_names(RecHeadArgs, Rest, VarMap, RestNames).
 
-build_structural_tree_call_lines([], _HelperName, _DriverPos, _OutputPos, _LeftVar, _RightVar, _InvariantPositions, VarMap, VarMap, []).
-build_structural_tree_call_lines([RecCall|Rest], HelperName, DriverPos, OutputPos, LeftVar, RightVar, InvariantPositions, VarMap0, VarMap, [Line|RestLines]) :-
+build_structural_tree_call_lines(RecCalls, HelperName, DriverPos, OutputPos, LeftVar, RightVar, InvariantPositions, VarMap0, VarMap, Lines) :-
+    build_structural_tree_call_lines(RecCalls, HelperName, DriverPos, OutputPos, LeftVar, RightVar, InvariantPositions, 1, VarMap0, VarMap, Lines).
+
+build_structural_tree_call_lines([], _HelperName, _DriverPos, _OutputPos, _LeftVar, _RightVar, _InvariantPositions, _Index, VarMap, VarMap, []).
+build_structural_tree_call_lines([RecCall|Rest], HelperName, DriverPos, OutputPos, LeftVar, RightVar, InvariantPositions, Index, VarMap0, VarMap, [Line|RestLines]) :-
     RecCall =.. [_PredName|CallArgs],
     nth1(OutputPos, CallArgs, CallOutputVar),
     var(CallOutputVar),
@@ -539,14 +532,24 @@ build_structural_tree_call_lines([RecCall|Rest], HelperName, DriverPos, OutputPo
     structural_tree_call_invariant_exprs(CallArgs, InvariantPositions, VarMap0, InvariantExprs),
     append([CallInputExpr], InvariantExprs, HelperArgs),
     atomic_list_concat(HelperArgs, ', ', HelperArgList),
-    (   CallInput == LeftVar
-    ->  ResultName = "left_result"
-    ;   CallInput == RightVar
-    ->  ResultName = "right_result"
-    ),
+    structural_tree_call_result_name(Index, CallInput, LeftVar, RightVar, ResultName),
     format(string(Line), '            ~w = ~w(~w);', [ResultName, HelperName, HelperArgList]),
     update_typr_expr_varmap(VarMap0, CallOutputVar, ResultName, VarMap1),
-    build_structural_tree_call_lines(Rest, HelperName, DriverPos, OutputPos, LeftVar, RightVar, InvariantPositions, VarMap1, VarMap, RestLines).
+    NextIndex is Index + 1,
+    build_structural_tree_call_lines(Rest, HelperName, DriverPos, OutputPos, LeftVar, RightVar, InvariantPositions, NextIndex, VarMap1, VarMap, RestLines).
+
+structural_tree_call_result_name(_Index, CallInput, LeftVar, _RightVar, "left_result") :-
+    CallInput == LeftVar,
+    !.
+structural_tree_call_result_name(_Index, CallInput, _LeftVar, RightVar, "right_result") :-
+    CallInput == RightVar,
+    !.
+structural_tree_call_result_name(1, _CallInput, _LeftVar, _RightVar, "left_result") :-
+    !.
+structural_tree_call_result_name(2, _CallInput, _LeftVar, _RightVar, "right_result") :-
+    !.
+structural_tree_call_result_name(Index, _CallInput, _LeftVar, _RightVar, ResultName) :-
+    format(string(ResultName), 'call_~w', [Index]).
 
 structural_tree_call_invariant_exprs(_CallArgs, [], _VarMap, []).
 structural_tree_call_invariant_exprs(CallArgs, [Pos|Rest], VarMap, [Expr|RestExprs]) :-
@@ -1162,6 +1165,13 @@ tail_recursive_pre_goal(Goal, VarMap0, VarMap, [], Lines) :-
     ).
 tail_recursive_pre_goal(Goal, VarMap0, VarMap, [], [Line]) :-
     Goal = (Var is Expr),
+    !,
+    ensure_tail_temp_var(VarMap0, Var, TempName, VarMap),
+    typr_translate_r_expr(Expr, VarMap0, ResolvedExpr),
+    format(string(Line), '        ~w = ~w;', [TempName, ResolvedExpr]).
+tail_recursive_pre_goal(Goal, VarMap0, VarMap, [], [Line]) :-
+    Goal = (Var = Expr),
+    var(Var),
     !,
     ensure_tail_temp_var(VarMap0, Var, TempName, VarMap),
     typr_translate_r_expr(Expr, VarMap0, ResolvedExpr),

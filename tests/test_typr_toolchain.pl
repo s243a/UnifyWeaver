@@ -342,6 +342,56 @@ test(nary_structural_tree_invariant_branch_output_checks_with_typr, [condition(t
     ),
     retractall(user:weighted_tree_sum_scale_branch(_, _, _)).
 
+test(structural_tree_branch_local_calls_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:tree_sum_branch_calls([], 0)),
+    assertz(user:(tree_sum_branch_calls([V, L, R], Sum) :-
+        ( V > 0 -> LeftTree = L, RightTree = R ; LeftTree = R, RightTree = L ),
+        tree_sum_branch_calls(LeftTree, LS),
+        tree_sum_branch_calls(RightTree, RS),
+        Sum is V + LS + RS
+    )),
+    assertz(type_declarations:uw_type(tree_sum_branch_calls/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum_branch_calls/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum_branch_calls/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum_branch_calls/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:tree_sum_branch_calls(_, _)).
+
+test(weighted_structural_tree_branch_local_calls_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_branch_calls([], _Scale, 0)),
+    assertz(user:(weighted_tree_branch_calls([V, L, R], Scale, Sum) :-
+        ( Scale > 1 -> LeftTree = L, RightTree = R ; LeftTree = R, RightTree = L ),
+        Scale1 is Scale + 1,
+        weighted_tree_branch_calls(LeftTree, Scale1, LS),
+        weighted_tree_branch_calls(RightTree, Scale, RS),
+        Sum is (V * Scale) + LS + RS
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_branch_calls/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_branch_calls/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_branch_calls/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_branch_calls/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_branch_calls/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:weighted_tree_branch_calls(_, _, _)).
+
 test(nary_structural_tree_subtree_invariant_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:weighted_tree_sum_subtree_scale([], _Scale, 0)),
