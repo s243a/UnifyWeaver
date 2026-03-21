@@ -306,6 +306,7 @@ run_tests :-
     test_phase24_streaming_token_counter,
     test_declarative_test_gen,
     test_shared_logic_infrastructure,
+    test_cross_target_integration,
     %% Run generated declarative tests if available
     (exists_file('generated/prolog/test_declarative.pl') ->
         consult('generated/prolog/test_declarative'),
@@ -6112,13 +6113,13 @@ test_shared_logic_infrastructure :-
     assert_true('elixir mix.exs exists', (
         exists_file('generated/elixir/mix.exs')
     )),
-    assert_true('elixir has 18 lib modules', (
+    assert_true('elixir has 19 lib modules', (
         expand_file_name('generated/elixir/lib/agent_loop/*.ex', Files),
-        length(Files, 18)
+        length(Files, 19)
     )),
-    assert_true('elixir has 13 test files', (
+    assert_true('elixir has 15 test files', (
         expand_file_name('generated/elixir/test/*.exs', TestFiles),
-        length(TestFiles, 13)
+        length(TestFiles, 15)
     )),
     assert_true('elixir_server facts count is 5', (
         findall(S, agent_loop_module:elixir_server(S, _), Srvs),
@@ -6167,7 +6168,8 @@ test_shared_logic_infrastructure :-
             'generated/elixir/lib/agent_loop/tool_result_cache.ex',
             'generated/elixir/lib/agent_loop/streaming_token_counter.ex',
             'generated/elixir/lib/agent_loop/retry.ex',
-            'generated/elixir/lib/agent_loop/mcp_client.ex'
+            'generated/elixir/lib/agent_loop/mcp_client.ex',
+            'generated/elixir/lib/agent_loop/sessions.ex'
         ]), (
             read_file_to_string(Mod, Content, []),
             %% Every public def should have a preceding @spec
@@ -6192,4 +6194,102 @@ test_shared_logic_infrastructure :-
             read_file_to_string(F, Content, []),
             sub_string(Content, _, _, _, "ExUnit.Case")
         ))
+    )).
+
+%% =============================================================================
+%% Cross-target integration tests
+%% =============================================================================
+%%
+%% Verify that compile_logic/3 produces semantically consistent code across
+%% Python, Rust, Elixir, and Prolog for all 30 shared_logic methods.
+
+test_cross_target_integration :-
+    format("~nCross-target integration tests:~n"),
+    %% All 30 methods compile for all 4 targets
+    assert_true('all 30 shared_logic compile for 4 targets (py/rs/ex/pl)', (
+        findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
+        include([M]>>(
+            agent_loop_module:compile_logic(python, M, _),
+            agent_loop_module:compile_logic(rust, M, _),
+            agent_loop_module:compile_logic(elixir, M, _),
+            agent_loop_module:compile_logic(prolog, M, _)
+        ), AllMs, OkMs),
+        length(OkMs, 30)
+    )),
+    %% Prolog compile_logic produces Result = ... pattern for return methods
+    assert_true('prolog is_over_budget has Result unification', (
+        agent_loop_module:compile_logic(prolog, is_over_budget, PlOB),
+        sub_atom(PlOB, _, _, _, 'Result')
+    )),
+    assert_true('prolog budget_remaining has Result unification', (
+        agent_loop_module:compile_logic(prolog, budget_remaining, PlBR),
+        sub_atom(PlBR, _, _, _, 'Result')
+    )),
+    %% Prolog uses State.field for self_field
+    assert_true('prolog is_over_budget accesses State.total_cost', (
+        agent_loop_module:compile_logic(prolog, is_over_budget, PlOB2),
+        sub_atom(PlOB2, _, _, _, 'State.total_cost')
+    )),
+    %% Python/Rust/Elixir/Prolog all handle guard_leq_zero
+    assert_true('all targets handle guard_leq_zero', (
+        agent_loop_module:compile_logic(python, is_over_budget, PyG),
+        sub_atom(PyG, _, _, _, '<= 0'),
+        agent_loop_module:compile_logic(rust, is_over_budget, RsG),
+        sub_atom(RsG, _, _, _, '<= 0'),
+        agent_loop_module:compile_logic(elixir, is_over_budget, ExG),
+        sub_atom(ExG, _, _, _, '<= 0'),
+        agent_loop_module:compile_logic(prolog, is_over_budget, PlG),
+        sub_atom(PlG, _, _, _, '=< 0')
+    )),
+    %% Cross-target: on_token produces print-like output for all targets
+    assert_true('all targets emit print/write for on_token', (
+        agent_loop_module:compile_logic(python, on_token, PyOT),
+        sub_atom(PyOT, _, _, _, 'print'),
+        agent_loop_module:compile_logic(rust, on_token, RsOT),
+        sub_atom(RsOT, _, _, _, 'print'),
+        agent_loop_module:compile_logic(elixir, on_token, ExOT),
+        sub_atom(ExOT, _, _, _, 'IO.write'),
+        agent_loop_module:compile_logic(prolog, on_token, PlOT),
+        sub_atom(PlOT, _, _, _, 'write')
+    )),
+    %% Cross-target: matches_str_set produces set membership for destructive tools
+    assert_true('all targets handle matches_str_set for is_tool_destructive', (
+        agent_loop_module:compile_logic(python, is_tool_destructive, PyTD),
+        sub_atom(PyTD, _, _, _, '"bash"'),
+        agent_loop_module:compile_logic(rust, is_tool_destructive, RsTD),
+        sub_atom(RsTD, _, _, _, '"bash"'),
+        agent_loop_module:compile_logic(elixir, is_tool_destructive, ExTD),
+        sub_atom(ExTD, _, _, _, '"bash"'),
+        agent_loop_module:compile_logic(prolog, is_tool_destructive, PlTD),
+        sub_atom(PlTD, _, _, _, '"bash"')
+    )),
+    %% Elixir sessions module exists and has full methods
+    assert_true('sessions.ex has save_session and load_session', (
+        read_file_to_string('generated/elixir/lib/agent_loop/sessions.ex', SContent, []),
+        sub_string(SContent, _, _, _, "save_session"),
+        sub_string(SContent, _, _, _, "load_session"),
+        sub_string(SContent, _, _, _, "list_sessions"),
+        sub_string(SContent, _, _, _, "delete_session")
+    )),
+    %% Output parser has extract_fenced and extract_bare
+    assert_true('output_parser.ex has extract_fenced and extract_bare', (
+        read_file_to_string('generated/elixir/lib/agent_loop/output_parser.ex', OPContent, []),
+        sub_string(OPContent, _, _, _, "extract_fenced"),
+        sub_string(OPContent, _, _, _, "extract_bare"),
+        sub_string(OPContent, _, _, _, "parse_response")
+    )),
+    %% MCP client has full protocol methods + MCPManager
+    assert_true('mcp_client.ex has connect/send_request/discover_tools/MCPManager', (
+        read_file_to_string('generated/elixir/lib/agent_loop/mcp_client.ex', MCPContent, []),
+        sub_string(MCPContent, _, _, _, "def connect"),
+        sub_string(MCPContent, _, _, _, "send_request"),
+        sub_string(MCPContent, _, _, _, "discover_tools"),
+        sub_string(MCPContent, _, _, _, "call_tool"),
+        sub_string(MCPContent, _, _, _, "disconnect"),
+        sub_string(MCPContent, _, _, _, "MCPManager")
+    )),
+    %% Parity report includes Prolog column
+    assert_true('parity report has Prolog column', (
+        read_file_to_string('generated/PARITY_REPORT.md', PRContent, []),
+        sub_string(PRContent, _, _, _, "Prolog")
     )).

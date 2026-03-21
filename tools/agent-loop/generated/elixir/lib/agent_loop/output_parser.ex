@@ -23,4 +23,45 @@ defmodule AgentLoop.OutputParser do
     end
   end
 
+  @doc "Extract JSON from fenced code blocks (```json ... ```)"
+  @spec extract_fenced(String.t()) :: [map()]
+  def extract_fenced(text) do
+    ~r/```(?:json)?\s*\n(.*?)```/s
+    |> Regex.scan(text)
+    |> Enum.flat_map(fn [_, body] ->
+      case Jason.decode(body) do
+        {:ok, parsed} when is_map(parsed) -> [parsed]
+        _ -> []
+      end
+    end)
+  end
+
+  @doc "Extract bare JSON objects from text using bracket depth tracking"
+  @spec extract_bare(String.t()) :: [map()]
+  def extract_bare(text) do
+    text
+    |> String.graphemes()
+    |> Enum.reduce({0, "", []}, fn
+      "{", {0, _acc, results} -> {1, "{", results}
+      "{", {depth, acc, results} -> {depth + 1, acc <> "{", results}
+      "}", {1, acc, results} ->
+        candidate = acc <> "}"
+        case Jason.decode(candidate) do
+          {:ok, parsed} when is_map(parsed) -> {0, "", results ++ [parsed]}
+          _ -> {0, "", results}
+        end
+      "}", {depth, acc, results} when depth > 1 -> {depth - 1, acc <> "}", results}
+      char, {depth, acc, results} when depth > 0 -> {depth, acc <> char, results}
+      _, state -> state
+    end)
+    |> elem(2)
+  end
+
+  @doc "Parse model response text and extract structured JSON blocks"
+  @spec parse_response(String.t(), [atom()]) :: {[map()], String.t(), [String.t()]}
+  def parse_response(text, _expected_keys \\ []) do
+    fenced = extract_fenced(text)
+    blocks = if fenced != [], do: fenced, else: extract_bare(text)
+    {blocks, text, []}
+  end
 end
