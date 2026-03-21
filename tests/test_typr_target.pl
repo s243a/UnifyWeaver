@@ -52,10 +52,12 @@ cleanup_typr_test :-
     retractall(user:tree_height(_, _)),
     retractall(user:tree_sum_prework(_, _)),
     retractall(user:tree_sum_branch(_, _)),
+    retractall(user:tree_sum_asym_branch(_, _)),
     retractall(user:weighted_tree_sum(_, _, _)),
     retractall(user:weighted_tree_affine_sum(_, _, _, _)),
     retractall(user:weighted_tree_sum_prework(_, _, _)),
     retractall(user:weighted_tree_sum_branch(_, _, _)),
+    retractall(user:weighted_tree_sum_asym_branch(_, _, _)),
     retractall(user:list_length(_, _)),
     retractall(user:power(_, _, _)),
     retractall(user:power_if(_, _, _)),
@@ -318,9 +320,30 @@ test(recursive_compiler_supports_typr_structural_tree_branching_path) :-
     once(recursive_compiler:compile_recursive(tree_sum_branch/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let tree_sum_branch <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "step_2 = (value + 1);")),
-    once(sub_string(Code, _, _, _, "step_1 = (step_2 + 1);")),
-    once(sub_string(Code, _, _, _, "result = ((step_1 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 = (step_1 + 1);")),
+    once(sub_string(Code, _, _, _, "result = ((step_2 + left_result) + right_result);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_asymmetric_branching_path) :-
+    clear_type_declarations,
+    assertz(user:tree_sum_asym_branch([], 0)),
+    assertz(user:(tree_sum_asym_branch([V, L, R], Sum) :-
+        ( V > 0 -> A is V + 1 ; B is V + 2 ),
+        tree_sum_asym_branch(L, LS),
+        tree_sum_asym_branch(R, RS),
+        ( V > 0 -> Sum is A + LS + RS ; Sum is B + LS + RS )
+    )),
+    assertz(type_declarations:uw_type(tree_sum_asym_branch/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum_asym_branch/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum_asym_branch/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum_asym_branch/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let tree_sum_asym_branch <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "if (value > 0) {")),
+    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 = (value + 2);")),
+    once(sub_string(Code, _, _, _, "result = if (@{ value > 0 }@) { ((step_1 + left_result) + right_result) } else { ((step_2 + left_result) + right_result) };")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
@@ -389,9 +412,32 @@ test(recursive_compiler_supports_typr_nary_structural_tree_branching_path) :-
     once(recursive_compiler:compile_recursive(weighted_tree_sum_branch/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_branch <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_2 = (value * arg2);")),
-    once(sub_string(Code, _, _, _, "step_1 = (step_2 + 1);")),
-    once(sub_string(Code, _, _, _, "result = ((step_1 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
+    once(sub_string(Code, _, _, _, "step_2 = (step_1 + 1);")),
+    once(sub_string(Code, _, _, _, "result = ((step_2 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_nary_structural_tree_asymmetric_branching_path) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_sum_asym_branch([], _Scale, 0)),
+    assertz(user:(weighted_tree_sum_asym_branch([V, L, R], Scale, Sum) :-
+        ( Scale > 1 -> A is V * Scale ; B is V + Scale ),
+        weighted_tree_sum_asym_branch(L, Scale, LS),
+        weighted_tree_sum_asym_branch(R, Scale, RS),
+        ( Scale > 1 -> Sum is A + LS + RS ; Sum is B + LS + RS )
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_sum_asym_branch/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_sum_asym_branch/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_sum_asym_branch/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_sum_asym_branch/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_sum_asym_branch/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let weighted_tree_sum_asym_branch <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
+    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
+    once(sub_string(Code, _, _, _, "step_2 = (value + arg2);")),
+    once(sub_string(Code, _, _, _, "result = if (@{ arg2 > 1 }@) { ((step_1 + left_result) + right_result) } else { ((step_2 + left_result) + right_result) };")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).

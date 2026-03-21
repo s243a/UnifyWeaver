@@ -402,8 +402,7 @@ structural_tree_recursive_spec(
         VarMap
     ),
     typr_goals_to_body(PostGoals, PostBody),
-    normalize_typr_goals(PostBody, [OutputVar is AggExpr]),
-    typr_translate_r_expr(AggExpr, VarMap, ResultExpr),
+    linear_recursive_output_expr(PostBody, OutputVar, VarMap, ResultExpr),
     atom_string(Pred, PredStr),
     format(string(HelperName), '~w_impl', [PredStr]).
 
@@ -1144,10 +1143,10 @@ compile_tail_recursive_pre_if_then_else_goal(
 ) :-
     native_typr_if_condition(IfGoal, VarMap0, IfCondition0),
     typr_condition_expr_text(IfCondition0, IfCondition),
-    tail_recursive_pre_if_then_else_shared_output_var(ThenGoal, ElseGoal, SharedVar),
-    ensure_tail_temp_var(VarMap0, SharedVar, _SharedName, VarMap),
-    compile_tail_recursive_pre_branch_body(ThenGoal, SharedVar, VarMap, ThenLines),
-    compile_tail_recursive_pre_branch_body(ElseGoal, SharedVar, VarMap, ElseLines),
+    compile_tail_recursive_pre_goals(ThenGoal, VarMap0, VarMap1, ThenGuardConditions, ThenStepLines),
+    compile_tail_recursive_pre_goals(ElseGoal, VarMap1, VarMap, ElseGuardConditions, ElseStepLines),
+    tail_recursive_pre_branch_lines(ThenGuardConditions, ThenStepLines, ThenLines),
+    tail_recursive_pre_branch_lines(ElseGuardConditions, ElseStepLines, ElseLines),
     indent_lines(ThenLines, '    ', IndentedThenLines),
     indent_lines(ElseLines, '    ', IndentedElseLines),
     format(string(IfLine), '        if (~w) {', [IfCondition]),
@@ -1158,37 +1157,10 @@ compile_tail_recursive_pre_if_then_else_goal(
     ),
     append(Lines0, ['        };'], Lines).
 
-tail_recursive_pre_if_then_else_shared_output_var(ThenGoal, ElseGoal, SharedVar) :-
-    tail_recursive_pre_branch_output_var(ThenGoal, SharedVar),
-    var(SharedVar),
-    tail_recursive_pre_branch_output_var(ElseGoal, ElseVar),
-    SharedVar == ElseVar.
-
-tail_recursive_pre_branch_output_var(Body, OutputVar) :-
-    normalize_typr_goals(Body, Goals),
-    append(_, [LastGoal], Goals),
-    tail_recursive_pre_final_output_var(LastGoal, OutputVar).
-
-tail_recursive_pre_final_output_var(_Module:Goal, OutputVar) :-
-    !,
-    tail_recursive_pre_final_output_var(Goal, OutputVar).
-tail_recursive_pre_final_output_var(Var is _Expr, Var) :-
-    var(Var),
-    !.
-tail_recursive_pre_final_output_var(Goal, OutputVar) :-
-    typr_goal_output_var_simple(Goal, OutputVar).
-
-compile_tail_recursive_pre_branch_body(Body, SharedVar, VarMap0, Lines) :-
-    normalize_typr_goals(Body, Goals),
-    Goals \= [],
-    append(PrefixGoals, [LastGoal], Goals),
-    typr_goals_to_body(PrefixGoals, PrefixBody),
-    compile_tail_recursive_pre_goals(PrefixBody, VarMap0, VarMap1, GuardConditions, PrefixLines),
+tail_recursive_pre_branch_lines(GuardConditions, StepLines, Lines) :-
     raw_guard_expr(GuardConditions, GuardExpr),
     tail_recursive_pre_branch_guard_lines(GuardExpr, GuardLines),
-    tail_recursive_pre_branch_output_lines(LastGoal, SharedVar, VarMap1, OutputLines),
-    append(GuardLines, PrefixLines, Lines0),
-    append(Lines0, OutputLines, Lines).
+    append(GuardLines, StepLines, Lines).
 
 tail_recursive_pre_branch_guard_lines('TRUE', []) :-
     !.
@@ -1199,33 +1171,6 @@ tail_recursive_pre_branch_guard_lines(GuardExpr, [
 ]) :-
     format_string('        if (!(~w)) {', [GuardExpr], IfLine),
     StopLine = '            stop("No matching recursive branch")'.
-
-tail_recursive_pre_branch_output_lines(_Module:Goal, SharedVar, VarMap, Lines) :-
-    !,
-    tail_recursive_pre_branch_output_lines(Goal, SharedVar, VarMap, Lines).
-tail_recursive_pre_branch_output_lines(SharedVar is Expr, SharedVar, VarMap, [Line]) :-
-    !,
-    lookup_typr_var(SharedVar, VarMap, SharedName),
-    typr_translate_r_expr(Expr, VarMap, ResolvedExpr),
-    format(string(Line), '        ~w = ~w;', [SharedName, ResolvedExpr]).
-tail_recursive_pre_branch_output_lines(Goal, SharedVar, VarMap, [Line]) :-
-    tail_recursive_pre_branch_binding_expr(Goal, SharedVar, VarMap, OutputExpr),
-    lookup_typr_var(SharedVar, VarMap, SharedName),
-    format(string(Line), '        ~w = ~w;', [SharedName, OutputExpr]).
-
-tail_recursive_pre_branch_binding_expr(Goal, SharedVar, VarMap, OutputExpr) :-
-    functor(Goal, Pred, Arity),
-    binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
-    Outputs = [_],
-    simple_r_binding_target(TargetName),
-    Goal =.. [_|Args],
-    length(Inputs, InCount),
-    length(InArgs, InCount),
-    append(InArgs, [OutArg], Args),
-    OutArg == SharedVar,
-    maplist(typr_resolve_value(VarMap), InArgs, ResolvedInArgs),
-    atomic_list_concat(ResolvedInArgs, ', ', RArgsStr),
-    format(string(OutputExpr), '~w(~w)', [TargetName, RArgsStr]).
 
 ensure_tail_temp_var(VarMap, Var, Name, VarMap, existing) :-
     lookup_typr_var(Var, VarMap, Name),

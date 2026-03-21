@@ -201,8 +201,10 @@ bring-up.
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
-    args and limited native guards, local `is` steps, or guarded
-    pre-recursive branching before the two subtree calls
+    args and limited native guards, local `is` steps, guarded
+    pre-recursive branching before the two subtree calls, or asymmetric
+    branch-local prework that is reconciled later by a guarded result
+    expression
   - guarded post-recursive recombination inside those same single-recursive-
     call numeric and list linear-recursive shapes when the later result and
     branch-local selected intermediate values are chosen by supported
