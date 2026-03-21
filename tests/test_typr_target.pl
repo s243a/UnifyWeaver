@@ -57,6 +57,8 @@ cleanup_typr_test :-
     retractall(user:weighted_tree_affine_sum(_, _, _, _)),
     retractall(user:weighted_tree_sum_scale_step(_, _, _)),
     retractall(user:weighted_tree_sum_scale_branch(_, _, _)),
+    retractall(user:weighted_tree_sum_subtree_scale(_, _, _)),
+    retractall(user:weighted_tree_sum_subtree_branch(_, _, _)),
     retractall(user:weighted_tree_sum_prework(_, _, _)),
     retractall(user:weighted_tree_sum_branch(_, _, _)),
     retractall(user:weighted_tree_sum_asym_branch(_, _, _)),
@@ -416,6 +418,65 @@ test(recursive_compiler_supports_typr_nary_structural_tree_invariant_branch_path
     once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_scale_branch_impl(left, step_1);")),
     once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_scale_branch_impl(right, step_1);")),
     once(sub_string(Code, _, _, _, "result = (((value * step_1) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_nary_structural_tree_subtree_invariant_path) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_sum_subtree_scale([], _Scale, 0)),
+    assertz(user:(weighted_tree_sum_subtree_scale([V, L, R], Scale, Sum) :-
+        ScaleL is Scale + 1,
+        ScaleR is Scale + 2,
+        weighted_tree_sum_subtree_scale(L, ScaleL, LS),
+        weighted_tree_sum_subtree_scale(R, ScaleR, RS),
+        Sum is (V * Scale) + LS + RS
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_sum_subtree_scale/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_sum_subtree_scale/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_sum_subtree_scale/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_sum_subtree_scale/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_sum_subtree_scale/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let weighted_tree_sum_subtree_scale <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "weighted_tree_sum_subtree_scale_impl <- function(current_tree, arg2)")),
+    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 2);")),
+    once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_subtree_scale_impl(left, step_1);")),
+    once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_subtree_scale_impl(right, step_2);")),
+    once(sub_string(Code, _, _, _, "result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_nary_structural_tree_subtree_branch_path) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_sum_subtree_branch([], _Scale, 0)),
+    assertz(user:(weighted_tree_sum_subtree_branch([V, L, R], Scale, Sum) :-
+        ( Scale > 1 ->
+            ScaleL is Scale + 1,
+            ScaleR is Scale + 2
+        ;   ScaleL is Scale + 3,
+            ScaleR is Scale + 4
+        ),
+        weighted_tree_sum_subtree_branch(L, ScaleL, LS),
+        weighted_tree_sum_subtree_branch(R, ScaleR, RS),
+        Sum is (V * ScaleL) + LS + RS + ScaleR
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_sum_subtree_branch/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_sum_subtree_branch/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_sum_subtree_branch/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_sum_subtree_branch/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_sum_subtree_branch/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let weighted_tree_sum_subtree_branch <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "weighted_tree_sum_subtree_branch_impl <- function(current_tree, arg2)")),
+    once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
+    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 2);")),
+    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 3);")),
+    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 4);")),
+    once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_subtree_branch_impl(left, step_1);")),
+    once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_subtree_branch_impl(right, step_2);")),
+    once(sub_string(Code, _, _, _, "result = ((((value * step_1) + left_result) + right_result) + step_2);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).

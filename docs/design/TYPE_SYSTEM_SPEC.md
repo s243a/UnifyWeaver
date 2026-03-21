@@ -380,12 +380,15 @@ Current TypR lowering policy is intentionally mixed:
   to TypR-valid functions when they match the currently supported `[]` /
   `[V, L, R]` shape with one tree-driving argument, invariant context args,
   two recursive subtree calls, limited native guards, local `is` steps,
-  threaded invariant-context updates before those subtree calls, guarded
-  pre-recursive branching before those subtree calls, and a TypR-
+  threaded invariant-context updates before those subtree calls, per-
+  subtree invariant-context updates for the left and right recursive calls,
+  guarded pre-recursive branching before those subtree calls, and a TypR-
   translatable result expression that may also reconcile asymmetric
   branch-local prework, such as `tree_sum/2`, `tree_height/2`,
   `weighted_tree_sum/3`, `weighted_tree_affine_sum/4`,
   `weighted_tree_sum_scale_step/3`, `weighted_tree_sum_scale_branch/3`,
+  `weighted_tree_sum_subtree_scale/3`,
+  `weighted_tree_sum_subtree_branch/3`,
   `tree_sum_prework/2`, `weighted_tree_sum_prework/3`,
   `tree_sum_branch/2`, `weighted_tree_sum_branch/3`,
   `tree_sum_asym_branch/2`, or `weighted_tree_sum_asym_branch/3`
