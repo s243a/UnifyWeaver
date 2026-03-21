@@ -68,6 +68,9 @@ This document focuses on architecture and rollout choices specific to TypR.
    - conservative arity-2 numeric multi-call tree-recursive predicates that
      match the currently supported memoized helper shape for `fib/2`-style
      recursion, emitted as TypR functions with raw-expression helper bodies
+   - conservative arity-2 structural tree-recursive predicates that match
+     the currently supported `[]` / `[V, L, R]` shape, emitted as TypR
+     functions with raw-expression structural helper bodies
    - guarded post-recursive recombination inside those same single-recursive-
      call numeric and list linear-recursive shapes when the later result and
      branch-local selected intermediate values are chosen by supported
@@ -353,6 +356,8 @@ Current implementation note:
   compiled to raw-expression fold/loop bodies inside TypR functions,
   conservative arity-2 numeric multi-call tree-recursive predicates
   compiled to raw-expression memoized helper bodies inside TypR functions,
+  conservative arity-2 structural tree-recursive predicates compiled to
+  raw-expression structural helper bodies inside TypR functions,
   guarded post-recursive recombination inside those same single-recursive-
   call numeric and list linear-recursive shapes, including multi-state
   branch-local recombination after the recursive call,

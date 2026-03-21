@@ -48,6 +48,8 @@ cleanup_typr_test :-
     retractall(user:factorial_acc(_, _, _)),
     retractall(user:factorial_linear(_, _)),
     retractall(user:fib(_, _)),
+    retractall(user:tree_sum(_, _)),
+    retractall(user:tree_height(_, _)),
     retractall(user:list_length(_, _)),
     retractall(user:power(_, _, _)),
     retractall(user:power_if(_, _, _)),
@@ -228,6 +230,44 @@ test(recursive_compiler_supports_typr_tree_recursion_path) :-
     once(sub_string(Code, _, _, _, "fib_impl <- function(current_input)")),
     once(sub_string(Code, _, _, _, "call_1 = fib_impl(step_1);")),
     once(sub_string(Code, _, _, _, "result = (call_1 + call_2);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:tree_sum([], 0)),
+    assertz(user:(tree_sum([V, L, R], Sum) :-
+        tree_sum(L, LS),
+        tree_sum(R, RS),
+        Sum is V + LS + RS
+    )),
+    assertz(type_declarations:uw_type(tree_sum/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let tree_sum <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "tree_sum_impl <- function(current_tree)")),
+    once(sub_string(Code, _, _, _, "value = .subset2(current_tree, 1);")),
+    once(sub_string(Code, _, _, _, "left_result = tree_sum_impl(left);")),
+    once(sub_string(Code, _, _, _, "result = ((value + left_result) + right_result);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_height_path) :-
+    clear_type_declarations,
+    assertz(user:tree_height([], 0)),
+    assertz(user:(tree_height([_V, L, R], H) :-
+        tree_height(L, HL),
+        tree_height(R, HR),
+        H is 1 + max(HL, HR)
+    )),
+    assertz(type_declarations:uw_type(tree_height/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_height/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_height/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_height/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let tree_height <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "tree_height_impl <- function(current_tree)")),
+    once(sub_string(Code, _, _, _, "result = (1 + max(left_result, right_result));")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

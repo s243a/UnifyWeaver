@@ -144,6 +144,52 @@ test(tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     ),
     retractall(user:fib(_, _)).
 
+test(structural_tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:tree_sum([], 0)),
+    assertz(user:(tree_sum([V, L, R], Sum) :-
+        tree_sum(L, LS),
+        tree_sum(R, RS),
+        Sum is V + LS + RS
+    )),
+    assertz(type_declarations:uw_type(tree_sum/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:tree_sum(_, _)).
+
+test(structural_tree_height_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:tree_height([], 0)),
+    assertz(user:(tree_height([_V, L, R], H) :-
+        tree_height(L, HL),
+        tree_height(R, HR),
+        H is 1 + max(HL, HR)
+    )),
+    assertz(type_declarations:uw_type(tree_height/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_height/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_height/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_height/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:tree_height(_, _)).
+
 test(nary_linear_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:power(_Base, 0, 1)),
