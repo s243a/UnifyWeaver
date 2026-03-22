@@ -785,6 +785,48 @@ test(nary_structural_tree_subtree_branch_output_checks_with_typr, [condition(typ
     ),
     retractall(user:weighted_tree_sum_subtree_branch(_, _, _)).
 
+test(double_nested_structural_tree_subtree_context_guard_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_double_nested_subtree_context_guard([], _Scale, 0)),
+    assertz(user:(weighted_tree_double_nested_subtree_context_guard([V, L, R], Scale, Sum) :-
+        ( Scale > 1 ->
+            Bias is V * Scale,
+            ( V > 0 ->
+                ( Scale > 2 ->
+                    ScaleL is Scale + 1,
+                    ScaleR is Scale + 2
+                ;   ScaleL is Scale + 3,
+                    ScaleR is Scale + 4
+                ),
+                weighted_tree_double_nested_subtree_context_guard(L, ScaleL, LS),
+                weighted_tree_double_nested_subtree_context_guard(R, ScaleR, RS),
+                Part is Bias + LS + RS + ScaleR
+            ;   weighted_tree_double_nested_subtree_context_guard(L, Scale, LS),
+                weighted_tree_double_nested_subtree_context_guard(R, Scale, RS),
+                Part is (V * Scale) + LS + RS
+            ),
+            Sum is Part + 1
+        ;   weighted_tree_double_nested_subtree_context_guard(L, Scale, LS),
+            weighted_tree_double_nested_subtree_context_guard(R, Scale, RS),
+            Sum is (V * Scale) + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_subtree_context_guard/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_subtree_context_guard/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_subtree_context_guard/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_double_nested_subtree_context_guard/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_double_nested_subtree_context_guard/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:weighted_tree_double_nested_subtree_context_guard(_, _, _)).
+
 test(nary_structural_tree_prework_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:weighted_tree_sum_prework([], _Scale, 0)),

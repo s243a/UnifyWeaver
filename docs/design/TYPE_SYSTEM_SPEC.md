@@ -382,9 +382,11 @@ Current TypR lowering policy is intentionally mixed:
   two recursive subtree calls, limited native guards, local `is` steps,
   threaded invariant-context updates before those subtree calls, per-
   subtree invariant-context updates for the left and right recursive calls,
-  branch-local recursive-call aliases before those subtree calls, guarded
-  pre-recursive branching before those subtree calls, recursive subtree
-  calls inside supported branch bodies, nested recursive subtree calls
+  nested branch-local subtree-context selection before shared recursive
+  subtree calls, branch-local recursive-call aliases before those subtree
+  calls, guarded pre-recursive branching before those subtree calls,
+  recursive subtree calls inside supported branch bodies, nested recursive
+  subtree calls
   inside supported branch bodies, shared pre-recursive local work before
   nested recursive branch bodies, nested branch-local post-recursive
   recombination before a later shared result expression, multiple nested
