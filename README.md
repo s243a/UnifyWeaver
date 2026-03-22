@@ -247,6 +247,8 @@ includes:
   `weighted_tree_sum_scale_step/3`, `weighted_tree_sum_scale_branch/3`,
   `tree_sum_branch_calls/2`, `weighted_tree_branch_calls/3`,
   `tree_sum_recursive_branch/2`, `weighted_tree_recursive_branch/3`,
+  `tree_sum_nested_recursive_branch/2`,
+  `weighted_tree_nested_recursive_branch/3`,
   `weighted_tree_sum_subtree_scale/3`, `weighted_tree_sum_subtree_branch/3`,
   `tree_sum_prework/2`, `weighted_tree_sum_prework/3`,
   `tree_sum_branch/2`, `weighted_tree_sum_branch/3`,
@@ -257,9 +259,10 @@ includes:
   per-subtree invariant-context updates for the left and right recursive
   calls, branch-local recursive-call aliases before the two subtree calls,
   guarded pre-recursive branching before the two subtree calls, recursive
-  subtree calls inside supported branch bodies, and asymmetric branch-local
-  prework that is reconciled later by a guarded result expression, instead
-  of wrapped-R fallback
+  subtree calls inside supported branch bodies, nested recursive subtree
+  calls inside supported branch bodies, and asymmetric branch-local prework
+  that is reconciled later by a guarded result expression, instead of
+  wrapped-R fallback
 - guarded post-recursive recombination in those same linear-recursive
   shapes, including multi-state branch-local recombination such as
   `power_if/3`, `count_occ/3`, `power_multistate/3`, and `count_weighted/3`,
