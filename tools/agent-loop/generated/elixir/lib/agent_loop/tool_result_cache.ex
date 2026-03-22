@@ -81,4 +81,10 @@ defmodule AgentLoop.ToolResultCache do
     true
   end
 
+  @doc "Check if the tool result cache is empty."
+  @spec is_empty_cache(t()) :: boolean()
+  def is_empty_cache(%__MODULE__{} = state) do
+    Enum.count(state.cache) == 0
+  end
+
 end

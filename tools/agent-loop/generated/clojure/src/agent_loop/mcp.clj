@@ -20,3 +20,12 @@
   (:request-id state)
 )
 
+(defn mcp-parse-tool-name
+  "Extract the tool name after the mcp: prefix. Returns original if no prefix."
+  [tool-name]
+  (if (.startsWith tool-name "mcp:")
+      (subs tool-name 4)
+      tool-name
+  )
+)
+

@@ -25,19 +25,24 @@
 (defn format-summary
   "Format a one-line summary of streaming stats."
   [state]
-  (format nil "%s tokens, %s chars" (:token-count state) (:char-count state))
+  (format "%s tokens, %s chars" (:token-count state) (:char-count state))
 )
 
 (defn reset
   "Reset streaming counters to zero."
   [state]
-  (assoc state :token-count 0)
-  (assoc state :char-count 0)
+  (assoc state :token-count 0 :char-count 0)
 )
 
 (defn is-live
   "Check if live token display is enabled."
   [state]
   (:show-live state)
+)
+
+(defn streaming-char-count
+  "Return the current character count from streaming."
+  [state]
+  (:char-count state)
 )
 

@@ -80,7 +80,7 @@ defmodule AgentLoop.ContextManager do
     if max_tokens <= 0 do
         false
     else
-        return_val(self_field(estimated_tokens) >= max_tokens)
+        estimate_tokens(state) >= max_tokens
     end
   end
 
@@ -144,6 +144,12 @@ defmodule AgentLoop.ContextManager do
     mins = div(seconds, 60)
     secs = rem(seconds, 60)
     "#{mins}m #{secs}s"
+  end
+
+  @doc "Return the last N messages from context history."
+  @spec context_last_n(t(), integer()) :: list()
+  def context_last_n(%__MODULE__{} = state, n) do
+    Enum.take(state.messages, -n)
   end
 
 end

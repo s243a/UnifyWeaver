@@ -20,4 +20,10 @@ defmodule AgentLoop.Retry do
     min(base_delay * :math.pow(exponential_base, (attempt - 1)), max_delay)
   end
 
+  @doc "Check if the retry attempt has exceeded the maximum allowed retries."
+  @spec retry_max_exceeded(integer(), integer()) :: boolean()
+  def retry_max_exceeded(attempt, max_retries) do
+    attempt >= max_retries
+  end
+
 end

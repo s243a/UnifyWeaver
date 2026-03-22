@@ -15,7 +15,7 @@
   (if (seq results)
       results
       (extract-bare text)
-  )
+  ))
 )
 
 (defn is-valid-format

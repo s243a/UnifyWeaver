@@ -17,7 +17,7 @@
 (defn clear
   "Clear all cached tool results."
   [state]
-  (:cache state).clear()
+  (assoc state :cache {})
 )
 
 (defn len
@@ -29,7 +29,7 @@
 (defn make-key
   "Build a canonical cache key from tool name and arguments."
   [state tool-name args]
-  (format nil "{}:{}" tool-name, (cheshire.core/generate-string args {:key-fn name}))
+  (format "%s:%s" tool-name, (cheshire.core/generate-string args {:key-fn name}))
 )
 
 (defn should-skip
@@ -73,5 +73,11 @@
   [state key]
   (update state :cache dissoc key)
   true
+)
+
+(defn is-empty-cache
+  "Check if the tool result cache is empty."
+  [state]
+  (zero? (count (:cache state)))
 )
 

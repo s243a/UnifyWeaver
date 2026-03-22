@@ -86,6 +86,15 @@ set_pricing(State, Input_price, Output_price, State1) :-
     put_dict(input_price, State, input_price, State1)
     put_dict(output_price, State, output_price, State1)
 
+%% Compute the average cost per token. Returns 0.0 if no tokens used.
+cost_per_token(State, Result) :-
+    total = (State.total_input_tokens + State.total_output_tokens)
+    (total =< 0 ->
+        Result = 0.0
+    ;
+    Result = (State.total_cost / float(total))
+    )
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

@@ -83,4 +83,15 @@ defmodule AgentLoop.CostTracker do
     %{state | output_price: output_price}
   end
 
+  @doc "Compute the average cost per token. Returns 0.0 if no tokens used."
+  @spec cost_per_token(t()) :: float()
+  def cost_per_token(%__MODULE__{} = state) do
+    total = (state.total_input_tokens + state.total_output_tokens)
+    if total <= 0 do
+        0.0
+    else
+        (state.total_cost / (total * 1.0))
+    end
+  end
+
 end

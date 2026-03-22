@@ -10,13 +10,13 @@
 (defn is-destructive
   "Check if a tool name is in the destructive set (bash, write, edit)."
   [tool-name]
-  (#{"bash" "write" "edit"} tool_name)
+  (#{"bash" "write" "edit"} tool-name)
 )
 
 (defn is-safe
   "Check if a tool is read-only (safe without approval)."
   [tool-name]
-  (= tool-name read)
+  (= tool-name "read")
 )
 
 (defn is-approved
@@ -28,16 +28,16 @@
 (defn tool-needs-approval
   "Check if a tool requires user approval (destructive and not safe)."
   [tool-name]
-  (if eq_str(tool_name, read)
+  (if (= tool-name "read")
       false
-      (#{"bash" "write" "edit"} tool_name)
+      (#{"bash" "write" "edit"} tool-name)
   )
 )
 
 (defn check-approval-block
   "Return true if tool should be blocked: destructive + not in approved set."
   [tool-name approved-set]
-  (if (not (#{"bash" "write" "edit"} tool_name))
+  (if (not (#{"bash" "write" "edit"} tool-name))
       false
       (not (contains? approved-set tool-name))
   )
@@ -52,6 +52,18 @@
 (defn has-required-params
   "Check that all required parameter keys exist in args dict."
   [args required-keys]
-  (every? #(contains? args %) required_keys)
+  (every? #(contains? args %) required-keys)
+)
+
+(defn tool-category
+  "Categorize a tool as destructive, safe, or normal."
+  [tool-name]
+  (if (#{"bash" "write" "edit"} tool-name)
+      "destructive"
+      (if (= tool-name "read")
+          "safe"
+          "normal"
+      )
+  )
 )
 

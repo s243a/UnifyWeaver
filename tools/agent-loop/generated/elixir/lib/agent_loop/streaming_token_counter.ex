@@ -47,4 +47,10 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.show_live
   end
 
+  @doc "Return the current character count from streaming."
+  @spec streaming_char_count(t()) :: integer()
+  def streaming_char_count(%__MODULE__{} = state) do
+    state.char_count
+  end
+
 end

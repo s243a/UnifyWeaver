@@ -24,7 +24,7 @@
 (defn clear
   "Clear all messages from context."
   [state]
-  (:messages state).clear()
+  (assoc state :messages [])
 )
 
 (defn len
@@ -49,7 +49,7 @@
   "Get the last message from history, or nil if empty."
   [state]
   (if (empty? (:messages state))
-      none-val
+      nil
       (last (:messages state))
   )
 )
@@ -59,7 +59,7 @@
   [state max-tokens]
   (if (<= max-tokens 0)
       false
-      return_val(self_field(estimated_tokens) >= max_tokens)
+      (>= (estimate-tokens state) max-tokens)
   )
 )
 
@@ -117,8 +117,13 @@
 (defn format-duration
   "Format a duration in seconds to a human-readable string (e.g. 90 -> 1m 30s)."
   [seconds]
-  (let [mins (quot seconds 60)]
-  (let [secs (mod seconds 60)]
-  (format nil "{}m {}s" mins, secs)
+  (let [mins (quot seconds 60) secs (mod seconds 60)]
+  (format "%sm %ss" mins, secs))
+)
+
+(defn context-last-n
+  "Return the last N messages from context history."
+  [state n]
+  (take-last n (:messages state))
 )
 
