@@ -1547,6 +1547,7 @@ target_dir(python, 'generated/python/').
 target_dir(prolog, 'generated/prolog/').
 target_dir(rust, 'generated/rust/src/').
 target_dir(elixir, 'generated/elixir/lib/agent_loop/').
+target_dir(clojure, 'generated/clojure/src/agent_loop/').
 
 %% output_path(+Language, +RelPath, -FullPath)
 output_path(Lang, RelPath, FullPath) :-
@@ -1562,6 +1563,7 @@ generate_all :-
     generate_all(prolog),
     generate_all(rust),
     generate_all(elixir),
+    generate_all(clojure),
     generate_all(tests),
     generate_parity_report.
 
@@ -1692,10 +1694,12 @@ generate_parity_report :-
     (expand_file_name('generated/elixir/test/*.exs', ExTests) -> length(ExTests, ExTC) ; ExTC = 0),
     (expand_file_name('generated/rust/tests/*.rs', RsTests) -> length(RsTests, RsTC) ; RsTC = 0),
     (expand_file_name('generated/prolog/*.pl', PlFiles) -> length(PlFiles, PlFC) ; PlFC = 0),
+    (expand_file_name('generated/clojure/src/agent_loop/*.clj', CljFiles) -> length(CljFiles, CljFC) ; CljFC = 0),
     format(S, '| Python | ~w modules | — |~n', [PyFC]),
     format(S, '| Rust | ~w modules | ~w test files |~n', [RsFC, RsTC]),
     format(S, '| Elixir | ~w modules | ~w test files |~n', [ExFC, ExTC]),
     format(S, '| Prolog | ~w modules | — |~n', [PlFC]),
+    format(S, '| Clojure | ~w modules | — |~n', [CljFC]),
     %% --- GenServer wrappers ---
     write(S, '\n## Elixir OTP Components\n\n'),
     write(S, '| GenServer | Wraps | Supervised |\n'),
@@ -2105,6 +2109,30 @@ expand_expr(rust, list_last(Expr), S) :-
     expand_expr(rust, Expr, Inner),
     format(atom(S), "~w.last().cloned()", [Inner]).
 
+%% --- String split (whitespace) ---
+expand_expr(python, str_split(X), S) :-
+    expand_expr(python, X, XS),
+    format(atom(S), "~w.split()", [XS]).
+expand_expr(rust, str_split(X), S) :-
+    expand_expr(rust, X, XS),
+    format(atom(S), "~w.split_whitespace().collect::<Vec<_>>()", [XS]).
+
+%% --- Filter by suffix ---
+expand_expr(python, filter_endswith(List, Suffix), S) :-
+    expand_expr(python, List, LS),
+    format(atom(S), '[f for f in ~w if f.endswith("~w")]', [LS, Suffix]).
+expand_expr(rust, filter_endswith(List, Suffix), S) :-
+    expand_expr(rust, List, LS),
+    format(atom(S), '~w.iter().filter(|f| f.ends_with("~w")).collect::<Vec<_>>()', [LS, Suffix]).
+
+%% --- Map keys ---
+expand_expr(python, map_keys(Expr), S) :-
+    expand_expr(python, Expr, ES),
+    format(atom(S), "list(~w.keys())", [ES]).
+expand_expr(rust, map_keys(Expr), S) :-
+    expand_expr(rust, Expr, ES),
+    format(atom(S), "~w.keys().cloned().collect::<Vec<_>>()", [ES]).
+
 %% --- Addition ---
 expand_expr(python, add(A, B), S) :-
     expand_expr(python, A, AS),
@@ -2117,6 +2145,8 @@ expand_expr(rust, add(A, B), S) :-
 
 %% --- Literal values ---
 expand_expr(_, literal(V), S) :- atom_string(V, S).
+
+%% Note: self_direct/self_field handled by generic bridge (expand_expr -> logic_slot) at line ~2208
 
 %% --- None/nil ---
 expand_expr(python, none_val, "None").
@@ -3331,6 +3361,82 @@ shared_logic(tools, has_required_params, [
 ]).
 
 %% =============================================================================
+%% Additional shared_logic/3 — Phase 2: Deepen to 52 methods
+%% =============================================================================
+
+%% --- CostTracker: summary & pricing ---
+
+shared_logic(costs, get_summary, [
+    signature(get_summary, [], owned_string),
+    doc("Format a one-line cost summary showing totals."),
+    container('CostTracker'),
+    body_template("~return_val(format_str(\"${} ({} input, {} output)\", [self_direct(total_cost), self_direct(total_input_tokens), self_direct(total_output_tokens)]))~")
+]).
+
+shared_logic(costs, set_pricing, [
+    signature(set_pricing, [input_price, output_price], void),
+    arg_types([float, float]),
+    mutable,
+    doc("Set the per-token pricing for input and output."),
+    container('CostTracker'),
+    body_template("~self_assign(input_price, input_price)~\n~self_assign(output_price, output_price)~")
+]).
+
+%% --- ToolResultCache: keys & invalidate ---
+
+shared_logic(tool_cache, cache_keys, [
+    signature(cache_keys, [], list_of_string),
+    doc("Return the list of all cache keys."),
+    container('ToolResultCache'),
+    body_template("~return_val(map_keys(self_direct(cache)))~")
+]).
+
+shared_logic(tool_cache, cache_invalidate, [
+    signature(cache_invalidate, [key], bool),
+    arg_types([string]),
+    mutable,
+    doc("Remove a single cache entry by key. Returns true if key existed."),
+    container('ToolResultCache'),
+    body_template("~self_map_remove(cache, key)~\n~return_val(true)~")
+]).
+
+%% --- ContextManager: word_count & get_format ---
+
+shared_logic(context, word_count, [
+    signature(word_count, [content], int),
+    arg_types([string]),
+    doc("Count the number of whitespace-separated words in content."),
+    container(none),
+    body_template("~return_val(len_of(str_split(content)))~")
+]).
+
+shared_logic(context, get_format, [
+    signature(get_format, [], string),
+    doc("Return the current context format setting."),
+    container('ContextManager'),
+    body_template("~return_val(self_direct(format))~")
+]).
+
+%% --- StreamingTokenCounter: is_live ---
+
+shared_logic(streaming, is_live, [
+    signature(is_live, [], bool),
+    doc("Check if live token display is enabled."),
+    container('StreamingTokenCounter'),
+    body_template("~return_val(self_direct(show_live))~")
+]).
+
+%% --- SessionManager: session_count ---
+
+shared_logic(sessions, session_count, [
+    signature(session_count, [filenames], int),
+    arg_types([list_of_string]),
+    doc("Count the number of session files (ending in .json) in a filename list."),
+    container(none),
+    body_template("~return_val(len_of(filter_endswith(filenames, \".json\")))~")
+]).
+
+%% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
 
@@ -3404,6 +3510,33 @@ logic_slot(python, self_list_append(Field, Item), S) :-
 logic_slot(rust, self_list_append(Field, Item), S) :-
     expand_expr(rust, Item, IS),
     format(atom(S), "self.~w.push(~w)", [Field, IS]).
+
+%% --- Map keys / remove slots ---
+logic_slot(python, map_keys(Expr), S) :-
+    expand_expr(python, Expr, ES),
+    format(atom(S), "list(~w.keys())", [ES]).
+logic_slot(rust, map_keys(Expr), S) :-
+    expand_expr(rust, Expr, ES),
+    format(atom(S), "~w.keys().cloned().collect::<Vec<_>>()", [ES]).
+
+logic_slot(python, self_map_remove(Field, Key), S) :-
+    logic_slot(python, self_field(Field), SF),
+    expand_expr(python, Key, KS),
+    format(atom(S), "~w.pop(~w, None)", [SF, KS]).
+logic_slot(rust, self_map_remove(Field, Key), S) :-
+    expand_expr(rust, Key, KS),
+    format(atom(S), "self.~w.remove(&~w)", [Field, KS]).
+
+%% --- String split (whitespace) ---
+logic_slot(python, str_split(X), S) :- format(atom(S), "~w.split()", [X]).
+logic_slot(rust, str_split(X), S) :-
+    format(atom(S), "~w.split_whitespace().collect::<Vec<_>>()", [X]).
+
+%% --- Filter list by suffix ---
+logic_slot(python, filter_endswith(List, Suffix), S) :-
+    format(atom(S), '[f for f in ~w if f.endswith("~w")]', [List, Suffix]).
+logic_slot(rust, filter_endswith(List, Suffix), S) :-
+    format(atom(S), '~w.iter().filter(|f| f.ends_with("~w")).collect::<Vec<_>>()', [List, Suffix]).
 
 %% --- Arithmetic slots ---
 logic_slot(python, matches_set(X, List), S) :-
@@ -3535,6 +3668,19 @@ logic_slot(elixir, self_list_append(Field, Item), S) :-
     expand_expr(elixir, Item, IS),
     format(atom(S), "%{state | ~w: state.~w ++ [~w]}", [Field, Field, IS]).
 
+%% --- Map keys / remove slots ---
+logic_slot(elixir, map_keys(Expr), S) :-
+    expand_expr(elixir, Expr, ES),
+    format(atom(S), "Map.keys(~w)", [ES]).
+logic_slot(elixir, self_map_remove(Field, Key), S) :-
+    expand_expr(elixir, Key, KS),
+    format(atom(S), "%{state | ~w: Map.delete(state.~w, ~w)}", [Field, Field, KS]).
+%% --- String split / filter ---
+logic_slot(elixir, str_split(X), S) :-
+    format(atom(S), "String.split(~w)", [X]).
+logic_slot(elixir, filter_endswith(List, Suffix), S) :-
+    format(atom(S), 'Enum.filter(~w, &String.ends_with?(&1, "~w"))', [List, Suffix]).
+
 %% --- Set membership ---
 logic_slot(elixir, matches_set(X, List), S) :-
     atomic_list_concat(List, ', ', Items),
@@ -3610,6 +3756,19 @@ logic_slot(prolog, self_map_put(Field, Key, Value), S) :-
 logic_slot(prolog, self_list_append(Field, Item), S) :-
     expand_expr(prolog, Item, IS),
     format(atom(S), "append(State.~w, [~w], NewList), put_dict(~w, State, NewList, State1)", [Field, IS, Field]).
+
+%% --- Map keys / remove slots ---
+logic_slot(prolog, map_keys(Expr), S) :-
+    expand_expr(prolog, Expr, ES),
+    format(atom(S), "dict_keys(~w, Keys)", [ES]).
+logic_slot(prolog, self_map_remove(Field, Key), S) :-
+    expand_expr(prolog, Key, KS),
+    format(atom(S), "del_dict(~w, State.~w, _, NewMap), put_dict(~w, State, NewMap, State1)", [KS, Field, Field]).
+%% --- String split / filter ---
+logic_slot(prolog, str_split(X), S) :-
+    format(atom(S), "split_string(~w, \" \", \"\", Words)", [X]).
+logic_slot(prolog, filter_endswith(List, Suffix), S) :-
+    format(atom(S), 'include([F]>>(sub_atom(F, _, _, 0, "~w")), ~w, Filtered)', [Suffix, List]).
 
 %% --- Set membership ---
 logic_slot(prolog, matches_set(X, List), S) :-
@@ -3700,6 +3859,17 @@ expand_expr(prolog, map_has_key(Collection, Key), S) :-
 expand_expr(prolog, list_last(Expr), S) :-
     expand_expr(prolog, Expr, Inner),
     format(atom(S), "last(~w, Last)", [Inner]).
+
+%% --- String split / filter / map_keys ---
+expand_expr(prolog, str_split(X), S) :-
+    expand_expr(prolog, X, XS),
+    format(atom(S), 'split_string(~w, " ", "", Words)', [XS]).
+expand_expr(prolog, filter_endswith(List, Suffix), S) :-
+    expand_expr(prolog, List, LS),
+    format(atom(S), 'include([F]>>(sub_atom(F, _, _, 0, "~w")), ~w, Filtered)', [Suffix, LS]).
+expand_expr(prolog, map_keys(Expr), S) :-
+    expand_expr(prolog, Expr, ES),
+    format(atom(S), "dict_keys(~w, Keys)", [ES]).
 
 %% --- Addition ---
 expand_expr(prolog, add(A, B), S) :-
@@ -3981,6 +4151,23 @@ logic_slot(clojure, self_list_append(Field, Item), S) :-
     clojure_kebab(Field, KF),
     expand_expr(clojure, Item, IS),
     format(atom(S), "(update state :~w conj ~w)", [KF, IS]).
+
+%% --- Map keys / remove slots ---
+logic_slot(clojure, map_keys(Expr), S) :-
+    expand_expr(clojure, Expr, ES),
+    format(atom(S), "(keys ~w)", [ES]).
+logic_slot(clojure, self_map_remove(Field, Key), S) :-
+    clojure_kebab(Field, KF),
+    expand_expr(clojure, Key, KS),
+    format(atom(S), "(update state :~w dissoc ~w)", [KF, KS]).
+%% --- String split / filter ---
+logic_slot(clojure, str_split(X), S) :-
+    clojure_kebab(X, KX),
+    format(atom(S), "(clojure.string/split ~w #\"\\s+\")", [KX]).
+logic_slot(clojure, filter_endswith(List, Suffix), S) :-
+    clojure_kebab(List, KL),
+    format(atom(S), '(filter #(.endsWith % "~w") ~w)', [Suffix, KL]).
+
 logic_slot(clojure, matches_set(X, List), S) :-
     atomic_list_concat(List, ' ', ListStr),
     format(atom(S), "(#{~w} ~w)", [ListStr, X]).
@@ -4075,6 +4262,18 @@ expand_expr(clojure, map_has_key(Coll, Key), S) :-
 expand_expr(clojure, list_last(Expr), S) :-
     expand_expr(clojure, Expr, Inner),
     format(atom(S), "(last ~w)", [Inner]).
+
+%% --- String split / filter / map_keys ---
+expand_expr(clojure, str_split(X), S) :-
+    expand_expr(clojure, X, XS),
+    format(atom(S), '(clojure.string/split ~w #"\\s+")', [XS]).
+expand_expr(clojure, filter_endswith(List, Suffix), S) :-
+    expand_expr(clojure, List, LS),
+    format(atom(S), '(filter #(.endsWith % "~w") ~w)', [Suffix, LS]).
+expand_expr(clojure, map_keys(Expr), S) :-
+    expand_expr(clojure, Expr, ES),
+    format(atom(S), "(keys ~w)", [ES]).
+
 expand_expr(clojure, path_join(Dir, File), S) :-
     expand_expr(clojure, Dir, DS), expand_expr(clojure, File, FS),
     format(atom(S), "(str ~w \"/\" ~w)", [DS, FS]).
@@ -4231,6 +4430,17 @@ expand_expr(elixir, map_has_key(Collection, Key), S) :-
 expand_expr(elixir, list_last(Expr), S) :-
     expand_expr(elixir, Expr, Inner),
     format(atom(S), "List.last(~w)", [Inner]).
+
+%% --- String split / filter / map_keys ---
+expand_expr(elixir, str_split(X), S) :-
+    expand_expr(elixir, X, XS),
+    format(atom(S), "String.split(~w)", [XS]).
+expand_expr(elixir, filter_endswith(List, Suffix), S) :-
+    expand_expr(elixir, List, LS),
+    format(atom(S), 'Enum.filter(~w, &String.ends_with?(&1, "~w"))', [LS, Suffix]).
+expand_expr(elixir, map_keys(Expr), S) :-
+    expand_expr(elixir, Expr, ES),
+    format(atom(S), "Map.keys(~w)", [ES]).
 
 %% --- Addition ---
 expand_expr(elixir, add(A, B), S) :-
@@ -7264,6 +7474,182 @@ generate_elixir_router_test(Dir) :-
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/test/router_test.exs~n', []).
+
+%% =============================================================================
+%% Clojure Code Generation
+%% =============================================================================
+
+generate_all(clojure) :-
+    write('Generating Clojure target...'), nl,
+    output_path(clojure, '', ClojureDir),
+    make_directory_path(ClojureDir),
+    generate_clojure_project,
+    generate_clojure_costs,
+    generate_clojure_streaming,
+    generate_clojure_tool_cache,
+    generate_clojure_context,
+    generate_clojure_retry,
+    generate_clojure_output_parser,
+    generate_clojure_sessions,
+    generate_clojure_tools,
+    generate_clojure_mcp,
+    write('Clojure target done.'), nl.
+
+%% write_clojure_header(+Stream, +Namespace, +Description)
+write_clojure_header(S, Namespace, Description) :-
+    format(S, ';; ~w — ~w~n', [Namespace, Description]),
+    format(S, ';; Auto-generated by UnifyWeaver agent_loop_module.pl~n', []),
+    format(S, ';; Do not edit manually.~n~n', []).
+
+%% write_shared_block_clojure is already defined elsewhere as convenience
+
+%% --- project.clj ---
+generate_clojure_project :-
+    target_dir(clojure, SrcDir),
+    atom_concat(SrcDir, '../../project.clj', Path),
+    open(Path, write, S),
+    write(S, '(defproject agent-loop "0.1.0"\n'),
+    write(S, '  :description "Agent loop implementation generated by UnifyWeaver"\n'),
+    write(S, '  :dependencies [[org.clojure/clojure "1.11.1"]\n'),
+    write(S, '                 [cheshire "5.12.0"]\n'),
+    write(S, '                 [org.clojure/data.json "2.4.0"]]\n'),
+    write(S, '  :main agent-loop.core\n'),
+    write(S, '  :target-path "target/%s"\n'),
+    write(S, '  :profiles {:uberjar {:aot :all\n'),
+    write(S, '                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}})\n'),
+    close(S),
+    format('  Generated clojure/project.clj~n', []).
+
+%% --- CostTracker ---
+generate_clojure_costs :-
+    output_path(clojure, 'costs.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.costs', 'Model pricing and cost tracking'),
+    write(S, '(ns agent-loop.costs\n'),
+    write(S, '  (:require [cheshire.core :as json]))\n\n'),
+    write(S, '(defn create-cost-tracker\n'),
+    write(S, '  "Create a new cost tracker state map."\n'),
+    write(S, '  []\n'),
+    write(S, '  {:total-input-tokens 0\n'),
+    write(S, '   :total-output-tokens 0\n'),
+    write(S, '   :total-cost 0.0\n'),
+    write(S, '   :input-price 0.0\n'),
+    write(S, '   :output-price 0.0\n'),
+    write(S, '   :records []})\n\n'),
+    write_shared_block_clojure(S, costs),
+    close(S),
+    format('  Generated clojure/src/agent_loop/costs.clj~n', []).
+
+%% --- StreamingTokenCounter ---
+generate_clojure_streaming :-
+    output_path(clojure, 'streaming.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.streaming', 'Token counting for streamed responses'),
+    write(S, '(ns agent-loop.streaming)\n\n'),
+    write(S, '(defn create-streaming-counter\n'),
+    write(S, '  "Create a new streaming token counter state."\n'),
+    write(S, '  []\n'),
+    write(S, '  {:token-count 0\n'),
+    write(S, '   :char-count 0\n'),
+    write(S, '   :show-live false})\n\n'),
+    write_shared_block_clojure(S, streaming),
+    close(S),
+    format('  Generated clojure/src/agent_loop/streaming.clj~n', []).
+
+%% --- ToolResultCache ---
+generate_clojure_tool_cache :-
+    output_path(clojure, 'tool_cache.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.tool-cache', 'Cache for tool execution results'),
+    write(S, '(ns agent-loop.tool-cache\n'),
+    write(S, '  (:require [cheshire.core :as json]))\n\n'),
+    write(S, '(defn create-tool-cache\n'),
+    write(S, '  "Create a new tool result cache state."\n'),
+    write(S, '  []\n'),
+    write(S, '  {:cache {}\n'),
+    write(S, '   :max-size 100})\n\n'),
+    write_shared_block_clojure(S, tool_cache),
+    close(S),
+    format('  Generated clojure/src/agent_loop/tool_cache.clj~n', []).
+
+%% --- ContextManager ---
+generate_clojure_context :-
+    output_path(clojure, 'context.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.context', 'Conversation context management'),
+    write(S, '(ns agent-loop.context)\n\n'),
+    write(S, '(defn create-context\n'),
+    write(S, '  "Create a new context manager state."\n'),
+    write(S, '  []\n'),
+    write(S, '  {:messages []\n'),
+    write(S, '   :format "plain"\n'),
+    write(S, '   :max-tokens 0\n'),
+    write(S, '   :max-messages 0})\n\n'),
+    write_shared_block_clojure(S, context),
+    close(S),
+    format('  Generated clojure/src/agent_loop/context.clj~n', []).
+
+%% --- Retry ---
+generate_clojure_retry :-
+    output_path(clojure, 'retry.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.retry', 'Retry logic with exponential backoff'),
+    write(S, '(ns agent-loop.retry)\n\n'),
+    write_shared_block_clojure(S, retry),
+    close(S),
+    format('  Generated clojure/src/agent_loop/retry.clj~n', []).
+
+%% --- OutputParser ---
+generate_clojure_output_parser :-
+    output_path(clojure, 'output_parser.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.output-parser', 'JSON extraction from LLM output'),
+    write(S, '(ns agent-loop.output-parser\n'),
+    write(S, '  (:require [cheshire.core :as json]))\n\n'),
+    write_shared_block_clojure(S, output_parser),
+    close(S),
+    format('  Generated clojure/src/agent_loop/output_parser.clj~n', []).
+
+%% --- Sessions ---
+generate_clojure_sessions :-
+    output_path(clojure, 'sessions.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.sessions', 'Session persistence'),
+    write(S, '(ns agent-loop.sessions\n'),
+    write(S, '  (:require [clojure.java.io :as io]\n'),
+    write(S, '            [cheshire.core :as json]))\n\n'),
+    write(S, '(defn create-session-manager\n'),
+    write(S, '  "Create a new session manager state."\n'),
+    write(S, '  [sessions-dir]\n'),
+    write(S, '  {:sessions-dir sessions-dir})\n\n'),
+    write_shared_block_clojure(S, sessions),
+    close(S),
+    format('  Generated clojure/src/agent_loop/sessions.clj~n', []).
+
+%% --- Tools ---
+generate_clojure_tools :-
+    output_path(clojure, 'tools.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.tools', 'Tool safety and dispatch helpers'),
+    write(S, '(ns agent-loop.tools)\n\n'),
+    write_shared_block_clojure(S, tools),
+    close(S),
+    format('  Generated clojure/src/agent_loop/tools.clj~n', []).
+
+%% --- MCP ---
+generate_clojure_mcp :-
+    output_path(clojure, 'mcp.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.mcp', 'MCP client protocol'),
+    write(S, '(ns agent-loop.mcp\n'),
+    write(S, '  (:require [cheshire.core :as json]))\n\n'),
+    write(S, '(defn create-mcp-client\n'),
+    write(S, '  "Create a new MCP client state."\n'),
+    write(S, '  []\n'),
+    write(S, '  {:request-id 0})\n\n'),
+    write_shared_block_clojure(S, mcp),
+    close(S),
+    format('  Generated clojure/src/agent_loop/mcp.clj~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.

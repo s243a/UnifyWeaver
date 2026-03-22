@@ -116,4 +116,16 @@ defmodule AgentLoop.ContextManager do
     max(1, div(String.length(content), 4))
   end
 
+  @doc "Count the number of whitespace-separated words in content."
+  @spec word_count(String.t()) :: integer()
+  def word_count(content) do
+    Enum.count(String.split(content))
+  end
+
+  @doc "Return the current context format setting."
+  @spec get_format(t()) :: String.t()
+  def get_format(%__MODULE__{} = state) do
+    state.format
+  end
+
 end

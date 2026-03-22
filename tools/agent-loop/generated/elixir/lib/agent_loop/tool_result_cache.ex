@@ -68,4 +68,17 @@ defmodule AgentLoop.ToolResultCache do
     Enum.count(state.cache)
   end
 
+  @doc "Return the list of all cache keys."
+  @spec cache_keys(t()) :: [String.t()]
+  def cache_keys(%__MODULE__{} = state) do
+    Map.keys(state.cache)
+  end
+
+  @doc "Remove a single cache entry by key. Returns true if key existed."
+  @spec cache_invalidate(t(), String.t()) :: t()
+  def cache_invalidate(%__MODULE__{} = state, key) do
+    %{state | cache: Map.delete(state.cache, key)}
+    true
+  end
+
 end

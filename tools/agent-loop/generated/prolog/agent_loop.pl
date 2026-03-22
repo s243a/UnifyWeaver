@@ -88,6 +88,14 @@ tokens_over_budget(State, Max_tokens, Result) :-
 message_token_estimate(Content, Result) :-
     Result = max(1, (atom_length(content, Len) // 4))
 
+%% Count the number of whitespace-separated words in content.
+word_count(Content, Result) :-
+    Result = length(split_string(content, " ", "", Words), Len)
+
+%% Return the current context format setting.
+get_format(State, Result) :-
+    Result = State.format
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -105,6 +113,10 @@ format_summary(State, Result) :-
 reset(State, State1) :-
     put_dict(token_count, State, 0, State1)
     put_dict(char_count, State, 0, State1)
+
+%% Check if live token display is enabled.
+is_live(State, Result) :-
+    Result = State.show_live
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -140,6 +152,15 @@ has_key(State, Key, Result) :-
 %% Return the number of cached tool results.
 cache_count(State, Result) :-
     Result = length(State.cache, Len)
+
+%% Return the list of all cache keys.
+cache_keys(State, Result) :-
+    Result = dict_keys(State.cache, Keys)
+
+%% Remove a single cache entry by key. Returns true if key existed.
+cache_invalidate(State, Key, State1) :-
+    del_dict(key, State.cache, _, NewMap), put_dict(cache, State, NewMap, State1)
+    Result = true
 
 
 %% --- shared_logic: mcp (generated from compile_logic) ---
@@ -194,6 +215,10 @@ session_list_filter(Filename, Result) :-
 %% Return the list of metadata keys in a session file.
 session_data_keys(Result) :-
     Result = ['id', 'name', 'message_count', 'saved_at']
+
+%% Count the number of session files (ending in .json) in a filename list.
+session_count(Filenames, Result) :-
+    Result = length(include([F]>>(sub_atom(F, _, _, 0, ".json")), filenames, Filtered), Len)
 
 conversation([]).
 max_iterations(0).
