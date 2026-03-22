@@ -6113,13 +6113,13 @@ test_shared_logic_infrastructure :-
     assert_true('elixir mix.exs exists', (
         exists_file('generated/elixir/mix.exs')
     )),
-    assert_true('elixir has 20 lib modules', (
+    assert_true('elixir has 22 lib modules', (
         expand_file_name('generated/elixir/lib/agent_loop/*.ex', Files),
-        length(Files, 20)
+        length(Files, 22)
     )),
-    assert_true('elixir has 16 test files', (
+    assert_true('elixir has 17 test files', (
         expand_file_name('generated/elixir/test/*.exs', TestFiles),
-        length(TestFiles, 16)
+        length(TestFiles, 17)
     )),
     assert_true('elixir_server facts count is 6', (
         findall(S, agent_loop_module:elixir_server(S, _), Srvs),

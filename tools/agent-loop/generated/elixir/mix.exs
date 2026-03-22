@@ -21,7 +21,9 @@ defmodule AgentLoop.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
-      {:toml, "~> 0.7"}
+      {:toml, "~> 0.7"},
+      {:plug_cowboy, "~> 2.7"},
+      {:plug, "~> 1.15"}
     ]
   end
 end
