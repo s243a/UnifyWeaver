@@ -63,6 +63,8 @@ cleanup_typr_test :-
     retractall(user:weighted_tree_recursive_branch(_, _, _)),
     retractall(user:tree_sum_nested_recursive_branch(_, _)),
     retractall(user:weighted_tree_nested_recursive_branch(_, _, _)),
+    retractall(user:tree_sum_nested_branch_recombine(_, _)),
+    retractall(user:weighted_tree_nested_branch_recombine(_, _, _)),
     retractall(user:weighted_tree_sum_subtree_scale(_, _, _)),
     retractall(user:weighted_tree_sum_subtree_branch(_, _, _)),
     retractall(user:weighted_tree_sum_prework(_, _, _)),
@@ -603,6 +605,72 @@ test(recursive_compiler_supports_typr_weighted_nested_structural_tree_recursive_
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
     once(sub_string(Code, _, _, _, "right_result = weighted_tree_nested_recursive_branch_impl(right, arg2);")),
     once(sub_string(Code, _, _, _, "left_result = weighted_tree_nested_recursive_branch_impl(left, arg2);")),
+    once(sub_string(Code, _, _, _, "branch_result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_nested_structural_tree_branch_recombine_path) :-
+    clear_type_declarations,
+    assertz(user:tree_sum_nested_branch_recombine([], 0)),
+    assertz(user:(tree_sum_nested_branch_recombine([V, L, R], Sum) :-
+        ( V > 0 ->
+            ( V > 1 ->
+                tree_sum_nested_branch_recombine(L, LS),
+                tree_sum_nested_branch_recombine(R, RS),
+                Part is V + LS + RS
+            ;   tree_sum_nested_branch_recombine(R, RS),
+                tree_sum_nested_branch_recombine(L, LS),
+                Part is V + LS + RS
+            ),
+            Sum is Part + 1
+        ;   tree_sum_nested_branch_recombine(L, LS),
+            tree_sum_nested_branch_recombine(R, RS),
+            Sum is V + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(tree_sum_nested_branch_recombine/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum_nested_branch_recombine/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum_nested_branch_recombine/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum_nested_branch_recombine/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let tree_sum_nested_branch_recombine <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "tree_sum_nested_branch_recombine_impl <- function(current_tree)")),
+    once(sub_string(Code, _, _, _, "if (value > 0) {")),
+    once(sub_string(Code, _, _, _, "if (value > 1) {")),
+    once(sub_string(Code, _, _, _, "branch_result = (((value + left_result) + right_result) + 1);")),
+    once(sub_string(Code, _, _, _, "branch_result = ((value + left_result) + right_result);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_weighted_nested_structural_tree_branch_recombine_path) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_nested_branch_recombine([], _Scale, 0)),
+    assertz(user:(weighted_tree_nested_branch_recombine([V, L, R], Scale, Sum) :-
+        ( Scale > 1 ->
+            ( V > 0 ->
+                weighted_tree_nested_branch_recombine(L, Scale, LS),
+                weighted_tree_nested_branch_recombine(R, Scale, RS),
+                Part is (V * Scale) + LS + RS
+            ;   weighted_tree_nested_branch_recombine(R, Scale, RS),
+                weighted_tree_nested_branch_recombine(L, Scale, LS),
+                Part is (V * Scale) + LS + RS
+            ),
+            Sum is Part + 1
+        ;   weighted_tree_nested_branch_recombine(L, Scale, LS),
+            weighted_tree_nested_branch_recombine(R, Scale, RS),
+            Sum is (V * Scale) + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_nested_branch_recombine/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_nested_branch_recombine/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_nested_branch_recombine/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_nested_branch_recombine/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_nested_branch_recombine/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let weighted_tree_nested_branch_recombine <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "weighted_tree_nested_branch_recombine_impl <- function(current_tree, arg2)")),
+    once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
+    once(sub_string(Code, _, _, _, "if (value > 0) {")),
+    once(sub_string(Code, _, _, _, "branch_result = ((((value * arg2) + left_result) + right_result) + 1);")),
     once(sub_string(Code, _, _, _, "branch_result = (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),

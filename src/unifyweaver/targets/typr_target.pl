@@ -803,7 +803,10 @@ structural_tree_recursive_prefix_lines(
     OutputPos is Arity,
     linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
     normalize_typr_goals(BranchGoal, Goals),
-    split_typr_multicall_goal_prefix(Pred, Goals, PreGoals, RecCalls),
+    (   split_typr_multicall_goals(Pred, Goals, PreGoals, RecCalls, PostGoals)
+    ;   split_typr_multicall_goal_prefix(Pred, Goals, PreGoals, RecCalls),
+        PostGoals = []
+    ),
     typr_goals_to_body(PreGoals, PreBody),
     compile_tail_recursive_pre_goals(PreBody, VarMap0, PreVarMap, GuardConditions, StepLines),
     tail_recursive_pre_branch_lines(GuardConditions, StepLines, BranchPreLines),
@@ -816,9 +819,10 @@ structural_tree_recursive_prefix_lines(
         RightVar,
         InvariantPositions,
         PreVarMap,
-        VarMap,
+        CallVarMap,
         CallLines
     ),
+    linear_recursive_post_goals_varmap(PostGoals, CallVarMap, VarMap),
     append(BranchPreLines, CallLines, Lines).
 
 add_structural_tree_value_var(ValueVar, VarMap, [ValueVar-"value"|VarMap]) :-

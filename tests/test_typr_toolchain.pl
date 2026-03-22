@@ -514,6 +514,75 @@ test(weighted_nested_structural_tree_recursive_branch_body_output_checks_with_ty
     ),
     retractall(user:weighted_tree_nested_recursive_branch(_, _, _)).
 
+test(nested_structural_tree_branch_recombine_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:tree_sum_nested_branch_recombine([], 0)),
+    assertz(user:(tree_sum_nested_branch_recombine([V, L, R], Sum) :-
+        ( V > 0 ->
+            ( V > 1 ->
+                tree_sum_nested_branch_recombine(L, LS),
+                tree_sum_nested_branch_recombine(R, RS),
+                Part is V + LS + RS
+            ;   tree_sum_nested_branch_recombine(R, RS),
+                tree_sum_nested_branch_recombine(L, LS),
+                Part is V + LS + RS
+            ),
+            Sum is Part + 1
+        ;   tree_sum_nested_branch_recombine(L, LS),
+            tree_sum_nested_branch_recombine(R, RS),
+            Sum is V + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(tree_sum_nested_branch_recombine/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum_nested_branch_recombine/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum_nested_branch_recombine/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum_nested_branch_recombine/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:tree_sum_nested_branch_recombine(_, _)).
+
+test(weighted_nested_structural_tree_branch_recombine_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_nested_branch_recombine([], _Scale, 0)),
+    assertz(user:(weighted_tree_nested_branch_recombine([V, L, R], Scale, Sum) :-
+        ( Scale > 1 ->
+            ( V > 0 ->
+                weighted_tree_nested_branch_recombine(L, Scale, LS),
+                weighted_tree_nested_branch_recombine(R, Scale, RS),
+                Part is (V * Scale) + LS + RS
+            ;   weighted_tree_nested_branch_recombine(R, Scale, RS),
+                weighted_tree_nested_branch_recombine(L, Scale, LS),
+                Part is (V * Scale) + LS + RS
+            ),
+            Sum is Part + 1
+        ;   weighted_tree_nested_branch_recombine(L, Scale, LS),
+            weighted_tree_nested_branch_recombine(R, Scale, RS),
+            Sum is (V * Scale) + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_nested_branch_recombine/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_nested_branch_recombine/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_nested_branch_recombine/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_nested_branch_recombine/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_nested_branch_recombine/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:weighted_tree_nested_branch_recombine(_, _, _)).
+
 test(nary_structural_tree_subtree_invariant_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:weighted_tree_sum_subtree_scale([], _Scale, 0)),
