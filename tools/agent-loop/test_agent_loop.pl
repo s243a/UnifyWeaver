@@ -6201,18 +6201,19 @@ test_shared_logic_infrastructure :-
 %% =============================================================================
 %%
 %% Verify that compile_logic/3 produces semantically consistent code across
-%% Python, Rust, Elixir, and Prolog for all 44 shared_logic methods.
+%% Python, Rust, Elixir, Prolog, and Clojure for all 44 shared_logic methods.
 
 test_cross_target_integration :-
     format("~nCross-target integration tests:~n"),
-    %% All 30 methods compile for all 4 targets
-    assert_true('all 44 shared_logic compile for 4 targets (py/rs/ex/pl)', (
+    %% All 44 methods compile for all 5 targets
+    assert_true('all 44 shared_logic compile for 5 targets (py/rs/ex/pl/clj)', (
         findall(M, agent_loop_module:shared_logic(_, M, _), AllMs),
         include([M]>>(
             agent_loop_module:compile_logic(python, M, _),
             agent_loop_module:compile_logic(rust, M, _),
             agent_loop_module:compile_logic(elixir, M, _),
-            agent_loop_module:compile_logic(prolog, M, _)
+            agent_loop_module:compile_logic(prolog, M, _),
+            agent_loop_module:compile_logic(clojure, M, _)
         ), AllMs, OkMs),
         length(OkMs, 44)
     )),
@@ -6230,7 +6231,16 @@ test_cross_target_integration :-
         agent_loop_module:compile_logic(prolog, is_over_budget, PlOB2),
         sub_atom(PlOB2, _, _, _, 'State.total_cost')
     )),
-    %% Python/Rust/Elixir/Prolog all handle guard_leq_zero
+    %% Clojure uses prefix notation and kebab-case
+    assert_true('clojure is_over_budget uses prefix notation', (
+        agent_loop_module:compile_logic(clojure, is_over_budget, ClOB),
+        sub_atom(ClOB, _, _, _, '(>= (:total-cost state) budget)')
+    )),
+    assert_true('clojure cost_compute uses prefix arithmetic', (
+        agent_loop_module:compile_logic(clojure, cost_compute, ClCC),
+        sub_atom(ClCC, _, _, _, '(/ (*')
+    )),
+    %% Python/Rust/Elixir/Prolog/Clojure all handle guard_leq_zero
     assert_true('all targets handle guard_leq_zero', (
         agent_loop_module:compile_logic(python, is_over_budget, PyG),
         sub_atom(PyG, _, _, _, '<= 0'),
@@ -6239,7 +6249,9 @@ test_cross_target_integration :-
         agent_loop_module:compile_logic(elixir, is_over_budget, ExG),
         sub_atom(ExG, _, _, _, '<= 0'),
         agent_loop_module:compile_logic(prolog, is_over_budget, PlG),
-        sub_atom(PlG, _, _, _, '=< 0')
+        sub_atom(PlG, _, _, _, '=< 0'),
+        agent_loop_module:compile_logic(clojure, is_over_budget, ClG),
+        sub_atom(ClG, _, _, _, '(<= ')
     )),
     %% Cross-target: on_token produces print-like output for all targets
     assert_true('all targets emit print/write for on_token', (
