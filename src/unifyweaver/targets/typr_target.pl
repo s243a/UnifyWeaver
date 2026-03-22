@@ -434,8 +434,7 @@ structural_tree_recursive_spec(
 ) :-
     RecHead =.. [_PredName|RecHeadArgs],
     typr_if_then_else_goal(RecBody, IfGoal, ThenGoal, ElseGoal),
-    normalize_typr_goals(ThenGoal, ThenGoals),
-    split_typr_multicall_goals(Pred, ThenGoals, _ThenPreGoals0, ThenRecCalls, _ThenPostGoals0),
+    structural_tree_goal_rec_calls(Pred, ThenGoal, ThenRecCalls),
     structural_tree_arg_spec(
         Arity,
         BaseClauses,
@@ -696,6 +695,59 @@ structural_tree_branch_body_lines(
     OutputVar,
     Lines
 ) :-
+    normalize_typr_goals(BranchGoal, [NestedIfGoal|PostGoals]),
+    typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal, ElseGoal),
+    PostGoals \= [],
+    native_typr_if_condition(IfGoal, VarMap0, IfCondition0),
+    typr_condition_expr_text(IfCondition0, IfCondition),
+    structural_tree_recursive_prefix_lines(
+        Pred,
+        ThenGoal,
+        VarMap0,
+        HelperName,
+        DriverPos,
+        Arity,
+        LeftVar,
+        RightVar,
+        ThenVarMap,
+        ThenLines
+    ),
+    structural_tree_recursive_prefix_lines(
+        Pred,
+        ElseGoal,
+        VarMap0,
+        HelperName,
+        DriverPos,
+        Arity,
+        LeftVar,
+        RightVar,
+        ElseVarMap,
+        ElseLines
+    ),
+    typr_goals_to_body(PostGoals, PostBody),
+    linear_recursive_output_expr(PostBody, OutputVar, ThenVarMap, ThenBranchResultExpr),
+    linear_recursive_output_expr(PostBody, OutputVar, ElseVarMap, ElseBranchResultExpr),
+    format(string(ThenResultLine), '        branch_result = ~w;', [ThenBranchResultExpr]),
+    format(string(ElseResultLine), '        branch_result = ~w;', [ElseBranchResultExpr]),
+    append(ThenLines, [ThenResultLine], ThenLinesWithResult),
+    append(ElseLines, [ElseResultLine], ElseLinesWithResult),
+    indent_lines(ThenLinesWithResult, '    ', IndentedThenLines),
+    indent_lines(ElseLinesWithResult, '    ', IndentedElseLines),
+    format(string(IfLine), '        if (~w) {', [IfCondition]),
+    append([IfLine|IndentedThenLines], ['        } else {'|IndentedElseLines], Lines0),
+    append(Lines0, ['        };'], Lines).
+structural_tree_branch_body_lines(
+    Pred,
+    BranchGoal,
+    VarMap0,
+    HelperName,
+    DriverPos,
+    Arity,
+    LeftVar,
+    RightVar,
+    OutputVar,
+    Lines
+) :-
     OutputPos is Arity,
     linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
     normalize_typr_goals(BranchGoal, Goals),
@@ -721,6 +773,54 @@ structural_tree_branch_body_lines(
     append(BranchPreLines, CallLines, Lines0),
     append(Lines0, [ResultLine], Lines).
 
+structural_tree_goal_rec_calls(Pred, Goal, RecCalls) :-
+    normalize_typr_goals(Goal, Goals),
+    (   split_typr_multicall_goals(Pred, Goals, _PreGoals, RecCalls, _PostGoals)
+    ;   split_typr_multicall_goal_prefix(Pred, Goals, _PreGoals, RecCalls)
+    ),
+    !.
+structural_tree_goal_rec_calls(Pred, Goal, RecCalls) :-
+    typr_if_then_else_goal(Goal, _IfGoal, ThenGoal, _ElseGoal),
+    !,
+    structural_tree_goal_rec_calls(Pred, ThenGoal, RecCalls).
+structural_tree_goal_rec_calls(Pred, Goal, RecCalls) :-
+    normalize_typr_goals(Goal, [NestedIfGoal|_PostGoals]),
+    typr_if_then_else_goal(NestedIfGoal, _IfGoal, ThenGoal, _ElseGoal),
+    structural_tree_goal_rec_calls(Pred, ThenGoal, RecCalls).
+
+structural_tree_recursive_prefix_lines(
+    Pred,
+    BranchGoal,
+    VarMap0,
+    HelperName,
+    DriverPos,
+    Arity,
+    LeftVar,
+    RightVar,
+    VarMap,
+    Lines
+) :-
+    OutputPos is Arity,
+    linear_recursive_invariant_positions(Arity, DriverPos, InvariantPositions),
+    normalize_typr_goals(BranchGoal, Goals),
+    split_typr_multicall_goal_prefix(Pred, Goals, PreGoals, RecCalls),
+    typr_goals_to_body(PreGoals, PreBody),
+    compile_tail_recursive_pre_goals(PreBody, VarMap0, PreVarMap, GuardConditions, StepLines),
+    tail_recursive_pre_branch_lines(GuardConditions, StepLines, BranchPreLines),
+    build_structural_tree_call_lines(
+        RecCalls,
+        HelperName,
+        DriverPos,
+        OutputPos,
+        LeftVar,
+        RightVar,
+        InvariantPositions,
+        PreVarMap,
+        VarMap,
+        CallLines
+    ),
+    append(BranchPreLines, CallLines, Lines).
+
 add_structural_tree_value_var(ValueVar, VarMap, [ValueVar-"value"|VarMap]) :-
     var(ValueVar),
     !.
@@ -732,6 +832,12 @@ split_typr_multicall_goals(Pred, Goals, PreGoals, RecCalls, PostGoals) :-
     RecCalls = [_|[_|_]],
     PostGoals \= [],
     \+ contains_recursive_goal(Pred, PostGoals).
+
+split_typr_multicall_goal_prefix(Pred, Goals, PreGoals, RecCalls) :-
+    split_non_recursive_prefix(Pred, Goals, PreGoals, RecAndPostGoals),
+    take_recursive_goal_prefix(Pred, RecAndPostGoals, RecCalls, PostGoals),
+    RecCalls = [_|[_|_]],
+    PostGoals == [].
 
 split_non_recursive_prefix(_Pred, [], [], []).
 split_non_recursive_prefix(Pred, [Goal|Rest], [], [Goal|Rest]) :-

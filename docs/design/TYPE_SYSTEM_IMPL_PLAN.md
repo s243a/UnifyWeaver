@@ -206,8 +206,9 @@ bring-up.
     context updates for the left and right recursive calls, branch-local
     recursive-call aliases before the two subtree calls, guarded
     pre-recursive branching before the two subtree calls, recursive subtree
-    calls inside supported branch bodies, or asymmetric branch-local
-    prework that is reconciled later by a guarded result expression
+    calls inside supported branch bodies, nested recursive subtree calls
+    inside supported branch bodies, or asymmetric branch-local prework that
+    is reconciled later by a guarded result expression
   - guarded post-recursive recombination inside those same single-recursive-
     call numeric and list linear-recursive shapes when the later result and
     branch-local selected intermediate values are chosen by supported

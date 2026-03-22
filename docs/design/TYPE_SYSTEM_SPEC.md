@@ -384,13 +384,16 @@ Current TypR lowering policy is intentionally mixed:
   subtree invariant-context updates for the left and right recursive calls,
   branch-local recursive-call aliases before those subtree calls, guarded
   pre-recursive branching before those subtree calls, recursive subtree
-  calls inside supported branch bodies, and a TypR-translatable result
-  expression that may also reconcile asymmetric branch-local prework, such
-  as `tree_sum/2`, `tree_height/2`,
+  calls inside supported branch bodies, nested recursive subtree calls
+  inside supported branch bodies, and a TypR-translatable result expression
+  that may also reconcile asymmetric branch-local prework, such as
+  `tree_sum/2`, `tree_height/2`,
   `weighted_tree_sum/3`, `weighted_tree_affine_sum/4`,
   `weighted_tree_sum_scale_step/3`, `weighted_tree_sum_scale_branch/3`,
   `tree_sum_branch_calls/2`, `weighted_tree_branch_calls/3`,
   `tree_sum_recursive_branch/2`, `weighted_tree_recursive_branch/3`,
+  `tree_sum_nested_recursive_branch/2`,
+  `weighted_tree_nested_recursive_branch/3`,
   `weighted_tree_sum_subtree_scale/3`,
   `weighted_tree_sum_subtree_branch/3`,
   `tree_sum_prework/2`, `weighted_tree_sum_prework/3`,
