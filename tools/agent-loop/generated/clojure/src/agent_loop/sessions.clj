@@ -17,19 +17,19 @@
 (defn session-path
   "Build the filesystem path for a session file."
   [state session-id]
-  (str (:sessions-dir state) "/" (format nil "{}.json" session-id))
+  (str (:sessions-dir state) "/" (format "%s.json" session-id))
 )
 
 (defn session-exists
   "Check if a session file exists on disk."
   [state session-id]
-  (.exists (java.io.File. (str (:sessions-dir state) "/" (format nil "{}.json" session-id))))
+  (.exists (java.io.File. (str (:sessions-dir state) "/" (format "%s.json" session-id))))
 )
 
 (defn session-filename
   "Build the filename for a session (id + .json extension)."
   [session-id]
-  (format nil "{}.json" session-id)
+  (format "%s.json" session-id)
 )
 
 (defn session-list-filter
@@ -48,5 +48,14 @@
   "Count the number of session files (ending in .json) in a filename list."
   [filenames]
   (count (filter #(.endsWith % ".json") filenames))
+)
+
+(defn session-is-valid-id
+  "Check if a session ID is non-empty and contains no path separators."
+  [session-id]
+  (if (empty? session-id)
+      false
+      (not (clojure.string/includes? session-id "/"))
+  )
 )
 

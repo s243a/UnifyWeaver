@@ -31,6 +31,16 @@ defmodule AgentLoop.MCPClient do
     state.request_id
   end
 
+  @doc "Extract the tool name after the mcp: prefix. Returns original if no prefix."
+  @spec mcp_parse_tool_name(String.t()) :: String.t()
+  def mcp_parse_tool_name(tool_name) do
+    if String.starts_with?(tool_name, "mcp:") do
+        String.slice(tool_name, 4..-1)
+    else
+        tool_name
+    end
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

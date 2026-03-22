@@ -48,6 +48,16 @@ defmodule AgentLoop.Sessions do
     Enum.count(Enum.filter(filenames, &String.ends_with?(&1, ".json")))
   end
 
+  @doc "Check if a session ID is non-empty and contains no path separators."
+  @spec session_is_valid_id(String.t()) :: boolean()
+  def session_is_valid_id(session_id) do
+    if session_id == "" do
+        false
+    else
+        not String.contains?(session_id, "/")
+    end
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

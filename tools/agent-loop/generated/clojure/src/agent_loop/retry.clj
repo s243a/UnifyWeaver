@@ -19,3 +19,9 @@
   (min (* base-delay (Math/pow exponential-base (- attempt 1))) max-delay)
 )
 
+(defn retry-max-exceeded
+  "Check if the retry attempt has exceeded the maximum allowed retries."
+  [attempt max-retries]
+  (>= attempt max-retries)
+)
+

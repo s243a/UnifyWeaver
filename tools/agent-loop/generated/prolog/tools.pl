@@ -88,7 +88,7 @@ is_approved(Tool_name, Approved_set, Result) :-
 
 %% Check if a tool requires user approval (destructive and not safe).
 tool_needs_approval(Tool_name, Result) :-
-    (eq_str(tool_name, read) ->
+    (tool_name == "read" ->
         Result = false
     ;
     Result = memberchk(tool_name, ["bash", "write", "edit"])
@@ -109,6 +109,18 @@ is_mcp_tool(Tool_name, Result) :-
 %% Check that all required parameter keys exist in args dict.
 has_required_params(Args, Required_keys, Result) :-
     Result = forall(member(K, required_keys), get_dict(K, args, _))
+
+%% Categorize a tool as destructive, safe, or normal.
+tool_category(Tool_name, Result) :-
+    (memberchk(tool_name, ["bash", "write", "edit"]) ->
+        Result = "destructive"
+    ;
+    (tool_name == "read" ->
+        Result = "safe"
+    ;
+    Result = "normal"
+    )
+    )
 
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-

@@ -2017,6 +2017,7 @@ shared_logic(tool_cache, cache_clear, [
     field_map(python, ['self.cache'-'self._cache']),
     field_map(rust, ['self.cache()'-'self.cache']),
     field_map(elixir, ['state.cache.clear()'-'%{state | cache: %{}}']),
+    field_map(clojure, ['(:cache state).clear()'-'(assoc state :cache {})']),
     body_template("~self_field(cache)~.clear()")
 ]).
 
@@ -2246,8 +2247,11 @@ expand_expr(prolog, eq_str(A, B), S) :-
     expand_expr(prolog, B, BS),
     format(atom(S), "~w == \"~w\"", [AS, BS]).
 
-expand_expr(clojure, Atom, S) :- atom(Atom), \+ number(Atom), Atom \= true, Atom \= false, Atom \= nil, clojure_kebab(Atom, S).
+expand_expr(clojure, Atom, S) :- atom(Atom), \+ number(Atom), Atom \= true, Atom \= false, Atom \= nil, Atom \= none_val, clojure_kebab(Atom, S).
 expand_expr(Target, Atom, S) :- Target \= clojure, atom(Atom), atom_string(Atom, S).
+
+%% Strings — emit as quoted string literals
+expand_expr(_, Str, S) :- string(Str), format(atom(S), '"~w"', [Str]).
 
 %% Bridge: compound expressions that are actually slots delegate to logic_slot/3
 expand_expr(Target, Expr, S) :-
@@ -2987,6 +2991,8 @@ expand_template_str(Target, Str, Result) :-
         term_string(SlotTerm, SlotStr),
         (logic_slot(Target, SlotTerm, Replacement) ->
             true
+        ; expand_expr(Target, SlotTerm, Replacement) ->
+            true
         ;
             %% Slot not found — keep literal
             format(atom(Replacement), "~w", [SlotStr])
@@ -3016,6 +3022,7 @@ resolve_type(python, set_of_string, "set[str]").
 resolve_type(python, owned_string, "str").
 resolve_type(python, list_of_dict, "list[dict]").
 resolve_type(python, list_of_string, "list[str]").
+resolve_type(python, list, "list").
 resolve_type(python, ref(T), S) :-
     resolve_type(python, T, S).
 resolve_type(python, optional(T), S) :-
@@ -3033,6 +3040,7 @@ resolve_type(rust, set_of_string, "std::collections::HashSet<String>").
 resolve_type(rust, owned_string, "String").
 resolve_type(rust, list_of_dict, "Vec<serde_json::Value>").
 resolve_type(rust, list_of_string, "Vec<String>").
+resolve_type(rust, list, "Vec<serde_json::Value>").
 resolve_type(rust, ref(T), S) :-
     resolve_type(rust, T, Inner),
     format(atom(S), "&~w", [Inner]).
@@ -3093,6 +3101,7 @@ shared_logic(costs, reset, [
     container('CostTracker'),
     mutable,
     field_map(elixir, ['state.records.clear()'-'%{state | records: []}']),
+    field_map(clojure, ['(:records state).clear()'-'(assoc state :records [])']),
     body_template("~self_direct(records)~.clear()\n~self_assign(total_input_tokens, 0)~\n~self_assign(total_output_tokens, 0)~\n~self_assign(total_cost, 0.0)~")
 ]).
 
@@ -3120,6 +3129,7 @@ shared_logic(context, context_clear, [
     mutable,
     py_extra_body("self._token_count = 0\nself._char_count = 0\nself._word_count = 0"),
     field_map(elixir, ['state.messages.clear()'-'%{state | messages: []}']),
+    field_map(clojure, ['(:messages state).clear()'-'(assoc state :messages [])']),
     body_template("~self_direct(messages)~.clear()")
 ]).
 
@@ -3287,9 +3297,7 @@ shared_logic(context, context_needs_trim, [
     arg_types([int]),
     doc("Check if context token count exceeds the budget for trimming."),
     container('ContextManager'),
-    body_template("if ~guard_leq_zero(max_tokens)~:\n    ~return_val(false)~\n~return_val(self_field(estimated_tokens) >= max_tokens)~"),
-    field_map(elixir, ['self.estimated_tokens'-'state.estimated_tokens']),
-    field_map(prolog, ['self.estimated_tokens'-'State.estimated_tokens'])
+    body_template("if ~guard_leq_zero(max_tokens)~:\n    ~return_val(false)~\n~return_val(gte(self_method(estimate_tokens), max_tokens))~")
 ]).
 
 shared_logic(context, context_message_count, [
@@ -3553,9 +3561,145 @@ shared_logic(context, format_duration, [
     body_template("~assign(mins, int_div(seconds, 60))~\n~assign(secs, modulo(seconds, 60))~\n~return_val(format_str(\"{}m {}s\", [mins, secs]))~")
 ]).
 
+%% --- New shared_logic methods: 61-68 ---
+
+shared_logic(costs, cost_per_token, [
+    signature(cost_per_token, [], float),
+    arg_types([]),
+    doc("Compute the average cost per token. Returns 0.0 if no tokens used."),
+    container('CostTracker'),
+    body_template("~assign(total, add(self_direct(total_input_tokens), self_direct(total_output_tokens)))~\nif ~guard_leq_zero(total)~:\n    ~return_val(0.0)~\n~return_val(div_float(self_direct(total_cost), as_float(total)))~")
+]).
+
+shared_logic(tool_cache, is_empty_cache, [
+    signature(is_empty_cache, [], bool),
+    arg_types([]),
+    doc("Check if the tool result cache is empty."),
+    container('ToolResultCache'),
+    body_template("~return_val(eq_zero(len_of(self_direct(cache))))~")
+]).
+
+shared_logic(context, context_last_n, [
+    signature(context_last_n, [n], list),
+    arg_types([int]),
+    doc("Return the last N messages from context history."),
+    container('ContextManager'),
+    body_template("~return_val(list_tail_n(self_direct(messages), n))~")
+]).
+
+shared_logic(sessions, session_is_valid_id, [
+    signature(session_is_valid_id, [session_id], bool),
+    arg_types([string]),
+    doc("Check if a session ID is non-empty and contains no path separators."),
+    container(none),
+    body_template("if ~is_empty_str(session_id)~:\n    ~return_val(false)~\n~return_val(not_expr(str_contains(session_id, \"/\")))~")
+]).
+
+shared_logic(streaming, streaming_char_count, [
+    signature(streaming_char_count, [], int),
+    arg_types([]),
+    doc("Return the current character count from streaming."),
+    container('StreamingTokenCounter'),
+    body_template("~return_val(self_direct(char_count))~")
+]).
+
+shared_logic(retry, retry_max_exceeded, [
+    signature(retry_max_exceeded, [attempt, max_retries], bool),
+    arg_types([int, int]),
+    doc("Check if the retry attempt has exceeded the maximum allowed retries."),
+    container(none),
+    body_template("~return_val(gte(attempt, max_retries))~")
+]).
+
+shared_logic(mcp, mcp_parse_tool_name, [
+    signature(mcp_parse_tool_name, [tool_name], string),
+    arg_types([string]),
+    doc("Extract the tool name after the mcp: prefix. Returns original if no prefix."),
+    container(none),
+    body_template("if ~str_starts_with(tool_name, \"mcp:\")~:\n    ~return_val(str_slice_from(tool_name, 4))~\n~return_val(tool_name)~")
+]).
+
+shared_logic(tools, tool_category, [
+    signature(tool_category, [tool_name], string),
+    arg_types([string]),
+    doc("Categorize a tool as destructive, safe, or normal."),
+    container(none),
+    body_template("if ~matches_str_set(tool_name, [bash, write, edit])~:\n    ~return_val(\"destructive\")~\nif ~eq_str(tool_name, read)~:\n    ~return_val(\"safe\")~\n~return_val(\"normal\")~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
+
+%% --- eq_zero: check if value is zero ---
+expand_expr(python, eq_zero(X), S) :-
+    expand_expr(python, X, XS), format(atom(S), "~w == 0", [XS]).
+expand_expr(rust, eq_zero(X), S) :-
+    expand_expr(rust, X, XS), format(atom(S), "~w == 0", [XS]).
+expand_expr(elixir, eq_zero(X), S) :-
+    expand_expr(elixir, X, XS), format(atom(S), "~w == 0", [XS]).
+expand_expr(prolog, eq_zero(X), S) :-
+    expand_expr(prolog, X, XS), format(atom(S), "~w =:= 0", [XS]).
+expand_expr(clojure, eq_zero(X), S) :-
+    expand_expr(clojure, X, XS), format(atom(S), "(zero? ~w)", [XS]).
+
+%% --- list_tail_n: get last N elements ---
+expand_expr(python, list_tail_n(List, N), S) :-
+    expand_expr(python, List, LS), expand_expr(python, N, NS),
+    format(atom(S), "~w[-~w:]", [LS, NS]).
+expand_expr(rust, list_tail_n(List, N), S) :-
+    expand_expr(rust, List, LS), expand_expr(rust, N, NS),
+    format(atom(S), "~w[~w.len().saturating_sub(~w)..]", [LS, LS, NS]).
+expand_expr(elixir, list_tail_n(List, N), S) :-
+    expand_expr(elixir, List, LS), expand_expr(elixir, N, NS),
+    format(atom(S), "Enum.take(~w, -~w)", [LS, NS]).
+expand_expr(prolog, list_tail_n(List, N), S) :-
+    expand_expr(prolog, List, LS), expand_expr(prolog, N, NS),
+    format(atom(S), "last_n(~w, ~w, Result)", [LS, NS]).
+expand_expr(clojure, list_tail_n(List, N), S) :-
+    expand_expr(clojure, List, LS), expand_expr(clojure, N, NS),
+    format(atom(S), "(take-last ~w ~w)", [NS, LS]).
+
+%% --- is_empty_str: check if string is empty ---
+logic_slot(python, is_empty_str(X), S) :-
+    expand_expr(python, X, XS), format(atom(S), "not ~w", [XS]).
+logic_slot(rust, is_empty_str(X), S) :-
+    expand_expr(rust, X, XS), format(atom(S), "~w.is_empty()", [XS]).
+logic_slot(elixir, is_empty_str(X), S) :-
+    expand_expr(elixir, X, XS), format(atom(S), "~w == \"\"", [XS]).
+logic_slot(prolog, is_empty_str(X), S) :-
+    expand_expr(prolog, X, XS), format(atom(S), '~w == ""', [XS]).
+logic_slot(clojure, is_empty_str(X), S) :-
+    expand_expr(clojure, X, XS), format(atom(S), "(empty? ~w)", [XS]).
+
+%% --- str_contains: check if string contains substring ---
+logic_slot(python, str_contains(Str, Sub), S) :-
+    expand_expr(python, Str, SS),
+    format(atom(S), '"~w" in ~w', [Sub, SS]).
+logic_slot(rust, str_contains(Str, Sub), S) :-
+    expand_expr(rust, Str, SS),
+    format(atom(S), '~w.contains("~w")', [SS, Sub]).
+logic_slot(elixir, str_contains(Str, Sub), S) :-
+    expand_expr(elixir, Str, SS),
+    format(atom(S), 'String.contains?(~w, "~w")', [SS, Sub]).
+logic_slot(prolog, str_contains(Str, Sub), S) :-
+    expand_expr(prolog, Str, SS),
+    format(atom(S), 'sub_string(~w, _, _, _, "~w")', [SS, Sub]).
+logic_slot(clojure, str_contains(Str, Sub), S) :-
+    expand_expr(clojure, Str, SS),
+    format(atom(S), '(clojure.string/includes? ~w "~w")', [SS, Sub]).
+
+%% --- str_slice_from: substring from index N to end ---
+expand_expr(python, str_slice_from(Str, N), S) :-
+    expand_expr(python, Str, SS), format(atom(S), "~w[~w:]", [SS, N]).
+expand_expr(rust, str_slice_from(Str, N), S) :-
+    expand_expr(rust, Str, SS), format(atom(S), "&~w[~w..]", [SS, N]).
+expand_expr(elixir, str_slice_from(Str, N), S) :-
+    expand_expr(elixir, Str, SS), format(atom(S), "String.slice(~w, ~w..-1)", [SS, N]).
+expand_expr(prolog, str_slice_from(Str, N), S) :-
+    expand_expr(prolog, Str, SS), format(atom(S), "sub_string(~w, ~w, _, 0, Result)", [SS, N]).
+expand_expr(clojure, str_slice_from(Str, N), S) :-
+    expand_expr(clojure, Str, SS), format(atom(S), "(subs ~w ~w)", [SS, N]).
 
 %% --- Print/IO slots ---
 logic_slot(python, print_flush(X), S) :-
@@ -4056,6 +4200,22 @@ expand_expr(prolog, gt(A, B), S) :-
     expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
     format(atom(S), "~w > ~w", [AS, BS]).
 
+expand_expr(python, gte(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "~w >= ~w", [AS, BS]).
+expand_expr(rust, gte(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "~w >= ~w", [AS, BS]).
+expand_expr(elixir, gte(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "~w >= ~w", [AS, BS]).
+expand_expr(prolog, gte(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "~w >= ~w", [AS, BS]).
+expand_expr(clojure, gte(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(>= ~w ~w)", [AS, BS]).
+
 %% --- String starts_with ---
 logic_slot(python, str_starts_with(Str, Prefix), S) :-
     format(atom(S), '~w.startswith("~w")', [Str, Prefix]).
@@ -4205,6 +4365,7 @@ resolve_type(prolog, set_of_string, "list").
 resolve_type(prolog, owned_string, "atom").
 resolve_type(prolog, list_of_dict, "list").
 resolve_type(prolog, list_of_string, "list").
+resolve_type(prolog, list, "list").
 resolve_type(prolog, optional(T), S) :-
     resolve_type(prolog, T, Inner),
     format(atom(S), "~w_or_none", [Inner]).
@@ -4240,6 +4401,7 @@ resolve_type(clojure, set_of_string, "#{String}").
 resolve_type(clojure, owned_string, "String").
 resolve_type(clojure, list_of_dict, "[IPersistentMap]").
 resolve_type(clojure, list_of_string, "[String]").
+resolve_type(clojure, list, "coll").
 resolve_type(clojure, optional(T), S) :-
     resolve_type(clojure, T, Inner),
     format(atom(S), "(or ~w nil)", [Inner]).
@@ -4314,14 +4476,19 @@ logic_slot(clojure, filter_endswith(List, Suffix), S) :-
 
 logic_slot(clojure, matches_set(X, List), S) :-
     atomic_list_concat(List, ' ', ListStr),
-    format(atom(S), "(#{~w} ~w)", [ListStr, X]).
+    expand_expr(clojure, X, XS),
+    format(atom(S), "(#{~w} ~w)", [ListStr, XS]).
 logic_slot(clojure, matches_str_set(X, List), S) :-
     maplist([Item, QI]>>(format(atom(QI), '"~w"', [Item])), List, QList),
     atomic_list_concat(QList, ' ', ListStr),
-    format(atom(S), "(#{~w} ~w)", [ListStr, X]).
+    expand_expr(clojure, X, XS),
+    format(atom(S), "(#{~w} ~w)", [ListStr, XS]).
 logic_slot(clojure, format_str(Fmt, Args), S) :-
     format_args_list(Args, clojure, ArgStr),
-    format(atom(S), '(format nil "~w" ~w)', [Fmt, ArgStr]).
+    %% Convert {} placeholders to %s for Clojure (Java) format
+    atomic_list_concat(Parts, '{}', Fmt),
+    atomic_list_concat(Parts, '%s', CljFmt),
+    format(atom(S), '(format "~w" ~w)', [CljFmt, ArgStr]).
 logic_slot(clojure, canonical_json(X), S) :-
     format(atom(S), "(cheshire.core/generate-string ~w {:key-fn name})", [X]).
 logic_slot(clojure, call_method(Method, Args), S) :-
@@ -4334,7 +4501,7 @@ logic_slot(clojure, is_empty_check(X), S) :-
 logic_slot(clojure, streaming_summary(Tokens, Chars), S) :-
     expand_expr(clojure, Tokens, TS),
     expand_expr(clojure, Chars, CS),
-    atomic_list_concat(['(format nil "%s tokens, %s chars" ', TS, ' ', CS, ')'], S).
+    atomic_list_concat(['(format "%s tokens, %s chars" ', TS, ' ', CS, ')'], S).
 logic_slot(clojure, not_expr(Expr), S) :-
     logic_slot(clojure, Expr, Inner), format(atom(S), "(not ~w)", [Inner]).
 logic_slot(clojure, str_starts_with(Str, Prefix), S) :-
@@ -4342,7 +4509,8 @@ logic_slot(clojure, str_starts_with(Str, Prefix), S) :-
 logic_slot(clojure, str_ends_with(Str, Suffix), S) :-
     clojure_kebab(Str, KS), format(atom(S), '(.endsWith ~w "~w")', [KS, Suffix]).
 logic_slot(clojure, all_keys_present(Dict, Keys), S) :-
-    format(atom(S), "(every? #(contains? ~w %) ~w)", [Dict, Keys]).
+    expand_expr(clojure, Dict, DS), expand_expr(clojure, Keys, KS),
+    format(atom(S), "(every? #(contains? ~w %) ~w)", [DS, KS]).
 logic_slot(clojure, json_encode(X), S) :-
     format(atom(S), "(cheshire.core/generate-string ~w {:pretty true})", [X]).
 logic_slot(clojure, json_decode(X), S) :-
@@ -4395,8 +4563,8 @@ expand_expr(clojure, gt(A, B), S) :-
     expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
     format(atom(S), "(> ~w ~w)", [AS, BS]).
 expand_expr(clojure, eq_str(A, B), S) :-
-    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
-    format(atom(S), "(= ~w ~w)", [AS, BS]).
+    expand_expr(clojure, A, AS),
+    format(atom(S), '(= ~w "~w")', [AS, B]).
 expand_expr(clojure, map_get(Coll, Key), S) :-
     expand_expr(clojure, Coll, CS), expand_expr(clojure, Key, KS),
     format(atom(S), "(get ~w ~w)", [CS, KS]).
@@ -4461,6 +4629,45 @@ clojure_fixup_body(In, Out) :-
     atomics_to_text(FixedLines, "\n", Out).
 
 clojure_fixup_lines([], []).
+%% Merge consecutive (let [var val] lines into a single (let [v1 e1 v2 e2]
+clojure_fixup_lines([Line|Rest], Result) :-
+    is_let_binding_line(Line, Binding),
+    !,
+    collect_let_lines(Rest, MoreBindings, BodyLines),
+    append([Binding], MoreBindings, AllBindings),
+    atomic_list_concat(AllBindings, ' ', BindStr),
+    format(atom(LetOpen), "(let [~w]", [BindStr]),
+    clojure_fixup_lines(BodyLines, FixedBody),
+    %% Add closing paren to last body line
+    (FixedBody = [] ->
+        Result = [LetOpen, ")"]
+    ;
+        append(BodyInit, [LastBody], FixedBody),
+        format(atom(LastClosed), "~w)", [LastBody]),
+        append([LetOpen|BodyInit], [LastClosed], Result)
+    ).
+%% Merge consecutive (assoc state :field val) lines into a single (assoc state :f1 v1 :f2 v2 ...)
+clojure_fixup_lines([Line|Rest], Result) :-
+    is_assoc_state_line(Line, Pairs),
+    !,
+    collect_assoc_lines(Rest, MorePairs, Remaining),
+    append(Pairs, MorePairs, AllPairs),
+    atomic_list_concat(AllPairs, ' ', PairsStr),
+    format(atom(Merged), "(assoc state ~w)", [PairsStr]),
+    clojure_fixup_lines(Remaining, RestFixed),
+    Result = [Merged|RestFixed].
+%% Merge consecutive (update state :field ...) lines into (-> state (update ...) (update ...))
+clojure_fixup_lines([Line|Rest], Result) :-
+    is_update_state_line(Line),
+    Rest = [Next|_],
+    is_update_state_line(Next),
+    !,
+    collect_update_lines([Line|Rest], UpdateLines, Remaining),
+    maplist(strip_update_state_prefix, UpdateLines, InnerUpdates),
+    atomic_list_concat(['(-> state'|InnerUpdates], '\n    ', ThreadHead),
+    atom_concat(ThreadHead, ')', Threaded),
+    clojure_fixup_lines(Remaining, RestFixed),
+    Result = [Threaded|RestFixed].
 clojure_fixup_lines([Line|Rest], Result) :-
     (  is_if_line(Line, Cond)
     ->
@@ -4486,6 +4693,56 @@ clojure_fixup_lines([Line|Rest], Result) :-
        clojure_fixup_lines(Rest, RestFixed),
        Result = [Line|RestFixed]
     ).
+
+%% Helper: detect (let [var val] and extract binding string
+is_let_binding_line(Line, Binding) :-
+    atom_string(Line, S),
+    string_concat("(let [", Rest, S),
+    string_concat(Binding0, "]", Rest),
+    atom_string(Binding, Binding0).
+
+collect_let_lines([], [], []).
+collect_let_lines([Line|Rest], Bindings, Body) :-
+    (is_let_binding_line(Line, B) ->
+        collect_let_lines(Rest, MoreB, Body),
+        Bindings = [B|MoreB]
+    ;
+        Bindings = [], Body = [Line|Rest]
+    ).
+
+%% Helper: detect (assoc state :key val) and extract ":key val" pairs
+is_assoc_state_line(Line, [Pairs]) :-
+    atom_string(Line, S),
+    string_concat("(assoc state ", Rest, S),
+    string_concat(PairsStr, ")", Rest),
+    atom_string(Pairs, PairsStr).
+
+collect_assoc_lines([], [], []).
+collect_assoc_lines([Line|Rest], Pairs, Remaining) :-
+    (is_assoc_state_line(Line, P) ->
+        collect_assoc_lines(Rest, MoreP, Remaining),
+        append(P, MoreP, Pairs)
+    ;
+        Pairs = [], Remaining = [Line|Rest]
+    ).
+
+%% Helper: detect (update state ...) lines
+is_update_state_line(Line) :-
+    atom_string(Line, S),
+    sub_string(S, 0, _, _, "(update state ").
+
+collect_update_lines([], [], []).
+collect_update_lines([Line|Rest], [Line|More], Remaining) :-
+    is_update_state_line(Line),
+    !,
+    collect_update_lines(Rest, More, Remaining).
+collect_update_lines(Lines, [], Lines).
+
+strip_update_state_prefix(Line, Inner) :-
+    atom_string(Line, S),
+    string_concat("(update state ", Rest, S),
+    string_concat(Args, ")", Rest),
+    format(atom(Inner), "(update ~w)", [Args]).
 
 %% --- emit_shared_method/3 for Clojure ---
 emit_shared_method(S, clojure, MethodName) :-
@@ -4641,6 +4898,7 @@ resolve_type(elixir, set_of_string, "MapSet.t()").
 resolve_type(elixir, owned_string, "String.t()").
 resolve_type(elixir, list_of_dict, "[map()]").
 resolve_type(elixir, list_of_string, "[String.t()]").
+resolve_type(elixir, list, "list()").
 resolve_type(elixir, ref(T), S) :-
     resolve_type(elixir, T, S).
 resolve_type(elixir, optional(T), S) :-
@@ -7872,8 +8130,13 @@ generate_clojure_backends :-
         (member(description(Desc), Props) -> true ; Desc = ''),
         (member(supports_streaming(Stream), Props) -> true ; Stream = false),
         (member(default_model(DefModel), Props) -> true ; DefModel = nil),
+        (DefModel \= nil ->
+            format(atom(DMStr), '"~w"', [DefModel])
+        ;
+            DMStr = nil
+        ),
         format(S, '   {:name :~w :type :~w :class-name "~w" :command "~w" :description "~w" :supports-streaming ~w :default-model ~w}~n',
-            [Name, Type, ClassName, Cmd, Desc, Stream, (DefModel \= nil -> format(atom(DM), '"~w"', [DefModel]), DM ; nil)])
+            [Name, Type, ClassName, Cmd, Desc, Stream, DMStr])
     )),
     write(S, '  ])\n\n'),
     write(S, '(defn lookup\n'),

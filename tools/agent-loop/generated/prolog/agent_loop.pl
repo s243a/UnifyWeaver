@@ -61,7 +61,7 @@ context_needs_trim(State, Max_tokens, Result) :-
     (max_tokens =< 0 ->
         Result = false
     ;
-    return_val(self_field(estimated_tokens) >= max_tokens)
+    Result = estimate_tokens(State, MethodResult) >= max_tokens
     )
 
 %% Return the number of messages in the context window.
@@ -110,6 +110,10 @@ format_duration(Seconds, Result) :-
     secs = (seconds mod 60)
     Result = format(atom(Formatted), "{}m {}s", [mins, secs])
 
+%% Return the last N messages from context history.
+context_last_n(State, N, Result) :-
+    Result = last_n(State.messages, n, Result)
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -131,6 +135,10 @@ reset(State, State1) :-
 %% Check if live token display is enabled.
 is_live(State, Result) :-
     Result = State.show_live
+
+%% Return the current character count from streaming.
+streaming_char_count(State, Result) :-
+    Result = State.char_count
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -176,6 +184,10 @@ cache_invalidate(State, Key, State1) :-
     del_dict(key, State.cache, _, NewMap), put_dict(cache, State, NewMap, State1)
     Result = true
 
+%% Check if the tool result cache is empty.
+is_empty_cache(State, Result) :-
+    Result = length(State.cache, Len) =:= 0
+
 
 %% --- shared_logic: mcp (generated from compile_logic) ---
 
@@ -183,6 +195,14 @@ cache_invalidate(State, Key, State1) :-
 next_request_id(State, State1) :-
     NewVal is State.request_id + 1, put_dict(request_id, State, NewVal, State1)
     Result = State.request_id
+
+%% Extract the tool name after the mcp: prefix. Returns original if no prefix.
+mcp_parse_tool_name(Tool_name, Result) :-
+    (atom_concat('mcp:', _, tool_name) ->
+        Result = sub_string(tool_name, 4, _, 0, Result)
+    ;
+    Result = tool_name
+    )
 
 
 %% --- shared_logic: retry (generated from compile_logic) ---
@@ -194,6 +214,10 @@ is_retryable_status(Status, Result) :-
 %% Calculate exponential backoff delay, capped at max_delay.
 compute_delay(Base_delay, Exponential_base, Attempt, Max_delay, Result) :-
     Result = min((base_delay * (exponential_base ** (attempt - 1))), max_delay)
+
+%% Check if the retry attempt has exceeded the maximum allowed retries.
+retry_max_exceeded(Attempt, Max_retries, Result) :-
+    Result = attempt >= max_retries
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -241,6 +265,14 @@ session_data_keys(Result) :-
 %% Count the number of session files (ending in .json) in a filename list.
 session_count(Filenames, Result) :-
     Result = length(include([F]>>(sub_atom(F, _, _, 0, ".json")), filenames, Filtered), Len)
+
+%% Check if a session ID is non-empty and contains no path separators.
+session_is_valid_id(Session_id, Result) :-
+    (session_id == "" ->
+        Result = false
+    ;
+    Result = \+ sub_string(session_id, _, _, _, "/")
+    )
 
 conversation([]).
 max_iterations(0).
