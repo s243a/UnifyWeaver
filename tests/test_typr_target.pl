@@ -47,6 +47,8 @@ cleanup_typr_test :-
     retractall(user:if_then_else_asymmetric_rejoin_clause(_, _)),
     retractall(user:factorial_acc(_, _, _)),
     retractall(user:factorial_linear(_, _)),
+    retractall(user:typr_mutual_even(_)),
+    retractall(user:typr_mutual_odd(_)),
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
@@ -255,6 +257,38 @@ test(recursive_compiler_supports_typr_tree_recursion_path) :-
     once(sub_string(Code, _, _, _, "fib_impl <- function(current_input)")),
     once(sub_string(Code, _, _, _, "call_1 = fib_impl(step_1);")),
     once(sub_string(Code, _, _, _, "result = (call_1 + call_2);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_mutual_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even(0)),
+    assertz(user:(typr_mutual_even(N) :-
+        N > 0,
+        N1 is N - 1,
+        typr_mutual_odd(N1)
+    )),
+    assertz(user:typr_mutual_odd(1)),
+    assertz(user:(typr_mutual_odd(N) :-
+        N > 1,
+        N1 is N - 1,
+        typr_mutual_even(N1)
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even/1, 1, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd/1, 1, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even/1, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even/1, typr_mutual_odd/1")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even <- fn(arg1: int): bool")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_odd <- fn(arg1: int): bool")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_typr_mutual_odd_memo <- new.env(hash=TRUE, parent=emptyenv())")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_impl <- function(current_input)")),
+    once(sub_string(Code, _, _, _, "typr_mutual_odd_impl <- function(current_input)")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even:\", current_input);")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_odd:\", current_input);")),
+    once(sub_string(Code, _, _, _, "result = typr_mutual_odd_impl((current_input + -1));")),
+    once(sub_string(Code, _, _, _, "result = typr_mutual_even_impl((current_input + -1));")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
