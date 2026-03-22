@@ -695,15 +695,17 @@ structural_tree_branch_body_lines(
     OutputVar,
     Lines
 ) :-
-    normalize_typr_goals(BranchGoal, [NestedIfGoal|PostGoals]),
+    structural_tree_nested_if_goal(BranchGoal, PreGoals, NestedIfGoal, PostGoals),
+    typr_goals_to_body(PreGoals, PreBody),
+    compile_tail_recursive_pre_goals(PreBody, VarMap0, PreVarMap, GuardConditions, StepLines),
+    tail_recursive_pre_branch_lines(GuardConditions, StepLines, BranchPreLines),
     typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal, ElseGoal),
-    PostGoals \= [],
-    native_typr_if_condition(IfGoal, VarMap0, IfCondition0),
+    native_typr_if_condition(IfGoal, PreVarMap, IfCondition0),
     typr_condition_expr_text(IfCondition0, IfCondition),
     structural_tree_recursive_prefix_lines(
         Pred,
         ThenGoal,
-        VarMap0,
+        PreVarMap,
         HelperName,
         DriverPos,
         Arity,
@@ -715,7 +717,7 @@ structural_tree_branch_body_lines(
     structural_tree_recursive_prefix_lines(
         Pred,
         ElseGoal,
-        VarMap0,
+        PreVarMap,
         HelperName,
         DriverPos,
         Arity,
@@ -734,8 +736,9 @@ structural_tree_branch_body_lines(
     indent_lines(ThenLinesWithResult, '    ', IndentedThenLines),
     indent_lines(ElseLinesWithResult, '    ', IndentedElseLines),
     format(string(IfLine), '        if (~w) {', [IfCondition]),
-    append([IfLine|IndentedThenLines], ['        } else {'|IndentedElseLines], Lines0),
-    append(Lines0, ['        };'], Lines).
+    append(BranchPreLines, [IfLine|IndentedThenLines], Lines0),
+    append(Lines0, ['        } else {'|IndentedElseLines], Lines1),
+    append(Lines1, ['        };'], Lines).
 structural_tree_branch_body_lines(
     Pred,
     BranchGoal,
@@ -784,9 +787,16 @@ structural_tree_goal_rec_calls(Pred, Goal, RecCalls) :-
     !,
     structural_tree_goal_rec_calls(Pred, ThenGoal, RecCalls).
 structural_tree_goal_rec_calls(Pred, Goal, RecCalls) :-
-    normalize_typr_goals(Goal, [NestedIfGoal|_PostGoals]),
+    structural_tree_nested_if_goal(Goal, _PreGoals, NestedIfGoal, _PostGoals),
     typr_if_then_else_goal(NestedIfGoal, _IfGoal, ThenGoal, _ElseGoal),
     structural_tree_goal_rec_calls(Pred, ThenGoal, RecCalls).
+
+structural_tree_nested_if_goal(Goal, PreGoals, NestedIfGoal, PostGoals) :-
+    normalize_typr_goals(Goal, Goals),
+    append(PreGoals, [NestedIfGoal|PostGoals], Goals),
+    PostGoals \= [],
+    typr_if_then_else_goal(NestedIfGoal, _IfGoal, _ThenGoal, _ElseGoal),
+    !.
 
 structural_tree_recursive_prefix_lines(
     Pred,

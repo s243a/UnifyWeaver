@@ -207,7 +207,8 @@ bring-up.
     recursive-call aliases before the two subtree calls, guarded
     pre-recursive branching before the two subtree calls, recursive subtree
     calls inside supported branch bodies, nested recursive subtree calls
-    inside supported branch bodies, nested branch-local post-recursive
+    inside supported branch bodies, shared pre-recursive local work before
+    nested recursive branch bodies, nested branch-local post-recursive
     recombination before a later shared result expression, or asymmetric
     branch-local prework that is reconciled later by a guarded result
     expression

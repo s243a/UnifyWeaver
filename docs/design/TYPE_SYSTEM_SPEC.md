@@ -385,7 +385,8 @@ Current TypR lowering policy is intentionally mixed:
   branch-local recursive-call aliases before those subtree calls, guarded
   pre-recursive branching before those subtree calls, recursive subtree
   calls inside supported branch bodies, nested recursive subtree calls
-  inside supported branch bodies, nested branch-local post-recursive
+  inside supported branch bodies, shared pre-recursive local work before
+  nested recursive branch bodies, nested branch-local post-recursive
   recombination before a later shared result expression, and a
   TypR-translatable result expression that may also reconcile asymmetric
   branch-local prework, such as `tree_sum/2`, `tree_height/2`,

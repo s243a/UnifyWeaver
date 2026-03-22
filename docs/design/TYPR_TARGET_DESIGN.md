@@ -76,7 +76,8 @@ This document focuses on architecture and rollout choices specific to TypR.
      recursive calls, branch-local recursive-call aliases before the two
      subtree calls, guarded pre-recursive branching before the two subtree
      calls, recursive subtree calls inside supported branch bodies, nested
-     recursive subtree calls inside supported branch bodies, nested
+     recursive subtree calls inside supported branch bodies, shared
+     pre-recursive local work before nested recursive branch bodies, nested
      branch-local post-recursive recombination before a later shared result
      expression, or asymmetric branch-local prework that is reconciled
      later by a guarded result expression, emitted as TypR functions with
@@ -373,8 +374,11 @@ Current implementation note:
   updates for the left and right recursive calls, branch-local recursive-
   call aliases before the two subtree calls, guarded pre-recursive
   branching before the two subtree calls, recursive subtree calls inside
-  supported branch bodies, and asymmetric branch-local prework that is
-  reconciled later by a guarded result expression,
+  supported branch bodies, nested recursive subtree calls inside supported
+  branch bodies, shared pre-recursive local work before nested recursive
+  branch bodies, nested branch-local post-recursive recombination before a
+  later shared result expression, and asymmetric branch-local prework that
+  is reconciled later by a guarded result expression,
   guarded post-recursive recombination inside those same single-recursive-
   call numeric and list linear-recursive shapes, including multi-state
   branch-local recombination after the recursive call,
