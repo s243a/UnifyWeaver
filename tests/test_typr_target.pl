@@ -49,6 +49,8 @@ cleanup_typr_test :-
     retractall(user:factorial_linear(_, _)),
     retractall(user:typr_mutual_even(_)),
     retractall(user:typr_mutual_odd(_)),
+    retractall(user:typr_mutual_even_list(_)),
+    retractall(user:typr_mutual_odd_list(_)),
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
@@ -289,6 +291,34 @@ test(recursive_compiler_supports_typr_mutual_recursion_path) :-
     once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_odd:\", current_input);")),
     once(sub_string(Code, _, _, _, "result = typr_mutual_odd_impl((current_input + -1));")),
     once(sub_string(Code, _, _, _, "result = typr_mutual_even_impl((current_input + -1));")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_mutual_recursion_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_list([])),
+    assertz(user:(typr_mutual_even_list([_|T]) :-
+        typr_mutual_odd_list(T)
+    )),
+    assertz(user:typr_mutual_odd_list([_])),
+    assertz(user:(typr_mutual_odd_list([_|T]) :-
+        typr_mutual_even_list(T)
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_list/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_list/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_list/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_list/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_list/1, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_list/1, typr_mutual_odd_list/1")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_list <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_odd_list <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_list_typr_mutual_odd_list_memo <- new.env(hash=TRUE, parent=emptyenv())")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_list:\", paste(deparse(current_input), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_odd_list:\", paste(deparse(current_input), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "length(current_input) == 0")),
+    once(sub_string(Code, _, _, _, "length(current_input) == 1")),
+    once(sub_string(Code, _, _, _, "result = typr_mutual_odd_list_impl(tail(current_input, -1));")),
+    once(sub_string(Code, _, _, _, "result = typr_mutual_even_list_impl(tail(current_input, -1));")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

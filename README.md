@@ -241,10 +241,10 @@ includes:
 - conservative arity-2 numeric multi-call tree-recursive predicates such as
   `fib/2`, lowered to TypR functions that use raw-expression memoized helper
   bodies inside TypR instead of wrapped-R fallback
-- conservative arity-1 boolean numeric mutual-recursive predicate groups
-  such as `is_even/1` and `is_odd/1`, lowered to TypR functions that use
-  raw-expression memoized helper bodies inside TypR instead of wrapped-R
-  fallback
+- conservative arity-1 boolean mutual-recursive predicate groups such as
+  `is_even/1` / `is_odd/1` and `even_list/1` / `odd_list/1`, lowered to
+  TypR functions that use raw-expression memoized helper bodies inside TypR
+  instead of wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates with one
   tree-driving argument and invariant context args, such as `tree_sum/2`,
   `tree_height/2`, `weighted_tree_sum/3`, `weighted_tree_affine_sum/4`,
