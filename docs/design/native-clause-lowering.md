@@ -213,6 +213,75 @@ Each target needs idiom-appropriate translations:
 | Guard expression | `if x > 0:` | `if x > 0 {` | `if x > 0 {` |
 | Fallback embedding | N/A (Python is native) | `// fallback` comment | `// fallback` comment |
 
+### Type Annotations
+
+Native clause lowering should use type annotations from `type_declarations.pl`
+when available, but **must work without them**. The system already provides:
+
+- `uw_type(PredSpec, ArgIndex, AbstractType)` — per-argument type declarations
+- `uw_return_type(PredSpec, AbstractType)` — return type declarations
+- `resolve_type(AbstractType, TargetLang, ConcreteType)` — maps abstract types
+  (integer, float, atom, string, boolean, any, list(...), maybe(...), etc.) to
+  target-specific concrete types
+- `predicate_arg_type/3`, `predicate_return_type/2` — query helpers with domain
+  type resolution
+
+**Integration strategy for native lowering:**
+
+1. **When type annotations exist:** Use `predicate_arg_type/3` and
+   `predicate_return_type/2` to resolve parameter and return types via
+   `resolve_type/3`. Generate typed function signatures.
+
+   ```prolog
+   % With uw_type(classify/2, 1, integer) declared:
+   % Rust → fn classify(arg1: i64) -> &'static str
+   % Go   → func classify(arg1 int) string
+   ```
+
+2. **When type annotations are absent:** Fall back to sensible defaults per
+   target. Each target chooses its own untyped convention:
+
+   | Target | Untyped param | Untyped return |
+   |--------|---------------|----------------|
+   | Python | (no annotation) | (no annotation) |
+   | Go | `interface{}` | `interface{}` |
+   | Rust | `i64` (numeric default) | `&'static str` or inferred |
+   | Elixir | (no annotation, dynamically typed) | (no annotation) |
+   | Haskell | polymorphic `a` or `Int` default | inferred |
+   | Java | `Object` or `int` default | `Object` or inferred |
+
+3. **Type inference from clause structure:** When no explicit annotations exist,
+   native lowering can opportunistically infer types from the clause body:
+   - Head args matched against atoms → likely `atom`/`string` type
+   - Head args used in arithmetic → likely `integer`/`number` type
+   - Output is always an atom literal → return type is `string`/`&'static str`
+   - Output is arithmetic → return type is `integer`/`i64`
+
+   This inference is best-effort and should never block compilation. If inference
+   fails or is ambiguous, use the target's untyped defaults.
+
+4. **`uw_typed_mode` interaction:** The existing `resolve_typed_mode/4` supports
+   three modes:
+   - `explicit` — emit annotations only for explicitly declared types; do not
+     infer or fill in defaults for the annotations themselves. Code still
+     compiles using target defaults for actual runtime types, but function
+     signatures only show what the user declared. This means `explicit` mode
+     does **not** require type annotations — missing declarations simply produce
+     unannotated parameters, not compilation failures. If users want to enforce
+     that all predicates have type declarations, that is a separate lint/
+     validation concern (e.g., a `check_type_coverage/1` predicate), not a
+     codegen-blocking behavior.
+   - `infer` — emit annotations for non-obvious types (TypR's default);
+     opportunistically infer from clause structure when declarations are absent
+   - `off` — suppress all annotations regardless of declarations
+
+   Native lowering should respect this mode when generating function signatures.
+
+**Key principle:** Type annotations improve output quality (more idiomatic,
+compilable code) but are never required. A predicate with no `uw_type`
+declarations must still compile correctly through native lowering using target
+defaults.
+
 ---
 
 ## Implementation Plan
