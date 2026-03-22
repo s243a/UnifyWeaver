@@ -30,23 +30,23 @@
 
 %% Estimate token count using chars/4 heuristic.
 estimate_tokens(State, Result) :-
-    Result = (char_count(State, MethodResult) // 4)
+    Result = (char_count(State, MethodResult) // 4).
 
 %% Clear all messages from context.
 clear(State, State1) :-
-    State.messages.clear()
+    put_dict(messages, State, [], State1).
 
 %% Return number of messages in context.
 len(State, Result) :-
-    Result = length(State.messages, Len)
+    Result = length(State.messages, Len).
 
 %% Check if context has no messages.
 is_empty(State, Result) :-
-    Result = State.messages == []
+    Result = State.messages == [].
 
 %% Append a message to the context history.
 add_message(State, Message, State1) :-
-    append(State.messages, [message], NewList), put_dict(messages, State, NewList, State1)
+    append(State.messages, [Message], NewList), put_dict(messages, State, NewList, State1).
 
 %% Get the last message from history, or nil if empty.
 last_message(State, Result) :-
@@ -54,65 +54,65 @@ last_message(State, Result) :-
         Result = none
     ;
     Result = last(State.messages, Last)
-    )
+    ).
 
 %% Check if context token count exceeds the budget for trimming.
 context_needs_trim(State, Max_tokens, Result) :-
-    (max_tokens =< 0 ->
+    (Max_tokens =< 0 ->
         Result = false
     ;
-    Result = estimate_tokens(State, MethodResult) >= max_tokens
-    )
+    Result = estimate_tokens(State, MethodResult) >= Max_tokens
+    ).
 
 %% Return the number of messages in the context window.
 context_message_count(State, Result) :-
-    Result = length(State.messages, Len)
+    Result = length(State.messages, Len).
 
 %% Compute how many oldest messages to drop to fit within count limit.
 trim_excess_count(State, Max_messages, Result) :-
-    (max_messages =< 0 ->
+    (Max_messages =< 0 ->
         Result = 0
     ;
-    Result = max(0.0, (length(State.messages, Len) - max_messages))
-    )
+    Result = max(0.0, (length(State.messages, Len) - Max_messages))
+    ).
 
 %% Check if estimated token count exceeds the max token budget.
 tokens_over_budget(State, Max_tokens, Result) :-
-    (max_tokens =< 0 ->
+    (Max_tokens =< 0 ->
         Result = false
     ;
-    Result = estimate_tokens(State, MethodResult) > max_tokens
-    )
+    Result = estimate_tokens(State, MethodResult) > Max_tokens
+    ).
 
 %% Estimate tokens for a single message using chars/4 heuristic.
 message_token_estimate(Content, Result) :-
-    Result = max(1, (atom_length(content, Len) // 4))
+    Result = max(1, (atom_length(Content, Len) // 4)).
 
 %% Count the number of whitespace-separated words in content.
 word_count(Content, Result) :-
-    Result = length(split_string(content, " ", "", Words), Len)
+    Result = length(split_string(Content, " ", "", Words), Len).
 
 %% Return the current context format setting.
 get_format(State, Result) :-
-    Result = State.format
+    Result = State.format.
 
 %% Truncate a string to max_len characters, appending ... if truncated.
 truncate_string(Text, Max_len, Result) :-
-    (atom_length(text, Len) =< max_len ->
-        Result = text
+    (atom_length(Text, Len) =< Max_len ->
+        Result = Text
     ;
-    Result = sub_atom(text, 0, max_len, _, Prefix), atom_concat(Prefix, "...", Truncated)
-    )
+    Result = sub_atom(Text, 0, Max_len, _, Prefix), atom_concat(Prefix, "...", Truncated)
+    ).
 
 %% Format a duration in seconds to a human-readable string (e.g. 90 -> 1m 30s).
 format_duration(Seconds, Result) :-
-    mins = (seconds // 60)
-    secs = (seconds mod 60)
-    Result = format(atom(Formatted), "{}m {}s", [mins, secs])
+    Mins = (Seconds // 60),
+    Secs = (Seconds mod 60),
+    Result = format(atom(Formatted), "~wm ~ws", [Mins, Secs]).
 
 %% Return the last N messages from context history.
 context_last_n(State, N, Result) :-
-    Result = last_n(State.messages, n, Result)
+    Result = last_n(State.messages, N, Result).
 
 %% Get the first (oldest) message from history, or nil if empty.
 context_oldest_message(State, Result) :-
@@ -120,191 +120,224 @@ context_oldest_message(State, Result) :-
         Result = none
     ;
     Result = nth0(0, State.messages, Result)
-    )
+    ).
 
 %% Remove the oldest message from context history.
 context_drop_oldest(State, State1) :-
-    put_dict(messages, State, State.messages = [_|Result], State1)
+    State.messages = [_|Rest], put_dict(messages, State, Rest, State1).
+
+%% Check if context has at least one message.
+has_messages(State, Result) :-
+    Result = State.messages \= [].
+
+%% Get a message at a specific index, or nil if out of range.
+message_at(State, Index, Result) :-
+    (Index >= length(State.messages, Len) ->
+        Result = none
+    ;
+    Result = nth0(Index, State.messages, Result)
+    ).
 
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
 %% Process a streamed token chunk: print it, update char and token counts.
 on_token(State, Token, State1) :-
-    write(token), flush_output
-    NewVal is State.char_count + atom_length(token, Len), put_dict(char_count, State, NewVal, State1)
-    put_dict(token_count, State, max(1, (State.char_count // 4)), State1)
+    write(Token), flush_output,
+    NewVal is State.char_count + atom_length(Token, Len), put_dict(char_count, State, NewVal, State1),
+    put_dict(token_count, State, max(1, (State.char_count // 4)), State1).
 
 %% Format a one-line summary of streaming stats.
 format_summary(State, Result) :-
-    Result = format(atom(Summary), "~State.token_count tokens, State.char_count chars", [State.token_count, State.char_count])
+    Result = format(atom(Summary), "~w tokens, ~w chars", [State.token_count, State.char_count]).
 
 %% Reset streaming counters to zero.
 reset(State, State1) :-
-    put_dict(token_count, State, 0, State1)
-    put_dict(char_count, State, 0, State1)
+    put_dict(token_count, State, 0, State1),
+    put_dict(char_count, State, 0, State1).
 
 %% Check if live token display is enabled.
 is_live(State, Result) :-
-    Result = State.show_live
+    Result = State.show_live.
 
 %% Return the current character count from streaming.
 streaming_char_count(State, Result) :-
-    Result = State.char_count
+    Result = State.char_count.
 
 %% Return the current approximate token count from streaming.
 streaming_token_count(State, Result) :-
-    Result = State.token_count
+    Result = State.token_count.
+
+%% Reset token and character counters to zero.
+reset_counts(State, State1) :-
+    put_dict(token_count, State, 0, State1),
+    put_dict(char_count, State, 0, State1).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
 
 %% Clear all cached tool results.
 clear(State, State1) :-
-    State.cache.clear()
+    put_dict(cache, State, _{}, State1).
 
 %% Return number of cached entries.
 len(State, Result) :-
-    Result = length(State.cache, Len)
+    Result = length(State.cache, Len).
 
 %% Build a canonical cache key from tool name and arguments.
 make_key(State, Tool_name, Args, Result) :-
-    Result = format(atom(Formatted), "{}:{}", [tool_name, atom_json_term(args, JsonStr, [])])
+    Result = format(atom(Formatted), "~w:~w", [Tool_name, atom_json_term(Args, JsonStr, [])]).
 
 %% Check if a tool should skip the cache (destructive tools).
 should_skip(State, Tool_name, Result) :-
-    Result = memberchk(tool_name, State.skip_tools)
+    Result = memberchk(Tool_name, State.skip_tools).
 
 %% Look up a cached result by key. Returns nil if not found.
 get(State, Key, Result) :-
-    Result = get_dict(key, State.cache, Val)
+    Result = get_dict(Key, State.cache, Val).
 
 %% Store a result in the cache.
 put(State, Key, Value, State1) :-
-    put_dict(key, State.cache, value, NewMap), put_dict(cache, State, NewMap, State1)
+    put_dict(Key, State.cache, Value, NewMap), put_dict(cache, State, NewMap, State1).
 
 %% Check if a key exists in the cache.
 has_key(State, Key, Result) :-
-    Result = get_dict(key, State.cache, _)
+    Result = get_dict(Key, State.cache, _).
 
 %% Return the number of cached tool results.
 cache_count(State, Result) :-
-    Result = length(State.cache, Len)
+    Result = length(State.cache, Len).
 
 %% Return the list of all cache keys.
 cache_keys(State, Result) :-
-    Result = dict_keys(State.cache, Keys)
+    Result = dict_keys(State.cache, Keys).
 
 %% Remove a single cache entry by key. Returns true if key existed.
 cache_invalidate(State, Key, State1) :-
-    del_dict(key, State.cache, _, NewMap), put_dict(cache, State, NewMap, State1)
-    Result = true
+    del_dict(Key, State.cache, _, NewMap), put_dict(cache, State, NewMap, State1),
+    Result = true.
 
 %% Check if the tool result cache is empty.
 is_empty_cache(State, Result) :-
-    Result = length(State.cache, Len) =:= 0
+    Result = length(State.cache, Len) =:= 0.
 
 %% Return the maximum cache size limit.
 cache_max_size(State, Result) :-
-    Result = State.max_size
+    Result = State.max_size.
 
 %% Check if the cache has reached its maximum size.
 cache_is_full(State, Result) :-
-    Result = length(State.cache, Len) >= State.max_size
+    Result = length(State.cache, Len) >= State.max_size.
+
+%% Compute cache hit rate. Returns 0.0 if no lookups.
+cache_hit_rate(State, Result) :-
+    (State.total_lookups =:= 0 ->
+        Result = 0.0
+    ;
+    Result = (float(State.hits) / float(State.total_lookups))
+    ).
 
 
 %% --- shared_logic: mcp (generated from compile_logic) ---
 
 %% Increment and return the next JSON-RPC request ID.
 next_request_id(State, State1) :-
-    NewVal is State.request_id + 1, put_dict(request_id, State, NewVal, State1)
-    Result = State.request_id
+    NewVal is State.request_id + 1, put_dict(request_id, State, NewVal, State1),
+    Result = State.request_id.
 
 %% Extract the tool name after the mcp: prefix. Returns original if no prefix.
 mcp_parse_tool_name(Tool_name, Result) :-
-    (atom_concat('mcp:', _, tool_name) ->
-        Result = sub_string(tool_name, 4, _, 0, Result)
+    (atom_concat('mcp:', _, Tool_name) ->
+        Result = sub_string(Tool_name, 4, _, 0, Result)
     ;
-    Result = tool_name
-    )
+    Result = Tool_name
+    ).
+
+%% Check if a JSON-RPC method is a notification (starts with 'notifications/').
+mcp_is_notification(Method_name, Result) :-
+    Result = atom_concat('notifications/', _, Method_name).
 
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
 %% Check if an HTTP status code is retryable (408, 429, 5xx).
 is_retryable_status(Status, Result) :-
-    Result = memberchk(status, [408, 429, 500, 502, 503, 504])
+    Result = memberchk(Status, [408, 429, 500, 502, 503, 504]).
 
 %% Calculate exponential backoff delay, capped at max_delay.
 compute_delay(Base_delay, Exponential_base, Attempt, Max_delay, Result) :-
-    Result = min((base_delay * (exponential_base ** (attempt - 1))), max_delay)
+    Result = min((Base_delay * (Exponential_base ** (Attempt - 1))), Max_delay).
 
 %% Check if the retry attempt has exceeded the maximum allowed retries.
 retry_max_exceeded(Attempt, Max_retries, Result) :-
-    Result = attempt >= max_retries
+    Result = Attempt >= Max_retries.
 
 %% Cap a retry delay to a maximum value.
 retry_delay_capped(Delay, Max_delay, Result) :-
-    Result = min(delay, max_delay)
+    Result = min(Delay, Max_delay).
+
+%% Check if this is the first retry attempt (attempt == 0).
+is_first_attempt(Attempt, Result) :-
+    Result = Attempt =:= 0.
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
 
 %% Extract JSON blocks: try fenced code blocks first, fall back to bare objects.
 extract_json(State, Text, Result) :-
-    results = extract_fenced(text, MethodResult)
-    (results \= [] ->
-        Result = results
+    Results = extract_fenced(Text, MethodResult),
+    (Results \= [] ->
+        Result = Results
     ;
-    Result = extract_bare(text, MethodResult)
-    )
+    Result = extract_bare(Text, MethodResult)
+    ).
 
 %% Check if a format string is one of the valid formats (plain, markdown, json, xml).
 is_valid_format(Fmt, Result) :-
-    Result = memberchk(fmt, ["plain", "markdown", "json", "xml"])
+    Result = memberchk(Fmt, ["plain", "markdown", "json", "xml"]).
 
 %% Escape HTML special characters (& < > quotes).
 escape_html(Text, Result) :-
-    Result = html_escape(text, Escaped)
+    Result = html_escape(Text, Escaped).
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
 
 %% Build the filesystem path for a session file.
 session_path(State, Session_id, Result) :-
-    Result = directory_file_path(State.sessions_dir, format(atom(Formatted), "{}.json", [session_id]), Path)
+    Result = directory_file_path(State.sessions_dir, format(atom(Formatted), "~w.json", [Session_id]), Path).
 
 %% Check if a session file exists on disk.
 session_exists(State, Session_id, Result) :-
-    Result = exists_file(directory_file_path(State.sessions_dir, format(atom(Formatted), "{}.json", [session_id]), Path))
+    Result = exists_file(directory_file_path(State.sessions_dir, format(atom(Formatted), "~w.json", [Session_id]), Path)).
 
 %% Build the filename for a session (id + .json extension).
 session_filename(Session_id, Result) :-
-    Result = format(atom(Formatted), "{}.json", [session_id])
+    Result = format(atom(Formatted), "~w.json", [Session_id]).
 
 %% Check if a filename is a session file (ends with .json).
 session_list_filter(Filename, Result) :-
-    Result = atom_concat(_, '.json', filename)
+    Result = atom_concat(_, '.json', Filename).
 
 %% Return the list of metadata keys in a session file.
 session_data_keys(Result) :-
-    Result = ['id', 'name', 'message_count', 'saved_at']
+    Result = ['id', 'name', 'message_count', 'saved_at'].
 
 %% Count the number of session files (ending in .json) in a filename list.
 session_count(Filenames, Result) :-
-    Result = length(include([F]>>(sub_atom(F, _, _, 0, ".json")), filenames, Filtered), Len)
+    Result = length(include([F]>>(sub_atom(F, _, _, 0, ".json")), Filenames, Filtered), Len).
 
 %% Check if a session ID is non-empty and contains no path separators.
 session_is_valid_id(Session_id, Result) :-
-    (session_id == "" ->
+    (Session_id == "" ->
         Result = false
     ;
-    Result = \+ sub_string(session_id, _, _, _, "/")
-    )
+    Result = \+ sub_string(Session_id, _, _, _, "/")
+    ).
 
 %% Return the configured sessions directory path.
 session_dir(State, Result) :-
-    Result = State.sessions_dir
+    Result = State.sessions_dir.
 
 conversation([]).
 max_iterations(0).

@@ -96,3 +96,15 @@
   (not (zero? (count (:records state))))
 )
 
+(defn total-tokens
+  "Return total token count (input + output)."
+  [state]
+  (+ (:total-input-tokens state) (:total-output-tokens state))
+)
+
+(defn cost-summary-short
+  "Return a short cost summary string (e.g. $0.05)."
+  [state]
+  (format "$%s" (:total-cost state))
+)
+

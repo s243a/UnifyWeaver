@@ -2018,6 +2018,7 @@ shared_logic(tool_cache, cache_clear, [
     field_map(rust, ['self.cache()'-'self.cache']),
     field_map(elixir, ['state.cache.clear()'-'%{state | cache: %{}}']),
     field_map(clojure, ['(:cache state).clear()'-'(assoc state :cache {})']),
+    field_map(prolog, ['State.cache.clear()'-'put_dict(cache, State, _{}, State1)']),
     body_template("~self_field(cache)~.clear()")
 ]).
 
@@ -2035,7 +2036,7 @@ shared_logic(tool_cache, cache_len, [
 %% =============================================================================
 
 %% Python slots
-logic_slot(python, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0", [X]).
+logic_slot(python, guard_leq_zero(X), S) :- expand_expr(python, X, XS), format(atom(S), "~w <= 0", [XS]).
 logic_slot(python, guard_leq(A, B), S) :-
     expand_expr(python, A, AS), expand_expr(python, B, BS),
     format(atom(S), "~w <= ~w", [AS, BS]).
@@ -2048,7 +2049,7 @@ logic_slot(python, return_val(Expr), S) :-
 logic_slot(python, self_field(F), S) :- format(atom(S), "self.~w", [F]).
 
 %% Rust slots
-logic_slot(rust, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0.0", [X]).
+logic_slot(rust, guard_leq_zero(X), S) :- expand_expr(rust, X, XS), format(atom(S), "~w <= 0.0", [XS]).
 logic_slot(rust, guard_leq(A, B), S) :-
     expand_expr(rust, A, AS), expand_expr(rust, B, BS),
     format(atom(S), "~w <= ~w", [AS, BS]).
@@ -2061,7 +2062,7 @@ logic_slot(rust, return_val(Expr), S) :-
 logic_slot(rust, self_field(F), S) :- format(atom(S), "self.~w()", [F]).
 
 %% Prolog slots — state is a SWI-Prolog dict; results via unification
-logic_slot(prolog, guard_leq_zero(X), S) :- format(atom(S), "~w =< 0", [X]).
+logic_slot(prolog, guard_leq_zero(X), S) :- expand_expr(prolog, X, XS), format(atom(S), "~w =< 0", [XS]).
 logic_slot(prolog, guard_leq(A, B), S) :-
     expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
     format(atom(S), "~w =< ~w", [AS, BS]).
@@ -2248,7 +2249,15 @@ expand_expr(prolog, eq_str(A, B), S) :-
     format(atom(S), "~w == \"~w\"", [AS, BS]).
 
 expand_expr(clojure, Atom, S) :- atom(Atom), \+ number(Atom), Atom \= true, Atom \= false, Atom \= nil, Atom \= none_val, clojure_kebab(Atom, S).
-expand_expr(Target, Atom, S) :- Target \= clojure, atom(Atom), atom_string(Atom, S).
+%% Prolog atoms: capitalize identifier-like atoms as Prolog variables
+expand_expr(prolog, Atom, S) :-
+    atom(Atom), \+ number(Atom),
+    Atom \= true, Atom \= false, Atom \= none,
+    atom_chars(Atom, [H|T]),
+    char_type(H, alpha),
+    upcase_atom(H, UH),
+    atom_chars(S, [UH|T]).
+expand_expr(Target, Atom, S) :- Target \= clojure, Target \= prolog, atom(Atom), atom_string(Atom, S).
 
 %% Strings — emit as quoted string literals
 expand_expr(_, Str, S) :- string(Str), format(atom(S), '"~w"', [Str]).
@@ -2618,7 +2627,11 @@ emit_shared_method(S, prolog, MethodName) :-
         BodyStr1 = BodyStr0
     ),
     %% Apply Prolog fixup (if X:\n    Y\nZ → (X -> Y ; Z))
-    prolog_fixup_body(BodyStr1, BodyStr),
+    prolog_fixup_body(BodyStr1, BodyStr2),
+    %% Capitalize parameter names in body (budget → Budget)
+    prolog_capitalize_body_params(Args, BodyStr2, BodyStr3),
+    %% Add commas between goals and period at end
+    prolog_add_clause_punctuation(BodyStr3, BodyStr),
     %% Emit body lines
     split_string(BodyStr, "\n", "", Lines),
     forall(member(Line, Lines), (
@@ -2636,6 +2649,125 @@ prolog_capitalize_args(ArgsStr, Result) :-
         atom_chars(Cap, [UH|T])
     ), Parts, CapParts),
     atomic_list_concat(CapParts, ', ', Result).
+
+%% Capitalize parameter names in the body text (budget → Budget, text → Text)
+%% Uses word-boundary replacement to avoid over-matching substrings
+prolog_capitalize_body_params([], Body, Body).
+prolog_capitalize_body_params([Arg|Rest], BodyIn, BodyOut) :-
+    atom_string(Arg, ArgStr),
+    string_chars(ArgStr, [H|T]),
+    upcase_atom(H, UH),
+    atom_chars(CapArg, [UH|T]),
+    %% Replace whole-word occurrences of the lowercase param with capitalized
+    prolog_replace_param(ArgStr, CapArg, BodyIn, BodyMid),
+    prolog_capitalize_body_params(Rest, BodyMid, BodyOut).
+
+%% Replace a parameter name (whole word) in body text
+%% We split on the param and check boundaries to avoid partial matches
+prolog_replace_param(Param, CapParam, In, Out) :-
+    atom_string(Param, ParamStr),
+    atom_string(CapParam, CapStr),
+    atom_string(In, InStr),
+    string_length(ParamStr, PLen),
+    prolog_replace_param_str(InStr, ParamStr, CapStr, PLen, OutStr),
+    atom_string(Out, OutStr).
+
+prolog_replace_param_str("", _, _, _, "").
+prolog_replace_param_str(In, Param, Cap, PLen, Out) :-
+    string_length(In, InLen),
+    InLen >= PLen,
+    sub_string(In, 0, PLen, _, Front),
+    Front = Param,
+    %% Check character before (at position -1 = start of string)
+    %% and after to ensure word boundary
+    sub_string(In, PLen, _, 0, After),
+    (After = "" -> AfterOk = true
+    ; sub_string(After, 0, 1, _, AfterChar),
+      (prolog_is_ident_char(AfterChar) -> AfterOk = false ; AfterOk = true)
+    ),
+    AfterOk = true,
+    !,
+    prolog_replace_param_str(After, Param, Cap, PLen, RestOut),
+    string_concat(Cap, RestOut, Out).
+prolog_replace_param_str(In, Param, Cap, PLen, Out) :-
+    sub_string(In, 0, 1, _, Ch),
+    sub_string(In, 1, _, 0, Rest),
+    %% If current char is ident char, skip ahead until word ends
+    (prolog_is_ident_char(Ch) ->
+        prolog_skip_ident(Rest, Skipped, Remaining),
+        string_concat(Ch, Skipped, Word),
+        prolog_replace_param_str(Remaining, Param, Cap, PLen, RestOut),
+        string_concat(Word, RestOut, Out)
+    ;
+        prolog_replace_param_str(Rest, Param, Cap, PLen, RestOut),
+        string_concat(Ch, RestOut, Out)
+    ).
+
+prolog_skip_ident("", "", "").
+prolog_skip_ident(In, Skipped, Remaining) :-
+    sub_string(In, 0, 1, _, Ch),
+    (prolog_is_ident_char(Ch) ->
+        sub_string(In, 1, _, 0, Rest),
+        prolog_skip_ident(Rest, RestSkipped, Remaining),
+        string_concat(Ch, RestSkipped, Skipped)
+    ;
+        Skipped = "",
+        Remaining = In
+    ).
+
+prolog_is_ident_char(Ch) :-
+    atom_string(ChAtom, Ch),
+    char_code(ChAtom, Code),
+    (Code >= 0'a, Code =< 0'z -> true
+    ; Code >= 0'A, Code =< 0'Z -> true
+    ; Code >= 0'0, Code =< 0'9 -> true
+    ; ChAtom = '_' -> true
+    ; fail
+    ).
+
+%% Add commas between Prolog body goals and a period at the end
+%% Rules: don't add comma before lines starting with ';' or ')' or after '->'
+prolog_add_clause_punctuation(In, Out) :-
+    split_string(In, "\n", "", Lines),
+    exclude([L]>>(L = ""), Lines, NonEmpty),
+    (NonEmpty = [] ->
+        Out = "true."
+    ;
+        prolog_punctuate_lines(NonEmpty, Punctuated),
+        atomics_to_text(Punctuated, "\n", Out)
+    ).
+
+prolog_punctuate_lines([], []).
+prolog_punctuate_lines([Last], [WithDot]) :-
+    %% Add period to last line
+    atom_concat(Last, '.', WithDot).
+prolog_punctuate_lines([Line, Next|Rest], [WithComma|RestPunct]) :-
+    %% Decide if comma needed between Line and Next
+    (prolog_needs_comma(Line, Next) ->
+        atom_concat(Line, ',', WithComma)
+    ;
+        WithComma = Line
+    ),
+    prolog_punctuate_lines([Next|Rest], RestPunct).
+
+%% Check if a comma is needed between two consecutive lines
+prolog_needs_comma(Line, Next) :-
+    atom_string(Line, LineStr),
+    atom_string(Next, NextStr),
+    %% No comma if current line ends with '->' (conditional then)
+    \+ sub_atom(Line, _, 2, 0, '->'),
+    %% No comma if current line starts with '(' (conditional open)
+    \+ sub_atom(Line, 0, 1, _, '('),
+    %% No comma if current line is ';' or starts with ';' (else branch)
+    \+ sub_string(LineStr, 0, 1, _, ";"),
+    %% No comma if next line starts with ';' (else branch)
+    \+ sub_string(NextStr, 0, 1, _, ";"),
+    %% No comma if next line starts with ')' (closing conditional)
+    \+ sub_string(NextStr, 0, 1, _, ")"),
+    %% No comma if current line ends with '('
+    \+ sub_atom(Line, _, 1, 0, '('),
+    %% No comma if current line already ends with ','
+    \+ sub_atom(Line, _, 1, 0, ',').
 
 %% Prolog fixup: convert imperative if/return patterns to Prolog (Cond -> Then ; Else)
 %% Prolog fixup: convert imperative if/return patterns to Prolog conditionals
@@ -3102,6 +3234,7 @@ shared_logic(costs, reset, [
     mutable,
     field_map(elixir, ['state.records.clear()'-'%{state | records: []}']),
     field_map(clojure, ['(:records state).clear()'-'(assoc state :records [])']),
+    field_map(prolog, ['State.records.clear()'-'put_dict(records, State, [], State1)']),
     body_template("~self_direct(records)~.clear()\n~self_assign(total_input_tokens, 0)~\n~self_assign(total_output_tokens, 0)~\n~self_assign(total_cost, 0.0)~")
 ]).
 
@@ -3130,6 +3263,7 @@ shared_logic(context, context_clear, [
     py_extra_body("self._token_count = 0\nself._char_count = 0\nself._word_count = 0"),
     field_map(elixir, ['state.messages.clear()'-'%{state | messages: []}']),
     field_map(clojure, ['(:messages state).clear()'-'(assoc state :messages [])']),
+    field_map(prolog, ['State.messages.clear()'-'put_dict(messages, State, [], State1)']),
     body_template("~self_direct(messages)~.clear()")
 ]).
 
@@ -3651,6 +3785,7 @@ shared_logic(context, context_drop_oldest, [
     doc("Remove the oldest message from context history."),
     container('ContextManager'),
     mutable,
+    field_map(prolog, ['put_dict(messages, State, State.messages = [_|Result], State1)'-'State.messages = [_|Rest], put_dict(messages, State, Rest, State1)']),
     body_template("~self_assign(messages, list_rest(self_direct(messages)))~")
 ]).
 
@@ -3692,6 +3827,72 @@ shared_logic(retry, retry_delay_capped, [
     doc("Cap a retry delay to a maximum value."),
     container(none),
     body_template("~return_val(min_val(delay, max_delay))~")
+]).
+
+%% --- New shared_logic methods: 77-84 ---
+
+shared_logic(context, context_has_messages, [
+    signature(has_messages, [], bool),
+    arg_types([]),
+    doc("Check if context has at least one message."),
+    container('ContextManager'),
+    body_template("~return_val(not_empty(self_direct(messages)))~")
+]).
+
+shared_logic(context, context_message_at, [
+    signature(message_at, [index], string),
+    arg_types([int]),
+    doc("Get a message at a specific index, or nil if out of range."),
+    container('ContextManager'),
+    body_template("if ~gte(index, len_of(self_direct(messages)))~:\n    ~return_val(none_val)~\n~return_val(list_nth(self_direct(messages), index))~")
+]).
+
+shared_logic(costs, total_tokens, [
+    signature(total_tokens, [], int),
+    arg_types([]),
+    doc("Return the total number of tokens (input + output) used."),
+    container('CostTracker'),
+    body_template("~return_val(add(self_direct(total_input_tokens), self_direct(total_output_tokens)))~")
+]).
+
+shared_logic(costs, cost_summary_short, [
+    signature(cost_summary_short, [], owned_string),
+    arg_types([]),
+    doc("Return a short cost summary string (e.g. $0.05)."),
+    container('CostTracker'),
+    body_template("~return_val(format_str(\"${}\", [self_direct(total_cost)]))~")
+]).
+
+shared_logic(streaming, streaming_reset_counts, [
+    signature(reset_counts, [], void),
+    doc("Reset token and character counters to zero."),
+    container('StreamingTokenCounter'),
+    mutable,
+    body_template("~self_assign(token_count, literal(0))~\n~self_assign(char_count, literal(0))~")
+]).
+
+shared_logic(tool_cache, cache_hit_rate, [
+    signature(cache_hit_rate, [], float),
+    arg_types([]),
+    doc("Compute cache hit rate. Returns 0.0 if no lookups."),
+    container('ToolResultCache'),
+    body_template("if ~eq_zero(self_direct(total_lookups))~:\n    ~return_val(0.0)~\n~return_val(div_float(as_float(self_direct(hits)), as_float(self_direct(total_lookups))))~")
+]).
+
+shared_logic(retry, is_first_attempt, [
+    signature(is_first_attempt, [attempt], bool),
+    arg_types([int]),
+    doc("Check if this is the first retry attempt (attempt == 0)."),
+    container(none),
+    body_template("~return_val(eq_zero(attempt))~")
+]).
+
+shared_logic(mcp, mcp_is_notification, [
+    signature(mcp_is_notification, [method_name], bool),
+    arg_types([string]),
+    doc("Check if a JSON-RPC method is a notification (starts with 'notifications/')."),
+    container(none),
+    body_template("~return_val(str_starts_with(method_name, \"notifications/\"))~")
 ]).
 
 %% =============================================================================
@@ -3750,6 +3951,23 @@ expand_expr(prolog, list_rest(List), S) :-
     expand_expr(prolog, List, LS), format(atom(S), "~w = [_|Result]", [LS]).
 expand_expr(clojure, list_rest(List), S) :-
     expand_expr(clojure, List, LS), format(atom(S), "(rest ~w)", [LS]).
+
+%% --- list_nth: get element at index ---
+expand_expr(python, list_nth(List, N), S) :-
+    expand_expr(python, List, LS), expand_expr(python, N, NS),
+    format(atom(S), "~w[~w]", [LS, NS]).
+expand_expr(rust, list_nth(List, N), S) :-
+    expand_expr(rust, List, LS), expand_expr(rust, N, NS),
+    format(atom(S), "~w[~w]", [LS, NS]).
+expand_expr(elixir, list_nth(List, N), S) :-
+    expand_expr(elixir, List, LS), expand_expr(elixir, N, NS),
+    format(atom(S), "Enum.at(~w, ~w)", [LS, NS]).
+expand_expr(prolog, list_nth(List, N), S) :-
+    expand_expr(prolog, List, LS), expand_expr(prolog, N, NS),
+    format(atom(S), "nth0(~w, ~w, Result)", [NS, LS]).
+expand_expr(clojure, list_nth(List, N), S) :-
+    expand_expr(clojure, List, LS), expand_expr(clojure, N, NS),
+    format(atom(S), "(nth ~w ~w nil)", [LS, NS]).
 
 %% --- is_empty_str: check if string is empty ---
 logic_slot(python, is_empty_str(X), S) :-
@@ -3971,7 +4189,7 @@ logic_slot(rust, streaming_summary(Tokens, Chars), S) :-
 %% associated → module function, no state parameter
 
 %% --- Core slots ---
-logic_slot(elixir, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0", [X]).
+logic_slot(elixir, guard_leq_zero(X), S) :- expand_expr(elixir, X, XS), format(atom(S), "~w <= 0", [XS]).
 logic_slot(elixir, guard_leq(A, B), S) :-
     expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
     format(atom(S), "~w <= ~w", [AS, BS]).
@@ -4100,7 +4318,12 @@ logic_slot(prolog, self_assign(Field, Expr), S) :-
     format(atom(S), "put_dict(~w, State, ~w, State1)", [Field, ES]).
 logic_slot(prolog, assign(Var, Expr), S) :-
     expand_expr(prolog, Expr, ES),
-    format(atom(S), "~w = ~w", [Var, ES]).
+    %% Capitalize variable name for Prolog
+    atom_string(Var, VarStr),
+    string_chars(VarStr, [H|T]),
+    upcase_atom(H, UH),
+    atom_chars(CapVar, [UH|T]),
+    format(atom(S), "~w = ~w", [CapVar, ES]).
 
 %% --- Map/collection mutation slots ---
 logic_slot(prolog, self_map_put(Field, Key, Value), S) :-
@@ -4133,7 +4356,10 @@ logic_slot(prolog, matches_set(X, List), S) :-
 %% --- Format string slots ---
 logic_slot(prolog, format_str(Fmt, Args), S) :-
     format_args_list(Args, prolog, ArgStr),
-    format(atom(S), "format(atom(Formatted), \"~w\", [~w])", [Fmt, ArgStr]).
+    %% Convert {} placeholders to ~w for Prolog format/3
+    atomic_list_concat(Parts, '{}', Fmt),
+    atomic_list_concat(Parts, '~w', PlFmt),
+    format(atom(S), "format(atom(Formatted), \"~w\", [~w])", [PlFmt, ArgStr]).
 logic_slot(prolog, canonical_json(X), S) :-
     format(atom(S), "atom_json_term(~w, JsonStr, [])", [X]).
 
@@ -4153,7 +4379,7 @@ logic_slot(prolog, is_empty_check(X), S) :-
 logic_slot(prolog, streaming_summary(Tokens, Chars), S) :-
     expand_expr(prolog, Tokens, TS),
     expand_expr(prolog, Chars, CS),
-    format(atom(S), "format(atom(Summary), \"~~~w tokens, ~w chars\", [~w, ~w])", [TS, CS, TS, CS]).
+    atomic_list_concat(['format(atom(Summary), "~w tokens, ~w chars", [', TS, ', ', CS, '])'], S).
 
 %% =============================================================================
 %% Prolog expand_expr/3
@@ -4501,7 +4727,7 @@ resolve_type(clojure, ref(T), S) :-
 
 %% --- logic_slot/3 for Clojure ---
 
-logic_slot(clojure, guard_leq_zero(X), S) :- clojure_kebab(X, KX), format(atom(S), "(<= ~w 0)", [KX]).
+logic_slot(clojure, guard_leq_zero(X), S) :- expand_expr(clojure, X, XS), format(atom(S), "(<= ~w 0)", [XS]).
 logic_slot(clojure, guard_leq(A, B), S) :-
     expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
     format(atom(S), "(<= ~w ~w)", [AS, BS]).
@@ -8183,6 +8409,11 @@ generate_clojure_context :-
     write(S, '   :format "plain"\n'),
     write(S, '   :max-tokens 0\n'),
     write(S, '   :max-messages 0})\n\n'),
+    %% char-count helper used by estimate-tokens
+    write(S, '(defn char-count\n'),
+    write(S, '  "Compute total character count across all messages."\n'),
+    write(S, '  [state]\n'),
+    write(S, '  (reduce + 0 (map count (:messages state))))\n\n'),
     write_shared_block_clojure(S, context),
     close(S),
     format('  Generated clojure/src/agent_loop/context.clj~n', []).
@@ -8204,6 +8435,24 @@ generate_clojure_output_parser :-
     write_clojure_header(S, 'agent-loop.output-parser', 'JSON extraction from LLM output'),
     write(S, '(ns agent-loop.output-parser\n'),
     write(S, '  (:require [cheshire.core :as json]))\n\n'),
+    %% Helper functions used by extract-json shared_logic method
+    write(S, '(defn extract-fenced\n'),
+    write(S, '  "Extract JSON from fenced code blocks (```json ... ```).\n'),
+    write(S, '  Returns a vector of parsed JSON values."\n'),
+    write(S, '  [text]\n'),
+    write(S, '  (let [pattern #"(?s)```(?:json)?\\s*\\n(.*?)\\n```"]\n'),
+    write(S, '    (->> (re-seq pattern text)\n'),
+    write(S, '         (map second)\n'),
+    write(S, '         (keep #(try (json/parse-string % true) (catch Exception _ nil)))\n'),
+    write(S, '         vec)))\n\n'),
+    write(S, '(defn extract-bare\n'),
+    write(S, '  "Extract bare JSON objects from text.\n'),
+    write(S, '  Returns a vector of parsed JSON values."\n'),
+    write(S, '  [text]\n'),
+    write(S, '  (let [pattern #"(?s)\\{[^{}]*\\}"]\n'),
+    write(S, '    (->> (re-seq pattern text)\n'),
+    write(S, '         (keep #(try (json/parse-string % true) (catch Exception _ nil)))\n'),
+    write(S, '         vec)))\n\n'),
     write_shared_block_clojure(S, output_parser),
     close(S),
     format('  Generated clojure/src/agent_loop/output_parser.clj~n', []).

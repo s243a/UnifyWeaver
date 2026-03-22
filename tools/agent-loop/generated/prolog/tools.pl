@@ -76,51 +76,51 @@ tool_description(openrouter_api, bash, $, command, truncate(72)).
 
 %% Check if a tool name is in the destructive set (bash, write, edit).
 is_destructive(Tool_name, Result) :-
-    Result = memberchk(tool_name, ["bash", "write", "edit"])
+    Result = memberchk(Tool_name, ["bash", "write", "edit"]).
 
 %% Check if a tool is read-only (safe without approval).
 is_safe(Tool_name, Result) :-
-    Result = tool_name == "read"
+    Result = Tool_name == "Read".
 
 %% Check if a tool is in the user-approved set.
 is_approved(Tool_name, Approved_set, Result) :-
-    Result = memberchk(tool_name, approved_set)
+    Result = memberchk(Tool_name, Approved_set).
 
 %% Check if a tool requires user approval (destructive and not safe).
 tool_needs_approval(Tool_name, Result) :-
-    (tool_name == "read" ->
+    (Tool_name == "Read" ->
         Result = false
     ;
-    Result = memberchk(tool_name, ["bash", "write", "edit"])
-    )
+    Result = memberchk(Tool_name, ["bash", "write", "edit"])
+    ).
 
 %% Return true if tool should be blocked: destructive + not in approved set.
 check_approval_block(Tool_name, Approved_set, Result) :-
-    (\+ memberchk(tool_name, ["bash", "write", "edit"]) ->
+    (\+ memberchk(Tool_name, ["bash", "write", "edit"]) ->
         Result = false
     ;
-    Result = \+ memberchk(tool_name, approved_set)
-    )
+    Result = \+ memberchk(Tool_name, Approved_set)
+    ).
 
 %% Check if tool name has mcp: prefix indicating MCP dispatch.
 is_mcp_tool(Tool_name, Result) :-
-    Result = atom_concat('mcp:', _, tool_name)
+    Result = atom_concat('mcp:', _, Tool_name).
 
 %% Check that all required parameter keys exist in args dict.
 has_required_params(Args, Required_keys, Result) :-
-    Result = forall(member(K, required_keys), get_dict(K, args, _))
+    Result = forall(member(K, Required_keys), get_dict(K, Args, _)).
 
 %% Categorize a tool as destructive, safe, or normal.
 tool_category(Tool_name, Result) :-
-    (memberchk(tool_name, ["bash", "write", "edit"]) ->
+    (memberchk(Tool_name, ["bash", "write", "edit"]) ->
         Result = "destructive"
     ;
-    (tool_name == "read" ->
+    (Tool_name == "Read" ->
         Result = "safe"
     ;
     Result = "normal"
     )
-    )
+    ).
 
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-

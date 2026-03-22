@@ -43,61 +43,69 @@ model_pricing("mistral", 0.0, 0.0).
 
 %% Check if total cost exceeds budget. Budget of 0 means unlimited.
 is_over_budget(State, Budget, Result) :-
-    (budget =< 0 ->
+    (Budget =< 0 ->
         Result = false
     ;
     Result = State.total_cost >= Budget
-    )
+    ).
 
 %% Return remaining budget in USD. Budget of 0 means unlimited (returns -1).
 budget_remaining(State, Budget, Result) :-
-    (budget =< 0 ->
+    (Budget =< 0 ->
         Result = -1.0
     ;
     Result = max(0.0, Budget - State.total_cost)
-    )
+    ).
 
 %% Reset all cost tracking state.
 reset(State, State1) :-
-    State.records.clear()
-    put_dict(total_input_tokens, State, 0, State1)
-    put_dict(total_output_tokens, State, 0, State1)
-    put_dict(total_cost, State, 0.0, State1)
+    put_dict(records, State, [], State1),
+    put_dict(total_input_tokens, State, 0, State1),
+    put_dict(total_output_tokens, State, 0, State1),
+    put_dict(total_cost, State, 0.0, State1).
 
 %% Compute cost from token count and price per 1M tokens.
 cost_compute(Tokens, Price_per_million, Result) :-
-    Result = ((float(tokens) * price_per_million) / 1.0e+06)
+    Result = ((float(Tokens) * Price_per_million) / 1.0e+06).
 
 %% Record a usage entry and update running totals.
 record_usage(State, Input_tokens, Output_tokens, Model, State1) :-
-    NewVal is State.total_input_tokens + input_tokens, put_dict(total_input_tokens, State, NewVal, State1)
-    NewVal is State.total_output_tokens + output_tokens, put_dict(total_output_tokens, State, NewVal, State1)
+    NewVal is State.total_input_tokens + Input_tokens, put_dict(total_input_tokens, State, NewVal, State1),
+    NewVal is State.total_output_tokens + Output_tokens, put_dict(total_output_tokens, State, NewVal, State1).
 
 %% Return total token count (input + output).
 total_tokens(State, Result) :-
-    Result = (State.total_input_tokens + State.total_output_tokens)
+    Result = (State.total_input_tokens + State.total_output_tokens).
 
 %% Format a one-line cost summary showing totals.
 get_summary(State, Result) :-
-    Result = format(atom(Formatted), "${} ({} input, {} output)", [State.total_cost, State.total_input_tokens, State.total_output_tokens])
+    Result = format(atom(Formatted), "$~w (~w input, ~w output)", [State.total_cost, State.total_input_tokens, State.total_output_tokens]).
 
 %% Set the per-token pricing for input and output.
 set_pricing(State, Input_price, Output_price, State1) :-
-    put_dict(input_price, State, input_price, State1)
-    put_dict(output_price, State, output_price, State1)
+    put_dict(Input_price, State, Input_price, State1),
+    put_dict(Output_price, State, Output_price, State1).
 
 %% Compute the average cost per token. Returns 0.0 if no tokens used.
 cost_per_token(State, Result) :-
-    total = (State.total_input_tokens + State.total_output_tokens)
-    (total =< 0 ->
+    Total = (State.total_input_tokens + State.total_output_tokens),
+    (Total =< 0 ->
         Result = 0.0
     ;
-    Result = (State.total_cost / float(total))
-    )
+    Result = (State.total_cost / float(Total))
+    ).
 
 %% Check if any usage records have been logged.
 has_records(State, Result) :-
-    Result = \+ length(State.records, Len) =:= 0
+    Result = \+ length(State.records, Len) =:= 0.
+
+%% Return total token count (input + output).
+total_tokens(State, Result) :-
+    Result = (State.total_input_tokens + State.total_output_tokens).
+
+%% Return a short cost summary string (e.g. $0.05).
+cost_summary_short(State, Result) :-
+    Result = format(atom(Formatted), "$~w", [State.total_cost]).
 
 
 %% Cost tracker using dynamic state

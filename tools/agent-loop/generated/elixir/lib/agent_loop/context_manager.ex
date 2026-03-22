@@ -168,4 +168,20 @@ defmodule AgentLoop.ContextManager do
     %{state | messages: tl(state.messages)}
   end
 
+  @doc "Check if context has at least one message."
+  @spec has_messages(t()) :: boolean()
+  def has_messages(%__MODULE__{} = state) do
+    state.messages != []
+  end
+
+  @doc "Get a message at a specific index, or nil if out of range."
+  @spec message_at(t(), integer()) :: String.t()
+  def message_at(%__MODULE__{} = state, index) do
+    if index >= Enum.count(state.messages) do
+        nil
+    else
+        Enum.at(state.messages, index)
+    end
+  end
+
 end

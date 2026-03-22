@@ -31,3 +31,9 @@
   (min delay max-delay)
 )
 
+(defn is-first-attempt
+  "Check if this is the first retry attempt (attempt == 0)."
+  [attempt]
+  (zero? attempt)
+)
+

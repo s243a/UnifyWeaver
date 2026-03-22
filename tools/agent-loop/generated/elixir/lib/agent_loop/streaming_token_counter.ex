@@ -59,4 +59,11 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.token_count
   end
 
+  @doc "Reset token and character counters to zero."
+  @spec reset_counts(t()) :: t()
+  def reset_counts(%__MODULE__{} = state) do
+    state = %{state | token_count: 0}
+    %{state | char_count: 0}
+  end
+
 end

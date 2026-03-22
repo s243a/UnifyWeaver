@@ -41,6 +41,12 @@ defmodule AgentLoop.MCPClient do
     end
   end
 
+  @doc "Check if a JSON-RPC method is a notification (starts with 'notifications/')."
+  @spec mcp_is_notification(String.t()) :: boolean()
+  def mcp_is_notification(method_name) do
+    String.starts_with?(method_name, "notifications/")
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do
