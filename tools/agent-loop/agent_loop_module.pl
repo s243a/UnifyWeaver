@@ -5109,6 +5109,9 @@ generate_all(elixir) :-
     generate_elixir_streaming_server,
     generate_elixir_mcp_server,
     generate_elixir_mcp_manager_server,
+    %% HTTP API (Plug.Router)
+    generate_elixir_router,
+    generate_elixir_http_server,
     %% Application + supervision
     generate_elixir_application,
     %% ExUnit tests
@@ -5146,7 +5149,9 @@ generate_elixir_mix_exs :-
     write(S, '  defp deps do\n'),
     write(S, '    [\n'),
     write(S, '      {:jason, "~> 1.4"},\n'),
-    write(S, '      {:toml, "~> 0.7"}\n'),
+    write(S, '      {:toml, "~> 0.7"},\n'),
+    write(S, '      {:plug_cowboy, "~> 2.7"},\n'),
+    write(S, '      {:plug, "~> 1.15"}\n'),
     write(S, '    ]\n'),
     write(S, '  end\n'),
     write(S, 'end\n'),
@@ -6276,7 +6281,8 @@ generate_elixir_tests :-
     generate_elixir_mcp_server_test(TestDir),
     generate_elixir_output_parser_test(TestDir),
     generate_elixir_sessions_test(TestDir),
-    generate_elixir_mcp_manager_server_test(TestDir).
+    generate_elixir_mcp_manager_server_test(TestDir),
+    generate_elixir_router_test(TestDir).
 
 generate_elixir_test_helper(Dir) :-
     atom_concat(Dir, 'test_helper.exs', Path),
@@ -6744,6 +6750,238 @@ generate_elixir_mcp_manager_server_test(Dir) :-
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/test/mcp_manager_server_test.exs~n', []).
+
+%% =============================================================================
+%% Elixir Plug HTTP API — Router, HTTPServer, RouterTest
+%% Generated from tool_spec/2, slash_command/4, elixir_server/2 facts
+%% =============================================================================
+
+generate_elixir_router :-
+    output_path(elixir, 'router.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.Router', 'Plug.Router HTTP API (data-driven from declarative facts)'),
+    write(S, 'defmodule AgentLoop.Router do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  HTTP API router generated from tool_spec, slash_command, and elixir_server facts.\n'),
+    write(S, '  All endpoints are data-driven — no hand-written routes.\n'),
+    write(S, '  """\n\n'),
+    write(S, '  use Plug.Router\n\n'),
+    write(S, '  plug :match\n'),
+    write(S, '  plug Plug.Parsers, parsers: [:json], json_decoder: Jason\n'),
+    write(S, '  plug :dispatch\n\n'),
+    %% Health endpoint
+    write(S, '  # --- Health ---\n\n'),
+    write(S, '  get "/api/health" do\n'),
+    write(S, '    send_json(conn, 200, %{status: "ok", version: "0.1.0"})\n'),
+    write(S, '  end\n\n'),
+    %% Tool listing endpoint
+    write(S, '  # --- Tool listing (from tool_spec facts) ---\n\n'),
+    write(S, '  get "/api/tools" do\n'),
+    write(S, '    tools = [\n'),
+    findall(Name, tool_spec(Name, _), ToolNames),
+    emit_elixir_tool_list_items(S, ToolNames),
+    write(S, '    ]\n'),
+    write(S, '    send_json(conn, 200, tools)\n'),
+    write(S, '  end\n\n'),
+    %% Per-tool POST endpoints
+    write(S, '  # --- Per-tool execution endpoints (one per tool_spec) ---\n\n'),
+    forall(tool_spec(Name, Props), (
+        emit_elixir_tool_route(S, Name, Props)
+    )),
+    %% Command listing endpoint
+    write(S, '  # --- Command listing (from slash_command facts) ---\n\n'),
+    write(S, '  get "/api/commands" do\n'),
+    write(S, '    commands = [\n'),
+    findall(CName, slash_command(CName, _, _, _), CmdNames),
+    emit_elixir_command_list_items(S, CmdNames),
+    write(S, '    ]\n'),
+    write(S, '    send_json(conn, 200, commands)\n'),
+    write(S, '  end\n\n'),
+    %% Per-command POST endpoints
+    write(S, '  # --- Per-command endpoints (one per slash_command) ---\n\n'),
+    forall(slash_command(CName, _, _, HelpText), (
+        emit_elixir_command_route(S, CName, HelpText)
+    )),
+    %% Per-server state endpoints
+    write(S, '  # --- Per-server state endpoints (one per elixir_server) ---\n\n'),
+    forall(elixir_server(Srv, _), (
+        emit_elixir_server_route(S, Srv)
+    )),
+    %% Catch-all
+    write(S, '  # --- Catch-all ---\n\n'),
+    write(S, '  match _ do\n'),
+    write(S, '    send_json(conn, 404, %{error: "not_found"})\n'),
+    write(S, '  end\n\n'),
+    %% Helper
+    write(S, '  # --- Helpers ---\n\n'),
+    write(S, '  defp send_json(conn, status, body) do\n'),
+    write(S, '    conn\n'),
+    write(S, '    |> put_resp_content_type("application/json")\n'),
+    write(S, '    |> send_resp(status, Jason.encode!(body))\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/router.ex~n', []).
+
+%% Emit tool list items for GET /api/tools
+emit_elixir_tool_list_items(_, []).
+emit_elixir_tool_list_items(S, [Name]) :-
+    tool_spec(Name, Props),
+    member(description(Desc), Props),
+    (member(confirmation_required(true), Props) -> Conf = "true" ; Conf = "false"),
+    format(S, '      %{name: "~w", description: "~w", confirmation_required: ~w}~n', [Name, Desc, Conf]).
+emit_elixir_tool_list_items(S, [Name|Rest]) :-
+    Rest \= [],
+    tool_spec(Name, Props),
+    member(description(Desc), Props),
+    (member(confirmation_required(true), Props) -> Conf = "true" ; Conf = "false"),
+    format(S, '      %{name: "~w", description: "~w", confirmation_required: ~w},~n', [Name, Desc, Conf]),
+    emit_elixir_tool_list_items(S, Rest).
+
+%% Emit a POST route for a single tool
+emit_elixir_tool_route(S, Name, Props) :-
+    member(description(Desc), Props),
+    (member(confirmation_required(true), Props) -> ConfRequired = true ; ConfRequired = false),
+    member(parameters(Params), Props),
+    format(S, '  @doc "~w"\n', [Desc]),
+    format(S, '  post "/api/tools/~w" do~n', [Name]),
+    %% Extract required params
+    findall(PName, member(param(PName, _, required, _), Params), ReqParams),
+    (ReqParams \= [] ->
+        format_elixir_required_check(S, Name, ReqParams, ConfRequired)
+    ;
+        (ConfRequired = true ->
+            format(S, '    send_json(conn, 200, %{tool: "~w", status: "requires_confirmation", params: conn.body_params})~n', [Name])
+        ;
+            format(S, '    send_json(conn, 200, %{tool: "~w", status: "accepted", params: conn.body_params})~n', [Name])
+        )
+    ),
+    write(S, '  end\n\n').
+
+%% Emit required param validation for a tool route
+format_elixir_required_check(S, Name, ReqParams, ConfRequired) :-
+    format(S, '    required = ~w~n', [ReqParams]),
+    write(S, '    params = conn.body_params\n'),
+    write(S, '    missing = Enum.filter(required, fn k -> not Map.has_key?(params, Atom.to_string(k)) end)\n\n'),
+    write(S, '    if missing != [] do\n'),
+    write(S, '      send_json(conn, 400, %{error: "missing_params", missing: missing})\n'),
+    write(S, '    else\n'),
+    (ConfRequired = true ->
+        format(S, '      send_json(conn, 200, %{tool: "~w", status: "requires_confirmation", params: params})~n', [Name])
+    ;
+        format(S, '      send_json(conn, 200, %{tool: "~w", status: "accepted", params: params})~n', [Name])
+    ),
+    write(S, '    end\n').
+
+%% Emit command list items for GET /api/commands
+emit_elixir_command_list_items(_, []).
+emit_elixir_command_list_items(S, [Name]) :-
+    slash_command(Name, _, _, Help),
+    format(S, '      %{name: "~w", help: "~w"}~n', [Name, Help]).
+emit_elixir_command_list_items(S, [Name|Rest]) :-
+    Rest \= [],
+    slash_command(Name, _, _, Help),
+    format(S, '      %{name: "~w", help: "~w"},~n', [Name, Help]),
+    emit_elixir_command_list_items(S, Rest).
+
+%% Emit a POST route for a single command
+emit_elixir_command_route(S, Name, HelpText) :-
+    format(S, '  @doc "~w"\n', [HelpText]),
+    format(S, '  post "/api/commands/~w" do~n', [Name]),
+    format(S, '    send_json(conn, 200, %{command: "~w", status: "acknowledged", params: conn.body_params})~n', [Name]),
+    write(S, '  end\n\n').
+
+%% Emit a GET route for a GenServer state endpoint
+emit_elixir_server_route(S, Srv) :-
+    server_url_slug(Srv, Slug),
+    format(S, '  @doc "Get ~w state"\n', [Srv]),
+    format(S, '  get "/api/servers/~w" do~n', [Slug]),
+    format(S, '    state = AgentLoop.~w.get_state(AgentLoop.~w)~n', [Srv, Srv]),
+    format(S, '    send_json(conn, 200, Map.from_struct(state))~n', []),
+    write(S, '  end\n\n').
+
+%% Convert ServerModule name to URL slug: CostServer -> cost, ContextServer -> context
+server_url_slug('CostServer', cost).
+server_url_slug('ContextServer', context).
+server_url_slug('CacheServer', cache).
+server_url_slug('StreamingServer', streaming).
+server_url_slug('MCPServer', mcp).
+server_url_slug('MCPManagerServer', mcp_manager).
+
+%% --- HTTP Server wrapper ---
+
+generate_elixir_http_server :-
+    output_path(elixir, 'http_server.ex', Path),
+    open(Path, write, S),
+    write_elixir_header(S, 'AgentLoop.HTTPServer', 'Plug.Cowboy HTTP server wrapper'),
+    write(S, 'defmodule AgentLoop.HTTPServer do\n'),
+    write(S, '  @moduledoc """\n'),
+    write(S, '  Thin wrapper to start/stop the Plug.Cowboy HTTP server.\n'),
+    write(S, '  Not auto-started by the supervision tree — call start/1 explicitly.\n'),
+    write(S, '  """\n\n'),
+    write(S, '  @doc "Start the HTTP server on the given port (default 4000)."\n'),
+    write(S, '  def start(port \\\\ 4000) do\n'),
+    write(S, '    Plug.Cowboy.http(AgentLoop.Router, [], port: port)\n'),
+    write(S, '  end\n\n'),
+    write(S, '  @doc "Stop the HTTP server."\n'),
+    write(S, '  def stop do\n'),
+    write(S, '    Plug.Cowboy.shutdown(AgentLoop.Router.HTTP)\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/lib/agent_loop/http_server.ex~n', []).
+
+%% --- Router Test ---
+
+generate_elixir_router_test(Dir) :-
+    atom_concat(Dir, 'router_test.exs', Path),
+    open(Path, write, S),
+    write(S, 'defmodule AgentLoop.RouterTest do\n'),
+    write(S, '  use ExUnit.Case, async: true\n'),
+    write(S, '  use Plug.Test\n\n'),
+    write(S, '  alias AgentLoop.Router\n\n'),
+    write(S, '  @opts Router.init([])\n\n'),
+    %% Health test
+    write(S, '  test "GET /api/health returns 200" do\n'),
+    write(S, '    conn = conn(:get, "/api/health") |> Router.call(@opts)\n'),
+    write(S, '    assert conn.status == 200\n'),
+    write(S, '    body = Jason.decode!(conn.resp_body)\n'),
+    write(S, '    assert body["status"] == "ok"\n'),
+    write(S, '  end\n\n'),
+    %% Tools list test
+    findall(_, tool_spec(_, _), Ts), length(Ts, NTools),
+    write(S, '  test "GET /api/tools returns tool list" do\n'),
+    write(S, '    conn = conn(:get, "/api/tools") |> Router.call(@opts)\n'),
+    write(S, '    assert conn.status == 200\n'),
+    write(S, '    tools = Jason.decode!(conn.resp_body)\n'),
+    write(S, '    assert is_list(tools)\n'),
+    format(S, '    assert length(tools) == ~w~n', [NTools]),
+    write(S, '  end\n\n'),
+    %% Commands list test
+    write(S, '  test "GET /api/commands returns command list" do\n'),
+    write(S, '    conn = conn(:get, "/api/commands") |> Router.call(@opts)\n'),
+    write(S, '    assert conn.status == 200\n'),
+    write(S, '    commands = Jason.decode!(conn.resp_body)\n'),
+    write(S, '    assert is_list(commands)\n'),
+    write(S, '  end\n\n'),
+    %% Tool param validation test (read requires path)
+    write(S, '  test "POST /api/tools/read without params returns 400" do\n'),
+    write(S, '    conn =\n'),
+    write(S, '      conn(:post, "/api/tools/read", %{})\n'),
+    write(S, '      |> put_req_header("content-type", "application/json")\n'),
+    write(S, '      |> Router.call(@opts)\n'),
+    write(S, '    assert conn.status == 400\n'),
+    write(S, '    body = Jason.decode!(conn.resp_body)\n'),
+    write(S, '    assert body["error"] == "missing_params"\n'),
+    write(S, '  end\n\n'),
+    %% 404 test
+    write(S, '  test "unknown route returns 404" do\n'),
+    write(S, '    conn = conn(:get, "/api/nonexistent") |> Router.call(@opts)\n'),
+    write(S, '    assert conn.status == 404\n'),
+    write(S, '  end\n'),
+    write(S, 'end\n'),
+    close(S),
+    format('  Generated elixir/test/router_test.exs~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.
