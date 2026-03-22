@@ -650,6 +650,85 @@ test(weighted_nested_structural_tree_branch_prework_output_checks_with_typr, [co
     ),
     retractall(user:weighted_tree_nested_branch_prework(_, _, _)).
 
+test(double_nested_structural_tree_calls_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:tree_sum_double_nested_calls([], 0)),
+    assertz(user:(tree_sum_double_nested_calls([V, L, R], Sum) :-
+        ( V > 0 ->
+            Bias is V + 1,
+            ( V > 1 ->
+                ( V > 2 ->
+                    tree_sum_double_nested_calls(L, LS),
+                    tree_sum_double_nested_calls(R, RS)
+                ;   tree_sum_double_nested_calls(R, RS),
+                    tree_sum_double_nested_calls(L, LS)
+                ),
+                Part is Bias + LS + RS
+            ;   tree_sum_double_nested_calls(L, LS),
+                tree_sum_double_nested_calls(R, RS),
+                Part is V + LS + RS
+            ),
+            Sum is Part + 1
+        ;   tree_sum_double_nested_calls(L, LS),
+            tree_sum_double_nested_calls(R, RS),
+            Sum is V + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(tree_sum_double_nested_calls/2, 1, list(any))),
+    assertz(type_declarations:uw_type(tree_sum_double_nested_calls/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(tree_sum_double_nested_calls/2, integer)),
+    once(recursive_compiler:compile_recursive(tree_sum_double_nested_calls/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:tree_sum_double_nested_calls(_, _)).
+
+test(weighted_double_nested_structural_tree_calls_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_double_nested_calls([], _Scale, 0)),
+    assertz(user:(weighted_tree_double_nested_calls([V, L, R], Scale, Sum) :-
+        ( Scale > 1 ->
+            Bias is V * Scale,
+            ( V > 0 ->
+                ( Scale > 2 ->
+                    weighted_tree_double_nested_calls(L, Scale, LS),
+                    weighted_tree_double_nested_calls(R, Scale, RS)
+                ;   weighted_tree_double_nested_calls(R, Scale, RS),
+                    weighted_tree_double_nested_calls(L, Scale, LS)
+                ),
+                Part is Bias + LS + RS
+            ;   weighted_tree_double_nested_calls(L, Scale, LS),
+                weighted_tree_double_nested_calls(R, Scale, RS),
+                Part is (V * Scale) + LS + RS
+            ),
+            Sum is Part + 1
+        ;   weighted_tree_double_nested_calls(L, Scale, LS),
+            weighted_tree_double_nested_calls(R, Scale, RS),
+            Sum is (V * Scale) + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_calls/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_calls/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_calls/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_double_nested_calls/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_double_nested_calls/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:weighted_tree_double_nested_calls(_, _, _)).
+
 test(nary_structural_tree_subtree_invariant_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:weighted_tree_sum_subtree_scale([], _Scale, 0)),

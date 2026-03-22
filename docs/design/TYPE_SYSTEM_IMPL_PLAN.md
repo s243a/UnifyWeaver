@@ -209,7 +209,8 @@ bring-up.
     calls inside supported branch bodies, nested recursive subtree calls
     inside supported branch bodies, shared pre-recursive local work before
     nested recursive branch bodies, nested branch-local post-recursive
-    recombination before a later shared result expression, or asymmetric
+    recombination before a later shared result expression, multiple nested
+    branch-local control points around the two subtree calls, or asymmetric
     branch-local prework that is reconciled later by a guarded result
     expression
   - guarded post-recursive recombination inside those same single-recursive-
