@@ -68,6 +68,26 @@ context_needs_trim(State, Max_tokens, Result) :-
 context_message_count(State, Result) :-
     Result = length(State.messages, Len)
 
+%% Compute how many oldest messages to drop to fit within count limit.
+trim_excess_count(State, Max_messages, Result) :-
+    (max_messages =< 0 ->
+        Result = 0
+    ;
+    Result = max(0.0, (length(State.messages, Len) - max_messages))
+    )
+
+%% Check if estimated token count exceeds the max token budget.
+tokens_over_budget(State, Max_tokens, Result) :-
+    (max_tokens =< 0 ->
+        Result = false
+    ;
+    Result = estimate_tokens(State, MethodResult) > max_tokens
+    )
+
+%% Estimate tokens for a single message using chars/4 heuristic.
+message_token_estimate(Content, Result) :-
+    Result = max(1, (atom_length(content, Len) // 4))
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -166,6 +186,14 @@ session_exists(State, Session_id, Result) :-
 %% Build the filename for a session (id + .json extension).
 session_filename(Session_id, Result) :-
     Result = format(atom(Formatted), "{}.json", [session_id])
+
+%% Check if a filename is a session file (ends with .json).
+session_list_filter(Filename, Result) :-
+    Result = atom_concat(_, '.json', filename)
+
+%% Return the list of metadata keys in a session file.
+session_data_keys(Result) :-
+    Result = ['id', 'name', 'message_count', 'saved_at']
 
 conversation([]).
 max_iterations(0).

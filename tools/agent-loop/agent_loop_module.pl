@@ -2932,6 +2932,7 @@ resolve_type(python, dict, "dict").
 resolve_type(python, set_of_string, "set[str]").
 resolve_type(python, owned_string, "str").
 resolve_type(python, list_of_dict, "list[dict]").
+resolve_type(python, list_of_string, "list[str]").
 resolve_type(python, ref(T), S) :-
     resolve_type(python, T, S).
 resolve_type(python, optional(T), S) :-
@@ -2948,6 +2949,7 @@ resolve_type(rust, dict, "std::collections::HashMap<String, serde_json::Value>")
 resolve_type(rust, set_of_string, "std::collections::HashSet<String>").
 resolve_type(rust, owned_string, "String").
 resolve_type(rust, list_of_dict, "Vec<serde_json::Value>").
+resolve_type(rust, list_of_string, "Vec<String>").
 resolve_type(rust, ref(T), S) :-
     resolve_type(rust, T, Inner),
     format(atom(S), "&~w", [Inner]).
@@ -3246,6 +3248,76 @@ shared_logic(tool_cache, cache_count, [
     doc("Return the number of cached tool results."),
     container('ToolResultCache'),
     body_template("~return_val(len_of(self_direct(cache)))~")
+]).
+
+%% --- Coverage gap: context trimming helpers ---
+
+shared_logic(context, trim_excess_count, [
+    signature(trim_excess_count, [max_messages], int),
+    arg_types([int]),
+    doc("Compute how many oldest messages to drop to fit within count limit."),
+    container('ContextManager'),
+    body_template("if ~guard_leq_zero(max_messages)~:\n    ~return_val(literal(0))~\n~return_val(max_zero(sub(len_of(self_direct(messages)), max_messages)))~")
+]).
+
+shared_logic(context, tokens_over_budget, [
+    signature(tokens_over_budget, [max_tokens], bool),
+    arg_types([int]),
+    doc("Check if estimated token count exceeds the max token budget."),
+    container('ContextManager'),
+    body_template("if ~guard_leq_zero(max_tokens)~:\n    ~return_val(false)~\n~return_val(gt(self_method(estimate_tokens), max_tokens))~")
+]).
+
+shared_logic(context, message_token_estimate, [
+    signature(message_token_estimate, [content], int),
+    arg_types([string]),
+    doc("Estimate tokens for a single message using chars/4 heuristic."),
+    container(none),
+    body_template("~return_val(max_one(int_div(str_len(content), 4)))~")
+]).
+
+%% --- Coverage gap: session I/O helpers ---
+
+shared_logic(sessions, session_list_filter, [
+    signature(session_list_filter, [filename], bool),
+    arg_types([string]),
+    doc("Check if a filename is a session file (ends with .json)."),
+    container(none),
+    body_template("~return_val(str_ends_with(filename, \".json\"))~")
+]).
+
+shared_logic(sessions, session_data_keys, [
+    signature(session_data_keys, [], list_of_string),
+    arg_types([]),
+    doc("Return the list of metadata keys in a session file."),
+    container(none),
+    body_template("~return_val(literal_list([\"id\", \"name\", \"message_count\", \"saved_at\"]))~")
+]).
+
+%% --- Coverage gap: tool dispatch helpers ---
+
+shared_logic(tools, check_approval_block, [
+    signature(check_approval_block, [tool_name, approved_set], bool),
+    arg_types([string, set_of_string]),
+    doc("Return true if tool should be blocked: destructive + not in approved set."),
+    container(none),
+    body_template("if ~not_expr(matches_str_set(tool_name, [bash, write, edit]))~:\n    ~return_val(false)~\n~return_val(not_expr(contains(approved_set, tool_name)))~")
+]).
+
+shared_logic(tools, is_mcp_tool, [
+    signature(is_mcp_tool, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if tool name has mcp: prefix indicating MCP dispatch."),
+    container(none),
+    body_template("~return_val(str_starts_with(tool_name, \"mcp:\"))~")
+]).
+
+shared_logic(tools, has_required_params, [
+    signature(has_required_params, [args, required_keys], bool),
+    arg_types([dict, list_of_string]),
+    doc("Check that all required parameter keys exist in args dict."),
+    container(none),
+    body_template("~return_val(all_keys_present(args, required_keys))~")
 ]).
 
 %% =============================================================================
@@ -3626,6 +3698,178 @@ expand_expr(prolog, add(A, B), S) :-
     format(atom(S), "(~w + ~w)", [AS, BS]).
 
 %% =============================================================================
+%% Coverage-gap slots: not, gt, str_starts_with, str_ends_with, all_keys_present,
+%%   literal_list, json_encode, json_decode, file_read, file_write
+%% =============================================================================
+
+%% --- Boolean negation ---
+logic_slot(python, not_expr(Expr), S) :-
+    logic_slot(python, Expr, Inner), format(atom(S), "not ~w", [Inner]).
+logic_slot(rust, not_expr(Expr), S) :-
+    logic_slot(rust, Expr, Inner), format(atom(S), "!(~w)", [Inner]).
+logic_slot(elixir, not_expr(Expr), S) :-
+    logic_slot(elixir, Expr, Inner), format(atom(S), "not ~w", [Inner]).
+logic_slot(prolog, not_expr(Expr), S) :-
+    logic_slot(prolog, Expr, Inner), format(atom(S), "\\+ ~w", [Inner]).
+
+expand_expr(python, not_expr(Expr), S) :-
+    expand_expr(python, Expr, Inner), format(atom(S), "not ~w", [Inner]).
+expand_expr(rust, not_expr(Expr), S) :-
+    expand_expr(rust, Expr, Inner), format(atom(S), "!(~w)", [Inner]).
+expand_expr(elixir, not_expr(Expr), S) :-
+    expand_expr(elixir, Expr, Inner), format(atom(S), "not ~w", [Inner]).
+expand_expr(prolog, not_expr(Expr), S) :-
+    expand_expr(prolog, Expr, Inner), format(atom(S), "\\+ ~w", [Inner]).
+
+%% --- Greater-than comparison ---
+expand_expr(python, gt(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "~w > ~w", [AS, BS]).
+expand_expr(rust, gt(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "~w > ~w", [AS, BS]).
+expand_expr(elixir, gt(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "~w > ~w", [AS, BS]).
+expand_expr(prolog, gt(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "~w > ~w", [AS, BS]).
+
+%% --- String starts_with ---
+logic_slot(python, str_starts_with(Str, Prefix), S) :-
+    format(atom(S), '~w.startswith("~w")', [Str, Prefix]).
+logic_slot(rust, str_starts_with(Str, Prefix), S) :-
+    format(atom(S), '~w.starts_with("~w")', [Str, Prefix]).
+logic_slot(elixir, str_starts_with(Str, Prefix), S) :-
+    format(atom(S), 'String.starts_with?(~w, "~w")', [Str, Prefix]).
+logic_slot(prolog, str_starts_with(Str, Prefix), S) :-
+    format(atom(S), 'atom_concat(\'~w\', _, ~w)', [Prefix, Str]).
+
+expand_expr(python, str_starts_with(Str, Prefix), S) :-
+    expand_expr(python, Str, SS),
+    format(atom(S), '~w.startswith("~w")', [SS, Prefix]).
+expand_expr(rust, str_starts_with(Str, Prefix), S) :-
+    expand_expr(rust, Str, SS),
+    format(atom(S), '~w.starts_with("~w")', [SS, Prefix]).
+expand_expr(elixir, str_starts_with(Str, Prefix), S) :-
+    expand_expr(elixir, Str, SS),
+    format(atom(S), 'String.starts_with?(~w, "~w")', [SS, Prefix]).
+expand_expr(prolog, str_starts_with(Str, Prefix), S) :-
+    expand_expr(prolog, Str, SS),
+    format(atom(S), 'atom_concat(\'~w\', _, ~w)', [Prefix, SS]).
+
+%% --- String ends_with ---
+logic_slot(python, str_ends_with(Str, Suffix), S) :-
+    format(atom(S), '~w.endswith("~w")', [Str, Suffix]).
+logic_slot(rust, str_ends_with(Str, Suffix), S) :-
+    format(atom(S), '~w.ends_with("~w")', [Str, Suffix]).
+logic_slot(elixir, str_ends_with(Str, Suffix), S) :-
+    format(atom(S), 'String.ends_with?(~w, "~w")', [Str, Suffix]).
+logic_slot(prolog, str_ends_with(Str, Suffix), S) :-
+    format(atom(S), 'atom_concat(_, \'~w\', ~w)', [Suffix, Str]).
+
+expand_expr(python, str_ends_with(Str, Suffix), S) :-
+    expand_expr(python, Str, SS),
+    format(atom(S), '~w.endswith("~w")', [SS, Suffix]).
+expand_expr(rust, str_ends_with(Str, Suffix), S) :-
+    expand_expr(rust, Str, SS),
+    format(atom(S), '~w.ends_with("~w")', [SS, Suffix]).
+expand_expr(elixir, str_ends_with(Str, Suffix), S) :-
+    expand_expr(elixir, Str, SS),
+    format(atom(S), 'String.ends_with?(~w, "~w")', [SS, Suffix]).
+expand_expr(prolog, str_ends_with(Str, Suffix), S) :-
+    expand_expr(prolog, Str, SS),
+    format(atom(S), 'atom_concat(_, \'~w\', ~w)', [Suffix, SS]).
+
+%% --- All keys present in dict ---
+logic_slot(python, all_keys_present(Dict, Keys), S) :-
+    format(atom(S), "all(k in ~w for k in ~w)", [Dict, Keys]).
+logic_slot(rust, all_keys_present(Dict, Keys), S) :-
+    format(atom(S), "~w.iter().all(|k| ~w.contains_key(k))", [Keys, Dict]).
+logic_slot(elixir, all_keys_present(Dict, Keys), S) :-
+    format(atom(S), "Enum.all?(~w, &Map.has_key?(~w, &1))", [Keys, Dict]).
+logic_slot(prolog, all_keys_present(Dict, Keys), S) :-
+    format(atom(S), "forall(member(K, ~w), get_dict(K, ~w, _))", [Keys, Dict]).
+
+expand_expr(python, all_keys_present(Dict, Keys), S) :-
+    expand_expr(python, Dict, DS), expand_expr(python, Keys, KS),
+    format(atom(S), "all(k in ~w for k in ~w)", [DS, KS]).
+expand_expr(rust, all_keys_present(Dict, Keys), S) :-
+    expand_expr(rust, Dict, DS), expand_expr(rust, Keys, KS),
+    format(atom(S), "~w.iter().all(|k| ~w.contains_key(k))", [KS, DS]).
+expand_expr(elixir, all_keys_present(Dict, Keys), S) :-
+    expand_expr(elixir, Dict, DS), expand_expr(elixir, Keys, KS),
+    format(atom(S), "Enum.all?(~w, &Map.has_key?(~w, &1))", [KS, DS]).
+expand_expr(prolog, all_keys_present(Dict, Keys), S) :-
+    expand_expr(prolog, Dict, DS), expand_expr(prolog, Keys, KS),
+    format(atom(S), "forall(member(K, ~w), get_dict(K, ~w, _))", [KS, DS]).
+
+%% --- Literal list ---
+expand_expr(python, literal_list(Items), S) :-
+    format_literal_list(python, Items, Inner),
+    format(atom(S), "[~w]", [Inner]).
+expand_expr(rust, literal_list(Items), S) :-
+    format_literal_list(rust, Items, Inner),
+    format(atom(S), "vec![~w]", [Inner]).
+expand_expr(elixir, literal_list(Items), S) :-
+    format_literal_list(elixir, Items, Inner),
+    format(atom(S), "[~w]", [Inner]).
+expand_expr(prolog, literal_list(Items), S) :-
+    format_literal_list(prolog, Items, Inner),
+    format(atom(S), "[~w]", [Inner]).
+
+format_literal_list(_, [], "").
+format_literal_list(Target, [X], S) :- format_literal_item(Target, X, S).
+format_literal_list(Target, [X|Xs], S) :-
+    Xs \= [],
+    format_literal_item(Target, X, XS),
+    format_literal_list(Target, Xs, Rest),
+    format(atom(S), "~w, ~w", [XS, Rest]).
+
+format_literal_item(python, X, S) :- format(atom(S), '"~w"', [X]).
+format_literal_item(rust, X, S) :- format(atom(S), '"~w"', [X]).
+format_literal_item(elixir, X, S) :- format(atom(S), '"~w"', [X]).
+format_literal_item(prolog, X, S) :- format(atom(S), "'~w'", [X]).
+
+%% --- JSON encode/decode ---
+logic_slot(python, json_encode(X), S) :-
+    format(atom(S), "json.dumps(~w, indent=2)", [X]).
+logic_slot(rust, json_encode(X), S) :-
+    format(atom(S), "serde_json::to_string_pretty(&~w).unwrap_or_default()", [X]).
+logic_slot(elixir, json_encode(X), S) :-
+    format(atom(S), "Jason.encode!(~w, pretty: true)", [X]).
+logic_slot(prolog, json_encode(X), S) :-
+    format(atom(S), "with_output_to(string(JsonStr), json_write_dict(current_output, ~w, []))", [X]).
+
+logic_slot(python, json_decode(X), S) :-
+    format(atom(S), "json.loads(~w)", [X]).
+logic_slot(rust, json_decode(X), S) :-
+    format(atom(S), "serde_json::from_str(&~w).ok()", [X]).
+logic_slot(elixir, json_decode(X), S) :-
+    format(atom(S), "Jason.decode(~w)", [X]).
+logic_slot(prolog, json_decode(X), S) :-
+    format(atom(S), "term_string(Term, ~w), Term", [X]).
+
+%% --- File read/write ---
+logic_slot(python, file_write(Path, Content), S) :-
+    format(atom(S), "Path(~w).write_text(~w)", [Path, Content]).
+logic_slot(rust, file_write(Path, Content), S) :-
+    format(atom(S), "std::fs::write(&~w, &~w).ok()", [Path, Content]).
+logic_slot(elixir, file_write(Path, Content), S) :-
+    format(atom(S), "File.write!(~w, ~w)", [Path, Content]).
+logic_slot(prolog, file_write(Path, Content), S) :-
+    format(atom(S), "setup_call_cleanup(open(~w, write, Out), write(Out, ~w), close(Out))", [Path, Content]).
+
+logic_slot(python, file_read(Path), S) :-
+    format(atom(S), "Path(~w).read_text()", [Path]).
+logic_slot(rust, file_read(Path), S) :-
+    format(atom(S), "std::fs::read_to_string(&~w).ok()", [Path]).
+logic_slot(elixir, file_read(Path), S) :-
+    format(atom(S), "File.read!(~w)", [Path]).
+logic_slot(prolog, file_read(Path), S) :-
+    format(atom(S), "read_file_to_string(~w, Content, [])", [Path]).
+
+%% =============================================================================
 %% Prolog resolve_type/3
 %% =============================================================================
 
@@ -3639,6 +3883,7 @@ resolve_type(prolog, dict, "dict").
 resolve_type(prolog, set_of_string, "list").
 resolve_type(prolog, owned_string, "atom").
 resolve_type(prolog, list_of_dict, "list").
+resolve_type(prolog, list_of_string, "list").
 resolve_type(prolog, optional(T), S) :-
     resolve_type(prolog, T, Inner),
     format(atom(S), "~w_or_none", [Inner]).
@@ -3725,6 +3970,7 @@ resolve_type(elixir, dict, "map()").
 resolve_type(elixir, set_of_string, "MapSet.t()").
 resolve_type(elixir, owned_string, "String.t()").
 resolve_type(elixir, list_of_dict, "[map()]").
+resolve_type(elixir, list_of_string, "[String.t()]").
 resolve_type(elixir, ref(T), S) :-
     resolve_type(elixir, T, S).
 resolve_type(elixir, optional(T), S) :-

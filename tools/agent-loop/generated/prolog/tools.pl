@@ -94,6 +94,22 @@ tool_needs_approval(Tool_name, Result) :-
     Result = memberchk(tool_name, ["bash", "write", "edit"])
     )
 
+%% Return true if tool should be blocked: destructive + not in approved set.
+check_approval_block(Tool_name, Approved_set, Result) :-
+    (\+ memberchk(tool_name, ["bash", "write", "edit"]) ->
+        Result = false
+    ;
+    Result = \+ memberchk(tool_name, approved_set)
+    )
+
+%% Check if tool name has mcp: prefix indicating MCP dispatch.
+is_mcp_tool(Tool_name, Result) :-
+    Result = atom_concat('mcp:', _, tool_name)
+
+%% Check that all required parameter keys exist in args dict.
+has_required_params(Args, Required_keys, Result) :-
+    Result = forall(member(K, required_keys), get_dict(K, args, _))
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->
