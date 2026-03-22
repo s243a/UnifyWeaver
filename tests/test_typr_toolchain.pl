@@ -144,6 +144,37 @@ test(tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     ),
     retractall(user:fib(_, _)).
 
+test(mutual_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even(0)),
+    assertz(user:(typr_mutual_even(N) :-
+        N > 0,
+        N1 is N - 1,
+        typr_mutual_odd(N1)
+    )),
+    assertz(user:typr_mutual_odd(1)),
+    assertz(user:(typr_mutual_odd(N) :-
+        N > 1,
+        N1 is N - 1,
+        typr_mutual_even(N1)
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even/1, 1, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd/1, 1, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_even(_)),
+    retractall(user:typr_mutual_odd(_)).
+
 test(structural_tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:tree_sum([], 0)),
