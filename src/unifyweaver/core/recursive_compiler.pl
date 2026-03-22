@@ -164,31 +164,27 @@ compile_advanced(bash, Pred/Arity, FinalOptions, GeneratedCode) :-
         Pred/Arity, FinalOptions, GeneratedCode
     ).
 compile_advanced(java, Pred/Arity, FinalOptions, GeneratedCode) :-
-    java_target:compile_predicate_to_java(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(java)|FinalOptions], GeneratedCode).
 compile_advanced(kotlin, Pred/Arity, FinalOptions, GeneratedCode) :-
-    kotlin_target:compile_predicate_to_kotlin(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(kotlin)|FinalOptions], GeneratedCode).
 compile_advanced(scala, Pred/Arity, FinalOptions, GeneratedCode) :-
-    scala_target:compile_predicate_to_scala(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(scala)|FinalOptions], GeneratedCode).
 compile_advanced(clojure, Pred/Arity, FinalOptions, GeneratedCode) :-
-    clojure_target:compile_predicate_to_clojure(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(clojure)|FinalOptions], GeneratedCode).
 compile_advanced(jython, Pred/Arity, FinalOptions, GeneratedCode) :-
-    jython_target:compile_predicate_to_jython(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(jython)|FinalOptions], GeneratedCode).
 compile_advanced(elixir, Pred/Arity, FinalOptions, GeneratedCode) :-
-    elixir_target:compile_predicate_to_elixir(Pred/Arity, [generator_mode(true)|FinalOptions], GeneratedCode).
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(elixir)|FinalOptions], GeneratedCode).
 compile_advanced(r, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(r)|FinalOptions], GeneratedCode).
 compile_advanced(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_recursive_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_advanced(python, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(python)|FinalOptions], GeneratedCode).
-compile_advanced(go, Pred/Arity, _FinalOptions, _GeneratedCode) :-
-    format(user_error, 'Advanced recursive compilation for target go not yet implemented (~w).~n',
-           [Pred/Arity]),
-    fail.
-compile_advanced(rust, Pred/Arity, _FinalOptions, _GeneratedCode) :-
-    format(user_error, 'Advanced recursive compilation for target rust not yet implemented (~w).~n',
-           [Pred/Arity]),
-    fail.
+compile_advanced(go, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(go)|FinalOptions], GeneratedCode).
+compile_advanced(rust, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(rust)|FinalOptions], GeneratedCode).
 compile_advanced(Target, Pred/Arity, _FinalOptions, _GeneratedCode) :-
     format(user_error, 'Advanced recursive compilation for target ~w not implemented (~w).~n',
            [Target, Pred/Arity]),
