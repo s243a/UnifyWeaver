@@ -125,6 +125,16 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - `-SkipCodegen`
     - `-CacheSlice admission|reuse|lru`
     - `-ProjectFilter <pattern>`
+- Summary diff helper (useful for comparing two smoke runs): `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1`
+  - Compares two `cache_smoke_sequence_summary.json` files
+  - Reports:
+    - overall result change
+    - `generatedAtUtc` when present
+    - total duration delta
+    - per-slice status deltas
+    - per-slice duration deltas
+  - Example:
+    - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1 -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json`
 - Typical local repro flow:
   - Full CI-style cache smoke sequence:
     - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_sequence.ps1 -OutputDir tmp/csharp_query_smoke_ci`
@@ -136,6 +146,12 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
       - `Total duration: ...`
   - Re-run a single slice against existing generated projects:
     - `pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci -CacheSlice reuse -SkipCodegen -KeepArtifacts`
+  - Compare two completed smoke runs:
+    - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1 -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json`
+    - Prints:
+      - total sequence duration delta
+      - per-slice `admission` / `reuse` / `lru` status deltas
+      - per-slice duration deltas
 - CI behavior:
   - Workflow job: `.github/workflows/test.yml` `csharp_query_runtime_smoke`
   - Uses the cache smoke sequence wrapper rather than spelling slice commands inline
