@@ -26,4 +26,10 @@ defmodule AgentLoop.Retry do
     attempt >= max_retries
   end
 
+  @doc "Cap a retry delay to a maximum value."
+  @spec retry_delay_capped(integer(), integer()) :: integer()
+  def retry_delay_capped(delay, max_delay) do
+    min(delay, max_delay)
+  end
+
 end

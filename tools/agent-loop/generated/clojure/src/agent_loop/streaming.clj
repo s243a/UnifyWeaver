@@ -18,8 +18,9 @@
   "Process a streamed token chunk: print it, update char and token counts."
   [state token]
   (print token) (flush)
-  (update state :char-count + (count token))
-  (assoc state :token-count (max 1 (quot (:char-count state) 4)))
+  (-> state
+      (update :char-count + (count token))
+      (assoc :token-count (max 1 (quot (:char-count state) 4))))
 )
 
 (defn format-summary
@@ -31,7 +32,9 @@
 (defn reset
   "Reset streaming counters to zero."
   [state]
-  (assoc state :token-count 0 :char-count 0)
+  (-> state
+      (assoc :token-count 0)
+      (assoc :char-count 0))
 )
 
 (defn is-live
@@ -44,5 +47,11 @@
   "Return the current character count from streaming."
   [state]
   (:char-count state)
+)
+
+(defn streaming-token-count
+  "Return the current approximate token count from streaming."
+  [state]
+  (:token-count state)
 )
 

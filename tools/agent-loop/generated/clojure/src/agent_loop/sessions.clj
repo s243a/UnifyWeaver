@@ -59,3 +59,9 @@
   )
 )
 
+(defn session-dir
+  "Return the configured sessions directory path."
+  [state]
+  (:sessions-dir state)
+)
+

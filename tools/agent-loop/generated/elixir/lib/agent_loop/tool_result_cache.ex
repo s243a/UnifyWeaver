@@ -87,4 +87,16 @@ defmodule AgentLoop.ToolResultCache do
     Enum.count(state.cache) == 0
   end
 
+  @doc "Return the maximum cache size limit."
+  @spec cache_max_size(t()) :: integer()
+  def cache_max_size(%__MODULE__{} = state) do
+    state.max_size
+  end
+
+  @doc "Check if the cache has reached its maximum size."
+  @spec cache_is_full(t()) :: boolean()
+  def cache_is_full(%__MODULE__{} = state) do
+    Enum.count(state.cache) >= state.max_size
+  end
+
 end

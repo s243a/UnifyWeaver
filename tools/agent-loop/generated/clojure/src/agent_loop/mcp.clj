@@ -16,8 +16,8 @@
 (defn next-request-id
   "Increment and return the next JSON-RPC request ID."
   [state]
-  (update state :request-id + 1)
-  (:request-id state)
+  (let [new-state (update state :request-id + 1)]
+    (:request-id new-state))
 )
 
 (defn mcp-parse-tool-name

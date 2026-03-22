@@ -94,4 +94,10 @@ defmodule AgentLoop.CostTracker do
     end
   end
 
+  @doc "Check if any usage records have been logged."
+  @spec has_records(t()) :: boolean()
+  def has_records(%__MODULE__{} = state) do
+    not Enum.count(state.records) == 0
+  end
+
 end

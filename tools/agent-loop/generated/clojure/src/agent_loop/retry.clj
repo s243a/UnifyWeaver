@@ -25,3 +25,9 @@
   (>= attempt max-retries)
 )
 
+(defn retry-delay-capped
+  "Cap a retry delay to a maximum value."
+  [delay max-delay]
+  (min delay max-delay)
+)
+

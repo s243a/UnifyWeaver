@@ -29,7 +29,7 @@
 (defn make-key
   "Build a canonical cache key from tool name and arguments."
   [state tool-name args]
-  (format "%s:%s" tool-name, (cheshire.core/generate-string args {:key-fn name}))
+  (format "%s:%s" tool-name (cheshire.core/generate-string args {:key-fn name}))
 )
 
 (defn should-skip
@@ -72,12 +72,23 @@
   "Remove a single cache entry by key. Returns true if key existed."
   [state key]
   (update state :cache dissoc key)
-  true
 )
 
 (defn is-empty-cache
   "Check if the tool result cache is empty."
   [state]
   (zero? (count (:cache state)))
+)
+
+(defn cache-max-size
+  "Return the maximum cache size limit."
+  [state]
+  (:max-size state)
+)
+
+(defn cache-is-full
+  "Check if the cache has reached its maximum size."
+  [state]
+  (>= (count (:cache state)) (:max-size state))
 )
 

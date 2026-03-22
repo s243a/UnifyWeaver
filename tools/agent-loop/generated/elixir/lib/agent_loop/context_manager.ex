@@ -152,4 +152,20 @@ defmodule AgentLoop.ContextManager do
     Enum.take(state.messages, -n)
   end
 
+  @doc "Get the first (oldest) message from history, or nil if empty."
+  @spec context_oldest_message(t()) :: String.t() | nil
+  def context_oldest_message(%__MODULE__{} = state) do
+    if Enum.empty?(state.messages) do
+        nil
+    else
+        List.first(state.messages)
+    end
+  end
+
+  @doc "Remove the oldest message from context history."
+  @spec context_drop_oldest(t()) :: t()
+  def context_drop_oldest(%__MODULE__{} = state) do
+    %{state | messages: tl(state.messages)}
+  end
+
 end

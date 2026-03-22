@@ -3627,6 +3627,73 @@ shared_logic(tools, tool_category, [
     body_template("if ~matches_str_set(tool_name, [bash, write, edit])~:\n    ~return_val(\"destructive\")~\nif ~eq_str(tool_name, read)~:\n    ~return_val(\"safe\")~\n~return_val(\"normal\")~")
 ]).
 
+%% --- New shared_logic methods: 69-76 ---
+
+shared_logic(costs, has_records, [
+    signature(has_records, [], bool),
+    arg_types([]),
+    doc("Check if any usage records have been logged."),
+    container('CostTracker'),
+    body_template("~return_val(not_expr(eq_zero(len_of(self_direct(records)))))~")
+]).
+
+shared_logic(context, context_oldest_message, [
+    signature(context_oldest_message, [], optional(string)),
+    arg_types([]),
+    doc("Get the first (oldest) message from history, or nil if empty."),
+    container('ContextManager'),
+    body_template("if ~is_empty_check(self_direct(messages))~:\n    ~return_val(none_val)~\n~return_val(list_first(self_direct(messages)))~")
+]).
+
+shared_logic(context, context_drop_oldest, [
+    signature(context_drop_oldest, [], void),
+    arg_types([]),
+    doc("Remove the oldest message from context history."),
+    container('ContextManager'),
+    mutable,
+    body_template("~self_assign(messages, list_rest(self_direct(messages)))~")
+]).
+
+shared_logic(tool_cache, cache_max_size, [
+    signature(cache_max_size, [], int),
+    arg_types([]),
+    doc("Return the maximum cache size limit."),
+    container('ToolResultCache'),
+    body_template("~return_val(self_direct(max_size))~")
+]).
+
+shared_logic(tool_cache, cache_is_full, [
+    signature(cache_is_full, [], bool),
+    arg_types([]),
+    doc("Check if the cache has reached its maximum size."),
+    container('ToolResultCache'),
+    body_template("~return_val(gte(len_of(self_direct(cache)), self_direct(max_size)))~")
+]).
+
+shared_logic(streaming, streaming_token_count, [
+    signature(streaming_token_count, [], int),
+    arg_types([]),
+    doc("Return the current approximate token count from streaming."),
+    container('StreamingTokenCounter'),
+    body_template("~return_val(self_direct(token_count))~")
+]).
+
+shared_logic(sessions, session_dir, [
+    signature(session_dir, [], string),
+    arg_types([]),
+    doc("Return the configured sessions directory path."),
+    container('SessionManager'),
+    body_template("~return_val(self_direct(sessions_dir))~")
+]).
+
+shared_logic(retry, retry_delay_capped, [
+    signature(retry_delay_capped, [delay, max_delay], int),
+    arg_types([int, int]),
+    doc("Cap a retry delay to a maximum value."),
+    container(none),
+    body_template("~return_val(min_val(delay, max_delay))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -3659,6 +3726,30 @@ expand_expr(prolog, list_tail_n(List, N), S) :-
 expand_expr(clojure, list_tail_n(List, N), S) :-
     expand_expr(clojure, List, LS), expand_expr(clojure, N, NS),
     format(atom(S), "(take-last ~w ~w)", [NS, LS]).
+
+%% --- list_first: get first element ---
+expand_expr(python, list_first(List), S) :-
+    expand_expr(python, List, LS), format(atom(S), "~w[0]", [LS]).
+expand_expr(rust, list_first(List), S) :-
+    expand_expr(rust, List, LS), format(atom(S), "~w.first().cloned()", [LS]).
+expand_expr(elixir, list_first(List), S) :-
+    expand_expr(elixir, List, LS), format(atom(S), "List.first(~w)", [LS]).
+expand_expr(prolog, list_first(List), S) :-
+    expand_expr(prolog, List, LS), format(atom(S), "nth0(0, ~w, Result)", [LS]).
+expand_expr(clojure, list_first(List), S) :-
+    expand_expr(clojure, List, LS), format(atom(S), "(first ~w)", [LS]).
+
+%% --- list_rest: get all but first element ---
+expand_expr(python, list_rest(List), S) :-
+    expand_expr(python, List, LS), format(atom(S), "~w[1:]", [LS]).
+expand_expr(rust, list_rest(List), S) :-
+    expand_expr(rust, List, LS), format(atom(S), "~w[1..].to_vec()", [LS]).
+expand_expr(elixir, list_rest(List), S) :-
+    expand_expr(elixir, List, LS), format(atom(S), "tl(~w)", [LS]).
+expand_expr(prolog, list_rest(List), S) :-
+    expand_expr(prolog, List, LS), format(atom(S), "~w = [_|Result]", [LS]).
+expand_expr(clojure, list_rest(List), S) :-
+    expand_expr(clojure, List, LS), format(atom(S), "(rest ~w)", [LS]).
 
 %% --- is_empty_str: check if string is empty ---
 logic_slot(python, is_empty_str(X), S) :-
@@ -4646,28 +4737,52 @@ clojure_fixup_lines([Line|Rest], Result) :-
         format(atom(LastClosed), "~w)", [LastBody]),
         append([LetOpen|BodyInit], [LastClosed], Result)
     ).
-%% Merge consecutive (assoc state :field val) lines into a single (assoc state :f1 v1 :f2 v2 ...)
+%% Thread consecutive state-mutating lines: (assoc state ...), (update state ...) → (-> state ...)
+clojure_fixup_lines([Line|Rest], Result) :-
+    is_state_mutating_line(Line),
+    Rest = [Next|_],
+    is_state_mutating_line(Next),
+    !,
+    collect_state_mutating([Line|Rest], MutLines, Remaining),
+    maplist(strip_state_prefix, MutLines, InnerOps),
+    atomic_list_concat(['(-> state'|InnerOps], '\n    ', ThreadHead),
+    atom_concat(ThreadHead, ')', Threaded),
+    clojure_fixup_lines(Remaining, RestFixed),
+    Result = [Threaded|RestFixed].
+%% Single (assoc state :f1 v1) followed by non-mutating — keep as-is
 clojure_fixup_lines([Line|Rest], Result) :-
     is_assoc_state_line(Line, Pairs),
+    Rest = [Next|_],
+    \+ is_state_mutating_line(Next),
     !,
+    %% Check for consecutive assoc-only (merge pairs)
     collect_assoc_lines(Rest, MorePairs, Remaining),
     append(Pairs, MorePairs, AllPairs),
     atomic_list_concat(AllPairs, ' ', PairsStr),
     format(atom(Merged), "(assoc state ~w)", [PairsStr]),
     clojure_fixup_lines(Remaining, RestFixed),
     Result = [Merged|RestFixed].
-%% Merge consecutive (update state :field ...) lines into (-> state (update ...) (update ...))
+%% State-mutating line followed by bare true/false — drop the literal (state is the return)
 clojure_fixup_lines([Line|Rest], Result) :-
-    is_update_state_line(Line),
-    Rest = [Next|_],
-    is_update_state_line(Next),
+    is_state_mutating_line(Line),
+    Rest = [Next|After],
+    is_bare_literal(Next),
     !,
-    collect_update_lines([Line|Rest], UpdateLines, Remaining),
-    maplist(strip_update_state_prefix, UpdateLines, InnerUpdates),
-    atomic_list_concat(['(-> state'|InnerUpdates], '\n    ', ThreadHead),
-    atom_concat(ThreadHead, ')', Threaded),
-    clojure_fixup_lines(Remaining, RestFixed),
-    Result = [Threaded|RestFixed].
+    clojure_fixup_lines([Line|After], Result).
+%% State-mutating line followed by (:field state) — let-bind and access from new state
+clojure_fixup_lines([Line|Rest], Result) :-
+    is_state_mutating_line(Line),
+    Rest = [Next|After],
+    is_state_field_access(Next),
+    !,
+    atom_string(Next, NextStr),
+    split_string(NextStr, "", "", _),  % ensure it's a valid string
+    %% Replace " state)" with " new-state)" in the field access
+    atomic_list_concat(Parts, ' state)', Next),
+    atomic_list_concat(Parts, ' new-state)', FixedAccess),
+    format(atom(LetExpr), "(let [new-state ~w]\n  ~w)", [Line, FixedAccess]),
+    clojure_fixup_lines(After, RestFixed),
+    Result = [LetExpr|RestFixed].
 clojure_fixup_lines([Line|Rest], Result) :-
     (  is_if_line(Line, Cond)
     ->
@@ -4708,6 +4823,42 @@ collect_let_lines([Line|Rest], Bindings, Body) :-
         Bindings = [B|MoreB]
     ;
         Bindings = [], Body = [Line|Rest]
+    ).
+
+%% Helper: detect (:field state) access pattern
+is_state_field_access(Line) :-
+    atom_string(Line, S),
+    sub_string(S, 0, _, _, "(:"),
+    sub_string(S, _, _, 0, " state)").
+
+%% Helper: detect bare literal lines (true, false, nil)
+is_bare_literal(Line) :-
+    atom_string(Line, S),
+    string_to_atom(S, A),
+    memberchk(A, [true, false, nil]).
+
+%% Helper: detect any state-mutating line (assoc state ...) or (update state ...)
+is_state_mutating_line(Line) :-
+    (is_assoc_state_line(Line, _) ; is_update_state_line(Line)), !.
+
+collect_state_mutating([], [], []).
+collect_state_mutating([Line|Rest], [Line|More], Remaining) :-
+    is_state_mutating_line(Line),
+    !,
+    collect_state_mutating(Rest, More, Remaining).
+collect_state_mutating(Lines, [], Lines).
+
+%% Strip "state" from (assoc state ...) or (update state ...) for threading
+strip_state_prefix(Line, Inner) :-
+    atom_string(Line, S),
+    (string_concat("(assoc state ", Rest, S) ->
+        string_concat(Args, ")", Rest),
+        format(atom(Inner), "(assoc ~w)", [Args])
+    ; string_concat("(update state ", Rest, S) ->
+        string_concat(Args, ")", Rest),
+        format(atom(Inner), "(update ~w)", [Args])
+    ;
+        Inner = Line
     ).
 
 %% Helper: detect (assoc state :key val) and extract ":key val" pairs
@@ -4995,7 +5146,11 @@ format_args_list([A|Rest], Target, S) :-
     Rest \= [],
     expand_expr(Target, A, AStr),
     format_args_list(Rest, Target, RestStr),
-    format(atom(S), "~w, ~w", [AStr, RestStr]).
+    (Target = clojure ->
+        format(atom(S), "~w ~w", [AStr, RestStr])
+    ;
+        format(atom(S), "~w, ~w", [AStr, RestStr])
+    ).
 
 %% Python f-string: replace {} with {expr} for each arg
 python_fstring(Fmt, Args, S) :-
