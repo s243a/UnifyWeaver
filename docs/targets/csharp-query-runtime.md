@@ -133,6 +133,15 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - total duration delta
     - per-slice status deltas
     - per-slice duration deltas
+  - Optional machine-readable output:
+    - `-JsonOutputPath tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json`
+    - Writes a JSON diff containing:
+      - baseline / compare summary paths
+      - overall result delta
+      - generated-at timestamps when present
+      - total duration delta
+      - project filter / output dir / failure detail deltas
+      - per-slice status and duration deltas
   - Example:
     - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1 -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json`
 - Typical local repro flow:
@@ -152,6 +161,10 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
       - total sequence duration delta
       - per-slice `admission` / `reuse` / `lru` status deltas
       - per-slice duration deltas
+  - Compare two completed smoke runs and keep a JSON diff:
+    - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1 -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json -JsonOutputPath tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json`
+    - Produces:
+      - `tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json`
 - CI behavior:
   - Workflow job: `.github/workflows/test.yml` `csharp_query_runtime_smoke`
   - Uses the cache smoke sequence wrapper rather than spelling slice commands inline
