@@ -253,6 +253,8 @@ includes:
   `weighted_tree_nested_branch_recombine/3`,
   `tree_sum_nested_branch_prework/2`,
   `weighted_tree_nested_branch_prework/3`,
+  `tree_sum_double_nested_calls/2`,
+  `weighted_tree_double_nested_calls/3`,
   `weighted_tree_sum_subtree_scale/3`, `weighted_tree_sum_subtree_branch/3`,
   `tree_sum_prework/2`, `weighted_tree_sum_prework/3`,
   `tree_sum_branch/2`, `weighted_tree_sum_branch/3`,
@@ -266,7 +268,8 @@ includes:
   subtree calls inside supported branch bodies, nested recursive subtree
   calls inside supported branch bodies, shared pre-recursive local work
   before nested recursive branch bodies, nested branch-local post-recursive
-  recombination before a later shared result expression, and asymmetric
+  recombination before a later shared result expression, multiple nested
+  branch-local control points around the two subtree calls, and asymmetric
   branch-local prework that is reconciled later by a guarded result
   expression, instead of wrapped-R fallback
 - guarded post-recursive recombination in those same linear-recursive

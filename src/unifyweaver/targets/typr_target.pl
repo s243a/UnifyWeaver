@@ -787,7 +787,7 @@ structural_tree_goal_rec_calls(Pred, Goal, RecCalls) :-
     !,
     structural_tree_goal_rec_calls(Pred, ThenGoal, RecCalls).
 structural_tree_goal_rec_calls(Pred, Goal, RecCalls) :-
-    structural_tree_nested_if_goal(Goal, _PreGoals, NestedIfGoal, _PostGoals),
+    structural_tree_nested_if_goal_any(Goal, _PreGoals, NestedIfGoal, _PostGoals),
     typr_if_then_else_goal(NestedIfGoal, _IfGoal, ThenGoal, _ElseGoal),
     structural_tree_goal_rec_calls(Pred, ThenGoal, RecCalls).
 
@@ -798,6 +798,77 @@ structural_tree_nested_if_goal(Goal, PreGoals, NestedIfGoal, PostGoals) :-
     typr_if_then_else_goal(NestedIfGoal, _IfGoal, _ThenGoal, _ElseGoal),
     !.
 
+structural_tree_nested_if_goal_any(Goal, PreGoals, NestedIfGoal, PostGoals) :-
+    normalize_typr_goals(Goal, Goals),
+    append(PreGoals, [NestedIfGoal|PostGoals], Goals),
+    typr_if_then_else_goal(NestedIfGoal, _IfGoal, _ThenGoal, _ElseGoal),
+    !.
+
+structural_tree_recursive_prefix_lines(
+    Pred,
+    BranchGoal,
+    VarMap0,
+    HelperName,
+    DriverPos,
+    Arity,
+    LeftVar,
+    RightVar,
+    VarMap,
+    Lines
+) :-
+    structural_tree_nested_if_goal_any(BranchGoal, PreGoals, NestedIfGoal, PostGoals),
+    typr_goals_to_body(PreGoals, PreBody),
+    compile_tail_recursive_pre_goals(PreBody, VarMap0, PreVarMap, GuardConditions, StepLines),
+    tail_recursive_pre_branch_lines(GuardConditions, StepLines, BranchPreLines),
+    typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal, ElseGoal),
+    native_typr_if_condition(IfGoal, PreVarMap, IfCondition0),
+    typr_condition_expr_text(IfCondition0, IfCondition),
+    structural_tree_recursive_prefix_lines(
+        Pred,
+        ThenGoal,
+        PreVarMap,
+        HelperName,
+        DriverPos,
+        Arity,
+        LeftVar,
+        RightVar,
+        ThenVarMap0,
+        ThenLines
+    ),
+    structural_tree_recursive_prefix_lines(
+        Pred,
+        ElseGoal,
+        PreVarMap,
+        HelperName,
+        DriverPos,
+        Arity,
+        LeftVar,
+        RightVar,
+        ElseVarMap0,
+        ElseLines
+    ),
+    linear_recursive_post_goals_varmap(PostGoals, ThenVarMap0, ThenVarMap),
+    linear_recursive_post_goals_varmap(PostGoals, ElseVarMap0, ElseVarMap),
+    varmap_changed_vars(PreVarMap, ThenVarMap, ThenChangedVars0),
+    varmap_changed_vars(PreVarMap, ElseVarMap, ElseChangedVars0),
+    unique_vars_by_identity(ThenChangedVars0, ThenChangedVars),
+    unique_vars_by_identity(ElseChangedVars0, ElseChangedVars),
+    include_vars_by_identity(ThenChangedVars, ElseChangedVars, SharedChangedVars),
+    SharedChangedVars \= [],
+    merge_linear_recursive_branch_vars(
+        SharedChangedVars,
+        IfCondition,
+        ThenVarMap,
+        ElseVarMap,
+        PreVarMap,
+        VarMap
+    ),
+    indent_lines(ThenLines, '    ', IndentedThenLines),
+    indent_lines(ElseLines, '    ', IndentedElseLines),
+    format(string(IfLine), '        if (~w) {', [IfCondition]),
+    append(BranchPreLines, [IfLine|IndentedThenLines], Lines0),
+    append(Lines0, ['        } else {'|IndentedElseLines], Lines1),
+    append(Lines1, ['        };'], Lines).
 structural_tree_recursive_prefix_lines(
     Pred,
     BranchGoal,
