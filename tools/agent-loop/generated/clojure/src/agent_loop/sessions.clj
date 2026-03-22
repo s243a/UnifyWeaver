@@ -65,3 +65,12 @@
   (:sessions-dir state)
 )
 
+(defn session-id-from-filename
+  "Extract session ID from a .json filename by removing the extension."
+  [filename]
+  (if (.endsWith filename ".json")
+      (subs filename 0 (- (count filename) 5))
+      filename
+  )
+)
+

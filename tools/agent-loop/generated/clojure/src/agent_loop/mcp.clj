@@ -35,3 +35,9 @@
   (.startsWith method-name "notifications/")
 )
 
+(defn mcp-request-id-str
+  "Get the current request ID as a string for JSON-RPC message construction."
+  [state]
+  (format "%s" (:request-id state))
+)
+

@@ -64,6 +64,16 @@ defmodule AgentLoop.Sessions do
     state.sessions_dir
   end
 
+  @doc "Extract session ID from a .json filename by removing the extension."
+  @spec session_id_from_filename(String.t()) :: String.t()
+  def session_id_from_filename(filename) do
+    if String.ends_with?(filename, ".json") do
+        String.slice(filename, 0..-5)
+    else
+        filename
+    end
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

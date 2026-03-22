@@ -63,9 +63,9 @@ pub fn tool_schemas_json() -> &'static Vec<serde_json::Value> {
 
 pub static TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec { name: "bash", description: "Execute a bash command", parameters: &[ToolParam { name: "command", param_type: "string", required: true, description: "The command to execute" }] },
-    ToolSpec { name: "read", description: "Read a file", parameters: &[ToolParam { name: "path", param_type: "string", required: true, description: "Path to file" }] },
-    ToolSpec { name: "write", description: "Write content to a file", parameters: &[ToolParam { name: "path", param_type: "string", required: true, description: "Path to file" }, ToolParam { name: "content", param_type: "string", required: true, description: "Content to write" }] },
-    ToolSpec { name: "edit", description: "Edit a file with search/replace", parameters: &[ToolParam { name: "path", param_type: "string", required: true, description: "Path to file" }, ToolParam { name: "old_string", param_type: "string", required: true, description: "Text to find" }, ToolParam { name: "new_string", param_type: "string", required: true, description: "Replacement text" }] },
+    ToolSpec { name: "read", description: "Read a file", parameters: &[ToolParam { name: "file_path", param_type: "string", required: true, description: "Path to file" }] },
+    ToolSpec { name: "write", description: "Write content to a file", parameters: &[ToolParam { name: "file_path", param_type: "string", required: true, description: "Path to file" }, ToolParam { name: "content", param_type: "string", required: true, description: "Content to write" }] },
+    ToolSpec { name: "edit", description: "Edit a file with search/replace", parameters: &[ToolParam { name: "file_path", param_type: "string", required: true, description: "Path to file" }, ToolParam { name: "old_string", param_type: "string", required: true, description: "Text to find" }, ToolParam { name: "new_string", param_type: "string", required: true, description: "Replacement text" }] },
 ];
 
 pub static DESTRUCTIVE_TOOLS: &[&str] = &[

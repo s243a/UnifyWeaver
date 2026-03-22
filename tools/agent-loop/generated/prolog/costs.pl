@@ -97,7 +97,7 @@ cost_per_token(State, Result) :-
 
 %% Check if any usage records have been logged.
 has_records(State, Result) :-
-    Result = \+ length(State.records, Len) =:= 0.
+    \+ length(State.records, Result) =:= 0.
 
 %% Return total token count (input + output).
 total_tokens(State, Result) :-
@@ -106,6 +106,18 @@ total_tokens(State, Result) :-
 %% Return a short cost summary string (e.g. $0.05).
 cost_summary_short(State, Result) :-
     Result = format(atom(Formatted), "$~w", [State.total_cost]).
+
+%% Check if the current model has zero cost (total_cost == 0 after usage).
+is_free_model(State, Result) :-
+    Result = State.total_cost =:= 0.
+
+%% Compute ratio of input to output tokens. Returns 0.0 if no output tokens.
+input_output_ratio(State, Result) :-
+    (State.total_output_tokens =:= 0 ->
+        Result = 0.0
+    ;
+    Result = (float(State.total_input_tokens) / float(State.total_output_tokens))
+    ).
 
 
 %% Cost tracker using dynamic state

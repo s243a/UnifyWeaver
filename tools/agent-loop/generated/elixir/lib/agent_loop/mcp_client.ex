@@ -47,6 +47,12 @@ defmodule AgentLoop.MCPClient do
     String.starts_with?(method_name, "notifications/")
   end
 
+  @doc "Get the current request ID as a string for JSON-RPC message construction."
+  @spec mcp_request_id_str(t()) :: String.t()
+  def mcp_request_id_str(%__MODULE__{} = state) do
+    "#{state.request_id}"
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

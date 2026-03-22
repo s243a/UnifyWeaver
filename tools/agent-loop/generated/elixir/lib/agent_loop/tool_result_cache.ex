@@ -109,4 +109,14 @@ defmodule AgentLoop.ToolResultCache do
     end
   end
 
+  @doc "Compute cache utilization as fraction of max size. Returns 0.0 if max_size is 0."
+  @spec cache_utilization(t()) :: float()
+  def cache_utilization(%__MODULE__{} = state) do
+    if state.max_size == 0 do
+        0.0
+    else
+        ((Enum.count(state.cache) * 1.0) / (state.max_size * 1.0))
+    end
+  end
+
 end

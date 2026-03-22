@@ -34,9 +34,9 @@
 
 %% tool_spec(+ToolName, +Properties)
 tool_spec(bash, [description("Execute a bash command"), parameters([param(command,string,required,"The command to execute")]), confirmation_required(true), timeout(120)]).
-tool_spec(read, [description("Read a file"), parameters([param(path,string,required,"Path to file")]), confirmation_required(false)]).
-tool_spec(write, [description("Write content to a file"), parameters([param(path,string,required,"Path to file"),param(content,string,required,"Content to write")]), confirmation_required(true)]).
-tool_spec(edit, [description("Edit a file with search/replace"), parameters([param(path,string,required,"Path to file"),param(old_string,string,required,"Text to find"),param(new_string,string,required,"Replacement text")]), confirmation_required(true)]).
+tool_spec(read, [description("Read a file"), parameters([param(file_path,string,required,"Path to file")]), confirmation_required(false)]).
+tool_spec(write, [description("Write content to a file"), parameters([param(file_path,string,required,"Path to file"),param(content,string,required,"Content to write")]), confirmation_required(true)]).
+tool_spec(edit, [description("Edit a file with search/replace"), parameters([param(file_path,string,required,"Path to file"),param(old_string,string,required,"Text to find"),param(new_string,string,required,"Replacement text")]), confirmation_required(true)]).
 
 %% tool_handler(+ToolName, +HandlerPredicate)
 tool_handler(bash, '_execute_bash').

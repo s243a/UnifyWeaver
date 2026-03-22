@@ -381,9 +381,9 @@ class ToolHandler:
 
         self.tool_required_params = {
             'bash': ['command'],
-            'read': ['path'],
-            'write': ['path', 'content'],
-            'edit': ['path', 'old_string', 'new_string'],
+            'read': ['file_path'],
+            'write': ['file_path', 'content'],
+            'edit': ['file_path', 'old_string', 'new_string'],
         }
 
         # Tool result cache
@@ -764,7 +764,7 @@ class ToolHandler:
 
     def _read_file(self, args: dict) -> ToolResult:
         """Read a file."""
-        path = args.get('path', '')
+        path = args.get('file_path', '')
         file_path, error = self._validate_file_path(path, 'read')
         if error:
             return error
@@ -805,7 +805,7 @@ class ToolHandler:
 
     def _write_file(self, args: dict) -> ToolResult:
         """Write content to a file."""
-        path = args.get('path', '')
+        path = args.get('file_path', '')
         content = args.get('content', '')
 
         file_path, error = self._validate_file_path(path, 'write')
@@ -839,7 +839,7 @@ class ToolHandler:
 
     def _edit_file(self, args: dict) -> ToolResult:
         """Edit a file with search/replace."""
-        path = args.get('path', '')
+        path = args.get('file_path', '')
         old_string = args.get('old_string', '')
         new_string = args.get('new_string', '')
 

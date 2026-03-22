@@ -162,3 +162,9 @@
   )
 )
 
+(defn total-chars
+  "Return total character count across all messages in context."
+  [state]
+  (count (:messages state))
+)
+

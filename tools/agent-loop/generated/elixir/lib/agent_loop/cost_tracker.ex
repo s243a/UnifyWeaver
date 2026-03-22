@@ -112,4 +112,20 @@ defmodule AgentLoop.CostTracker do
     "$#{state.total_cost}"
   end
 
+  @doc "Check if the current model has zero cost (total_cost == 0 after usage)."
+  @spec is_free_model(t()) :: boolean()
+  def is_free_model(%__MODULE__{} = state) do
+    state.total_cost == 0
+  end
+
+  @doc "Compute ratio of input to output tokens. Returns 0.0 if no output tokens."
+  @spec input_output_ratio(t()) :: float()
+  def input_output_ratio(%__MODULE__{} = state) do
+    if state.total_output_tokens == 0 do
+        0.0
+    else
+        ((state.total_input_tokens * 1.0) / (state.total_output_tokens * 1.0))
+    end
+  end
+
 end

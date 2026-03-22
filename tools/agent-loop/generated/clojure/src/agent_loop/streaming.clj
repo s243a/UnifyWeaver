@@ -63,3 +63,9 @@
       (assoc :char-count 0))
 )
 
+(defn is-active
+  "Check if streaming has received any tokens (char_count > 0)."
+  [state]
+  (> (:char-count state) 0)
+)
+

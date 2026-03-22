@@ -933,7 +933,7 @@ class TestToolHandlerCacheWiring:
         from backends.base import ToolCall
         handler = ToolHandler(confirm_destructive=False)
         test_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "test_integration.py"))
-        tc = ToolCall(name="read", arguments={"path": test_file})
+        tc = ToolCall(name="read", arguments={"file_path": test_file})
         result = handler.execute(tc)
         assert result.success
         assert handler.cache.size() == 1
