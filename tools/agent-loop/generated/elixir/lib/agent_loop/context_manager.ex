@@ -90,4 +90,30 @@ defmodule AgentLoop.ContextManager do
     Enum.count(state.messages)
   end
 
+  @doc "Compute how many oldest messages to drop to fit within count limit."
+  @spec trim_excess_count(t(), integer()) :: integer()
+  def trim_excess_count(%__MODULE__{} = state, max_messages) do
+    if max_messages <= 0 do
+        0
+    else
+        max(0.0, (Enum.count(state.messages) - max_messages))
+    end
+  end
+
+  @doc "Check if estimated token count exceeds the max token budget."
+  @spec tokens_over_budget(t(), integer()) :: boolean()
+  def tokens_over_budget(%__MODULE__{} = state, max_tokens) do
+    if max_tokens <= 0 do
+        false
+    else
+        estimate_tokens(state) > max_tokens
+    end
+  end
+
+  @doc "Estimate tokens for a single message using chars/4 heuristic."
+  @spec message_token_estimate(String.t()) :: integer()
+  def message_token_estimate(content) do
+    max(1, div(String.length(content), 4))
+  end
+
 end

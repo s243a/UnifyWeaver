@@ -30,6 +30,18 @@ defmodule AgentLoop.Sessions do
     "#{session_id}.json"
   end
 
+  @doc "Check if a filename is a session file (ends with .json)."
+  @spec session_list_filter(String.t()) :: boolean()
+  def session_list_filter(filename) do
+    String.ends_with?(filename, ".json")
+  end
+
+  @doc "Return the list of metadata keys in a session file."
+  @spec session_data_keys() :: [String.t()]
+  def session_data_keys do
+    ["id", "name", "message_count", "saved_at"]
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

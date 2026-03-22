@@ -72,16 +72,16 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 36 |
-| `logic_slot/3` facts | ~75 (20 python + 20 rust + ~35 elixir) |
-| `expand_expr/3` facts | ~50 (14 python + 14 rust + ~22 elixir) |
-| `resolve_type/3` facts | 64 (14 python + 19 rust + 17 elixir + 14 prolog incl. `optional/1`, `owned_string`) |
-| `elixir_server/2` facts | 5 (data-driven OTP supervision) |
+| `shared_logic/3` facts | 44 |
+| `logic_slot/3` facts | ~120 (25 python + 25 rust + ~35 elixir + ~35 prolog) |
+| `expand_expr/3` facts | ~90 (20 python + 20 rust + ~25 elixir + ~25 prolog) |
+| `resolve_type/3` facts | 68 (15 python + 20 rust + 18 elixir + 15 prolog incl. `optional/1`, `owned_string`, `list_of_string`) |
+| `elixir_server/2` facts | 6 (data-driven OTP supervision) |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1079 + 388 declarative + 139 Rust + 148 Python (1079 Prolog unit + 388 auto-generated + 53 Elixir ExUnit + 36 Prolog integration + 148 Python + 139 cargo test) |
+| Total tests | 1079 + 428 declarative + 139 Rust + 148 Python (1079 Prolog unit + 428 auto-generated + 53 Elixir ExUnit + 44 Prolog integration + 148 Python + 139 cargo test) |
 
 ## Backends
 
@@ -473,7 +473,7 @@ This produces all 33 Python files in `generated/`. The output should match `prot
 | Property | ~30 | Structural invariants (e.g., every tool_spec has description + parameters) |
 | Cross-reference | ~15 | Referential integrity (aliases → commands, helper_fragments → py_fragments) |
 | Count consistency | ~6 | Hardcoded counts catch unregistered additions |
-| Shared logic | ~216 | shared_logic facts exist and compile for all 4 targets (python, rust, elixir, prolog) |
+| Shared logic | ~264 | shared_logic facts exist and compile for all 4 targets (python, rust, elixir, prolog) |
 | **Total** | **~296** | Auto-generated, zero maintenance |
 
 ```bash
@@ -535,7 +535,7 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**All 36 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
+**All 44 shared_logic methods are actively wired** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
