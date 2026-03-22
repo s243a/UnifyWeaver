@@ -55,3 +55,11 @@
   (:token-count state)
 )
 
+(defn reset-counts
+  "Reset token and character counters to zero."
+  [state]
+  (-> state
+      (assoc :token-count 0)
+      (assoc :char-count 0))
+)
+

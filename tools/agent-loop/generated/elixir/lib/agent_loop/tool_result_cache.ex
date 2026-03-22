@@ -99,4 +99,14 @@ defmodule AgentLoop.ToolResultCache do
     Enum.count(state.cache) >= state.max_size
   end
 
+  @doc "Compute cache hit rate. Returns 0.0 if no lookups."
+  @spec cache_hit_rate(t()) :: float()
+  def cache_hit_rate(%__MODULE__{} = state) do
+    if state.total_lookups == 0 do
+        0.0
+    else
+        ((state.hits * 1.0) / (state.total_lookups * 1.0))
+    end
+  end
+
 end

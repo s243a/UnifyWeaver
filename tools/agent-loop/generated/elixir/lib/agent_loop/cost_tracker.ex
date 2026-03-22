@@ -100,4 +100,16 @@ defmodule AgentLoop.CostTracker do
     not Enum.count(state.records) == 0
   end
 
+  @doc "Return total token count (input + output)."
+  @spec total_tokens(t()) :: integer()
+  def total_tokens(%__MODULE__{} = state) do
+    (state.total_input_tokens + state.total_output_tokens)
+  end
+
+  @doc "Return a short cost summary string (e.g. $0.05)."
+  @spec cost_summary_short(t()) :: String.t()
+  def cost_summary_short(%__MODULE__{} = state) do
+    "$#{state.total_cost}"
+  end
+
 end

@@ -5,6 +5,25 @@
 (ns agent-loop.output-parser
   (:require [cheshire.core :as json]))
 
+(defn extract-fenced
+  "Extract JSON from fenced code blocks (```json ... ```).
+  Returns a vector of parsed JSON values."
+  [text]
+  (let [pattern #"(?s)```(?:json)?\s*\n(.*?)\n```"]
+    (->> (re-seq pattern text)
+         (map second)
+         (keep #(try (json/parse-string % true) (catch Exception _ nil)))
+         vec)))
+
+(defn extract-bare
+  "Extract bare JSON objects from text.
+  Returns a vector of parsed JSON values."
+  [text]
+  (let [pattern #"(?s)\{[^{}]*\}"]
+    (->> (re-seq pattern text)
+         (keep #(try (json/parse-string % true) (catch Exception _ nil)))
+         vec)))
+
 
 ;; --- shared_logic: output_parser (generated from compile_logic) ---
 

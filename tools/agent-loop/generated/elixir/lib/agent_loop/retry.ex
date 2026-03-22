@@ -32,4 +32,10 @@ defmodule AgentLoop.Retry do
     min(delay, max_delay)
   end
 
+  @doc "Check if this is the first retry attempt (attempt == 0)."
+  @spec is_first_attempt(integer()) :: boolean()
+  def is_first_attempt(attempt) do
+    attempt == 0
+  end
+
 end

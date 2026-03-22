@@ -12,6 +12,11 @@
    :max-tokens 0
    :max-messages 0})
 
+(defn char-count
+  "Compute total character count across all messages."
+  [state]
+  (reduce + 0 (map count (:messages state))))
+
 
 ;; --- shared_logic: context (generated from compile_logic) ---
 
@@ -140,5 +145,20 @@
   "Remove the oldest message from context history."
   [state]
   (assoc state :messages (rest (:messages state)))
+)
+
+(defn has-messages
+  "Check if context has at least one message."
+  [state]
+  (seq (:messages state))
+)
+
+(defn message-at
+  "Get a message at a specific index, or nil if out of range."
+  [state index]
+  (if (>= index (count (:messages state)))
+      nil
+      (nth (:messages state) index nil)
+  )
 )
 

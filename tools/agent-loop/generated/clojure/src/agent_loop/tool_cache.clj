@@ -92,3 +92,12 @@
   (>= (count (:cache state)) (:max-size state))
 )
 
+(defn cache-hit-rate
+  "Compute cache hit rate. Returns 0.0 if no lookups."
+  [state]
+  (if (zero? (:total-lookups state))
+      0.0
+      (/ (double (:hits state)) (double (:total-lookups state)))
+  )
+)
+

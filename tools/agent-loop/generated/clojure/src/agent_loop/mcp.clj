@@ -29,3 +29,9 @@
   )
 )
 
+(defn mcp-is-notification
+  "Check if a JSON-RPC method is a notification (starts with 'notifications/')."
+  [method-name]
+  (.startsWith method-name "notifications/")
+)
+
