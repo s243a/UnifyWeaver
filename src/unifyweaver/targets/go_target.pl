@@ -85,6 +85,9 @@
 % Pipeline validation
 :- use_module('../core/pipeline_validation').
 
+% Native clause body lowering (shared analysis infrastructure)
+:- use_module('../core/clause_body_analysis', except([translate_expr/3])).
+
 % Service validation (Client-Server Phase 2)
 :- use_module('../core/service_validation').
 :- use_module('../core/optimizer').
@@ -5270,6 +5273,39 @@ func main() {
 %% compile_predicate_to_go_normal(+Pred, +Arity, +Options, -GoCode)
 %  Normal (non-aggregation) compilation path
 %
+% Try native clause body lowering first — produces clean Go functions
+compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
+    option(include_package(IncludePackage), Options, true),
+    functor(Head, Pred, Arity),
+    module_findall_clauses(Head, Clauses),
+    Clauses \= [],
+    \+ is_tail_recursive_pattern(Pred, Clauses),
+    native_go_clause_body(Pred/Arity, Clauses, FuncBody),
+    !,
+    format('Type: native_clause_lowering~n'),
+    % Build standalone function + main
+    Arity1 is Arity - 1,
+    build_go_arg_list(Arity1, ArgList),
+    atom_string(Pred, PredStr),
+    format(string(FuncCode),
+'func ~w(~w) interface{} {
+~w
+}', [PredStr, ArgList, FuncBody]),
+    (   IncludePackage
+    ->  format(string(GoCode),
+'package main
+
+import "fmt"
+
+~w
+
+func main() {
+\t// Example usage
+\tfmt.Println(~w(0))
+}
+', [FuncCode, PredStr])
+    ;   GoCode = FuncCode
+    ).
 compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
     % Get options
     option(record_delimiter(RecordDelim), Options, newline),
@@ -5365,6 +5401,349 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
         )
     ),
     !.
+
+% ============================================================================
+% NATIVE CLAUSE BODY LOWERING
+% ============================================================================
+%
+% Compiles multi-clause predicates into Go if/else if/else chains using
+% the shared clause_body_analysis module.
+
+%% build_go_arg_list(+N, -ArgList)
+%  Build "arg1 interface{}, arg2 interface{}, ..." for N arguments.
+build_go_arg_list(0, "") :- !.
+build_go_arg_list(N, ArgList) :-
+    findall(ArgDecl, (
+        between(1, N, I),
+        format(string(ArgDecl), 'arg~w interface{}', [I])
+    ), ArgDecls),
+    atomic_list_concat(ArgDecls, ', ', ArgList).
+
+%% native_go_clause_body(+PredSpec, +Clauses, -Code)
+%  Try to compile clauses to native Go if/else if/else body.
+
+% Single clause
+native_go_clause_body(PredSpec, [Head-Body], Code) :-
+    native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
+    !,
+    (   Condition == "true"
+    ->  Code = ClauseCode
+    ;   format(string(Code),
+'\tif ~w {
+~w
+\t} else {
+\t\tpanic("No matching clause for ~w")
+\t}', [Condition, ClauseCode, PredSpec])
+    ).
+
+% Multi-clause
+native_go_clause_body(PredSpec, Clauses, Code) :-
+    Clauses = [_|[_|_]],
+    maplist(native_go_clause_pair(PredSpec), Clauses, Branches),
+    Branches \= [],
+    branches_to_go_if_chain(Branches, IfChain),
+    format(string(Code),
+'~w else {
+\t\tpanic("No matching clause for ~w")
+\t}', [IfChain, PredSpec]).
+
+native_go_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
+    native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
+    !.
+
+%% native_go_clause(+PredSpec, +Head, +Body, -Condition, -Code)
+native_go_clause(_PredSpec, Head, Body, Condition, Code) :-
+    Head =.. [_Pred|HeadArgs],
+    length(HeadArgs, Arity),
+    build_head_varmap(HeadArgs, 1, VarMap),
+    % Extract head conditions — only from input args (last is output)
+    (   Arity > 1
+    ->  append(InputHeadArgs, [OutputHeadArg], HeadArgs),
+        go_head_conditions(InputHeadArgs, 1, HeadConditions)
+    ;   OutputHeadArg = _,
+        go_head_conditions(HeadArgs, 1, HeadConditions)
+    ),
+    % Process body goals
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  % Pure fact: return the output arg value
+        go_resolve_value(VarMap, OutputHeadArg, OutputExpr),
+        format(string(Code), '\t\treturn ~w', [OutputExpr]),
+        GoalConditions = []
+    ;   % Body goals
+        (   Arity > 1, nonvar(OutputHeadArg)
+        ->  % Output is constant in head — guards become conditions
+            clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+            maplist(go_guard_condition(VarMap), GuardGoals, GoalConditions),
+            (   OutputGoals == []
+            ->  go_literal(OutputHeadArg, OutputLit),
+                format(string(Code), '\t\treturn ~w', [OutputLit])
+            ;   go_output_goals(OutputGoals, VarMap, Code)
+            )
+        ;   % Output is a variable — goals should compute it
+            native_go_goal_sequence(Goals, VarMap, GoalConditions, Code)
+        )
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_go_conditions(AllConditions, Condition).
+
+%% go_head_conditions(+HeadArgs, +Index, -Conditions)
+go_head_conditions([], _, []).
+go_head_conditions([HeadArg|Rest], Index, Conditions) :-
+    (   var(HeadArg)
+    ->  Conditions = RestConditions
+    ;   format(string(ArgName), 'arg~w', [Index]),
+        go_literal(HeadArg, Literal),
+        format(string(Cond), '~w == ~w', [ArgName, Literal]),
+        Conditions = [Cond|RestConditions]
+    ),
+    NextIndex is Index + 1,
+    go_head_conditions(Rest, NextIndex, RestConditions).
+
+%% native_go_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+native_go_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+    maplist(go_guard_condition(VarMap), GuardGoals, Conditions),
+    go_output_goals(OutputGoals, VarMap, Code).
+
+%% go_guard_condition(+VarMap, +Goal, -Condition)
+go_guard_condition(VarMap, _Module:Goal, Condition) :-
+    !, go_guard_condition(VarMap, Goal, Condition).
+go_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    Goal =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    go_expr(Left, VarMap, GoLeft),
+    go_expr(Right, VarMap, GoRight),
+    go_op(StdOp, GoOp),
+    % Go needs type assertions for interface{} comparisons
+    format(string(Condition), '~w ~w ~w', [GoLeft, GoOp, GoRight]).
+go_guard_condition(VarMap, integer(X), Condition) :-
+    !, go_expr(X, VarMap, GoX),
+    format(string(Condition), 'func() bool { _, ok := ~w.(int); return ok }()', [GoX]).
+go_guard_condition(VarMap, float(X), Condition) :-
+    !, go_expr(X, VarMap, GoX),
+    format(string(Condition), 'func() bool { _, ok := ~w.(float64); return ok }()', [GoX]).
+go_guard_condition(VarMap, number(X), Condition) :-
+    !, go_expr(X, VarMap, GoX),
+    format(string(Condition), 'func() bool { switch ~w.(type) { case int, float64: return true; default: return false } }()', [GoX]).
+go_guard_condition(VarMap, atom(X), Condition) :-
+    !, go_expr(X, VarMap, GoX),
+    format(string(Condition), 'func() bool { _, ok := ~w.(string); return ok }()', [GoX]).
+
+%% go_output_goals(+Goals, +VarMap, -Code)
+go_output_goals([], _VarMap, '\t\treturn nil') :- !.
+go_output_goals(Goals, VarMap, Code) :-
+    go_output_goals_acc(Goals, VarMap, Lines, _VarMapOut),
+    atomic_list_concat(Lines, '\n', Code).
+
+go_output_goals_acc([], VarMap, [], VarMap).
+go_output_goals_acc([Goal], VarMap, Lines, VarMapOut) :-
+    !, go_output_goal_last(Goal, VarMap, Lines, VarMapOut).
+go_output_goals_acc([Goal|Rest], VarMap0, [Line|RestLines], VarMapOut) :-
+    go_output_goal(Goal, VarMap0, Line, VarMap1),
+    go_output_goals_acc(Rest, VarMap1, RestLines, VarMapOut).
+
+%% go_output_goal_last — produce a return statement
+go_output_goal_last(_Module:Goal, VarMap, Lines, VarMapOut) :-
+    !, go_output_goal_last(Goal, VarMap, Lines, VarMapOut).
+go_output_goal_last(Goal, VarMap0, Lines, VarMapOut) :-
+    if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    !,
+    go_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap0, Lines, VarMapOut).
+go_output_goal_last(=(Var, Expr), VarMap, [Line], VarMap) :-
+    var(Var), !,
+    go_expr(Expr, VarMap, GoExpr),
+    format(string(Line), '\t\treturn ~w', [GoExpr]).
+go_output_goal_last(is(Var, Expr), VarMap, [Line], VarMap) :-
+    var(Var), !,
+    go_expr(Expr, VarMap, GoExpr),
+    format(string(Line), '\t\treturn ~w', [GoExpr]).
+go_output_goal_last(Goal, VarMap0, [AssignLine, ReturnLine], VarMapOut) :-
+    go_output_goal(Goal, VarMap0, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar),
+        lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(ReturnLine), '\t\treturn ~w', [OutName])
+    ;   ReturnLine = '\t\treturn nil'
+    ).
+
+%% go_output_goal — produce an assignment
+go_output_goal(_Module:Goal, VarMap0, Line, VarMapOut) :-
+    !, go_output_goal(Goal, VarMap0, Line, VarMapOut).
+go_output_goal(=(Var, Expr), VarMap0, Line, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut, IntroKind),
+    go_expr(Expr, VarMap0, GoExpr),
+    go_assign_op(IntroKind, AssignOp),
+    format(string(Line), '\t\t~w ~w ~w', [VarName, AssignOp, GoExpr]).
+go_output_goal(is(Var, Expr), VarMap0, Line, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut, IntroKind),
+    go_expr(Expr, VarMap0, GoExpr),
+    go_assign_op(IntroKind, AssignOp),
+    format(string(Line), '\t\t~w ~w ~w', [VarName, AssignOp, GoExpr]).
+
+go_assign_op(new, ':=').
+go_assign_op(existing, '=').
+
+%% go_if_then_else_output — generate if/else for output within a clause
+go_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap0, Lines, VarMapOut) :-
+    flatten_go_if_elif_branches(IfGoal, ThenGoal, ElseGoal, Branches, DefaultGoal),
+    go_if_elif_return_lines(Branches, DefaultGoal, VarMap0, Lines),
+    VarMapOut = VarMap0.
+
+flatten_go_if_elif_branches(If, Then, Else, [branch(If, Then)|RestBranches], Default) :-
+    if_then_else_goal(Else, If2, Then2, Else2),
+    !,
+    flatten_go_if_elif_branches(If2, Then2, Else2, RestBranches, Default).
+flatten_go_if_elif_branches(If, Then, Else, [branch(If, Then)], Else).
+
+go_if_elif_return_lines([branch(If, Then)|Rest], DefaultGoal, VarMap, [IfLine, RetLine|RestLines]) :-
+    go_guard_condition(VarMap, If, IfCond),
+    go_branch_value(Then, VarMap, ThenVal),
+    format(string(IfLine), '\t\tif ~w {', [IfCond]),
+    format(string(RetLine), '\t\t\treturn ~w', [ThenVal]),
+    go_elif_return_lines(Rest, DefaultGoal, VarMap, RestLines).
+
+go_elif_return_lines([], DefaultGoal, VarMap, [CloseLine, ElseLine, RetLine, CloseElseLine]) :-
+    !,
+    CloseLine = '\t\t}',
+    go_branch_value(DefaultGoal, VarMap, DefVal),
+    ElseLine = '\t\t// else',
+    format(string(RetLine), '\t\treturn ~w', [DefVal]),
+    CloseElseLine = ''.
+go_elif_return_lines([branch(If, Then)|Rest], DefaultGoal, VarMap, [CloseElifLine, RetLine|RestLines]) :-
+    go_guard_condition(VarMap, If, IfCond),
+    go_branch_value(Then, VarMap, ThenVal),
+    format(string(CloseElifLine), '\t\t} else if ~w {', [IfCond]),
+    format(string(RetLine), '\t\t\treturn ~w', [ThenVal]),
+    go_elif_return_lines(Rest, DefaultGoal, VarMap, RestLines).
+
+%% go_branch_value — extract result value from a branch
+go_branch_value(_Module:Goal, VarMap, Value) :-
+    !, go_branch_value(Goal, VarMap, Value).
+go_branch_value((A, B), VarMap, Value) :-
+    !,
+    normalize_goals((A, B), Goals),
+    last(Goals, LastGoal),
+    go_branch_value(LastGoal, VarMap, Value).
+go_branch_value(=(_, Expr), VarMap, Value) :-
+    !, go_expr(Expr, VarMap, Value).
+go_branch_value(is(_, Expr), VarMap, Value) :-
+    !, go_expr(Expr, VarMap, Value).
+go_branch_value(Goal, VarMap, Value) :-
+    go_expr(Goal, VarMap, Value).
+
+%% go_expr — convert Prolog expression to Go syntax
+go_expr(Var, VarMap, GoExpr) :-
+    var(Var), !,
+    (   lookup_var(Var, VarMap, Name)
+    ->  GoExpr = Name
+    ;   term_string(Var, GoExpr)
+    ).
+go_expr(Expr, VarMap, GoExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    go_expr(Left, VarMap, GoLeft),
+    go_expr(Right, VarMap, GoRight),
+    go_op(StdOp, GoOp),
+    % Go needs type assertions for arithmetic on interface{}
+    % Use helper format for now
+    format(string(GoExpr), '(~w ~w ~w)', [GoLeft, GoOp, GoRight]).
+go_expr(-Expr, VarMap, GoExpr) :-
+    !,
+    go_expr(Expr, VarMap, Inner),
+    format(string(GoExpr), '(-~w)', [Inner]).
+go_expr(abs(Expr), VarMap, GoExpr) :-
+    !,
+    go_expr(Expr, VarMap, Inner),
+    format(string(GoExpr), 'math.Abs(~w)', [Inner]).
+go_expr(Atom, _VarMap, GoExpr) :-
+    atom(Atom), !,
+    go_literal(Atom, GoExpr).
+go_expr(Number, _VarMap, GoExpr) :-
+    number(Number), !,
+    format(string(GoExpr), '~w', [Number]).
+go_expr(String, _VarMap, GoExpr) :-
+    string(String), !,
+    format(string(GoExpr), '"~w"', [String]).
+
+%% go_literal — convert Prolog value to Go literal
+go_literal(Value, 'nil') :- var(Value), !.
+go_literal(true, 'true') :- !.
+go_literal(false, 'false') :- !.
+go_literal([], 'nil') :- !.
+go_literal(Value, GoLiteral) :-
+    number(Value), !,
+    format(string(GoLiteral), '~w', [Value]).
+go_literal(Value, GoLiteral) :-
+    atom(Value), !,
+    format(string(GoLiteral), '"~w"', [Value]).
+go_literal(Value, GoLiteral) :-
+    string(Value), !,
+    format(string(GoLiteral), '"~w"', [Value]).
+go_literal(Value, GoLiteral) :-
+    term_string(Value, GoLiteral).
+
+%% go_resolve_value — resolve variable or constant to Go expression
+go_resolve_value(VarMap, Var, GoExpr) :-
+    var(Var), !,
+    lookup_var(Var, VarMap, GoExpr).
+go_resolve_value(_VarMap, Value, GoExpr) :-
+    go_literal(Value, GoExpr).
+
+%% go_op — map standard operator to Go syntax
+go_op('>', '>').
+go_op('<', '<').
+go_op('>=', '>=').
+go_op('<=', '<=').
+go_op('==', '==').
+go_op('!=', '!=').
+go_op('+', '+').
+go_op('-', '-').
+go_op('*', '*').
+go_op('/', '/').
+go_op('%', '%').
+go_op('&&', '&&').
+go_op('||', '||').
+
+%% combine_go_conditions — join conditions with &&
+combine_go_conditions([], "true") :- !.
+combine_go_conditions([Condition], Condition) :- !.
+combine_go_conditions(Conditions, Combined) :-
+    atomic_list_concat(Conditions, ' && ', Combined).
+
+%% branches_to_go_if_chain — build Go if/else if chain
+branches_to_go_if_chain([branch(Condition, ClauseCode)], Code) :-
+    !,
+    indent_go(ClauseCode, IndentedCode),
+    format(string(Code), '\tif ~w {\n~w\n\t}', [Condition, IndentedCode]).
+branches_to_go_if_chain([branch(Condition, ClauseCode)|Rest], Code) :-
+    indent_go(ClauseCode, IndentedCode),
+    branches_to_go_elif_chain(Rest, RestCode),
+    format(string(Code), '\tif ~w {\n~w\n\t} ~w', [Condition, IndentedCode, RestCode]).
+
+branches_to_go_elif_chain([branch(Condition, ClauseCode)], Code) :-
+    !,
+    indent_go(ClauseCode, IndentedCode),
+    format(string(Code), 'else if ~w {\n~w\n\t}', [Condition, IndentedCode]).
+branches_to_go_elif_chain([branch(Condition, ClauseCode)|Rest], Code) :-
+    indent_go(ClauseCode, IndentedCode),
+    branches_to_go_elif_chain(Rest, RestCode),
+    format(string(Code), 'else if ~w {\n~w\n\t} ~w', [Condition, IndentedCode, RestCode]).
+
+%% indent_go — add one level of tab indentation
+indent_go(Code, IndentedCode) :-
+    split_string(Code, "\n", "", Lines),
+    maplist(indent_go_line, Lines, IndentedLines),
+    atomic_list_concat(IndentedLines, '\n', IndentedCode).
+
+indent_go_line("", "") :- !.
+indent_go_line(Line, Indented) :-
+    format(string(Indented), '\t~w', [Line]).
 
 %% Helper to check if a clause is a fact (body is just 'true')
 is_fact_clause(_-true).
