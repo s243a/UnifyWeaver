@@ -4,6 +4,10 @@
 #   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_summary_diff.ps1 `
 #     -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json `
 #     -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json
+#   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_summary_diff.ps1 `
+#     -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json `
+#     -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json `
+#     -JsonOutputPath tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json
 
 [CmdletBinding()]
 param(
@@ -11,7 +15,10 @@ param(
     [string]$BaselineSummaryPath,
 
     [Parameter(Mandatory = $true)]
-    [string]$CompareSummaryPath
+    [string]$CompareSummaryPath,
+
+    [Parameter(Mandatory = $false)]
+    [string]$JsonOutputPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +64,19 @@ function Format-SignedDurationDelta {
     $numericSeconds = [double]$Seconds
     $sign = if ($numericSeconds -ge 0) { "+" } else { "" }
     return ("{0}{1:F1}s" -f $sign, $numericSeconds)
+}
+
+function Round-Seconds {
+    param(
+        [Parameter(Mandatory = $false)]
+        $Seconds
+    )
+
+    if ($null -eq $Seconds) {
+        return $null
+    }
+
+    return [Math]::Round([double]$Seconds, 1)
 }
 
 function Get-SummaryValue {
@@ -174,6 +194,44 @@ function Get-CacheSmokeSummary {
     }
 }
 
+function New-DiffField {
+    param(
+        [Parameter(Mandatory = $false)]
+        $BaselineValue,
+
+        [Parameter(Mandatory = $false)]
+        $CompareValue,
+
+        [Parameter(Mandatory = $false)]
+        $DeltaValue = $null
+    )
+
+    return [pscustomobject]@{
+        baseline = $BaselineValue
+        compare = $CompareValue
+        delta = $DeltaValue
+    }
+}
+
+function Write-CacheSmokeDiffJson {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [psobject]$DiffData
+    )
+
+    $resolvedPath = Resolve-ProjectPath -Path $Path
+    $parentDir = Split-Path -Parent $resolvedPath
+    if ($parentDir) {
+        New-Item -ItemType Directory -Force -Path $parentDir | Out-Null
+    }
+
+    $DiffData | ConvertTo-Json -Depth 8 | Set-Content -Path $resolvedPath
+    return $resolvedPath
+}
+
 $baseline = Get-CacheSmokeSummary -Path $BaselineSummaryPath
 $compare = Get-CacheSmokeSummary -Path $CompareSummaryPath
 
@@ -198,6 +256,9 @@ $tableRows = foreach ($sliceName in $allSliceNames) {
 
     [pscustomobject]@{
         Slice = $sliceName
+        BaselineDurationSeconds = Round-Seconds -Seconds $baselineDuration
+        CompareDurationSeconds = Round-Seconds -Seconds $compareDuration
+        DurationDeltaSeconds = Round-Seconds -Seconds $durationDelta
         BaselineStatus = $baselineStatus
         CompareStatus = $compareStatus
         StatusDelta = if ($baselineStatus -eq $compareStatus) { "same" } else { "$baselineStatus -> $compareStatus" }
@@ -211,6 +272,58 @@ $totalDurationDelta = if (($null -ne $baseline.TotalDurationSeconds) -and ($null
     $compare.TotalDurationSeconds - $baseline.TotalDurationSeconds
 } else {
     $null
+}
+
+$diffData = [pscustomobject][ordered]@{
+    baselineSummaryPath = $baseline.DisplayPath
+    compareSummaryPath = $compare.DisplayPath
+    overallResult = New-DiffField `
+        -BaselineValue $baseline.OverallResult `
+        -CompareValue $compare.OverallResult `
+        -DeltaValue $(if ($baseline.OverallResult -eq $compare.OverallResult) { "same" } else { "$($baseline.OverallResult) -> $($compare.OverallResult)" })
+    generatedAtUtc = New-DiffField `
+        -BaselineValue $(if ([string]::IsNullOrWhiteSpace($baseline.GeneratedAtUtc)) { $null } else { $baseline.GeneratedAtUtc }) `
+        -CompareValue $(if ([string]::IsNullOrWhiteSpace($compare.GeneratedAtUtc)) { $null } else { $compare.GeneratedAtUtc })
+    totalDuration = [pscustomobject]@{
+        baseline = Format-DurationSeconds -Seconds $baseline.TotalDurationSeconds
+        baselineSeconds = Round-Seconds -Seconds $baseline.TotalDurationSeconds
+        compare = Format-DurationSeconds -Seconds $compare.TotalDurationSeconds
+        compareSeconds = Round-Seconds -Seconds $compare.TotalDurationSeconds
+        delta = Format-SignedDurationDelta -Seconds $totalDurationDelta
+        deltaSeconds = Round-Seconds -Seconds $totalDurationDelta
+    }
+    projectFilter = New-DiffField `
+        -BaselineValue $baseline.ProjectFilter `
+        -CompareValue $compare.ProjectFilter `
+        -DeltaValue $(if ($baseline.ProjectFilter -eq $compare.ProjectFilter) { "same" } else { "$($baseline.ProjectFilter) -> $($compare.ProjectFilter)" })
+    outputDir = New-DiffField `
+        -BaselineValue $baseline.OutputDir `
+        -CompareValue $compare.OutputDir `
+        -DeltaValue $(if ($baseline.OutputDir -eq $compare.OutputDir) { "same" } else { "$($baseline.OutputDir) -> $($compare.OutputDir)" })
+    failureDetail = New-DiffField `
+        -BaselineValue $baseline.FailureDetail `
+        -CompareValue $compare.FailureDetail `
+        -DeltaValue $(if (($baseline.FailureDetail ?? "") -eq ($compare.FailureDetail ?? "")) { "same" } else { "changed" })
+    slices = @(
+        foreach ($row in $tableRows) {
+            [pscustomobject][ordered]@{
+                slice = $row.Slice
+                status = [pscustomobject]@{
+                    baseline = $row.BaselineStatus
+                    compare = $row.CompareStatus
+                    delta = $row.StatusDelta
+                }
+                duration = [pscustomobject]@{
+                    baseline = $row.BaselineDuration
+                    baselineSeconds = $row.BaselineDurationSeconds
+                    compare = $row.CompareDuration
+                    compareSeconds = $row.CompareDurationSeconds
+                    delta = $row.DurationDelta
+                    deltaSeconds = $row.DurationDeltaSeconds
+                }
+            }
+        }
+    )
 }
 
 Write-Host "=== C# query cache smoke summary diff ==="
@@ -238,10 +351,16 @@ if ($baseline.OutputDir -ne $compare.OutputDir) {
 }
 
 if ($baseline.FailureDetail -or $compare.FailureDetail) {
-    Write-Host ("Failure detail: {0} -> {1}" -f `
+Write-Host ("Failure detail: {0} -> {1}" -f `
         $(if ($null -eq $baseline.FailureDetail) { "n/a" } else { $baseline.FailureDetail }), `
         $(if ($null -eq $compare.FailureDetail) { "n/a" } else { $compare.FailureDetail }))
 }
 
 Write-Host ""
-$tableRows | Format-Table -AutoSize
+$tableRows | Format-Table Slice, BaselineStatus, CompareStatus, StatusDelta, BaselineDuration, CompareDuration, DurationDelta -AutoSize
+
+if (-not [string]::IsNullOrWhiteSpace($JsonOutputPath)) {
+    $resolvedJsonOutputPath = Write-CacheSmokeDiffJson -Path $JsonOutputPath -DiffData $diffData
+    Write-Host ""
+    Write-Host ("Wrote cache smoke diff JSON: {0}" -f $resolvedJsonOutputPath)
+}
