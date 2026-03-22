@@ -8,6 +8,12 @@
 #     -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json `
 #     -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json `
 #     -JsonOutputPath tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json
+#   pwsh -File .\scripts\testing\run_csharp_query_cache_smoke_summary_diff.ps1 `
+#     -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json `
+#     -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json `
+#     -FailOnStatusRegression `
+#     -MaxTotalDurationDeltaSeconds 120 `
+#     -MaxSliceDurationDeltaSeconds 150
 
 [CmdletBinding()]
 param(
@@ -18,7 +24,16 @@ param(
     [string]$CompareSummaryPath,
 
     [Parameter(Mandatory = $false)]
-    [string]$JsonOutputPath
+    [string]$JsonOutputPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$FailOnStatusRegression,
+
+    [Parameter(Mandatory = $false)]
+    [double]$MaxTotalDurationDeltaSeconds = -1,
+
+    [Parameter(Mandatory = $false)]
+    [double]$MaxSliceDurationDeltaSeconds = -1
 )
 
 $ErrorActionPreference = "Stop"
@@ -232,6 +247,34 @@ function Write-CacheSmokeDiffJson {
     return $resolvedPath
 }
 
+function Test-IsStatusRegression {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaselineStatus,
+
+        [Parameter(Mandatory = $true)]
+        [string]$CompareStatus
+    )
+
+    if ($BaselineStatus -eq $CompareStatus) {
+        return $false
+    }
+
+    if ($BaselineStatus -eq "PASS" -and $CompareStatus -ne "PASS") {
+        return $true
+    }
+
+    if ($BaselineStatus -eq "MISSING" -and $CompareStatus -ne "MISSING") {
+        return $false
+    }
+
+    if ($CompareStatus -eq "MISSING") {
+        return $true
+    }
+
+    return $false
+}
+
 $baseline = Get-CacheSmokeSummary -Path $BaselineSummaryPath
 $compare = Get-CacheSmokeSummary -Path $CompareSummaryPath
 
@@ -274,9 +317,42 @@ $totalDurationDelta = if (($null -ne $baseline.TotalDurationSeconds) -and ($null
     $null
 }
 
+$thresholdFailures = @()
+
+if ($FailOnStatusRegression -and (Test-IsStatusRegression -BaselineStatus $baseline.OverallResult -CompareStatus $compare.OverallResult)) {
+    $thresholdFailures += "Overall result regressed: $($baseline.OverallResult) -> $($compare.OverallResult)"
+}
+
+if (($MaxTotalDurationDeltaSeconds -ge 0) -and ($null -ne $totalDurationDelta) -and ($totalDurationDelta -gt $MaxTotalDurationDeltaSeconds)) {
+    $thresholdFailures += "Total duration delta exceeded threshold: $(Format-SignedDurationDelta -Seconds $totalDurationDelta) > +$([Math]::Round($MaxTotalDurationDeltaSeconds, 1))s"
+}
+
+if ($FailOnStatusRegression) {
+    foreach ($row in $tableRows) {
+        if (Test-IsStatusRegression -BaselineStatus $row.BaselineStatus -CompareStatus $row.CompareStatus) {
+            $thresholdFailures += "Slice status regressed for '$($row.Slice)': $($row.BaselineStatus) -> $($row.CompareStatus)"
+        }
+    }
+}
+
+if ($MaxSliceDurationDeltaSeconds -ge 0) {
+    foreach ($row in $tableRows) {
+        if (($null -ne $row.DurationDeltaSeconds) -and ($row.DurationDeltaSeconds -gt $MaxSliceDurationDeltaSeconds)) {
+            $thresholdFailures += "Slice duration delta exceeded threshold for '$($row.Slice)': $($row.DurationDelta) > +$([Math]::Round($MaxSliceDurationDeltaSeconds, 1))s"
+        }
+    }
+}
+
 $diffData = [pscustomobject][ordered]@{
     baselineSummaryPath = $baseline.DisplayPath
     compareSummaryPath = $compare.DisplayPath
+    thresholds = [pscustomobject]@{
+        failOnStatusRegression = [bool]$FailOnStatusRegression
+        maxTotalDurationDeltaSeconds = if ($MaxTotalDurationDeltaSeconds -ge 0) { [Math]::Round($MaxTotalDurationDeltaSeconds, 1) } else { $null }
+        maxSliceDurationDeltaSeconds = if ($MaxSliceDurationDeltaSeconds -ge 0) { [Math]::Round($MaxSliceDurationDeltaSeconds, 1) } else { $null }
+        passed = ($thresholdFailures.Count -eq 0)
+        failures = @($thresholdFailures)
+    }
     overallResult = New-DiffField `
         -BaselineValue $baseline.OverallResult `
         -CompareValue $compare.OverallResult `
@@ -363,4 +439,14 @@ if (-not [string]::IsNullOrWhiteSpace($JsonOutputPath)) {
     $resolvedJsonOutputPath = Write-CacheSmokeDiffJson -Path $JsonOutputPath -DiffData $diffData
     Write-Host ""
     Write-Host ("Wrote cache smoke diff JSON: {0}" -f $resolvedJsonOutputPath)
+}
+
+if ($thresholdFailures.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Threshold failures:"
+    foreach ($failure in $thresholdFailures) {
+        Write-Host ("- {0}" -f $failure)
+    }
+
+    throw ("Cache smoke summary diff thresholds failed ({0} issue(s))." -f $thresholdFailures.Count)
 }
