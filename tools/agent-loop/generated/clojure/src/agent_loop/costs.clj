@@ -39,7 +39,11 @@
 (defn reset
   "Reset all cost tracking state."
   [state]
-  (assoc state :records [] :total-input-tokens 0 :total-output-tokens 0 :total-cost 0.0)
+  (-> state
+      (assoc :records [])
+      (assoc :total-input-tokens 0)
+      (assoc :total-output-tokens 0)
+      (assoc :total-cost 0.0))
 )
 
 (defn cost-compute
@@ -65,13 +69,15 @@
 (defn get-summary
   "Format a one-line cost summary showing totals."
   [state]
-  (format "$%s (%s input, %s output)" (:total-cost state), (:total-input-tokens state), (:total-output-tokens state))
+  (format "$%s (%s input, %s output)" (:total-cost state) (:total-input-tokens state) (:total-output-tokens state))
 )
 
 (defn set-pricing
   "Set the per-token pricing for input and output."
   [state input-price output-price]
-  (assoc state :input-price input-price :output-price output-price)
+  (-> state
+      (assoc :input-price input-price)
+      (assoc :output-price output-price))
 )
 
 (defn cost-per-token
@@ -82,5 +88,11 @@
       0.0
       (/ (:total-cost state) (double total))
   ))
+)
+
+(defn has-records
+  "Check if any usage records have been logged."
+  [state]
+  (not (zero? (count (:records state))))
 )
 

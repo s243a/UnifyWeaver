@@ -53,4 +53,10 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.char_count
   end
 
+  @doc "Return the current approximate token count from streaming."
+  @spec streaming_token_count(t()) :: integer()
+  def streaming_token_count(%__MODULE__{} = state) do
+    state.token_count
+  end
+
 end

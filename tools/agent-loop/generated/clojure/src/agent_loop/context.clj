@@ -118,12 +118,27 @@
   "Format a duration in seconds to a human-readable string (e.g. 90 -> 1m 30s)."
   [seconds]
   (let [mins (quot seconds 60) secs (mod seconds 60)]
-  (format "%sm %ss" mins, secs))
+  (format "%sm %ss" mins secs))
 )
 
 (defn context-last-n
   "Return the last N messages from context history."
   [state n]
   (take-last n (:messages state))
+)
+
+(defn context-oldest-message
+  "Get the first (oldest) message from history, or nil if empty."
+  [state]
+  (if (empty? (:messages state))
+      nil
+      (first (:messages state))
+  )
+)
+
+(defn context-drop-oldest
+  "Remove the oldest message from context history."
+  [state]
+  (assoc state :messages (rest (:messages state)))
 )
 

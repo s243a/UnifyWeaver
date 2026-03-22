@@ -114,6 +114,18 @@ format_duration(Seconds, Result) :-
 context_last_n(State, N, Result) :-
     Result = last_n(State.messages, n, Result)
 
+%% Get the first (oldest) message from history, or nil if empty.
+context_oldest_message(State, Result) :-
+    (State.messages == [] ->
+        Result = none
+    ;
+    Result = nth0(0, State.messages, Result)
+    )
+
+%% Remove the oldest message from context history.
+context_drop_oldest(State, State1) :-
+    put_dict(messages, State, State.messages = [_|Result], State1)
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -139,6 +151,10 @@ is_live(State, Result) :-
 %% Return the current character count from streaming.
 streaming_char_count(State, Result) :-
     Result = State.char_count
+
+%% Return the current approximate token count from streaming.
+streaming_token_count(State, Result) :-
+    Result = State.token_count
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -188,6 +204,14 @@ cache_invalidate(State, Key, State1) :-
 is_empty_cache(State, Result) :-
     Result = length(State.cache, Len) =:= 0
 
+%% Return the maximum cache size limit.
+cache_max_size(State, Result) :-
+    Result = State.max_size
+
+%% Check if the cache has reached its maximum size.
+cache_is_full(State, Result) :-
+    Result = length(State.cache, Len) >= State.max_size
+
 
 %% --- shared_logic: mcp (generated from compile_logic) ---
 
@@ -218,6 +242,10 @@ compute_delay(Base_delay, Exponential_base, Attempt, Max_delay, Result) :-
 %% Check if the retry attempt has exceeded the maximum allowed retries.
 retry_max_exceeded(Attempt, Max_retries, Result) :-
     Result = attempt >= max_retries
+
+%% Cap a retry delay to a maximum value.
+retry_delay_capped(Delay, Max_delay, Result) :-
+    Result = min(delay, max_delay)
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -273,6 +301,10 @@ session_is_valid_id(Session_id, Result) :-
     ;
     Result = \+ sub_string(session_id, _, _, _, "/")
     )
+
+%% Return the configured sessions directory path.
+session_dir(State, Result) :-
+    Result = State.sessions_dir
 
 conversation([]).
 max_iterations(0).

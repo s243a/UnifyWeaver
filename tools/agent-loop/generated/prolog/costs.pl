@@ -95,6 +95,10 @@ cost_per_token(State, Result) :-
     Result = (State.total_cost / float(total))
     )
 
+%% Check if any usage records have been logged.
+has_records(State, Result) :-
+    Result = \+ length(State.records, Len) =:= 0
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

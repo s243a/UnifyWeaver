@@ -58,6 +58,12 @@ defmodule AgentLoop.Sessions do
     end
   end
 
+  @doc "Return the configured sessions directory path."
+  @spec session_dir(t()) :: String.t()
+  def session_dir(%__MODULE__{} = state) do
+    state.sessions_dir
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do
