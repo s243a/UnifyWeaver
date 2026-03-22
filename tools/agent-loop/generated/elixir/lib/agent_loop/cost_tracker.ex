@@ -70,4 +70,17 @@ defmodule AgentLoop.CostTracker do
     (state.total_input_tokens + state.total_output_tokens)
   end
 
+  @doc "Format a one-line cost summary showing totals."
+  @spec get_summary(t()) :: String.t()
+  def get_summary(%__MODULE__{} = state) do
+    "$#{state.total_cost} (#{state.total_input_tokens} input, #{state.total_output_tokens} output)"
+  end
+
+  @doc "Set the per-token pricing for input and output."
+  @spec set_pricing(t(), float(), float()) :: t()
+  def set_pricing(%__MODULE__{} = state, input_price, output_price) do
+    state = %{state | input_price: input_price}
+    %{state | output_price: output_price}
+  end
+
 end

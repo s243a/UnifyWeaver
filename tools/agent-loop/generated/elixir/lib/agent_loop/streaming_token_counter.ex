@@ -41,4 +41,10 @@ defmodule AgentLoop.StreamingTokenCounter do
     %{state | char_count: 0}
   end
 
+  @doc "Check if live token display is enabled."
+  @spec is_live(t()) :: boolean()
+  def is_live(%__MODULE__{} = state) do
+    state.show_live
+  end
+
 end

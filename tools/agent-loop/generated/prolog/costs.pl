@@ -77,6 +77,15 @@ record_usage(State, Input_tokens, Output_tokens, Model, State1) :-
 total_tokens(State, Result) :-
     Result = (State.total_input_tokens + State.total_output_tokens)
 
+%% Format a one-line cost summary showing totals.
+get_summary(State, Result) :-
+    Result = format(atom(Formatted), "${} ({} input, {} output)", [State.total_cost, State.total_input_tokens, State.total_output_tokens])
+
+%% Set the per-token pricing for input and output.
+set_pricing(State, Input_price, Output_price, State1) :-
+    put_dict(input_price, State, input_price, State1)
+    put_dict(output_price, State, output_price, State1)
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

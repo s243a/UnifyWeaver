@@ -42,6 +42,12 @@ defmodule AgentLoop.Sessions do
     ["id", "name", "message_count", "saved_at"]
   end
 
+  @doc "Count the number of session files (ending in .json) in a filename list."
+  @spec session_count([String.t()]) :: integer()
+  def session_count(filenames) do
+    Enum.count(Enum.filter(filenames, &String.ends_with?(&1, ".json")))
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do
