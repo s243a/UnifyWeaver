@@ -18,3 +18,15 @@
   )
 )
 
+(defn is-valid-format
+  "Check if a format string is one of the valid formats (plain, markdown, json, xml)."
+  [fmt]
+  (#{"plain" "markdown" "json" "xml"} fmt)
+)
+
+(defn escape-html
+  "Escape HTML special characters (& < > quotes)."
+  [text]
+  (-> text (.replace "&" "&amp;") (.replace "<" "&lt;") (.replace ">" "&gt;") (.replace "\"" "&quot;"))
+)
+

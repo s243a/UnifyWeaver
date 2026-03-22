@@ -105,3 +105,20 @@
   (:format state)
 )
 
+(defn truncate-string
+  "Truncate a string to max_len characters, appending ... if truncated."
+  [text max-len]
+  (if (<= (count text) max-len)
+      text
+      (str (subs text 0 max-len) "...")
+  )
+)
+
+(defn format-duration
+  "Format a duration in seconds to a human-readable string (e.g. 90 -> 1m 30s)."
+  [seconds]
+  (let [mins (quot seconds 60)]
+  (let [secs (mod seconds 60)]
+  (format nil "{}m {}s" mins, secs)
+)
+

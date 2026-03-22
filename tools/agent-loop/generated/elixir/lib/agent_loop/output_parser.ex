@@ -23,6 +23,18 @@ defmodule AgentLoop.OutputParser do
     end
   end
 
+  @doc "Check if a format string is one of the valid formats (plain, markdown, json, xml)."
+  @spec is_valid_format(String.t()) :: boolean()
+  def is_valid_format(fmt) do
+    fmt in ["plain", "markdown", "json", "xml"]
+  end
+
+  @doc "Escape HTML special characters (& < > quotes)."
+  @spec escape_html(String.t()) :: String.t()
+  def escape_html(text) do
+    Phoenix.HTML.html_escape(text) |> Phoenix.HTML.safe_to_string()
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

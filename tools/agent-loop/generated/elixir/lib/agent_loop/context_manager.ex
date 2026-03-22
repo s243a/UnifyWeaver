@@ -128,4 +128,22 @@ defmodule AgentLoop.ContextManager do
     state.format
   end
 
+  @doc "Truncate a string to max_len characters, appending ... if truncated."
+  @spec truncate_string(String.t(), integer()) :: String.t()
+  def truncate_string(text, max_len) do
+    if String.length(text) <= max_len do
+        text
+    else
+        String.slice(text, 0, max_len) <> "..."
+    end
+  end
+
+  @doc "Format a duration in seconds to a human-readable string (e.g. 90 -> 1m 30s)."
+  @spec format_duration(integer()) :: String.t()
+  def format_duration(seconds) do
+    mins = div(seconds, 60)
+    secs = rem(seconds, 60)
+    "#{mins}m #{secs}s"
+  end
+
 end

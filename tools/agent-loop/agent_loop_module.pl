@@ -2035,6 +2035,9 @@ shared_logic(tool_cache, cache_len, [
 
 %% Python slots
 logic_slot(python, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0", [X]).
+logic_slot(python, guard_leq(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "~w <= ~w", [AS, BS]).
 logic_slot(python, return_val(false), "return False").
 logic_slot(python, return_val(true), "return True").
 logic_slot(python, return_val(Expr), S) :-
@@ -2045,6 +2048,9 @@ logic_slot(python, self_field(F), S) :- format(atom(S), "self.~w", [F]).
 
 %% Rust slots
 logic_slot(rust, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0.0", [X]).
+logic_slot(rust, guard_leq(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "~w <= ~w", [AS, BS]).
 logic_slot(rust, return_val(false), "return false;").
 logic_slot(rust, return_val(true), "return true;").
 logic_slot(rust, return_val(Expr), S) :-
@@ -2055,6 +2061,9 @@ logic_slot(rust, self_field(F), S) :- format(atom(S), "self.~w()", [F]).
 
 %% Prolog slots — state is a SWI-Prolog dict; results via unification
 logic_slot(prolog, guard_leq_zero(X), S) :- format(atom(S), "~w =< 0", [X]).
+logic_slot(prolog, guard_leq(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "~w =< ~w", [AS, BS]).
 logic_slot(prolog, return_val(false), "Result = false").
 logic_slot(prolog, return_val(true), "Result = true").
 logic_slot(prolog, return_val(Expr), S) :-
@@ -2091,6 +2100,16 @@ expand_expr(rust, map_get(Collection, Key), S) :-
     expand_expr(rust, Key, KS),
     format(atom(S), "~w.get(&~w).cloned()", [CS, KS]).
 
+%% --- Map get with default ---
+expand_expr(python, map_get_default(Coll, Key, Default), S) :-
+    expand_expr(python, Coll, CS), expand_expr(python, Key, KS),
+    expand_expr(python, Default, DS),
+    format(atom(S), "~w.get(~w, ~w)", [CS, KS, DS]).
+expand_expr(rust, map_get_default(Coll, Key, Default), S) :-
+    expand_expr(rust, Coll, CS), expand_expr(rust, Key, KS),
+    expand_expr(rust, Default, DS),
+    format(atom(S), "~w.get(&~w).cloned().unwrap_or(~w)", [CS, KS, DS]).
+
 %% --- Map has_key ---
 expand_expr(python, map_has_key(Collection, Key), S) :-
     expand_expr(python, Collection, CS),
@@ -2100,6 +2119,30 @@ expand_expr(rust, map_has_key(Collection, Key), S) :-
     expand_expr(rust, Collection, CS),
     expand_expr(rust, Key, KS),
     format(atom(S), "~w.contains_key(&~w)", [CS, KS]).
+
+%% --- Modulo ---
+expand_expr(python, modulo(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "(~w % ~w)", [AS, BS]).
+expand_expr(rust, modulo(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "(~w % ~w)", [AS, BS]).
+
+%% --- HTML escape ---
+expand_expr(python, html_escape(X), S) :-
+    expand_expr(python, X, XS),
+    format(atom(S), "~w.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\"', '&quot;')", [XS]).
+expand_expr(rust, html_escape(X), S) :-
+    expand_expr(rust, X, XS),
+    format(atom(S), '~w.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\\\"", "&quot;")', [XS]).
+
+%% --- String truncation with ellipsis ---
+expand_expr(python, str_slice_ellipsis(X, N), S) :-
+    expand_expr(python, X, XS), expand_expr(python, N, NS),
+    format(atom(S), "~w[:~w] + \"...\"", [XS, NS]).
+expand_expr(rust, str_slice_ellipsis(X, N), S) :-
+    expand_expr(rust, X, XS), expand_expr(rust, N, NS),
+    format(atom(S), 'format!("{}...", &~w[..~w])', [XS, NS]).
 
 %% --- List last element ---
 expand_expr(python, list_last(Expr), S) :-
@@ -3437,6 +3480,80 @@ shared_logic(sessions, session_count, [
 ]).
 
 %% =============================================================================
+%% Additional shared_logic/3 — Phase 3: Deepen to 60 methods
+%% =============================================================================
+
+%% --- Config helpers ---
+
+shared_logic(config, config_get_field, [
+    signature(config_get_field, [config, key, default_val], string),
+    arg_types([dict, string, string]),
+    doc("Get a config field value, returning default if not present."),
+    container(none),
+    body_template("~return_val(map_get_default(config, key, default_val))~")
+]).
+
+shared_logic(config, config_has_field, [
+    signature(config_has_field, [config, key], bool),
+    arg_types([dict, string]),
+    doc("Check if a config map contains the given key."),
+    container(none),
+    body_template("~return_val(map_has_key(config, key))~")
+]).
+
+%% --- Alias helpers ---
+
+shared_logic(config, alias_exists, [
+    signature(alias_exists, [aliases, name], bool),
+    arg_types([dict, string]),
+    doc("Check if a command alias is registered."),
+    container(none),
+    body_template("~return_val(map_has_key(aliases, name))~")
+]).
+
+shared_logic(config, alias_resolve, [
+    signature(alias_resolve, [aliases, name], string),
+    arg_types([dict, string]),
+    doc("Resolve a command alias to its target, or return the name unchanged."),
+    container(none),
+    body_template("~return_val(map_get_default(aliases, name, name))~")
+]).
+
+%% --- String utility helpers ---
+
+shared_logic(output_parser, is_valid_format, [
+    signature(is_valid_format, [fmt], bool),
+    arg_types([string]),
+    doc("Check if a format string is one of the valid formats (plain, markdown, json, xml)."),
+    container(none),
+    body_template("~return_val(matches_str_set(fmt, [plain, markdown, json, xml]))~")
+]).
+
+shared_logic(output_parser, escape_html, [
+    signature(escape_html, [text], string),
+    arg_types([string]),
+    doc("Escape HTML special characters (& < > quotes)."),
+    container(none),
+    body_template("~return_val(html_escape(text))~")
+]).
+
+shared_logic(context, truncate_string, [
+    signature(truncate_string, [text, max_len], string),
+    arg_types([string, int]),
+    doc("Truncate a string to max_len characters, appending ... if truncated."),
+    container(none),
+    body_template("if ~guard_leq(str_len(text), max_len)~:\n    ~return_val(text)~\n~return_val(str_slice_ellipsis(text, max_len))~")
+]).
+
+shared_logic(context, format_duration, [
+    signature(format_duration, [seconds], string),
+    arg_types([int]),
+    doc("Format a duration in seconds to a human-readable string (e.g. 90 -> 1m 30s)."),
+    container(none),
+    body_template("~assign(mins, int_div(seconds, 60))~\n~assign(secs, modulo(seconds, 60))~\n~return_val(format_str(\"{}m {}s\", [mins, secs]))~")
+]).
+
+%% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
 
@@ -3620,6 +3737,9 @@ logic_slot(rust, streaming_summary(Tokens, Chars), S) :-
 
 %% --- Core slots ---
 logic_slot(elixir, guard_leq_zero(X), S) :- format(atom(S), "~w <= 0", [X]).
+logic_slot(elixir, guard_leq(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "~w <= ~w", [AS, BS]).
 logic_slot(elixir, return_val(false), "false").
 logic_slot(elixir, return_val(true), "true").
 logic_slot(elixir, return_val(Expr), S) :-
@@ -3849,11 +3969,32 @@ expand_expr(prolog, map_get(Collection, Key), S) :-
     expand_expr(prolog, Key, KS),
     format(atom(S), "get_dict(~w, ~w, Val)", [KS, CS]).
 
+%% --- Map get with default ---
+expand_expr(prolog, map_get_default(Coll, Key, Default), S) :-
+    expand_expr(prolog, Coll, CS), expand_expr(prolog, Key, KS),
+    expand_expr(prolog, Default, DS),
+    format(atom(S), "(get_dict(~w, ~w, Val) -> Val ; ~w)", [KS, CS, DS]).
+
 %% --- Map has_key ---
 expand_expr(prolog, map_has_key(Collection, Key), S) :-
     expand_expr(prolog, Collection, CS),
     expand_expr(prolog, Key, KS),
     format(atom(S), "get_dict(~w, ~w, _)", [KS, CS]).
+
+%% --- Modulo ---
+expand_expr(prolog, modulo(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "(~w mod ~w)", [AS, BS]).
+
+%% --- HTML escape ---
+expand_expr(prolog, html_escape(X), S) :-
+    expand_expr(prolog, X, XS),
+    format(atom(S), 'html_escape(~w, Escaped)', [XS]).
+
+%% --- String truncation with ellipsis ---
+expand_expr(prolog, str_slice_ellipsis(X, N), S) :-
+    expand_expr(prolog, X, XS), expand_expr(prolog, N, NS),
+    format(atom(S), 'sub_atom(~w, 0, ~w, _, Prefix), atom_concat(Prefix, "...", Truncated)', [XS, NS]).
 
 %% --- List last element ---
 expand_expr(prolog, list_last(Expr), S) :-
@@ -4108,6 +4249,9 @@ resolve_type(clojure, ref(T), S) :-
 %% --- logic_slot/3 for Clojure ---
 
 logic_slot(clojure, guard_leq_zero(X), S) :- clojure_kebab(X, KX), format(atom(S), "(<= ~w 0)", [KX]).
+logic_slot(clojure, guard_leq(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(<= ~w ~w)", [AS, BS]).
 logic_slot(clojure, return_val(false), "false").
 logic_slot(clojure, return_val(true), "true").
 logic_slot(clojure, return_val(Expr), S) :-
@@ -4256,9 +4400,22 @@ expand_expr(clojure, eq_str(A, B), S) :-
 expand_expr(clojure, map_get(Coll, Key), S) :-
     expand_expr(clojure, Coll, CS), expand_expr(clojure, Key, KS),
     format(atom(S), "(get ~w ~w)", [CS, KS]).
+expand_expr(clojure, map_get_default(Coll, Key, Default), S) :-
+    expand_expr(clojure, Coll, CS), expand_expr(clojure, Key, KS),
+    expand_expr(clojure, Default, DS),
+    format(atom(S), "(get ~w ~w ~w)", [CS, KS, DS]).
 expand_expr(clojure, map_has_key(Coll, Key), S) :-
     expand_expr(clojure, Coll, CS), expand_expr(clojure, Key, KS),
     format(atom(S), "(contains? ~w ~w)", [CS, KS]).
+expand_expr(clojure, modulo(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(mod ~w ~w)", [AS, BS]).
+expand_expr(clojure, html_escape(X), S) :-
+    expand_expr(clojure, X, XS),
+    format(atom(S), '(-> ~w (.replace "&" "&amp;") (.replace "<" "&lt;") (.replace ">" "&gt;") (.replace "\\"" "&quot;"))', [XS]).
+expand_expr(clojure, str_slice_ellipsis(X, N), S) :-
+    expand_expr(clojure, X, XS), expand_expr(clojure, N, NS),
+    format(atom(S), '(str (subs ~w 0 ~w) "...")', [XS, NS]).
 expand_expr(clojure, list_last(Expr), S) :-
     expand_expr(clojure, Expr, Inner),
     format(atom(S), "(last ~w)", [Inner]).
@@ -4420,11 +4577,32 @@ expand_expr(elixir, map_get(Collection, Key), S) :-
     expand_expr(elixir, Key, KS),
     format(atom(S), "Map.get(~w, ~w)", [CS, KS]).
 
+%% --- Map get with default ---
+expand_expr(elixir, map_get_default(Coll, Key, Default), S) :-
+    expand_expr(elixir, Coll, CS), expand_expr(elixir, Key, KS),
+    expand_expr(elixir, Default, DS),
+    format(atom(S), "Map.get(~w, ~w, ~w)", [CS, KS, DS]).
+
 %% --- Map has_key ---
 expand_expr(elixir, map_has_key(Collection, Key), S) :-
     expand_expr(elixir, Collection, CS),
     expand_expr(elixir, Key, KS),
     format(atom(S), "Map.has_key?(~w, ~w)", [CS, KS]).
+
+%% --- Modulo ---
+expand_expr(elixir, modulo(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "rem(~w, ~w)", [AS, BS]).
+
+%% --- HTML escape ---
+expand_expr(elixir, html_escape(X), S) :-
+    expand_expr(elixir, X, XS),
+    format(atom(S), 'Phoenix.HTML.html_escape(~w) |> Phoenix.HTML.safe_to_string()', [XS]).
+
+%% --- String truncation with ellipsis ---
+expand_expr(elixir, str_slice_ellipsis(X, N), S) :-
+    expand_expr(elixir, X, XS), expand_expr(elixir, N, NS),
+    format(atom(S), 'String.slice(~w, 0, ~w) <> "..."', [XS, NS]).
 
 %% --- List last element ---
 expand_expr(elixir, list_last(Expr), S) :-
@@ -7493,6 +7671,13 @@ generate_all(clojure) :-
     generate_clojure_sessions,
     generate_clojure_tools,
     generate_clojure_mcp,
+    %% Data layer
+    generate_clojure_pricing,
+    generate_clojure_backends,
+    generate_clojure_config,
+    generate_clojure_security,
+    %% Tests
+    generate_clojure_tests,
     write('Clojure target done.'), nl.
 
 %% write_clojure_header(+Stream, +Namespace, +Description)
@@ -7650,6 +7835,358 @@ generate_clojure_mcp :-
     write_shared_block_clojure(S, mcp),
     close(S),
     format('  Generated clojure/src/agent_loop/mcp.clj~n', []).
+
+%% --- Pricing data module ---
+generate_clojure_pricing :-
+    output_path(clojure, 'pricing.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.pricing', 'Model pricing table'),
+    write(S, '(ns agent-loop.pricing)\n\n'),
+    write(S, '(def pricing\n'),
+    write(S, '  "Model pricing data — cost per million tokens (input/output)."\n'),
+    write(S, '  [\n'),
+    forall(model_pricing(Model, Input, Output), (
+        format(S, '   {:model "~w" :input ~w :output ~w}~n', [Model, Input, Output])
+    )),
+    write(S, '  ])\n\n'),
+    write(S, '(defn lookup\n'),
+    write(S, '  "Look up pricing for a model name. Returns {:input n :output n} or nil."\n'),
+    write(S, '  [model]\n'),
+    write(S, '  (first (filter #(= (:model %) model) pricing)))\n'),
+    close(S),
+    format('  Generated clojure/src/agent_loop/pricing.clj~n', []).
+
+%% --- Backends data module ---
+generate_clojure_backends :-
+    output_path(clojure, 'backends.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.backends', 'Backend configuration registry'),
+    write(S, '(ns agent-loop.backends)\n\n'),
+    write(S, '(def backends\n'),
+    write(S, '  "Agent backend configurations."\n'),
+    write(S, '  [\n'),
+    forall(agent_backend(Name, Props), (
+        (member(type(Type), Props) -> true ; Type = unknown),
+        (member(class_name(ClassName), Props) -> true ; ClassName = ''),
+        (member(command(Cmd), Props) -> true ; Cmd = ''),
+        (member(description(Desc), Props) -> true ; Desc = ''),
+        (member(supports_streaming(Stream), Props) -> true ; Stream = false),
+        (member(default_model(DefModel), Props) -> true ; DefModel = nil),
+        format(S, '   {:name :~w :type :~w :class-name "~w" :command "~w" :description "~w" :supports-streaming ~w :default-model ~w}~n',
+            [Name, Type, ClassName, Cmd, Desc, Stream, (DefModel \= nil -> format(atom(DM), '"~w"', [DefModel]), DM ; nil)])
+    )),
+    write(S, '  ])\n\n'),
+    write(S, '(defn lookup\n'),
+    write(S, '  "Look up a backend by name keyword."\n'),
+    write(S, '  [name]\n'),
+    write(S, '  (first (filter #(= (:name %) name) backends)))\n'),
+    close(S),
+    format('  Generated clojure/src/agent_loop/backends.clj~n', []).
+
+%% --- Config module ---
+generate_clojure_config :-
+    output_path(clojure, 'config.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.config', 'Configuration loading and defaults'),
+    write(S, '(ns agent-loop.config\n'),
+    write(S, '  (:require [cheshire.core :as json]\n'),
+    write(S, '            [clojure.java.io :as io]))\n\n'),
+    %% Config search paths
+    write(S, '(def config-search-paths\n'),
+    write(S, '  "Config file search paths in priority order."\n'),
+    write(S, '  [\n'),
+    forall(config_search_path(CSP, Priority), (
+        format(S, '   {:path "~w" :priority :~w}~n', [CSP, Priority])
+    )),
+    write(S, '  ])\n\n'),
+    %% API key env vars
+    write(S, '(def api-key-env-vars\n'),
+    write(S, '  "API key environment variable per backend."\n'),
+    write(S, '  {\n'),
+    forall(api_key_env_var(Backend, EnvVar), (
+        format(S, '   :~w "~w"~n', [Backend, EnvVar])
+    )),
+    write(S, '  })\n\n'),
+    %% Default config
+    write(S, '(def default-config\n'),
+    write(S, '  "Default agent configuration values."\n'),
+    write(S, '  {\n'),
+    forall(agent_config_field(FieldName, _Type, Default, _Doc), (
+        (Default \= none ->
+            clojure_config_default(Default, CljDefault),
+            clojure_kebab(FieldName, KFieldName),
+            format(S, '   :~w ~w~n', [KFieldName, CljDefault])
+        ; true)
+    )),
+    write(S, '  })\n\n'),
+    %% Utility functions
+    write(S, '(defn resolve-api-key\n'),
+    write(S, '  "Resolve API key from environment for a backend."\n'),
+    write(S, '  [backend]\n'),
+    write(S, '  (when-let [env-var (get api-key-env-vars backend)]\n'),
+    write(S, '    (System/getenv env-var)))\n\n'),
+    write(S, '(defn load-config\n'),
+    write(S, '  "Load config from the first existing search path."\n'),
+    write(S, '  []\n'),
+    write(S, '  (let [path (->> config-search-paths\n'),
+    write(S, '                  (map :path)\n'),
+    write(S, '                  (map #(clojure.string/replace % "~/" (str (System/getProperty "user.home") "/")))\n'),
+    write(S, '                  (filter #(.exists (java.io.File. %)))\n'),
+    write(S, '                  first)]\n'),
+    write(S, '    (when path\n'),
+    write(S, '      (merge default-config\n'),
+    write(S, '             (json/parse-string (slurp path) true)))))\n'),
+    write_shared_block_clojure(S, config),
+    close(S),
+    format('  Generated clojure/src/agent_loop/config.clj~n', []).
+
+%% clojure_config_default(+PrologDefault, -ClojureDefault)
+clojure_config_default('None', nil).
+clojure_config_default('False', false).
+clojure_config_default('True', true).
+clojure_config_default(Default, CljVal) :-
+    Default \= 'None', Default \= 'False', Default \= 'True',
+    atom_string(Default, DS),
+    (sub_string(DS, 0, 1, _, "\"") ->
+        CljVal = Default
+    ; sub_string(DS, _, _, _, "default_factory") ->
+        (sub_string(DS, _, _, _, "list") -> CljVal = '[]'
+        ; sub_string(DS, _, _, _, "dict") -> CljVal = '{}'
+        ; CljVal = '[]')
+    ;
+        CljVal = Default
+    ).
+
+%% --- Security module ---
+generate_clojure_security :-
+    output_path(clojure, 'security.clj', Path),
+    open(Path, write, S),
+    write_clojure_header(S, 'agent-loop.security', 'Security profiles and path restrictions'),
+    write(S, '(ns agent-loop.security)\n\n'),
+    %% Security profiles
+    write(S, '(def profiles\n'),
+    write(S, '  "Security profiles — open, cautious, guarded, paranoid."\n'),
+    write(S, '  {\n'),
+    forall(security_profile(Name, Props), (
+        (member(description(Desc), Props) -> true ; Desc = ''),
+        (member(path_validation(PV), Props) -> true ; PV = false),
+        (member(command_blocklist(CB), Props) -> true ; CB = false),
+        (member(audit_logging(AL), Props) -> true ; AL = disabled),
+        format(S, '   :~w {:name :~w :description "~w" :path-validation ~w :command-blocklist ~w :audit-logging :~w}~n',
+            [Name, Name, Desc, PV, CB, AL])
+    )),
+    write(S, '  })\n\n'),
+    %% Blocked paths
+    write(S, '(def blocked-paths\n'),
+    write(S, '  "Absolute paths that are always blocked."\n'),
+    write(S, '  #{\n'),
+    forall(blocked_path(BP), (
+        format(S, '    "~w"~n', [BP])
+    )),
+    write(S, '  })\n\n'),
+    %% Blocked path prefixes
+    write(S, '(def blocked-path-prefixes\n'),
+    write(S, '  "Path prefixes that are blocked."\n'),
+    write(S, '  [\n'),
+    forall(blocked_path_prefix(BPP), (
+        format(S, '    "~w"~n', [BPP])
+    )),
+    write(S, '  ])\n\n'),
+    %% API functions
+    write(S, '(defn profile\n'),
+    write(S, '  "Get a security profile by name keyword."\n'),
+    write(S, '  [name]\n'),
+    write(S, '  (get profiles name))\n\n'),
+    write(S, '(defn path-blocked?\n'),
+    write(S, '  "Check if a path is blocked."\n'),
+    write(S, '  [path]\n'),
+    write(S, '  (or (contains? blocked-paths path)\n'),
+    write(S, '      (some #(.startsWith path %) blocked-path-prefixes)))\n'),
+    close(S),
+    format('  Generated clojure/src/agent_loop/security.clj~n', []).
+
+%% --- Clojure Tests (clojure.test) ---
+generate_clojure_tests :-
+    target_dir(clojure, SrcDir),
+    atom_concat(SrcDir, '../../test/agent_loop/', TestDir),
+    make_directory_path(TestDir),
+    generate_clojure_cost_test(TestDir),
+    generate_clojure_context_test(TestDir),
+    generate_clojure_tool_cache_test(TestDir),
+    generate_clojure_retry_test(TestDir),
+    generate_clojure_tools_test(TestDir),
+    generate_clojure_streaming_test(TestDir),
+    generate_clojure_pricing_test(TestDir),
+    generate_clojure_config_test(TestDir).
+
+%% --- Cost tests ---
+generate_clojure_cost_test(Dir) :-
+    atom_concat(Dir, 'costs_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.costs-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.costs :as costs]))\n\n'),
+    write(S, '(deftest test-create-cost-tracker\n'),
+    write(S, '  (let [state (costs/create-cost-tracker)]\n'),
+    write(S, '    (is (= 0.0 (:total-cost state)))\n'),
+    write(S, '    (is (= 0 (:total-input-tokens state)))\n'),
+    write(S, '    (is (= 0 (:total-output-tokens state)))))\n\n'),
+    write(S, '(deftest test-is-over-budget\n'),
+    write(S, '  (testing "zero budget means unlimited"\n'),
+    write(S, '    (is (false? (costs/is-over-budget (costs/create-cost-tracker) 0))))\n'),
+    write(S, '  (testing "under budget"\n'),
+    write(S, '    (is (false? (costs/is-over-budget {:total-cost 5.0} 10.0))))\n'),
+    write(S, '  (testing "over budget"\n'),
+    write(S, '    (is (true? (costs/is-over-budget {:total-cost 15.0} 10.0)))))\n\n'),
+    write(S, '(deftest test-budget-remaining\n'),
+    write(S, '  (testing "unlimited returns -1"\n'),
+    write(S, '    (is (= -1.0 (costs/budget-remaining (costs/create-cost-tracker) 0))))\n'),
+    write(S, '  (testing "remaining calculation"\n'),
+    write(S, '    (is (= 7.0 (costs/budget-remaining {:total-cost 3.0} 10.0)))))\n\n'),
+    write(S, '(deftest test-cost-compute\n'),
+    write(S, '  (let [cost (costs/cost-compute 1000 15.0)]\n'),
+    write(S, '    (is (< (Math/abs (- cost 0.015)) 0.0001))))\n\n'),
+    write(S, '(deftest test-total-tokens\n'),
+    write(S, '  (is (= 300 (costs/total-tokens {:total-input-tokens 200 :total-output-tokens 100}))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
+
+%% --- Context tests ---
+generate_clojure_context_test(Dir) :-
+    atom_concat(Dir, 'context_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.context-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.context :as ctx]))\n\n'),
+    write(S, '(deftest test-create-context\n'),
+    write(S, '  (let [state (ctx/create-context)]\n'),
+    write(S, '    (is (= [] (:messages state)))\n'),
+    write(S, '    (is (= "plain" (:format state)))))\n\n'),
+    write(S, '(deftest test-context-is-empty\n'),
+    write(S, '  (is (true? (ctx/is-empty (ctx/create-context))))\n'),
+    write(S, '  (is (false? (ctx/is-empty {:messages [{:role "user"}]}))))\n\n'),
+    write(S, '(deftest test-estimate-tokens\n'),
+    write(S, '  (let [state {:messages [{:content "hello world"}]}]\n'),
+    write(S, '    (is (pos? (ctx/estimate-tokens state)))))\n\n'),
+    write(S, '(deftest test-word-count\n'),
+    write(S, '  (is (= 3 (ctx/word-count "hello world foo"))))\n\n'),
+    write(S, '(deftest test-message-token-estimate\n'),
+    write(S, '  (is (pos? (ctx/message-token-estimate "some content here"))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/context_test.clj~n', []).
+
+%% --- ToolResultCache tests ---
+generate_clojure_tool_cache_test(Dir) :-
+    atom_concat(Dir, 'tool_cache_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.tool-cache-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.tool-cache :as cache]))\n\n'),
+    write(S, '(deftest test-create-cache\n'),
+    write(S, '  (let [state (cache/create-tool-cache)]\n'),
+    write(S, '    (is (= {} (:cache state)))\n'),
+    write(S, '    (is (= 100 (:max-size state)))))\n\n'),
+    write(S, '(deftest test-cache-clear\n'),
+    write(S, '  (let [state {:cache {"k1" "v1"} :max-size 100}\n'),
+    write(S, '        cleared (cache/cache-clear state)]\n'),
+    write(S, '    (is (= {} (:cache cleared)))))\n\n'),
+    write(S, '(deftest test-should-skip\n'),
+    write(S, '  (is (true? (cache/should-skip "bash")))\n'),
+    write(S, '  (is (false? (cache/should-skip "read"))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/tool_cache_test.clj~n', []).
+
+%% --- Retry tests ---
+generate_clojure_retry_test(Dir) :-
+    atom_concat(Dir, 'retry_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.retry-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.retry :as retry]))\n\n'),
+    write(S, '(deftest test-is-retryable-status\n'),
+    write(S, '  (is (true? (retry/is-retryable-status 429)))\n'),
+    write(S, '  (is (true? (retry/is-retryable-status 503)))\n'),
+    write(S, '  (is (false? (retry/is-retryable-status 200)))\n'),
+    write(S, '  (is (false? (retry/is-retryable-status 404))))\n\n'),
+    write(S, '(deftest test-compute-delay\n'),
+    write(S, '  (let [delay (retry/compute-delay 1.0 2.0 1 60.0)]\n'),
+    write(S, '    (is (= 1.0 delay)))\n'),
+    write(S, '  (let [delay (retry/compute-delay 1.0 2.0 3 60.0)]\n'),
+    write(S, '    (is (= 4.0 delay))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
+
+%% --- Tools tests ---
+generate_clojure_tools_test(Dir) :-
+    atom_concat(Dir, 'tools_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.tools-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.tools :as tools]))\n\n'),
+    write(S, '(deftest test-is-destructive\n'),
+    write(S, '  (is (tools/is-destructive "bash"))\n'),
+    write(S, '  (is (tools/is-destructive "write"))\n'),
+    write(S, '  (is (not (tools/is-destructive "read"))))\n\n'),
+    write(S, '(deftest test-is-mcp-tool\n'),
+    write(S, '  (is (true? (tools/is-mcp-tool "mcp:server/tool")))\n'),
+    write(S, '  (is (false? (tools/is-mcp-tool "read"))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
+
+%% --- Streaming tests ---
+generate_clojure_streaming_test(Dir) :-
+    atom_concat(Dir, 'streaming_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.streaming-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is]]\n'),
+    write(S, '            [agent-loop.streaming :as streaming]))\n\n'),
+    write(S, '(deftest test-create-counter\n'),
+    write(S, '  (let [state (streaming/create-streaming-counter)]\n'),
+    write(S, '    (is (= 0 (:token-count state)))\n'),
+    write(S, '    (is (= 0 (:char-count state)))\n'),
+    write(S, '    (is (false? (:show-live state)))))\n\n'),
+    write(S, '(deftest test-is-live\n'),
+    write(S, '  (is (false? (streaming/is-live {:show-live false})))\n'),
+    write(S, '  (is (true? (streaming/is-live {:show-live true}))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
+
+%% --- Pricing tests ---
+generate_clojure_pricing_test(Dir) :-
+    atom_concat(Dir, 'pricing_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.pricing-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.pricing :as pricing]))\n\n'),
+    write(S, '(deftest test-pricing-table-exists\n'),
+    write(S, '  (is (pos? (count pricing/pricing))))\n\n'),
+    write(S, '(deftest test-lookup-known-model\n'),
+    write(S, '  (let [entry (pricing/lookup "gpt-4")]\n'),
+    write(S, '    (when entry\n'),
+    write(S, '      (is (number? (:input entry)))\n'),
+    write(S, '      (is (number? (:output entry))))))\n\n'),
+    write(S, '(deftest test-lookup-unknown-model\n'),
+    write(S, '  (is (nil? (pricing/lookup "nonexistent-model-xyz"))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/pricing_test.clj~n', []).
+
+%% --- Config tests ---
+generate_clojure_config_test(Dir) :-
+    atom_concat(Dir, 'config_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.config-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.config :as config]))\n\n'),
+    write(S, '(deftest test-default-config-exists\n'),
+    write(S, '  (is (map? config/default-config)))\n\n'),
+    write(S, '(deftest test-search-paths-exist\n'),
+    write(S, '  (is (pos? (count config/config-search-paths))))\n\n'),
+    write(S, '(deftest test-api-key-env-vars\n'),
+    write(S, '  (is (map? config/api-key-env-vars))\n'),
+    write(S, '  (is (string? (get config/api-key-env-vars :openai))))\n'),
+    write(S, '  (is (string? (get config/api-key-env-vars :anthropic))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.

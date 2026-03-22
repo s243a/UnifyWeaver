@@ -96,6 +96,20 @@ word_count(Content, Result) :-
 get_format(State, Result) :-
     Result = State.format
 
+%% Truncate a string to max_len characters, appending ... if truncated.
+truncate_string(Text, Max_len, Result) :-
+    (atom_length(text, Len) =< max_len ->
+        Result = text
+    ;
+    Result = sub_atom(text, 0, max_len, _, Prefix), atom_concat(Prefix, "...", Truncated)
+    )
+
+%% Format a duration in seconds to a human-readable string (e.g. 90 -> 1m 30s).
+format_duration(Seconds, Result) :-
+    mins = (seconds // 60)
+    secs = (seconds mod 60)
+    Result = format(atom(Formatted), "{}m {}s", [mins, secs])
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -192,6 +206,14 @@ extract_json(State, Text, Result) :-
     ;
     Result = extract_bare(text, MethodResult)
     )
+
+%% Check if a format string is one of the valid formats (plain, markdown, json, xml).
+is_valid_format(Fmt, Result) :-
+    Result = memberchk(fmt, ["plain", "markdown", "json", "xml"])
+
+%% Escape HTML special characters (& < > quotes).
+escape_html(Text, Result) :-
+    Result = html_escape(text, Escaped)
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
