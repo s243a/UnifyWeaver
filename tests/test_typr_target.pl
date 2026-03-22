@@ -69,6 +69,7 @@ cleanup_typr_test :-
     retractall(user:weighted_tree_nested_branch_prework(_, _, _)),
     retractall(user:tree_sum_double_nested_calls(_, _)),
     retractall(user:weighted_tree_double_nested_calls(_, _, _)),
+    retractall(user:weighted_tree_double_nested_subtree_context_guard(_, _, _)),
     retractall(user:weighted_tree_sum_subtree_scale(_, _, _)),
     retractall(user:weighted_tree_sum_subtree_branch(_, _, _)),
     retractall(user:weighted_tree_sum_prework(_, _, _)),
@@ -777,7 +778,7 @@ test(recursive_compiler_supports_typr_double_nested_structural_tree_calls_path) 
     once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
     once(sub_string(Code, _, _, _, "if (value > 1) {")),
     once(sub_string(Code, _, _, _, "if (value > 2) {")),
-    once(sub_string(Code, _, _, _, "branch_result = ((if (value > 2) { ((step_1 + left_result) + right_result) } else { ((step_1 + left_result) + right_result) }) + 1);")),
+    once(sub_string(Code, _, _, _, "branch_result = (((step_1 + (if (value > 2) { left_result } else { left_result })) + (if (value > 2) { right_result } else { right_result })) + 1);")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
@@ -816,7 +817,7 @@ test(recursive_compiler_supports_typr_weighted_double_nested_structural_tree_cal
     once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
     once(sub_string(Code, _, _, _, "if (arg2 > 2) {")),
-    once(sub_string(Code, _, _, _, "branch_result = ((if (arg2 > 2) { ((step_1 + left_result) + right_result) } else { ((step_1 + left_result) + right_result) }) + 1);")),
+    once(sub_string(Code, _, _, _, "branch_result = (((step_1 + (if (arg2 > 2) { left_result } else { left_result })) + (if (arg2 > 2) { right_result } else { right_result })) + 1);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
@@ -876,6 +877,54 @@ test(recursive_compiler_supports_typr_nary_structural_tree_subtree_branch_path) 
     once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_subtree_branch_impl(left, step_1);")),
     once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_subtree_branch_impl(right, step_2);")),
     once(sub_string(Code, _, _, _, "result = ((((value * step_1) + left_result) + right_result) + step_2);")),
+    once(sub_string(Code, _, _, _, "arg3 <- v4;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_double_nested_structural_tree_subtree_context_guard_path) :-
+    clear_type_declarations,
+    assertz(user:weighted_tree_double_nested_subtree_context_guard([], _Scale, 0)),
+    assertz(user:(weighted_tree_double_nested_subtree_context_guard([V, L, R], Scale, Sum) :-
+        ( Scale > 1 ->
+            Bias is V * Scale,
+            ( V > 0 ->
+                ( Scale > 2 ->
+                    ScaleL is Scale + 1,
+                    ScaleR is Scale + 2
+                ;   ScaleL is Scale + 3,
+                    ScaleR is Scale + 4
+                ),
+                weighted_tree_double_nested_subtree_context_guard(L, ScaleL, LS),
+                weighted_tree_double_nested_subtree_context_guard(R, ScaleR, RS),
+                Part is Bias + LS + RS + ScaleR
+            ;   weighted_tree_double_nested_subtree_context_guard(L, Scale, LS),
+                weighted_tree_double_nested_subtree_context_guard(R, Scale, RS),
+                Part is (V * Scale) + LS + RS
+            ),
+            Sum is Part + 1
+        ;   weighted_tree_double_nested_subtree_context_guard(L, Scale, LS),
+            weighted_tree_double_nested_subtree_context_guard(R, Scale, RS),
+            Sum is (V * Scale) + LS + RS
+        )
+    )),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_subtree_context_guard/3, 1, list(any))),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_subtree_context_guard/3, 2, integer)),
+    assertz(type_declarations:uw_type(weighted_tree_double_nested_subtree_context_guard/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(weighted_tree_double_nested_subtree_context_guard/3, integer)),
+    once(recursive_compiler:compile_recursive(weighted_tree_double_nested_subtree_context_guard/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let weighted_tree_double_nested_subtree_context_guard <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "weighted_tree_double_nested_subtree_context_guard_impl <- function(current_tree, arg2)")),
+    once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
+    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
+    once(sub_string(Code, _, _, _, "if (value > 0) {")),
+    once(sub_string(Code, _, _, _, "if (arg2 > 2) {")),
+    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "step_3 = (arg2 + 2);")),
+    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 3);")),
+    once(sub_string(Code, _, _, _, "step_3 = (arg2 + 4);")),
+    once(sub_string(Code, _, _, _, "left_result = weighted_tree_double_nested_subtree_context_guard_impl(left, step_2);")),
+    once(sub_string(Code, _, _, _, "right_result = weighted_tree_double_nested_subtree_context_guard_impl(right, step_3);")),
+    once(sub_string(Code, _, _, _, "branch_result = ((((step_1 + left_result) + right_result) + step_3) + 1);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).

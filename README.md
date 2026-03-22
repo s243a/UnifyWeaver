@@ -263,10 +263,12 @@ includes:
   `[]` / `[V, L, R]` trees, including limited native guards, local `is`
   steps, threaded invariant-context updates before the two subtree calls,
   per-subtree invariant-context updates for the left and right recursive
-  calls, branch-local recursive-call aliases before the two subtree calls,
-  guarded pre-recursive branching before the two subtree calls, recursive
-  subtree calls inside supported branch bodies, nested recursive subtree
-  calls inside supported branch bodies, shared pre-recursive local work
+  calls, nested branch-local subtree-context selection before shared
+  recursive subtree calls, branch-local recursive-call aliases before the
+  two subtree calls, guarded pre-recursive branching before the two subtree
+  calls, recursive subtree calls inside supported branch bodies, nested
+  recursive subtree calls inside supported branch bodies, shared
+  pre-recursive local work
   before nested recursive branch bodies, nested branch-local post-recursive
   recombination before a later shared result expression, multiple nested
   branch-local control points around the two subtree calls, and asymmetric
