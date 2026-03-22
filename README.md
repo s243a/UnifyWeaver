@@ -251,6 +251,8 @@ includes:
   `weighted_tree_nested_recursive_branch/3`,
   `tree_sum_nested_branch_recombine/2`,
   `weighted_tree_nested_branch_recombine/3`,
+  `tree_sum_nested_branch_prework/2`,
+  `weighted_tree_nested_branch_prework/3`,
   `weighted_tree_sum_subtree_scale/3`, `weighted_tree_sum_subtree_branch/3`,
   `tree_sum_prework/2`, `weighted_tree_sum_prework/3`,
   `tree_sum_branch/2`, `weighted_tree_sum_branch/3`,
@@ -262,7 +264,8 @@ includes:
   calls, branch-local recursive-call aliases before the two subtree calls,
   guarded pre-recursive branching before the two subtree calls, recursive
   subtree calls inside supported branch bodies, nested recursive subtree
-  calls inside supported branch bodies, nested branch-local post-recursive
+  calls inside supported branch bodies, shared pre-recursive local work
+  before nested recursive branch bodies, nested branch-local post-recursive
   recombination before a later shared result expression, and asymmetric
   branch-local prework that is reconciled later by a guarded result
   expression, instead of wrapped-R fallback
