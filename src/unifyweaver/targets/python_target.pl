@@ -96,6 +96,9 @@
 % Pipeline validation (Phase 9)
 :- use_module('../core/pipeline_validation').
 
+% Native clause body lowering (shared analysis infrastructure)
+:- use_module('../core/clause_body_analysis', except([translate_expr/3])).
+
 % Service validation (Client-Server Phase 2)
 :- use_module('../core/service_validation').
 
@@ -2975,27 +2978,43 @@ compile_procedural_mode(Name, Arity, Module, Options, PythonCode) :-
     ).
 
 %% compile_non_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
+compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
+    % Try native clause body lowering first
+    pairs_from_clauses(Clauses, ClausePairs),
+    native_python_clause_body(Name/Arity, ClausePairs, NativeBody),
+    !,
+    % Build standalone function
+    Arity1 is Arity - 1,  % Last arg is output
+    build_python_arg_list(Arity1, ArgList),
+    format(string(FuncCode),
+'def ~w(~w):
+~w', [Name, ArgList, NativeBody]),
+    header(Header),
+    helpers(Helpers),
+    generate_python_main(Options, Main),
+    format(string(PythonCode), "~s~s\n~s\n~s", [Header, Helpers, FuncCode, Main]).
 compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
+    % Fallback: per-clause functions with yield
     % Generate clause functions
     findall(ClauseCode, (
         nth0(Index, Clauses, (ClauseHead, ClauseBody)),
         translate_clause(ClauseHead, ClauseBody, Index, Arity, ClauseCode)
     ), ClauseCodes),
     atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
-    
+
     % Generate process_stream calls
     findall(Call, (
         nth0(Index, Clauses, _),
         format(string(Call), "        yield from _clause_~d(record)", [Index])
     ), Calls),
     atomic_list_concat(Calls, "\n", CallsCode),
-    
+
     header(Header),
     helpers(Helpers),
-    
+
     generate_python_main(Options, Main),
-    
-    format(string(Logic), 
+
+    format(string(Logic),
 "
 ~s
 
@@ -3006,6 +3025,430 @@ def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
 \n", [AllClausesCode, CallsCode]),
 
     format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+% ============================================================================
+% NATIVE CLAUSE BODY LOWERING
+% ============================================================================
+%
+% Compiles multi-clause predicates into Python if/elif/else chains using
+% the shared clause_body_analysis module. Falls back to per-clause functions
+% if lowering fails for any clause.
+%
+% Architecture follows TypR's approach:
+%   try native_python_clause_body → success: emit if/elif/else
+%                                 → failure: fall through to per-clause
+
+%% pairs_from_clauses(+Clauses, -Pairs)
+%  Convert [(Head, Body), ...] to [Head-Body, ...] for clause_body_analysis.
+pairs_from_clauses([], []).
+pairs_from_clauses([(Head, Body)|Rest], [Head-Body|RestPairs]) :-
+    pairs_from_clauses(Rest, RestPairs).
+
+%% build_python_arg_list(+N, -ArgList)
+%  Build "arg1, arg2, ..." for N arguments.
+build_python_arg_list(0, "") :- !.
+build_python_arg_list(N, ArgList) :-
+    findall(ArgName, (
+        between(1, N, I),
+        format(string(ArgName), 'arg~w', [I])
+    ), ArgNames),
+    atomic_list_concat(ArgNames, ', ', ArgList).
+
+%% native_python_clause_body(+PredSpec, +Clauses, -Code)
+%  Try to compile clauses to a native Python if/elif/else body.
+%  Clauses are Head-Body pairs.
+
+% Single clause: just emit the body (with guard if needed)
+native_python_clause_body(PredSpec, [Head-Body], Code) :-
+    native_python_clause(PredSpec, Head, Body, Condition, ClauseCode),
+    !,
+    (   Condition == 'True'
+    ->  Code = ClauseCode
+    ;   indent_python(ClauseCode, IndentedCode),
+        format(string(Code),
+'    if ~w:
+~w
+    else:
+        raise ValueError("No matching clause for ~w")', [Condition, IndentedCode, PredSpec])
+    ).
+
+% Multi-clause: emit if/elif/else chain
+native_python_clause_body(PredSpec, Clauses, Code) :-
+    Clauses = [_|[_|_]],
+    maplist(native_python_clause_pair(PredSpec), Clauses, Branches),
+    Branches \= [],
+    branches_to_python_if_chain(Branches, IfChain),
+    format(string(Code),
+'~w
+    else:
+        raise ValueError("No matching clause for ~w")', [IfChain, PredSpec]).
+
+native_python_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
+    native_python_clause(PredSpec, Head, Body, Condition, ClauseCode),
+    !.
+
+%% native_python_clause(+PredSpec, +Head, +Body, -Condition, -Code)
+%  Compile a single clause to a condition and Python code.
+native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
+    Head =.. [_Pred|HeadArgs],
+    length(HeadArgs, Arity),
+    % Build VarMap from head arguments
+    build_head_varmap(HeadArgs, 1, VarMap),
+    % Extract head conditions — only from input args (not the output arg)
+    % The last argument is treated as the output
+    (   Arity > 1
+    ->  append(InputHeadArgs, [OutputHeadArg], HeadArgs),
+        % Conditions from input args only
+        python_head_conditions(InputHeadArgs, 1, HeadConditions)
+    ;   OutputHeadArg = _,
+        python_head_conditions(HeadArgs, 1, HeadConditions)
+    ),
+    % Process body goals
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  % Pure fact clause: return the output arg value
+        python_resolve_value(VarMap, OutputHeadArg, OutputExpr),
+        format(string(Code), '    return ~w', [OutputExpr]),
+        GoalConditions = []
+    ;   % Body goals: check if output arg is bound in head (constant)
+        (   Arity > 1, nonvar(OutputHeadArg)
+        ->  % Output is a constant in head — guards are conditions, return the constant
+            clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+            maplist(python_guard_condition(VarMap), GuardGoals, GoalConditions),
+            (   OutputGoals == []
+            ->  python_literal(OutputHeadArg, OutputLit),
+                format(string(Code), '    return ~w', [OutputLit])
+            ;   python_output_goals(OutputGoals, VarMap, Code)
+            )
+        ;   % Output is a variable — goals should compute it
+            native_python_goal_sequence(Goals, VarMap, GoalConditions, Code)
+        )
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_python_conditions(AllConditions, Condition).
+
+%% python_head_conditions(+HeadArgs, +Index, -Conditions)
+%  Generate conditions from head argument patterns.
+%  Variables produce no condition; constants produce equality checks.
+python_head_conditions([], _, []).
+python_head_conditions([HeadArg|Rest], Index, Conditions) :-
+    (   var(HeadArg)
+    ->  Conditions = RestConditions
+    ;   format(string(ArgName), 'arg~w', [Index]),
+        python_literal(HeadArg, Literal),
+        format(string(Cond), '~w == ~w', [ArgName, Literal]),
+        Conditions = [Cond|RestConditions]
+    ),
+    NextIndex is Index + 1,
+    python_head_conditions(Rest, NextIndex, RestConditions).
+
+%% native_python_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Process a sequence of body goals into guard conditions and Python code.
+%  Guards become conditions; outputs become assignments; last output becomes return.
+native_python_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+    maplist(python_guard_condition(VarMap), GuardGoals, Conditions),
+    python_output_goals(OutputGoals, VarMap, Code).
+
+%% python_guard_condition(+VarMap, +Goal, -Condition)
+%  Convert a guard goal to a Python condition string.
+python_guard_condition(VarMap, _Module:Goal, Condition) :-
+    !,
+    python_guard_condition(VarMap, Goal, Condition).
+python_guard_condition(VarMap, Goal, Condition) :-
+    if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    !,
+    % Nested if-then-else in guard position
+    python_guard_condition(VarMap, IfGoal, IfCond),
+    python_guard_condition(VarMap, ThenGoal, ThenCond),
+    python_guard_condition(VarMap, ElseGoal, ElseCond),
+    format(string(Condition), '(~w if ~w else ~w)', [ThenCond, IfCond, ElseCond]).
+python_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    Goal =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    python_expr(Left, VarMap, PyLeft),
+    python_expr(Right, VarMap, PyRight),
+    % Map standard ops to Python
+    python_op(StdOp, PyOp),
+    format(string(Condition), '~w ~w ~w', [PyLeft, PyOp, PyRight]).
+python_guard_condition(VarMap, integer(X), Condition) :-
+    !,
+    python_expr(X, VarMap, PyX),
+    format(string(Condition), 'isinstance(~w, int)', [PyX]).
+python_guard_condition(VarMap, float(X), Condition) :-
+    !,
+    python_expr(X, VarMap, PyX),
+    format(string(Condition), 'isinstance(~w, float)', [PyX]).
+python_guard_condition(VarMap, number(X), Condition) :-
+    !,
+    python_expr(X, VarMap, PyX),
+    format(string(Condition), 'isinstance(~w, (int, float))', [PyX]).
+python_guard_condition(VarMap, atom(X), Condition) :-
+    !,
+    python_expr(X, VarMap, PyX),
+    format(string(Condition), 'isinstance(~w, str)', [PyX]).
+python_guard_condition(VarMap, is_list(X), Condition) :-
+    !,
+    python_expr(X, VarMap, PyX),
+    format(string(Condition), 'isinstance(~w, list)', [PyX]).
+
+%% python_output_goals(+Goals, +VarMap, -Code)
+%  Convert output goals to Python assignments. The last one becomes a return.
+python_output_goals([], _VarMap, '    return None') :- !.
+python_output_goals(Goals, VarMap, Code) :-
+    python_output_goals_acc(Goals, VarMap, Lines, _VarMapOut),
+    atomic_list_concat(Lines, '\n', Code).
+
+python_output_goals_acc([], VarMap, [], VarMap).
+python_output_goals_acc([Goal], VarMap, Lines, VarMapOut) :-
+    !,
+    % Last goal: try to make it a return
+    python_output_goal_last(Goal, VarMap, Lines, VarMapOut).
+python_output_goals_acc([Goal|Rest], VarMap0, [Line|RestLines], VarMapOut) :-
+    python_output_goal(Goal, VarMap0, Line, VarMap1),
+    python_output_goals_acc(Rest, VarMap1, RestLines, VarMapOut).
+
+%% python_output_goal_last(+Goal, +VarMap, -Lines, -VarMapOut)
+%  Handle the last output goal — produce a return statement.
+python_output_goal_last(_Module:Goal, VarMap, Lines, VarMapOut) :-
+    !,
+    python_output_goal_last(Goal, VarMap, Lines, VarMapOut).
+python_output_goal_last(Goal, VarMap0, Lines, VarMapOut) :-
+    if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    !,
+    python_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap0, Lines, VarMapOut).
+python_output_goal_last(=(Var, Expr), VarMap, [Line], VarMap) :-
+    var(Var),
+    !,
+    python_expr(Expr, VarMap, PyExpr),
+    format(string(Line), '    return ~w', [PyExpr]).
+python_output_goal_last(is(Var, Expr), VarMap, [Line], VarMap) :-
+    var(Var),
+    !,
+    python_expr(Expr, VarMap, PyExpr),
+    format(string(Line), '    return ~w', [PyExpr]).
+python_output_goal_last(Goal, VarMap0, [AssignLine, ReturnLine], VarMapOut) :-
+    % Fallback: assign then return
+    python_output_goal(Goal, VarMap0, AssignLine, VarMapOut),
+    % Find what variable was just assigned
+    (   goal_output_var(Goal, OutVar),
+        lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(ReturnLine), '    return ~w', [OutName])
+    ;   ReturnLine = '    return None'
+    ).
+
+%% python_output_goal(+Goal, +VarMap, -Line, -VarMapOut)
+%  Convert an output goal to a Python assignment line.
+python_output_goal(_Module:Goal, VarMap0, Line, VarMapOut) :-
+    !,
+    python_output_goal(Goal, VarMap0, Line, VarMapOut).
+python_output_goal(=(Var, Expr), VarMap0, Line, VarMapOut) :-
+    var(Var),
+    !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    python_expr(Expr, VarMap0, PyExpr),
+    format(string(Line), '    ~w = ~w', [VarName, PyExpr]).
+python_output_goal(is(Var, Expr), VarMap0, Line, VarMapOut) :-
+    var(Var),
+    !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    python_expr(Expr, VarMap0, PyExpr),
+    format(string(Line), '    ~w = ~w', [VarName, PyExpr]).
+python_output_goal(=(Var, Expr), VarMap, Line, VarMap) :-
+    atom(Var),
+    !,
+    python_expr(Expr, VarMap, PyExpr),
+    format(string(Line), '    ~w = ~w', [Var, PyExpr]).
+
+%% python_if_then_else_output(+If, +Then, +Else, +VarMap, -Lines, -VarMapOut)
+%  Generate if/else for output assignment within a clause body.
+%  Handles nested if-then-else in Else branch by flattening to if/elif/else.
+python_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap0, Lines, VarMapOut) :-
+    % Flatten nested if-then-else into branches
+    flatten_if_elif_branches(IfGoal, ThenGoal, ElseGoal, Branches, DefaultGoal),
+    % All branches should assign the same output variable
+    python_guard_condition(VarMap0, IfGoal, _),  % just test it works
+    python_if_elif_lines(Branches, DefaultGoal, VarMap0, Lines, VarMapOut).
+
+%% flatten_if_elif_branches(+If, +Then, +Else, -Branches, -Default)
+%  Flatten (If -> Then ; (If2 -> Then2 ; Else2)) into branches list.
+flatten_if_elif_branches(If, Then, Else, [branch(If, Then)|RestBranches], Default) :-
+    if_then_else_goal(Else, If2, Then2, Else2),
+    !,
+    flatten_if_elif_branches(If2, Then2, Else2, RestBranches, Default).
+flatten_if_elif_branches(If, Then, Else, [branch(If, Then)], Else).
+
+%% python_if_elif_lines(+Branches, +Default, +VarMap, -Lines, -VarMapOut)
+python_if_elif_lines(Branches, DefaultGoal, VarMap0, Lines, VarMapOut) :-
+    % Use direct return style: if/elif/else with returns
+    python_if_elif_return_lines(Branches, DefaultGoal, VarMap0, Lines),
+    VarMapOut = VarMap0.
+
+%% python_if_elif_return_lines(+Branches, +Default, +VarMap, -Lines)
+%  First branch uses 'if', remaining use 'elif'.
+python_if_elif_return_lines([branch(If, Then)|Rest], DefaultGoal, VarMap, [IfLine, RetLine|RestLines]) :-
+    python_guard_condition(VarMap, If, IfCond),
+    python_branch_value(Then, VarMap, ThenVal),
+    format(string(IfLine), '    if ~w:', [IfCond]),
+    format(string(RetLine), '        return ~w', [ThenVal]),
+    python_elif_return_lines(Rest, DefaultGoal, VarMap, RestLines).
+
+python_elif_return_lines([], DefaultGoal, VarMap, [ElseLine, RetLine]) :-
+    !,
+    python_branch_value(DefaultGoal, VarMap, DefVal),
+    ElseLine = '    else:',
+    format(string(RetLine), '        return ~w', [DefVal]).
+python_elif_return_lines([branch(If, Then)|Rest], DefaultGoal, VarMap, [ElifLine, RetLine|RestLines]) :-
+    python_guard_condition(VarMap, If, IfCond),
+    python_branch_value(Then, VarMap, ThenVal),
+    format(string(ElifLine), '    elif ~w:', [IfCond]),
+    format(string(RetLine), '        return ~w', [ThenVal]),
+    python_elif_return_lines(Rest, DefaultGoal, VarMap, RestLines).
+
+%% python_branch_value(+Goal, +VarMap, -Value)
+%  Extract the result value from a branch (Then or Else).
+python_branch_value(_Module:Goal, VarMap, Value) :-
+    !, python_branch_value(Goal, VarMap, Value).
+python_branch_value((A, B), VarMap, Value) :-
+    !,
+    % Multi-goal branch: take value from last goal
+    normalize_goals((A, B), Goals),
+    last(Goals, LastGoal),
+    python_branch_value(LastGoal, VarMap, Value).
+python_branch_value(=(_, Expr), VarMap, Value) :-
+    !, python_expr(Expr, VarMap, Value).
+python_branch_value(is(_, Expr), VarMap, Value) :-
+    !, python_expr(Expr, VarMap, Value).
+python_branch_value(Goal, VarMap, Value) :-
+    python_expr(Goal, VarMap, Value).
+
+%% python_expr(+Expr, +VarMap, -PyExpr)
+%  Convert a Prolog expression to Python syntax.
+python_expr(Var, VarMap, PyExpr) :-
+    var(Var),
+    !,
+    (   lookup_var(Var, VarMap, Name)
+    ->  PyExpr = Name
+    ;   term_string(Var, PyExpr)
+    ).
+python_expr(Expr, VarMap, PyExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    python_expr(Left, VarMap, PyLeft),
+    python_expr(Right, VarMap, PyRight),
+    python_op(StdOp, PyOp),
+    format(string(PyExpr), '(~w ~w ~w)', [PyLeft, PyOp, PyRight]).
+python_expr(-Expr, VarMap, PyExpr) :-
+    !,
+    python_expr(Expr, VarMap, Inner),
+    format(string(PyExpr), '(-~w)', [Inner]).
+python_expr(abs(Expr), VarMap, PyExpr) :-
+    !,
+    python_expr(Expr, VarMap, Inner),
+    format(string(PyExpr), 'abs(~w)', [Inner]).
+python_expr(min(A, B), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    python_expr(B, VarMap, PyB),
+    format(string(PyExpr), 'min(~w, ~w)', [PyA, PyB]).
+python_expr(max(A, B), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    python_expr(B, VarMap, PyB),
+    format(string(PyExpr), 'max(~w, ~w)', [PyA, PyB]).
+python_expr(Atom, _VarMap, PyExpr) :-
+    atom(Atom), !,
+    python_literal(Atom, PyExpr).
+python_expr(Number, _VarMap, PyExpr) :-
+    number(Number), !,
+    format(string(PyExpr), '~w', [Number]).
+python_expr(String, _VarMap, PyExpr) :-
+    string(String), !,
+    format(string(PyExpr), '"~w"', [String]).
+
+%% python_literal(+Value, -PyLiteral)
+%  Convert a Prolog value to Python literal syntax.
+python_literal(Value, 'None') :- var(Value), !.
+python_literal(true, 'True') :- !.
+python_literal(false, 'False') :- !.
+python_literal([], '[]') :- !.
+python_literal(Value, PyLiteral) :-
+    number(Value), !,
+    format(string(PyLiteral), '~w', [Value]).
+python_literal(Value, PyLiteral) :-
+    atom(Value), !,
+    format(string(PyLiteral), '"~w"', [Value]).
+python_literal(Value, PyLiteral) :-
+    string(Value), !,
+    format(string(PyLiteral), '"~w"', [Value]).
+python_literal(Value, PyLiteral) :-
+    term_string(Value, PyLiteral).
+
+%% python_resolve_value(+VarMap, +Value, -PyExpr)
+%  Resolve a value (variable or constant) to Python expression.
+python_resolve_value(VarMap, Var, PyExpr) :-
+    var(Var), !,
+    lookup_var(Var, VarMap, PyExpr).
+python_resolve_value(_VarMap, Value, PyExpr) :-
+    python_literal(Value, PyExpr).
+
+%% python_op(+StdOp, -PyOp)
+%  Map standard operator to Python syntax.
+python_op('>', '>').
+python_op('<', '<').
+python_op('>=', '>=').
+python_op('<=', '<=').
+python_op('==', '==').
+python_op('!=', '!=').
+python_op('+', '+').
+python_op('-', '-').
+python_op('*', '*').
+python_op('/', '//').
+python_op('%', '%').
+python_op('&&', 'and').
+python_op('||', 'or').
+
+%% combine_python_conditions(+Conditions, -Combined)
+%  Join conditions with 'and'.
+combine_python_conditions([], 'True') :- !.
+combine_python_conditions([Condition], Condition) :- !.
+combine_python_conditions(Conditions, Combined) :-
+    atomic_list_concat(Conditions, ' and ', Combined).
+
+%% branches_to_python_if_chain(+Branches, -Code)
+%  Build Python if/elif chain from branches.
+branches_to_python_if_chain([branch(Condition, ClauseCode)], Code) :-
+    !,
+    indent_python(ClauseCode, IndentedCode),
+    format(string(Code), '    if ~w:\n~w', [Condition, IndentedCode]).
+branches_to_python_if_chain([branch(Condition, ClauseCode)|Rest], Code) :-
+    indent_python(ClauseCode, IndentedCode),
+    branches_to_python_elif_chain(Rest, RestCode),
+    format(string(Code), '    if ~w:\n~w\n~w', [Condition, IndentedCode, RestCode]).
+
+branches_to_python_elif_chain([branch(Condition, ClauseCode)], Code) :-
+    !,
+    indent_python(ClauseCode, IndentedCode),
+    format(string(Code), '    elif ~w:\n~w', [Condition, IndentedCode]).
+branches_to_python_elif_chain([branch(Condition, ClauseCode)|Rest], Code) :-
+    indent_python(ClauseCode, IndentedCode),
+    branches_to_python_elif_chain(Rest, RestCode),
+    format(string(Code), '    elif ~w:\n~w\n~w', [Condition, IndentedCode, RestCode]).
+
+%% indent_python(+Code, -IndentedCode)
+%  Add one level of indentation (4 spaces) to each line.
+indent_python(Code, IndentedCode) :-
+    split_string(Code, "\n", "", Lines),
+    maplist(indent_python_line, Lines, IndentedLines),
+    atomic_list_concat(IndentedLines, '\n', IndentedCode).
+
+indent_python_line("", "") :- !.
+indent_python_line(Line, Indented) :-
+    format(string(Indented), '    ~w', [Line]).
 
 % ============================================================================
 % PIPELINE MODE - Phase 1: Object Pipeline Support
