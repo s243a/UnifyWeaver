@@ -175,6 +175,33 @@ test(mutual_recursive_output_checks_with_typr, [condition(typr_cli_available)]) 
     retractall(user:typr_mutual_even(_)),
     retractall(user:typr_mutual_odd(_)).
 
+test(structural_mutual_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_list([])),
+    assertz(user:(typr_mutual_even_list([_|T]) :-
+        typr_mutual_odd_list(T)
+    )),
+    assertz(user:typr_mutual_odd_list([_])),
+    assertz(user:(typr_mutual_odd_list([_|T]) :-
+        typr_mutual_even_list(T)
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_list/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_list/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_list/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_list/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_list/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_even_list(_)),
+    retractall(user:typr_mutual_odd_list(_)).
+
 test(structural_tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:tree_sum([], 0)),

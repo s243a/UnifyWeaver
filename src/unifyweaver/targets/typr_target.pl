@@ -79,7 +79,9 @@ mutual_recursion:compile_mutual_pattern(typr, Predicates, MemoEnabled, _MemoStra
 
 compile_typr_mutual_recursion_group(Predicates0, MemoEnabled, Code) :-
     sort(Predicates0, Predicates),
-    maplist(typr_mutual_numeric_spec(Predicates), Predicates, Specs),
+    (   maplist(typr_mutual_numeric_spec(Predicates), Predicates, Specs)
+    ;   maplist(typr_mutual_list_spec(Predicates), Predicates, Specs)
+    ),
     typr_mutual_group_code(Specs, MemoEnabled, Code).
 
 typr_mutual_numeric_spec(GroupPredicates, Pred/Arity, Spec) :-
@@ -105,6 +107,7 @@ typr_mutual_numeric_spec(GroupPredicates, Pred/Arity, Spec) :-
     format(string(HelperName), '~w_impl', [PredStr]),
     format(string(NextHelperName), '~w_impl', [NextPredStr]),
     Spec = mutual_spec{
+        kind: numeric,
         pred: Pred,
         pred_str: PredStr,
         typed_arg_list: TypedArgList,
@@ -116,10 +119,55 @@ typr_mutual_numeric_spec(GroupPredicates, Pred/Arity, Spec) :-
         step_expr: StepExpr
     }.
 
+typr_mutual_list_spec(GroupPredicates, Pred/Arity, Spec) :-
+    Arity =:= 1,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "bool"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    maplist(typr_mutual_list_base_case_length, BaseClauses, BaseLengths0),
+    sort(BaseLengths0, BaseLengths),
+    RecHead =.. [_PredName, RecInputPattern],
+    RecInputPattern = [HeadVar|TailVar],
+    var(TailVar),
+    parse_recursive_body(RecBody, HeadVar, Conditions, Computations, RecCall),
+    Conditions == [],
+    Computations == [],
+    RecCall \= none,
+    RecCall =.. [NextPred, RecArg],
+    memberchk(NextPred/1, GroupPredicates),
+    RecArg == TailVar,
+    atom_string(Pred, PredStr),
+    atom_string(NextPred, NextPredStr),
+    format(string(HelperName), '~w_impl', [PredStr]),
+    format(string(NextHelperName), '~w_impl', [NextPredStr]),
+    Spec = mutual_spec{
+        kind: list,
+        pred: Pred,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "bool",
+        helper_name: HelperName,
+        next_helper_name: NextHelperName,
+        base_lengths: BaseLengths,
+        guard_expr: 'length(current_input) > 0',
+        step_expr: 'tail(current_input, -1)'
+    }.
+
 typr_mutual_base_case_value(clause(Head, true), BaseExpr) :-
     Head =.. [_Pred, BaseValue],
     integer(BaseValue),
     typr_translate_r_expr(BaseValue, [], BaseExpr).
+
+typr_mutual_list_base_case_length(clause(Head, true), 0) :-
+    Head =.. [_Pred, []].
+typr_mutual_list_base_case_length(clause(Head, true), 1) :-
+    Head =.. [_Pred, [Elem]],
+    var(Elem).
 
 typr_mutual_guard_expr(_HeadVar, [], 'TRUE') :-
     !.
@@ -215,6 +263,8 @@ typr_mutual_wrapper_code(GroupName, Specs, false, Spec, Code) :-
 };', [PredStr, TypedArgList, ReturnType, IndentedHelpersText, HelperName]).
 
 typr_mutual_helper_code(GroupName, true, Spec, Code) :-
+    Kind = Spec.kind,
+    Kind == numeric,
     PredStr = Spec.pred_str,
     HelperName = Spec.helper_name,
     NextHelperName = Spec.next_helper_name,
@@ -234,12 +284,50 @@ typr_mutual_helper_code(GroupName, true, Spec, Code) :-
     append(Lines2, ['    };'], Lines),
     atomic_list_concat(Lines, '\n', Code).
 typr_mutual_helper_code(_GroupName, false, Spec, Code) :-
+    Kind = Spec.kind,
+    Kind == numeric,
     HelperName = Spec.helper_name,
     NextHelperName = Spec.next_helper_name,
     BaseValues = Spec.base_values,
     GuardExpr = Spec.guard_expr,
     StepExpr = Spec.step_expr,
     typr_mutual_base_branch_lines_no_memo(BaseValues, BaseLines),
+    typr_mutual_recursive_branch_lines_no_memo(GuardExpr, NextHelperName, StepExpr, RecursiveLines),
+    format_string_return('    ~w <- function(current_input) {', [HelperName], HelperLine),
+    append([HelperLine], BaseLines, Lines0),
+    append(Lines0, RecursiveLines, Lines1),
+    append(Lines1, ['        } else {', '            FALSE', '        }', '    };'], Lines),
+    atomic_list_concat(Lines, '\n', Code).
+typr_mutual_helper_code(GroupName, true, Spec, Code) :-
+    Kind = Spec.kind,
+    Kind == list,
+    PredStr = Spec.pred_str,
+    HelperName = Spec.helper_name,
+    NextHelperName = Spec.next_helper_name,
+    BaseLengths = Spec.base_lengths,
+    GuardExpr = Spec.guard_expr,
+    StepExpr = Spec.step_expr,
+    typr_mutual_list_base_branch_lines(GroupName, BaseLengths, BaseLines),
+    typr_mutual_recursive_branch_lines(GroupName, GuardExpr, NextHelperName, StepExpr, RecursiveLines),
+    typr_mutual_false_lines(GroupName, FalseLines),
+    format_string_return('    ~w <- function(current_input) {', [HelperName], HelperLine),
+    format_string_return('        key <- paste0("~w:", paste(deparse(current_input), collapse=""));', [PredStr], KeyLine),
+    format_string_return('        if (exists(key, envir=~w_memo, inherits=FALSE)) {', [GroupName], MemoCheckLine),
+    format_string_return('            get(key, envir=~w_memo, inherits=FALSE)', [GroupName], MemoGetLine),
+    append([HelperLine, KeyLine, MemoCheckLine, MemoGetLine], BaseLines, Lines0),
+    append(Lines0, RecursiveLines, Lines1),
+    append(Lines1, FalseLines, Lines2),
+    append(Lines2, ['    };'], Lines),
+    atomic_list_concat(Lines, '\n', Code).
+typr_mutual_helper_code(_GroupName, false, Spec, Code) :-
+    Kind = Spec.kind,
+    Kind == list,
+    HelperName = Spec.helper_name,
+    NextHelperName = Spec.next_helper_name,
+    BaseLengths = Spec.base_lengths,
+    GuardExpr = Spec.guard_expr,
+    StepExpr = Spec.step_expr,
+    typr_mutual_list_base_branch_lines_no_memo(BaseLengths, BaseLines),
     typr_mutual_recursive_branch_lines_no_memo(GuardExpr, NextHelperName, StepExpr, RecursiveLines),
     format_string_return('    ~w <- function(current_input) {', [HelperName], HelperLine),
     append([HelperLine], BaseLines, Lines0),
@@ -273,6 +361,30 @@ typr_mutual_base_branch_lines_no_memo_rest([], []).
 typr_mutual_base_branch_lines_no_memo_rest([BaseValue|Rest], [IfLine, '            TRUE'|RestLines]) :-
     format(string(IfLine), '        } else if (identical(current_input, ~w)) {', [BaseValue]),
     typr_mutual_base_branch_lines_no_memo_rest(Rest, RestLines).
+
+typr_mutual_list_base_branch_lines(GroupName, [BaseLength|Rest], Lines) :-
+    format(string(IfLine), '        } else if (length(current_input) == ~w) {', [BaseLength]),
+    format(string(AssignLine), '            assign(key, result, envir=~w_memo);', [GroupName]),
+    Lines = [IfLine, '            result = TRUE;', AssignLine, '            result'|RestLines],
+    typr_mutual_list_base_branch_lines_rest(GroupName, Rest, RestLines).
+
+typr_mutual_list_base_branch_lines_rest(_GroupName, [], []).
+typr_mutual_list_base_branch_lines_rest(GroupName, [BaseLength|Rest], [
+    IfLine, '            result = TRUE;', AssignLine, '            result'|RestLines
+]) :-
+    format(string(IfLine), '        } else if (length(current_input) == ~w) {', [BaseLength]),
+    format(string(AssignLine), '            assign(key, result, envir=~w_memo);', [GroupName]),
+    typr_mutual_list_base_branch_lines_rest(GroupName, Rest, RestLines).
+
+typr_mutual_list_base_branch_lines_no_memo([BaseLength|Rest], Lines) :-
+    format(string(IfLine), '        if (length(current_input) == ~w) {', [BaseLength]),
+    Lines = [IfLine, '            TRUE'|RestLines],
+    typr_mutual_list_base_branch_lines_no_memo_rest(Rest, RestLines).
+
+typr_mutual_list_base_branch_lines_no_memo_rest([], []).
+typr_mutual_list_base_branch_lines_no_memo_rest([BaseLength|Rest], [IfLine, '            TRUE'|RestLines]) :-
+    format(string(IfLine), '        } else if (length(current_input) == ~w) {', [BaseLength]),
+    typr_mutual_list_base_branch_lines_no_memo_rest(Rest, RestLines).
 
 typr_mutual_recursive_branch_lines(GroupName, 'TRUE', NextHelperName, StepExpr, Lines) :-
     !,

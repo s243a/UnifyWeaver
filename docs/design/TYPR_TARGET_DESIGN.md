@@ -68,9 +68,10 @@ This document focuses on architecture and rollout choices specific to TypR.
    - conservative arity-2 numeric multi-call tree-recursive predicates that
      match the currently supported memoized helper shape for `fib/2`-style
      recursion, emitted as TypR functions with raw-expression helper bodies
-   - conservative arity-1 boolean numeric mutual-recursive predicate groups
-     that match the currently supported `is_even/1` / `is_odd/1`-style SCC
-     shape with integer base cases, numeric guard/step expressions, and
+   - conservative arity-1 boolean mutual-recursive predicate groups that
+     match the currently supported `is_even/1` / `is_odd/1`-style numeric
+     SCC shape or `even_list/1` / `odd_list/1`-style list-structural SCC
+     shape with `[]` / `[_]` base cases, one-tail recursive descent, and
      boolean return types, emitted as TypR functions with raw-expression
      memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
