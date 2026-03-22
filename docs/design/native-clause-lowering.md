@@ -282,6 +282,47 @@ compilable code) but are never required. A predicate with no `uw_type`
 declarations must still compile correctly through native lowering using target
 defaults.
 
+### Future Work: Type Coverage Lint
+
+A `check_type_coverage/1` (or similar) predicate should be added to provide
+optional enforcement of type declarations. This is a validation/lint tool, not
+part of the codegen pipeline itself. Proposed behavior:
+
+```prolog
+%% check_type_coverage(+PredSpec)
+%   Warns or fails if PredSpec lacks type declarations.
+%   Intended for CI or pre-compilation checks, not runtime codegen.
+
+?- check_type_coverage(classify/2).
+% WARNING: classify/2 arg 1 has no uw_type declaration
+% WARNING: classify/2 has no uw_return_type declaration
+```
+
+**Design considerations:**
+
+- **Granularity:** Should support checking a single predicate, a module, or all
+  predicates targeted for compilation. A batch mode like
+  `check_all_type_coverage(+Module, -Warnings)` would be useful for CI.
+
+- **Severity levels:**
+  - `warn` (default) — print warnings but don't fail; suitable for gradual
+    adoption where some predicates are typed and others aren't yet
+  - `strict` — fail if any targeted predicate lacks full type coverage; useful
+    for projects that want to enforce complete typing
+
+- **Scope:** Only check predicates that will go through native lowering or
+  typed codegen paths. Pure facts or predicates that only use pattern-based
+  compilation may not need type declarations.
+
+- **Integration with `uw_typed_mode`:** When a predicate's mode is `off`, the
+  lint should skip it. When `explicit`, missing types should be flagged at
+  `warn` severity. When `infer`, missing types are expected and the lint should
+  only flag cases where inference is ambiguous.
+
+- **Output format:** Should produce structured results (not just printed
+  warnings) so tooling can consume them — e.g., a list of
+  `missing_type(PredSpec, ArgIndex)` terms.
+
 ---
 
 ## Implementation Plan
