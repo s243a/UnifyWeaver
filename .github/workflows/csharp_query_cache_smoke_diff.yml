@@ -4,12 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       baseline_run_id:
-        description: 'GitHub Actions run ID for the baseline smoke summary artifact'
-        required: true
+        description: 'Optional explicit baseline run ID; if blank, resolve the latest successful smoke run for baseline_ref'
+        required: false
+        default: ''
         type: string
       compare_run_id:
-        description: 'GitHub Actions run ID for the compare smoke summary artifact'
-        required: true
+        description: 'Optional explicit compare run ID; if blank, resolve the latest successful smoke run for compare_ref'
+        required: false
+        default: ''
+        type: string
+      baseline_ref:
+        description: 'Ref name used for automatic baseline run resolution'
+        required: false
+        default: 'main'
+        type: string
+      compare_ref:
+        description: 'Ref name used for automatic compare run resolution; defaults to the workflow dispatch ref when blank'
+        required: false
+        default: ''
         type: string
       baseline_artifact_name:
         description: 'Artifact name containing the baseline cache smoke summary JSON'
@@ -48,11 +60,14 @@ jobs:
     env:
       BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
       COMPARE_RUN_ID: ${{ inputs.compare_run_id }}
+      BASELINE_REF_INPUT: ${{ inputs.baseline_ref }}
+      COMPARE_REF_INPUT: ${{ inputs.compare_ref }}
       BASELINE_ARTIFACT_NAME: ${{ inputs.baseline_artifact_name }}
       COMPARE_ARTIFACT_NAME: ${{ inputs.compare_artifact_name }}
       FAIL_ON_STATUS_REGRESSION: ${{ inputs.fail_on_status_regression }}
       MAX_TOTAL_DURATION_DELTA_SECONDS: ${{ inputs.max_total_duration_delta_seconds }}
       MAX_SLICE_DURATION_DELTA_SECONDS: ${{ inputs.max_slice_duration_delta_seconds }}
+      WORKFLOW_DISPATCH_REF: ${{ github.ref_name }}
       BASELINE_DOWNLOAD_DIR: tmp/csharp_query_smoke_summary_diff/baseline
       COMPARE_DOWNLOAD_DIR: tmp/csharp_query_smoke_summary_diff/compare
       CACHE_SMOKE_DIFF_JSON_PATH: tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json
@@ -68,13 +83,101 @@ jobs:
           pwsh -v
           gh --version
 
+      - name: Resolve baseline and compare run IDs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          function Get-RunMetadata {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string]$RunId,
+
+              [Parameter(Mandatory = $true)]
+              [string]$Source,
+
+              [Parameter(Mandatory = $false)]
+              [string]$RequestedRef
+            )
+
+            $run = gh api "/repos/$env:GITHUB_REPOSITORY/actions/runs/$RunId" | ConvertFrom-Json
+            return [pscustomobject]@{
+              RunId = [string]$run.id
+              RefName = [string]$run.head_branch
+              Sha = [string]$run.head_sha
+              HtmlUrl = [string]$run.html_url
+              Source = $Source
+              RequestedRef = $RequestedRef
+            }
+          }
+
+          function Resolve-LatestSmokeRun {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string]$RefName,
+
+              [Parameter(Mandatory = $true)]
+              [string]$ArtifactName
+            )
+
+            $encodedRef = [uri]::EscapeDataString($RefName)
+            $runsResponse = gh api "/repos/$env:GITHUB_REPOSITORY/actions/workflows/test.yml/runs?branch=$encodedRef&status=success&per_page=50" | ConvertFrom-Json
+
+            foreach ($run in @($runsResponse.workflow_runs)) {
+              $artifactsResponse = gh api "/repos/$env:GITHUB_REPOSITORY/actions/runs/$($run.id)/artifacts?per_page=100" | ConvertFrom-Json
+              $artifact = @($artifactsResponse.artifacts | Where-Object { $_.name -eq $ArtifactName -and -not $_.expired }) | Select-Object -First 1
+              if ($artifact) {
+                return [pscustomobject]@{
+                  RunId = [string]$run.id
+                  RefName = [string]$run.head_branch
+                  Sha = [string]$run.head_sha
+                  HtmlUrl = [string]$run.html_url
+                  Source = 'latest-successful'
+                  RequestedRef = $RefName
+                }
+              }
+            }
+
+            throw "Could not resolve a successful test.yml run for ref '$RefName' containing artifact '$ArtifactName'."
+          }
+
+          $baselineRef = if ([string]::IsNullOrWhiteSpace($env:BASELINE_REF_INPUT)) { 'main' } else { $env:BASELINE_REF_INPUT }
+          $compareRef = if ([string]::IsNullOrWhiteSpace($env:COMPARE_REF_INPUT)) { $env:WORKFLOW_DISPATCH_REF } else { $env:COMPARE_REF_INPUT }
+
+          $baselineRun = if ([string]::IsNullOrWhiteSpace($env:BASELINE_RUN_ID)) {
+            Resolve-LatestSmokeRun -RefName $baselineRef -ArtifactName $env:BASELINE_ARTIFACT_NAME
+          } else {
+            Get-RunMetadata -RunId $env:BASELINE_RUN_ID -Source 'explicit' -RequestedRef $baselineRef
+          }
+
+          $compareRun = if ([string]::IsNullOrWhiteSpace($env:COMPARE_RUN_ID)) {
+            Resolve-LatestSmokeRun -RefName $compareRef -ArtifactName $env:COMPARE_ARTIFACT_NAME
+          } else {
+            Get-RunMetadata -RunId $env:COMPARE_RUN_ID -Source 'explicit' -RequestedRef $compareRef
+          }
+
+          @(
+            "BASELINE_RESOLVED_RUN_ID=$($baselineRun.RunId)"
+            "BASELINE_RESOLVED_REF=$($baselineRun.RefName)"
+            "BASELINE_RESOLVED_SHA=$($baselineRun.Sha)"
+            "BASELINE_RESOLVED_URL=$($baselineRun.HtmlUrl)"
+            "BASELINE_RESOLUTION_SOURCE=$($baselineRun.Source)"
+            "BASELINE_REQUESTED_REF=$($baselineRun.RequestedRef)"
+            "COMPARE_RESOLVED_RUN_ID=$($compareRun.RunId)"
+            "COMPARE_RESOLVED_REF=$($compareRun.RefName)"
+            "COMPARE_RESOLVED_SHA=$($compareRun.Sha)"
+            "COMPARE_RESOLVED_URL=$($compareRun.HtmlUrl)"
+            "COMPARE_RESOLUTION_SOURCE=$($compareRun.Source)"
+            "COMPARE_REQUESTED_REF=$($compareRun.RequestedRef)"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Download baseline cache smoke summary artifact
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path $env:BASELINE_DOWNLOAD_DIR | Out-Null
-          gh run download $env:BASELINE_RUN_ID --repo $env:GITHUB_REPOSITORY --name $env:BASELINE_ARTIFACT_NAME --dir $env:BASELINE_DOWNLOAD_DIR
+          gh run download $env:BASELINE_RESOLVED_RUN_ID --repo $env:GITHUB_REPOSITORY --name $env:BASELINE_ARTIFACT_NAME --dir $env:BASELINE_DOWNLOAD_DIR
 
       - name: Download compare cache smoke summary artifact
         shell: pwsh
@@ -82,7 +185,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path $env:COMPARE_DOWNLOAD_DIR | Out-Null
-          gh run download $env:COMPARE_RUN_ID --repo $env:GITHUB_REPOSITORY --name $env:COMPARE_ARTIFACT_NAME --dir $env:COMPARE_DOWNLOAD_DIR
+          gh run download $env:COMPARE_RESOLVED_RUN_ID --repo $env:GITHUB_REPOSITORY --name $env:COMPARE_ARTIFACT_NAME --dir $env:COMPARE_DOWNLOAD_DIR
 
       - name: Resolve downloaded cache smoke summary paths
         shell: pwsh
@@ -149,9 +252,13 @@ jobs:
             @(
               "## C# Query Cache Smoke Diff",
               "",
-              "- Baseline run ID: `"$($env:BASELINE_RUN_ID)`"",
+              "- Baseline run ID: `"$($env:BASELINE_RESOLVED_RUN_ID)`"",
+              "- Baseline resolution: `"$($env:BASELINE_RESOLUTION_SOURCE)`"` (requested ref: `"$($env:BASELINE_REQUESTED_REF)`"`, resolved ref: `"$($env:BASELINE_RESOLVED_REF)`"`)",
+              "- Baseline run URL: `"$($env:BASELINE_RESOLVED_URL)`"",
               "- Baseline artifact: `"$($env:BASELINE_ARTIFACT_NAME)`"",
-              "- Compare run ID: `"$($env:COMPARE_RUN_ID)`"",
+              "- Compare run ID: `"$($env:COMPARE_RESOLVED_RUN_ID)`"",
+              "- Compare resolution: `"$($env:COMPARE_RESOLUTION_SOURCE)`"` (requested ref: `"$($env:COMPARE_REQUESTED_REF)`"`, resolved ref: `"$($env:COMPARE_RESOLVED_REF)`"`)",
+              "- Compare run URL: `"$($env:COMPARE_RESOLVED_URL)`"",
               "- Compare artifact: `"$($env:COMPARE_ARTIFACT_NAME)`"",
               "- Diff JSON artifact: `"$($env:CACHE_SMOKE_DIFF_ARTIFACT_NAME)`"",
               "- Overall result delta: `"$($diff.overallResult.delta)`"",
