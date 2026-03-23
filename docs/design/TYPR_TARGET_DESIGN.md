@@ -73,8 +73,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      SCC shape, `even_list/1` / `odd_list/1`-style list-structural SCC
      shape with `[]` / `[_]` base cases and one-tail recursive descent, or
      `even_left_tree/1` / `odd_left_tree/1`-style tree-structural SCC shape
-     with `[]` / `[V, [], []]` base cases, one-subtree recursive descent,
-     and boolean return types, emitted as TypR functions with raw-expression
+     with `[]` / `[V, [], []]` base cases and one-subtree recursive descent,
+     or `even_tree/1` / `odd_tree/1`-style tree-structural SCC shape with
+     `[]` / `[V, [], []]` base cases, two-subtree boolean descent, and
+     boolean return types, emitted as TypR functions with raw-expression
      memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
