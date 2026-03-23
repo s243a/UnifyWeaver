@@ -246,8 +246,9 @@ includes:
   `even_left_tree/1` / `odd_left_tree/1`, and `even_tree/1` / `odd_tree/1`,
   including dual-subtree tree SCCs with alias-style prework or guarded
   branch-local alias selection before the two recursive subtree calls, or
-  direct recursive subtree calls inside supported guarded branch bodies
-  before the shared boolean rejoin, lowered to TypR functions that use
+  direct recursive subtree calls inside supported guarded branch bodies,
+  including one nested branch-local control point around those calls before
+  the shared boolean rejoin, lowered to TypR functions that use
   raw-expression memoized helper bodies inside TypR instead of wrapped-R
   fallback
 - conservative `N`-ary structural tree-recursive predicates with one
