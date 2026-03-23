@@ -461,6 +461,84 @@ test(structural_tree_dual_mutual_nested_branch_prework_output_checks_with_typr, 
     retractall(user:typr_mutual_even_tree_nested_branch_pre(_)),
     retractall(user:typr_mutual_odd_tree_nested_branch_pre(_)).
 
+test(structural_tree_dual_mutual_intercall_guard_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_call_guard([])),
+    assertz(user:(typr_mutual_even_tree_call_guard([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_odd_tree_call_guard(L),
+            V >= 0,
+            typr_mutual_odd_tree_call_guard(R)
+        ;   typr_mutual_odd_tree_call_guard(R),
+            typr_mutual_odd_tree_call_guard(L)
+        )
+    )),
+    assertz(user:typr_mutual_odd_tree_call_guard([_, [], []])),
+    assertz(user:(typr_mutual_odd_tree_call_guard([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_even_tree_call_guard(L),
+            V >= 0,
+            typr_mutual_even_tree_call_guard(R)
+        ;   typr_mutual_even_tree_call_guard(R),
+            typr_mutual_even_tree_call_guard(L)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_call_guard/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_call_guard/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_call_guard/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_call_guard/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_call_guard/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_even_tree_call_guard(_)),
+    retractall(user:typr_mutual_odd_tree_call_guard(_)).
+
+test(structural_tree_dual_mutual_intercall_alias_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_call_alias([])),
+    assertz(user:(typr_mutual_even_tree_call_alias([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_odd_tree_call_alias(L),
+            Right = R,
+            typr_mutual_odd_tree_call_alias(Right)
+        ;   typr_mutual_odd_tree_call_alias(R),
+            typr_mutual_odd_tree_call_alias(L)
+        )
+    )),
+    assertz(user:typr_mutual_odd_tree_call_alias([_, [], []])),
+    assertz(user:(typr_mutual_odd_tree_call_alias([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_even_tree_call_alias(L),
+            Right = R,
+            typr_mutual_even_tree_call_alias(Right)
+        ;   typr_mutual_even_tree_call_alias(R),
+            typr_mutual_even_tree_call_alias(L)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_call_alias/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_call_alias/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_call_alias/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_call_alias/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_call_alias/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_even_tree_call_alias(_)),
+    retractall(user:typr_mutual_odd_tree_call_alias(_)).
+
 test(structural_tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:tree_sum([], 0)),

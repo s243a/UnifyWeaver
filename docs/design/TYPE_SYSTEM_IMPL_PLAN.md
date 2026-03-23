@@ -207,7 +207,8 @@ bring-up.
     `odd_tree/1`-style tree-structural SCC shape with two-subtree boolean
     descent and alias-style prework, guarded branch-local alias selection,
     or direct recursive subtree calls inside supported guarded branch
-    bodies before the shared boolean rejoin after the two recursive subtree
+    bodies with limited branch-local alias or guard state around those
+    calls before the shared boolean rejoin after the two recursive subtree
     calls, including one nested branch-local control point around those
     calls and shared branch-local guard prework before a nested mutual
     branch
