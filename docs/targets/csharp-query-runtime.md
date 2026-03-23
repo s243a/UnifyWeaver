@@ -211,6 +211,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
         - resolution source (`explicit` vs `latest-successful`)
         - requested refs
         - resolved refs
+        - resolved SHAs
         - resolved run URLs
         - artifact names
         - overall result delta
@@ -218,6 +219,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
         - threshold settings
         - threshold pass/fail result
         - threshold failure list when present
+      - diff JSON metadata with:
+        - `baselineRun.runId`, `baselineRun.resolutionSource`, `baselineRun.requestedRef`, `baselineRun.resolvedRef`, `baselineRun.resolvedSha`, `baselineRun.runUrl`, `baselineRun.artifactName`
+        - `compareRun.runId`, `compareRun.resolutionSource`, `compareRun.requestedRef`, `compareRun.resolvedRef`, `compareRun.resolvedSha`, `compareRun.runUrl`, `compareRun.artifactName`
 - Environment variables (used by the test harness):
   - `SKIP_CSHARP_EXECUTION=1` (generate C# projects but do not execute via Prolog)
   - `CSHARP_QUERY_OUTPUT_DIR=...` (where generated projects are written)
