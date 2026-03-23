@@ -189,6 +189,27 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - project filter
     - keep-artifacts setting
     - per-slice status and duration
+  - Manual compare workflow: `.github/workflows/csharp_query_cache_smoke_diff.yml`
+    - Trigger: `workflow_dispatch`
+    - Required inputs:
+      - `baseline_run_id`
+      - `compare_run_id`
+      - `baseline_artifact_name` (defaults to `csharp-query-smoke-summary-json`)
+      - `compare_artifact_name` (defaults to `csharp-query-smoke-summary-json`)
+    - Optional threshold inputs:
+      - `fail_on_status_regression`
+      - `max_total_duration_delta_seconds`
+      - `max_slice_duration_delta_seconds`
+    - Outputs:
+      - diff JSON artifact: `csharp-query-smoke-diff-json`
+      - job summary with:
+        - baseline / compare run IDs
+        - artifact names
+        - overall result delta
+        - total duration delta
+        - threshold settings
+        - threshold pass/fail result
+        - threshold failure list when present
 - Environment variables (used by the test harness):
   - `SKIP_CSHARP_EXECUTION=1` (generate C# projects but do not execute via Prolog)
   - `CSHARP_QUERY_OUTPUT_DIR=...` (where generated projects are written)
