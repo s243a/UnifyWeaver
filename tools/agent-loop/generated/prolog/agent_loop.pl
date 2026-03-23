@@ -150,6 +150,18 @@ is_over_budget(State, Result) :-
     estimate_tokens(State, Result) >= State.max_context_tokens
     ).
 
+%% Return a formatted summary of context state: message count and estimated tokens.
+format_stats(State, Result) :-
+    format(atom(Formatted), "msgs=~w tok=~w", [length(State.messages, Result), estimate_tokens(State, Result)]).
+
+%% Return how many more messages can be added before reaching max_messages. Returns -1 if unlimited.
+messages_remaining(State, Result) :-
+    (State.max_messages =< 0 ->
+        Result = -1
+    ;
+    (State.max_messages - length(State.messages, Result))
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -301,6 +313,10 @@ tool_count(State, Result) :-
 has_tools(State, Result) :-
     length(State.tools, Result) > 0.
 
+%% Return the number of registered MCP server connections.
+server_count(State, Result) :-
+    length(State.servers, Result).
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -367,6 +383,14 @@ is_json_content(Text, Result) :-
 %% Strip leading and trailing whitespace from parsed content.
 strip_content(Text, Result) :-
     normalize_space(atom(Result), Text).
+
+%% Check if content length exceeds a maximum threshold.
+content_exceeds_length(Text, Max_length, Result) :-
+    length(Text, Result) > Max_length.
+
+%% Check if a response text is empty or whitespace-only.
+is_empty_response(Text, Result) :-
+    length(normalize_space(atom(Result), Text), Result) =:= 0.
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---

@@ -71,6 +71,12 @@ defmodule AgentLoop.MCPClient do
     Enum.count(state.tools) > 0
   end
 
+  @doc "Return the number of registered MCP server connections."
+  @spec server_count(t()) :: integer()
+  def server_count(%__MODULE__{} = state) do
+    Enum.count(state.servers)
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

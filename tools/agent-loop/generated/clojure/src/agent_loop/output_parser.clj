@@ -3,7 +3,8 @@
 ;; Do not edit manually.
 
 (ns agent-loop.output-parser
-  (:require [cheshire.core :as json]))
+  (:require [cheshire.core :as json]
+            [clojure.string :as str]))
 
 (defn extract-fenced
   "Extract JSON from fenced code blocks (```json ... ```).
@@ -71,5 +72,17 @@
   "Strip leading and trailing whitespace from parsed content."
   [text]
   (clojure.string/trim text)
+)
+
+(defn content-exceeds-length
+  "Check if content length exceeds a maximum threshold."
+  [text max-length]
+  (> (count text) max-length)
+)
+
+(defn is-empty-response
+  "Check if a response text is empty or whitespace-only."
+  [text]
+  (zero? (count (clojure.string/trim text)))
 )
 

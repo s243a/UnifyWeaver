@@ -2094,6 +2094,9 @@ prolog_is_bool_expr(and_expr(_, _)).
 prolog_is_bool_expr(str_starts_with(_, _)).
 prolog_is_bool_expr(map_has_key(_, _)).
 prolog_is_bool_expr(path_exists(_)).
+prolog_is_bool_expr(lt(_, _)).
+prolog_is_bool_expr(lte(_, _)).
+prolog_is_bool_expr(neq(_, _)).
 prolog_is_bool_expr(self_total_cost >= _).
 logic_slot(prolog, self_field(F), S) :- format(atom(S), "State.~w", [F]).
 
@@ -4116,6 +4119,72 @@ shared_logic(sessions, session_has_metadata, [
     body_template("~return_val(map_has_key(data, \"metadata\"))~")
 ]).
 
+%% --- Deeper shared_logic coverage (109–116) ---
+
+shared_logic(output_parser, content_exceeds_length, [
+    signature(content_exceeds_length, [text, max_length], bool),
+    arg_types([string, int]),
+    doc("Check if content length exceeds a maximum threshold."),
+    container(none),
+    body_template("~return_val(gt(len_of(text), max_length))~")
+]).
+
+shared_logic(context, context_format_stats, [
+    signature(format_stats, [], owned_string),
+    arg_types([]),
+    doc("Return a formatted summary of context state: message count and estimated tokens."),
+    container('ContextManager'),
+    body_template("~return_val(format_str(\"msgs={} tok={}\", [len_of(self_direct(messages)), self_method(estimate_tokens)]))~")
+]).
+
+shared_logic(mcp, mcp_server_count, [
+    signature(server_count, [], int),
+    arg_types([]),
+    doc("Return the number of registered MCP server connections."),
+    container('MCPClient'),
+    body_template("~return_val(len_of(self_direct(servers)))~")
+]).
+
+shared_logic(costs, cost_per_input_token, [
+    signature(cost_per_input_token, [], float),
+    arg_types([]),
+    doc("Calculate average cost per input token. Returns 0.0 if no input tokens recorded."),
+    container('CostTracker'),
+    body_template("if ~eq_zero(self_direct(total_input_tokens))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(total_cost)), as_float(self_direct(total_input_tokens))))~")
+]).
+
+shared_logic(security, is_path_safe, [
+    signature(is_path_safe, [path], bool),
+    arg_types([string]),
+    doc("Check if a path does not contain directory traversal sequences."),
+    container(none),
+    body_template("~return_val(and_expr(not_expr(str_starts_with(path, \"..\")), not_expr(str_starts_with(path, \"/..\"))))~")
+]).
+
+shared_logic(security, is_visible_file, [
+    signature(is_visible_file, [filename], bool),
+    arg_types([string]),
+    doc("Check if a filename is not a hidden dotfile."),
+    container(none),
+    body_template("~return_val(not_expr(str_starts_with(filename, \".\")))~")
+]).
+
+shared_logic(output_parser, is_empty_response, [
+    signature(is_empty_response, [text], bool),
+    arg_types([string]),
+    doc("Check if a response text is empty or whitespace-only."),
+    container(none),
+    body_template("~return_val(eq_zero(len_of(str_strip(text))))~")
+]).
+
+shared_logic(context, context_messages_remaining, [
+    signature(messages_remaining, [], int),
+    arg_types([]),
+    doc("Return how many more messages can be added before reaching max_messages. Returns -1 if unlimited."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_messages), literal(0))~:\n    ~return_val(literal(-1))~\n~return_val(sub(self_direct(max_messages), len_of(self_direct(messages))))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -4821,6 +4890,57 @@ expand_expr(prolog, gte(A, B), S) :-
 expand_expr(clojure, gte(A, B), S) :-
     expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
     format(atom(S), "(>= ~w ~w)", [AS, BS]).
+
+%% --- Less-than comparison ---
+expand_expr(python, lt(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "~w < ~w", [AS, BS]).
+expand_expr(rust, lt(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "~w < ~w", [AS, BS]).
+expand_expr(elixir, lt(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "~w < ~w", [AS, BS]).
+expand_expr(prolog, lt(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "~w < ~w", [AS, BS]).
+expand_expr(clojure, lt(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(< ~w ~w)", [AS, BS]).
+
+%% --- Less-than-or-equal comparison ---
+expand_expr(python, lte(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "~w <= ~w", [AS, BS]).
+expand_expr(rust, lte(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "~w <= ~w", [AS, BS]).
+expand_expr(elixir, lte(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "~w <= ~w", [AS, BS]).
+expand_expr(prolog, lte(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "~w =< ~w", [AS, BS]).
+expand_expr(clojure, lte(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(<= ~w ~w)", [AS, BS]).
+
+%% --- Not-equal comparison ---
+expand_expr(python, neq(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "~w != ~w", [AS, BS]).
+expand_expr(rust, neq(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "~w != ~w", [AS, BS]).
+expand_expr(elixir, neq(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "~w != ~w", [AS, BS]).
+expand_expr(prolog, neq(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "~w \\= ~w", [AS, BS]).
+expand_expr(clojure, neq(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(not= ~w ~w)", [AS, BS]).
 
 %% --- String starts_with ---
 logic_slot(python, str_starts_with(Str, Prefix), S) :-
@@ -5650,7 +5770,7 @@ expand_expr(python, div_float(A, B), S) :-
 expand_expr(rust, div_float(A, B), S) :-
     expand_expr(rust, A, AStr),
     expand_expr(rust, B, BStr),
-    format(atom(S), "((~w) as f64 / ~w)", [AStr, BStr]).
+    format(atom(S), "(~w / ~w)", [AStr, BStr]).
 
 expand_expr(_, N, S) :- number(N), number_codes(N, Codes), atom_codes(S, Codes).
 
@@ -8699,7 +8819,8 @@ generate_clojure_context :-
     output_path(clojure, 'context.clj', Path),
     open(Path, write, S),
     write_clojure_header(S, 'agent-loop.context', 'Conversation context management'),
-    write(S, '(ns agent-loop.context)\n\n'),
+    write(S, '(ns agent-loop.context\n'),
+    write(S, '  (:require [clojure.string :as str]))\n\n'),
     write(S, '(defn create-context\n'),
     write(S, '  "Create a new context manager state."\n'),
     write(S, '  []\n'),
@@ -8732,7 +8853,8 @@ generate_clojure_output_parser :-
     open(Path, write, S),
     write_clojure_header(S, 'agent-loop.output-parser', 'JSON extraction from LLM output'),
     write(S, '(ns agent-loop.output-parser\n'),
-    write(S, '  (:require [cheshire.core :as json]))\n\n'),
+    write(S, '  (:require [cheshire.core :as json]\n'),
+    write(S, '            [clojure.string :as str]))\n\n'),
     %% Helper functions used by extract-json shared_logic method
     write(S, '(defn extract-fenced\n'),
     write(S, '  "Extract JSON from fenced code blocks (```json ... ```).\n'),
@@ -8762,6 +8884,7 @@ generate_clojure_sessions :-
     write_clojure_header(S, 'agent-loop.sessions', 'Session persistence'),
     write(S, '(ns agent-loop.sessions\n'),
     write(S, '  (:require [clojure.java.io :as io]\n'),
+    write(S, '            [clojure.string :as str]\n'),
     write(S, '            [cheshire.core :as json]))\n\n'),
     write(S, '(defn create-session-manager\n'),
     write(S, '  "Create a new session manager state."\n'),
@@ -8855,6 +8978,7 @@ generate_clojure_config :-
     write_clojure_header(S, 'agent-loop.config', 'Configuration loading and defaults'),
     write(S, '(ns agent-loop.config\n'),
     write(S, '  (:require [cheshire.core :as json]\n'),
+    write(S, '            [clojure.string :as str]\n'),
     write(S, '            [clojure.java.io :as io]))\n\n'),
     %% Config search paths
     write(S, '(def config-search-paths\n'),

@@ -59,6 +59,18 @@ defmodule AgentLoop.OutputParser do
     String.trim(text)
   end
 
+  @doc "Check if content length exceeds a maximum threshold."
+  @spec content_exceeds_length(String.t(), integer()) :: boolean()
+  def content_exceeds_length(text, max_length) do
+    Enum.count(text) > max_length
+  end
+
+  @doc "Check if a response text is empty or whitespace-only."
+  @spec is_empty_response(String.t()) :: boolean()
+  def is_empty_response(text) do
+    Enum.count(String.trim(text)) == 0
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

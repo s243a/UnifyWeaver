@@ -144,4 +144,14 @@ defmodule AgentLoop.CostTracker do
     state.message_count > 0
   end
 
+  @doc "Calculate average cost per input token. Returns 0.0 if no input tokens recorded."
+  @spec cost_per_input_token(t()) :: float()
+  def cost_per_input_token(%__MODULE__{} = state) do
+    if state.total_input_tokens == 0 do
+        0.0
+    else
+        ((state.total_cost * 1.0) / (state.total_input_tokens * 1.0))
+    end
+  end
+
 end
