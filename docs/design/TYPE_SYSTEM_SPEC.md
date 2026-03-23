@@ -386,7 +386,8 @@ Current TypR lowering policy is intentionally mixed:
   or the `even_tree/1` / `odd_tree/1`-style tree-structural SCC shape with
   `[]` / `[V, [], []]` base cases, two-subtree boolean descent, and
   alias-style prework, guarded branch-local alias selection, or direct
-  recursive subtree calls inside supported guarded branch bodies before
+  recursive subtree calls inside supported guarded branch bodies with
+  limited branch-local alias or guard state around those calls before
   those two recursive subtree calls rejoin via a shared boolean result,
   including one nested branch-local control point around those calls and
   shared branch-local guard prework before a nested mutual branch, using
