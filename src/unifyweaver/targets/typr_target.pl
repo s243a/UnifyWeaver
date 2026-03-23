@@ -81,6 +81,7 @@ compile_typr_mutual_recursion_group(Predicates0, MemoEnabled, Code) :-
     sort(Predicates0, Predicates),
     (   maplist(typr_mutual_numeric_spec(Predicates), Predicates, Specs)
     ;   maplist(typr_mutual_list_spec(Predicates), Predicates, Specs)
+    ;   maplist(typr_mutual_tree_spec(Predicates), Predicates, Specs)
     ),
     typr_mutual_group_code(Specs, MemoEnabled, Code).
 
@@ -168,6 +169,54 @@ typr_mutual_list_base_case_length(clause(Head, true), 0) :-
 typr_mutual_list_base_case_length(clause(Head, true), 1) :-
     Head =.. [_Pred, [Elem]],
     var(Elem).
+
+typr_mutual_tree_spec(GroupPredicates, Pred/Arity, Spec) :-
+    Arity =:= 1,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "bool"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    maplist(typr_mutual_tree_base_case_condition, BaseClauses, BaseConds0),
+    sort(BaseConds0, BaseConditions),
+    RecHead =.. [_PredName, RecInputPattern],
+    RecInputPattern = [ValueVar, LeftVar, RightVar],
+    parse_recursive_body(RecBody, ValueVar, Conditions, Computations, RecCall),
+    Conditions == [],
+    Computations == [],
+    RecCall \= none,
+    RecCall =.. [NextPred, RecArg],
+    memberchk(NextPred/1, GroupPredicates),
+    (   RecArg == LeftVar ->
+        StepExpr = '.subset2(current_input, 2)'
+    ;   RecArg == RightVar ->
+        StepExpr = '.subset2(current_input, 3)'
+    ),
+    atom_string(Pred, PredStr),
+    atom_string(NextPred, NextPredStr),
+    format(string(HelperName), '~w_impl', [PredStr]),
+    format(string(NextHelperName), '~w_impl', [NextPredStr]),
+    Spec = mutual_spec{
+        kind: tree,
+        pred: Pred,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "bool",
+        helper_name: HelperName,
+        next_helper_name: NextHelperName,
+        base_conditions: BaseConditions,
+        guard_expr: 'length(current_input) == 3',
+        step_expr: StepExpr
+    }.
+
+typr_mutual_tree_base_case_condition(clause(Head, true), 'length(current_input) == 0') :-
+    Head =.. [_Pred, []].
+typr_mutual_tree_base_case_condition(clause(Head, true), 'length(current_input) == 3 && length(.subset2(current_input, 2)) == 0 && length(.subset2(current_input, 3)) == 0') :-
+    Head =.. [_Pred, [Val, [], []]],
+    var(Val).
 
 typr_mutual_guard_expr(_HeadVar, [], 'TRUE') :-
     !.
@@ -334,6 +383,42 @@ typr_mutual_helper_code(_GroupName, false, Spec, Code) :-
     append(Lines0, RecursiveLines, Lines1),
     append(Lines1, ['        } else {', '            FALSE', '        }', '    };'], Lines),
     atomic_list_concat(Lines, '\n', Code).
+typr_mutual_helper_code(GroupName, true, Spec, Code) :-
+    Kind = Spec.kind,
+    Kind == tree,
+    PredStr = Spec.pred_str,
+    HelperName = Spec.helper_name,
+    NextHelperName = Spec.next_helper_name,
+    BaseConditions = Spec.base_conditions,
+    GuardExpr = Spec.guard_expr,
+    StepExpr = Spec.step_expr,
+    typr_mutual_tree_base_branch_lines(GroupName, BaseConditions, BaseLines),
+    typr_mutual_recursive_branch_lines(GroupName, GuardExpr, NextHelperName, StepExpr, RecursiveLines),
+    typr_mutual_false_lines(GroupName, FalseLines),
+    format_string_return('    ~w <- function(current_input) {', [HelperName], HelperLine),
+    format_string_return('        key <- paste0(\"~w:\", paste(deparse(current_input), collapse=\"\"));', [PredStr], KeyLine),
+    format_string_return('        if (exists(key, envir=~w_memo, inherits=FALSE)) {', [GroupName], MemoCheckLine),
+    format_string_return('            get(key, envir=~w_memo, inherits=FALSE)', [GroupName], MemoGetLine),
+    append([HelperLine, KeyLine, MemoCheckLine, MemoGetLine], BaseLines, Lines0),
+    append(Lines0, RecursiveLines, Lines1),
+    append(Lines1, FalseLines, Lines2),
+    append(Lines2, ['    };'], Lines),
+    atomic_list_concat(Lines, '\n', Code).
+typr_mutual_helper_code(_GroupName, false, Spec, Code) :-
+    Kind = Spec.kind,
+    Kind == tree,
+    HelperName = Spec.helper_name,
+    NextHelperName = Spec.next_helper_name,
+    BaseConditions = Spec.base_conditions,
+    GuardExpr = Spec.guard_expr,
+    StepExpr = Spec.step_expr,
+    typr_mutual_tree_base_branch_lines_no_memo(BaseConditions, BaseLines),
+    typr_mutual_recursive_branch_lines_no_memo(GuardExpr, NextHelperName, StepExpr, RecursiveLines),
+    format_string_return('    ~w <- function(current_input) {', [HelperName], HelperLine),
+    append([HelperLine], BaseLines, Lines0),
+    append(Lines0, RecursiveLines, Lines1),
+    append(Lines1, ['        } else {', '            FALSE', '        }', '    };'], Lines),
+    atomic_list_concat(Lines, '\n', Code).
 
 format_string_return(Format, Args, String) :-
     format(string(String), Format, Args).
@@ -385,6 +470,30 @@ typr_mutual_list_base_branch_lines_no_memo_rest([], []).
 typr_mutual_list_base_branch_lines_no_memo_rest([BaseLength|Rest], [IfLine, '            TRUE'|RestLines]) :-
     format(string(IfLine), '        } else if (length(current_input) == ~w) {', [BaseLength]),
     typr_mutual_list_base_branch_lines_no_memo_rest(Rest, RestLines).
+
+typr_mutual_tree_base_branch_lines(GroupName, [BaseCondition|Rest], Lines) :-
+    format(string(IfLine), '        } else if (~w) {', [BaseCondition]),
+    format(string(AssignLine), '            assign(key, result, envir=~w_memo);', [GroupName]),
+    Lines = [IfLine, '            result = TRUE;', AssignLine, '            result'|RestLines],
+    typr_mutual_tree_base_branch_lines_rest(GroupName, Rest, RestLines).
+
+typr_mutual_tree_base_branch_lines_rest(_GroupName, [], []).
+typr_mutual_tree_base_branch_lines_rest(GroupName, [BaseCondition|Rest], [
+    IfLine, '            result = TRUE;', AssignLine, '            result'|RestLines
+]) :-
+    format(string(IfLine), '        } else if (~w) {', [BaseCondition]),
+    format(string(AssignLine), '            assign(key, result, envir=~w_memo);', [GroupName]),
+    typr_mutual_tree_base_branch_lines_rest(GroupName, Rest, RestLines).
+
+typr_mutual_tree_base_branch_lines_no_memo([BaseCondition|Rest], Lines) :-
+    format(string(IfLine), '        if (~w) {', [BaseCondition]),
+    Lines = [IfLine, '            TRUE'|RestLines],
+    typr_mutual_tree_base_branch_lines_no_memo_rest(Rest, RestLines).
+
+typr_mutual_tree_base_branch_lines_no_memo_rest([], []).
+typr_mutual_tree_base_branch_lines_no_memo_rest([BaseCondition|Rest], [IfLine, '            TRUE'|RestLines]) :-
+    format(string(IfLine), '        } else if (~w) {', [BaseCondition]),
+    typr_mutual_tree_base_branch_lines_no_memo_rest(Rest, RestLines).
 
 typr_mutual_recursive_branch_lines(GroupName, 'TRUE', NextHelperName, StepExpr, Lines) :-
     !,

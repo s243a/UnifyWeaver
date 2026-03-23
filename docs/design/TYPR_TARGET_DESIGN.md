@@ -70,9 +70,11 @@ This document focuses on architecture and rollout choices specific to TypR.
      recursion, emitted as TypR functions with raw-expression helper bodies
    - conservative arity-1 boolean mutual-recursive predicate groups that
      match the currently supported `is_even/1` / `is_odd/1`-style numeric
-     SCC shape or `even_list/1` / `odd_list/1`-style list-structural SCC
-     shape with `[]` / `[_]` base cases, one-tail recursive descent, and
-     boolean return types, emitted as TypR functions with raw-expression
+     SCC shape, `even_list/1` / `odd_list/1`-style list-structural SCC
+     shape with `[]` / `[_]` base cases and one-tail recursive descent, or
+     `even_left_tree/1` / `odd_left_tree/1`-style tree-structural SCC shape
+     with `[]` / `[V, [], []]` base cases, one-subtree recursive descent,
+     and boolean return types, emitted as TypR functions with raw-expression
      memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving

@@ -201,7 +201,9 @@ bring-up.
   - conservative arity-1 boolean mutual-recursive predicate groups lowered
     to TypR-valid functions with raw-expression memoized helper bodies for
     the currently supported `is_even/1` / `is_odd/1`-style numeric SCC
-    shape and `even_list/1` / `odd_list/1`-style list-structural SCC shape
+    shape, `even_list/1` / `odd_list/1`-style list-structural SCC shape,
+    and `even_left_tree/1` / `odd_left_tree/1`-style tree-structural SCC
+    shape with one-subtree recursive descent
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
