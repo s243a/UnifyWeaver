@@ -53,6 +53,18 @@ defmodule AgentLoop.MCPClient do
     "#{state.request_id}"
   end
 
+  @doc "Check if the MCP client has an active connection."
+  @spec is_connected(t()) :: boolean()
+  def is_connected(%__MODULE__{} = state) do
+    state.request_id > 0
+  end
+
+  @doc "Return the number of tools discovered from MCP servers."
+  @spec tool_count(t()) :: integer()
+  def tool_count(%__MODULE__{} = state) do
+    Enum.count(state.tools)
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

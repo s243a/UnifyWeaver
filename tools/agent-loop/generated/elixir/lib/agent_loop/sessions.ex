@@ -74,6 +74,18 @@ defmodule AgentLoop.Sessions do
     end
   end
 
+  @doc "Build a session display name from its identifier."
+  @spec session_name_from_id(String.t()) :: String.t()
+  def session_name_from_id(session_id) do
+    "session-#{session_id}"
+  end
+
+  @doc "Check if a session has exceeded its maximum age in seconds."
+  @spec is_expired(float(), float()) :: boolean()
+  def is_expired(age, max_age) do
+    age > max_age
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

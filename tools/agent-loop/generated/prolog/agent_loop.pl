@@ -201,7 +201,7 @@ should_skip(State, Tool_name, Result) :-
     Result = memberchk(Tool_name, State.skip_tools).
 
 %% Look up a cached result by key. Returns nil if not found.
-get(State, Key, Result) :-
+cache_get(State, Key, Result) :-
     Result = get_dict(Key, State.cache, Val).
 
 %% Store a result in the cache.
@@ -277,6 +277,14 @@ mcp_is_notification(Method_name, Result) :-
 mcp_request_id_str(State, Result) :-
     Result = format(atom(Formatted), "~w", [State.request_id]).
 
+%% Check if the MCP client has an active connection.
+is_connected(State, Result) :-
+    Result = State.request_id > 0.
+
+%% Return the number of tools discovered from MCP servers.
+tool_count(State, Result) :-
+    length(State.tools, Result).
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -328,6 +336,14 @@ is_valid_format(Fmt, Result) :-
 escape_html(Text, Result) :-
     Result = html_escape(Text, Escaped).
 
+%% Check if text starts with a JSON object opening brace.
+is_json_object(Text, Result) :-
+    Result = atom_concat('{', _, Text).
+
+%% Return the character length of parsed content.
+content_length(Text, Result) :-
+    length(Text, Result).
+
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
 
@@ -374,6 +390,14 @@ session_id_from_filename(Filename, Result) :-
     ;
     Result = Filename
     ).
+
+%% Build a session display name from its identifier.
+session_name_from_id(Session_id, Result) :-
+    Result = format(atom(Formatted), "session-~w", [Session_id]).
+
+%% Check if a session has exceeded its maximum age in seconds.
+is_expired(Age, Max_age, Result) :-
+    Result = Age > Max_age.
 
 conversation([]).
 max_iterations(0).

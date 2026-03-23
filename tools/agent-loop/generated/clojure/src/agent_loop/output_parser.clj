@@ -49,3 +49,15 @@
   (-> text (.replace "&" "&amp;") (.replace "<" "&lt;") (.replace ">" "&gt;") (.replace "\"" "&quot;"))
 )
 
+(defn is-json-object
+  "Check if text starts with a JSON object opening brace."
+  [text]
+  (.startsWith text "{")
+)
+
+(defn content-length
+  "Return the character length of parsed content."
+  [text]
+  (count text)
+)
+

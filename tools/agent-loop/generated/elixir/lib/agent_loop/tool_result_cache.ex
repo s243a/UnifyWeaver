@@ -45,8 +45,8 @@ defmodule AgentLoop.ToolResultCache do
   end
 
   @doc "Look up a cached result by key. Returns nil if not found."
-  @spec get(t(), String.t()) :: String.t() | nil
-  def get(%__MODULE__{} = state, key) do
+  @spec cache_get(t(), String.t()) :: String.t() | nil
+  def cache_get(%__MODULE__{} = state, key) do
     Map.get(state.cache, key)
   end
 

@@ -128,4 +128,14 @@ defmodule AgentLoop.CostTracker do
     end
   end
 
+  @doc "Calculate average cost per message. Returns 0.0 if no messages recorded."
+  @spec average_cost_per_message(t()) :: float()
+  def average_cost_per_message(%__MODULE__{} = state) do
+    if state.message_count == 0 do
+        0.0
+    else
+        ((state.total_cost * 1.0) / (state.message_count * 1.0))
+    end
+  end
+
 end

@@ -41,3 +41,15 @@
   (format "%s" (:request-id state))
 )
 
+(defn is-connected
+  "Check if the MCP client has an active connection."
+  [state]
+  (> (:request-id state) 0)
+)
+
+(defn tool-count
+  "Return the number of tools discovered from MCP servers."
+  [state]
+  (count (:tools state))
+)
+
