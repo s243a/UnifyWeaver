@@ -59,3 +59,9 @@
   (> (count (:tools state)) 0)
 )
 
+(defn server-count
+  "Return the number of registered MCP server connections."
+  [state]
+  (count (:servers state))
+)
+

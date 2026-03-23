@@ -200,4 +200,20 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Return a formatted summary of context state: message count and estimated tokens."
+  @spec format_stats(t()) :: String.t()
+  def format_stats(%__MODULE__{} = state) do
+    "msgs=#{Enum.count(state.messages)} tok=#{estimate_tokens(state)}"
+  end
+
+  @doc "Return how many more messages can be added before reaching max_messages. Returns -1 if unlimited."
+  @spec messages_remaining(t()) :: integer()
+  def messages_remaining(%__MODULE__{} = state) do
+    if state.max_messages <= 0 do
+        -1
+    else
+        (state.max_messages - Enum.count(state.messages))
+    end
+  end
+
 end

@@ -131,6 +131,14 @@ average_cost_per_message(State, Result) :-
 is_tracking(State, Result) :-
     (State.message_count > 0 -> Result = true ; Result = false).
 
+%% Calculate average cost per input token. Returns 0.0 if no input tokens recorded.
+cost_per_input_token(State, Result) :-
+    (State.total_input_tokens =:= 0 ->
+        Result = 0.0
+    ;
+    Result = (float(State.total_cost) / float(State.total_input_tokens))
+    ).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

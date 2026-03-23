@@ -4,6 +4,7 @@
 
 (ns agent-loop.config
   (:require [cheshire.core :as json]
+            [clojure.string :as str]
             [clojure.java.io :as io]))
 
 (def config-search-paths

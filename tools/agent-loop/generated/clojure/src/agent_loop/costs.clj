@@ -138,3 +138,12 @@
   (> (:message-count state) 0)
 )
 
+(defn cost-per-input-token
+  "Calculate average cost per input token. Returns 0.0 if no input tokens recorded."
+  [state]
+  (if (zero? (:total-input-tokens state))
+      0.0
+      (/ (double (:total-cost state)) (double (:total-input-tokens state)))
+  )
+)
+
