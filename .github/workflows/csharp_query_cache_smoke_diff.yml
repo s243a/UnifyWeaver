@@ -1,0 +1,182 @@
+name: C# Query Cache Smoke Diff
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_run_id:
+        description: 'GitHub Actions run ID for the baseline smoke summary artifact'
+        required: true
+        type: string
+      compare_run_id:
+        description: 'GitHub Actions run ID for the compare smoke summary artifact'
+        required: true
+        type: string
+      baseline_artifact_name:
+        description: 'Artifact name containing the baseline cache smoke summary JSON'
+        required: true
+        default: 'csharp-query-smoke-summary-json'
+        type: string
+      compare_artifact_name:
+        description: 'Artifact name containing the compare cache smoke summary JSON'
+        required: true
+        default: 'csharp-query-smoke-summary-json'
+        type: string
+      fail_on_status_regression:
+        description: 'Fail if the overall result or any slice status regresses'
+        required: true
+        default: true
+        type: boolean
+      max_total_duration_delta_seconds:
+        description: 'Fail if compare total duration exceeds baseline by more than this many seconds; leave blank to disable'
+        required: false
+        default: ''
+        type: string
+      max_slice_duration_delta_seconds:
+        description: 'Fail if any compare slice duration exceeds baseline by more than this many seconds; leave blank to disable'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  csharp_query_cache_smoke_diff:
+    name: C# Query Cache Smoke Diff
+    runs-on: ubuntu-latest
+    env:
+      BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+      COMPARE_RUN_ID: ${{ inputs.compare_run_id }}
+      BASELINE_ARTIFACT_NAME: ${{ inputs.baseline_artifact_name }}
+      COMPARE_ARTIFACT_NAME: ${{ inputs.compare_artifact_name }}
+      FAIL_ON_STATUS_REGRESSION: ${{ inputs.fail_on_status_regression }}
+      MAX_TOTAL_DURATION_DELTA_SECONDS: ${{ inputs.max_total_duration_delta_seconds }}
+      MAX_SLICE_DURATION_DELTA_SECONDS: ${{ inputs.max_slice_duration_delta_seconds }}
+      BASELINE_DOWNLOAD_DIR: tmp/csharp_query_smoke_summary_diff/baseline
+      COMPARE_DOWNLOAD_DIR: tmp/csharp_query_smoke_summary_diff/compare
+      CACHE_SMOKE_DIFF_JSON_PATH: tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json
+      CACHE_SMOKE_DIFF_ARTIFACT_NAME: csharp-query-smoke-diff-json
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify PowerShell and GitHub CLI
+        shell: pwsh
+        run: |
+          pwsh -v
+          gh --version
+
+      - name: Download baseline cache smoke summary artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:BASELINE_DOWNLOAD_DIR | Out-Null
+          gh run download $env:BASELINE_RUN_ID --repo $env:GITHUB_REPOSITORY --name $env:BASELINE_ARTIFACT_NAME --dir $env:BASELINE_DOWNLOAD_DIR
+
+      - name: Download compare cache smoke summary artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:COMPARE_DOWNLOAD_DIR | Out-Null
+          gh run download $env:COMPARE_RUN_ID --repo $env:GITHUB_REPOSITORY --name $env:COMPARE_ARTIFACT_NAME --dir $env:COMPARE_DOWNLOAD_DIR
+
+      - name: Resolve downloaded cache smoke summary paths
+        shell: pwsh
+        run: |
+          $baselineSummaryPath = Get-ChildItem -Path $env:BASELINE_DOWNLOAD_DIR -Recurse -File -Filter cache_smoke_sequence_summary.json | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $baselineSummaryPath) {
+            throw "Could not find cache_smoke_sequence_summary.json under $($env:BASELINE_DOWNLOAD_DIR)."
+          }
+
+          $compareSummaryPath = Get-ChildItem -Path $env:COMPARE_DOWNLOAD_DIR -Recurse -File -Filter cache_smoke_sequence_summary.json | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $compareSummaryPath) {
+            throw "Could not find cache_smoke_sequence_summary.json under $($env:COMPARE_DOWNLOAD_DIR)."
+          }
+
+          "BASELINE_SUMMARY_PATH=$baselineSummaryPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "COMPARE_SUMMARY_PATH=$compareSummaryPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run cache smoke summary diff
+        shell: pwsh
+        run: |
+          $diffArgs = @(
+            '-NoProfile'
+            '-File'
+            'scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1'
+            '-BaselineSummaryPath'
+            $env:BASELINE_SUMMARY_PATH
+            '-CompareSummaryPath'
+            $env:COMPARE_SUMMARY_PATH
+            '-JsonOutputPath'
+            $env:CACHE_SMOKE_DIFF_JSON_PATH
+          )
+
+          if ($env:FAIL_ON_STATUS_REGRESSION -eq 'true') {
+            $diffArgs += '-FailOnStatusRegression'
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:MAX_TOTAL_DURATION_DELTA_SECONDS)) {
+            $diffArgs += @('-MaxTotalDurationDeltaSeconds', $env:MAX_TOTAL_DURATION_DELTA_SECONDS)
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:MAX_SLICE_DURATION_DELTA_SECONDS)) {
+            $diffArgs += @('-MaxSliceDurationDeltaSeconds', $env:MAX_SLICE_DURATION_DELTA_SECONDS)
+          }
+
+          & pwsh @diffArgs
+
+      - name: Upload cache smoke diff JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.CACHE_SMOKE_DIFF_ARTIFACT_NAME }}
+          path: ${{ env.CACHE_SMOKE_DIFF_JSON_PATH }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summarize cache smoke diff
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path $env:CACHE_SMOKE_DIFF_JSON_PATH) {
+            $diff = Get-Content $env:CACHE_SMOKE_DIFF_JSON_PATH -Raw | ConvertFrom-Json
+            $thresholds = $diff.thresholds
+
+            @(
+              "## C# Query Cache Smoke Diff",
+              "",
+              "- Baseline run ID: `"$($env:BASELINE_RUN_ID)`"",
+              "- Baseline artifact: `"$($env:BASELINE_ARTIFACT_NAME)`"",
+              "- Compare run ID: `"$($env:COMPARE_RUN_ID)`"",
+              "- Compare artifact: `"$($env:COMPARE_ARTIFACT_NAME)`"",
+              "- Diff JSON artifact: `"$($env:CACHE_SMOKE_DIFF_ARTIFACT_NAME)`"",
+              "- Overall result delta: `"$($diff.overallResult.delta)`"",
+              "- Total duration delta: `"$($diff.totalDuration.delta)`"",
+              "- Fail on status regression: $(if ($thresholds.failOnStatusRegression) { 'true' } else { 'false' })",
+              "- Max total duration delta seconds: $(if ($null -eq $thresholds.maxTotalDurationDeltaSeconds) { 'disabled' } else { $thresholds.maxTotalDurationDeltaSeconds })",
+              "- Max slice duration delta seconds: $(if ($null -eq $thresholds.maxSliceDurationDeltaSeconds) { 'disabled' } else { $thresholds.maxSliceDurationDeltaSeconds })",
+              "- Thresholds passed: $(if ($thresholds.passed) { 'true' } else { 'false' })"
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            if ($thresholds.failures.Count -gt 0) {
+              @(
+                "",
+                "### Threshold Failures",
+                ""
+              ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+              foreach ($failure in $thresholds.failures) {
+                "- $failure" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              }
+            }
+          } else {
+            @(
+              "## C# Query Cache Smoke Diff",
+              "",
+              "- Diff JSON was not produced at `"$($env:CACHE_SMOKE_DIFF_JSON_PATH)`""
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
