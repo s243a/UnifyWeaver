@@ -69,3 +69,9 @@
   (> (:char-count state) 0)
 )
 
+(defn is-idle
+  "Check if the streaming counter is idle (no tokens counted)."
+  [state]
+  (zero? (:token-count state))
+)
+

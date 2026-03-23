@@ -190,4 +190,14 @@ defmodule AgentLoop.ContextManager do
     Enum.count(state.messages)
   end
 
+  @doc "Check if context has exceeded the maximum token budget."
+  @spec is_over_budget(t()) :: boolean()
+  def is_over_budget(%__MODULE__{} = state) do
+    if state.max_context_tokens <= 0 do
+        false
+    else
+        estimate_tokens(state) >= state.max_context_tokens
+    end
+  end
+
 end

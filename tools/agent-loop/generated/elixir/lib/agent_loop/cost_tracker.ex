@@ -138,4 +138,10 @@ defmodule AgentLoop.CostTracker do
     end
   end
 
+  @doc "Check if cost tracking is active (has recorded any usage)."
+  @spec is_tracking(t()) :: boolean()
+  def is_tracking(%__MODULE__{} = state) do
+    state.message_count > 0
+  end
+
 end

@@ -73,16 +73,16 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 100 (5-target parity: Python, Rust, Elixir, Prolog, Clojure) |
+| `shared_logic/3` facts | 108 (5-target parity: Python, Rust, Elixir, Prolog, Clojure) |
 | `logic_slot/3` facts | ~120 (25 python + 25 rust + ~35 elixir + ~35 prolog) |
-| `expand_expr/3` facts | ~90 (20 python + 20 rust + ~25 elixir + ~25 prolog) |
+| `expand_expr/3` facts | ~110 (incl. or_expr, and_expr, str_strip across 5 targets) |
 | `resolve_type/3` facts | 68 (15 python + 20 rust + 18 elixir + 15 prolog incl. `optional/1`, `owned_string`, `list_of_string`) |
 | `elixir_server/2` facts | 6 (data-driven OTP supervision) |
 | `rust_data_table/5` specs | 9 |
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 1841 Prolog (incl. 760 declarative) + 142 Rust + 148 Python + 25 Clojure |
+| Total tests | 1937 Prolog (incl. 856 declarative) + 142 Rust + 148 Python + 31 Clojure |
 
 ## Backends
 

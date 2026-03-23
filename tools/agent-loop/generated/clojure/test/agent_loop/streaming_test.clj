@@ -11,3 +11,7 @@
 (deftest test-is-live
   (is (false? (streaming/is-live {:show-live false})))
   (is (true? (streaming/is-live {:show-live true}))))
+
+(deftest test-is-idle
+  (is (true? (streaming/is-idle {:token-count 0})))
+  (is (false? (streaming/is-idle {:token-count 5}))))

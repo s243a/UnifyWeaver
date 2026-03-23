@@ -2075,8 +2075,26 @@ logic_slot(prolog, return_val(Expr), S) :-
     (sub_atom(ExprStr, _, _, _, 'Result') ->
         S = ExprStr
     ;
-        format(atom(S), "Result = ~w", [ExprStr])
+        %% If expression is a boolean/comparison, wrap in goal-style conditional
+        (prolog_is_bool_expr(Expr) ->
+            format(atom(S), "(~w -> Result = true ; Result = false)", [ExprStr])
+        ;
+            format(atom(S), "Result = ~w", [ExprStr])
+        )
     ).
+
+%% Detect expressions that produce boolean results in Prolog
+prolog_is_bool_expr(gt(_, _)).
+prolog_is_bool_expr(gte(_, _)).
+prolog_is_bool_expr(eq_zero(_)).
+prolog_is_bool_expr(eq_str(_, _)).
+prolog_is_bool_expr(not_expr(_)).
+prolog_is_bool_expr(or_expr(_, _)).
+prolog_is_bool_expr(and_expr(_, _)).
+prolog_is_bool_expr(str_starts_with(_, _)).
+prolog_is_bool_expr(map_has_key(_, _)).
+prolog_is_bool_expr(path_exists(_)).
+prolog_is_bool_expr(self_total_cost >= _).
 logic_slot(prolog, self_field(F), S) :- format(atom(S), "State.~w", [F]).
 
 %% Expression expansion
@@ -4032,6 +4050,72 @@ shared_logic(costs, average_cost_per_message, [
     body_template("if ~eq_zero(self_direct(message_count))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(total_cost)), as_float(self_direct(message_count))))~")
 ]).
 
+%% --- Deeper shared_logic coverage (101–108) ---
+
+shared_logic(output_parser, is_json_content, [
+    signature(is_json_content, [text], bool),
+    arg_types([string]),
+    doc("Check if text starts with a JSON opening character (object or array)."),
+    container(none),
+    body_template("~return_val(or_expr(str_starts_with(text, \"{\"), str_starts_with(text, \"[\")))~")
+]).
+
+shared_logic(output_parser, strip_content, [
+    signature(strip_content, [text], owned_string),
+    arg_types([string]),
+    doc("Strip leading and trailing whitespace from parsed content."),
+    container(none),
+    body_template("~return_val(str_strip(text))~")
+]).
+
+shared_logic(mcp, mcp_has_tools, [
+    signature(has_tools, [], bool),
+    arg_types([]),
+    doc("Check if any tools have been discovered from MCP servers."),
+    container('MCPClient'),
+    body_template("~return_val(gt(len_of(self_direct(tools)), literal(0)))~")
+]).
+
+shared_logic(tools, tool_needs_path_validation, [
+    signature(needs_path_validation, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if a tool requires file path validation (read, write, or edit)."),
+    container(none),
+    body_template("~return_val(or_expr(str_starts_with(tool_name, \"read\"), or_expr(str_starts_with(tool_name, \"write\"), str_starts_with(tool_name, \"edit\"))))~")
+]).
+
+shared_logic(context, context_is_over_budget, [
+    signature(is_over_budget, [], bool),
+    arg_types([]),
+    doc("Check if context has exceeded the maximum token budget."),
+    container('ContextManager'),
+    body_template("if ~guard_leq_zero(self_direct(max_context_tokens))~:\n    ~return_val(false)~\n~return_val(gte(self_method(estimate_tokens), self_direct(max_context_tokens)))~")
+]).
+
+shared_logic(streaming, streaming_is_idle, [
+    signature(is_idle, [], bool),
+    arg_types([]),
+    doc("Check if the streaming counter is idle (no tokens counted)."),
+    container('StreamingTokenCounter'),
+    body_template("~return_val(eq_zero(self_direct(token_count)))~")
+]).
+
+shared_logic(costs, is_tracking, [
+    signature(is_tracking, [], bool),
+    arg_types([]),
+    doc("Check if cost tracking is active (has recorded any usage)."),
+    container('CostTracker'),
+    body_template("~return_val(gt(self_direct(message_count), literal(0)))~")
+]).
+
+shared_logic(sessions, session_has_metadata, [
+    signature(has_metadata, [data], bool),
+    arg_types([dict]),
+    doc("Check if session data contains a metadata key."),
+    container(none),
+    body_template("~return_val(map_has_key(data, \"metadata\"))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -4671,6 +4755,43 @@ expand_expr(elixir, not_expr(Expr), S) :-
 expand_expr(prolog, not_expr(Expr), S) :-
     expand_expr(prolog, Expr, Inner), format(atom(S), "\\+ ~w", [Inner]).
 
+%% --- Boolean combinators ---
+expand_expr(python, or_expr(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "(~w or ~w)", [AS, BS]).
+expand_expr(rust, or_expr(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "(~w || ~w)", [AS, BS]).
+expand_expr(elixir, or_expr(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "(~w or ~w)", [AS, BS]).
+expand_expr(prolog, or_expr(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "(~w ; ~w)", [AS, BS]).
+
+expand_expr(python, and_expr(A, B), S) :-
+    expand_expr(python, A, AS), expand_expr(python, B, BS),
+    format(atom(S), "(~w and ~w)", [AS, BS]).
+expand_expr(rust, and_expr(A, B), S) :-
+    expand_expr(rust, A, AS), expand_expr(rust, B, BS),
+    format(atom(S), "(~w && ~w)", [AS, BS]).
+expand_expr(elixir, and_expr(A, B), S) :-
+    expand_expr(elixir, A, AS), expand_expr(elixir, B, BS),
+    format(atom(S), "(~w and ~w)", [AS, BS]).
+expand_expr(prolog, and_expr(A, B), S) :-
+    expand_expr(prolog, A, AS), expand_expr(prolog, B, BS),
+    format(atom(S), "(~w , ~w)", [AS, BS]).
+
+%% --- String strip (trim whitespace) ---
+expand_expr(python, str_strip(Expr), S) :-
+    expand_expr(python, Expr, Inner), format(atom(S), "~w.strip()", [Inner]).
+expand_expr(rust, str_strip(Expr), S) :-
+    expand_expr(rust, Expr, Inner), format(atom(S), "~w.trim()", [Inner]).
+expand_expr(elixir, str_strip(Expr), S) :-
+    expand_expr(elixir, Expr, Inner), format(atom(S), "String.trim(~w)", [Inner]).
+expand_expr(prolog, str_strip(Expr), S) :-
+    expand_expr(prolog, Expr, Inner), format(atom(S), "normalize_space(atom(Result), ~w)", [Inner]).
+
 %% --- Greater-than comparison ---
 expand_expr(python, gt(A, B), S) :-
     expand_expr(python, A, AS), expand_expr(python, B, BS),
@@ -5093,6 +5214,15 @@ expand_expr(clojure, path_exists(Path), S) :-
 expand_expr(clojure, not_expr(Expr), S) :-
     expand_expr(clojure, Expr, Inner),
     format(atom(S), "(not ~w)", [Inner]).
+expand_expr(clojure, or_expr(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(or ~w ~w)", [AS, BS]).
+expand_expr(clojure, and_expr(A, B), S) :-
+    expand_expr(clojure, A, AS), expand_expr(clojure, B, BS),
+    format(atom(S), "(and ~w ~w)", [AS, BS]).
+expand_expr(clojure, str_strip(Expr), S) :-
+    expand_expr(clojure, Expr, Inner),
+    format(atom(S), "(clojure.string/trim ~w)", [Inner]).
 expand_expr(clojure, str_starts_with(Str, Prefix), S) :-
     expand_expr(clojure, Str, SS),
     format(atom(S), '(.startsWith ~w "~w")', [SS, Prefix]).
@@ -8882,7 +9012,16 @@ generate_clojure_cost_test(Dir) :-
     write(S, '  (let [cost (costs/cost-compute 1000 15.0)]\n'),
     write(S, '    (is (< (Math/abs (- cost 0.015)) 0.0001))))\n\n'),
     write(S, '(deftest test-total-tokens\n'),
-    write(S, '  (is (= 300 (costs/total-tokens {:total-input-tokens 200 :total-output-tokens 100}))))\n'),
+    write(S, '  (is (= 300 (costs/total-tokens {:total-input-tokens 200 :total-output-tokens 100}))))\n\n'),
+    write(S, '(deftest test-is-free-model\n'),
+    write(S, '  (is (true? (costs/is-free-model {:total-cost 0.0})))\n'),
+    write(S, '  (is (false? (costs/is-free-model {:total-cost 0.5}))))\n\n'),
+    write(S, '(deftest test-average-cost-per-message\n'),
+    write(S, '  (is (= 0.0 (costs/average-cost-per-message {:total-cost 10.0 :message-count 0})))\n'),
+    write(S, '  (is (= 2.0 (costs/average-cost-per-message {:total-cost 10.0 :message-count 5}))))\n\n'),
+    write(S, '(deftest test-is-tracking\n'),
+    write(S, '  (is (false? (costs/is-tracking {:message-count 0})))\n'),
+    write(S, '  (is (true? (costs/is-tracking {:message-count 3}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -8965,7 +9104,16 @@ generate_clojure_tools_test(Dir) :-
     write(S, '  (is (not (tools/is-destructive "read"))))\n\n'),
     write(S, '(deftest test-is-mcp-tool\n'),
     write(S, '  (is (true? (tools/is-mcp-tool "mcp:server/tool")))\n'),
-    write(S, '  (is (false? (tools/is-mcp-tool "read"))))\n'),
+    write(S, '  (is (false? (tools/is-mcp-tool "read"))))\n\n'),
+    write(S, '(deftest test-is-builtin\n'),
+    write(S, '  (is (true? (tools/is-builtin "read")))\n'),
+    write(S, '  (is (true? (tools/is-builtin "bash")))\n'),
+    write(S, '  (is (false? (tools/is-builtin "mcp__server__tool"))))\n\n'),
+    write(S, '(deftest test-needs-path-validation\n'),
+    write(S, '  (is (true? (tools/needs-path-validation "read")))\n'),
+    write(S, '  (is (true? (tools/needs-path-validation "write")))\n'),
+    write(S, '  (is (true? (tools/needs-path-validation "edit")))\n'),
+    write(S, '  (is (false? (tools/needs-path-validation "bash"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -8983,7 +9131,10 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '    (is (false? (:show-live state)))))\n\n'),
     write(S, '(deftest test-is-live\n'),
     write(S, '  (is (false? (streaming/is-live {:show-live false})))\n'),
-    write(S, '  (is (true? (streaming/is-live {:show-live true}))))\n'),
+    write(S, '  (is (true? (streaming/is-live {:show-live true}))))\n\n'),
+    write(S, '(deftest test-is-idle\n'),
+    write(S, '  (is (true? (streaming/is-idle {:token-count 0})))\n'),
+    write(S, '  (is (false? (streaming/is-idle {:token-count 5}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 

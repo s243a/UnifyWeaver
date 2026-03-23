@@ -132,3 +132,9 @@
   )
 )
 
+(defn is-tracking
+  "Check if cost tracking is active (has recorded any usage)."
+  [state]
+  (> (:message-count state) 0)
+)
+

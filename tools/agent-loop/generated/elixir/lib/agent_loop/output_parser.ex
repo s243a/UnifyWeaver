@@ -47,6 +47,18 @@ defmodule AgentLoop.OutputParser do
     Enum.count(text)
   end
 
+  @doc "Check if text starts with a JSON opening character (object or array)."
+  @spec is_json_content(String.t()) :: boolean()
+  def is_json_content(text) do
+    (String.starts_with?(text, "{") or String.starts_with?(text, "["))
+  end
+
+  @doc "Strip leading and trailing whitespace from parsed content."
+  @spec strip_content(String.t()) :: String.t()
+  def strip_content(text) do
+    String.trim(text)
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

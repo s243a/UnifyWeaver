@@ -142,6 +142,14 @@ message_at(State, Index, Result) :-
 total_chars(State, Result) :-
     length(State.messages, Result).
 
+%% Check if context has exceeded the maximum token budget.
+is_over_budget(State, Result) :-
+    (State.max_context_tokens =< 0 ->
+        Result = false
+    ;
+    estimate_tokens(State, Result) >= State.max_context_tokens
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -179,7 +187,11 @@ reset_counts(State, State1) :-
 
 %% Check if streaming has received any tokens (char_count > 0).
 is_active(State, Result) :-
-    Result = State.char_count > 0.
+    (State.char_count > 0 -> Result = true ; Result = false).
+
+%% Check if the streaming counter is idle (no tokens counted).
+is_idle(State, Result) :-
+    (State.token_count =:= 0 -> Result = true ; Result = false).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -210,7 +222,7 @@ put(State, Key, Value, State1) :-
 
 %% Check if a key exists in the cache.
 has_key(State, Key, Result) :-
-    Result = get_dict(Key, State.cache, _).
+    (get_dict(Key, State.cache, _) -> Result = true ; Result = false).
 
 %% Return the number of cached tool results.
 cache_count(State, Result) :-
@@ -271,7 +283,7 @@ mcp_parse_tool_name(Tool_name, Result) :-
 
 %% Check if a JSON-RPC method is a notification (starts with 'notifications/').
 mcp_is_notification(Method_name, Result) :-
-    Result = atom_concat('notifications/', _, Method_name).
+    (atom_concat('notifications/', _, Method_name) -> Result = true ; Result = false).
 
 %% Get the current request ID as a string for JSON-RPC message construction.
 mcp_request_id_str(State, Result) :-
@@ -279,11 +291,15 @@ mcp_request_id_str(State, Result) :-
 
 %% Check if the MCP client has an active connection.
 is_connected(State, Result) :-
-    Result = State.request_id > 0.
+    (State.request_id > 0 -> Result = true ; Result = false).
 
 %% Return the number of tools discovered from MCP servers.
 tool_count(State, Result) :-
     length(State.tools, Result).
+
+%% Check if any tools have been discovered from MCP servers.
+has_tools(State, Result) :-
+    length(State.tools, Result) > 0.
 
 
 %% --- shared_logic: retry (generated from compile_logic) ---
@@ -298,7 +314,7 @@ compute_delay(Base_delay, Exponential_base, Attempt, Max_delay, Result) :-
 
 %% Check if the retry attempt has exceeded the maximum allowed retries.
 retry_max_exceeded(Attempt, Max_retries, Result) :-
-    Result = Attempt >= Max_retries.
+    (Attempt >= Max_retries -> Result = true ; Result = false).
 
 %% Cap a retry delay to a maximum value.
 retry_delay_capped(Delay, Max_delay, Result) :-
@@ -306,7 +322,7 @@ retry_delay_capped(Delay, Max_delay, Result) :-
 
 %% Check if this is the first retry attempt (attempt == 0).
 is_first_attempt(Attempt, Result) :-
-    Result = Attempt =:= 0.
+    (Attempt =:= 0 -> Result = true ; Result = false).
 
 %% Check if a request should be retried based on attempt count and status code.
 should_retry(Attempt, Max_retries, Status, Result) :-
@@ -338,11 +354,19 @@ escape_html(Text, Result) :-
 
 %% Check if text starts with a JSON object opening brace.
 is_json_object(Text, Result) :-
-    Result = atom_concat('{', _, Text).
+    (atom_concat('{', _, Text) -> Result = true ; Result = false).
 
 %% Return the character length of parsed content.
 content_length(Text, Result) :-
     length(Text, Result).
+
+%% Check if text starts with a JSON opening character (object or array).
+is_json_content(Text, Result) :-
+    ((atom_concat('{', _, Text) ; atom_concat('[', _, Text)) -> Result = true ; Result = false).
+
+%% Strip leading and trailing whitespace from parsed content.
+strip_content(Text, Result) :-
+    normalize_space(atom(Result), Text).
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
@@ -353,7 +377,7 @@ session_path(State, Session_id, Result) :-
 
 %% Check if a session file exists on disk.
 session_exists(State, Session_id, Result) :-
-    Result = exists_file(directory_file_path(State.sessions_dir, format(atom(Formatted), "~w.json", [Session_id]), Path)).
+    (exists_file(directory_file_path(State.sessions_dir, format(atom(Formatted), "~w.json", [Session_id]), Path)) -> Result = true ; Result = false).
 
 %% Build the filename for a session (id + .json extension).
 session_filename(Session_id, Result) :-
@@ -376,7 +400,7 @@ session_is_valid_id(Session_id, Result) :-
     (Session_id == "" ->
         Result = false
     ;
-    Result = \+ sub_string(Session_id, _, _, _, "/")
+    (\+ sub_string(Session_id, _, _, _, "/") -> Result = true ; Result = false)
     ).
 
 %% Return the configured sessions directory path.
@@ -397,7 +421,11 @@ session_name_from_id(Session_id, Result) :-
 
 %% Check if a session has exceeded its maximum age in seconds.
 is_expired(Age, Max_age, Result) :-
-    Result = Age > Max_age.
+    (Age > Max_age -> Result = true ; Result = false).
+
+%% Check if session data contains a metadata key.
+has_metadata(Data, Result) :-
+    (get_dict("metadata", Data, _) -> Result = true ; Result = false).
 
 conversation([]).
 max_iterations(0).

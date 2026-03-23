@@ -53,3 +53,9 @@
   (count (:tools state))
 )
 
+(defn has-tools
+  "Check if any tools have been discovered from MCP servers."
+  [state]
+  (> (count (:tools state)) 0)
+)
+
