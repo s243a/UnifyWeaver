@@ -169,6 +169,7 @@ jobs:
             "COMPARE_RESOLVED_URL=$($compareRun.HtmlUrl)"
             "COMPARE_RESOLUTION_SOURCE=$($compareRun.Source)"
             "COMPARE_REQUESTED_REF=$($compareRun.RequestedRef)"
+            "CACHE_SMOKE_DIFF_COMPARE_URL=$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/compare/$($baselineRun.Sha)...$($compareRun.Sha)"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Download baseline cache smoke summary artifact
@@ -263,6 +264,8 @@ jobs:
             artifactName = $env:COMPARE_ARTIFACT_NAME
           }) -Force
 
+          $diff | Add-Member -NotePropertyName compareUrl -NotePropertyValue $env:CACHE_SMOKE_DIFF_COMPARE_URL -Force
+
           $diff | ConvertTo-Json -Depth 10 | Set-Content -Path $env:CACHE_SMOKE_DIFF_JSON_PATH
 
       - name: Upload cache smoke diff JSON
@@ -294,6 +297,7 @@ jobs:
               "- Compare resolution: `"$($env:COMPARE_RESOLUTION_SOURCE)`"` (requested ref: `"$($env:COMPARE_REQUESTED_REF)`"`, resolved ref: `"$($env:COMPARE_RESOLVED_REF)`"`)",
               "- Compare resolved SHA: `"$($env:COMPARE_RESOLVED_SHA)`"",
               "- Compare run URL: `"$($env:COMPARE_RESOLVED_URL)`"",
+              "- Compare URL: `"$($env:CACHE_SMOKE_DIFF_COMPARE_URL)`"",
               "- Compare artifact: `"$($env:COMPARE_ARTIFACT_NAME)`"",
               "- Diff JSON artifact: `"$($env:CACHE_SMOKE_DIFF_ARTIFACT_NAME)`"",
               "- Overall result delta: `"$($diff.overallResult.delta)`"",

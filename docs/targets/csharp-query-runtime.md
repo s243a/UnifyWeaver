@@ -213,6 +213,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
         - resolved refs
         - resolved SHAs
         - resolved run URLs
+        - GitHub compare URL derived from the resolved SHAs
         - artifact names
         - overall result delta
         - total duration delta
@@ -220,6 +221,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
         - threshold pass/fail result
         - threshold failure list when present
       - diff JSON metadata with:
+        - `compareUrl`
         - `baselineRun.runId`, `baselineRun.resolutionSource`, `baselineRun.requestedRef`, `baselineRun.resolvedRef`, `baselineRun.resolvedSha`, `baselineRun.runUrl`, `baselineRun.artifactName`
         - `compareRun.runId`, `compareRun.resolutionSource`, `compareRun.requestedRef`, `compareRun.resolvedRef`, `compareRun.resolvedSha`, `compareRun.runUrl`, `compareRun.artifactName`
 - Environment variables (used by the test harness):
