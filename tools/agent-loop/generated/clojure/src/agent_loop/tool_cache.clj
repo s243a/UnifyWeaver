@@ -101,3 +101,12 @@
   )
 )
 
+(defn cache-utilization
+  "Compute cache utilization as fraction of max size. Returns 0.0 if max_size is 0."
+  [state]
+  (if (zero? (:max-size state))
+      0.0
+      (/ (double (count (:cache state))) (double (:max-size state)))
+  )
+)
+

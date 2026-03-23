@@ -275,9 +275,9 @@ impl ToolHandler {
     pub fn validate_tool_args(&self, tool_call: &ToolCall) -> Option<String> {
         let required: &[&str] = match tool_call.name.as_str() {
             "bash" => &["command"],
-            "read" => &["path"],
-            "write" => &["path", "content"],
-            "edit" => &["path", "old_string", "new_string"],
+            "read" => &["file_path"],
+            "write" => &["file_path", "content"],
+            "edit" => &["file_path", "old_string", "new_string"],
             _ => return None, // No schema for plugin/MCP tools
         };
         let missing: Vec<&str> = required.iter()

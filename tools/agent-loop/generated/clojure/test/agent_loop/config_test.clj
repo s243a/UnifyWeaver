@@ -10,5 +10,5 @@
 
 (deftest test-api-key-env-vars
   (is (map? config/api-key-env-vars))
-  (is (string? (get config/api-key-env-vars :openai))))
-  (is (string? (get config/api-key-env-vars :anthropic))))
+  (is (string? (get config/api-key-env-vars :openai)))
+  (is (string? (get config/api-key-env-vars :claude))))

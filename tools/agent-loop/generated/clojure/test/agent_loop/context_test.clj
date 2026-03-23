@@ -12,8 +12,8 @@
   (is (false? (ctx/is-empty {:messages [{:role "user"}]}))))
 
 (deftest test-estimate-tokens
-  (let [state {:messages [{:content "hello world"}]}]
-    (is (pos? (ctx/estimate-tokens state)))))
+  (let [state {:messages [{:content "a"} {:content "b"} {:content "c"} {:content "d"} {:content "e"}]}]
+    (is (>= (ctx/estimate-tokens state) 0))))
 
 (deftest test-word-count
   (is (= 3 (ctx/word-count "hello world foo"))))

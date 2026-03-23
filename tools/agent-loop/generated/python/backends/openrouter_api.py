@@ -35,12 +35,12 @@ DEFAULT_TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Path to file"
                     }
                 },
-                "required": ["path"]
+                "required": ["file_path"]
             }
         }
     },
@@ -52,7 +52,7 @@ DEFAULT_TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Path to file"
                     },
@@ -61,7 +61,7 @@ DEFAULT_TOOL_SCHEMAS = [
                         "description": "Content to write"
                     }
                 },
-                "required": ["path", "content"]
+                "required": ["file_path", "content"]
             }
         }
     },
@@ -73,7 +73,7 @@ DEFAULT_TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Path to file"
                     },
@@ -86,7 +86,7 @@ DEFAULT_TOOL_SCHEMAS = [
                         "description": "Replacement text"
                     }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["file_path", "old_string", "new_string"]
             }
         }
     },

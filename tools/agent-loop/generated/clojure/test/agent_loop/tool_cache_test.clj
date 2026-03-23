@@ -9,9 +9,10 @@
 
 (deftest test-cache-clear
   (let [state {:cache {"k1" "v1"} :max-size 100}
-        cleared (cache/cache-clear state)]
+        cleared (cache/clear state)]
     (is (= {} (:cache cleared)))))
 
 (deftest test-should-skip
-  (is (true? (cache/should-skip "bash")))
-  (is (false? (cache/should-skip "read"))))
+  (let [state {:cache {} :max-size 100 :skip-tools #{"bash" "write"}}]
+    (is (true? (cache/should-skip state "bash")))
+    (is (false? (cache/should-skip state "read")))))

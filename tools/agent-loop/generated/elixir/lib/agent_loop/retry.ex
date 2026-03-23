@@ -38,4 +38,14 @@ defmodule AgentLoop.Retry do
     attempt == 0
   end
 
+  @doc "Check if a request should be retried based on attempt count and status code."
+  @spec should_retry(integer(), integer(), integer()) :: boolean()
+  def should_retry(attempt, max_retries, status) do
+    if attempt >= max_retries do
+        false
+    else
+        status in [408, 429, 500, 502, 503, 504]
+    end
+  end
+
 end

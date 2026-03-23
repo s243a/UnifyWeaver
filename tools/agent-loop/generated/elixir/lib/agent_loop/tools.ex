@@ -10,9 +10,9 @@ defmodule AgentLoop.Tools do
 
   @tools [
     %{name: :bash, description: "Execute a bash command", confirm: true, timeout: 120, params: [%{name: :command, type: :string, required: true, description: "The command to execute"}, ]},
-    %{name: :read, description: "Read a file", confirm: false, timeout: 120, params: [%{name: :path, type: :string, required: true, description: "Path to file"}, ]},
-    %{name: :write, description: "Write content to a file", confirm: true, timeout: 120, params: [%{name: :path, type: :string, required: true, description: "Path to file"}, %{name: :content, type: :string, required: true, description: "Content to write"}, ]},
-    %{name: :edit, description: "Edit a file with search/replace", confirm: true, timeout: 120, params: [%{name: :path, type: :string, required: true, description: "Path to file"}, %{name: :old_string, type: :string, required: true, description: "Text to find"}, %{name: :new_string, type: :string, required: true, description: "Replacement text"}, ]},
+    %{name: :read, description: "Read a file", confirm: false, timeout: 120, params: [%{name: :file_path, type: :string, required: true, description: "Path to file"}, ]},
+    %{name: :write, description: "Write content to a file", confirm: true, timeout: 120, params: [%{name: :file_path, type: :string, required: true, description: "Path to file"}, %{name: :content, type: :string, required: true, description: "Content to write"}, ]},
+    %{name: :edit, description: "Edit a file with search/replace", confirm: true, timeout: 120, params: [%{name: :file_path, type: :string, required: true, description: "Path to file"}, %{name: :old_string, type: :string, required: true, description: "Text to find"}, %{name: :new_string, type: :string, required: true, description: "Replacement text"}, ]},
   ]
 
   @destructive_tools MapSet.new([

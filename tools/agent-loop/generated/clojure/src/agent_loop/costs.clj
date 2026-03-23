@@ -108,3 +108,18 @@
   (format "$%s" (:total-cost state))
 )
 
+(defn is-free-model
+  "Check if the current model has zero cost (total_cost == 0 after usage)."
+  [state]
+  (zero? (:total-cost state))
+)
+
+(defn input-output-ratio
+  "Compute ratio of input to output tokens. Returns 0.0 if no output tokens."
+  [state]
+  (if (zero? (:total-output-tokens state))
+      0.0
+      (/ (double (:total-input-tokens state)) (double (:total-output-tokens state)))
+  )
+)
+

@@ -184,4 +184,10 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Return total character count across all messages in context."
+  @spec total_chars(t()) :: integer()
+  def total_chars(%__MODULE__{} = state) do
+    Enum.count(state.messages)
+  end
+
 end

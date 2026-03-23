@@ -66,4 +66,10 @@ defmodule AgentLoop.StreamingTokenCounter do
     %{state | char_count: 0}
   end
 
+  @doc "Check if streaming has received any tokens (char_count > 0)."
+  @spec is_active(t()) :: boolean()
+  def is_active(%__MODULE__{} = state) do
+    state.char_count > 0
+  end
+
 end

@@ -37,3 +37,12 @@
   (zero? attempt)
 )
 
+(defn should-retry
+  "Check if a request should be retried based on attempt count and status code."
+  [attempt max-retries status]
+  (if (>= attempt max-retries)
+      false
+      (#{408 429 500 502 503 504} status)
+  )
+)
+
