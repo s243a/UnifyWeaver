@@ -4,6 +4,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(apply)).
+:- use_module('../core/clause_body_analysis').
 
 %% compile_predicate_to_perl(+Pred/Arity, +Options, -Code)
 %%
@@ -808,7 +809,29 @@ compile_single_update(HeadArgs, ParamNames, ComputedVars, Idx, RecArg, Code) :-
     ;   format(string(Code), "        ~s = '~w';~n", [ParamName, RecArg])
     ).
 
-%% Non-recursive rules use simple CPS
+%% Non-recursive rules — try native lowering first
+compile_nonrecursive_rules(Pred, Arity, Clauses, Code) :-
+    native_perl_clause_body(Pred/Arity, Clauses, FuncBody),
+    !,
+    atom_string(Pred, PredStr),
+    Arity1 is Arity - 1,
+    build_perl_arg_list(Arity1, ArgList),
+    format(string(Code),
+'#!/usr/bin/env perl
+use strict;
+use warnings;
+
+sub ~w {
+~w~w
+}
+
+# CLI entry point
+if (@ARGV) {
+    print ~w($ARGV[0]), "\\n";
+}
+', [PredStr, ArgList, FuncBody, PredStr]).
+
+%% Fallback: non-recursive rules use simple CPS
 compile_nonrecursive_rules(Pred, Arity, Clauses, Code) :-
     format(string(Start), "sub ~w {~n    my $callback = shift;~n", [Pred]),
     compile_all_clauses(Pred, Arity, Clauses, 0, ClauseCodes),
@@ -1095,6 +1118,298 @@ format_fact_arg(A, S) :- format(string(S), "'~w'", [A]).
 indent(0, "") :- !.
 indent(N, Str) :-
     N > 0, N1 is N - 1, indent(N1, S), string_concat("    ", S, Str).
+
+%% ============================================
+%% ============================================
+%% NATIVE CLAUSE BODY LOWERING
+%% ============================================
+
+%% build_perl_arg_list(+N, -ArgList)
+%  Generates "    my ($arg1, $arg2) = @_;\n" or "" for arity 0
+build_perl_arg_list(0, "") :- !.
+build_perl_arg_list(N, ArgList) :-
+    findall(Arg, (
+        between(1, N, I),
+        format(string(Arg), '$arg~w', [I])
+    ), Args),
+    atomic_list_concat(Args, ', ', ArgStr),
+    format(string(ArgList), '    my (~w) = @_;~n', [ArgStr]).
+
+%% native_perl_clause_body(+PredSpec, +Clauses, -Code)
+
+% Single clause
+native_perl_clause_body(PredSpec, [Head-Body], Code) :-
+    native_perl_clause(PredSpec, Head, Body, Condition, ClauseCode),
+    !,
+    (   Condition == "true"
+    ->  format(string(Code), '    return ~w;', [ClauseCode])
+    ;   format(string(Code),
+'    if (~w) {
+        return ~w;
+    }
+    die "No matching clause for ~w\\n";', [Condition, ClauseCode, PredSpec])
+    ).
+
+% Multi-clause → if/elsif/else
+native_perl_clause_body(PredSpec, Clauses, Code) :-
+    Clauses = [_|[_|_]],
+    maplist(native_perl_clause_pair(PredSpec), Clauses, Branches),
+    Branches \= [],
+    branches_to_perl_if_chain(Branches, PredSpec, Code).
+
+native_perl_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
+    native_perl_clause(PredSpec, Head, Body, Condition, ClauseCode),
+    !.
+
+%% native_perl_clause(+PredSpec, +Head, +Body, -Condition, -Code)
+native_perl_clause(_PredSpec, Head, Body, Condition, Code) :-
+    Head =.. [_Pred|HeadArgs],
+    length(HeadArgs, Arity),
+    build_head_varmap(HeadArgs, 1, VarMap),
+    (   Arity > 1
+    ->  append(_InputHeadArgs, [OutputHeadArg], HeadArgs),
+        perl_head_conditions(HeadArgs, 1, Arity, HeadConditions)
+    ;   OutputHeadArg = _,
+        perl_head_conditions(HeadArgs, 1, Arity, HeadConditions)
+    ),
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  perl_resolve_value(VarMap, OutputHeadArg, Code),
+        GoalConditions = []
+    ;   (   Arity > 1, nonvar(OutputHeadArg)
+        ->  clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+            maplist(perl_guard_condition(VarMap), GuardGoals, GoalConditions),
+            (   OutputGoals == []
+            ->  perl_literal(OutputHeadArg, Code)
+            ;   perl_output_goals(OutputGoals, VarMap, Code)
+            )
+        ;   native_perl_goal_sequence(Goals, VarMap, GoalConditions, Code)
+        )
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_perl_conditions(AllConditions, Condition).
+
+%% perl_head_conditions(+HeadArgs, +Index, +Arity, -Conditions)
+perl_head_conditions([], _, _, []).
+perl_head_conditions([_], _, Arity, []) :- Arity > 1, !.
+perl_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
+    (   var(HeadArg)
+    ->  Conditions = RestConditions
+    ;   format(string(ArgName), '$arg~w', [Index]),
+        perl_literal(HeadArg, Literal),
+        (   atom(HeadArg)
+        ->  format(string(Cond), '~w eq ~w', [ArgName, Literal])
+        ;   format(string(Cond), '~w == ~w', [ArgName, Literal])
+        ),
+        Conditions = [Cond|RestConditions]
+    ),
+    NextIndex is Index + 1,
+    perl_head_conditions(Rest, NextIndex, Arity, RestConditions).
+
+%% native_perl_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+native_perl_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+    maplist(perl_guard_condition(VarMap), GuardGoals, Conditions),
+    perl_output_goals(OutputGoals, VarMap, Code).
+
+%% perl_guard_condition(+VarMap, +Goal, -Condition)
+perl_guard_condition(VarMap, _Module:Goal, Condition) :-
+    !, perl_guard_condition(VarMap, Goal, Condition).
+perl_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    Goal =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    perl_expr(Left, VarMap, PLeft),
+    perl_expr(Right, VarMap, PRight),
+    (   (atom(Left) ; atom(Right)), (StdOp == '==' ; StdOp == '!=')
+    ->  (StdOp == '==' -> POp = 'eq' ; POp = 'ne')
+    ;   perl_op(StdOp, POp)
+    ),
+    format(string(Condition), '~w ~w ~w', [PLeft, POp, PRight]).
+
+%% perl_output_goals(+Goals, +VarMap, -Code)
+perl_output_goals([], _VarMap, '"error"') :- !.
+perl_output_goals([Goal], VarMap, Code) :-
+    !, perl_output_goal_last(Goal, VarMap, Code).
+perl_output_goals([Goal|Rest], VarMap0, Code) :-
+    perl_output_goal(Goal, VarMap0, _Line, VarMap1),
+    perl_output_goals(Rest, VarMap1, Code).
+
+%% perl_output_goal_last — produce the return expression
+perl_output_goal_last(_Module:Goal, VarMap, Code) :-
+    !, perl_output_goal_last(Goal, VarMap, Code).
+perl_output_goal_last(Goal, VarMap, Code) :-
+    if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
+    !,
+    perl_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap, Code).
+perl_output_goal_last(=(Var, Expr), VarMap, Code) :-
+    var(Var), !,
+    perl_expr(Expr, VarMap, Code).
+perl_output_goal_last(is(Var, Expr), VarMap, Code) :-
+    var(Var), !,
+    perl_expr(Expr, VarMap, Code).
+
+%% perl_output_goal — produce a my assignment (not used as return)
+perl_output_goal(_Module:Goal, VarMap0, Line, VarMapOut) :-
+    !, perl_output_goal(Goal, VarMap0, Line, VarMapOut).
+perl_output_goal(=(Var, Expr), VarMap0, Line, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    perl_expr(Expr, VarMap0, PExpr),
+    format(string(Line), 'my $~w = ~w;', [VarName, PExpr]).
+perl_output_goal(is(Var, Expr), VarMap0, Line, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    perl_expr(Expr, VarMap0, PExpr),
+    format(string(Line), 'my $~w = ~w;', [VarName, PExpr]).
+
+%% perl_if_then_else_output — generate ternary expressions
+perl_if_then_else_output(IfGoal, ThenGoal, ElseGoal, VarMap, Code) :-
+    flatten_perl_if_branches(IfGoal, ThenGoal, ElseGoal, Branches, DefaultGoal),
+    perl_branches_to_ternary(Branches, DefaultGoal, VarMap, Code).
+
+flatten_perl_if_branches(If, Then, Else, [branch(If, Then)|RestBranches], Default) :-
+    if_then_else_goal(Else, If2, Then2, Else2),
+    !,
+    flatten_perl_if_branches(If2, Then2, Else2, RestBranches, Default).
+flatten_perl_if_branches(If, Then, Else, [branch(If, Then)], Else).
+
+perl_branches_to_ternary([branch(If, Then)], DefaultGoal, VarMap, Code) :-
+    !,
+    perl_guard_condition(VarMap, If, IfCond),
+    perl_branch_value(Then, VarMap, ThenVal),
+    perl_branch_value(DefaultGoal, VarMap, ElseVal),
+    format(string(Code), '(~w) ? ~w : ~w', [IfCond, ThenVal, ElseVal]).
+perl_branches_to_ternary([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :-
+    perl_guard_condition(VarMap, If, IfCond),
+    perl_branch_value(Then, VarMap, ThenVal),
+    perl_branches_to_ternary(Rest, DefaultGoal, VarMap, ElseCode),
+    format(string(Code), '(~w) ? ~w : ~w', [IfCond, ThenVal, ElseCode]).
+
+%% perl_branch_value — extract result value from a branch
+perl_branch_value(_Module:Goal, VarMap, Value) :-
+    !, perl_branch_value(Goal, VarMap, Value).
+perl_branch_value((A, B), VarMap, Value) :-
+    !,
+    normalize_goals((A, B), Goals),
+    last(Goals, LastGoal),
+    perl_branch_value(LastGoal, VarMap, Value).
+perl_branch_value(=(_, Expr), VarMap, Value) :-
+    !, perl_expr(Expr, VarMap, Value).
+perl_branch_value(is(_, Expr), VarMap, Value) :-
+    !, perl_expr(Expr, VarMap, Value).
+perl_branch_value(Goal, VarMap, Value) :-
+    perl_expr(Goal, VarMap, Value).
+
+%% perl_expr — convert Prolog expression to Perl syntax
+perl_expr(Var, VarMap, PExpr) :-
+    var(Var), !,
+    (   lookup_var(Var, VarMap, Name)
+    ->  format(string(PExpr), '$~w', [Name])
+    ;   term_string(Var, PExpr)
+    ).
+perl_expr(Expr, VarMap, PExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    perl_expr(Left, VarMap, PLeft),
+    perl_expr(Right, VarMap, PRight),
+    perl_op(StdOp, POp),
+    format(string(PExpr), '(~w ~w ~w)', [PLeft, POp, PRight]).
+perl_expr(-Expr, VarMap, PExpr) :-
+    !,
+    perl_expr(Expr, VarMap, Inner),
+    format(string(PExpr), '(-~w)', [Inner]).
+perl_expr(abs(Expr), VarMap, PExpr) :-
+    !,
+    perl_expr(Expr, VarMap, Inner),
+    format(string(PExpr), 'abs(~w)', [Inner]).
+perl_expr(Atom, _VarMap, PExpr) :-
+    atom(Atom), !,
+    perl_literal(Atom, PExpr).
+perl_expr(Number, _VarMap, PExpr) :-
+    number(Number), !,
+    format(string(PExpr), '~w', [Number]).
+perl_expr(String, _VarMap, PExpr) :-
+    string(String), !,
+    format(string(PExpr), '"~w"', [String]).
+
+%% perl_literal — convert Prolog value to Perl literal
+perl_literal(Value, 'undef') :- var(Value), !.
+perl_literal(true, '1') :- !.
+perl_literal(false, '0') :- !.
+perl_literal(Value, PerlLiteral) :-
+    number(Value), !,
+    format(string(PerlLiteral), '~w', [Value]).
+perl_literal(Value, PerlLiteral) :-
+    atom(Value), !,
+    format(string(PerlLiteral), '"~w"', [Value]).
+perl_literal(Value, PerlLiteral) :-
+    string(Value), !,
+    format(string(PerlLiteral), '"~w"', [Value]).
+perl_literal(Value, PerlLiteral) :-
+    term_string(Value, S),
+    format(string(PerlLiteral), '"~w"', [S]).
+
+%% perl_resolve_value — resolve variable or constant to Perl expression
+perl_resolve_value(VarMap, Var, PExpr) :-
+    var(Var), !,
+    lookup_var(Var, VarMap, Name),
+    format(string(PExpr), '$~w', [Name]).
+perl_resolve_value(_VarMap, Value, PExpr) :-
+    perl_literal(Value, PExpr).
+
+%% perl_op — map standard operator to Perl syntax
+perl_op('>', '>').
+perl_op('<', '<').
+perl_op('>=', '>=').
+perl_op('<=', '<=').
+perl_op('==', '==').
+perl_op('!=', '!=').
+perl_op('+', '+').
+perl_op('-', '-').
+perl_op('*', '*').
+perl_op('/', '/').
+perl_op('%', '%').
+perl_op('&&', '&&').
+perl_op('||', '||').
+
+%% combine_perl_conditions — join conditions with &&
+combine_perl_conditions([], "true") :- !.
+combine_perl_conditions([Condition], Condition) :- !.
+combine_perl_conditions(Conditions, Combined) :-
+    atomic_list_concat(Conditions, ' && ', Combined).
+
+%% branches_to_perl_if_chain — build Perl if/elsif/else chain
+branches_to_perl_if_chain(Branches, PredSpec, Code) :-
+    branches_to_perl_if_lines(Branches, PredSpec, Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+branches_to_perl_if_lines([branch(Condition, ClauseCode)], PredSpec, [IfLine, RetLine, ElseLine, ErrLine, CloseLine]) :-
+    !,
+    format(string(IfLine), '    if (~w) {', [Condition]),
+    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    ElseLine = '    } else {',
+    format(string(ErrLine), '        die "No matching clause for ~w\\n";', [PredSpec]),
+    CloseLine = '    }'.
+branches_to_perl_if_lines([branch(Condition, ClauseCode)|Rest], PredSpec, [IfLine, RetLine|RestLines]) :-
+    format(string(IfLine), '    if (~w) {', [Condition]),
+    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    branches_to_perl_elsif_lines(Rest, PredSpec, RestLines).
+
+branches_to_perl_elsif_lines([branch(Condition, ClauseCode)], PredSpec, [ElifLine, RetLine, ElseLine, ErrLine, CloseLine]) :-
+    !,
+    format(string(ElifLine), '    } elsif (~w) {', [Condition]),
+    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    ElseLine = '    } else {',
+    format(string(ErrLine), '        die "No matching clause for ~w\\n";', [PredSpec]),
+    CloseLine = '    }'.
+branches_to_perl_elsif_lines([branch(Condition, ClauseCode)|Rest], PredSpec, [ElifLine, RetLine|RestLines]) :-
+    format(string(ElifLine), '    } elsif (~w) {', [Condition]),
+    format(string(RetLine), '        return ~w;', [ClauseCode]),
+    branches_to_perl_elsif_lines(Rest, PredSpec, RestLines).
 
 %% ============================================
 %% TEST SUPPORT
