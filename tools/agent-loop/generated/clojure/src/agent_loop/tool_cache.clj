@@ -38,7 +38,7 @@
   (contains? (:skip-tools state) tool-name)
 )
 
-(defn get
+(defn cache-get
   "Look up a cached result by key. Returns nil if not found."
   [state key]
   (get (:cache state) key)

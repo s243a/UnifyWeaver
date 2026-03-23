@@ -74,3 +74,15 @@
   )
 )
 
+(defn session-name-from-id
+  "Build a session display name from its identifier."
+  [session-id]
+  (format "session-%s" session-id)
+)
+
+(defn is-expired
+  "Check if a session has exceeded its maximum age in seconds."
+  [age max-age]
+  (> age max-age)
+)
+

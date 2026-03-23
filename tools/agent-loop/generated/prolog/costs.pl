@@ -119,6 +119,14 @@ input_output_ratio(State, Result) :-
     Result = (float(State.total_input_tokens) / float(State.total_output_tokens))
     ).
 
+%% Calculate average cost per message. Returns 0.0 if no messages recorded.
+average_cost_per_message(State, Result) :-
+    (State.message_count =:= 0 ->
+        Result = 0.0
+    ;
+    Result = (float(State.total_cost) / float(State.message_count))
+    ).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

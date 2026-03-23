@@ -123,3 +123,12 @@
   )
 )
 
+(defn average-cost-per-message
+  "Calculate average cost per message. Returns 0.0 if no messages recorded."
+  [state]
+  (if (zero? (:message-count state))
+      0.0
+      (/ (double (:total-cost state)) (double (:message-count state)))
+  )
+)
+

@@ -15,7 +15,7 @@
 (defn char-count
   "Compute total character count across all messages."
   [state]
-  (reduce + 0 (map count (:messages state))))
+  (reduce + 0 (map #(count (str (:content % ""))) (:messages state))))
 
 
 ;; --- shared_logic: context (generated from compile_logic) ---

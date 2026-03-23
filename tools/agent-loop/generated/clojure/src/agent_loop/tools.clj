@@ -67,3 +67,9 @@
   )
 )
 
+(defn is-builtin
+  "Check if a tool name refers to a built-in (non-MCP) tool."
+  [tool-name]
+  (not (.startsWith tool-name "mcp__"))
+)
+

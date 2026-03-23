@@ -3337,7 +3337,7 @@ shared_logic(costs, record_usage, [
 
 %% --- ToolResultCache: lookup and store ---
 shared_logic(tool_cache, cache_get, [
-    signature(get, [key], optional(string)),
+    signature(cache_get, [key], optional(string)),
     arg_types([string]),
     doc("Look up a cached result by key. Returns nil if not found."),
     container('ToolResultCache'),
@@ -3964,6 +3964,72 @@ shared_logic(mcp, mcp_request_id_str, [
     doc("Get the current request ID as a string for JSON-RPC message construction."),
     container('MCPClient'),
     body_template("~return_val(format_str(\"{}\", [self_direct(request_id)]))~")
+]).
+
+%% --- Deeper shared_logic coverage (93–100) ---
+
+shared_logic(mcp, mcp_is_connected, [
+    signature(is_connected, [], bool),
+    arg_types([]),
+    doc("Check if the MCP client has an active connection."),
+    container('MCPClient'),
+    body_template("~return_val(gt(self_direct(request_id), literal(0)))~")
+]).
+
+shared_logic(mcp, mcp_tool_count, [
+    signature(tool_count, [], int),
+    arg_types([]),
+    doc("Return the number of tools discovered from MCP servers."),
+    container('MCPClient'),
+    body_template("~return_val(len_of(self_direct(tools)))~")
+]).
+
+shared_logic(sessions, session_name_from_id, [
+    signature(session_name_from_id, [session_id], owned_string),
+    arg_types([string]),
+    doc("Build a session display name from its identifier."),
+    container(none),
+    body_template("~return_val(format_str(\"session-{}\", [session_id]))~")
+]).
+
+shared_logic(sessions, session_is_expired, [
+    signature(is_expired, [age, max_age], bool),
+    arg_types([float, float]),
+    doc("Check if a session has exceeded its maximum age in seconds."),
+    container(none),
+    body_template("~return_val(gt(age, max_age))~")
+]).
+
+shared_logic(output_parser, is_json_object, [
+    signature(is_json_object, [text], bool),
+    arg_types([string]),
+    doc("Check if text starts with a JSON object opening brace."),
+    container(none),
+    body_template("~return_val(str_starts_with(text, \"{\"))~")
+]).
+
+shared_logic(output_parser, content_length, [
+    signature(content_length, [text], int),
+    arg_types([string]),
+    doc("Return the character length of parsed content."),
+    container(none),
+    body_template("~return_val(len_of(text))~")
+]).
+
+shared_logic(tools, tool_is_builtin, [
+    signature(is_builtin, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if a tool name refers to a built-in (non-MCP) tool."),
+    container(none),
+    body_template("~return_val(not_expr(str_starts_with(tool_name, \"mcp__\")))~")
+]).
+
+shared_logic(costs, average_cost_per_message, [
+    signature(average_cost_per_message, [], float),
+    arg_types([]),
+    doc("Calculate average cost per message. Returns 0.0 if no messages recorded."),
+    container('CostTracker'),
+    body_template("if ~eq_zero(self_direct(message_count))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(total_cost)), as_float(self_direct(message_count))))~")
 ]).
 
 %% =============================================================================
@@ -8515,7 +8581,7 @@ generate_clojure_context :-
     write(S, '(defn char-count\n'),
     write(S, '  "Compute total character count across all messages."\n'),
     write(S, '  [state]\n'),
-    write(S, '  (reduce + 0 (map count (:messages state))))\n\n'),
+    write(S, '  (reduce + 0 (map #(count (str (:content % ""))) (:messages state))))\n\n'),
     write_shared_block_clojure(S, context),
     close(S),
     format('  Generated clojure/src/agent_loop/context.clj~n', []).

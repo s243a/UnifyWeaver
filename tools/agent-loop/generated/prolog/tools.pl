@@ -122,6 +122,10 @@ tool_category(Tool_name, Result) :-
     )
     ).
 
+%% Check if a tool name refers to a built-in (non-MCP) tool.
+is_builtin(Tool_name, Result) :-
+    Result = \+ atom_concat('mcp__', _, Tool_name).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

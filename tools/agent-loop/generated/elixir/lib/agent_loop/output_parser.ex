@@ -35,6 +35,18 @@ defmodule AgentLoop.OutputParser do
     Phoenix.HTML.html_escape(text) |> Phoenix.HTML.safe_to_string()
   end
 
+  @doc "Check if text starts with a JSON object opening brace."
+  @spec is_json_object(String.t()) :: boolean()
+  def is_json_object(text) do
+    String.starts_with?(text, "{")
+  end
+
+  @doc "Return the character length of parsed content."
+  @spec content_length(String.t()) :: integer()
+  def content_length(text) do
+    Enum.count(text)
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do
