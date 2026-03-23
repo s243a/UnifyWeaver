@@ -133,6 +133,11 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - total duration delta
     - per-slice status deltas
     - per-slice duration deltas
+  - Optional threshold checks:
+    - `-FailOnStatusRegression`
+    - `-MaxTotalDurationDeltaSeconds <seconds>`
+    - `-MaxSliceDurationDeltaSeconds <seconds>`
+    - Threshold failures still write the JSON diff before the helper exits non-zero
   - Optional machine-readable output:
     - `-JsonOutputPath tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json`
     - Writes a JSON diff containing:
@@ -165,6 +170,14 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1 -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json -JsonOutputPath tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json`
     - Produces:
       - `tmp/csharp_query_smoke_summary_diff/cache_smoke_sequence_diff.json`
+  - Compare two completed smoke runs with thresholds that pass:
+    - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1 -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json -JsonOutputPath tmp/csharp_query_smoke_summary_diff_thresholds_pass/cache_smoke_sequence_diff.json -FailOnStatusRegression -MaxTotalDurationDeltaSeconds 200 -MaxSliceDurationDeltaSeconds 200`
+  - Compare two completed smoke runs with thresholds that intentionally fail:
+    - `pwsh -NoProfile -File scripts/testing/run_csharp_query_cache_smoke_summary_diff.ps1 -BaselineSummaryPath tmp/csharp_query_smoke_ci/cache_smoke_sequence_summary.json -CompareSummaryPath tmp/csharp_query_smoke_summary_metadata/cache_smoke_sequence_summary.json -JsonOutputPath tmp/csharp_query_smoke_summary_diff_thresholds_fail/cache_smoke_sequence_diff.json -FailOnStatusRegression -MaxTotalDurationDeltaSeconds 100 -MaxSliceDurationDeltaSeconds 120`
+    - Produces the JSON diff even though the helper exits non-zero
+    - The fail-case JSON includes:
+      - `thresholds.passed = false`
+      - `thresholds.failures = [...]`
 - CI behavior:
   - Workflow job: `.github/workflows/test.yml` `csharp_query_runtime_smoke`
   - Uses the cache smoke sequence wrapper rather than spelling slice commands inline
