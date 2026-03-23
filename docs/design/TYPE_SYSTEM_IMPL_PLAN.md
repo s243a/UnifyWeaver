@@ -209,7 +209,8 @@ bring-up.
     or direct recursive subtree calls inside supported guarded branch
     bodies before the shared boolean rejoin after the two recursive subtree
     calls, including one nested branch-local control point around those
-    calls
+    calls and shared branch-local guard prework before a nested mutual
+    branch
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
