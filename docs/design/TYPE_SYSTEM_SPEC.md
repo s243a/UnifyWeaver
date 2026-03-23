@@ -388,9 +388,10 @@ Current TypR lowering policy is intentionally mixed:
   alias-style prework, guarded branch-local alias selection, or direct
   recursive subtree calls inside supported guarded branch bodies before
   those two recursive subtree calls rejoin via a shared boolean result,
-  including one nested branch-local control point around those calls,
-  using raw-expression memoized helper bodies inside TypR rather than
-  wrapped-R fallback
+  including one nested branch-local control point around those calls and
+  shared branch-local guard prework before a nested mutual branch, using
+  raw-expression memoized helper bodies inside TypR rather than wrapped-R
+  fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower
   to TypR-valid functions when they match the currently supported `[]` /
   `[V, L, R]` shape with one tree-driving argument, invariant context args,

@@ -463,6 +463,26 @@ typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, BranchConditi
     native_typr_if_condition(IfGoal, VarMap, BranchCondition0),
     typr_condition_expr_text(BranchCondition0, BranchConditionExpr).
 
+typr_mutual_tree_branch_prework([], _ValueVar, AliasMap, AliasMap, none).
+typr_mutual_tree_branch_prework([Goal|Rest], ValueVar, AliasMap0, AliasMap, GuardExpr) :-
+    (   typr_mutual_tree_alias_goal(Goal)
+    ->  typr_mutual_tree_alias_map([Goal], AliasMap0, AliasMap1),
+        typr_mutual_tree_branch_prework(Rest, ValueVar, AliasMap1, AliasMap, GuardExpr)
+    ;   typr_mutual_tree_condition_varmap(ValueVar, AliasMap0, VarMap),
+        native_typr_guard_goal(Goal, VarMap, GuardCondition),
+        typr_mutual_tree_branch_prework(Rest, ValueVar, AliasMap0, AliasMap, RestGuardExpr),
+        typr_mutual_tree_guard_expr_join(GuardCondition, RestGuardExpr, GuardExpr)
+    ).
+
+typr_mutual_tree_guard_expr_join(GuardCondition, none, GuardCondition) :-
+    !.
+typr_mutual_tree_guard_expr_join(GuardCondition, RestGuardExpr, GuardExpr) :-
+    combine_typr_conditions([GuardCondition, RestGuardExpr], GuardExpr).
+
+typr_mutual_tree_guard_wrap(none, Body, Body) :-
+    !.
+typr_mutual_tree_guard_wrap(GuardExpr, Body, branch_guard(GuardExpr, Body)).
+
 typr_mutual_tree_condition_varmap(ValueVar, AliasMap, VarMap) :-
     findall(
         Var-Expr,
@@ -483,8 +503,7 @@ typr_mutual_tree_branch_call(call_spec(_Side, NextPred, StepExpr), branch_call(H
 
 typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, Body) :-
     append(PreGoals, [NestedIfGoal], Goals),
-    maplist(typr_mutual_tree_alias_goal, PreGoals),
-    typr_mutual_tree_alias_map(PreGoals, AliasMap0, AliasMap),
+    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, AliasMap, GuardExpr),
     typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal0, ElseGoal0),
     typr_mutual_goal_list(ThenGoal0, ThenGoals0),
     maplist(typr_strip_module_goal, ThenGoals0, ThenGoals),
@@ -493,14 +512,19 @@ typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, Body) 
     maplist(typr_strip_module_goal, ElseGoals0, ElseGoals),
     typr_mutual_tree_branch_body(GroupPredicates, ElseGoals, ValueVar, AliasMap, ElseBody),
     typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, BranchConditionExpr),
-    Body = branch_if(BranchConditionExpr, ThenBody, ElseBody).
-typr_mutual_tree_branch_body(GroupPredicates, Goals, _ValueVar, AliasMap0, branch_calls(Calls)) :-
+    typr_mutual_tree_guard_wrap(
+        GuardExpr,
+        branch_if(BranchConditionExpr, ThenBody, ElseBody),
+        Body
+    ).
+typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, Body) :-
     typr_mutual_tree_split_pre_goals(GroupPredicates, Goals, PreGoals, RecGoals),
     RecGoals = [GoalA, GoalB],
-    typr_mutual_tree_alias_map(PreGoals, AliasMap0, AliasMap),
+    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, AliasMap, GuardExpr),
     maplist(typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap), [GoalA, GoalB], GoalSpecs),
     typr_mutual_tree_call_specs_cover_both_sides(GoalSpecs),
-    maplist(typr_mutual_tree_branch_call, GoalSpecs, Calls).
+    maplist(typr_mutual_tree_branch_call, GoalSpecs, Calls),
+    typr_mutual_tree_guard_wrap(GuardExpr, branch_calls(Calls), Body).
 
 typr_mutual_group_code(Specs, MemoEnabled, Code) :-
     findall(GroupLabel, (
@@ -1003,6 +1027,15 @@ typr_mutual_tree_branch_body_lines(branch_if(BranchConditionExpr, ThenBody, Else
     append(Lines0, [ElseLine], Lines1),
     append(Lines1, ElseLines, Lines2),
     append(Lines2, [EndLine], Lines).
+typr_mutual_tree_branch_body_lines(branch_guard(GuardExpr, Body), Prefix, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Prefix, GuardExpr]),
+    atom_concat(Prefix, '    ', NestedPrefix),
+    typr_mutual_tree_branch_body_lines(Body, NestedPrefix, BodyLines),
+    format(string(ElseLine), '~w} else {', [Prefix]),
+    format(string(FalseLine), '~w    result = FALSE;', [Prefix]),
+    format(string(EndLine), '~w}', [Prefix]),
+    append([IfLine], BodyLines, Lines0),
+    append(Lines0, [ElseLine, FalseLine, EndLine], Lines).
 typr_mutual_tree_branch_body_lines(branch_calls(Calls), Prefix, Lines) :-
     typr_mutual_tree_dual_branch_call_lines(Calls, Prefix, Lines).
 
@@ -1017,6 +1050,15 @@ typr_mutual_tree_branch_body_lines_no_memo(branch_if(BranchConditionExpr, ThenBo
     append(Lines0, [ElseLine], Lines1),
     append(Lines1, ElseLines, Lines2),
     append(Lines2, [EndLine], Lines).
+typr_mutual_tree_branch_body_lines_no_memo(branch_guard(GuardExpr, Body), Prefix, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Prefix, GuardExpr]),
+    atom_concat(Prefix, '    ', NestedPrefix),
+    typr_mutual_tree_branch_body_lines_no_memo(Body, NestedPrefix, BodyLines),
+    format(string(ElseLine), '~w} else {', [Prefix]),
+    format(string(FalseLine), '~w    FALSE', [Prefix]),
+    format(string(EndLine), '~w}', [Prefix]),
+    append([IfLine], BodyLines, Lines0),
+    append(Lines0, [ElseLine, FalseLine, EndLine], Lines).
 typr_mutual_tree_branch_body_lines_no_memo(branch_calls(Calls), Prefix, Lines) :-
     typr_mutual_tree_dual_branch_call_lines_no_memo(Calls, Prefix, Lines).
 

@@ -248,9 +248,9 @@ includes:
   branch-local alias selection before the two recursive subtree calls, or
   direct recursive subtree calls inside supported guarded branch bodies,
   including one nested branch-local control point around those calls before
-  the shared boolean rejoin, lowered to TypR functions that use
-  raw-expression memoized helper bodies inside TypR instead of wrapped-R
-  fallback
+  the shared boolean rejoin and shared branch-local guard prework before a
+  nested mutual branch, lowered to TypR functions that use raw-expression
+  memoized helper bodies inside TypR instead of wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates with one
   tree-driving argument and invariant context args, such as `tree_sum/2`,
   `tree_height/2`, `weighted_tree_sum/3`, `weighted_tree_affine_sum/4`,
