@@ -384,7 +384,8 @@ Current TypR lowering policy is intentionally mixed:
   `even_left_tree/1` / `odd_left_tree/1`-style tree-structural SCC shape
   with `[]` / `[V, [], []]` base cases and one-subtree recursive descent,
   or the `even_tree/1` / `odd_tree/1`-style tree-structural SCC shape with
-  `[]` / `[V, [], []]` base cases and two-subtree boolean descent, using
+  `[]` / `[V, [], []]` base cases, two-subtree boolean descent, and
+  alias-style prework before those two recursive subtree calls, using
   raw-expression memoized helper bodies inside TypR rather than wrapped-R
   fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower

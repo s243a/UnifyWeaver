@@ -205,7 +205,7 @@ bring-up.
     and `even_left_tree/1` / `odd_left_tree/1`-style tree-structural SCC
     shape with one-subtree recursive descent, plus `even_tree/1` /
     `odd_tree/1`-style tree-structural SCC shape with two-subtree boolean
-    descent
+    descent and alias-style prework before the two recursive subtree calls
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
