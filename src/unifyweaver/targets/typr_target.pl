@@ -229,8 +229,10 @@ typr_mutual_tree_dual_spec(GroupPredicates, Pred/Arity, Spec) :-
     RecInputPattern = [_ValueVar, LeftVar, RightVar],
     typr_mutual_goal_list(RecBody, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
-    Goals = [GoalA, GoalB],
-    maplist(typr_mutual_tree_recursive_goal(GroupPredicates, LeftVar, RightVar), [GoalA, GoalB], GoalSpecs0),
+    typr_mutual_tree_split_pre_goals(GroupPredicates, Goals, PreGoals, RecGoals),
+    RecGoals = [GoalA, GoalB],
+    typr_mutual_tree_alias_map(PreGoals, LeftVar, RightVar, AliasMap),
+    maplist(typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap), [GoalA, GoalB], GoalSpecs0),
     select(call_spec(left, LeftNextPred, '.subset2(current_input, 2)'), GoalSpecs0, GoalSpecs1),
     select(call_spec(right, RightNextPred, '.subset2(current_input, 3)'), GoalSpecs1, []),
     atom_string(Pred, PredStr),
@@ -295,17 +297,60 @@ typr_strip_module_goal(_Module:Goal, StrippedGoal) :-
     typr_strip_module_goal(Goal, StrippedGoal).
 typr_strip_module_goal(Goal, Goal).
 
-typr_mutual_tree_recursive_goal(GroupPredicates, LeftVar, RightVar, Goal0, call_spec(Side, NextPred, StepExpr)) :-
+typr_mutual_tree_split_pre_goals(GroupPredicates, Goals, PreGoals, RecGoals) :-
+    append(PreGoals, RecGoals, Goals),
+    RecGoals = [_, _],
+    maplist(typr_mutual_tree_alias_goal, PreGoals),
+    maplist(typr_mutual_recursive_group_goal(GroupPredicates), RecGoals).
+
+typr_mutual_recursive_group_goal(GroupPredicates, Goal0) :-
     typr_strip_module_goal(Goal0, Goal),
     Goal =.. [NextPred, RecArg],
     memberchk(NextPred/1, GroupPredicates),
-    (   RecArg == LeftVar ->
-        Side = left,
-        StepExpr = '.subset2(current_input, 2)'
-    ;   RecArg == RightVar ->
-        Side = right,
-        StepExpr = '.subset2(current_input, 3)'
+    var(RecArg).
+
+typr_mutual_tree_alias_goal(Goal) :-
+    Goal = (Left = Right),
+    var(Left),
+    var(Right).
+
+typr_mutual_tree_alias_map(PreGoals, LeftVar, RightVar, AliasMap) :-
+    typr_mutual_tree_alias_map(PreGoals, [LeftVar-left, RightVar-right], AliasMap).
+
+typr_mutual_tree_alias_map([], AliasMap, AliasMap).
+typr_mutual_tree_alias_map([Goal|Rest], AliasMap0, AliasMap) :-
+    typr_mutual_tree_alias_binding(Goal, AliasMap0, AliasMap1),
+    typr_mutual_tree_alias_map(Rest, AliasMap1, AliasMap).
+
+typr_mutual_tree_alias_binding(Left = Right, AliasMap0, AliasMap) :-
+    (   typr_mutual_tree_lookup_side(Left, AliasMap0, Side) ->
+        typr_mutual_tree_bind_var(Right, Side, AliasMap0, AliasMap)
+    ;   typr_mutual_tree_lookup_side(Right, AliasMap0, Side) ->
+        typr_mutual_tree_bind_var(Left, Side, AliasMap0, AliasMap)
     ).
+
+typr_mutual_tree_bind_var(Var, Side, AliasMap0, AliasMap) :-
+    (   typr_mutual_tree_lookup_side(Var, AliasMap0, ExistingSide) ->
+        ExistingSide == Side,
+        AliasMap = AliasMap0
+    ;   AliasMap = [Var-Side|AliasMap0]
+    ).
+
+typr_mutual_tree_lookup_side(Var, [KnownVar-Side|_], Side) :-
+    Var == KnownVar,
+    !.
+typr_mutual_tree_lookup_side(Var, [_|Rest], Side) :-
+    typr_mutual_tree_lookup_side(Var, Rest, Side).
+
+typr_mutual_tree_side_step_expr(left, '.subset2(current_input, 2)').
+typr_mutual_tree_side_step_expr(right, '.subset2(current_input, 3)').
+
+typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, Goal0, call_spec(Side, NextPred, StepExpr)) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Goal =.. [NextPred, RecArg],
+    memberchk(NextPred/1, GroupPredicates),
+    typr_mutual_tree_lookup_side(RecArg, AliasMap, Side),
+    typr_mutual_tree_side_step_expr(Side, StepExpr).
 
 typr_mutual_group_code(Specs, MemoEnabled, Code) :-
     findall(GroupLabel, (
