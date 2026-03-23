@@ -76,9 +76,9 @@ This document focuses on architecture and rollout choices specific to TypR.
      with `[]` / `[V, [], []]` base cases and one-subtree recursive descent,
      or `even_tree/1` / `odd_tree/1`-style tree-structural SCC shape with
      `[]` / `[V, [], []]` base cases, two-subtree boolean descent,
-     alias-style prework before the two recursive subtree calls, and
-     boolean return types, emitted as TypR functions with raw-expression
-     memoized helper bodies
+     alias-style prework or guarded branch-local alias selection before the
+     two recursive subtree calls, and boolean return types, emitted as
+     TypR functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
      argument, invariant context args, and limited native guards, local
