@@ -232,6 +232,39 @@ jobs:
 
           & pwsh @diffArgs
 
+      - name: Annotate cache smoke diff JSON with resolved run metadata
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path $env:CACHE_SMOKE_DIFF_JSON_PATH)) {
+            Write-Host "Cache smoke diff JSON was not produced; skipping run metadata annotation."
+            exit 0
+          }
+
+          $diff = Get-Content $env:CACHE_SMOKE_DIFF_JSON_PATH -Raw | ConvertFrom-Json
+
+          $diff | Add-Member -NotePropertyName baselineRun -NotePropertyValue ([pscustomobject]@{
+            runId = $env:BASELINE_RESOLVED_RUN_ID
+            resolutionSource = $env:BASELINE_RESOLUTION_SOURCE
+            requestedRef = $env:BASELINE_REQUESTED_REF
+            resolvedRef = $env:BASELINE_RESOLVED_REF
+            resolvedSha = $env:BASELINE_RESOLVED_SHA
+            runUrl = $env:BASELINE_RESOLVED_URL
+            artifactName = $env:BASELINE_ARTIFACT_NAME
+          }) -Force
+
+          $diff | Add-Member -NotePropertyName compareRun -NotePropertyValue ([pscustomobject]@{
+            runId = $env:COMPARE_RESOLVED_RUN_ID
+            resolutionSource = $env:COMPARE_RESOLUTION_SOURCE
+            requestedRef = $env:COMPARE_REQUESTED_REF
+            resolvedRef = $env:COMPARE_RESOLVED_REF
+            resolvedSha = $env:COMPARE_RESOLVED_SHA
+            runUrl = $env:COMPARE_RESOLVED_URL
+            artifactName = $env:COMPARE_ARTIFACT_NAME
+          }) -Force
+
+          $diff | ConvertTo-Json -Depth 10 | Set-Content -Path $env:CACHE_SMOKE_DIFF_JSON_PATH
+
       - name: Upload cache smoke diff JSON
         if: always()
         uses: actions/upload-artifact@v4
@@ -254,10 +287,12 @@ jobs:
               "",
               "- Baseline run ID: `"$($env:BASELINE_RESOLVED_RUN_ID)`"",
               "- Baseline resolution: `"$($env:BASELINE_RESOLUTION_SOURCE)`"` (requested ref: `"$($env:BASELINE_REQUESTED_REF)`"`, resolved ref: `"$($env:BASELINE_RESOLVED_REF)`"`)",
+              "- Baseline resolved SHA: `"$($env:BASELINE_RESOLVED_SHA)`"",
               "- Baseline run URL: `"$($env:BASELINE_RESOLVED_URL)`"",
               "- Baseline artifact: `"$($env:BASELINE_ARTIFACT_NAME)`"",
               "- Compare run ID: `"$($env:COMPARE_RESOLVED_RUN_ID)`"",
               "- Compare resolution: `"$($env:COMPARE_RESOLUTION_SOURCE)`"` (requested ref: `"$($env:COMPARE_REQUESTED_REF)`"`, resolved ref: `"$($env:COMPARE_RESOLVED_REF)`"`)",
+              "- Compare resolved SHA: `"$($env:COMPARE_RESOLVED_SHA)`"",
               "- Compare run URL: `"$($env:COMPARE_RESOLVED_URL)`"",
               "- Compare artifact: `"$($env:COMPARE_ARTIFACT_NAME)`"",
               "- Diff JSON artifact: `"$($env:CACHE_SMOKE_DIFF_ARTIFACT_NAME)`"",
