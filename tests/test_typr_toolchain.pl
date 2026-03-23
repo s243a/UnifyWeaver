@@ -332,6 +332,43 @@ test(structural_tree_dual_mutual_branch_prework_output_checks_with_typr, [condit
     retractall(user:typr_mutual_even_tree_branch_pre(_)),
     retractall(user:typr_mutual_odd_tree_branch_pre(_)).
 
+test(structural_tree_dual_mutual_recursive_branch_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_recursive_branch([])),
+    assertz(user:(typr_mutual_even_tree_recursive_branch([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_odd_tree_recursive_branch(L),
+            typr_mutual_odd_tree_recursive_branch(R)
+        ;   typr_mutual_odd_tree_recursive_branch(R),
+            typr_mutual_odd_tree_recursive_branch(L)
+        )
+    )),
+    assertz(user:typr_mutual_odd_tree_recursive_branch([_, [], []])),
+    assertz(user:(typr_mutual_odd_tree_recursive_branch([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_even_tree_recursive_branch(L),
+            typr_mutual_even_tree_recursive_branch(R)
+        ;   typr_mutual_even_tree_recursive_branch(R),
+            typr_mutual_even_tree_recursive_branch(L)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_recursive_branch/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_recursive_branch/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_recursive_branch/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_recursive_branch/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_recursive_branch/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_even_tree_recursive_branch(_)),
+    retractall(user:typr_mutual_odd_tree_recursive_branch(_)).
+
 test(structural_tree_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:tree_sum([], 0)),

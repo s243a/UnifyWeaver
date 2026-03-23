@@ -262,6 +262,47 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     generic_typr_return_type(Pred/Arity, Clauses, "bool"),
     build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
     findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    maplist(typr_mutual_tree_base_case_condition, BaseClauses, BaseConds0),
+    sort(BaseConds0, BaseConditions),
+    RecHead =.. [_PredName, RecInputPattern],
+    RecInputPattern = [ValueVar, LeftVar, RightVar],
+    typr_mutual_goal_list(RecBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    Goals = [BranchGoal],
+    typr_if_then_else_goal(BranchGoal, IfGoal, ThenGoal0, ElseGoal0),
+    typr_mutual_goal_list(ThenGoal0, ThenGoals0),
+    maplist(typr_strip_module_goal, ThenGoals0, ThenGoals),
+    typr_mutual_tree_branch_goal_calls(GroupPredicates, ThenGoals, LeftVar, RightVar, ThenCalls),
+    typr_mutual_goal_list(ElseGoal0, ElseGoals0),
+    maplist(typr_strip_module_goal, ElseGoals0, ElseGoals),
+    typr_mutual_tree_branch_goal_calls(GroupPredicates, ElseGoals, LeftVar, RightVar, ElseCalls),
+    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, LeftVar, RightVar, BranchConditionExpr),
+    atom_string(Pred, PredStr),
+    format(string(HelperName), '~w_impl', [PredStr]),
+    Spec = mutual_spec{
+        kind: tree_dual_branch,
+        pred: Pred,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "bool",
+        helper_name: HelperName,
+        base_conditions: BaseConditions,
+        guard_expr: 'length(current_input) == 3',
+        branch_condition_expr: BranchConditionExpr,
+        then_calls: ThenCalls,
+        else_calls: ElseCalls
+    }.
+
+typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
+    Arity =:= 1,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "bool"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
     partition(is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
     RecClauses = [clause(RecHead, RecBody)],
     BaseClauses \= [],
@@ -395,6 +436,15 @@ typr_mutual_tree_lookup_side(Var, [_|Rest], Side) :-
 typr_mutual_tree_side_step_expr(left, '.subset2(current_input, 2)').
 typr_mutual_tree_side_step_expr(right, '.subset2(current_input, 3)').
 
+typr_is_mutual_recursive_clause(GroupPredicates, clause(_Head, Body)) :-
+    sub_term(SubGoal0, Body),
+    nonvar(SubGoal0),
+    typr_strip_module_goal(SubGoal0, SubGoal),
+    compound(SubGoal),
+    functor(SubGoal, Pred, Arity),
+    memberchk(Pred/Arity, GroupPredicates),
+    !.
+
 typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, Goal0, call_spec(Side, NextPred, StepExpr)) :-
     typr_strip_module_goal(Goal0, Goal),
     Goal =.. [NextPred, RecArg],
@@ -421,6 +471,14 @@ typr_mutual_tree_condition_varmap(ValueVar, LeftVar, RightVar, VarMap) :-
 typr_mutual_tree_branch_call(call_spec(_Side, NextPred, StepExpr), branch_call(HelperName, StepExpr)) :-
     atom_string(NextPred, NextPredStr),
     format(string(HelperName), '~w_impl', [NextPredStr]).
+
+typr_mutual_tree_branch_goal_calls(GroupPredicates, Goals, LeftVar, RightVar, Calls) :-
+    typr_mutual_tree_split_pre_goals(GroupPredicates, Goals, PreGoals, RecGoals),
+    RecGoals = [GoalA, GoalB],
+    typr_mutual_tree_alias_map(PreGoals, LeftVar, RightVar, AliasMap),
+    maplist(typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap), [GoalA, GoalB], GoalSpecs),
+    typr_mutual_tree_call_specs_cover_both_sides(GoalSpecs),
+    maplist(typr_mutual_tree_branch_call, GoalSpecs, Calls).
 
 typr_mutual_group_code(Specs, MemoEnabled, Code) :-
     findall(GroupLabel, (
