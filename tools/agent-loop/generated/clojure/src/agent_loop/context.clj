@@ -168,3 +168,12 @@
   (count (:messages state))
 )
 
+(defn is-over-budget
+  "Check if context has exceeded the maximum token budget."
+  [state]
+  (if (<= (:max-context-tokens state) 0)
+      false
+      (>= (estimate-tokens state) (:max-context-tokens state))
+  )
+)
+

@@ -72,4 +72,10 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.char_count > 0
   end
 
+  @doc "Check if the streaming counter is idle (no tokens counted)."
+  @spec is_idle(t()) :: boolean()
+  def is_idle(%__MODULE__{} = state) do
+    state.token_count == 0
+  end
+
 end

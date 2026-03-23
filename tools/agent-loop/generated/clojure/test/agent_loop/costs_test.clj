@@ -28,3 +28,15 @@
 
 (deftest test-total-tokens
   (is (= 300 (costs/total-tokens {:total-input-tokens 200 :total-output-tokens 100}))))
+
+(deftest test-is-free-model
+  (is (true? (costs/is-free-model {:total-cost 0.0})))
+  (is (false? (costs/is-free-model {:total-cost 0.5}))))
+
+(deftest test-average-cost-per-message
+  (is (= 0.0 (costs/average-cost-per-message {:total-cost 10.0 :message-count 0})))
+  (is (= 2.0 (costs/average-cost-per-message {:total-cost 10.0 :message-count 5}))))
+
+(deftest test-is-tracking
+  (is (false? (costs/is-tracking {:message-count 0})))
+  (is (true? (costs/is-tracking {:message-count 3}))))

@@ -61,3 +61,15 @@
   (count text)
 )
 
+(defn is-json-content
+  "Check if text starts with a JSON opening character (object or array)."
+  [text]
+  (or (.startsWith text "{") (.startsWith text "["))
+)
+
+(defn strip-content
+  "Strip leading and trailing whitespace from parsed content."
+  [text]
+  (clojure.string/trim text)
+)
+

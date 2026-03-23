@@ -86,6 +86,12 @@ defmodule AgentLoop.Sessions do
     age > max_age
   end
 
+  @doc "Check if session data contains a metadata key."
+  @spec has_metadata(map()) :: boolean()
+  def has_metadata(data) do
+    Map.has_key?(data, "metadata")
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

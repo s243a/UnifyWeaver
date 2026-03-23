@@ -73,3 +73,9 @@
   (not (.startsWith tool-name "mcp__"))
 )
 
+(defn needs-path-validation
+  "Check if a tool requires file path validation (read, write, or edit)."
+  [tool-name]
+  (or (.startsWith tool-name "read") (or (.startsWith tool-name "write") (.startsWith tool-name "edit")))
+)
+

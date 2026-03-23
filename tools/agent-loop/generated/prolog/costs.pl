@@ -46,7 +46,7 @@ is_over_budget(State, Budget, Result) :-
     (Budget =< 0 ->
         Result = false
     ;
-    Result = State.total_cost >= Budget
+    (State.total_cost >= Budget -> Result = true ; Result = false)
     ).
 
 %% Return remaining budget in USD. Budget of 0 means unlimited (returns -1).
@@ -109,7 +109,7 @@ cost_summary_short(State, Result) :-
 
 %% Check if the current model has zero cost (total_cost == 0 after usage).
 is_free_model(State, Result) :-
-    Result = State.total_cost =:= 0.
+    (State.total_cost =:= 0 -> Result = true ; Result = false).
 
 %% Compute ratio of input to output tokens. Returns 0.0 if no output tokens.
 input_output_ratio(State, Result) :-
@@ -126,6 +126,10 @@ average_cost_per_message(State, Result) :-
     ;
     Result = (float(State.total_cost) / float(State.message_count))
     ).
+
+%% Check if cost tracking is active (has recorded any usage).
+is_tracking(State, Result) :-
+    (State.message_count > 0 -> Result = true ; Result = false).
 
 
 %% Cost tracker using dynamic state

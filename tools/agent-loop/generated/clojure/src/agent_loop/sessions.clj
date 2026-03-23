@@ -86,3 +86,9 @@
   (> age max-age)
 )
 
+(defn has-metadata
+  "Check if session data contains a metadata key."
+  [data]
+  (contains? data "metadata")
+)
+

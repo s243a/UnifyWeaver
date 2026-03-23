@@ -80,7 +80,7 @@ is_destructive(Tool_name, Result) :-
 
 %% Check if a tool is read-only (safe without approval).
 is_safe(Tool_name, Result) :-
-    Result = Tool_name == "Read".
+    (Tool_name == "Read" -> Result = true ; Result = false).
 
 %% Check if a tool is in the user-approved set.
 is_approved(Tool_name, Approved_set, Result) :-
@@ -99,12 +99,12 @@ check_approval_block(Tool_name, Approved_set, Result) :-
     (\+ memberchk(Tool_name, ["bash", "write", "edit"]) ->
         Result = false
     ;
-    Result = \+ memberchk(Tool_name, Approved_set)
+    (\+ memberchk(Tool_name, Approved_set) -> Result = true ; Result = false)
     ).
 
 %% Check if tool name has mcp: prefix indicating MCP dispatch.
 is_mcp_tool(Tool_name, Result) :-
-    Result = atom_concat('mcp:', _, Tool_name).
+    (atom_concat('mcp:', _, Tool_name) -> Result = true ; Result = false).
 
 %% Check that all required parameter keys exist in args dict.
 has_required_params(Args, Required_keys, Result) :-
@@ -124,7 +124,11 @@ tool_category(Tool_name, Result) :-
 
 %% Check if a tool name refers to a built-in (non-MCP) tool.
 is_builtin(Tool_name, Result) :-
-    Result = \+ atom_concat('mcp__', _, Tool_name).
+    (\+ atom_concat('mcp__', _, Tool_name) -> Result = true ; Result = false).
+
+%% Check if a tool requires file path validation (read, write, or edit).
+needs_path_validation(Tool_name, Result) :-
+    ((atom_concat('read', _, Tool_name) ; (atom_concat('write', _, Tool_name) ; atom_concat('edit', _, Tool_name))) -> Result = true ; Result = false).
 
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
