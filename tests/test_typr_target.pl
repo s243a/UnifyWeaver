@@ -73,6 +73,18 @@ cleanup_typr_test :-
     retractall(user:typr_mutual_odd_tree_nested_call_guard(_)),
     retractall(user:typr_mutual_even_tree_nested_call_alias(_)),
     retractall(user:typr_mutual_odd_tree_nested_call_alias(_)),
+    retractall(user:typr_mutual_even_tree_ctx(_, _)),
+    retractall(user:typr_mutual_odd_tree_ctx(_, _)),
+    retractall(user:typr_mutual_even_tree_ctx_step(_, _)),
+    retractall(user:typr_mutual_odd_tree_ctx_step(_, _)),
+    retractall(user:typr_mutual_even_tree_ctx_branch_step(_, _)),
+    retractall(user:typr_mutual_odd_tree_ctx_branch_step(_, _)),
+    retractall(user:typr_mutual_even_tree_ctx_branch_pre(_, _)),
+    retractall(user:typr_mutual_odd_tree_ctx_branch_pre(_, _)),
+    retractall(user:typr_mutual_even_tree_ctx_recursive_branch(_, _)),
+    retractall(user:typr_mutual_odd_tree_ctx_recursive_branch(_, _)),
+    retractall(user:typr_mutual_even_tree_ctx_nested_branch(_, _)),
+    retractall(user:typr_mutual_odd_tree_ctx_nested_branch(_, _)),
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
@@ -2651,6 +2663,87 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_path) 
     once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_ctx_impl(.subset2(current_input, 3), current_ctx);")),
     once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_ctx_impl(.subset2(current_input, 2), current_ctx);")),
     once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_ctx_impl(.subset2(current_input, 3), current_ctx);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_step_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_ctx_step([], _T0)),
+    assertz(user:(typr_mutual_even_tree_ctx_step([V, L, R], T) :-
+        V >= T,
+        T1 is T + 1,
+        typr_mutual_odd_tree_ctx_step(L, T1),
+        typr_mutual_odd_tree_ctx_step(R, T1)
+    )),
+    assertz(user:typr_mutual_odd_tree_ctx_step([_, [], []], _T1)),
+    assertz(user:(typr_mutual_odd_tree_ctx_step([V, L, R], T) :-
+        V >= T,
+        T1 is T + 1,
+        typr_mutual_even_tree_ctx_step(L, T1),
+        typr_mutual_even_tree_ctx_step(R, T1)
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx_step/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx_step/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx_step/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx_step/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_ctx_step/2, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_ctx_step/2, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_ctx_step/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_ctx_step/2, typr_mutual_odd_tree_ctx_step/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_ctx_step <- fn(arg1: [#N, Any], arg2: int): bool")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_odd_tree_ctx_step <- fn(arg1: [#N, Any], arg2: int): bool")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_ctx_step_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "typr_mutual_odd_tree_ctx_step_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree_ctx_step:\", paste(deparse(list(current_input, current_ctx)), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_ctx_step_impl(arg1, arg2)")),
+    once(sub_string(Code, _, _, _, "typr_mutual_odd_tree_ctx_step_impl(arg1, arg2)")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_ctx_step_impl(.subset2(current_input, 2), (current_ctx + 1));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_ctx_step_impl(.subset2(current_input, 3), (current_ctx + 1));")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_ctx_step_impl(.subset2(current_input, 2), (current_ctx + 1));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_ctx_step_impl(.subset2(current_input, 3), (current_ctx + 1));")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_branch_step_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_ctx_branch_step([], _T0)),
+    assertz(user:(typr_mutual_even_tree_ctx_branch_step([V, L, R], T) :-
+        ( V > T ->
+            T1 is T + 1
+        ;   T1 is T + 2
+        ),
+        typr_mutual_odd_tree_ctx_branch_step(L, T1),
+        typr_mutual_odd_tree_ctx_branch_step(R, T1)
+    )),
+    assertz(user:typr_mutual_odd_tree_ctx_branch_step([_, [], []], _T1)),
+    assertz(user:(typr_mutual_odd_tree_ctx_branch_step([V, L, R], T) :-
+        ( V > T ->
+            T1 is T + 1
+        ;   T1 is T + 2
+        ),
+        typr_mutual_even_tree_ctx_branch_step(L, T1),
+        typr_mutual_even_tree_ctx_branch_step(R, T1)
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx_branch_step/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx_branch_step/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx_branch_step/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx_branch_step/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_ctx_branch_step/2, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_ctx_branch_step/2, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_ctx_branch_step/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_ctx_branch_step/2, typr_mutual_odd_tree_ctx_branch_step/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_ctx_branch_step <- fn(arg1: [#N, Any], arg2: int): bool")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_odd_tree_ctx_branch_step <- fn(arg1: [#N, Any], arg2: int): bool")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_ctx_branch_step_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "typr_mutual_odd_tree_ctx_branch_step_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree_ctx_branch_step:\", paste(deparse(list(current_input, current_ctx)), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_ctx_branch_step_impl(arg1, arg2)")),
+    once(sub_string(Code, _, _, _, "typr_mutual_odd_tree_ctx_branch_step_impl(arg1, arg2)")),
+    once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) > current_ctx }@) { (current_ctx + 1) } else { (current_ctx + 2) }")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_ctx_branch_step_impl(.subset2(current_input, 2), (if (@{ .subset2(current_input, 1) > current_ctx }@) { (current_ctx + 1) } else { (current_ctx + 2) }));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_ctx_branch_step_impl(.subset2(current_input, 3), (if (@{ .subset2(current_input, 1) > current_ctx }@) { (current_ctx + 1) } else { (current_ctx + 2) }));")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_ctx_branch_step_impl(.subset2(current_input, 2), (if (@{ .subset2(current_input, 1) > current_ctx }@) { (current_ctx + 1) } else { (current_ctx + 2) }));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_ctx_branch_step_impl(.subset2(current_input, 3), (if (@{ .subset2(current_input, 1) > current_ctx }@) { (current_ctx + 1) } else { (current_ctx + 2) }));")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

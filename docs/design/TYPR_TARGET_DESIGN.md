@@ -76,19 +76,19 @@ This document focuses on architecture and rollout choices specific to TypR.
      with `[]` / `[V, [], []]` base cases and one-subtree recursive descent,
      or `even_tree/1` / `odd_tree/1`-style tree-structural SCC shape with
      `[]` / `[V, [], []]` base cases, two-subtree boolean descent,
-     alias-style prework, guarded branch-local alias selection, or direct
-     recursive subtree calls inside supported guarded branch bodies with
-     limited branch-local alias or guard state around those calls before
-     the shared boolean rejoin after the two recursive subtree calls,
-     including one nested branch-local control point around those calls,
-     one nested branch-local control point between the two direct recursive
-     subtree calls with limited alias or guard state before the second
-     call, shared branch-local guard prework before a nested mutual
-     branch, conservative arity-2 tree-structural SCCs with one invariant
-     context argument threaded through the shared dual-subtree calls and
-     the same conservative guarded branch-body family, and boolean return
-     types, emitted as TypR functions with raw-expression memoized helper
-     bodies
+     alias-style prework, shared computed context updates, guarded shared
+     context selection, or direct recursive subtree calls inside supported
+     guarded branch bodies with limited branch-local alias or guard state
+     around those calls before the shared boolean rejoin after the two
+     recursive subtree calls, including one nested branch-local control
+     point around those calls, one nested branch-local control point
+     between the two direct recursive subtree calls with limited alias or
+     guard state before the second call, shared branch-local guard prework
+     before a nested mutual branch, conservative arity-2 tree-structural
+     SCCs with one invariant context argument threaded through the shared
+     dual-subtree calls and the same computed-context and guarded
+     branch-body families, and boolean return types, emitted as TypR
+     functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
      argument, invariant context args, and limited native guards, local
