@@ -94,3 +94,16 @@ pub static PARANOID_CONFIRM: &[&str] = &[
     r"^node\s+[^-].*\.js$",
 ];
 
+
+// --- shared_logic: security (generated from compile_logic) ---
+
+/// Check if a path does not contain directory traversal sequences.
+pub fn is_path_safe(path: &str) -> bool {
+    return !(path.starts_with("..")) && !(path.starts_with("/.."));
+}
+
+/// Check if a filename is not a hidden dotfile.
+pub fn is_visible_file(filename: &str) -> bool {
+    return !(filename.starts_with("."));
+}
+

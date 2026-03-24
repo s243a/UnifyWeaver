@@ -130,6 +130,10 @@ is_builtin(Tool_name, Result) :-
 needs_path_validation(Tool_name, Result) :-
     ((atom_concat('read', _, Tool_name) ; (atom_concat('write', _, Tool_name) ; atom_concat('edit', _, Tool_name))) -> Result = true ; Result = false).
 
+%% Return the number of arguments a tool accepts. Returns 0 if tool not found.
+arg_count(State, Tool_name, Result) :-
+    length(State.args, Result).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

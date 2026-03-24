@@ -120,4 +120,20 @@ defmodule AgentLoop.Security do
       nil -> {false, nil}
     end
   end
+
+
+# --- shared_logic: security (generated from compile_logic) ---
+
+  @doc "Check if a path does not contain directory traversal sequences."
+  @spec is_path_safe(String.t()) :: boolean()
+  def is_path_safe(path) do
+    (not String.starts_with?(path, "..") and not String.starts_with?(path, "/.."))
+  end
+
+  @doc "Check if a filename is not a hidden dotfile."
+  @spec is_visible_file(String.t()) :: boolean()
+  def is_visible_file(filename) do
+    not String.starts_with?(filename, ".")
+  end
+
 end

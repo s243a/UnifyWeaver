@@ -54,7 +54,7 @@ budget_remaining(State, Budget, Result) :-
     (Budget =< 0 ->
         Result = -1.0
     ;
-    Result = max(0.0, Budget - State.total_cost)
+    Result is max(0.0, Budget - State.total_cost)
     ).
 
 %% Reset all cost tracking state.
@@ -66,7 +66,7 @@ reset(State, State1) :-
 
 %% Compute cost from token count and price per 1M tokens.
 cost_compute(Tokens, Price_per_million, Result) :-
-    Result = ((float(Tokens) * Price_per_million) / 1.0e+06).
+    Result is ((float(Tokens) * Price_per_million) / 1.0e+06).
 
 %% Record a usage entry and update running totals.
 record_usage(State, Input_tokens, Output_tokens, Model, State1) :-
@@ -75,7 +75,7 @@ record_usage(State, Input_tokens, Output_tokens, Model, State1) :-
 
 %% Return total token count (input + output).
 total_tokens(State, Result) :-
-    Result = (State.total_input_tokens + State.total_output_tokens).
+    Result is (State.total_input_tokens + State.total_output_tokens).
 
 %% Format a one-line cost summary showing totals.
 get_summary(State, Result) :-
@@ -92,7 +92,7 @@ cost_per_token(State, Result) :-
     (Total =< 0 ->
         Result = 0.0
     ;
-    Result = (State.total_cost / float(Total))
+    Result is (State.total_cost / float(Total))
     ).
 
 %% Check if any usage records have been logged.
@@ -101,7 +101,7 @@ has_records(State, Result) :-
 
 %% Return total token count (input + output).
 total_tokens(State, Result) :-
-    Result = (State.total_input_tokens + State.total_output_tokens).
+    Result is (State.total_input_tokens + State.total_output_tokens).
 
 %% Return a short cost summary string (e.g. $0.05).
 cost_summary_short(State, Result) :-
@@ -116,7 +116,7 @@ input_output_ratio(State, Result) :-
     (State.total_output_tokens =:= 0 ->
         Result = 0.0
     ;
-    Result = (float(State.total_input_tokens) / float(State.total_output_tokens))
+    Result is (float(State.total_input_tokens) / float(State.total_output_tokens))
     ).
 
 %% Calculate average cost per message. Returns 0.0 if no messages recorded.
@@ -124,7 +124,7 @@ average_cost_per_message(State, Result) :-
     (State.message_count =:= 0 ->
         Result = 0.0
     ;
-    Result = (float(State.total_cost) / float(State.message_count))
+    Result is (float(State.total_cost) / float(State.message_count))
     ).
 
 %% Check if cost tracking is active (has recorded any usage).
@@ -136,7 +136,7 @@ cost_per_input_token(State, Result) :-
     (State.total_input_tokens =:= 0 ->
         Result = 0.0
     ;
-    Result = (float(State.total_cost) / float(State.total_input_tokens))
+    Result is (float(State.total_cost) / float(State.total_input_tokens))
     ).
 
 

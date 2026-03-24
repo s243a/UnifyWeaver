@@ -75,3 +75,15 @@
   (zero? (:token-count state))
 )
 
+(defn chunk-is-complete
+  "Check if a streaming chunk starts with the SSE data prefix."
+  [chunk]
+  (.startsWith chunk "data:")
+)
+
+(defn byte-count
+  "Return the total number of bytes received in the stream."
+  [state]
+  (count (:buffer state))
+)
+

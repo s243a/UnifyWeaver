@@ -6107,7 +6107,7 @@ test_shared_logic_infrastructure :-
             agent_loop_module:compile_logic(rust, M, _),
             agent_loop_module:compile_logic(elixir, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 116)
+        length(OkMs, 124)
     )),
     %% --- Elixir structure validation ---
     assert_true('elixir mix.exs exists', (
@@ -6194,6 +6194,23 @@ test_shared_logic_infrastructure :-
             read_file_to_string(F, Content, []),
             sub_string(Content, _, _, _, "ExUnit.Case")
         ))
+    )),
+    %% --- Elixir shared_logic content validation ---
+    assert_true('elixir cost_tracker.ex contains is_over_budget', (
+        read_file_to_string('generated/elixir/lib/agent_loop/cost_tracker.ex', CostContent, []),
+        sub_string(CostContent, _, _, _, "is_over_budget")
+    )),
+    assert_true('elixir security.ex contains is_path_safe', (
+        read_file_to_string('generated/elixir/lib/agent_loop/security.ex', SecContent, []),
+        sub_string(SecContent, _, _, _, "is_path_safe")
+    )),
+    assert_true('elixir retry.ex contains is_retryable_error', (
+        read_file_to_string('generated/elixir/lib/agent_loop/retry.ex', RetryContent, []),
+        sub_string(RetryContent, _, _, _, "is_retryable_error")
+    )),
+    assert_true('elixir streaming.ex contains chunk_is_complete', (
+        read_file_to_string('generated/elixir/lib/agent_loop/streaming_token_counter.ex', StreamContent, []),
+        sub_string(StreamContent, _, _, _, "chunk_is_complete")
     )).
 
 %% =============================================================================
@@ -6215,7 +6232,7 @@ test_cross_target_integration :-
             agent_loop_module:compile_logic(prolog, M, _),
             agent_loop_module:compile_logic(clojure, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 116)
+        length(OkMs, 124)
     )),
     %% Prolog compile_logic produces Result = ... pattern for return methods
     assert_true('prolog is_over_budget has Result unification', (

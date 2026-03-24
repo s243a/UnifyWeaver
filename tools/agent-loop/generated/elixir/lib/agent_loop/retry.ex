@@ -48,4 +48,22 @@ defmodule AgentLoop.Retry do
     end
   end
 
+  @doc "Check if an HTTP status code is retryable (429 or 5xx)."
+  @spec is_retryable_error(integer()) :: boolean()
+  def is_retryable_error(status_code) do
+    ((status_code >= 429 and status_code <= 429) or status_code >= 500)
+  end
+
+  @doc "Check if the current attempt count has reached max_retries."
+  @spec max_retries_reached(t()) :: boolean()
+  def max_retries_reached(%__MODULE__{} = state) do
+    state.attempt >= state.max_retries
+  end
+
+  @doc "Calculate exponential backoff delay: base_delay * 2^attempt."
+  @spec retry_delay(t()) :: float()
+  def retry_delay(%__MODULE__{} = state) do
+    state.base_delay * (2 * state.attempt * 1.0)
+  end
+
 end
