@@ -392,9 +392,11 @@ Current TypR lowering policy is intentionally mixed:
   including one nested branch-local control point around those calls, one
   nested branch-local control point between the two direct recursive
   subtree calls with limited alias or guard state before the second call,
-  and shared branch-local guard prework before a nested mutual branch,
-  using raw-expression memoized helper bodies inside TypR rather than
-  wrapped-R fallback
+  and shared branch-local guard prework before a nested mutual branch, and
+  conservative arity-2 tree-structural SCCs with one invariant context
+  argument threaded through the shared dual-subtree calls, using
+  raw-expression memoized helper bodies inside TypR rather than wrapped-R
+  fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower
   to TypR-valid functions when they match the currently supported `[]` /
   `[V, L, R]` shape with one tree-driving argument, invariant context args,

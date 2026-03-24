@@ -2618,4 +2618,40 @@ test(transitive_closure_seeds_known_base_facts) :-
     once(sub_string(Code, _, _, _, "_seed_edge_1 <- add_edge(\"a\", \"b\");")),
     once(sub_string(Code, _, _, _, "_seed_edge_2 <- add_edge(\"b\", \"c\");")).
 
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_ctx([], _T0)),
+    assertz(user:(typr_mutual_even_tree_ctx([V, L, R], T) :-
+        V >= T,
+        typr_mutual_odd_tree_ctx(L, T),
+        typr_mutual_odd_tree_ctx(R, T)
+    )),
+    assertz(user:typr_mutual_odd_tree_ctx([_, [], []], _T1)),
+    assertz(user:(typr_mutual_odd_tree_ctx([V, L, R], T) :-
+        V >= T,
+        typr_mutual_even_tree_ctx(L, T),
+        typr_mutual_even_tree_ctx(R, T)
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_ctx/2, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_ctx/2, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_ctx/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_ctx/2, typr_mutual_odd_tree_ctx/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_ctx <- fn(arg1: [#N, Any], arg2: int): bool")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_odd_tree_ctx <- fn(arg1: [#N, Any], arg2: int): bool")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_ctx_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "typr_mutual_odd_tree_ctx_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree_ctx:\", paste(deparse(list(current_input, current_ctx)), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_ctx_impl(arg1, arg2)")),
+    once(sub_string(Code, _, _, _, "typr_mutual_odd_tree_ctx_impl(arg1, arg2)")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_ctx_impl(.subset2(current_input, 2), current_ctx);")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_ctx_impl(.subset2(current_input, 3), current_ctx);")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_ctx_impl(.subset2(current_input, 2), current_ctx);")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_ctx_impl(.subset2(current_input, 3), current_ctx);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
 :- end_tests(typr_target).

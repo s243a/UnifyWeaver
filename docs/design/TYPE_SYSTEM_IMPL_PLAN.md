@@ -212,8 +212,10 @@ bring-up.
     calls, including one nested branch-local control point around those
     calls, one nested branch-local control point between the two direct
     recursive subtree calls with limited alias or guard state before the
-    second call, and shared branch-local guard prework before a nested
-    mutual branch
+    second call, shared branch-local guard prework before a nested mutual
+    branch, and conservative arity-2 tree-structural SCCs with one
+    invariant context argument threaded through the shared dual-subtree
+    calls
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
