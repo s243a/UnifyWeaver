@@ -14,14 +14,17 @@
 #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 use wasm_bindgen::prelude::*;
 
+#[allow(unused_imports)]
 use crate::types::*;
 use crate::context::*;
 use crate::costs::*;
+#[allow(unused_imports)]
 use std::collections::HashMap;
 
 /// Browser-compatible agent loop state.
 /// Holds context, cost tracking, and configuration without
 /// filesystem or stdin dependencies.
+#[allow(dead_code)]
 pub struct WasmAgentState {
     context: ContextManager,
     cost_tracker: CostTracker,

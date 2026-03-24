@@ -7,6 +7,7 @@ use agent_loop::backends::*;
 use agent_loop::context::*;
 use agent_loop::costs::*;
 use agent_loop::tool_handler::*;
+#[allow(unused_imports)]
 use agent_loop::commands::*;
 use agent_loop::sessions::*;
 use agent_loop::config_loader::*;
@@ -1212,6 +1213,7 @@ async fn main() {
 
 
 /// Counts tokens during streaming and tracks character count.
+#[allow(dead_code)]
 pub struct StreamingTokenCounter {
     pub token_count: usize,
     pub char_count: usize,

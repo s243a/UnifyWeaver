@@ -114,6 +114,6 @@ impl CostTracker {
 
 /// Compute cost from token count and price per 1M tokens.
 pub fn cost_compute(tokens: i64, price_per_million: f64) -> f64 {
-    return ((tokens as f64) * price_per_million / 1.0e+06);
+    return (tokens as f64) * price_per_million / 1.0e+06;
 }
 
