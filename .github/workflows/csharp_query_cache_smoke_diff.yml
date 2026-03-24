@@ -24,13 +24,13 @@ on:
         default: ''
         type: string
       baseline_artifact_name:
-        description: 'Artifact name containing the baseline cache smoke summary JSON'
-        required: true
+        description: 'Optional artifact name containing the baseline cache smoke summary JSON; defaults to csharp-query-smoke-summary-json'
+        required: false
         default: 'csharp-query-smoke-summary-json'
         type: string
       compare_artifact_name:
-        description: 'Artifact name containing the compare cache smoke summary JSON'
-        required: true
+        description: 'Optional artifact name containing the compare cache smoke summary JSON; defaults to csharp-query-smoke-summary-json'
+        required: false
         default: 'csharp-query-smoke-summary-json'
         type: string
       fail_on_status_regression:
@@ -62,8 +62,9 @@ jobs:
       COMPARE_RUN_ID: ${{ inputs.compare_run_id }}
       BASELINE_REF_INPUT: ${{ inputs.baseline_ref }}
       COMPARE_REF_INPUT: ${{ inputs.compare_ref }}
-      BASELINE_ARTIFACT_NAME: ${{ inputs.baseline_artifact_name }}
-      COMPARE_ARTIFACT_NAME: ${{ inputs.compare_artifact_name }}
+      BASELINE_ARTIFACT_NAME_INPUT: ${{ inputs.baseline_artifact_name }}
+      COMPARE_ARTIFACT_NAME_INPUT: ${{ inputs.compare_artifact_name }}
+      DEFAULT_CACHE_SMOKE_SUMMARY_ARTIFACT_NAME: csharp-query-smoke-summary-json
       FAIL_ON_STATUS_REGRESSION: ${{ inputs.fail_on_status_regression }}
       MAX_TOTAL_DURATION_DELTA_SECONDS: ${{ inputs.max_total_duration_delta_seconds }}
       MAX_SLICE_DURATION_DELTA_SECONDS: ${{ inputs.max_slice_duration_delta_seconds }}
@@ -143,15 +144,17 @@ jobs:
 
           $baselineRef = if ([string]::IsNullOrWhiteSpace($env:BASELINE_REF_INPUT)) { 'main' } else { $env:BASELINE_REF_INPUT }
           $compareRef = if ([string]::IsNullOrWhiteSpace($env:COMPARE_REF_INPUT)) { $env:WORKFLOW_DISPATCH_REF } else { $env:COMPARE_REF_INPUT }
+          $baselineArtifactName = if ([string]::IsNullOrWhiteSpace($env:BASELINE_ARTIFACT_NAME_INPUT)) { $env:DEFAULT_CACHE_SMOKE_SUMMARY_ARTIFACT_NAME } else { $env:BASELINE_ARTIFACT_NAME_INPUT }
+          $compareArtifactName = if ([string]::IsNullOrWhiteSpace($env:COMPARE_ARTIFACT_NAME_INPUT)) { $env:DEFAULT_CACHE_SMOKE_SUMMARY_ARTIFACT_NAME } else { $env:COMPARE_ARTIFACT_NAME_INPUT }
 
           $baselineRun = if ([string]::IsNullOrWhiteSpace($env:BASELINE_RUN_ID)) {
-            Resolve-LatestSmokeRun -RefName $baselineRef -ArtifactName $env:BASELINE_ARTIFACT_NAME
+            Resolve-LatestSmokeRun -RefName $baselineRef -ArtifactName $baselineArtifactName
           } else {
             Get-RunMetadata -RunId $env:BASELINE_RUN_ID -Source 'explicit' -RequestedRef $baselineRef
           }
 
           $compareRun = if ([string]::IsNullOrWhiteSpace($env:COMPARE_RUN_ID)) {
-            Resolve-LatestSmokeRun -RefName $compareRef -ArtifactName $env:COMPARE_ARTIFACT_NAME
+            Resolve-LatestSmokeRun -RefName $compareRef -ArtifactName $compareArtifactName
           } else {
             Get-RunMetadata -RunId $env:COMPARE_RUN_ID -Source 'explicit' -RequestedRef $compareRef
           }
@@ -163,12 +166,14 @@ jobs:
             "BASELINE_RESOLVED_URL=$($baselineRun.HtmlUrl)"
             "BASELINE_RESOLUTION_SOURCE=$($baselineRun.Source)"
             "BASELINE_REQUESTED_REF=$($baselineRun.RequestedRef)"
+            "BASELINE_ARTIFACT_NAME=$baselineArtifactName"
             "COMPARE_RESOLVED_RUN_ID=$($compareRun.RunId)"
             "COMPARE_RESOLVED_REF=$($compareRun.RefName)"
             "COMPARE_RESOLVED_SHA=$($compareRun.Sha)"
             "COMPARE_RESOLVED_URL=$($compareRun.HtmlUrl)"
             "COMPARE_RESOLUTION_SOURCE=$($compareRun.Source)"
             "COMPARE_REQUESTED_REF=$($compareRun.RequestedRef)"
+            "COMPARE_ARTIFACT_NAME=$compareArtifactName"
             "CACHE_SMOKE_DIFF_COMPARE_URL=$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/compare/$($baselineRun.Sha)...$($compareRun.Sha)"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 

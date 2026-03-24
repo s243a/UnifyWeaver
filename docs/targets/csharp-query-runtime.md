@@ -197,9 +197,10 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - Automatic latest-successful resolution inputs:
       - `baseline_ref` (defaults to `main`)
       - `compare_ref` (defaults to the workflow dispatch ref)
-    - Artifact inputs:
-      - `baseline_artifact_name` (defaults to `csharp-query-smoke-summary-json`)
-      - `compare_artifact_name` (defaults to `csharp-query-smoke-summary-json`)
+    - Optional artifact-name overrides:
+      - `baseline_artifact_name` (defaults to `csharp-query-smoke-summary-json` when blank)
+      - `compare_artifact_name` (defaults to `csharp-query-smoke-summary-json` when blank)
+      - Use explicit artifact names only for nonstandard comparisons
     - Optional threshold inputs:
       - `fail_on_status_regression`
       - `max_total_duration_delta_seconds`
