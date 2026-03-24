@@ -142,3 +142,15 @@ def get_profile(name: str) -> SecurityProfile:
     """Get a built-in profile by name, defaulting to cautious."""
     profiles = get_builtin_profiles()
     return profiles.get(name, profiles['cautious'])
+
+
+# --- shared_logic: security (generated from compile_logic) ---
+
+def is_path_safe(path):
+    """Check if a path does not contain directory traversal sequences."""
+    return (not path.startswith("..") and not path.startswith("/.."))
+
+def is_visible_file(filename):
+    """Check if a filename is not a hidden dotfile."""
+    return not filename.startswith(".")
+

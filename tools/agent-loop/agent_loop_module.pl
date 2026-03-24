@@ -4291,6 +4291,77 @@ shared_logic(tools, tool_arg_count, [
     body_template("~return_val(len_of(self_direct(args)))~")
 ]).
 
+shared_logic(tools, tool_has_schema, [
+    signature(has_schema, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if a tool has a JSON schema definition for its parameters."),
+    container('ToolHandler'),
+    body_template("~return_val(gt(len_of(self_direct(schema)), literal(0)))~")
+]).
+
+%% --- Context module methods ---
+shared_logic(context, context_token_budget, [
+    signature(token_budget, [], int),
+    arg_types([]),
+    doc("Return the remaining token budget. Returns -1 if no max_tokens set."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_tokens), literal(0))~:\n    ~return_val(literal(-1))~\n~return_val(sub(self_direct(max_tokens), self_direct(token_count)))~")
+]).
+
+%% --- Sessions module methods ---
+shared_logic(sessions, session_age, [
+    signature(session_age, [created_at, now], float),
+    arg_types([float, float]),
+    doc("Return the age of a session in seconds given creation time and current time."),
+    container(none),
+    body_template("~return_val(sub(now, created_at))~")
+]).
+
+%% --- MCP module methods ---
+shared_logic(mcp, mcp_disconnect_reason, [
+    signature(disconnect_reason, [], string),
+    arg_types([]),
+    doc("Return the reason for the last MCP disconnection, or empty string if connected."),
+    container('MCPClient'),
+    body_template("~return_val(self_direct(disconnect_reason))~")
+]).
+
+%% --- Costs module methods ---
+shared_logic(costs, cost_total_messages, [
+    signature(total_messages, [], int),
+    arg_types([]),
+    doc("Return the total number of messages tracked by the cost tracker."),
+    container('CostTracker'),
+    body_template("~return_val(self_direct(message_count))~")
+]).
+
+%% --- Tool cache module methods ---
+shared_logic(tool_cache, cache_evict_oldest, [
+    signature(evict_oldest, [], int),
+    arg_types([]),
+    doc("Return the number of items that would be evicted to make room (1 if full, 0 otherwise)."),
+    container('ToolResultCache'),
+    body_template("if ~gte(len_of(self_direct(cache)), self_direct(max_size))~:\n    ~return_val(literal(1))~\n~return_val(literal(0))~")
+]).
+
+%% --- Streaming module methods ---
+shared_logic(streaming, streaming_avg_token_rate, [
+    signature(avg_token_rate, [], float),
+    arg_types([]),
+    doc("Return average tokens per second. Returns 0.0 if elapsed time is zero."),
+    container('StreamingHandler'),
+    body_template("if ~lte(self_direct(elapsed), literal(0))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(token_count)), self_direct(elapsed)))~")
+]).
+
+%% --- Config module methods ---
+shared_logic(config, config_merge, [
+    signature(merge, [key, value], string),
+    arg_types([string, string]),
+    doc("Return the value to use for a config key: the provided value if non-empty, otherwise the existing setting."),
+    container('ConfigLoader'),
+    body_template("if ~gt(len_of(value), literal(0))~:\n    ~return_val(value)~\n~return_val(self_direct(settings))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -5652,7 +5723,7 @@ emit_shared_method(S, clojure, MethodName) :-
     member(doc(Doc), Props),
     compile_logic(clojure, MethodName, Body),
     member(container(Container), Props),
-    (member(mutable, Props) -> Mutable = true ; Mutable = false),
+    (member(mutable, Props) -> _Mutable = true ; _Mutable = false),
     %% Kebab-case function name
     clojure_kebab(Name, KName),
     %% Docstring
@@ -6297,6 +6368,7 @@ generate_rust_config :-
     ]),
     write_rust(S, config_types),
     agent_loop_components:emit_rust_config_data(S, [target(rust)]),
+    %% config_has_key/config_is_debug/config_merge skipped — no ConfigLoader struct in Rust
     close(S),
     format('  Generated rust/src/config.rs~n', []).
 
@@ -6315,6 +6387,7 @@ generate_rust_costs :-
     %% Emit shared_logic methods (replacing former fragment methods)
     emit_shared_method(S, rust, is_over_budget),
     emit_shared_method(S, rust, budget_remaining),
+    %% cost_total_messages skipped — CostTracker has no message_count field in Rust
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
     close(S),
@@ -6329,6 +6402,7 @@ generate_rust_tools :-
     ]),
     write_rust(S, tools_types),
     agent_loop_components:emit_rust_tool_facts(S, [target(rust)]),
+    %% tool_arg_count/tool_has_schema skipped — ToolHandler has no schema/args fields in Rust
     close(S),
     format('  Generated rust/src/tools.rs~n', []).
 
@@ -6388,6 +6462,7 @@ generate_rust_mcp_client :-
     open(Path, write, S),
     write_rust_header(S, mcp_client, 'MCP client — stdio JSON-RPC 2.0 transport'),
     write_rust(S, mcp_client),
+    %% mcp_disconnect_reason skipped — no MCPClient struct with disconnect_reason field in Rust
     close(S),
     format('  Generated rust/src/mcp_client.rs~n', []).
 
@@ -6532,6 +6607,7 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_len),
     emit_shared_method(S, rust, context_is_empty),
     emit_shared_method(S, rust, estimate_tokens),
+    %% context_token_budget skipped — ContextManager has no max_tokens/token_count fields in Rust
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/context.rs~n', []).
@@ -6638,6 +6714,7 @@ generate_rust_tool_handler :-
     write_rust(S, tool_result_cache_body),
     emit_shared_method(S, rust, cache_clear),
     emit_shared_method(S, rust, cache_len),
+    %% cache_evict_oldest/cache_hit_rate skipped — ToolResultCache has no max_size/hits/total_lookups fields in Rust
     write_rust(S, tool_result_cache_tail),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
@@ -6736,6 +6813,8 @@ generate_rust_sessions :-
     open(Path, write, S),
     write_rust_header(S, sessions, 'Session persistence — save, load, list, delete'),
     write_rust(S, sessions_module),
+    emit_shared_method(S, rust, session_age),
+    %% session_age is container(none) so no struct fields needed
     close(S),
     format('  Generated rust/src/sessions.rs~n', []).
 
@@ -6763,6 +6842,8 @@ generate_rust_main :-
     %% Emit shared_logic standalone function (replacing former fragment code)
     emit_shared_method(S, rust, is_retryable_status),
     emit_shared_method(S, rust, compute_delay),
+    emit_shared_method(S, rust, is_retryable_error),
+    %% max_retries_reached/retry_delay skipped — no RetryHandler struct in Rust
     nl(S),
     %% Templates and skills
     write_rust(S, template_manager),
@@ -6849,6 +6930,7 @@ generate_rust_main :-
     %% Emit shared_logic methods for streaming (replacing former fragment methods)
     emit_shared_method(S, rust, on_token),
     emit_shared_method(S, rust, format_summary),
+    %% chunk_is_complete/stream_byte_count/streaming_avg_token_rate skipped — struct field mismatches or standalone-in-impl-block issue
     write(S, '}\n\n'),
     %% Main loop (expects `config`, `matches`, `session_manager` to be defined)
     write_rust(S, main_loop),
@@ -7539,7 +7621,8 @@ generate_elixir_config :-
     write(S, '    Map.new(map, fn {k, v} -> {String.to_existing_atom(k), v} end)\n'),
     write(S, '  rescue\n'),
     write(S, '    ArgumentError -> map\n'),
-    write(S, '  end\n'),
+    write(S, '  end\n\n'),
+    write_shared_block_elixir(S, config),
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/lib/agent_loop/config.ex~n', []).
@@ -9400,7 +9483,15 @@ generate_clojure_tools_test(Dir) :-
     write(S, '  (is (true? (tools/needs-path-validation "read")))\n'),
     write(S, '  (is (true? (tools/needs-path-validation "write")))\n'),
     write(S, '  (is (true? (tools/needs-path-validation "edit")))\n'),
-    write(S, '  (is (false? (tools/needs-path-validation "bash"))))\n'),
+    write(S, '  (is (false? (tools/needs-path-validation "bash"))))\n\n'),
+    write(S, '(deftest test-tool-category\n'),
+    write(S, '  (is (string? (tools/tool-category "bash"))))\n\n'),
+    write(S, '(deftest test-has-schema\n'),
+    write(S, '  (is (true? (tools/has-schema {:schema {:type "object"}} "bash")))\n'),
+    write(S, '  (is (false? (tools/has-schema {:schema {}} "bash"))))\n\n'),
+    write(S, '(deftest test-is-safe\n'),
+    write(S, '  (is (true? (tools/is-safe "read")))\n'),
+    write(S, '  (is (false? (tools/is-safe "bash"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -9497,7 +9588,12 @@ generate_clojure_security_test(Dir) :-
     write(S, '  (is (true? (security/is-visible-file "main.rs")))\n'),
     write(S, '  (is (false? (security/is-visible-file ".env"))))\n\n'),
     write(S, '(deftest test-profiles-exist\n'),
-    write(S, '  (is (pos? (count security/profiles))))\n'),
+    write(S, '  (is (pos? (count security/profiles))))\n\n'),
+    write(S, '(deftest test-blocked-paths-exist\n'),
+    write(S, '  (is (pos? (count security/blocked-paths))))\n\n'),
+    write(S, '(deftest test-path-blocked\n'),
+    write(S, '  (is (some? (security/path-blocked? "/etc/shadow")))\n'),
+    write(S, '  (is (not (security/path-blocked? "src/main.rs"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -9523,7 +9619,10 @@ generate_clojure_output_parser_test(Dir) :-
     write(S, '(deftest test-is-empty-response\n'),
     write(S, '  (is (true? (parser/is-empty-response "")))\n'),
     write(S, '  (is (true? (parser/is-empty-response "   ")))\n'),
-    write(S, '  (is (false? (parser/is-empty-response "hello"))))\n'),
+    write(S, '  (is (false? (parser/is-empty-response "hello"))))\n\n'),
+    write(S, '(deftest test-content-exceeds-length\n'),
+    write(S, '  (is (true? (parser/content-exceeds-length "hello world" 5)))\n'),
+    write(S, '  (is (false? (parser/content-exceeds-length "hi" 5))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
 
@@ -9544,7 +9643,15 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '  (is (false? (sessions/has-metadata {"messages" []}))))\n\n'),
     write(S, '(deftest test-session-is-expired\n'),
     write(S, '  (is (true? (sessions/is-expired 7200.0 3600.0)))\n'),
-    write(S, '  (is (false? (sessions/is-expired 1800.0 3600.0))))\n'),
+    write(S, '  (is (false? (sessions/is-expired 1800.0 3600.0))))\n\n'),
+    write(S, '(deftest test-session-age\n'),
+    write(S, '  (is (= 100.0 (sessions/session-age 1000.0 1100.0)))\n'),
+    write(S, '  (is (= 0.0 (sessions/session-age 500.0 500.0))))\n\n'),
+    write(S, '(deftest test-session-count\n'),
+    write(S, '  (is (= 0 (sessions/session-count [])))\n'),
+    write(S, '  (is (= 2 (sessions/session-count ["a.json" "b.json" "readme.txt"]))))\n\n'),
+    write(S, '(deftest test-session-dir\n'),
+    write(S, '  (is (string? (sessions/session-dir {:sessions-dir "/tmp/sessions"}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
 
@@ -9563,7 +9670,19 @@ generate_clojure_mcp_test(Dir) :-
     write(S, '  (is (= "read" (mcp/mcp-parse-tool-name "read"))))\n\n'),
     write(S, '(deftest test-mcp-is-connected\n'),
     write(S, '  (is (true? (mcp/is-connected {:request-id 5})))\n'),
-    write(S, '  (is (false? (mcp/is-connected {:request-id 0}))))\n'),
+    write(S, '  (is (false? (mcp/is-connected {:request-id 0}))))\n\n'),
+    write(S, '(deftest test-mcp-tool-count\n'),
+    write(S, '  (is (= 0 (mcp/tool-count {:tools []})))\n'),
+    write(S, '  (is (= 3 (mcp/tool-count {:tools ["a" "b" "c"]}))))\n\n'),
+    write(S, '(deftest test-mcp-has-tools\n'),
+    write(S, '  (is (false? (mcp/has-tools {:tools []})))\n'),
+    write(S, '  (is (true? (mcp/has-tools {:tools ["read"]}))))\n\n'),
+    write(S, '(deftest test-mcp-server-count\n'),
+    write(S, '  (is (= 0 (mcp/server-count {:servers []})))\n'),
+    write(S, '  (is (= 2 (mcp/server-count {:servers ["s1" "s2"]}))))\n\n'),
+    write(S, '(deftest test-mcp-disconnect-reason\n'),
+    write(S, '  (is (= "timeout" (mcp/disconnect-reason {:disconnect-reason "timeout"})))\n'),
+    write(S, '  (is (nil? (mcp/disconnect-reason {:other "field"}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/mcp_test.clj~n', []).
 
@@ -9970,7 +10089,8 @@ generate_security_profiles :-
     write(S, 'def get_profile(name: str) -> SecurityProfile:\n'),
     write(S, '    """Get a built-in profile by name, defaulting to cautious."""\n'),
     write(S, '    profiles = get_builtin_profiles()\n'),
-    write(S, '    return profiles.get(name, profiles[\'cautious\'])\n'),
+    write(S, '    return profiles.get(name, profiles[\'cautious\'])\n\n'),
+    write_shared_block_py(S, security),
     close(S),
     format('  Generated security/profiles.py~n', []).
 
@@ -17127,6 +17247,36 @@ fn test_phase24_streaming_counter_wired_in_loop() {
     let main_src = include_str!("../src/main.rs");
     assert!(main_src.contains("counter.on_token"), "main loop should use counter.on_token");
     assert!(main_src.contains("[Streamed:"), "main loop should show streaming summary");
+}
+
+// ============================================================================
+// Shared logic method presence tests
+// ============================================================================
+
+#[test]
+fn test_shared_logic_security_is_path_safe() {
+    let src = include_str!("../src/security.rs");
+    assert!(src.contains("fn is_path_safe"), "security.rs should have is_path_safe");
+    assert!(src.contains("fn is_visible_file"), "security.rs should have is_visible_file");
+}
+
+#[test]
+fn test_shared_logic_costs_budget_remaining() {
+    let src = include_str!("../src/costs.rs");
+    assert!(src.contains("fn is_over_budget"), "costs.rs should have is_over_budget");
+    assert!(src.contains("fn budget_remaining"), "costs.rs should have budget_remaining");
+}
+
+#[test]
+fn test_shared_logic_retry_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn is_retryable_error"), "main.rs should have is_retryable_error");
+}
+
+#[test]
+fn test_shared_logic_sessions_methods() {
+    let src = include_str!("../src/sessions.rs");
+    assert!(src.contains("fn session_age"), "sessions.rs should have session_age");
 }
 ').
 

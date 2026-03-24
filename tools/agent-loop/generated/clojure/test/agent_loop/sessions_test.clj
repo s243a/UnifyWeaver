@@ -16,3 +16,14 @@
 (deftest test-session-is-expired
   (is (true? (sessions/is-expired 7200.0 3600.0)))
   (is (false? (sessions/is-expired 1800.0 3600.0))))
+
+(deftest test-session-age
+  (is (= 100.0 (sessions/session-age 1000.0 1100.0)))
+  (is (= 0.0 (sessions/session-age 500.0 500.0))))
+
+(deftest test-session-count
+  (is (= 0 (sessions/session-count [])))
+  (is (= 2 (sessions/session-count ["a.json" "b.json" "readme.txt"]))))
+
+(deftest test-session-dir
+  (is (string? (sessions/session-dir {:sessions-dir "/tmp/sessions"}))))

@@ -134,6 +134,10 @@ needs_path_validation(Tool_name, Result) :-
 arg_count(State, Tool_name, Result) :-
     length(State.args, Result).
 
+%% Check if a tool has a JSON schema definition for its parameters.
+has_schema(State, Tool_name, Result) :-
+    length(State.schema, Result) > 0.
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

@@ -93,3 +93,9 @@
   (contains? data "metadata")
 )
 
+(defn session-age
+  "Return the age of a session in seconds given creation time and current time."
+  [created-at now]
+  (- now created-at)
+)
+

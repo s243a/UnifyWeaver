@@ -77,6 +77,12 @@ defmodule AgentLoop.MCPClient do
     Enum.count(state.servers)
   end
 
+  @doc "Return the reason for the last MCP disconnection, or empty string if connected."
+  @spec disconnect_reason(t()) :: String.t()
+  def disconnect_reason(%__MODULE__{} = state) do
+    state.disconnect_reason
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

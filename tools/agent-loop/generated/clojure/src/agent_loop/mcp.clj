@@ -65,3 +65,9 @@
   (count (:servers state))
 )
 
+(defn disconnect-reason
+  "Return the reason for the last MCP disconnection, or empty string if connected."
+  [state]
+  (:disconnect-reason state)
+)
+

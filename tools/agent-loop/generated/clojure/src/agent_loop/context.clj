@@ -193,3 +193,12 @@
   )
 )
 
+(defn token-budget
+  "Return the remaining token budget. Returns -1 if no max_tokens set."
+  [state]
+  (if (<= (:max-tokens state) 0)
+      -1
+      (- (:max-tokens state) (:token-count state))
+  )
+)
+

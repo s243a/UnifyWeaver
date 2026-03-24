@@ -162,6 +162,14 @@ messages_remaining(State, Result) :-
     (State.max_messages - length(State.messages, Result))
     ).
 
+%% Return the remaining token budget. Returns -1 if no max_tokens set.
+token_budget(State, Result) :-
+    (State.max_tokens =< 0 ->
+        Result = -1
+    ;
+    Result is (State.max_tokens - State.token_count)
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -212,6 +220,14 @@ chunk_is_complete(Chunk, Result) :-
 %% Return the total number of bytes received in the stream.
 byte_count(State, Result) :-
     length(State.buffer, Result).
+
+%% Return average tokens per second. Returns 0.0 if elapsed time is zero.
+avg_token_rate(State, Result) :-
+    (State.elapsed =< 0 ->
+        Result = 0.0
+    ;
+    Result is (float(State.token_count) / State.elapsed)
+    ).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -285,6 +301,14 @@ cache_utilization(State, Result) :-
     (float(length(State.cache, Result)) / float(State.max_size))
     ).
 
+%% Return the number of items that would be evicted to make room (1 if full, 0 otherwise).
+evict_oldest(State, Result) :-
+    (length(State.cache, Result) >= State.max_size ->
+        Result = 1
+    ;
+    Result = 0
+    ).
+
 
 %% --- shared_logic: mcp (generated from compile_logic) ---
 
@@ -324,6 +348,10 @@ has_tools(State, Result) :-
 %% Return the number of registered MCP server connections.
 server_count(State, Result) :-
     length(State.servers, Result).
+
+%% Return the reason for the last MCP disconnection, or empty string if connected.
+disconnect_reason(State, Result) :-
+    Result = State.disconnect_reason.
 
 
 %% --- shared_logic: retry (generated from compile_logic) ---
@@ -470,6 +498,10 @@ is_expired(Age, Max_age, Result) :-
 %% Check if session data contains a metadata key.
 has_metadata(Data, Result) :-
     (get_dict("metadata", Data, _) -> Result = true ; Result = false).
+
+%% Return the age of a session in seconds given creation time and current time.
+session_age(Created_at, Now, Result) :-
+    Result is (Now - Created_at).
 
 conversation([]).
 max_iterations(0).

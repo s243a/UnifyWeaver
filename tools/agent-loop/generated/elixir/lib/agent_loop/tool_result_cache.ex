@@ -119,4 +119,14 @@ defmodule AgentLoop.ToolResultCache do
     end
   end
 
+  @doc "Return the number of items that would be evicted to make room (1 if full, 0 otherwise)."
+  @spec evict_oldest(t()) :: integer()
+  def evict_oldest(%__MODULE__{} = state) do
+    if Enum.count(state.cache) >= state.max_size do
+        1
+    else
+        0
+    end
+  end
+
 end

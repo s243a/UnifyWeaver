@@ -147,3 +147,9 @@
   )
 )
 
+(defn total-messages
+  "Return the total number of messages tracked by the cost tracker."
+  [state]
+  (:message-count state)
+)
+

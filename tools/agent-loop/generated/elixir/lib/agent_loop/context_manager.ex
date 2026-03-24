@@ -216,4 +216,14 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Return the remaining token budget. Returns -1 if no max_tokens set."
+  @spec token_budget(t()) :: integer()
+  def token_budget(%__MODULE__{} = state) do
+    if state.max_tokens <= 0 do
+        -1
+    else
+        (state.max_tokens - state.token_count)
+    end
+  end
+
 end
