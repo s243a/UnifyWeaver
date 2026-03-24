@@ -80,10 +80,12 @@ This document focuses on architecture and rollout choices specific to TypR.
      recursive subtree calls inside supported guarded branch bodies with
      limited branch-local alias or guard state around those calls before
      the shared boolean rejoin after the two recursive subtree calls,
-     including one nested branch-local control point around those calls and
-     shared branch-local guard prework before a nested mutual branch, and
-     boolean return types, emitted as TypR functions with raw-expression
-     memoized helper bodies
+     including one nested branch-local control point around those calls,
+     one nested branch-local control point between the two direct recursive
+     subtree calls with limited alias or guard state before the second
+     call, and shared branch-local guard prework before a nested mutual
+     branch, and boolean return types, emitted as TypR functions with
+     raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
      argument, invariant context args, and limited native guards, local

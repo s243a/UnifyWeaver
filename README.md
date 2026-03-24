@@ -249,7 +249,9 @@ includes:
   direct recursive subtree calls inside supported guarded branch bodies with
   limited branch-local alias or guard state around those calls, including
   one nested branch-local control point around those calls before the
-  shared boolean rejoin and shared branch-local guard prework before a
+  shared boolean rejoin, one nested branch-local control point between the
+  two direct recursive subtree calls with limited alias or guard state
+  before the second call, and shared branch-local guard prework before a
   nested mutual branch, lowered to TypR functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates with one

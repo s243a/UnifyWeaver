@@ -69,6 +69,10 @@ cleanup_typr_test :-
     retractall(user:typr_mutual_odd_tree_call_guard(_)),
     retractall(user:typr_mutual_even_tree_call_alias(_)),
     retractall(user:typr_mutual_odd_tree_call_alias(_)),
+    retractall(user:typr_mutual_even_tree_nested_call_guard(_)),
+    retractall(user:typr_mutual_odd_tree_nested_call_guard(_)),
+    retractall(user:typr_mutual_even_tree_nested_call_alias(_)),
+    retractall(user:typr_mutual_odd_tree_nested_call_alias(_)),
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
@@ -711,6 +715,101 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_intercall_alia
     once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_call_alias_impl(.subset2(current_input, 3));")),
     once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_call_alias_impl(.subset2(current_input, 3));")),
     once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_call_alias_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "result = FALSE;")),
+    once(sub_string(Code, _, _, _, "result = left_result && right_result;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_nested_intercall_guard_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_nested_call_guard([])),
+    assertz(user:(typr_mutual_even_tree_nested_call_guard([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_odd_tree_nested_call_guard(L),
+            ( V > 10 ->
+                V >= 0,
+                typr_mutual_odd_tree_nested_call_guard(R)
+            ;   typr_mutual_odd_tree_nested_call_guard(R)
+            )
+        ;   typr_mutual_odd_tree_nested_call_guard(R),
+            typr_mutual_odd_tree_nested_call_guard(L)
+        )
+    )),
+    assertz(user:typr_mutual_odd_tree_nested_call_guard([_, [], []])),
+    assertz(user:(typr_mutual_odd_tree_nested_call_guard([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_even_tree_nested_call_guard(L),
+            ( V > 10 ->
+                V >= 0,
+                typr_mutual_even_tree_nested_call_guard(R)
+            ;   typr_mutual_even_tree_nested_call_guard(R)
+            )
+        ;   typr_mutual_even_tree_nested_call_guard(R),
+            typr_mutual_even_tree_nested_call_guard(L)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_nested_call_guard/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_nested_call_guard/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_nested_call_guard/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_nested_call_guard/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_nested_call_guard/1, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_nested_call_guard/1, typr_mutual_odd_tree_nested_call_guard/1")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_nested_call_guard <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_odd_tree_nested_call_guard <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_nested_call_guard_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "if (left_result) {")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 10) {")),
+    once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) >= 0 }@) {")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_nested_call_guard_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_nested_call_guard_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_nested_call_guard_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "result = FALSE;")),
+    once(sub_string(Code, _, _, _, "result = left_result && right_result;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_nested_intercall_alias_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_nested_call_alias([])),
+    assertz(user:(typr_mutual_even_tree_nested_call_alias([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_odd_tree_nested_call_alias(L),
+            ( V > 10 ->
+                Right = R,
+                typr_mutual_odd_tree_nested_call_alias(Right)
+            ;   typr_mutual_odd_tree_nested_call_alias(R)
+            )
+        ;   typr_mutual_odd_tree_nested_call_alias(R),
+            typr_mutual_odd_tree_nested_call_alias(L)
+        )
+    )),
+    assertz(user:typr_mutual_odd_tree_nested_call_alias([_, [], []])),
+    assertz(user:(typr_mutual_odd_tree_nested_call_alias([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_even_tree_nested_call_alias(L),
+            ( V > 10 ->
+                Right = R,
+                typr_mutual_even_tree_nested_call_alias(Right)
+            ;   typr_mutual_even_tree_nested_call_alias(R)
+            )
+        ;   typr_mutual_even_tree_nested_call_alias(R),
+            typr_mutual_even_tree_nested_call_alias(L)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_nested_call_alias/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_nested_call_alias/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_nested_call_alias/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_nested_call_alias/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_nested_call_alias/1, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_nested_call_alias/1, typr_mutual_odd_tree_nested_call_alias/1")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_nested_call_alias <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_odd_tree_nested_call_alias <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_nested_call_alias_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "if (left_result) {")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 10) {")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_nested_call_alias_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_nested_call_alias_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_nested_call_alias_impl(.subset2(current_input, 3));")),
     once(sub_string(Code, _, _, _, "result = FALSE;")),
     once(sub_string(Code, _, _, _, "result = left_result && right_result;")),
     \+ sub_string(Code, _, _, _, "(function("),
