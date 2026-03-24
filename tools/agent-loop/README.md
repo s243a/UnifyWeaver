@@ -536,7 +536,7 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**All 124 shared_logic methods are actively wired (5 targets: Python, Rust, Elixir, Prolog, Clojure)** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
+**All 132 shared_logic methods are actively wired (5 targets: Python, Rust, Elixir, Prolog, Clojure)** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
@@ -856,7 +856,7 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Tool schema validation | Y | Y | Complete (required param check from tool_spec before execution) |
 | Token budget / rate limiting | Y | Y | Complete (CostTracker.is_over_budget, interactive prompt) |
 | Streaming token counting | Y | Y | Complete (StreamingTokenCounter class/struct, live char/token count during streaming, summary after completion) |
-| Integration tests (cargo test) | N | Y (139 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter) |
+| Integration tests (cargo test) | N | Y (146 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter) |
 
 ## Future Work (Elixir Target)
 
