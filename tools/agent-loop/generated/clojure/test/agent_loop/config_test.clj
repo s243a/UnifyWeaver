@@ -12,3 +12,15 @@
   (is (map? config/api-key-env-vars))
   (is (string? (get config/api-key-env-vars :openai)))
   (is (string? (get config/api-key-env-vars :claude))))
+
+(deftest test-has-key
+  (is (true? (config/has-key {:settings {:model "gpt-4"}} :model)))
+  (is (false? (config/has-key {:settings {}} :model))))
+
+(deftest test-is-debug
+  (is (config/is-debug {:debug "true"}))
+  (is (not (config/is-debug {:debug "false"}))))
+
+(deftest test-config-has-field
+  (is (true? (config/config-has-field {:model "gpt-4"} :model)))
+  (is (false? (config/config-has-field {} :nonexistent))))

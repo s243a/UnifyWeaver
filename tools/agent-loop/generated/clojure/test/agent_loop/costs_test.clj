@@ -40,3 +40,19 @@
 (deftest test-is-tracking
   (is (false? (costs/is-tracking {:message-count 0})))
   (is (true? (costs/is-tracking {:message-count 3}))))
+
+(deftest test-has-records
+  (is (not (costs/has-records {:records []})))
+  (is (costs/has-records {:records [{:tokens 10}]})))
+
+(deftest test-cost-summary-short
+  (is (string? (costs/cost-summary-short {:total-cost 1.5 :total-input-tokens 100 :total-output-tokens 50}))))
+
+(deftest test-cost-per-input-token
+  (is (= 0.0 (costs/cost-per-input-token {:total-cost 1.0 :total-input-tokens 0})))
+  (is (pos? (costs/cost-per-input-token {:total-cost 1.0 :total-input-tokens 1000}))))
+
+(deftest test-reset
+  (let [state (costs/reset {:total-cost 5.0 :total-input-tokens 100 :total-output-tokens 50 :message-count 3})]
+    (is (= 0.0 (:total-cost state)))
+    (is (= 0 (:total-input-tokens state)))))

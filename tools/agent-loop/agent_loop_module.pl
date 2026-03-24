@@ -38,6 +38,8 @@
 :- discontiguous expand_expr/3.
 :- discontiguous resolve_type/3.
 :- discontiguous generate_all/1.
+:- discontiguous format_literal_item/3.
+:- discontiguous emit_shared_method/3.
 :- use_module(agent_loop_components).
 :- use_module(agent_loop_bindings).
 
@@ -2101,9 +2103,23 @@ logic_slot(prolog, return_val(Expr), S) :-
         (prolog_is_bool_expr(Expr) ->
             format(atom(S), "(~w -> Result = true ; Result = false)", [ExprStr])
         ;
-            format(atom(S), "Result = ~w", [ExprStr])
+            %% If expression is arithmetic, use 'is' instead of '='
+            (prolog_is_arithmetic_expr(Expr) ->
+                format(atom(S), "Result is ~w", [ExprStr])
+            ;
+                format(atom(S), "Result = ~w", [ExprStr])
+            )
         )
     ).
+
+%% Detect expressions that require arithmetic evaluation via is/2
+prolog_is_arithmetic_expr(sub(_, _)).
+prolog_is_arithmetic_expr(add(_, _)).
+prolog_is_arithmetic_expr(mul(_, _)).
+prolog_is_arithmetic_expr(div_float(_, _)).
+prolog_is_arithmetic_expr(as_float(_)).
+prolog_is_arithmetic_expr(len_of(_)).
+prolog_is_arithmetic_expr(max_zero(_)).
 
 %% Detect expressions that produce boolean results in Prolog
 prolog_is_bool_expr(gt(_, _)).
@@ -4207,6 +4223,74 @@ shared_logic(context, context_messages_remaining, [
     body_template("if ~lte(self_direct(max_messages), literal(0))~:\n    ~return_val(literal(-1))~\n~return_val(sub(self_direct(max_messages), len_of(self_direct(messages))))~")
 ]).
 
+%% --- Retry module methods ---
+shared_logic(retry, is_retryable_error, [
+    signature(is_retryable_error, [status_code], bool),
+    arg_types([int]),
+    doc("Check if an HTTP status code is retryable (429 or 5xx)."),
+    container(none),
+    body_template("~return_val(or_expr(and_expr(gte(status_code, 429), lte(status_code, 429)), gte(status_code, 500)))~")
+]).
+
+shared_logic(retry, max_retries_reached, [
+    signature(max_retries_reached, [], bool),
+    arg_types([]),
+    doc("Check if the current attempt count has reached max_retries."),
+    container('RetryHandler'),
+    body_template("~return_val(gte(self_direct(attempt), self_direct(max_retries)))~")
+]).
+
+shared_logic(retry, retry_delay, [
+    signature(retry_delay, [], float),
+    arg_types([]),
+    doc("Calculate exponential backoff delay: base_delay * 2^attempt."),
+    container('RetryHandler'),
+    body_template("~return_val(mul(self_direct(base_delay), as_float(mul(literal(2), self_direct(attempt)))))~")
+]).
+
+%% --- Config module methods ---
+shared_logic(config, config_has_key, [
+    signature(has_key, [key], bool),
+    arg_types([string]),
+    doc("Check if a configuration key exists in the settings map."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_has_key(self_direct(settings), key))~")
+]).
+
+shared_logic(config, config_is_debug, [
+    signature(is_debug, [], bool),
+    arg_types([]),
+    doc("Check if debug mode is enabled in configuration."),
+    container('ConfigLoader'),
+    body_template("~return_val(eq_str(self_direct(debug), true))~")
+]).
+
+%% --- Streaming module methods ---
+shared_logic(streaming, chunk_is_complete, [
+    signature(chunk_is_complete, [chunk], bool),
+    arg_types([string]),
+    doc("Check if a streaming chunk starts with the SSE data prefix."),
+    container(none),
+    body_template("~return_val(str_starts_with(chunk, \"data:\"))~")
+]).
+
+shared_logic(streaming, stream_byte_count, [
+    signature(byte_count, [], int),
+    arg_types([]),
+    doc("Return the total number of bytes received in the stream."),
+    container('StreamingHandler'),
+    body_template("~return_val(len_of(self_direct(buffer)))~")
+]).
+
+%% --- Tools module methods ---
+shared_logic(tools, tool_arg_count, [
+    signature(arg_count, [tool_name], int),
+    arg_types([string]),
+    doc("Return the number of arguments a tool accepts. Returns 0 if tool not found."),
+    container('ToolHandler'),
+    body_template("~return_val(len_of(self_direct(args)))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -6023,6 +6107,7 @@ generate_prolog_security :-
     agent_loop_components:emit_security_facts(S, [target(prolog)]),
     %% Generate check predicates (compiled from declarative rules)
     agent_loop_components:emit_security_check_predicates(S, [target(prolog)]),
+    write_shared_block(S, prolog, security),
     close(S),
     format('  Generated prolog/security.pl~n', []).
 
@@ -6270,6 +6355,7 @@ generate_rust_security :-
     write_rust(S, security_types),
     agent_loop_components:emit_rust_security_facts(S, [target(rust)]),
     emit_rust_regex_lists(S),
+    write_shared_block(S, rust, security),
     close(S),
     format('  Generated rust/src/security.rs~n', []).
 
@@ -7362,7 +7448,8 @@ generate_elixir_security :-
     write(S, '      {_, reason} -> {true, reason}\n'),
     write(S, '      nil -> {false, nil}\n'),
     write(S, '    end\n'),
-    write(S, '  end\n'),
+    write(S, '  end\n\n'),
+    write_shared_block_elixir(S, security),
     write(S, 'end\n'),
     close(S),
     format('  Generated elixir/lib/agent_loop/security.ex~n', []).
@@ -9171,7 +9258,19 @@ generate_clojure_cost_test(Dir) :-
     write(S, '  (is (= 2.0 (costs/average-cost-per-message {:total-cost 10.0 :message-count 5}))))\n\n'),
     write(S, '(deftest test-is-tracking\n'),
     write(S, '  (is (false? (costs/is-tracking {:message-count 0})))\n'),
-    write(S, '  (is (true? (costs/is-tracking {:message-count 3}))))\n'),
+    write(S, '  (is (true? (costs/is-tracking {:message-count 3}))))\n\n'),
+    write(S, '(deftest test-has-records\n'),
+    write(S, '  (is (not (costs/has-records {:records []})))\n'),
+    write(S, '  (is (costs/has-records {:records [{:tokens 10}]})))\n\n'),
+    write(S, '(deftest test-cost-summary-short\n'),
+    write(S, '  (is (string? (costs/cost-summary-short {:total-cost 1.5 :total-input-tokens 100 :total-output-tokens 50}))))\n\n'),
+    write(S, '(deftest test-cost-per-input-token\n'),
+    write(S, '  (is (= 0.0 (costs/cost-per-input-token {:total-cost 1.0 :total-input-tokens 0})))\n'),
+    write(S, '  (is (pos? (costs/cost-per-input-token {:total-cost 1.0 :total-input-tokens 1000}))))\n\n'),
+    write(S, '(deftest test-reset\n'),
+    write(S, '  (let [state (costs/reset {:total-cost 5.0 :total-input-tokens 100 :total-output-tokens 50 :message-count 3})]\n'),
+    write(S, '    (is (= 0.0 (:total-cost state)))\n'),
+    write(S, '    (is (= 0 (:total-input-tokens state)))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -9195,7 +9294,20 @@ generate_clojure_context_test(Dir) :-
     write(S, '(deftest test-word-count\n'),
     write(S, '  (is (= 3 (ctx/word-count "hello world foo"))))\n\n'),
     write(S, '(deftest test-message-token-estimate\n'),
-    write(S, '  (is (pos? (ctx/message-token-estimate "some content here"))))\n'),
+    write(S, '  (is (pos? (ctx/message-token-estimate "some content here"))))\n\n'),
+    write(S, '(deftest test-context-len\n'),
+    write(S, '  (is (= 0 (ctx/len {:messages []})))\n'),
+    write(S, '  (is (= 2 (ctx/len {:messages [{:role "user"} {:role "assistant"}]}))))\n\n'),
+    write(S, '(deftest test-context-has-messages\n'),
+    write(S, '  (is (nil? (ctx/has-messages {:messages []})))\n'),
+    write(S, '  (is (some? (ctx/has-messages {:messages [{:role "user"}]}))))\n\n'),
+    write(S, '(deftest test-context-clear\n'),
+    write(S, '  (let [state (ctx/clear {:messages [{:role "user"}]})]\n'),
+    write(S, '    (is (= [] (:messages state)))))\n\n'),
+    write(S, '(deftest test-context-message-count\n'),
+    write(S, '  (is (= 3 (ctx/context-message-count {:messages [{} {} {}]}))))\n\n'),
+    write(S, '(deftest test-get-format\n'),
+    write(S, '  (is (= "json" (ctx/get-format {:format "json"}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/context_test.clj~n', []).
 
@@ -9217,7 +9329,20 @@ generate_clojure_tool_cache_test(Dir) :-
     write(S, '(deftest test-should-skip\n'),
     write(S, '  (let [state {:cache {} :max-size 100 :skip-tools #{"bash" "write"}}]\n'),
     write(S, '    (is (true? (cache/should-skip state "bash")))\n'),
-    write(S, '    (is (false? (cache/should-skip state "read")))))\n'),
+    write(S, '    (is (false? (cache/should-skip state "read")))))\n\n'),
+    write(S, '(deftest test-cache-len\n'),
+    write(S, '  (is (= 0 (cache/len {:cache {}})))\n'),
+    write(S, '  (is (= 2 (cache/len {:cache {"a" 1 "b" 2}}))))\n\n'),
+    write(S, '(deftest test-is-empty-cache\n'),
+    write(S, '  (is (true? (cache/is-empty-cache {:cache {}})))\n'),
+    write(S, '  (is (false? (cache/is-empty-cache {:cache {"k" "v"}}))))\n\n'),
+    write(S, '(deftest test-cache-has-key\n'),
+    write(S, '  (is (true? (cache/has-key {:cache {"bash_ls" "result"}} "bash_ls")))\n'),
+    write(S, '  (is (false? (cache/has-key {:cache {}} "bash_ls"))))\n\n'),
+    write(S, '(deftest test-make-key\n'),
+    write(S, '  (let [key (cache/make-key {:cache {}} "bash" {"cmd" "ls -la"})]\n'),
+    write(S, '    (is (string? key))\n'),
+    write(S, '    (is (pos? (count key)))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tool_cache_test.clj~n', []).
 
@@ -9237,7 +9362,19 @@ generate_clojure_retry_test(Dir) :-
     write(S, '  (let [delay (retry/compute-delay 1.0 2.0 1 60.0)]\n'),
     write(S, '    (is (= 1.0 delay)))\n'),
     write(S, '  (let [delay (retry/compute-delay 1.0 2.0 3 60.0)]\n'),
-    write(S, '    (is (= 4.0 delay))))\n'),
+    write(S, '    (is (= 4.0 delay))))\n\n'),
+    write(S, '(deftest test-is-retryable-error\n'),
+    write(S, '  (is (retry/is-retryable-error 429))\n'),
+    write(S, '  (is (retry/is-retryable-error 500))\n'),
+    write(S, '  (is (retry/is-retryable-error 503))\n'),
+    write(S, '  (is (not (retry/is-retryable-error 200)))\n'),
+    write(S, '  (is (not (retry/is-retryable-error 404))))\n\n'),
+    write(S, '(deftest test-max-retries-reached\n'),
+    write(S, '  (is (true? (retry/max-retries-reached {:attempt 3 :max-retries 3})))\n'),
+    write(S, '  (is (false? (retry/max-retries-reached {:attempt 1 :max-retries 3}))))\n\n'),
+    write(S, '(deftest test-is-first-attempt\n'),
+    write(S, '  (is (true? (retry/is-first-attempt 0)))\n'),
+    write(S, '  (is (false? (retry/is-first-attempt 1))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -9284,7 +9421,19 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '  (is (true? (streaming/is-live {:show-live true}))))\n\n'),
     write(S, '(deftest test-is-idle\n'),
     write(S, '  (is (true? (streaming/is-idle {:token-count 0})))\n'),
-    write(S, '  (is (false? (streaming/is-idle {:token-count 5}))))\n'),
+    write(S, '  (is (false? (streaming/is-idle {:token-count 5}))))\n\n'),
+    write(S, '(deftest test-streaming-char-count\n'),
+    write(S, '  (is (= 0 (streaming/streaming-char-count {:char-count 0})))\n'),
+    write(S, '  (is (= 42 (streaming/streaming-char-count {:char-count 42}))))\n\n'),
+    write(S, '(deftest test-streaming-token-count\n'),
+    write(S, '  (is (= 0 (streaming/streaming-token-count {:token-count 0})))\n'),
+    write(S, '  (is (= 10 (streaming/streaming-token-count {:token-count 10}))))\n\n'),
+    write(S, '(deftest test-is-active\n'),
+    write(S, '  (is (true? (streaming/is-active {:token-count 1 :char-count 5})))\n'),
+    write(S, '  (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))\n\n'),
+    write(S, '(deftest test-chunk-is-complete\n'),
+    write(S, '  (is (streaming/chunk-is-complete "data: hello"))\n'),
+    write(S, '  (is (not (streaming/chunk-is-complete "partial"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 
@@ -9321,7 +9470,16 @@ generate_clojure_config_test(Dir) :-
     write(S, '(deftest test-api-key-env-vars\n'),
     write(S, '  (is (map? config/api-key-env-vars))\n'),
     write(S, '  (is (string? (get config/api-key-env-vars :openai)))\n'),
-    write(S, '  (is (string? (get config/api-key-env-vars :claude))))\n'),
+    write(S, '  (is (string? (get config/api-key-env-vars :claude))))\n\n'),
+    write(S, '(deftest test-has-key\n'),
+    write(S, '  (is (true? (config/has-key {:settings {:model "gpt-4"}} :model)))\n'),
+    write(S, '  (is (false? (config/has-key {:settings {}} :model))))\n\n'),
+    write(S, '(deftest test-is-debug\n'),
+    write(S, '  (is (config/is-debug {:debug "true"}))\n'),
+    write(S, '  (is (not (config/is-debug {:debug "false"}))))\n\n'),
+    write(S, '(deftest test-config-has-field\n'),
+    write(S, '  (is (true? (config/config-has-field {:model "gpt-4"} :model)))\n'),
+    write(S, '  (is (false? (config/config-has-field {} :nonexistent))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 

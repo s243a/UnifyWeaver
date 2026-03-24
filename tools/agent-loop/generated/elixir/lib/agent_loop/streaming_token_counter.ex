@@ -78,4 +78,16 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.token_count == 0
   end
 
+  @doc "Check if a streaming chunk starts with the SSE data prefix."
+  @spec chunk_is_complete(String.t()) :: boolean()
+  def chunk_is_complete(chunk) do
+    String.starts_with?(chunk, "data:")
+  end
+
+  @doc "Return the total number of bytes received in the stream."
+  @spec byte_count(t()) :: integer()
+  def byte_count(%__MODULE__{} = state) do
+    Enum.count(state.buffer)
+  end
+
 end

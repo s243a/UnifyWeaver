@@ -46,3 +46,21 @@
   )
 )
 
+(defn is-retryable-error
+  "Check if an HTTP status code is retryable (429 or 5xx)."
+  [status-code]
+  (or (and (>= status-code 429) (<= status-code 429)) (>= status-code 500))
+)
+
+(defn max-retries-reached
+  "Check if the current attempt count has reached max_retries."
+  [state]
+  (>= (:attempt state) (:max-retries state))
+)
+
+(defn retry-delay
+  "Calculate exponential backoff delay: base_delay * 2^attempt."
+  [state]
+  (* (:base-delay state) (double (* 2 (:attempt state))))
+)
+

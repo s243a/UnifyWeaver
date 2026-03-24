@@ -205,6 +205,14 @@ is_active(State, Result) :-
 is_idle(State, Result) :-
     (State.token_count =:= 0 -> Result = true ; Result = false).
 
+%% Check if a streaming chunk starts with the SSE data prefix.
+chunk_is_complete(Chunk, Result) :-
+    (atom_concat('data:', _, Chunk) -> Result = true ; Result = false).
+
+%% Return the total number of bytes received in the stream.
+byte_count(State, Result) :-
+    length(State.buffer, Result).
+
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
 
@@ -266,7 +274,7 @@ cache_hit_rate(State, Result) :-
     (State.total_lookups =:= 0 ->
         Result = 0.0
     ;
-    Result = (float(State.hits) / float(State.total_lookups))
+    Result is (float(State.hits) / float(State.total_lookups))
     ).
 
 %% Compute cache utilization as fraction of max size. Returns 0.0 if max_size is 0.
@@ -347,6 +355,18 @@ should_retry(Attempt, Max_retries, Status, Result) :-
     ;
     Result = memberchk(Status, [408, 429, 500, 502, 503, 504])
     ).
+
+%% Check if an HTTP status code is retryable (429 or 5xx).
+is_retryable_error(Status_code, Result) :-
+    (((Status_code >= 429 , Status_code =< 429) ; Status_code >= 500) -> Result = true ; Result = false).
+
+%% Check if the current attempt count has reached max_retries.
+max_retries_reached(State, Result) :-
+    (State.attempt >= State.max_retries -> Result = true ; Result = false).
+
+%% Calculate exponential backoff delay: base_delay * 2^attempt.
+retry_delay(State, Result) :-
+    Result is (State.base_delay * float((2 * State.attempt))).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---

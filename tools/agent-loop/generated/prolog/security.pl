@@ -102,3 +102,14 @@ set_security_profile(Profile) :-
         assert(current_security_profile(Profile)),
         format("Security profile set to: ~w~n", [Profile])
     ; format("Unknown profile: ~w~n", [Profile])).
+
+%% --- shared_logic: security (generated from compile_logic) ---
+
+%% Check if a path does not contain directory traversal sequences.
+is_path_safe(Path, Result) :-
+    ((\+ atom_concat('..', _, Path) , \+ atom_concat('/..', _, Path)) -> Result = true ; Result = false).
+
+%% Check if a filename is not a hidden dotfile.
+is_visible_file(Filename, Result) :-
+    (\+ atom_concat('.', _, Filename) -> Result = true ; Result = false).
+

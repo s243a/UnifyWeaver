@@ -79,3 +79,9 @@
   (or (.startsWith tool-name "read") (or (.startsWith tool-name "write") (.startsWith tool-name "edit")))
 )
 
+(defn arg-count
+  "Return the number of arguments a tool accepts. Returns 0 if tool not found."
+  [state tool-name]
+  (count (:args state))
+)
+

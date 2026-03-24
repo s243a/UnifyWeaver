@@ -100,3 +100,15 @@
   (get aliases name name)
 )
 
+(defn has-key
+  "Check if a configuration key exists in the settings map."
+  [state key]
+  (contains? (:settings state) key)
+)
+
+(defn is-debug
+  "Check if debug mode is enabled in configuration."
+  [state]
+  (= (:debug state) "true")
+)
+
