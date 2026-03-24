@@ -246,16 +246,17 @@ includes:
   `even_left_tree/1` / `odd_left_tree/1`, and `even_tree/1` / `odd_tree/1`,
   plus arity-2 tree-structural SCCs with one tree-driving argument and one
   invariant context argument, including dual-subtree tree SCCs with
-  alias-style prework or guarded branch-local alias selection before the
-  two recursive subtree calls, or direct recursive subtree calls inside
-  supported guarded branch bodies with limited branch-local alias or guard
-  state around those calls, including one nested branch-local control point
-  around those calls before the shared boolean rejoin, one nested
-  branch-local control point between the two direct recursive subtree calls
-  with limited alias or guard state before the second call, shared
-  branch-local guard prework before a nested mutual branch, and the same
-  conservative guarded branch-body family with one invariant context
-  argument threaded through the subtree calls, lowered to TypR
+  alias-style prework, shared computed context updates, or guarded shared
+  context selection before the two recursive subtree calls, or direct
+  recursive subtree calls inside supported guarded branch bodies with
+  limited branch-local alias or guard state around those calls, including
+  one nested branch-local control point around those calls before the
+  shared boolean rejoin, one nested branch-local control point between the
+  two direct recursive subtree calls with limited alias or guard state
+  before the second call, shared branch-local guard prework before a nested
+  mutual branch, and the same conservative guarded branch-body family with
+  one invariant context argument threaded through the subtree calls,
+  lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates with one

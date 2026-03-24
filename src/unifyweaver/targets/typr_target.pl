@@ -281,8 +281,8 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
     append(PreGoals, RecGoals, Goals),
     RecGoals = [GoalA, GoalB],
     typr_mutual_tree_alias_map([], LeftVar, RightVar, AliasMap0),
-    ExtraArgMap = [ContextVar-"current_ctx"],
-    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, PreGuardExpr),
+    ExtraArgMap0 = [ContextVar-"current_ctx"],
+    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap, PreGuardExpr),
     maplist(
         typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap),
         [GoalA, GoalB],
@@ -493,29 +493,45 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     typr_if_then_else_goal(BranchGoal, IfGoal, ThenGoal0, ElseGoal0),
     typr_mutual_goal_list(ThenGoal0, ThenGoals0),
     maplist(typr_strip_module_goal, ThenGoals0, ThenGoals),
-    maplist(typr_mutual_tree_alias_goal, ThenGoals),
     typr_mutual_goal_list(ElseGoal0, ElseGoals0),
     maplist(typr_strip_module_goal, ElseGoals0, ElseGoals),
-    maplist(typr_mutual_tree_alias_goal, ElseGoals),
-    typr_mutual_tree_alias_map(ThenGoals, LeftVar, RightVar, ThenAliasMap),
-    typr_mutual_tree_alias_map(ElseGoals, LeftVar, RightVar, ElseAliasMap),
-    typr_mutual_tree_context_fields(Pred, ContextVar, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
+    typr_mutual_tree_alias_map([], LeftVar, RightVar, AliasMap0),
+    typr_mutual_tree_context_fields(Pred, ContextVar, HelperName, ExtraArgMap0, HelperParams, WrapperCallArgs, MemoKeyExpr),
+    typr_mutual_tree_branch_prework(
+        ThenGoals,
+        ValueVar,
+        AliasMap0,
+        ExtraArgMap0,
+        ThenAliasMap,
+        ThenExtraArgMap,
+        ThenGuardExpr
+    ),
+    typr_mutual_tree_branch_prework(
+        ElseGoals,
+        ValueVar,
+        AliasMap0,
+        ExtraArgMap0,
+        ElseAliasMap,
+        ElseExtraArgMap,
+        ElseGuardExpr
+    ),
     maplist(
-        typr_mutual_tree_recursive_goal(GroupPredicates, ThenAliasMap, ExtraArgMap),
+        typr_mutual_tree_recursive_goal(GroupPredicates, ThenAliasMap, ThenExtraArgMap),
         [GoalA, GoalB],
         ThenGoalSpecs
     ),
     maplist(
-        typr_mutual_tree_recursive_goal(GroupPredicates, ElseAliasMap, ExtraArgMap),
+        typr_mutual_tree_recursive_goal(GroupPredicates, ElseAliasMap, ElseExtraArgMap),
         [GoalA, GoalB],
         ElseGoalSpecs
     ),
     typr_mutual_tree_call_specs_cover_both_sides(ThenGoalSpecs),
     typr_mutual_tree_call_specs_cover_both_sides(ElseGoalSpecs),
-    typr_mutual_tree_alias_map([], LeftVar, RightVar, AliasMap0),
-    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap0, ExtraArgMap, BranchConditionExpr),
+    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap0, ExtraArgMap0, BranchConditionExpr),
     maplist(typr_mutual_tree_branch_call, ThenGoalSpecs, ThenCalls),
     maplist(typr_mutual_tree_branch_call, ElseGoalSpecs, ElseCalls),
+    typr_mutual_tree_guard_wrap(ThenGuardExpr, branch_calls(ThenCalls), ThenBody),
+    typr_mutual_tree_guard_wrap(ElseGuardExpr, branch_calls(ElseCalls), ElseBody),
     atom_string(Pred, PredStr),
     Spec = mutual_spec{
         kind: tree_dual_branch,
@@ -531,8 +547,8 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
         base_conditions: BaseConditions,
         guard_expr: 'length(current_input) == 3',
         branch_condition_expr: BranchConditionExpr,
-        then_body: branch_calls(ThenCalls),
-        else_body: branch_calls(ElseCalls)
+        then_body: ThenBody,
+        else_body: ElseBody
     }.
 
 typr_mutual_tree_base_case_condition(clause(Head, true), 'length(current_input) == 0') :-
@@ -655,8 +671,8 @@ typr_mutual_extra_arg_expr(ExtraArgMap, Arg, Expr) :-
     member(StoredArg-Expr, ExtraArgMap),
     StoredArg == Arg,
     !.
-typr_mutual_extra_arg_expr(_ExtraArgMap, Arg, Expr) :-
-    typr_translate_r_expr(Arg, [], Expr).
+typr_mutual_extra_arg_expr(ExtraArgMap, Arg, Expr) :-
+    typr_translate_r_expr(Arg, ExtraArgMap, Expr).
 
 typr_mutual_tree_call_specs_cover_both_sides(CallSpecs) :-
     findall(Side, member(call_spec(Side, _NextPred, _StepExpr), CallSpecs), Sides0),
@@ -678,18 +694,35 @@ typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap, 
 
 typr_mutual_tree_branch_prework([], _ValueVar, AliasMap, AliasMap, none).
 typr_mutual_tree_branch_prework(Goals, ValueVar, AliasMap0, AliasMap, GuardExpr) :-
-    typr_mutual_tree_branch_prework(Goals, ValueVar, AliasMap0, [], AliasMap, GuardExpr).
+    typr_mutual_tree_branch_prework(Goals, ValueVar, AliasMap0, [], AliasMap, _ExtraArgMap, GuardExpr).
 
-typr_mutual_tree_branch_prework([], _ValueVar, AliasMap, _ExtraArgMap, AliasMap, none).
-typr_mutual_tree_branch_prework([Goal|Rest], ValueVar, AliasMap0, ExtraArgMap, AliasMap, GuardExpr) :-
+typr_mutual_tree_branch_prework(Goals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, GuardExpr) :-
+    typr_mutual_tree_branch_prework(Goals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, _ExtraArgMap, GuardExpr).
+
+typr_mutual_tree_branch_prework([], _ValueVar, AliasMap, ExtraArgMap, AliasMap, ExtraArgMap, none).
+typr_mutual_tree_branch_prework([Goal|Rest], ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap, GuardExpr) :-
     (   typr_mutual_tree_alias_goal(Goal)
     ->  typr_mutual_tree_alias_map([Goal], AliasMap0, AliasMap1),
-        typr_mutual_tree_branch_prework(Rest, ValueVar, AliasMap1, ExtraArgMap, AliasMap, GuardExpr)
-    ;   typr_mutual_tree_condition_varmap(ValueVar, AliasMap0, ExtraArgMap, VarMap),
+        typr_mutual_tree_branch_prework(Rest, ValueVar, AliasMap1, ExtraArgMap0, AliasMap, ExtraArgMap, GuardExpr)
+    ;   typr_mutual_tree_symbolic_extra_arg_goal(Goal, ValueVar, AliasMap0, ExtraArgMap0, ExtraArgMap1)
+    ->  typr_mutual_tree_branch_prework(Rest, ValueVar, AliasMap0, ExtraArgMap1, AliasMap, ExtraArgMap, GuardExpr)
+    ;   typr_mutual_tree_condition_varmap(ValueVar, AliasMap0, ExtraArgMap0, VarMap),
         native_typr_guard_goal(Goal, VarMap, GuardCondition),
-        typr_mutual_tree_branch_prework(Rest, ValueVar, AliasMap0, ExtraArgMap, AliasMap, RestGuardExpr),
+        typr_mutual_tree_branch_prework(Rest, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap, RestGuardExpr),
         typr_mutual_tree_guard_expr_join(GuardCondition, RestGuardExpr, GuardExpr)
     ).
+
+typr_mutual_tree_symbolic_extra_arg_goal(Goal, ValueVar, AliasMap, ExtraArgMap0, ExtraArgMap) :-
+    typr_mutual_tree_condition_varmap(ValueVar, AliasMap, ExtraArgMap0, VarMap0),
+    linear_recursive_post_goal_varmap(Goal, VarMap0, VarMap1),
+    varmap_changed_vars(VarMap0, VarMap1, ChangedVars0),
+    unique_vars_by_identity(ChangedVars0, ChangedVars),
+    ChangedVars \= [],
+    foldl(typr_mutual_tree_store_symbolic_expr(VarMap1), ChangedVars, ExtraArgMap0, ExtraArgMap).
+
+typr_mutual_tree_store_symbolic_expr(VarMap, Var, ExtraArgMap0, ExtraArgMap) :-
+    lookup_typr_var(Var, VarMap, Expr),
+    update_typr_expr_varmap(ExtraArgMap0, Var, Expr, ExtraArgMap).
 
 typr_mutual_tree_guard_expr_join(GuardCondition, none, GuardCondition) :-
     !.
@@ -733,15 +766,15 @@ typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, Body) 
 
 typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body) :-
     append(PreGoals, [NestedIfGoal], Goals),
-    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, GuardExpr),
+    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, ExtraArgMap1, GuardExpr),
     typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal0, ElseGoal0),
     typr_mutual_goal_list(ThenGoal0, ThenGoals0),
     maplist(typr_strip_module_goal, ThenGoals0, ThenGoals),
-    typr_mutual_tree_branch_body(GroupPredicates, ThenGoals, ValueVar, AliasMap, ExtraArgMap, ThenBody),
+    typr_mutual_tree_branch_body(GroupPredicates, ThenGoals, ValueVar, AliasMap, ExtraArgMap1, ThenBody),
     typr_mutual_goal_list(ElseGoal0, ElseGoals0),
     maplist(typr_strip_module_goal, ElseGoals0, ElseGoals),
-    typr_mutual_tree_branch_body(GroupPredicates, ElseGoals, ValueVar, AliasMap, ExtraArgMap, ElseBody),
-    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap, BranchConditionExpr),
+    typr_mutual_tree_branch_body(GroupPredicates, ElseGoals, ValueVar, AliasMap, ExtraArgMap1, ElseBody),
+    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap1, BranchConditionExpr),
     typr_mutual_tree_guard_wrap(
         GuardExpr,
         branch_if(BranchConditionExpr, ThenBody, ElseBody),
@@ -749,8 +782,8 @@ typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraA
     ).
 typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body) :-
     append(PreGoals, [FirstGoal0, NestedIfGoal], Goals),
-    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, GuardExpr),
-    typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap, FirstGoal0, FirstGoalSpec),
+    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, ExtraArgMap1, GuardExpr),
+    typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap1, FirstGoal0, FirstGoalSpec),
     typr_mutual_tree_branch_call(FirstGoalSpec, FirstCall),
     typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal0, ElseGoal0),
     typr_mutual_goal_list(ThenGoal0, ThenGoals0),
@@ -760,7 +793,7 @@ typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraA
         ThenGoals,
         ValueVar,
         AliasMap,
-        ExtraArgMap,
+        ExtraArgMap1,
         ThenBody,
         ThenGoalSpecs
     ),
@@ -772,12 +805,12 @@ typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraA
         ElseGoals,
         ValueVar,
         AliasMap,
-        ExtraArgMap,
+        ExtraArgMap1,
         ElseBody,
         ElseGoalSpecs
     ),
     typr_mutual_tree_call_specs_cover_both_sides([FirstGoalSpec|ElseGoalSpecs]),
-    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap, BranchConditionExpr),
+    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap1, BranchConditionExpr),
     typr_mutual_tree_guard_wrap(
         GuardExpr,
         branch_after_call(FirstCall, BranchConditionExpr, ThenBody, ElseBody),
@@ -786,8 +819,8 @@ typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraA
 typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body) :-
     typr_mutual_tree_split_pre_goals(GroupPredicates, Goals, PreGoals, RecGoals),
     RecGoals = [GoalA, GoalB],
-    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, GuardExpr),
-    maplist(typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap), [GoalA, GoalB], GoalSpecs),
+    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, ExtraArgMap1, GuardExpr),
+    maplist(typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap1), [GoalA, GoalB], GoalSpecs),
     typr_mutual_tree_call_specs_cover_both_sides(GoalSpecs),
     maplist(typr_mutual_tree_branch_call, GoalSpecs, Calls),
     typr_mutual_tree_guard_wrap(GuardExpr, branch_calls(Calls), Body).
@@ -803,24 +836,31 @@ typr_mutual_tree_branch_sequence(GroupPredicates, [Goal0|Rest], ValueVar, AliasM
     ->  typr_mutual_tree_branch_call(GoalSpec, Call),
         GoalSpecs = [GoalSpec|RestGoalSpecs],
         Steps = [step_call(Call)|RestSteps],
-        AliasMap1 = AliasMap0
+        AliasMap1 = AliasMap0,
+        ExtraArgMap1 = ExtraArgMap
     ;   typr_mutual_tree_alias_goal(Goal)
     ->  GoalSpecs = RestGoalSpecs,
         Steps = RestSteps,
-        typr_mutual_tree_alias_map([Goal], AliasMap0, AliasMap1)
+        typr_mutual_tree_alias_map([Goal], AliasMap0, AliasMap1),
+        ExtraArgMap1 = ExtraArgMap
+    ;   typr_mutual_tree_symbolic_extra_arg_goal(Goal, ValueVar, AliasMap0, ExtraArgMap, ExtraArgMap1)
+    ->  GoalSpecs = RestGoalSpecs,
+        Steps = RestSteps,
+        AliasMap1 = AliasMap0
     ;   \+ typr_mutual_tree_nested_goal(Goal),
         typr_mutual_tree_condition_varmap(ValueVar, AliasMap0, ExtraArgMap, VarMap),
         native_typr_guard_goal(Goal, VarMap, GuardCondition)
     ->  GoalSpecs = RestGoalSpecs,
         Steps = [step_guard(GuardCondition)|RestSteps],
-        AliasMap1 = AliasMap0
+        AliasMap1 = AliasMap0,
+        ExtraArgMap1 = ExtraArgMap
     ),
     typr_mutual_tree_branch_sequence(
         GroupPredicates,
         Rest,
         ValueVar,
         AliasMap1,
-        ExtraArgMap,
+        ExtraArgMap1,
         RestGoalSpecs,
         RestSteps
     ).
