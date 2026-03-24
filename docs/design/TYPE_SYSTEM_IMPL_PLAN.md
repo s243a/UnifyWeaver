@@ -215,7 +215,7 @@ bring-up.
     second call, shared branch-local guard prework before a nested mutual
     branch, and conservative arity-2 tree-structural SCCs with one
     invariant context argument threaded through the shared dual-subtree
-    calls
+    calls and the same conservative guarded branch-body family
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context

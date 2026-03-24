@@ -394,7 +394,8 @@ Current TypR lowering policy is intentionally mixed:
   subtree calls with limited alias or guard state before the second call,
   and shared branch-local guard prework before a nested mutual branch, and
   conservative arity-2 tree-structural SCCs with one invariant context
-  argument threaded through the shared dual-subtree calls, using
+  argument threaded through the shared dual-subtree calls and the same
+  conservative guarded branch-body family, using
   raw-expression memoized helper bodies inside TypR rather than wrapped-R
   fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower

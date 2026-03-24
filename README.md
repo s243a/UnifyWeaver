@@ -252,8 +252,10 @@ includes:
   state around those calls, including one nested branch-local control point
   around those calls before the shared boolean rejoin, one nested
   branch-local control point between the two direct recursive subtree calls
-  with limited alias or guard state before the second call, and shared
-  branch-local guard prework before a nested mutual branch, lowered to TypR
+  with limited alias or guard state before the second call, shared
+  branch-local guard prework before a nested mutual branch, and the same
+  conservative guarded branch-body family with one invariant context
+  argument threaded through the subtree calls, lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates with one
