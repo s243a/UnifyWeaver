@@ -87,3 +87,12 @@
   (count (:buffer state))
 )
 
+(defn avg-token-rate
+  "Return average tokens per second. Returns 0.0 if elapsed time is zero."
+  [state]
+  (if (<= (:elapsed state) 0)
+      0.0
+      (/ (double (:token-count state)) (:elapsed state))
+  )
+)
+

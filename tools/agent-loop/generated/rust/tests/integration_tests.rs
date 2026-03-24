@@ -1763,3 +1763,33 @@ fn test_phase24_streaming_counter_wired_in_loop() {
     assert!(main_src.contains("counter.on_token"), "main loop should use counter.on_token");
     assert!(main_src.contains("[Streamed:"), "main loop should show streaming summary");
 }
+
+// ============================================================================
+// Shared logic method presence tests
+// ============================================================================
+
+#[test]
+fn test_shared_logic_security_is_path_safe() {
+    let src = include_str!("../src/security.rs");
+    assert!(src.contains("fn is_path_safe"), "security.rs should have is_path_safe");
+    assert!(src.contains("fn is_visible_file"), "security.rs should have is_visible_file");
+}
+
+#[test]
+fn test_shared_logic_costs_budget_remaining() {
+    let src = include_str!("../src/costs.rs");
+    assert!(src.contains("fn is_over_budget"), "costs.rs should have is_over_budget");
+    assert!(src.contains("fn budget_remaining"), "costs.rs should have budget_remaining");
+}
+
+#[test]
+fn test_shared_logic_retry_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn is_retryable_error"), "main.rs should have is_retryable_error");
+}
+
+#[test]
+fn test_shared_logic_sessions_methods() {
+    let src = include_str!("../src/sessions.rs");
+    assert!(src.contains("fn session_age"), "sessions.rs should have session_age");
+}

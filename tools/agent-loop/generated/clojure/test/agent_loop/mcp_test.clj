@@ -13,3 +13,19 @@
 (deftest test-mcp-is-connected
   (is (true? (mcp/is-connected {:request-id 5})))
   (is (false? (mcp/is-connected {:request-id 0}))))
+
+(deftest test-mcp-tool-count
+  (is (= 0 (mcp/tool-count {:tools []})))
+  (is (= 3 (mcp/tool-count {:tools ["a" "b" "c"]}))))
+
+(deftest test-mcp-has-tools
+  (is (false? (mcp/has-tools {:tools []})))
+  (is (true? (mcp/has-tools {:tools ["read"]}))))
+
+(deftest test-mcp-server-count
+  (is (= 0 (mcp/server-count {:servers []})))
+  (is (= 2 (mcp/server-count {:servers ["s1" "s2"]}))))
+
+(deftest test-mcp-disconnect-reason
+  (is (= "timeout" (mcp/disconnect-reason {:disconnect-reason "timeout"})))
+  (is (nil? (mcp/disconnect-reason {:other "field"}))))

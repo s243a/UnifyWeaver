@@ -85,3 +85,9 @@
   (count (:args state))
 )
 
+(defn has-schema
+  "Check if a tool has a JSON schema definition for its parameters."
+  [state tool-name]
+  (> (count (:schema state)) 0)
+)
+

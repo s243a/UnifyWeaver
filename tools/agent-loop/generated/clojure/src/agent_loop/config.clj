@@ -112,3 +112,12 @@
   (= (:debug state) "true")
 )
 
+(defn merge
+  "Return the value to use for a config key: the provided value if non-empty, otherwise the existing setting."
+  [state key value]
+  (if (> (count value) 0)
+      value
+      (:settings state)
+  )
+)
+

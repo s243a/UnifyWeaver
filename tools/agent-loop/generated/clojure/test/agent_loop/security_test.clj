@@ -12,3 +12,10 @@
 
 (deftest test-profiles-exist
   (is (pos? (count security/profiles))))
+
+(deftest test-blocked-paths-exist
+  (is (pos? (count security/blocked-paths))))
+
+(deftest test-path-blocked
+  (is (some? (security/path-blocked? "/etc/shadow")))
+  (is (not (security/path-blocked? "src/main.rs"))))

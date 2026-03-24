@@ -90,4 +90,14 @@ defmodule AgentLoop.StreamingTokenCounter do
     Enum.count(state.buffer)
   end
 
+  @doc "Return average tokens per second. Returns 0.0 if elapsed time is zero."
+  @spec avg_token_rate(t()) :: float()
+  def avg_token_rate(%__MODULE__{} = state) do
+    if state.elapsed <= 0 do
+        0.0
+    else
+        ((state.token_count * 1.0) / state.elapsed)
+    end
+  end
+
 end

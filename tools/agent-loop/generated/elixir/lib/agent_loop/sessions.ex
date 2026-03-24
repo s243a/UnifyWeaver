@@ -92,6 +92,12 @@ defmodule AgentLoop.Sessions do
     Map.has_key?(data, "metadata")
   end
 
+  @doc "Return the age of a session in seconds given creation time and current time."
+  @spec session_age(float(), float()) :: float()
+  def session_age(created_at, now) do
+    (now - created_at)
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

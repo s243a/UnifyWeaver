@@ -21,3 +21,14 @@
   (is (true? (tools/needs-path-validation "write")))
   (is (true? (tools/needs-path-validation "edit")))
   (is (false? (tools/needs-path-validation "bash"))))
+
+(deftest test-tool-category
+  (is (string? (tools/tool-category "bash"))))
+
+(deftest test-has-schema
+  (is (true? (tools/has-schema {:schema {:type "object"}} "bash")))
+  (is (false? (tools/has-schema {:schema {}} "bash"))))
+
+(deftest test-is-safe
+  (is (true? (tools/is-safe "read")))
+  (is (false? (tools/is-safe "bash"))))

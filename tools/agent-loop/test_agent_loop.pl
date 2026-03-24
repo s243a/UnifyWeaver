@@ -6107,7 +6107,7 @@ test_shared_logic_infrastructure :-
             agent_loop_module:compile_logic(rust, M, _),
             agent_loop_module:compile_logic(elixir, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 124)
+        length(OkMs, 132)
     )),
     %% --- Elixir structure validation ---
     assert_true('elixir mix.exs exists', (
@@ -6211,6 +6211,26 @@ test_shared_logic_infrastructure :-
     assert_true('elixir streaming.ex contains chunk_is_complete', (
         read_file_to_string('generated/elixir/lib/agent_loop/streaming_token_counter.ex', StreamContent, []),
         sub_string(StreamContent, _, _, _, "chunk_is_complete")
+    )),
+    assert_true('elixir context_manager.ex contains token_budget', (
+        read_file_to_string('generated/elixir/lib/agent_loop/context_manager.ex', CtxContent, []),
+        sub_string(CtxContent, _, _, _, "token_budget")
+    )),
+    assert_true('elixir sessions.ex contains session_age', (
+        read_file_to_string('generated/elixir/lib/agent_loop/sessions.ex', SessContent, []),
+        sub_string(SessContent, _, _, _, "session_age")
+    )),
+    assert_true('elixir mcp_client.ex contains disconnect_reason', (
+        read_file_to_string('generated/elixir/lib/agent_loop/mcp_client.ex', McpContent, []),
+        sub_string(McpContent, _, _, _, "disconnect_reason")
+    )),
+    assert_true('elixir tool_result_cache.ex contains evict_oldest', (
+        read_file_to_string('generated/elixir/lib/agent_loop/tool_result_cache.ex', CacheContent, []),
+        sub_string(CacheContent, _, _, _, "evict_oldest")
+    )),
+    assert_true('elixir config.ex contains merge', (
+        read_file_to_string('generated/elixir/lib/agent_loop/config.ex', CfgContent, []),
+        sub_string(CfgContent, _, _, _, "def merge")
     )).
 
 %% =============================================================================
@@ -6232,7 +6252,7 @@ test_cross_target_integration :-
             agent_loop_module:compile_logic(prolog, M, _),
             agent_loop_module:compile_logic(clojure, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 124)
+        length(OkMs, 132)
     )),
     %% Prolog compile_logic produces Result = ... pattern for return methods
     assert_true('prolog is_over_budget has Result unification', (

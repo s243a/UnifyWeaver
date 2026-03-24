@@ -154,4 +154,10 @@ defmodule AgentLoop.CostTracker do
     end
   end
 
+  @doc "Return the total number of messages tracked by the cost tracker."
+  @spec total_messages(t()) :: integer()
+  def total_messages(%__MODULE__{} = state) do
+    state.message_count
+  end
+
 end

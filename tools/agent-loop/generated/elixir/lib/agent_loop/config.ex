@@ -109,4 +109,54 @@ defmodule AgentLoop.Config do
   rescue
     ArgumentError -> map
   end
+
+
+# --- shared_logic: config (generated from compile_logic) ---
+
+  @doc "Get a config field value, returning default if not present."
+  @spec config_get_field(map(), String.t(), String.t()) :: String.t()
+  def config_get_field(config, key, default_val) do
+    Map.get(config, key, default_val)
+  end
+
+  @doc "Check if a config map contains the given key."
+  @spec config_has_field(map(), String.t()) :: boolean()
+  def config_has_field(config, key) do
+    Map.has_key?(config, key)
+  end
+
+  @doc "Check if a command alias is registered."
+  @spec alias_exists(map(), String.t()) :: boolean()
+  def alias_exists(aliases, name) do
+    Map.has_key?(aliases, name)
+  end
+
+  @doc "Resolve a command alias to its target, or return the name unchanged."
+  @spec alias_resolve(map(), String.t()) :: String.t()
+  def alias_resolve(aliases, name) do
+    Map.get(aliases, name, name)
+  end
+
+  @doc "Check if a configuration key exists in the settings map."
+  @spec has_key(t(), String.t()) :: boolean()
+  def has_key(%__MODULE__{} = state, key) do
+    Map.has_key?(state.settings, key)
+  end
+
+  @doc "Check if debug mode is enabled in configuration."
+  @spec is_debug(t()) :: boolean()
+  def is_debug(%__MODULE__{} = state) do
+    state.debug == "true"
+  end
+
+  @doc "Return the value to use for a config key: the provided value if non-empty, otherwise the existing setting."
+  @spec merge(t(), String.t(), String.t()) :: String.t()
+  def merge(%__MODULE__{} = state, key, value) do
+    if Enum.count(value) > 0 do
+        value
+    else
+        state.settings
+    end
+  end
+
 end

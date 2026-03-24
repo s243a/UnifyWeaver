@@ -239,6 +239,11 @@ pub fn compute_delay(base_delay: f64, exponential_base: f64, attempt: i64, max_d
     return (base_delay * exponential_base.powi((attempt - 1) as i32)).min(max_delay);
 }
 
+/// Check if an HTTP status code is retryable (429 or 5xx).
+pub fn is_retryable_error(status_code: i64) -> bool {
+    return (status_code >= 429 && status_code <= 429) || status_code >= 500;
+}
+
 
 
 use std::collections::HashMap;

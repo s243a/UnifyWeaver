@@ -22,3 +22,7 @@
   (is (true? (parser/is-empty-response "")))
   (is (true? (parser/is-empty-response "   ")))
   (is (false? (parser/is-empty-response "hello"))))
+
+(deftest test-content-exceeds-length
+  (is (true? (parser/content-exceeds-length "hello world" 5)))
+  (is (false? (parser/content-exceeds-length "hi" 5))))

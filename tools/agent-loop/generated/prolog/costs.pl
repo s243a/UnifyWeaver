@@ -139,6 +139,10 @@ cost_per_input_token(State, Result) :-
     Result is (float(State.total_cost) / float(State.total_input_tokens))
     ).
 
+%% Return the total number of messages tracked by the cost tracker.
+total_messages(State, Result) :-
+    Result = State.message_count.
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)
