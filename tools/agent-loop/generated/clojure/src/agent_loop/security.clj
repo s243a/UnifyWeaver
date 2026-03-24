@@ -39,3 +39,19 @@
   [path]
   (or (contains? blocked-paths path)
       (some #(.startsWith path %) blocked-path-prefixes)))
+
+
+;; --- shared_logic: security (generated from compile_logic) ---
+
+(defn is-path-safe
+  "Check if a path does not contain directory traversal sequences."
+  [path]
+  (and (not (.startsWith path "..")) (not (.startsWith path "/..")))
+)
+
+(defn is-visible-file
+  "Check if a filename is not a hidden dotfile."
+  [filename]
+  (not (.startsWith filename "."))
+)
+

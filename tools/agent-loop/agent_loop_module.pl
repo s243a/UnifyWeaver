@@ -2058,7 +2058,29 @@ logic_slot(rust, return_val(true), "return true;").
 logic_slot(rust, return_val(Expr), S) :-
     Expr \= true, Expr \= false,
     expand_expr(rust, Expr, ExprStr),
-    format(atom(S), "return ~w;", [ExprStr]).
+    %% Strip balanced outer parens to avoid "unnecessary parentheses around return value"
+    atom_string(ExprStr, ExprS),
+    (rust_strip_outer_parens(ExprS, Inner) ->
+        format(atom(S), "return ~w;", [Inner])
+    ;
+        format(atom(S), "return ~w;", [ExprStr])
+    ).
+
+%% Strip outer parens if the expression is fully wrapped: "(expr)"
+%% Only strip if no unbalanced parens remain inside
+rust_strip_outer_parens(S, Inner) :-
+    string_concat("(", Rest, S),
+    string_concat(Inner, ")", Rest),
+    rust_parens_balanced(Inner).
+
+rust_parens_balanced(S) :-
+    string_codes(S, Codes),
+    rust_count_parens(Codes, 0).
+
+rust_count_parens([], 0).
+rust_count_parens([0'(|T], N) :- N1 is N + 1, rust_count_parens(T, N1).
+rust_count_parens([0')|T], N) :- N > 0, N1 is N - 1, rust_count_parens(T, N1).
+rust_count_parens([C|T], N) :- C \= 0'(, C \= 0'), rust_count_parens(T, N).
 logic_slot(rust, self_field(F), S) :- format(atom(S), "self.~w()", [F]).
 
 %% Prolog slots — state is a SWI-Prolog dict; results via unification
@@ -6271,7 +6293,6 @@ generate_rust_output_parser :-
     output_path(rust, 'output_parser.rs', Path),
     open(Path, write, S),
     write_rust_header(S, output_parser, 'Structured output parser — extract JSON from model responses'),
-    write(S, 'use crate::types::*;\n\n'),
     write_rust(S, output_parser),
     close(S),
     format('  Generated rust/src/output_parser.rs~n', []).
@@ -6641,7 +6662,7 @@ generate_rust_main :-
     write(S, 'use agent_loop::context::*;\n'),
     write(S, 'use agent_loop::costs::*;\n'),
     write(S, 'use agent_loop::tool_handler::*;\n'),
-    write(S, 'use agent_loop::commands::*;\n'),
+    write(S, '#[allow(unused_imports)]\nuse agent_loop::commands::*;\n'),
     write(S, 'use agent_loop::sessions::*;\n'),
     write(S, 'use agent_loop::config_loader::*;\n'),
     write(S, 'use agent_loop::output_parser::*;\n\n'),
@@ -9090,7 +9111,8 @@ generate_clojure_security :-
     write(S, '  "Check if a path is blocked."\n'),
     write(S, '  [path]\n'),
     write(S, '  (or (contains? blocked-paths path)\n'),
-    write(S, '      (some #(.startsWith path %) blocked-path-prefixes)))\n'),
+    write(S, '      (some #(.startsWith path %) blocked-path-prefixes)))\n\n'),
+    write_shared_block_clojure(S, security),
     close(S),
     format('  Generated clojure/src/agent_loop/security.clj~n', []).
 
@@ -9106,7 +9128,11 @@ generate_clojure_tests :-
     generate_clojure_tools_test(TestDir),
     generate_clojure_streaming_test(TestDir),
     generate_clojure_pricing_test(TestDir),
-    generate_clojure_config_test(TestDir).
+    generate_clojure_config_test(TestDir),
+    generate_clojure_security_test(TestDir),
+    generate_clojure_output_parser_test(TestDir),
+    generate_clojure_sessions_test(TestDir),
+    generate_clojure_mcp_test(TestDir).
 
 %% --- Cost tests ---
 generate_clojure_cost_test(Dir) :-
@@ -9298,6 +9324,90 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (string? (get config/api-key-env-vars :claude))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
+
+%% --- Security tests ---
+generate_clojure_security_test(Dir) :-
+    atom_concat(Dir, 'security_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.security-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.security :as security]))\n\n'),
+    write(S, '(deftest test-is-path-safe\n'),
+    write(S, '  (is (true? (security/is-path-safe "src/main.rs")))\n'),
+    write(S, '  (is (false? (security/is-path-safe "../../etc/passwd"))))\n\n'),
+    write(S, '(deftest test-is-visible-file\n'),
+    write(S, '  (is (true? (security/is-visible-file "main.rs")))\n'),
+    write(S, '  (is (false? (security/is-visible-file ".env"))))\n\n'),
+    write(S, '(deftest test-profiles-exist\n'),
+    write(S, '  (is (pos? (count security/profiles))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
+
+%% --- Output parser tests ---
+generate_clojure_output_parser_test(Dir) :-
+    atom_concat(Dir, 'output_parser_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.output-parser-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.output-parser :as parser]))\n\n'),
+    write(S, '(deftest test-is-json-object\n'),
+    write(S, '  (is (true? (parser/is-json-object "{:key 1}")))\n'),
+    write(S, '  (is (false? (parser/is-json-object "hello"))))\n\n'),
+    write(S, '(deftest test-is-json-content\n'),
+    write(S, '  (is (true? (parser/is-json-content "{:key 1}")))\n'),
+    write(S, '  (is (true? (parser/is-json-content "[1, 2, 3]")))\n'),
+    write(S, '  (is (false? (parser/is-json-content "hello"))))\n\n'),
+    write(S, '(deftest test-content-length\n'),
+    write(S, '  (is (= 5 (parser/content-length "hello")))\n'),
+    write(S, '  (is (= 0 (parser/content-length ""))))\n\n'),
+    write(S, '(deftest test-strip-content\n'),
+    write(S, '  (is (= "hello" (parser/strip-content "  hello  "))))\n\n'),
+    write(S, '(deftest test-is-empty-response\n'),
+    write(S, '  (is (true? (parser/is-empty-response "")))\n'),
+    write(S, '  (is (true? (parser/is-empty-response "   ")))\n'),
+    write(S, '  (is (false? (parser/is-empty-response "hello"))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
+
+%% --- Sessions tests ---
+generate_clojure_sessions_test(Dir) :-
+    atom_concat(Dir, 'sessions_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.sessions-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.sessions :as sessions]))\n\n'),
+    write(S, '(deftest test-session-filename\n'),
+    write(S, '  (is (= "abc.json" (sessions/session-filename "abc"))))\n\n'),
+    write(S, '(deftest test-session-is-valid-id\n'),
+    write(S, '  (is (true? (sessions/session-is-valid-id "abc123")))\n'),
+    write(S, '  (is (false? (sessions/session-is-valid-id ""))))\n\n'),
+    write(S, '(deftest test-session-has-metadata\n'),
+    write(S, '  (is (true? (sessions/has-metadata {"metadata" {:created "now"}})))\n'),
+    write(S, '  (is (false? (sessions/has-metadata {"messages" []}))))\n\n'),
+    write(S, '(deftest test-session-is-expired\n'),
+    write(S, '  (is (true? (sessions/is-expired 7200.0 3600.0)))\n'),
+    write(S, '  (is (false? (sessions/is-expired 1800.0 3600.0))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
+
+%% --- MCP tests ---
+generate_clojure_mcp_test(Dir) :-
+    atom_concat(Dir, 'mcp_test.clj', Path),
+    open(Path, write, S),
+    write(S, '(ns agent-loop.mcp-test\n'),
+    write(S, '  (:require [clojure.test :refer [deftest is testing]]\n'),
+    write(S, '            [agent-loop.mcp :as mcp]))\n\n'),
+    write(S, '(deftest test-mcp-is-notification\n'),
+    write(S, '  (is (true? (mcp/mcp-is-notification "notifications/update")))\n'),
+    write(S, '  (is (false? (mcp/mcp-is-notification "tools/call"))))\n\n'),
+    write(S, '(deftest test-mcp-parse-tool-name\n'),
+    write(S, '  (is (= "read" (mcp/mcp-parse-tool-name "mcp:read")))\n'),
+    write(S, '  (is (= "read" (mcp/mcp-parse-tool-name "read"))))\n\n'),
+    write(S, '(deftest test-mcp-is-connected\n'),
+    write(S, '  (is (true? (mcp/is-connected {:request-id 5})))\n'),
+    write(S, '  (is (false? (mcp/is-connected {:request-id 0}))))\n'),
+    close(S),
+    format('  Generated clojure/test/agent_loop/mcp_test.clj~n', []).
 
 %% generate_rust_command_dispatch(+Stream)
 %% Emit command handler function from slash_command/4 facts.
@@ -13300,14 +13410,17 @@ rust_fragment(wasm_bindings, '
 #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 use wasm_bindgen::prelude::*;
 
+#[allow(unused_imports)]
 use crate::types::*;
 use crate::context::*;
 use crate::costs::*;
+#[allow(unused_imports)]
 use std::collections::HashMap;
 
 /// Browser-compatible agent loop state.
 /// Holds context, cost tracking, and configuration without
 /// filesystem or stdin dependencies.
+#[allow(dead_code)]
 pub struct WasmAgentState {
     context: ContextManager,
     cost_tracker: CostTracker,
@@ -13823,6 +13936,7 @@ pub fn send_streaming(
 
 rust_fragment(streaming_token_counter, '
 /// Counts tokens during streaming and tracks character count.
+#[allow(dead_code)]
 pub struct StreamingTokenCounter {
     pub token_count: usize,
     pub char_count: usize,
