@@ -83,10 +83,12 @@ This document focuses on architecture and rollout choices specific to TypR.
      recursive subtree calls, including one nested branch-local control
      point around those calls, one nested branch-local control point
      between the two direct recursive subtree calls with limited alias or
-     guard state before the second call, shared branch-local guard prework
-     before a nested mutual branch, conservative arity-2 tree-structural
-     SCCs with one invariant context argument threaded through the shared
-     dual-subtree calls and the same computed-context and guarded
+     guard state before the second call, one nested post-call control
+     point after the shared dual-subtree calls before the shared boolean
+     rejoin, shared branch-local guard prework before a nested mutual
+     branch, conservative arity-2 tree-structural SCCs with one invariant
+     context argument threaded through the shared dual-subtree calls and
+     the same computed-context and guarded
      branch-body families, and boolean return types, emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
