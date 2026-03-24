@@ -221,6 +221,7 @@ register_builtin_targets :-
     % Low-level family
     register_target(llvm, lowlevel, [compiled, native, optimization]),
     register_target(wasm, lowlevel, [browser, sandboxed, portable]),
+    register_target(wat, lowlevel, [browser, sandboxed, portable, structured_control_flow, native_lowering]),
 
     % Database
     register_target(sql, database, [queries, transactions, relational]).
@@ -257,6 +258,7 @@ target_module(typescript, typescript_target).
 target_module(haskell, haskell_target).
 target_module(elixir, elixir_target).
 target_module(llvm, llvm_target).
+target_module(wat, wat_target).
 target_module(sql, sql_target).
 
 %% compile_to_target(+Target, +Pred/Arity, +Options, -Code)

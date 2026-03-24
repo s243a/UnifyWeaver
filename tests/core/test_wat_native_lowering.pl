@@ -176,6 +176,94 @@ test(transitive_closure_bfs) :-
     has(Code, "$edge_scan"),
     has(Code, "$mark_visited").
 
+test(multicall_recursion_memo) :-
+    wat_target:compile_multicall_recursion_wat(fib/2, [], Code),
+    has(Code, "(module"),
+    has(Code, "(func $fib"),
+    has(Code, "Multicall"),
+    has(Code, "(call $fib (i64.sub (local.get $n) (i64.const 1)))"),
+    has(Code, "(call $fib (i64.sub (local.get $n) (i64.const 2)))"),
+    has(Code, "i64.store"),
+    has(Code, "i32.store").
+
+test(direct_multicall_memo) :-
+    wat_target:compile_direct_multicall_wat(fib/2, [], Code),
+    has(Code, "(module"),
+    has(Code, "(func $fib"),
+    has(Code, "Direct Multi-Call"),
+    has(Code, "(call $fib"),
+    has(Code, "i64.store").
+
+% ============================================================================
+% Template integration
+% ============================================================================
+
+test(template_transitive_closure) :-
+    wat_target:compile_transitive_closure_wat_from_template(ancestor, parent, Code),
+    has(Code, "(module"),
+    has(Code, "ancestor"),
+    has(Code, "(loop $bfs").
+
+% ============================================================================
+% Multifile dispatch hooks
+% ============================================================================
+
+test(multifile_tail_hook) :-
+    tail_recursion:compile_tail_pattern(wat, "sum", 2, [], [], 2, add, false, Code),
+    has(Code, "(module"),
+    has(Code, "(func $sum"),
+    has(Code, "(loop $continue").
+
+test(multifile_linear_hook) :-
+    linear_recursion:compile_linear_pattern(wat, "fib", 2, [], [], true, table, Code),
+    has(Code, "(module"),
+    has(Code, "(func $fib"),
+    has(Code, "i64.load").
+
+test(multifile_tree_hook) :-
+    tree_recursion:compile_tree_pattern(wat, fibonacci, fib, 2, true, Code),
+    has(Code, "(module"),
+    has(Code, "(func $fib"),
+    has(Code, "(call $fib (i64.sub (local.get $n) (i64.const 1)))").
+
+test(multifile_multicall_hook) :-
+    multicall_linear_recursion:compile_multicall_pattern(wat, "fib", [base1], [], true, Code),
+    has(Code, "(module"),
+    has(Code, "(func $fib").
+
+test(multifile_direct_multicall_hook) :-
+    direct_multi_call_recursion:compile_direct_multicall_pattern(wat, "fib", [], clause(fib(n,f), true), Code),
+    has(Code, "(module"),
+    has(Code, "(func $fib").
+
+test(multifile_mutual_hook) :-
+    mutual_recursion:compile_mutual_pattern(wat, [is_even/1, is_odd/1], true, table, Code),
+    has(Code, "(module"),
+    has(Code, "(func $is_even"),
+    has(Code, "(func $is_odd").
+
+% ============================================================================
+% Component system
+% ============================================================================
+
+test(component_compile) :-
+    wat_target:wat_compile_component(test_comp,
+        [code("    (local.get $input)")],
+        [],
+        Code),
+    has(Code, "comp_test_comp"),
+    has(Code, "(export"),
+    has(Code, "local.get $input").
+
+% ============================================================================
+% Target registry
+% ============================================================================
+
+test(target_registered) :-
+    use_module('src/unifyweaver/core/target_registry'),
+    target_registry:registered_target(wat, lowlevel, Caps),
+    once(member(structured_control_flow, Caps)).
+
 % ============================================================================
 % LLVM WASM fallback
 % ============================================================================
