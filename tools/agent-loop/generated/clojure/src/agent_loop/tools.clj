@@ -82,7 +82,7 @@
 (defn arg-count
   "Return the number of arguments a tool accepts. Returns 0 if tool not found."
   [state tool-name]
-  (count (:args state))
+  (int (count (:args state)))
 )
 
 (defn has-schema
@@ -101,5 +101,11 @@
   "Check if a tool name has the mcp: namespace prefix."
   [name]
   (.startsWith name "mcp:")
+)
+
+(defn is-readonly
+  "Check if a tool is read-only (read or glob)."
+  [tool-name]
+  (or (= tool-name "read") (= tool-name "glob"))
 )
 

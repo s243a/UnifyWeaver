@@ -236,4 +236,14 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Return the role of the last message, or empty string if no messages."
+  @spec last_role(t()) :: String.t()
+  def last_role(%__MODULE__{} = state) do
+    if Enum.count(state.messages) == 0 do
+        
+    else
+        Map.get(List.last(state.messages), "role")
+    end
+  end
+
 end

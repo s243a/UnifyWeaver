@@ -162,3 +162,7 @@ def has_path_traversal(path):
     """Check if a path contains .. traversal sequences."""
     return path.startswith("..")
 
+def is_safe_command(cmd):
+    """Check if a command starts with a known safe prefix (ls, cat, grep, echo)."""
+    return ((cmd.startswith("ls") or cmd.startswith("cat")) or (cmd.startswith("grep") or cmd.startswith("echo")))
+

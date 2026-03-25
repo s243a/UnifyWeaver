@@ -121,3 +121,7 @@ is_hidden_path(Path, Result) :-
 has_path_traversal(Path, Result) :-
     (atom_concat('..', _, Path) -> Result = true ; Result = false).
 
+%% Check if a command starts with a known safe prefix (ls, cat, grep, echo).
+is_safe_command(Cmd, Result) :-
+    (((atom_concat('ls', _, Cmd) ; atom_concat('cat', _, Cmd)) ; (atom_concat('grep', _, Cmd) ; atom_concat('echo', _, Cmd))) -> Result = true ; Result = false).
+

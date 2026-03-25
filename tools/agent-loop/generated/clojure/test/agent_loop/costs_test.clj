@@ -64,3 +64,7 @@
 (deftest test-cost-exceeds
   (is (true? (costs/cost-exceeds {:total-cost 15.0} 10.0)))
   (is (false? (costs/cost-exceeds {:total-cost 5.0} 10.0))))
+
+(deftest test-input-ratio
+  (is (= 0.0 (costs/input-ratio {:total-input-tokens 0 :total-output-tokens 0})))
+  (is (= 0.5 (costs/input-ratio {:total-input-tokens 50 :total-output-tokens 50}))))

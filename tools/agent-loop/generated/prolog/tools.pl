@@ -146,6 +146,10 @@ name_is_valid(Tool_name, Result) :-
 is_mcp_prefixed(Name, Result) :-
     (atom_concat('mcp:', _, Name) -> Result = true ; Result = false).
 
+%% Check if a tool is read-only (read or glob).
+is_readonly(Tool_name, Result) :-
+    ((Tool_name == ""read"" ; Tool_name == ""glob"") -> Result = true ; Result = false).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

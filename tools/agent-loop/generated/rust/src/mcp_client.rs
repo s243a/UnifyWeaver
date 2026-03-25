@@ -152,3 +152,18 @@ impl McpManager {
         self.tools.clear();
     }
 }
+
+impl McpClient {
+    #[allow(dead_code, unused_variables)]
+    /// Return the reason for the last MCP disconnection, or empty string if connected.
+    pub fn disconnect_reason(&self) -> String {
+        return self.disconnect_reason.clone();
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Return the name of this MCP server/client instance.
+    pub fn server_name(&self) -> String {
+        return self.name.clone();
+    }
+
+}

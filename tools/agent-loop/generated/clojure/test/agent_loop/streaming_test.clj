@@ -43,3 +43,7 @@
 (deftest test-chars-per-token
   (is (= 0.0 (streaming/chars-per-token {:char-count 0 :token-count 0})))
   (is (= 4.0 (streaming/chars-per-token {:char-count 40 :token-count 10}))))
+
+(deftest test-progress-pct
+  (is (= 0.0 (streaming/progress-pct {:token-count 50} 0)))
+  (is (= 50.0 (streaming/progress-pct {:token-count 50} 100))))

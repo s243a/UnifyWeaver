@@ -78,4 +78,10 @@ defmodule AgentLoop.Retry do
     delay > max_delay
   end
 
+  @doc "Check if current attempt equals max_retries - 1 (last chance)."
+  @spec is_last_attempt(t()) :: boolean()
+  def is_last_attempt(%__MODULE__{} = state) do
+    state.attempt >= (state.max_retries - 1)
+  end
+
 end

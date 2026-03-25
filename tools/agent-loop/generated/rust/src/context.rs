@@ -261,31 +261,31 @@ impl ContextManager {
         out
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Clear all messages from context.
     pub fn clear(&mut self) {
         self.messages.clear();
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Return number of messages in context.
     pub fn len(&self) -> usize {
         return self.messages.len();
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Check if context has no messages.
     pub fn is_empty(&self) -> bool {
         return self.messages.is_empty();
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Estimate token count using chars/4 heuristic.
     pub fn estimate_tokens(&self) -> usize {
         return self.char_count() / 4;
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Return the remaining token budget. Returns -1 if no max_tokens set.
     pub fn token_budget(&self) -> i64 {
         if self.max_tokens <= 0 {

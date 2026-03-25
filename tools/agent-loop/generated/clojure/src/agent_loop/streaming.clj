@@ -84,7 +84,7 @@
 (defn byte-count
   "Return the total number of bytes received in the stream."
   [state]
-  (count (:buffer state))
+  (int (count (:buffer state)))
 )
 
 (defn avg-token-rate
@@ -108,6 +108,15 @@
   (if (zero? (:token-count state))
       0.0
       (/ (double (:char-count state)) (double (:token-count state)))
+  )
+)
+
+(defn progress-pct
+  "Estimate streaming progress as percentage of max_tokens. Returns 0.0 if max_tokens is 0."
+  [state max-tokens]
+  (if (zero? max-tokens)
+      0.0
+      (* (/ (double (:token-count state)) (double max-tokens)) 100.0)
   )
 )
 

@@ -116,4 +116,14 @@ defmodule AgentLoop.StreamingTokenCounter do
     end
   end
 
+  @doc "Estimate streaming progress as percentage of max_tokens. Returns 0.0 if max_tokens is 0."
+  @spec progress_pct(t(), integer()) :: float()
+  def progress_pct(%__MODULE__{} = state, max_tokens) do
+    if max_tokens == 0 do
+        0.0
+    else
+        ((state.token_count * 1.0) / (max_tokens * 1.0)) * 100.0
+    end
+  end
+
 end

@@ -87,6 +87,12 @@ defmodule AgentLoop.OutputParser do
     end
   end
 
+  @doc "Check if content length exceeds a threshold, suggesting multi-line output."
+  @spec is_multiline(String.t(), integer()) :: boolean()
+  def is_multiline(text, threshold) do
+    Enum.count(text) > threshold
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

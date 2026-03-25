@@ -149,6 +149,14 @@ total_messages(State, Result) :-
 cost_exceeds(State, Threshold, Result) :-
     (State.total_cost > Threshold -> Result = true ; Result = false).
 
+%% Return the ratio of input tokens to total tokens. Returns 0.0 if no tokens.
+input_ratio(State, Result) :-
+    ((State.total_input_tokens + State.total_output_tokens) =:= 0 ->
+        Result = 0.0
+    ;
+    Result is (float(State.total_input_tokens) / float((State.total_input_tokens + State.total_output_tokens)))
+    ).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

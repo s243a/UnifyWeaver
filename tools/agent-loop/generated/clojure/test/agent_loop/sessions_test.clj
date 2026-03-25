@@ -34,3 +34,8 @@
 
 (deftest test-json-path
   (is (= "/tmp/sessions/abc.json" (sessions/json-path "/tmp/sessions" "abc"))))
+
+(deftest test-name-valid
+  (is (true? (sessions/name-valid "my-session")))
+  (is (false? (sessions/name-valid "")))
+  (is (false? (sessions/name-valid "   "))))

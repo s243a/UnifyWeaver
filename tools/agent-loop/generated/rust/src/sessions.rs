@@ -191,19 +191,19 @@ fn now_iso8601() -> String {
     }
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month + 1, remaining_days + 1, hours, minutes, seconds)
 }
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Return the age of a session in seconds given creation time and current time.
 pub fn session_age(created_at: f64, now: f64) -> f64 {
     return now - created_at;
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Check if a session was created within the threshold (seconds).
 pub fn is_recent(created_at: f64, now: f64, threshold: f64) -> bool {
     return (now - created_at) <= threshold;
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Build the full JSON file path for a session: dir/session_id.json.
 pub fn json_path(dir: &str, session_id: &str) -> String {
     return format!("{}/{}.json", dir, session_id);

@@ -166,4 +166,14 @@ defmodule AgentLoop.CostTracker do
     state.total_cost > threshold
   end
 
+  @doc "Return the ratio of input tokens to total tokens. Returns 0.0 if no tokens."
+  @spec input_ratio(t()) :: float()
+  def input_ratio(%__MODULE__{} = state) do
+    if (state.total_input_tokens + state.total_output_tokens) == 0 do
+        0.0
+    else
+        ((state.total_input_tokens * 1.0) / ((state.total_input_tokens + state.total_output_tokens) * 1.0))
+    end
+  end
+
 end

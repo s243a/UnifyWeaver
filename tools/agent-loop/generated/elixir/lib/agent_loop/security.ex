@@ -148,4 +148,10 @@ defmodule AgentLoop.Security do
     String.starts_with?(path, "..")
   end
 
+  @doc "Check if a command starts with a known safe prefix (ls, cat, grep, echo)."
+  @spec is_safe_command(String.t()) :: boolean()
+  def is_safe_command(cmd) do
+    ((String.starts_with?(cmd, "ls") or String.starts_with?(cmd, "cat")) or (String.starts_with?(cmd, "grep") or String.starts_with?(cmd, "echo")))
+  end
+
 end

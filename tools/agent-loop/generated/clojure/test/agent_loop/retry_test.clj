@@ -36,3 +36,7 @@
 (deftest test-delay-exceeds-max
   (is (true? (retry/delay-exceeds-max 120.0 60.0)))
   (is (false? (retry/delay-exceeds-max 30.0 60.0))))
+
+(deftest test-is-last-attempt
+  (is (true? (retry/is-last-attempt {:attempt 2 :max-retries 3})))
+  (is (false? (retry/is-last-attempt {:attempt 0 :max-retries 3}))))
