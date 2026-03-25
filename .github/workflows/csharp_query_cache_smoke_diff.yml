@@ -289,6 +289,14 @@ jobs:
           if (Test-Path $env:CACHE_SMOKE_DIFF_JSON_PATH) {
             $diff = Get-Content $env:CACHE_SMOKE_DIFF_JSON_PATH -Raw | ConvertFrom-Json
             $thresholds = $diff.thresholds
+            $sliceMap = @{}
+            foreach ($sliceEntry in @($diff.slices)) {
+              $sliceMap[[string]$sliceEntry.slice] = $sliceEntry
+            }
+
+            $orderedSliceNames = @('admission', 'reuse', 'lru')
+            $remainingSliceNames = @($sliceMap.Keys | Where-Object { $_ -notin $orderedSliceNames } | Sort-Object)
+            $sliceSummaryNames = @($orderedSliceNames + $remainingSliceNames | Select-Object -Unique)
 
             @(
               "## C# Query Cache Smoke Diff",
@@ -312,6 +320,25 @@ jobs:
               "- Max slice duration delta seconds: $(if ($null -eq $thresholds.maxSliceDurationDeltaSeconds) { 'disabled' } else { $thresholds.maxSliceDurationDeltaSeconds })",
               "- Thresholds passed: $(if ($thresholds.passed) { 'true' } else { 'false' })"
             ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            if ($sliceSummaryNames.Count -gt 0) {
+              @(
+                "",
+                "### Slice Deltas",
+                ""
+              ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+              foreach ($sliceName in $sliceSummaryNames) {
+                if (-not $sliceMap.ContainsKey($sliceName)) {
+                  continue
+                }
+
+                $slice = $sliceMap[$sliceName]
+                @(
+                  "- $($slice.slice): status delta = `"$($slice.status.delta)`"`, duration delta = `"$($slice.duration.delta)`"`"
+                ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              }
+            }
 
             if ($thresholds.failures.Count -gt 0) {
               @(

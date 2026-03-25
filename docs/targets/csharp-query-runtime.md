@@ -218,6 +218,8 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
         - artifact names
         - overall result delta
         - total duration delta
+        - per-slice `admission` / `reuse` / `lru` status deltas
+        - per-slice `admission` / `reuse` / `lru` duration deltas
         - threshold settings
         - threshold pass/fail result
         - threshold failure list when present
