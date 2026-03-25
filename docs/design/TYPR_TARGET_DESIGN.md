@@ -94,7 +94,9 @@ This document focuses on architecture and rollout choices specific to TypR.
      the same computed-context and guarded
      branch-body families, including branch bodies where one shared
      subtree call happens before guarded control that contains the second
-     subtree call plus nested non-recursive post-call control, and
+     subtree call plus nested non-recursive post-call control, shared
+     context updates before that first subtree call, or branch-local
+     context updates before the second subtree call, and
      boolean return types, emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match

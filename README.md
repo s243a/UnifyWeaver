@@ -262,7 +262,9 @@ includes:
   one invariant context argument threaded through the subtree calls,
   including branch bodies where one shared subtree call happens before
   guarded control that contains the second subtree call plus nested
-  non-recursive post-call control,
+  non-recursive post-call control, shared context updates before that
+  first subtree call, or branch-local context updates before the second
+  subtree call,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
