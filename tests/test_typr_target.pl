@@ -85,6 +85,8 @@ cleanup_typr_test :-
     retractall(user:typr_mutual_odd_tree_ctx_recursive_branch(_, _)),
     retractall(user:typr_mutual_even_tree_ctx_nested_branch(_, _)),
     retractall(user:typr_mutual_odd_tree_ctx_nested_branch(_, _)),
+    retractall(user:typr_mutual_even_tree_ctx_call_nested_post(_, _)),
+    retractall(user:typr_mutual_odd_tree_ctx_call_nested_post(_, _)),
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
@@ -3029,6 +3031,49 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_nested
     once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) >= (current_ctx - 1) }@) {")),
     once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) >= (current_ctx - 2) }@) {")),
     once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) >= (current_ctx - 3) }@) {")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_branch_second_call_nested_postcall_control_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_ctx_call_nested_post([], _T0)),
+    assertz(user:(typr_mutual_even_tree_ctx_call_nested_post([V, L, R], T) :-
+        typr_mutual_odd_tree_ctx_call_nested_post(L, T),
+        ( V > T ->
+            typr_mutual_odd_tree_ctx_call_nested_post(R, T),
+            ( V > T + 10 ->
+                V >= T
+            ;   V >= T - 1
+            )
+        ;   typr_mutual_odd_tree_ctx_call_nested_post(R, T)
+        )
+    )),
+    assertz(user:typr_mutual_odd_tree_ctx_call_nested_post([_, [], []], _T1)),
+    assertz(user:(typr_mutual_odd_tree_ctx_call_nested_post([V, L, R], T) :-
+        typr_mutual_even_tree_ctx_call_nested_post(L, T),
+        ( V > T ->
+            typr_mutual_even_tree_ctx_call_nested_post(R, T),
+            ( V > T + 10 ->
+                V >= T
+            ;   V >= T - 1
+            )
+        ;   typr_mutual_even_tree_ctx_call_nested_post(R, T)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx_call_nested_post/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx_call_nested_post/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx_call_nested_post/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx_call_nested_post/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_ctx_call_nested_post/2, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_ctx_call_nested_post/2, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_ctx_call_nested_post/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_ctx_call_nested_post/2, typr_mutual_odd_tree_ctx_call_nested_post/2")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_ctx_call_nested_post_impl(.subset2(current_input, 2), current_ctx);")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > current_ctx) {")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_ctx_call_nested_post_impl(.subset2(current_input, 3), current_ctx);")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > (current_ctx + 10)) {")),
+    once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) >= current_ctx }@) {")),
+    once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) >= (current_ctx - 1) }@) {")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

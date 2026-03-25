@@ -767,6 +767,8 @@ typr_mutual_tree_goal_after_first_call(after_first_call, GroupPredicates, [Goal0
     ->  true
     ;   typr_mutual_tree_symbolic_extra_arg_goal(Goal, ValueVar, AliasMap0, ExtraArgMap0, _ExtraArgMap1)
     ->  true
+    ;   typr_mutual_tree_nested_goal(Goal)
+    ->  true
     ;   \+ typr_mutual_tree_nested_goal(Goal),
         typr_mutual_tree_condition_varmap(ValueVar, AliasMap0, ExtraArgMap0, VarMap),
         native_typr_guard_goal(Goal, VarMap, _GuardCondition)
@@ -1081,6 +1083,38 @@ typr_mutual_tree_tail_body(GroupPredicates, Goals, ValueVar, AliasMap0, Body, Go
 
 typr_mutual_tree_tail_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body, []) :-
     typr_mutual_tree_nonrecursive_tail_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body).
+typr_mutual_tree_tail_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body, [FirstGoalSpec]) :-
+    append(PreGoals, [FirstGoal0, NestedIfGoal], Goals),
+    typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, ExtraArgMap1, GuardExpr),
+    typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap1, FirstGoal0, FirstGoalSpec),
+    typr_mutual_tree_branch_call(FirstGoalSpec, FirstCall),
+    typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal0, ElseGoal0),
+    typr_mutual_goal_list(ThenGoal0, ThenGoals0),
+    maplist(typr_strip_module_goal, ThenGoals0, ThenGoals),
+    typr_mutual_tree_nonrecursive_tail_body(
+        GroupPredicates,
+        ThenGoals,
+        ValueVar,
+        AliasMap,
+        ExtraArgMap1,
+        ThenBody
+    ),
+    typr_mutual_goal_list(ElseGoal0, ElseGoals0),
+    maplist(typr_strip_module_goal, ElseGoals0, ElseGoals),
+    typr_mutual_tree_nonrecursive_tail_body(
+        GroupPredicates,
+        ElseGoals,
+        ValueVar,
+        AliasMap,
+        ExtraArgMap1,
+        ElseBody
+    ),
+    typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap1, BranchConditionExpr),
+    typr_mutual_tree_guard_wrap(
+        GuardExpr,
+        branch_after_call(FirstCall, BranchConditionExpr, ThenBody, ElseBody),
+        Body
+    ).
 typr_mutual_tree_tail_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body, GoalSpecs) :-
     typr_mutual_tree_branch_sequence(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, GoalSpecs, Steps),
     typr_mutual_tree_branch_body_from_steps(Steps, Body).

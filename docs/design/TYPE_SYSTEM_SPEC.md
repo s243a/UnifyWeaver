@@ -401,7 +401,10 @@ Current TypR lowering policy is intentionally mixed:
   SCCs with one invariant context
   argument threaded through the shared dual-subtree calls, shared computed
   context updates or guarded shared context selection before those calls,
-  and the same conservative guarded branch-body family, using
+  and the same conservative guarded branch-body family, including branch
+  bodies where one shared subtree call happens before guarded control that
+  contains the second subtree call plus nested non-recursive post-call
+  control, using
   raw-expression memoized helper bodies inside TypR rather than wrapped-R
   fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower

@@ -92,7 +92,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      mutual branch, conservative arity-2 tree-structural SCCs with one invariant
      context argument threaded through the shared dual-subtree calls and
      the same computed-context and guarded
-     branch-body families, and boolean return types, emitted as TypR
+     branch-body families, including branch bodies where one shared
+     subtree call happens before guarded control that contains the second
+     subtree call plus nested non-recursive post-call control, and
+     boolean return types, emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
