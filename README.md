@@ -244,8 +244,9 @@ includes:
 - conservative boolean mutual-recursive predicate groups such as
   `is_even/1` / `is_odd/1`, `even_list/1` / `odd_list/1`,
   `even_left_tree/1` / `odd_left_tree/1`, and `even_tree/1` / `odd_tree/1`,
-  plus arity-2 tree-structural SCCs with one tree-driving argument and one
-  invariant context argument, including dual-subtree tree SCCs with
+  plus conservative `N`-ary tree-structural SCCs with one tree-driving
+  argument and one or more threaded context arguments, including dual-subtree
+  tree SCCs with
   alias-style prework, shared computed context updates, or guarded shared
   context selection before the two recursive subtree calls, or direct
   recursive subtree calls inside supported guarded branch bodies with

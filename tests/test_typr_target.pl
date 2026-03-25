@@ -91,6 +91,8 @@ cleanup_typr_test :-
     retractall(user:typr_mutual_odd_tree_ctx_pre_branch_call_post(_, _)),
     retractall(user:typr_mutual_even_tree_ctx_branch_step_post(_, _)),
     retractall(user:typr_mutual_odd_tree_ctx_branch_step_post(_, _)),
+    retractall(user:typr_mutual_even_tree_ctx2(_, _, _)),
+    retractall(user:typr_mutual_odd_tree_ctx2(_, _, _)),
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
@@ -3176,6 +3178,45 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_branch
     once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_ctx_branch_step_post_impl(.subset2(current_input, 3), (current_ctx + 2));")),
     once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) >= (current_ctx + 1)) {")),
     once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) >= (current_ctx + 2)) {")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_multi_context_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_ctx2([], _T0, _B0)),
+    assertz(user:(typr_mutual_even_tree_ctx2([V, L, R], T, B) :-
+        T1 is T + 1,
+        B1 is B + 2,
+        typr_mutual_odd_tree_ctx2(L, T1, B1),
+        typr_mutual_odd_tree_ctx2(R, T1, B1),
+        V >= T,
+        V >= B
+    )),
+    assertz(user:typr_mutual_odd_tree_ctx2([_, [], []], _T1, _B1)),
+    assertz(user:(typr_mutual_odd_tree_ctx2([V, L, R], T, B) :-
+        T1 is T + 1,
+        B1 is B + 2,
+        typr_mutual_even_tree_ctx2(L, T1, B1),
+        typr_mutual_even_tree_ctx2(R, T1, B1),
+        V >= T,
+        V >= B
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx2/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx2/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx2/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx2/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx2/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx2/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_ctx2/3, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_ctx2/3, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_ctx2/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_ctx2/3, typr_mutual_odd_tree_ctx2/3")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_ctx2 <- fn(arg1: [#N, Any], arg2: int, arg3: int): bool {")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_ctx2_impl <- function(current_input, current_ctx, current_ctx_2) {")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree_ctx2:\", paste(deparse(list(current_input, current_ctx, current_ctx_2)), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_ctx2_impl(.subset2(current_input, 2), (current_ctx + 1), (current_ctx_2 + 2));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_ctx2_impl(.subset2(current_input, 3), (current_ctx + 1), (current_ctx_2 + 2));")),
+    once(sub_string(Code, _, _, _, "if (@{ .subset2(current_input, 1) >= current_ctx_2 }@) {")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
