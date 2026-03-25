@@ -253,9 +253,11 @@ includes:
   one nested branch-local control point around those calls before the
   shared boolean rejoin, one nested branch-local control point between the
   two direct recursive subtree calls with limited alias or guard state,
-  and one nested post-call control point after the shared dual-subtree
-  calls before the shared boolean rejoin
-  before the second call, shared branch-local guard prework before a nested
+  one nested post-call control point after the shared dual-subtree calls
+  before the shared boolean rejoin, inter-call symbolic context or alias
+  state before the second call combined with that shared post-call
+  control, nested non-recursive boolean post-call control after the shared
+  dual-subtree calls, shared branch-local guard prework before a nested
   mutual branch, and the same conservative guarded branch-body family with
   one invariant context argument threaded through the subtree calls,
   lowered to TypR
