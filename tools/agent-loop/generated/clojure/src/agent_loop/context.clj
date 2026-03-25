@@ -202,3 +202,12 @@
   )
 )
 
+(defn first-role
+  "Return the role of the first message, or empty string if no messages."
+  [state]
+  (if (zero? (count (:messages state)))
+      
+      (get (first (:messages state)) "role")
+  )
+)
+

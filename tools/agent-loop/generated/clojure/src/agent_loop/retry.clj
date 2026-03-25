@@ -61,12 +61,18 @@
 (defn retry-delay
   "Calculate exponential backoff delay: base_delay * 2^attempt."
   [state]
-  (* (:base-delay state) (double (* 2 (:attempt state))))
+  (* (:base-delay state) (* 2.0 (double (:attempt state))))
 )
 
 (defn attempts-left
   "Return the number of retry attempts remaining."
   [state]
   (- (:max-retries state) (:attempt state))
+)
+
+(defn delay-exceeds-max
+  "Check if the computed retry delay exceeds the maximum allowed delay."
+  [delay max-delay]
+  (> delay max-delay)
 )
 

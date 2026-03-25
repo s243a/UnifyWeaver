@@ -106,4 +106,14 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.token_count > 0
   end
 
+  @doc "Return average characters per token. Returns 0.0 if no tokens."
+  @spec chars_per_token(t()) :: float()
+  def chars_per_token(%__MODULE__{} = state) do
+    if state.token_count == 0 do
+        0.0
+    else
+        ((state.char_count * 1.0) / (state.token_count * 1.0))
+    end
+  end
+
 end

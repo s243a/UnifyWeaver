@@ -31,3 +31,7 @@
 
 (deftest test-config-field-count
   (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))
+
+(deftest test-config-is-empty
+  (is (true? (config/is-empty {:settings {}})))
+  (is (false? (config/is-empty {:settings {:a 1}}))))

@@ -77,6 +77,16 @@ defmodule AgentLoop.OutputParser do
     (String.starts_with?(text, "{") or String.starts_with?(text, "["))
   end
 
+  @doc "Return a preview of text truncated to max_len characters with ellipsis if needed."
+  @spec content_preview(String.t(), integer()) :: String.t()
+  def content_preview(text, max_len) do
+    if Enum.count(text) > max_len do
+        String.slice(text, 0, max_len) <> "..."
+    else
+        text
+    end
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

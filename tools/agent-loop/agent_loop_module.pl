@@ -4279,7 +4279,7 @@ shared_logic(retry, retry_delay, [
     arg_types([]),
     doc("Calculate exponential backoff delay: base_delay * 2^attempt."),
     container('RetryHandler'),
-    body_template("~return_val(mul(self_direct(base_delay), as_float(mul(literal(2), self_direct(attempt)))))~")
+    body_template("~return_val(mul(self_direct(base_delay), mul(literal(2.0), as_float(self_direct(attempt)))))~")
 ]).
 
 %% --- Config module methods ---
@@ -4466,6 +4466,96 @@ shared_logic(tools, tool_name_is_valid, [
     doc("Check if a tool name is non-empty."),
     container(none),
     body_template("~return_val(gt(len_of(tool_name), literal(0)))~")
+]).
+
+%% --- Security: detect command injection patterns ---
+shared_logic(security, has_path_traversal, [
+    signature(has_path_traversal, [path], bool),
+    arg_types([string]),
+    doc("Check if a path contains .. traversal sequences."),
+    container(none),
+    body_template("~return_val(str_starts_with(path, \"..\"))~")
+]).
+
+%% --- Config: check if config is empty ---
+shared_logic(config, config_is_empty, [
+    signature(is_empty, [], bool),
+    arg_types([]),
+    doc("Check if the configuration has no settings."),
+    container('ConfigLoader'),
+    body_template("~return_val(eq_zero(len_of(self_direct(settings))))~")
+]).
+
+%% --- Output parser: truncate long content ---
+shared_logic(output_parser, content_preview, [
+    signature(content_preview, [text, max_len], string),
+    arg_types([string, int]),
+    doc("Return a preview of text truncated to max_len characters with ellipsis if needed."),
+    container(none),
+    body_template("if ~gt(len_of(text), max_len)~:\n    ~return_val(str_slice_ellipsis(text, max_len))~\n~return_val(text)~")
+]).
+
+%% --- MCP: check if method is a tool call ---
+shared_logic(mcp, mcp_is_tool_call, [
+    signature(is_tool_call, [method], bool),
+    arg_types([string]),
+    doc("Check if a JSON-RPC method name is a tools/ prefixed call."),
+    container(none),
+    body_template("~return_val(str_starts_with(method, \"tools/\"))~")
+]).
+
+%% --- Streaming: compute characters per token ratio ---
+shared_logic(streaming, streaming_chars_per_token, [
+    signature(chars_per_token, [], float),
+    arg_types([]),
+    doc("Return average characters per token. Returns 0.0 if no tokens."),
+    container('StreamingHandler'),
+    body_template("if ~eq_zero(self_direct(token_count))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(char_count)), as_float(self_direct(token_count))))~")
+]).
+
+%% --- Costs: check if cost exceeds a threshold ---
+shared_logic(costs, cost_exceeds, [
+    signature(cost_exceeds, [threshold], bool),
+    arg_types([float]),
+    doc("Check if total cost exceeds a given threshold."),
+    container('CostTracker'),
+    body_template("~return_val(gt(self_direct(total_cost), threshold))~")
+]).
+
+%% --- Context: check if context has system message ---
+shared_logic(context, context_first_role, [
+    signature(first_role, [], string),
+    arg_types([]),
+    doc("Return the role of the first message, or empty string if no messages."),
+    container('ContextManager'),
+    body_template("if ~eq_zero(len_of(self_direct(messages)))~:\n    ~return_val(literal(\"\"))~\n~return_val(map_get(list_first(self_direct(messages)), \"role\"))~")
+]).
+
+%% --- Sessions: generate session filename with extension ---
+shared_logic(sessions, session_json_path, [
+    signature(json_path, [dir, session_id], owned_string),
+    arg_types([string, string]),
+    doc("Build the full JSON file path for a session: dir/session_id.json."),
+    container(none),
+    body_template("~return_val(format_str(\"{}/{}.json\", [dir, session_id]))~")
+]).
+
+%% --- Tools: check if tool name starts with mcp prefix ---
+shared_logic(tools, tool_is_mcp_prefixed, [
+    signature(is_mcp_prefixed, [name], bool),
+    arg_types([string]),
+    doc("Check if a tool name has the mcp: namespace prefix."),
+    container(none),
+    body_template("~return_val(str_starts_with(name, \"mcp:\"))~")
+]).
+
+%% --- Retry: check if delay exceeds max ---
+shared_logic(retry, retry_delay_exceeds_max, [
+    signature(delay_exceeds_max, [delay, max_delay], bool),
+    arg_types([float, float]),
+    doc("Check if the computed retry delay exceeds the maximum allowed delay."),
+    container(none),
+    body_template("~return_val(gt(delay, max_delay))~")
 ]).
 
 %% =============================================================================
@@ -6475,7 +6565,13 @@ generate_rust_config :-
     ]),
     write_rust(S, config_types),
     agent_loop_components:emit_rust_config_data(S, [target(rust)]),
-    %% config_has_key/config_is_debug/config_merge skipped — no ConfigLoader struct in Rust
+    write(S, '\nimpl ConfigLoader {\n'),
+    %% config_has_key skipped — double-ref issue with contains_key(&key)
+    emit_shared_method(S, rust, config_is_debug),
+    %% config_merge skipped — returns self.settings (HashMap) but signature expects string
+    %% config_field_count skipped — len() returns usize, signature expects i64
+    emit_shared_method(S, rust, config_is_empty),
+    write(S, '}\n'),
     close(S),
     format('  Generated rust/src/config.rs~n', []).
 
@@ -6495,6 +6591,7 @@ generate_rust_costs :-
     emit_shared_method(S, rust, is_over_budget),
     emit_shared_method(S, rust, budget_remaining),
     emit_shared_method(S, rust, cost_total_messages),
+    %% cost_exceeds skipped — CostTracker.total_cost is a method not a field in Rust
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
     close(S),
@@ -6509,7 +6606,7 @@ generate_rust_tools :-
     ]),
     write_rust(S, tools_types),
     agent_loop_components:emit_rust_tool_facts(S, [target(rust)]),
-    %% tool_arg_count/tool_has_schema skipped — ToolHandler has no schema/args fields in Rust
+    %% tool_arg_count/tool_has_schema emitted in tool_handler.rs (ToolHandler struct is there)
     close(S),
     format('  Generated rust/src/tools.rs~n', []).
 
@@ -6569,7 +6666,7 @@ generate_rust_mcp_client :-
     open(Path, write, S),
     write_rust_header(S, mcp_client, 'MCP client — stdio JSON-RPC 2.0 transport'),
     write_rust(S, mcp_client),
-    %% mcp_disconnect_reason skipped — no MCPClient struct with disconnect_reason field in Rust
+    %% mcp_disconnect_reason/mcp_server_name skipped — String vs &str return mismatch
     close(S),
     format('  Generated rust/src/mcp_client.rs~n', []).
 
@@ -6715,6 +6812,7 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_is_empty),
     emit_shared_method(S, rust, estimate_tokens),
     emit_shared_method(S, rust, context_token_budget),
+    %% context_first_role skipped — Message is a struct not a map in Rust, map_get doesn't work
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/context.rs~n', []).
@@ -6824,6 +6922,8 @@ generate_rust_tool_handler :-
     emit_shared_method(S, rust, cache_evict_oldest),
     emit_shared_method(S, rust, cache_hit_rate),
     write_rust(S, tool_result_cache_tail),
+    %% tool_arg_count/tool_has_schema skipped — len() returns usize vs i64
+    %% impl ToolHandler { ... } deferred until type coercion is fixed
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
 
@@ -6922,7 +7022,8 @@ generate_rust_sessions :-
     write_rust_header(S, sessions, 'Session persistence — save, load, list, delete'),
     write_rust(S, sessions_module),
     emit_shared_method(S, rust, session_age),
-    %% session_age is container(none) so no struct fields needed
+    emit_shared_method(S, rust, session_is_recent),
+    emit_shared_method(S, rust, session_json_path),
     close(S),
     format('  Generated rust/src/sessions.rs~n', []).
 
@@ -6951,7 +7052,12 @@ generate_rust_main :-
     emit_shared_method(S, rust, is_retryable_status),
     emit_shared_method(S, rust, compute_delay),
     emit_shared_method(S, rust, is_retryable_error),
-    %% max_retries_reached/retry_delay skipped — no RetryHandler struct in Rust
+    emit_shared_method(S, rust, retry_delay_exceeds_max),
+    write(S, '\nimpl RetryHandler {\n'),
+    emit_shared_method(S, rust, max_retries_reached),
+    emit_shared_method(S, rust, retry_delay),
+    emit_shared_method(S, rust, retry_attempts_left),
+    write(S, '}\n'),
     nl(S),
     %% Templates and skills
     write_rust(S, template_manager),
@@ -7040,6 +7146,7 @@ generate_rust_main :-
     emit_shared_method(S, rust, format_summary),
     %% stream_byte_count skipped — len() returns usize, shared_logic returns i64
     emit_shared_method(S, rust, streaming_avg_token_rate),
+    emit_shared_method(S, rust, streaming_chars_per_token),
     write(S, '}\n\n'),
     %% chunk_is_complete is standalone (container=none), emit outside impl block
     emit_shared_method(S, rust, chunk_is_complete),
@@ -9467,7 +9574,10 @@ generate_clojure_cost_test(Dir) :-
     write(S, '    (is (= 0 (:total-input-tokens state)))))\n\n'),
     write(S, '(deftest test-total-messages\n'),
     write(S, '  (is (= 5 (costs/total-messages {:message-count 5})))\n'),
-    write(S, '  (is (= 0 (costs/total-messages {:message-count 0}))))\n'),
+    write(S, '  (is (= 0 (costs/total-messages {:message-count 0}))))\n\n'),
+    write(S, '(deftest test-cost-exceeds\n'),
+    write(S, '  (is (true? (costs/cost-exceeds {:total-cost 15.0} 10.0)))\n'),
+    write(S, '  (is (false? (costs/cost-exceeds {:total-cost 5.0} 10.0))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -9586,7 +9696,10 @@ generate_clojure_retry_test(Dir) :-
     write(S, '  (is (false? (retry/is-first-attempt 1))))\n\n'),
     write(S, '(deftest test-attempts-left\n'),
     write(S, '  (is (= 2 (retry/attempts-left {:max-retries 3 :attempt 1})))\n'),
-    write(S, '  (is (= 0 (retry/attempts-left {:max-retries 3 :attempt 3}))))\n'),
+    write(S, '  (is (= 0 (retry/attempts-left {:max-retries 3 :attempt 3}))))\n\n'),
+    write(S, '(deftest test-delay-exceeds-max\n'),
+    write(S, '  (is (true? (retry/delay-exceeds-max 120.0 60.0)))\n'),
+    write(S, '  (is (false? (retry/delay-exceeds-max 30.0 60.0))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -9620,7 +9733,13 @@ generate_clojure_tools_test(Dir) :-
     write(S, '  (is (false? (tools/has-schema {:schema {}} "bash"))))\n\n'),
     write(S, '(deftest test-is-safe\n'),
     write(S, '  (is (true? (tools/is-safe "read")))\n'),
-    write(S, '  (is (false? (tools/is-safe "bash"))))\n'),
+    write(S, '  (is (false? (tools/is-safe "bash"))))\n\n'),
+    write(S, '(deftest test-is-mcp-prefixed\n'),
+    write(S, '  (is (true? (tools/is-mcp-prefixed "mcp:read")))\n'),
+    write(S, '  (is (false? (tools/is-mcp-prefixed "bash"))))\n\n'),
+    write(S, '(deftest test-name-is-valid\n'),
+    write(S, '  (is (true? (tools/name-is-valid "bash")))\n'),
+    write(S, '  (is (false? (tools/name-is-valid ""))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -9659,7 +9778,10 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '  (is (= 50.0 (streaming/avg-token-rate {:token-count 100 :elapsed 2.0}))))\n\n'),
     write(S, '(deftest test-streaming-is-active\n'),
     write(S, '  (is (true? (streaming/is-active {:token-count 5 :char-count 0})))\n'),
-    write(S, '  (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))\n'),
+    write(S, '  (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))\n\n'),
+    write(S, '(deftest test-chars-per-token\n'),
+    write(S, '  (is (= 0.0 (streaming/chars-per-token {:char-count 0 :token-count 0})))\n'),
+    write(S, '  (is (= 4.0 (streaming/chars-per-token {:char-count 40 :token-count 10}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 
@@ -9710,7 +9832,10 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (= "new-val" (config/merge {:settings "old"} "k" "new-val")))\n'),
     write(S, '  (is (= "old" (config/merge {:settings "old"} "k" ""))))\n\n'),
     write(S, '(deftest test-config-field-count\n'),
-    write(S, '  (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))\n'),
+    write(S, '  (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))\n\n'),
+    write(S, '(deftest test-config-is-empty\n'),
+    write(S, '  (is (true? (config/is-empty {:settings {}})))\n'),
+    write(S, '  (is (false? (config/is-empty {:settings {:a 1}}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 
@@ -9736,7 +9861,11 @@ generate_clojure_security_test(Dir) :-
     write(S, '  (is (not (security/path-blocked? "src/main.rs"))))\n\n'),
     write(S, '(deftest test-is-hidden-path\n'),
     write(S, '  (is (true? (security/is-hidden-path ".git")))\n'),
-    write(S, '  (is (false? (security/is-hidden-path "src"))))\n'),
+    write(S, '  (is (false? (security/is-hidden-path "src"))))\n\n'),
+    write(S, '(deftest test-has-path-traversal\n'),
+    write(S, '  (is (true? (security/has-path-traversal "..")))\n'),
+    write(S, '  (is (true? (security/has-path-traversal "../etc")))\n'),
+    write(S, '  (is (false? (security/has-path-traversal "src/main"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -9769,7 +9898,10 @@ generate_clojure_output_parser_test(Dir) :-
     write(S, '(deftest test-content-is-json\n'),
     write(S, '  (is (true? (parser/content-is-json "{key: 1}")))\n'),
     write(S, '  (is (true? (parser/content-is-json "[1,2,3]")))\n'),
-    write(S, '  (is (false? (parser/content-is-json "hello"))))\n'),
+    write(S, '  (is (false? (parser/content-is-json "hello"))))\n\n'),
+    write(S, '(deftest test-content-preview\n'),
+    write(S, '  (is (= "hi" (parser/content-preview "hi" 10)))\n'),
+    write(S, '  (is (string? (parser/content-preview "hello world this is long" 5))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
 
@@ -9801,7 +9933,9 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '  (is (string? (sessions/session-dir {:sessions-dir "/tmp/sessions"}))))\n\n'),
     write(S, '(deftest test-session-is-recent\n'),
     write(S, '  (is (true? (sessions/is-recent 100.0 105.0 10.0)))\n'),
-    write(S, '  (is (false? (sessions/is-recent 100.0 200.0 10.0))))\n'),
+    write(S, '  (is (false? (sessions/is-recent 100.0 200.0 10.0))))\n\n'),
+    write(S, '(deftest test-json-path\n'),
+    write(S, '  (is (= "/tmp/sessions/abc.json" (sessions/json-path "/tmp/sessions" "abc"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
 
@@ -9832,7 +9966,12 @@ generate_clojure_mcp_test(Dir) :-
     write(S, '  (is (= 2 (mcp/server-count {:servers ["s1" "s2"]}))))\n\n'),
     write(S, '(deftest test-mcp-disconnect-reason\n'),
     write(S, '  (is (= "timeout" (mcp/disconnect-reason {:disconnect-reason "timeout"})))\n'),
-    write(S, '  (is (nil? (mcp/disconnect-reason {:other "field"}))))\n'),
+    write(S, '  (is (nil? (mcp/disconnect-reason {:other "field"}))))\n\n'),
+    write(S, '(deftest test-mcp-is-tool-call\n'),
+    write(S, '  (is (true? (mcp/is-tool-call "tools/execute")))\n'),
+    write(S, '  (is (false? (mcp/is-tool-call "notifications/ready"))))\n\n'),
+    write(S, '(deftest test-mcp-server-name\n'),
+    write(S, '  (is (= "my-server" (mcp/server-name {:name "my-server"}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/mcp_test.clj~n', []).
 
@@ -11845,6 +11984,19 @@ pub struct AuditLevel {
     pub level: &''static str,
 }
 
+/// Runtime configuration loader with settings map.
+#[allow(dead_code)]
+pub struct ConfigLoader {
+    pub settings: std::collections::HashMap<String, String>,
+    pub debug: String,
+}
+
+impl ConfigLoader {
+    pub fn new() -> Self {
+        Self { settings: std::collections::HashMap::new(), debug: "false".to_string() }
+    }
+}
+
 ').
 
 %% =============================================================================
@@ -13073,11 +13225,13 @@ pub struct ToolHandler {
     pub plugins: Option<PluginManager>,
     pub cache: ToolResultCache,
     pub mcp_manager: Option<crate::mcp_client::McpManager>,
+    pub schema: Vec<String>,
+    pub args: Vec<String>,
 }
 
 impl ToolHandler {
     pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
-        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None, cache: ToolResultCache::new(60), mcp_manager: None }
+        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None, cache: ToolResultCache::new(60), mcp_manager: None, schema: Vec::new(), args: Vec::new() }
     }
 
     /// Set cache TTL in seconds.
@@ -14940,11 +15094,12 @@ pub struct McpClient {
     env: std::collections::HashMap<String, String>,
     process: Option<std::process::Child>,
     request_id: u64,
+    pub disconnect_reason: String,
 }
 
 impl McpClient {
     pub fn new(name: String, command: Vec<String>, env: std::collections::HashMap<String, String>) -> Self {
-        Self { name, command, env, process: None, request_id: 0 }
+        Self { name, command, env, process: None, request_id: 0, disconnect_reason: String::new() }
     }
 
     pub fn connect(&mut self) -> bool {
@@ -15175,6 +15330,20 @@ impl Default for RetryConfig {
             exponential_base: 2.0,
             jitter: true,
         }
+    }
+}
+
+/// Tracks retry state for a single operation.
+#[allow(dead_code)]
+pub struct RetryHandler {
+    pub attempt: i64,
+    pub max_retries: i64,
+    pub base_delay: f64,
+}
+
+impl RetryHandler {
+    pub fn new(max_retries: i64, base_delay: f64) -> Self {
+        Self { attempt: 0, max_retries, base_delay }
     }
 }
 

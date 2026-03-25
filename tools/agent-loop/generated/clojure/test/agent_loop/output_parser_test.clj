@@ -31,3 +31,7 @@
   (is (true? (parser/content-is-json "{key: 1}")))
   (is (true? (parser/content-is-json "[1,2,3]")))
   (is (false? (parser/content-is-json "hello"))))
+
+(deftest test-content-preview
+  (is (= "hi" (parser/content-preview "hi" 10)))
+  (is (string? (parser/content-preview "hello world this is long" 5))))

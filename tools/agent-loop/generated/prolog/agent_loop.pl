@@ -170,6 +170,14 @@ token_budget(State, Result) :-
     Result is (State.max_tokens - State.token_count)
     ).
 
+%% Return the role of the first message, or empty string if no messages.
+first_role(State, Result) :-
+    (length(State.messages, Result) =:= 0 ->
+        Result = 
+    ;
+    get_dict("role", nth0(0, State.messages, Result), Val)
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -232,6 +240,14 @@ avg_token_rate(State, Result) :-
 %% Check if the streaming handler is actively receiving tokens (token_count > 0).
 is_active(State, Result) :-
     (State.token_count > 0 -> Result = true ; Result = false).
+
+%% Return average characters per token. Returns 0.0 if no tokens.
+chars_per_token(State, Result) :-
+    (State.token_count =:= 0 ->
+        Result = 0.0
+    ;
+    Result is (float(State.char_count) / float(State.token_count))
+    ).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -361,6 +377,10 @@ disconnect_reason(State, Result) :-
 server_name(State, Result) :-
     Result = State.name.
 
+%% Check if a JSON-RPC method name is a tools/ prefixed call.
+is_tool_call(Method, Result) :-
+    (atom_concat('tools/', _, Method) -> Result = true ; Result = false).
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -402,11 +422,15 @@ max_retries_reached(State, Result) :-
 
 %% Calculate exponential backoff delay: base_delay * 2^attempt.
 retry_delay(State, Result) :-
-    Result is (State.base_delay * float((2 * State.attempt))).
+    Result is (State.base_delay * (2.0 * float(State.attempt))).
 
 %% Return the number of retry attempts remaining.
 attempts_left(State, Result) :-
     Result is (State.max_retries - State.attempt).
+
+%% Check if the computed retry delay exceeds the maximum allowed delay.
+delay_exceeds_max(Delay, Max_delay, Result) :-
+    (Delay > Max_delay -> Result = true ; Result = false).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -455,6 +479,14 @@ is_empty_response(Text, Result) :-
 %% Check if text starts with { or [ indicating JSON content.
 content_is_json(Text, Result) :-
     ((atom_concat('{', _, Text) ; atom_concat('[', _, Text)) -> Result = true ; Result = false).
+
+%% Return a preview of text truncated to max_len characters with ellipsis if needed.
+content_preview(Text, Max_len, Result) :-
+    (length(Text, Result) > Max_len ->
+        Result = sub_atom(Text, 0, Max_len, _, Prefix), atom_concat(Prefix, "...", Truncated)
+    ;
+    Result = Text
+    ).
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
@@ -522,6 +554,10 @@ session_age(Created_at, Now, Result) :-
 %% Check if a session was created within the threshold (seconds).
 is_recent(Created_at, Now, Threshold, Result) :-
     ((Now - Created_at) =< Threshold -> Result = true ; Result = false).
+
+%% Build the full JSON file path for a session: dir/session_id.json.
+json_path(Dir, Session_id, Result) :-
+    format(atom(Result), "~w/~w.json", [Dir, Session_id]).
 
 conversation([]).
 max_iterations(0).

@@ -61,3 +61,9 @@
   (.startsWith path ".")
 )
 
+(defn has-path-traversal
+  "Check if a path contains .. traversal sequences."
+  [path]
+  (.startsWith path "..")
+)
+

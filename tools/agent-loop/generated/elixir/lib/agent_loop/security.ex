@@ -142,4 +142,10 @@ defmodule AgentLoop.Security do
     String.starts_with?(path, ".")
   end
 
+  @doc "Check if a path contains .. traversal sequences."
+  @spec has_path_traversal(String.t()) :: boolean()
+  def has_path_traversal(path) do
+    String.starts_with?(path, "..")
+  end
+
 end

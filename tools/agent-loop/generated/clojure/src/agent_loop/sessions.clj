@@ -105,3 +105,9 @@
   (<= (- now created-at) threshold)
 )
 
+(defn json-path
+  "Build the full JSON file path for a session: dir/session_id.json."
+  [dir session-id]
+  (format "%s/%s.json" dir session-id)
+)
+

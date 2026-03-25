@@ -89,6 +89,12 @@ defmodule AgentLoop.MCPClient do
     state.name
   end
 
+  @doc "Check if a JSON-RPC method name is a tools/ prefixed call."
+  @spec is_tool_call(String.t()) :: boolean()
+  def is_tool_call(method) do
+    String.starts_with?(method, "tools/")
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

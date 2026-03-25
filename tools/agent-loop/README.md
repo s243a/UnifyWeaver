@@ -73,7 +73,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 140 (5-target parity: Python, Rust, Elixir, Prolog, Clojure) |
+| `shared_logic/3` facts | 150 (5-target parity: Python, Rust, Elixir, Prolog, Clojure) |
 | `logic_slot/3` facts | ~120 (25 python + 25 rust + ~35 elixir + ~35 prolog) |
 | `expand_expr/3` facts | ~130 (incl. lt, lte, neq, or_expr, and_expr, str_strip across 5 targets) |
 | `resolve_type/3` facts | 68 (15 python + 20 rust + 18 elixir + 15 prolog incl. `optional/1`, `owned_string`, `list_of_string`) |
@@ -82,7 +82,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 2138+ Prolog (incl. 1048 declarative) + 149 Rust + 148 Python + 95 Clojure |
+| Total tests | 2198+ Prolog (incl. 1108 declarative) + 149 Rust + 148 Python + 106 Clojure |
 
 ## Backends
 
@@ -520,25 +520,25 @@ resolve_type(rust, optional(T), S) :-
     format(atom(S), "Option<~w>", [Inner]).
 ```
 
-**140 shared methods** across 10 modules (compiled for Python, Rust, Elixir, Prolog, and Clojure):
+**150 shared methods** across 10 modules (compiled for Python, Rust, Elixir, Prolog, and Clojure):
 
 | Module | Count | Example Methods |
 |--------|-------|-----------------|
-| `context` | 25 | `context_clear`, `context_len`, `token_budget`, `messages_remaining`, `estimate_tokens` |
-| `costs` | 18 | `is_over_budget`, `budget_remaining`, `cost_compute`, `total_messages`, `cost_per_token` |
+| `context` | 26 | `context_clear`, `context_len`, `token_budget`, `first_role`, `estimate_tokens` |
+| `costs` | 19 | `is_over_budget`, `budget_remaining`, `cost_compute`, `cost_exceeds`, `cost_per_token` |
 | `tool_cache` | 16 | `cache_clear`, `make_key`, `evict_oldest`, `cache_hit_rate`, `cache_keys` |
-| `sessions` | 14 | `session_age`, `session_is_recent`, `session_is_expired`, `session_count` |
-| `tools` | 13 | `is_tool_destructive`, `tool_category`, `tool_name_is_valid`, `has_required_params` |
-| `streaming` | 13 | `on_token`, `format_summary`, `avg_token_rate`, `chunk_is_complete`, `is_active` |
-| `retry` | 10 | `is_retryable_status`, `compute_delay`, `is_retryable_error`, `attempts_left` |
-| `mcp` | 10 | `next_request_id`, `mcp_tool_count`, `mcp_disconnect_reason`, `server_name` |
-| `output_parser` | 10 | `extract_json_dispatch`, `content_is_json`, `is_json_content`, `strip_content` |
-| `config` | 8 | `config_has_key`, `config_is_debug`, `config_merge`, `field_count` |
-| `security` | 3 | `is_path_safe`, `is_visible_file`, `is_hidden_path` |
+| `sessions` | 15 | `session_age`, `session_is_recent`, `session_json_path`, `session_count` |
+| `tools` | 14 | `is_tool_destructive`, `tool_category`, `tool_name_is_valid`, `is_mcp_prefixed` |
+| `streaming` | 14 | `on_token`, `format_summary`, `avg_token_rate`, `chars_per_token`, `is_active` |
+| `retry` | 11 | `is_retryable_status`, `compute_delay`, `retry_delay_exceeds_max`, `attempts_left` |
+| `mcp` | 11 | `next_request_id`, `mcp_tool_count`, `mcp_is_tool_call`, `server_name` |
+| `output_parser` | 11 | `extract_json_dispatch`, `content_is_json`, `content_preview`, `strip_content` |
+| `config` | 9 | `config_has_key`, `config_is_debug`, `config_is_empty`, `field_count` |
+| `security` | 4 | `is_path_safe`, `is_visible_file`, `is_hidden_path`, `has_path_traversal` |
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**All 140 shared_logic methods are actively wired (5 targets: Python, Rust, Elixir, Prolog, Clojure)** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
+**All 150 shared_logic methods are actively wired (5 targets: Python, Rust, Elixir, Prolog, Clojure)** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|

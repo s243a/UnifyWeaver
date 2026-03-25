@@ -19,11 +19,13 @@ pub struct ToolHandler {
     pub plugins: Option<PluginManager>,
     pub cache: ToolResultCache,
     pub mcp_manager: Option<crate::mcp_client::McpManager>,
+    pub schema: Vec<String>,
+    pub args: Vec<String>,
 }
 
 impl ToolHandler {
     pub fn new(auto_approve: bool, security_profile: String, approval_mode: String) -> Self {
-        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None, cache: ToolResultCache::new(60), mcp_manager: None }
+        Self { auto_approve, security_profile, approval_mode, proot: None, plugins: None, cache: ToolResultCache::new(60), mcp_manager: None, schema: Vec::new(), args: Vec::new() }
     }
 
     /// Set cache TTL in seconds.

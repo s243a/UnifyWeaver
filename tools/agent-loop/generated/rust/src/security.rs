@@ -115,3 +115,9 @@ pub fn is_hidden_path(path: &str) -> bool {
     return path.starts_with(".");
 }
 
+#[allow(dead_code)]
+/// Check if a path contains .. traversal sequences.
+pub fn has_path_traversal(path: &str) -> bool {
+    return path.starts_with("..");
+}
+

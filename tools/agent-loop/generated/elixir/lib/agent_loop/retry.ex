@@ -63,13 +63,19 @@ defmodule AgentLoop.Retry do
   @doc "Calculate exponential backoff delay: base_delay * 2^attempt."
   @spec retry_delay(t()) :: float()
   def retry_delay(%__MODULE__{} = state) do
-    state.base_delay * (2 * state.attempt * 1.0)
+    state.base_delay * 2.0 * (state.attempt * 1.0)
   end
 
   @doc "Return the number of retry attempts remaining."
   @spec attempts_left(t()) :: integer()
   def attempts_left(%__MODULE__{} = state) do
     (state.max_retries - state.attempt)
+  end
+
+  @doc "Check if the computed retry delay exceeds the maximum allowed delay."
+  @spec delay_exceeds_max(float(), float()) :: boolean()
+  def delay_exceeds_max(delay, max_delay) do
+    delay > max_delay
   end
 
 end

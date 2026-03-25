@@ -60,3 +60,7 @@
 (deftest test-total-messages
   (is (= 5 (costs/total-messages {:message-count 5})))
   (is (= 0 (costs/total-messages {:message-count 0}))))
+
+(deftest test-cost-exceeds
+  (is (true? (costs/cost-exceeds {:total-cost 15.0} 10.0)))
+  (is (false? (costs/cost-exceeds {:total-cost 5.0} 10.0))))
