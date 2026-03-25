@@ -340,4 +340,60 @@ test(string_empty_table) :-
     once(wat_target:wat_string_data_segments([], Segs)),
     Segs == "".
 
+% ============================================================================
+% Memory layout constants
+% ============================================================================
+
+test(mem_regions_no_overlap) :-
+    wat_target:wat_mem_region(string_data, S),
+    wat_target:wat_mem_region(memo_values, MV),
+    wat_target:wat_mem_region(memo_flags, MF),
+    wat_target:wat_mem_region(graph_edges, GE),
+    wat_target:wat_mem_region(visited_flags, VF),
+    wat_target:wat_mem_region(bfs_queue, BQ),
+    wat_target:wat_mem_region(fact_data, FD),
+    S < MV, MV < MF, MF < GE, GE < VF, VF < BQ, BQ < FD,
+    FD < 65536.  % fits in 1 page
+
+test(memo_uses_region_offsets) :-
+    wat_target:compile_linear_recursion_wat(fib/2, [], Code),
+    has(Code, "i32.const 4096"),   % memo values base
+    has(Code, "i32.const 12288").  % memo flags base
+
+test(transitive_closure_uses_region_offsets) :-
+    wat_target:compile_transitive_closure_wat(reachable/2, [], Code),
+    has(Code, "i32.const 16384"),  % graph edges base
+    has(Code, "i32.const 32768"),  % visited flags base
+    has(Code, "i32.const 36864"). % bfs queue base
+
+test(multicall_uses_region_offsets) :-
+    wat_target:compile_multicall_recursion_wat(fib/2, [], Code),
+    has(Code, "i32.const 4096"),
+    has(Code, "i32.const 12288").
+
+test(direct_multicall_uses_region_offsets) :-
+    wat_target:compile_direct_multicall_wat(fib/2, [], Code),
+    has(Code, "i32.const 4096"),
+    has(Code, "i32.const 12288").
+
+test(tree_recursion_uses_region_offsets) :-
+    wat_target:compile_tree_recursion_wat(fib/2, [], Code),
+    has(Code, "i32.const 4096"),
+    has(Code, "i32.const 12288").
+
+% ============================================================================
+% Classify with string table (string output via hash)
+% ============================================================================
+
+test(classify_string_table) :-
+    assert(user:(classify(X, small) :- X > 0, X < 10)),
+    assert(user:(classify(X, large) :- X >= 10)),
+    wat_target:wat_compile_with_strings(classify/2, [], [small, large], Code),
+    has(Code, "(func $classify"),
+    has(Code, "(data"),
+    has(Code, "\"small\""),
+    has(Code, "\"large\""),
+    has(Code, "(func $str_lookup"),
+    retractall(user:classify(_, _)).
+
 :- end_tests(wat_native_lowering).
