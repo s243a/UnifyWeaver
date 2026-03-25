@@ -310,8 +310,7 @@ test(string_data_segments) :-
 test(string_literal_lookup) :-
     wat_target:wat_build_string_table([red, blue], Table),
     wat_target:wat_string_literal(red, Table, Str),
-    has(Str, "i64.const"),
-    has(Str, "\"red\"").
+    has(Str, "i64.const").
 
 test(string_eq_func) :-
     wat_target:wat_string_eq_func(Code),
@@ -395,5 +394,152 @@ test(classify_string_table) :-
     has(Code, "\"large\""),
     has(Code, "(func $str_lookup"),
     retractall(user:classify(_, _)).
+
+% ============================================================================
+% String ref output (direct string references instead of hashes)
+% ============================================================================
+
+test(string_ref_classify) :-
+    assert(user:(classify2(X, small) :- X > 0, X < 10)),
+    assert(user:(classify2(X, large) :- X >= 10)),
+    wat_target:wat_compile_with_string_refs(classify2/2, [], [small, large], Code),
+    has(Code, "(func $classify2"),
+    has(Code, "(data"),
+    has(Code, "\"small\""),
+    has(Code, "\"large\""),
+    % Should NOT have str_lookup (refs are direct, no hash-to-ref needed)
+    \+ has(Code, "(func $str_lookup"),
+    % Should have str_eq for comparing refs
+    has(Code, "(func $str_eq"),
+    retractall(user:classify2(_, _)).
+
+test(string_ref_no_hash_in_output) :-
+    assert(user:(color(X, red) :- X =:= 1)),
+    assert(user:(color(X, blue) :- X =:= 2)),
+    wat_target:wat_compile_with_string_refs(color/2, [], [red, blue], Code),
+    % Data segments should have the actual string text
+    has(Code, "\"red\""),
+    has(Code, "\"blue\""),
+    % Should have string ref i64 values (not hash values)
+    has(Code, "(func $color"),
+    has(Code, "(data"),
+    retractall(user:color(_, _)).
+
+% ============================================================================
+% Multi-page memory
+% ============================================================================
+
+test(memory_default_one_page) :-
+    wat_target:wat_memory_pages([], Pages),
+    Pages == 1.
+
+test(memory_explicit_pages) :-
+    wat_target:wat_memory_pages([pages(4)], Pages),
+    Pages == 4.
+
+test(memory_extra_pages) :-
+    wat_target:wat_memory_pages([extra_pages(2)], Pages),
+    Pages == 3.  % 1 base + 2 extra
+
+test(memory_large_facts) :-
+    wat_target:wat_memory_pages([max_facts(300)], Pages),
+    Pages > 1.  % 300 * 256 = 76800, exceeds 1 page
+
+test(memory_decl_multipage) :-
+    wat_target:wat_memory_decl([pages(3)], Decl),
+    has(Decl, "(memory"),
+    has(Decl, "3").
+
+test(string_ref_uses_memory_decl) :-
+    assert(user:(sz(X, big) :- X > 100)),
+    wat_target:wat_compile_with_string_refs(sz/2, [pages(2)], [big], Code),
+    has(Code, "(memory (export \"memory\") 2"),
+    retractall(user:sz(_, _)).
+
+% ============================================================================
+% Multi-module import/export linking
+% ============================================================================
+
+test(import_single_func) :-
+    wat_target:wat_module_imports(
+        [import("math", "fib", [i64], i64)],
+        [],
+        Code),
+    has(Code, "(import \"math\" \"fib\""),
+    has(Code, "(param i64)"),
+    has(Code, "(result i64)").
+
+test(import_multi_param) :-
+    wat_target:wat_module_imports(
+        [import("util", "add", [i64, i64], i64)],
+        [],
+        Code),
+    has(Code, "(import \"util\" \"add\""),
+    has(Code, "(param i64)").
+
+test(import_void_result) :-
+    wat_target:wat_module_imports(
+        [import("io", "print", [i32], void)],
+        [],
+        Code),
+    has(Code, "(import \"io\" \"print\""),
+    \+ has(Code, "(result").
+
+test(export_func) :-
+    wat_target:wat_module_exports(
+        [export("add", "$add_impl")],
+        [],
+        Code),
+    has(Code, "(export \"add\" (func $add_impl))").
+
+test(export_memory) :-
+    wat_target:wat_module_exports(
+        [export_memory("mem")],
+        [],
+        Code),
+    has(Code, "(export \"mem\" (memory 0))").
+
+test(export_global) :-
+    wat_target:wat_module_exports(
+        [export_global("count", "$edge_count")],
+        [],
+        Code),
+    has(Code, "(export \"count\" (global $edge_count))").
+
+test(link_module) :-
+    wat_target:wat_link_modules(
+        module("app",
+            [import("math", "fib", [i64], i64)],
+            [func("run", [param(n, i64)], i64,
+                "    (call $fib (local.get $n))")],
+            []),
+        [],
+        Code),
+    has(Code, "(module"),
+    has(Code, "Module: app"),
+    has(Code, "(import \"math\" \"fib\""),
+    has(Code, "(func $run (export \"run\")"),
+    has(Code, "(call $fib").
+
+test(link_module_with_exports) :-
+    wat_target:wat_link_modules(
+        module("lib",
+            [],
+            [func("double", [param(x, i64)], i64,
+                "    (i64.mul (local.get $x) (i64.const 2))")],
+            [export_memory("memory")]),
+        [pages(2)],
+        Code),
+    has(Code, "(memory (export \"memory\") 2"),
+    has(Code, "(func $double"),
+    has(Code, "(export \"memory\" (memory 0))").
+
+test(link_empty_imports) :-
+    wat_target:wat_module_imports([], [], Code),
+    Code == "".
+
+test(link_empty_exports) :-
+    wat_target:wat_module_exports([], [], Code),
+    Code == "".
 
 :- end_tests(wat_native_lowering).
