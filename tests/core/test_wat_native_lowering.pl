@@ -287,4 +287,57 @@ test(uses_shared_analysis_module) :-
     current_predicate(clause_body_analysis:if_then_else_goal/4),
     current_predicate(clause_body_analysis:build_head_varmap/3).
 
+% ============================================================================
+% String table support
+% ============================================================================
+
+test(string_table_build) :-
+    wat_target:wat_build_string_table([hello, world, hello], Table),
+    length(Table, 2),  % deduplicated
+    once(member(str_entry(hello, _, 5), Table)),
+    once(member(str_entry(world, _, 5), Table)).
+
+test(string_table_offsets) :-
+    wat_target:wat_build_string_table([abc, de], Table),
+    Table = [str_entry(abc, 0, 3), str_entry(de, 3, 2)].
+
+test(string_data_segments) :-
+    wat_target:wat_build_string_table([hi], Table),
+    wat_target:wat_string_data_segments(Table, Segs),
+    has(Segs, "(data (i32.const 0)"),
+    has(Segs, "\"hi\"").
+
+test(string_literal_lookup) :-
+    wat_target:wat_build_string_table([red, blue], Table),
+    wat_target:wat_string_literal(red, Table, Str),
+    has(Str, "i64.const"),
+    has(Str, "\"red\"").
+
+test(string_eq_func) :-
+    wat_target:wat_string_eq_func(Code),
+    has(Code, "(func $str_eq"),
+    has(Code, "i32.load8_u"),
+    has(Code, "(loop $cmp").
+
+test(string_lookup_func) :-
+    wat_target:wat_build_string_table([yes, no], Table),
+    wat_target:wat_string_lookup_func(Table, Code),
+    has(Code, "(func $str_lookup"),
+    has(Code, "\"yes\""),
+    has(Code, "\"no\"").
+
+test(compile_with_strings) :-
+    assert(user:(is_ok(X, ok) :- X > 0)),
+    wat_target:wat_compile_with_strings(is_ok/2, [], [ok], Code),
+    has(Code, "(module"),
+    has(Code, "(data"),
+    has(Code, "(func $str_eq"),
+    has(Code, "(func $str_lookup"),
+    has(Code, "(memory"),
+    retractall(user:is_ok(_, _)).
+
+test(string_empty_table) :-
+    once(wat_target:wat_string_data_segments([], Segs)),
+    Segs == "".
+
 :- end_tests(wat_native_lowering).
