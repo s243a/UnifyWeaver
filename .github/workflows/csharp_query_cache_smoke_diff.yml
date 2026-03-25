@@ -287,6 +287,34 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path $env:CACHE_SMOKE_DIFF_JSON_PATH) {
+            function Test-IsStatusRegression {
+              param(
+                [Parameter(Mandatory = $true)]
+                [string]$BaselineStatus,
+
+                [Parameter(Mandatory = $true)]
+                [string]$CompareStatus
+              )
+
+              if ($BaselineStatus -eq $CompareStatus) {
+                return $false
+              }
+
+              if ($BaselineStatus -eq 'PASS' -and $CompareStatus -ne 'PASS') {
+                return $true
+              }
+
+              if ($BaselineStatus -eq 'MISSING' -and $CompareStatus -ne 'MISSING') {
+                return $false
+              }
+
+              if ($CompareStatus -eq 'MISSING') {
+                return $true
+              }
+
+              return $false
+            }
+
             $diff = Get-Content $env:CACHE_SMOKE_DIFF_JSON_PATH -Raw | ConvertFrom-Json
             $thresholds = $diff.thresholds
             $sliceMap = @{}
@@ -297,6 +325,26 @@ jobs:
             $orderedSliceNames = @('admission', 'reuse', 'lru')
             $remainingSliceNames = @($sliceMap.Keys | Where-Object { $_ -notin $orderedSliceNames } | Sort-Object)
             $sliceSummaryNames = @($orderedSliceNames + $remainingSliceNames | Select-Object -Unique)
+            $regressionHighlights = @()
+
+            if (Test-IsStatusRegression -BaselineStatus ([string]$diff.overallResult.baseline) -CompareStatus ([string]$diff.overallResult.compare)) {
+              $regressionHighlights += "Overall result regressed: `"$($diff.overallResult.baseline)`" -> `"$($diff.overallResult.compare)`"`"
+            }
+
+            foreach ($sliceName in $sliceSummaryNames) {
+              if (-not $sliceMap.ContainsKey($sliceName)) {
+                continue
+              }
+
+              $slice = $sliceMap[$sliceName]
+              if (Test-IsStatusRegression -BaselineStatus ([string]$slice.status.baseline) -CompareStatus ([string]$slice.status.compare)) {
+                $regressionHighlights += "Slice status regressed for `"$($slice.slice)`"`: `"$($slice.status.baseline)`" -> `"$($slice.status.compare)`"`"
+              }
+
+              if (($null -ne $slice.duration.deltaSeconds) -and ([double]$slice.duration.deltaSeconds -gt 0)) {
+                $regressionHighlights += "Slice duration increased for `"$($slice.slice)`"`: `"$($slice.duration.delta)`"`"
+              }
+            }
 
             @(
               "## C# Query Cache Smoke Diff",
@@ -320,6 +368,18 @@ jobs:
               "- Max slice duration delta seconds: $(if ($null -eq $thresholds.maxSliceDurationDeltaSeconds) { 'disabled' } else { $thresholds.maxSliceDurationDeltaSeconds })",
               "- Thresholds passed: $(if ($thresholds.passed) { 'true' } else { 'false' })"
             ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            if ($regressionHighlights.Count -gt 0) {
+              @(
+                "",
+                "### Regression Highlights",
+                ""
+              ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+              foreach ($highlight in $regressionHighlights) {
+                "- $highlight" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              }
+            }
 
             if ($sliceSummaryNames.Count -gt 0) {
               @(
