@@ -67,3 +67,9 @@
   (.startsWith path "..")
 )
 
+(defn is-safe-command
+  "Check if a command starts with a known safe prefix (ls, cat, grep, echo)."
+  [cmd]
+  (or (or (.startsWith cmd "ls") (.startsWith cmd "cat")) (or (.startsWith cmd "grep") (.startsWith cmd "echo")))
+)
+

@@ -124,12 +124,18 @@
 (defn field-count
   "Return the number of configuration fields currently set."
   [state]
-  (count (:settings state))
+  (int (count (:settings state)))
 )
 
 (defn is-empty
   "Check if the configuration has no settings."
   [state]
   (zero? (count (:settings state)))
+)
+
+(defn get-or-default
+  "Look up a config key, returning default_val if not found."
+  [state key default-val]
+  (get (:settings state) key default-val)
 )
 

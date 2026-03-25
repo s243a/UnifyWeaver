@@ -211,3 +211,12 @@
   )
 )
 
+(defn last-role
+  "Return the role of the last message, or empty string if no messages."
+  [state]
+  (if (zero? (count (:messages state)))
+      
+      (get (last (:messages state)) "role")
+  )
+)
+

@@ -95,7 +95,7 @@ impl CostTracker {
         )
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Check if total cost exceeds budget. Budget of 0 means unlimited.
     pub fn is_over_budget(&self, budget: f64) -> bool {
         if budget <= 0.0 {
@@ -104,7 +104,7 @@ impl CostTracker {
         return self.total_cost() >= budget;
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Return remaining budget in USD. Budget of 0 means unlimited (returns -1).
     pub fn budget_remaining(&self, budget: f64) -> f64 {
         if budget <= 0.0 {
@@ -113,15 +113,24 @@ impl CostTracker {
         return (budget - self.total_cost()).max(0.0);
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Return the total number of messages tracked by the cost tracker.
     pub fn total_messages(&self) -> i64 {
-        return self.message_count;
+        return self.message_count.clone();
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Return the ratio of input tokens to total tokens. Returns 0.0 if no tokens.
+    pub fn input_ratio(&self) -> f64 {
+        if (self.total_input_tokens + self.total_output_tokens) == 0 {
+            return 0.0;
+        }
+        return (self.total_input_tokens as f64) / ((self.total_input_tokens + self.total_output_tokens) as f64);
     }
 
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Compute cost from token count and price per 1M tokens.
 pub fn cost_compute(tokens: i64, price_per_million: f64) -> f64 {
     return (tokens as f64) * price_per_million / 1.0e+06;

@@ -76,3 +76,9 @@
   (> delay max-delay)
 )
 
+(defn is-last-attempt
+  "Check if current attempt equals max_retries - 1 (last chance)."
+  [state]
+  (>= (:attempt state) (- (:max-retries state) 1))
+)
+

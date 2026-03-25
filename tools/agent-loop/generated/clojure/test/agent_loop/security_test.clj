@@ -28,3 +28,8 @@
   (is (true? (security/has-path-traversal "..")))
   (is (true? (security/has-path-traversal "../etc")))
   (is (false? (security/has-path-traversal "src/main"))))
+
+(deftest test-is-safe-command
+  (is (true? (security/is-safe-command "ls -la")))
+  (is (true? (security/is-safe-command "cat file.txt")))
+  (is (false? (security/is-safe-command "rm -rf /"))))

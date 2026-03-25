@@ -171,4 +171,10 @@ defmodule AgentLoop.Config do
     Enum.count(state.settings) == 0
   end
 
+  @doc "Look up a config key, returning default_val if not found."
+  @spec get_or_default(t(), String.t(), String.t()) :: String.t()
+  def get_or_default(%__MODULE__{} = state, key, default_val) do
+    Map.get(state.settings, key, default_val)
+  end
+
 end

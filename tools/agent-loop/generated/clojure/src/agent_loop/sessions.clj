@@ -111,3 +111,9 @@
   (format "%s/%s.json" dir session-id)
 )
 
+(defn name-valid
+  "Check if a session name is non-empty and usable."
+  [name]
+  (> (count (clojure.string/trim name)) 0)
+)
+

@@ -113,7 +113,7 @@
 (defn evict-oldest
   "Return the number of items that would be evicted to make room (1 if full, 0 otherwise)."
   [state]
-  (if (>= (count (:cache state)) (:max-size state))
+  (if (>= (int (count (:cache state))) (:max-size state))
       1
       0
   )

@@ -159,3 +159,12 @@
   (> (:total-cost state) threshold)
 )
 
+(defn input-ratio
+  "Return the ratio of input tokens to total tokens. Returns 0.0 if no tokens."
+  [state]
+  (if (zero? (+ (:total-input-tokens state) (:total-output-tokens state)))
+      0.0
+      (/ (double (:total-input-tokens state)) (double (+ (:total-input-tokens state) (:total-output-tokens state))))
+  )
+)
+

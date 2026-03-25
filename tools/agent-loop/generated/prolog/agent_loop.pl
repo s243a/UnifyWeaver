@@ -178,6 +178,14 @@ first_role(State, Result) :-
     get_dict("role", nth0(0, State.messages, Result), Val)
     ).
 
+%% Return the role of the last message, or empty string if no messages.
+last_role(State, Result) :-
+    (length(State.messages, Result) =:= 0 ->
+        Result = 
+    ;
+    Result = get_dict("role", last(State.messages, Last), Val)
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -247,6 +255,14 @@ chars_per_token(State, Result) :-
         Result = 0.0
     ;
     Result is (float(State.char_count) / float(State.token_count))
+    ).
+
+%% Estimate streaming progress as percentage of max_tokens. Returns 0.0 if max_tokens is 0.
+progress_pct(State, Max_tokens, Result) :-
+    (Max_tokens =:= 0 ->
+        Result = 0.0
+    ;
+    Result is ((float(State.token_count) / float(Max_tokens)) * 100.0)
     ).
 
 
@@ -381,6 +397,10 @@ server_name(State, Result) :-
 is_tool_call(Method, Result) :-
     (atom_concat('tools/', _, Method) -> Result = true ; Result = false).
 
+%% Format a JSON-RPC error string from code and message.
+format_error(Code, Message, Result) :-
+    format(atom(Result), "error ~w: ~w", [Code, Message]).
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -431,6 +451,10 @@ attempts_left(State, Result) :-
 %% Check if the computed retry delay exceeds the maximum allowed delay.
 delay_exceeds_max(Delay, Max_delay, Result) :-
     (Delay > Max_delay -> Result = true ; Result = false).
+
+%% Check if current attempt equals max_retries - 1 (last chance).
+is_last_attempt(State, Result) :-
+    (State.attempt >= (State.max_retries - 1) -> Result = true ; Result = false).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -487,6 +511,10 @@ content_preview(Text, Max_len, Result) :-
     ;
     Result = Text
     ).
+
+%% Check if content length exceeds a threshold, suggesting multi-line output.
+is_multiline(Text, Threshold, Result) :-
+    length(Text, Result) > Threshold.
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
@@ -558,6 +586,10 @@ is_recent(Created_at, Now, Threshold, Result) :-
 %% Build the full JSON file path for a session: dir/session_id.json.
 json_path(Dir, Session_id, Result) :-
     format(atom(Result), "~w/~w.json", [Dir, Session_id]).
+
+%% Check if a session name is non-empty and usable.
+name_valid(Name, Result) :-
+    length(normalize_space(atom(Result), Name), Result) > 0.
 
 conversation([]).
 max_iterations(0).

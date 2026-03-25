@@ -101,3 +101,9 @@
   )
 )
 
+(defn is-multiline
+  "Check if content length exceeds a threshold, suggesting multi-line output."
+  [text threshold]
+  (> (count text) threshold)
+)
+

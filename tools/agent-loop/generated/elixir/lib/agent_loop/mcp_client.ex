@@ -95,6 +95,12 @@ defmodule AgentLoop.MCPClient do
     String.starts_with?(method, "tools/")
   end
 
+  @doc "Format a JSON-RPC error string from code and message."
+  @spec format_error(integer(), String.t()) :: String.t()
+  def format_error(code, message) do
+    "error #{code}: #{message}"
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

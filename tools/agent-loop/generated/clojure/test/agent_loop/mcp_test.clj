@@ -36,3 +36,6 @@
 
 (deftest test-mcp-server-name
   (is (= "my-server" (mcp/server-name {:name "my-server"}))))
+
+(deftest test-format-error
+  (is (= "error 404: not found" (mcp/format-error 404 "not found"))))

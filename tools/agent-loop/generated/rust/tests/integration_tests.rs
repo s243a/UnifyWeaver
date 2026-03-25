@@ -1816,4 +1816,40 @@ fn test_shared_logic_tool_cache_methods() {
     assert!(src.contains("fn clear("), "tool_handler.rs should have clear");
     assert!(src.contains("fn evict_oldest("), "tool_handler.rs should have evict_oldest");
     assert!(src.contains("fn cache_hit_rate("), "tool_handler.rs should have cache_hit_rate");
+    assert!(src.contains("fn arg_count("), "tool_handler.rs should have arg_count");
+    assert!(src.contains("fn has_schema("), "tool_handler.rs should have has_schema");
+}
+
+#[test]
+fn test_shared_logic_config_methods() {
+    let src = include_str!("../src/config.rs");
+    assert!(src.contains("fn has_key("), "config.rs should have has_key");
+    assert!(src.contains("fn is_debug("), "config.rs should have is_debug");
+    assert!(src.contains("fn field_count("), "config.rs should have field_count");
+    assert!(src.contains("fn is_empty("), "config.rs should have is_empty");
+}
+
+#[test]
+fn test_shared_logic_mcp_methods() {
+    let src = include_str!("../src/mcp_client.rs");
+    assert!(src.contains("fn disconnect_reason("), "mcp_client.rs should have disconnect_reason");
+    assert!(src.contains("fn server_name("), "mcp_client.rs should have server_name");
+}
+
+#[test]
+fn test_shared_logic_retry_handler_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn max_retries_reached("), "main.rs should have max_retries_reached");
+    assert!(src.contains("fn retry_delay("), "main.rs should have retry_delay");
+    assert!(src.contains("fn attempts_left("), "main.rs should have attempts_left");
+    assert!(src.contains("fn is_last_attempt("), "main.rs should have is_last_attempt");
+    assert!(src.contains("struct RetryHandler"), "main.rs should have RetryHandler struct");
+}
+
+#[test]
+fn test_shared_logic_new_standalone_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn byte_count("), "main.rs should have byte_count");
+    assert!(src.contains("fn chars_per_token("), "main.rs should have chars_per_token");
+    assert!(src.contains("fn progress_pct("), "main.rs should have progress_pct");
 }

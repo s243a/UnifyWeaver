@@ -2057,6 +2057,10 @@ logic_slot(rust, guard_leq(A, B), S) :-
     format(atom(S), "~w <= ~w", [AS, BS]).
 logic_slot(rust, return_val(false), "return false;").
 logic_slot(rust, return_val(true), "return true;").
+%% Clone self fields when returning owned String to avoid move from &self
+logic_slot(rust, return_val(self_direct(Field)), S) :-
+    expand_expr(rust, self_direct(Field), FS),
+    format(atom(S), "return ~w.clone();", [FS]).
 logic_slot(rust, return_val(Expr), S) :-
     Expr \= true, Expr \= false,
     expand_expr(rust, Expr, ExprStr),
@@ -2171,7 +2175,7 @@ expand_expr(python, map_get(Collection, Key), S) :-
 expand_expr(rust, map_get(Collection, Key), S) :-
     expand_expr(rust, Collection, CS),
     expand_expr(rust, Key, KS),
-    format(atom(S), "~w.get(&~w).cloned()", [CS, KS]).
+    format(atom(S), "~w.get(~w).cloned()", [CS, KS]).
 
 %% --- Map get with default ---
 expand_expr(python, map_get_default(Coll, Key, Default), S) :-
@@ -2181,7 +2185,7 @@ expand_expr(python, map_get_default(Coll, Key, Default), S) :-
 expand_expr(rust, map_get_default(Coll, Key, Default), S) :-
     expand_expr(rust, Coll, CS), expand_expr(rust, Key, KS),
     expand_expr(rust, Default, DS),
-    format(atom(S), "~w.get(&~w).cloned().unwrap_or(~w)", [CS, KS, DS]).
+    format(atom(S), "~w.get(~w).cloned().unwrap_or(~w)", [CS, KS, DS]).
 
 %% --- Map has_key ---
 expand_expr(python, map_has_key(Collection, Key), S) :-
@@ -2191,7 +2195,7 @@ expand_expr(python, map_has_key(Collection, Key), S) :-
 expand_expr(rust, map_has_key(Collection, Key), S) :-
     expand_expr(rust, Collection, CS),
     expand_expr(rust, Key, KS),
-    format(atom(S), "~w.contains_key(&~w)", [CS, KS]).
+    format(atom(S), "~w.contains_key(~w)", [CS, KS]).
 
 %% --- Modulo ---
 expand_expr(python, modulo(A, B), S) :-
@@ -2232,6 +2236,23 @@ expand_expr(python, str_split(X), S) :-
 expand_expr(rust, str_split(X), S) :-
     expand_expr(rust, X, XS),
     format(atom(S), "~w.split_whitespace().collect::<Vec<_>>()", [XS]).
+
+%% --- str_split with separator ---
+expand_expr(python, str_split(X, Sep), S) :-
+    expand_expr(python, X, XS),
+    format(atom(S), '~w.split("~w")', [XS, Sep]).
+expand_expr(rust, str_split(X, Sep), S) :-
+    expand_expr(rust, X, XS),
+    format(atom(S), '~w.split("~w").collect::<Vec<_>>()', [XS, Sep]).
+expand_expr(elixir, str_split(X, Sep), S) :-
+    expand_expr(elixir, X, XS),
+    format(atom(S), 'String.split(~w, "~w")', [XS, Sep]).
+expand_expr(prolog, str_split(X, Sep), S) :-
+    expand_expr(prolog, X, XS),
+    format(atom(S), 'split_string(~w, "~w", "", Parts)', [XS, Sep]).
+expand_expr(clojure, str_split(X, Sep), S) :-
+    expand_expr(clojure, X, XS),
+    format(atom(S), '(clojure.string/split ~w #"~w")', [XS, Sep]).
 
 %% --- Filter by suffix ---
 expand_expr(python, filter_endswith(List, Suffix), S) :-
@@ -2452,7 +2473,7 @@ emit_shared_method(S, rust, MethodName) :-
     format_rust_typed_args(Props, Args, ArgsStr),
     (Container = none ->
         %% Standalone function (no self, top-level)
-        format(S, '#[allow(dead_code)]~n/// ~w~n', [Doc]),
+        format(S, '#[allow(dead_code, unused_variables)]~n/// ~w~n', [Doc]),
         (RetType = void ->
             (Args = [] ->
                 format(S, '~wfn ~w() {~n', [Vis, Name])
@@ -2470,7 +2491,7 @@ emit_shared_method(S, rust, MethodName) :-
         Indent = '    '
     ; member(associated, Props) ->
         %% Associated function (no self, inside impl block)
-        format(S, '    #[allow(dead_code)]~n    /// ~w~n', [Doc]),
+        format(S, '    #[allow(dead_code, unused_variables)]~n    /// ~w~n', [Doc]),
         (RetType = void ->
             (Args = [] ->
                 format(S, '    ~wfn ~w() {~n', [Vis, Name])
@@ -2488,7 +2509,7 @@ emit_shared_method(S, rust, MethodName) :-
         Indent = '        '
     ;
         %% Method on struct (with self)
-        format(S, '    #[allow(dead_code)]~n    /// ~w~n', [Doc]),
+        format(S, '    #[allow(dead_code, unused_variables)]~n    /// ~w~n', [Doc]),
         (( RetType = void ; member(mutable, Props) ) ->
             MutSelf = '&mut self'
         ;
@@ -4313,7 +4334,7 @@ shared_logic(streaming, stream_byte_count, [
     arg_types([]),
     doc("Return the total number of bytes received in the stream."),
     container('StreamingHandler'),
-    body_template("~return_val(len_of(self_direct(buffer)))~")
+    body_template("~return_val(as_int(len_of(self_direct(buffer))))~")
 ]).
 
 %% --- Tools module methods ---
@@ -4322,7 +4343,7 @@ shared_logic(tools, tool_arg_count, [
     arg_types([string]),
     doc("Return the number of arguments a tool accepts. Returns 0 if tool not found."),
     container('ToolHandler'),
-    body_template("~return_val(len_of(self_direct(args)))~")
+    body_template("~return_val(as_int(len_of(self_direct(args))))~")
 ]).
 
 shared_logic(tools, tool_has_schema, [
@@ -4353,7 +4374,7 @@ shared_logic(sessions, session_age, [
 
 %% --- MCP module methods ---
 shared_logic(mcp, mcp_disconnect_reason, [
-    signature(disconnect_reason, [], string),
+    signature(disconnect_reason, [], owned_string),
     arg_types([]),
     doc("Return the reason for the last MCP disconnection, or empty string if connected."),
     container('MCPClient'),
@@ -4375,7 +4396,7 @@ shared_logic(tool_cache, cache_evict_oldest, [
     arg_types([]),
     doc("Return the number of items that would be evicted to make room (1 if full, 0 otherwise)."),
     container('ToolResultCache'),
-    body_template("if ~gte(len_of(self_direct(cache)), self_direct(max_size))~:\n    ~return_val(literal(1))~\n~return_val(literal(0))~")
+    body_template("if ~gte(as_int(len_of(self_direct(cache))), self_direct(max_size))~:\n    ~return_val(literal(1))~\n~return_val(literal(0))~")
 ]).
 
 %% --- Streaming module methods ---
@@ -4434,7 +4455,7 @@ shared_logic(output_parser, content_is_json, [
 
 %% --- MCP module methods ---
 shared_logic(mcp, mcp_server_name, [
-    signature(server_name, [], string),
+    signature(server_name, [], owned_string),
     arg_types([]),
     doc("Return the name of this MCP server/client instance."),
     container('MCPClient'),
@@ -4447,7 +4468,7 @@ shared_logic(config, config_field_count, [
     arg_types([]),
     doc("Return the number of configuration fields currently set."),
     container('ConfigLoader'),
-    body_template("~return_val(len_of(self_direct(settings)))~")
+    body_template("~return_val(as_int(len_of(self_direct(settings))))~")
 ]).
 
 %% --- Sessions module methods ---
@@ -4556,6 +4577,97 @@ shared_logic(retry, retry_delay_exceeds_max, [
     doc("Check if the computed retry delay exceeds the maximum allowed delay."),
     container(none),
     body_template("~return_val(gt(delay, max_delay))~")
+]).
+
+%% --- Security: check if command is in allowed set ---
+shared_logic(security, is_safe_command, [
+    signature(is_safe_command, [cmd], bool),
+    arg_types([string]),
+    doc("Check if a command starts with a known safe prefix (ls, cat, grep, echo)."),
+    container(none),
+    body_template("~return_val(or_expr(or_expr(str_starts_with(cmd, \"ls\"), str_starts_with(cmd, \"cat\")), or_expr(str_starts_with(cmd, \"grep\"), str_starts_with(cmd, \"echo\"))))~")
+]).
+
+%% --- Config: get value with default ---
+shared_logic(config, config_get_or_default, [
+    signature(get_or_default, [key, default_val], owned_string),
+    arg_types([string, string]),
+    doc("Look up a config key, returning default_val if not found."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_get_default(self_direct(settings), key, default_val))~")
+]).
+
+%% --- Output parser: check if content is multi-line ---
+shared_logic(output_parser, output_is_multiline, [
+    signature(is_multiline, [text, threshold], bool),
+    arg_types([string, int]),
+    doc("Check if content length exceeds a threshold, suggesting multi-line output."),
+    container(none),
+    body_template("~return_val(gt(len_of(text), threshold))~")
+]).
+
+%% --- Streaming: estimate completion percentage ---
+shared_logic(streaming, streaming_progress_pct, [
+    signature(progress_pct, [max_tokens], float),
+    arg_types([int]),
+    doc("Estimate streaming progress as percentage of max_tokens. Returns 0.0 if max_tokens is 0."),
+    container('StreamingHandler'),
+    body_template("if ~eq_zero(max_tokens)~:\n    ~return_val(literal(0.0))~\n~return_val(mul(div_float(as_float(self_direct(token_count)), as_float(max_tokens)), literal(100.0)))~")
+]).
+
+%% --- Costs: input token ratio ---
+shared_logic(costs, cost_input_ratio, [
+    signature(input_ratio, [], float),
+    arg_types([]),
+    doc("Return the ratio of input tokens to total tokens. Returns 0.0 if no tokens."),
+    container('CostTracker'),
+    body_template("if ~eq_zero(add(self_direct(total_input_tokens), self_direct(total_output_tokens)))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(total_input_tokens)), as_float(add(self_direct(total_input_tokens), self_direct(total_output_tokens)))))~")
+]).
+
+%% --- Context: get role of last message ---
+shared_logic(context, context_last_role, [
+    signature(last_role, [], string),
+    arg_types([]),
+    doc("Return the role of the last message, or empty string if no messages."),
+    container('ContextManager'),
+    body_template("if ~eq_zero(len_of(self_direct(messages)))~:\n    ~return_val(literal(\"\"))~\n~return_val(map_get(list_last(self_direct(messages)), \"role\"))~")
+]).
+
+%% --- Sessions: check if session data has messages ---
+%% --- Sessions: check if session name is non-empty ---
+shared_logic(sessions, session_name_valid, [
+    signature(name_valid, [name], bool),
+    arg_types([string]),
+    doc("Check if a session name is non-empty and usable."),
+    container(none),
+    body_template("~return_val(gt(len_of(str_strip(name)), literal(0)))~")
+]).
+
+%% --- Tools: check if tool is read-only ---
+shared_logic(tools, tool_is_readonly, [
+    signature(is_readonly, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if a tool is read-only (read or glob)."),
+    container(none),
+    body_template("~return_val(or_expr(eq_str(tool_name, \"read\"), eq_str(tool_name, \"glob\")))~")
+]).
+
+%% --- Retry: check if this is the last retry attempt ---
+shared_logic(retry, retry_is_last_attempt, [
+    signature(is_last_attempt, [], bool),
+    arg_types([]),
+    doc("Check if current attempt equals max_retries - 1 (last chance)."),
+    container('RetryHandler'),
+    body_template("~return_val(gte(self_direct(attempt), sub(self_direct(max_retries), literal(1))))~")
+]).
+
+%% --- MCP: format error response ---
+shared_logic(mcp, mcp_format_error, [
+    signature(format_error, [code, message], owned_string),
+    arg_types([int, string]),
+    doc("Format a JSON-RPC error string from code and message."),
+    container(none),
+    body_template("~return_val(format_str(\"error {}: {}\", [code, message]))~")
 ]).
 
 %% =============================================================================
@@ -6136,6 +6248,21 @@ expand_expr(rust, as_float(X), S) :-
     expand_expr(rust, X, Inner),
     format(atom(S), "(~w as f64)", [Inner]).
 
+%% as_int — cast to integer (usize→i64 in Rust, int() in Python, etc.)
+expand_expr(python, as_int(X), S) :-
+    expand_expr(python, X, Inner),
+    format(atom(S), "int(~w)", [Inner]).
+expand_expr(rust, as_int(X), S) :-
+    expand_expr(rust, X, Inner),
+    format(atom(S), "(~w as i64)", [Inner]).
+expand_expr(elixir, as_int(X), S) :-
+    expand_expr(elixir, X, Inner), S = Inner.
+expand_expr(prolog, as_int(X), S) :-
+    expand_expr(prolog, X, Inner), S = Inner.
+expand_expr(clojure, as_int(X), S) :-
+    expand_expr(clojure, X, Inner),
+    format(atom(S), "(int ~w)", [Inner]).
+
 expand_expr(python, div_float(A, B), S) :-
     expand_expr(python, A, AStr),
     expand_expr(python, B, BStr),
@@ -6566,11 +6693,12 @@ generate_rust_config :-
     write_rust(S, config_types),
     agent_loop_components:emit_rust_config_data(S, [target(rust)]),
     write(S, '\nimpl ConfigLoader {\n'),
-    %% config_has_key skipped — double-ref issue with contains_key(&key)
+    emit_shared_method(S, rust, config_has_key),
     emit_shared_method(S, rust, config_is_debug),
     %% config_merge skipped — returns self.settings (HashMap) but signature expects string
-    %% config_field_count skipped — len() returns usize, signature expects i64
+    emit_shared_method(S, rust, config_field_count),
     emit_shared_method(S, rust, config_is_empty),
+    %% config_get_or_default skipped — unwrap_or(&str) vs String type mismatch
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/config.rs~n', []).
@@ -6591,6 +6719,7 @@ generate_rust_costs :-
     emit_shared_method(S, rust, is_over_budget),
     emit_shared_method(S, rust, budget_remaining),
     emit_shared_method(S, rust, cost_total_messages),
+    emit_shared_method(S, rust, cost_input_ratio),
     %% cost_exceeds skipped — CostTracker.total_cost is a method not a field in Rust
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
@@ -6666,7 +6795,10 @@ generate_rust_mcp_client :-
     open(Path, write, S),
     write_rust_header(S, mcp_client, 'MCP client — stdio JSON-RPC 2.0 transport'),
     write_rust(S, mcp_client),
-    %% mcp_disconnect_reason/mcp_server_name skipped — String vs &str return mismatch
+    write(S, '\nimpl McpClient {\n'),
+    emit_shared_method(S, rust, mcp_disconnect_reason),
+    emit_shared_method(S, rust, mcp_server_name),
+    write(S, '}\n'),
     close(S),
     format('  Generated rust/src/mcp_client.rs~n', []).
 
@@ -6922,8 +7054,10 @@ generate_rust_tool_handler :-
     emit_shared_method(S, rust, cache_evict_oldest),
     emit_shared_method(S, rust, cache_hit_rate),
     write_rust(S, tool_result_cache_tail),
-    %% tool_arg_count/tool_has_schema skipped — len() returns usize vs i64
-    %% impl ToolHandler { ... } deferred until type coercion is fixed
+    write(S, '\nimpl ToolHandler {\n'),
+    emit_shared_method(S, rust, tool_arg_count),
+    emit_shared_method(S, rust, tool_has_schema),
+    write(S, '}\n'),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
 
@@ -7057,6 +7191,7 @@ generate_rust_main :-
     emit_shared_method(S, rust, max_retries_reached),
     emit_shared_method(S, rust, retry_delay),
     emit_shared_method(S, rust, retry_attempts_left),
+    emit_shared_method(S, rust, retry_is_last_attempt),
     write(S, '}\n'),
     nl(S),
     %% Templates and skills
@@ -7144,9 +7279,10 @@ generate_rust_main :-
     %% Emit shared_logic methods for streaming (replacing former fragment methods)
     emit_shared_method(S, rust, on_token),
     emit_shared_method(S, rust, format_summary),
-    %% stream_byte_count skipped — len() returns usize, shared_logic returns i64
+    emit_shared_method(S, rust, stream_byte_count),
     emit_shared_method(S, rust, streaming_avg_token_rate),
     emit_shared_method(S, rust, streaming_chars_per_token),
+    emit_shared_method(S, rust, streaming_progress_pct),
     write(S, '}\n\n'),
     %% chunk_is_complete is standalone (container=none), emit outside impl block
     emit_shared_method(S, rust, chunk_is_complete),
@@ -9577,7 +9713,10 @@ generate_clojure_cost_test(Dir) :-
     write(S, '  (is (= 0 (costs/total-messages {:message-count 0}))))\n\n'),
     write(S, '(deftest test-cost-exceeds\n'),
     write(S, '  (is (true? (costs/cost-exceeds {:total-cost 15.0} 10.0)))\n'),
-    write(S, '  (is (false? (costs/cost-exceeds {:total-cost 5.0} 10.0))))\n'),
+    write(S, '  (is (false? (costs/cost-exceeds {:total-cost 5.0} 10.0))))\n\n'),
+    write(S, '(deftest test-input-ratio\n'),
+    write(S, '  (is (= 0.0 (costs/input-ratio {:total-input-tokens 0 :total-output-tokens 0})))\n'),
+    write(S, '  (is (= 0.5 (costs/input-ratio {:total-input-tokens 50 :total-output-tokens 50}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -9699,7 +9838,10 @@ generate_clojure_retry_test(Dir) :-
     write(S, '  (is (= 0 (retry/attempts-left {:max-retries 3 :attempt 3}))))\n\n'),
     write(S, '(deftest test-delay-exceeds-max\n'),
     write(S, '  (is (true? (retry/delay-exceeds-max 120.0 60.0)))\n'),
-    write(S, '  (is (false? (retry/delay-exceeds-max 30.0 60.0))))\n'),
+    write(S, '  (is (false? (retry/delay-exceeds-max 30.0 60.0))))\n\n'),
+    write(S, '(deftest test-is-last-attempt\n'),
+    write(S, '  (is (true? (retry/is-last-attempt {:attempt 2 :max-retries 3})))\n'),
+    write(S, '  (is (false? (retry/is-last-attempt {:attempt 0 :max-retries 3}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -9739,7 +9881,11 @@ generate_clojure_tools_test(Dir) :-
     write(S, '  (is (false? (tools/is-mcp-prefixed "bash"))))\n\n'),
     write(S, '(deftest test-name-is-valid\n'),
     write(S, '  (is (true? (tools/name-is-valid "bash")))\n'),
-    write(S, '  (is (false? (tools/name-is-valid ""))))\n'),
+    write(S, '  (is (false? (tools/name-is-valid ""))))\n\n'),
+    write(S, '(deftest test-is-readonly\n'),
+    write(S, '  (is (true? (tools/is-readonly "read")))\n'),
+    write(S, '  (is (true? (tools/is-readonly "glob")))\n'),
+    write(S, '  (is (false? (tools/is-readonly "bash"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -9781,7 +9927,10 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '  (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))\n\n'),
     write(S, '(deftest test-chars-per-token\n'),
     write(S, '  (is (= 0.0 (streaming/chars-per-token {:char-count 0 :token-count 0})))\n'),
-    write(S, '  (is (= 4.0 (streaming/chars-per-token {:char-count 40 :token-count 10}))))\n'),
+    write(S, '  (is (= 4.0 (streaming/chars-per-token {:char-count 40 :token-count 10}))))\n\n'),
+    write(S, '(deftest test-progress-pct\n'),
+    write(S, '  (is (= 0.0 (streaming/progress-pct {:token-count 50} 0)))\n'),
+    write(S, '  (is (= 50.0 (streaming/progress-pct {:token-count 50} 100))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 
@@ -9865,7 +10014,11 @@ generate_clojure_security_test(Dir) :-
     write(S, '(deftest test-has-path-traversal\n'),
     write(S, '  (is (true? (security/has-path-traversal "..")))\n'),
     write(S, '  (is (true? (security/has-path-traversal "../etc")))\n'),
-    write(S, '  (is (false? (security/has-path-traversal "src/main"))))\n'),
+    write(S, '  (is (false? (security/has-path-traversal "src/main"))))\n\n'),
+    write(S, '(deftest test-is-safe-command\n'),
+    write(S, '  (is (true? (security/is-safe-command "ls -la")))\n'),
+    write(S, '  (is (true? (security/is-safe-command "cat file.txt")))\n'),
+    write(S, '  (is (false? (security/is-safe-command "rm -rf /"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -9901,7 +10054,10 @@ generate_clojure_output_parser_test(Dir) :-
     write(S, '  (is (false? (parser/content-is-json "hello"))))\n\n'),
     write(S, '(deftest test-content-preview\n'),
     write(S, '  (is (= "hi" (parser/content-preview "hi" 10)))\n'),
-    write(S, '  (is (string? (parser/content-preview "hello world this is long" 5))))\n'),
+    write(S, '  (is (string? (parser/content-preview "hello world this is long" 5))))\n\n'),
+    write(S, '(deftest test-is-multiline\n'),
+    write(S, '  (is (true? (parser/is-multiline "hello world this is long" 5)))\n'),
+    write(S, '  (is (false? (parser/is-multiline "hi" 10))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
 
@@ -9935,7 +10091,11 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '  (is (true? (sessions/is-recent 100.0 105.0 10.0)))\n'),
     write(S, '  (is (false? (sessions/is-recent 100.0 200.0 10.0))))\n\n'),
     write(S, '(deftest test-json-path\n'),
-    write(S, '  (is (= "/tmp/sessions/abc.json" (sessions/json-path "/tmp/sessions" "abc"))))\n'),
+    write(S, '  (is (= "/tmp/sessions/abc.json" (sessions/json-path "/tmp/sessions" "abc"))))\n\n'),
+    write(S, '(deftest test-name-valid\n'),
+    write(S, '  (is (true? (sessions/name-valid "my-session")))\n'),
+    write(S, '  (is (false? (sessions/name-valid "")))\n'),
+    write(S, '  (is (false? (sessions/name-valid "   "))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
 
@@ -9971,7 +10131,9 @@ generate_clojure_mcp_test(Dir) :-
     write(S, '  (is (true? (mcp/is-tool-call "tools/execute")))\n'),
     write(S, '  (is (false? (mcp/is-tool-call "notifications/ready"))))\n\n'),
     write(S, '(deftest test-mcp-server-name\n'),
-    write(S, '  (is (= "my-server" (mcp/server-name {:name "my-server"}))))\n'),
+    write(S, '  (is (= "my-server" (mcp/server-name {:name "my-server"}))))\n\n'),
+    write(S, '(deftest test-format-error\n'),
+    write(S, '  (is (= "error 404: not found" (mcp/format-error 404 "not found"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/mcp_test.clj~n', []).
 
@@ -14943,7 +15105,7 @@ pub struct ToolResultCache {
     cache: std::collections::HashMap<String, (Instant, ToolResult)>,
     ttl: std::time::Duration,
     skip_tools: std::collections::HashSet<String>,
-    pub max_size: usize,
+    pub max_size: i64,
     pub hits: u64,
     pub total_lookups: u64,
 }
@@ -17632,6 +17794,42 @@ fn test_shared_logic_tool_cache_methods() {
     assert!(src.contains("fn clear("), "tool_handler.rs should have clear");
     assert!(src.contains("fn evict_oldest("), "tool_handler.rs should have evict_oldest");
     assert!(src.contains("fn cache_hit_rate("), "tool_handler.rs should have cache_hit_rate");
+    assert!(src.contains("fn arg_count("), "tool_handler.rs should have arg_count");
+    assert!(src.contains("fn has_schema("), "tool_handler.rs should have has_schema");
+}
+
+#[test]
+fn test_shared_logic_config_methods() {
+    let src = include_str!("../src/config.rs");
+    assert!(src.contains("fn has_key("), "config.rs should have has_key");
+    assert!(src.contains("fn is_debug("), "config.rs should have is_debug");
+    assert!(src.contains("fn field_count("), "config.rs should have field_count");
+    assert!(src.contains("fn is_empty("), "config.rs should have is_empty");
+}
+
+#[test]
+fn test_shared_logic_mcp_methods() {
+    let src = include_str!("../src/mcp_client.rs");
+    assert!(src.contains("fn disconnect_reason("), "mcp_client.rs should have disconnect_reason");
+    assert!(src.contains("fn server_name("), "mcp_client.rs should have server_name");
+}
+
+#[test]
+fn test_shared_logic_retry_handler_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn max_retries_reached("), "main.rs should have max_retries_reached");
+    assert!(src.contains("fn retry_delay("), "main.rs should have retry_delay");
+    assert!(src.contains("fn attempts_left("), "main.rs should have attempts_left");
+    assert!(src.contains("fn is_last_attempt("), "main.rs should have is_last_attempt");
+    assert!(src.contains("struct RetryHandler"), "main.rs should have RetryHandler struct");
+}
+
+#[test]
+fn test_shared_logic_new_standalone_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn byte_count("), "main.rs should have byte_count");
+    assert!(src.contains("fn chars_per_token("), "main.rs should have chars_per_token");
+    assert!(src.contains("fn progress_pct("), "main.rs should have progress_pct");
 }
 ').
 

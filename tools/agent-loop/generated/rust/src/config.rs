@@ -228,13 +228,25 @@ pub static CLI_OVERRIDES: &[CliOverride] = &[
 
 
 impl ConfigLoader {
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
+    /// Check if a configuration key exists in the settings map.
+    pub fn has_key(&self, key: &str) -> bool {
+        return self.settings.contains_key(key);
+    }
+
+    #[allow(dead_code, unused_variables)]
     /// Check if debug mode is enabled in configuration.
     pub fn is_debug(&self) -> bool {
         return self.debug == "true";
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
+    /// Return the number of configuration fields currently set.
+    pub fn field_count(&self) -> i64 {
+        return self.settings.len() as i64;
+    }
+
+    #[allow(dead_code, unused_variables)]
     /// Check if the configuration has no settings.
     pub fn is_empty(&self) -> bool {
         return self.settings.len() == 0;

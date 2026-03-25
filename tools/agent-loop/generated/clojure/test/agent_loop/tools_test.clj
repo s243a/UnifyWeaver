@@ -40,3 +40,8 @@
 (deftest test-name-is-valid
   (is (true? (tools/name-is-valid "bash")))
   (is (false? (tools/name-is-valid ""))))
+
+(deftest test-is-readonly
+  (is (true? (tools/is-readonly "read")))
+  (is (true? (tools/is-readonly "glob")))
+  (is (false? (tools/is-readonly "bash"))))

@@ -243,25 +243,25 @@ where
     }
     Err(format!("Failed after {} attempts: {}", config.max_attempts, last_err))
 }
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Check if an HTTP status code is retryable (408, 429, 5xx).
 pub fn is_retryable_status(status: i64) -> bool {
     return matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Calculate exponential backoff delay, capped at max_delay.
 pub fn compute_delay(base_delay: f64, exponential_base: f64, attempt: i64, max_delay: f64) -> f64 {
     return (base_delay * exponential_base.powi((attempt - 1) as i32)).min(max_delay);
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Check if an HTTP status code is retryable (429 or 5xx).
 pub fn is_retryable_error(status_code: i64) -> bool {
     return (status_code >= 429 && status_code <= 429) || status_code >= 500;
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Check if the computed retry delay exceeds the maximum allowed delay.
 pub fn delay_exceeds_max(delay: f64, max_delay: f64) -> bool {
     return delay > max_delay;
@@ -269,22 +269,28 @@ pub fn delay_exceeds_max(delay: f64, max_delay: f64) -> bool {
 
 
 impl RetryHandler {
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Check if the current attempt count has reached max_retries.
     pub fn max_retries_reached(&self) -> bool {
         return self.attempt >= self.max_retries;
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Calculate exponential backoff delay: base_delay * 2^attempt.
     pub fn retry_delay(&self) -> f64 {
         return self.base_delay * 2.0 * (self.attempt as f64);
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Return the number of retry attempts remaining.
     pub fn attempts_left(&self) -> i64 {
         return self.max_retries - self.attempt;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if current attempt equals max_retries - 1 (last chance).
+    pub fn is_last_attempt(&self) -> bool {
+        return self.attempt >= (self.max_retries - 1);
     }
 
 }
@@ -1276,7 +1282,7 @@ impl StreamingTokenCounter {
         Self { token_count: 0, char_count: 0, show_live, elapsed: 0.0, buffer: Vec::new() }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Process a streamed token chunk: print it, update char and token counts.
     pub fn on_token(&mut self, token: &str) {
         use std::io::Write;
@@ -1285,13 +1291,19 @@ impl StreamingTokenCounter {
         self.token_count = std::cmp::max(1, self.char_count / 4);
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Format a one-line summary of streaming stats.
     pub fn format_summary(&self) -> String {
         return format!("~{} tokens, {} chars", self.token_count, self.char_count);
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
+    /// Return the total number of bytes received in the stream.
+    pub fn byte_count(&self) -> i64 {
+        return self.buffer.len() as i64;
+    }
+
+    #[allow(dead_code, unused_variables)]
     /// Return average tokens per second. Returns 0.0 if elapsed time is zero.
     pub fn avg_token_rate(&self) -> f64 {
         if self.elapsed <= 0.0 {
@@ -1300,7 +1312,7 @@ impl StreamingTokenCounter {
         return (self.token_count as f64) / self.elapsed;
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unused_variables)]
     /// Return average characters per token. Returns 0.0 if no tokens.
     pub fn chars_per_token(&self) -> f64 {
         if self.token_count == 0 {
@@ -1309,9 +1321,18 @@ impl StreamingTokenCounter {
         return (self.char_count as f64) / (self.token_count as f64);
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Estimate streaming progress as percentage of max_tokens. Returns 0.0 if max_tokens is 0.
+    pub fn progress_pct(&self, max_tokens: i64) -> f64 {
+        if max_tokens == 0 {
+            return 0.0;
+        }
+        return ((self.token_count as f64) / (max_tokens as f64)) * 100.0;
+    }
+
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_variables)]
 /// Check if a streaming chunk starts with the SSE data prefix.
 pub fn chunk_is_complete(chunk: &str) -> bool {
     return chunk.starts_with("data:");

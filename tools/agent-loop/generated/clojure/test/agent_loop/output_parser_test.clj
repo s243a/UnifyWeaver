@@ -35,3 +35,7 @@
 (deftest test-content-preview
   (is (= "hi" (parser/content-preview "hi" 10)))
   (is (string? (parser/content-preview "hello world this is long" 5))))
+
+(deftest test-is-multiline
+  (is (true? (parser/is-multiline "hello world this is long" 5)))
+  (is (false? (parser/is-multiline "hi" 10))))

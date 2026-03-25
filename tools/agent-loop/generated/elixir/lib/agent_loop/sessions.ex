@@ -110,6 +110,12 @@ defmodule AgentLoop.Sessions do
     "#{dir}/#{session_id}.json"
   end
 
+  @doc "Check if a session name is non-empty and usable."
+  @spec name_valid(String.t()) :: boolean()
+  def name_valid(name) do
+    Enum.count(String.trim(name)) > 0
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

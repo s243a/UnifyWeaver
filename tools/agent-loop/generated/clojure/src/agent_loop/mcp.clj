@@ -83,3 +83,9 @@
   (.startsWith method "tools/")
 )
 
+(defn format-error
+  "Format a JSON-RPC error string from code and message."
+  [code message]
+  (format "error %s: %s" code message)
+)
+
