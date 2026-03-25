@@ -92,3 +92,12 @@
   (or (.startsWith text "{") (.startsWith text "["))
 )
 
+(defn content-preview
+  "Return a preview of text truncated to max_len characters with ellipsis if needed."
+  [text max-len]
+  (if (> (count text) max-len)
+      (str (subs text 0 max-len) "...")
+      text
+  )
+)
+

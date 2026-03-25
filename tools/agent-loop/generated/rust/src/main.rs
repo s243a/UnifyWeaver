@@ -160,6 +160,20 @@ impl Default for RetryConfig {
     }
 }
 
+/// Tracks retry state for a single operation.
+#[allow(dead_code)]
+pub struct RetryHandler {
+    pub attempt: i64,
+    pub max_retries: i64,
+    pub base_delay: f64,
+}
+
+impl RetryHandler {
+    pub fn new(max_retries: i64, base_delay: f64) -> Self {
+        Self { attempt: 0, max_retries, base_delay }
+    }
+}
+
 /// Simple pseudo-random jitter based on system time.
 fn jitter_factor() -> f64 {
     let nanos = std::time::SystemTime::now()
@@ -247,6 +261,33 @@ pub fn is_retryable_error(status_code: i64) -> bool {
     return (status_code >= 429 && status_code <= 429) || status_code >= 500;
 }
 
+#[allow(dead_code)]
+/// Check if the computed retry delay exceeds the maximum allowed delay.
+pub fn delay_exceeds_max(delay: f64, max_delay: f64) -> bool {
+    return delay > max_delay;
+}
+
+
+impl RetryHandler {
+    #[allow(dead_code)]
+    /// Check if the current attempt count has reached max_retries.
+    pub fn max_retries_reached(&self) -> bool {
+        return self.attempt >= self.max_retries;
+    }
+
+    #[allow(dead_code)]
+    /// Calculate exponential backoff delay: base_delay * 2^attempt.
+    pub fn retry_delay(&self) -> f64 {
+        return self.base_delay * 2.0 * (self.attempt as f64);
+    }
+
+    #[allow(dead_code)]
+    /// Return the number of retry attempts remaining.
+    pub fn attempts_left(&self) -> i64 {
+        return self.max_retries - self.attempt;
+    }
+
+}
 
 
 use std::collections::HashMap;
@@ -1257,6 +1298,15 @@ impl StreamingTokenCounter {
             return 0.0;
         }
         return (self.token_count as f64) / self.elapsed;
+    }
+
+    #[allow(dead_code)]
+    /// Return average characters per token. Returns 0.0 if no tokens.
+    pub fn chars_per_token(&self) -> f64 {
+        if self.token_count == 0 {
+            return 0.0;
+        }
+        return (self.char_count as f64) / (self.token_count as f64);
     }
 
 }

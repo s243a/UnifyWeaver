@@ -77,3 +77,9 @@
   (:name state)
 )
 
+(defn is-tool-call
+  "Check if a JSON-RPC method name is a tools/ prefixed call."
+  [method]
+  (.startsWith method "tools/")
+)
+

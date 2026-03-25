@@ -160,4 +160,10 @@ defmodule AgentLoop.CostTracker do
     state.message_count
   end
 
+  @doc "Check if total cost exceeds a given threshold."
+  @spec cost_exceeds(t(), float()) :: boolean()
+  def cost_exceeds(%__MODULE__{} = state, threshold) do
+    state.total_cost > threshold
+  end
+
 end

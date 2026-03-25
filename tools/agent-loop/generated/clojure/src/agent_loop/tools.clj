@@ -97,3 +97,9 @@
   (> (count tool-name) 0)
 )
 
+(defn is-mcp-prefixed
+  "Check if a tool name has the mcp: namespace prefix."
+  [name]
+  (.startsWith name "mcp:")
+)
+

@@ -142,6 +142,10 @@ has_schema(State, _Tool_name, Result) :-
 name_is_valid(Tool_name, Result) :-
     length(Tool_name, Result) > 0.
 
+%% Check if a tool name has the mcp: namespace prefix.
+is_mcp_prefixed(Name, Result) :-
+    (atom_concat('mcp:', _, Name) -> Result = true ; Result = false).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

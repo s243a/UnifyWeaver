@@ -102,3 +102,12 @@
   (> (:token-count state) 0)
 )
 
+(defn chars-per-token
+  "Return average characters per token. Returns 0.0 if no tokens."
+  [state]
+  (if (zero? (:token-count state))
+      0.0
+      (/ (double (:char-count state)) (double (:token-count state)))
+  )
+)
+

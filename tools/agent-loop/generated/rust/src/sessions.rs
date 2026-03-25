@@ -197,3 +197,15 @@ pub fn session_age(created_at: f64, now: f64) -> f64 {
     return now - created_at;
 }
 
+#[allow(dead_code)]
+/// Check if a session was created within the threshold (seconds).
+pub fn is_recent(created_at: f64, now: f64, threshold: f64) -> bool {
+    return (now - created_at) <= threshold;
+}
+
+#[allow(dead_code)]
+/// Build the full JSON file path for a session: dir/session_id.json.
+pub fn json_path(dir: &str, session_id: &str) -> String {
+    return format!("{}/{}.json", dir, session_id);
+}
+

@@ -145,6 +145,10 @@ cost_per_input_token(State, Result) :-
 total_messages(State, Result) :-
     Result = State.message_count.
 
+%% Check if total cost exceeds a given threshold.
+cost_exceeds(State, Threshold, Result) :-
+    (State.total_cost > Threshold -> Result = true ; Result = false).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

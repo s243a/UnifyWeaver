@@ -29,3 +29,10 @@
 (deftest test-mcp-disconnect-reason
   (is (= "timeout" (mcp/disconnect-reason {:disconnect-reason "timeout"})))
   (is (nil? (mcp/disconnect-reason {:other "field"}))))
+
+(deftest test-mcp-is-tool-call
+  (is (true? (mcp/is-tool-call "tools/execute")))
+  (is (false? (mcp/is-tool-call "notifications/ready"))))
+
+(deftest test-mcp-server-name
+  (is (= "my-server" (mcp/server-name {:name "my-server"}))))

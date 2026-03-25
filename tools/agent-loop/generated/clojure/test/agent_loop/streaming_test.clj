@@ -39,3 +39,7 @@
 (deftest test-streaming-is-active
   (is (true? (streaming/is-active {:token-count 5 :char-count 0})))
   (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))
+
+(deftest test-chars-per-token
+  (is (= 0.0 (streaming/chars-per-token {:char-count 0 :token-count 0})))
+  (is (= 4.0 (streaming/chars-per-token {:char-count 40 :token-count 10}))))

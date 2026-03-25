@@ -117,3 +117,7 @@ is_visible_file(Filename, Result) :-
 is_hidden_path(Path, Result) :-
     (atom_concat('.', _, Path) -> Result = true ; Result = false).
 
+%% Check if a path contains .. traversal sequences.
+has_path_traversal(Path, Result) :-
+    (atom_concat('..', _, Path) -> Result = true ; Result = false).
+

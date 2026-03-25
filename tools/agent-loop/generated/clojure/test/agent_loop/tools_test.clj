@@ -32,3 +32,11 @@
 (deftest test-is-safe
   (is (true? (tools/is-safe "read")))
   (is (false? (tools/is-safe "bash"))))
+
+(deftest test-is-mcp-prefixed
+  (is (true? (tools/is-mcp-prefixed "mcp:read")))
+  (is (false? (tools/is-mcp-prefixed "bash"))))
+
+(deftest test-name-is-valid
+  (is (true? (tools/name-is-valid "bash")))
+  (is (false? (tools/name-is-valid ""))))

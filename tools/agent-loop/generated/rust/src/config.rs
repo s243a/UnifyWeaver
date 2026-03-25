@@ -64,6 +64,19 @@ pub struct AuditLevel {
     pub level: &'static str,
 }
 
+/// Runtime configuration loader with settings map.
+#[allow(dead_code)]
+pub struct ConfigLoader {
+    pub settings: std::collections::HashMap<String, String>,
+    pub debug: String,
+}
+
+impl ConfigLoader {
+    pub fn new() -> Self {
+        Self { settings: std::collections::HashMap::new(), debug: "false".to_string() }
+    }
+}
+
 pub static CLI_ARGS: &[CliArgument] = &[
     CliArgument { name: "agent", long_flag: "--agent", short_flag: "-a", default_value: "", help: "Agent variant from config file (e.g., yolo, claude-opus, ollama)" },
     CliArgument { name: "config", long_flag: "--config", short_flag: "-C", default_value: "", help: "Path to config file (agents.yaml or agents.json)" },
@@ -213,3 +226,18 @@ pub static CLI_OVERRIDES: &[CliOverride] = &[
     CliOverride { cli_flag: "max_tokens", config_field: "max_context_tokens", behavior: "not_none_check" },
 ];
 
+
+impl ConfigLoader {
+    #[allow(dead_code)]
+    /// Check if debug mode is enabled in configuration.
+    pub fn is_debug(&self) -> bool {
+        return self.debug == "true";
+    }
+
+    #[allow(dead_code)]
+    /// Check if the configuration has no settings.
+    pub fn is_empty(&self) -> bool {
+        return self.settings.len() == 0;
+    }
+
+}

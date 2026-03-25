@@ -153,3 +153,9 @@
   (:message-count state)
 )
 
+(defn cost-exceeds
+  "Check if total cost exceeds a given threshold."
+  [state threshold]
+  (> (:total-cost state) threshold)
+)
+

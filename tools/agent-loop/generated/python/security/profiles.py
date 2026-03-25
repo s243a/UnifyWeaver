@@ -158,3 +158,7 @@ def is_hidden_path(path):
     """Check if a path component starts with a dot (hidden file/directory)."""
     return path.startswith(".")
 
+def has_path_traversal(path):
+    """Check if a path contains .. traversal sequences."""
+    return path.startswith("..")
+

@@ -226,4 +226,14 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Return the role of the first message, or empty string if no messages."
+  @spec first_role(t()) :: String.t()
+  def first_role(%__MODULE__{} = state) do
+    if Enum.count(state.messages) == 0 do
+        
+    else
+        Map.get(List.first(state.messages), "role")
+    end
+  end
+
 end

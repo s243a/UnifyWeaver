@@ -127,3 +127,9 @@
   (count (:settings state))
 )
 
+(defn is-empty
+  "Check if the configuration has no settings."
+  [state]
+  (zero? (count (:settings state)))
+)
+

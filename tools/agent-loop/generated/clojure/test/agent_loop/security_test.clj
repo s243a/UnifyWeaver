@@ -23,3 +23,8 @@
 (deftest test-is-hidden-path
   (is (true? (security/is-hidden-path ".git")))
   (is (false? (security/is-hidden-path "src"))))
+
+(deftest test-has-path-traversal
+  (is (true? (security/has-path-traversal "..")))
+  (is (true? (security/has-path-traversal "../etc")))
+  (is (false? (security/has-path-traversal "src/main"))))

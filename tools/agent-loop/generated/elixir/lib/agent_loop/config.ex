@@ -165,4 +165,10 @@ defmodule AgentLoop.Config do
     Enum.count(state.settings)
   end
 
+  @doc "Check if the configuration has no settings."
+  @spec is_empty(t()) :: boolean()
+  def is_empty(%__MODULE__{} = state) do
+    Enum.count(state.settings) == 0
+  end
+
 end

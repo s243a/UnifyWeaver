@@ -31,3 +31,6 @@
 (deftest test-session-is-recent
   (is (true? (sessions/is-recent 100.0 105.0 10.0)))
   (is (false? (sessions/is-recent 100.0 200.0 10.0))))
+
+(deftest test-json-path
+  (is (= "/tmp/sessions/abc.json" (sessions/json-path "/tmp/sessions" "abc"))))

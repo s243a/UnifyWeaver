@@ -21,11 +21,12 @@ pub struct McpClient {
     env: std::collections::HashMap<String, String>,
     process: Option<std::process::Child>,
     request_id: u64,
+    pub disconnect_reason: String,
 }
 
 impl McpClient {
     pub fn new(name: String, command: Vec<String>, env: std::collections::HashMap<String, String>) -> Self {
-        Self { name, command, env, process: None, request_id: 0 }
+        Self { name, command, env, process: None, request_id: 0, disconnect_reason: String::new() }
     }
 
     pub fn connect(&mut self) -> bool {

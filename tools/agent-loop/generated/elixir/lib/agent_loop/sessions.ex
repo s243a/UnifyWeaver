@@ -104,6 +104,12 @@ defmodule AgentLoop.Sessions do
     (now - created_at) <= threshold
   end
 
+  @doc "Build the full JSON file path for a session: dir/session_id.json."
+  @spec json_path(String.t(), String.t()) :: String.t()
+  def json_path(dir, session_id) do
+    "#{dir}/#{session_id}.json"
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do
