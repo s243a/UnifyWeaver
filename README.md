@@ -252,7 +252,9 @@ includes:
   limited branch-local alias or guard state around those calls, including
   one nested branch-local control point around those calls before the
   shared boolean rejoin, one nested branch-local control point between the
-  two direct recursive subtree calls with limited alias or guard state
+  two direct recursive subtree calls with limited alias or guard state,
+  and one nested post-call control point after the shared dual-subtree
+  calls before the shared boolean rejoin
   before the second call, shared branch-local guard prework before a nested
   mutual branch, and the same conservative guarded branch-body family with
   one invariant context argument threaded through the subtree calls,
