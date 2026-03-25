@@ -260,6 +260,9 @@ includes:
   dual-subtree calls, shared branch-local guard prework before a nested
   mutual branch, and the same conservative guarded branch-body family with
   one invariant context argument threaded through the subtree calls,
+  including branch bodies where one shared subtree call happens before
+  guarded control that contains the second subtree call plus nested
+  non-recursive post-call control,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
