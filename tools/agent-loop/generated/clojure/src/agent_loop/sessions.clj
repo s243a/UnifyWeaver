@@ -99,3 +99,9 @@
   (- now created-at)
 )
 
+(defn is-recent
+  "Check if a session was created within the threshold (seconds)."
+  [created-at now threshold]
+  (<= (- now created-at) threshold)
+)
+

@@ -83,6 +83,12 @@ defmodule AgentLoop.MCPClient do
     state.disconnect_reason
   end
 
+  @doc "Return the name of this MCP server/client instance."
+  @spec server_name(t()) :: String.t()
+  def server_name(%__MODULE__{} = state) do
+    state.name
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

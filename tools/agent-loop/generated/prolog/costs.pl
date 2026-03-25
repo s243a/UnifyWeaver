@@ -16,6 +16,8 @@
 :- det(cost_tracker_total/2).
 :- det(cost_tracker_format/2).
 
+:- discontiguous total_tokens/2.
+
 %% Dependencies: none (self-contained)
 
 %% Indexing hints (SWI-Prolog auto-indexes first argument):
@@ -69,7 +71,7 @@ cost_compute(Tokens, Price_per_million, Result) :-
     Result is ((float(Tokens) * Price_per_million) / 1.0e+06).
 
 %% Record a usage entry and update running totals.
-record_usage(State, Input_tokens, Output_tokens, Model, State1) :-
+record_usage(State, Input_tokens, Output_tokens, _Model, State1) :-
     NewVal is State.total_input_tokens + Input_tokens, put_dict(total_input_tokens, State, NewVal, State1),
     NewVal is State.total_output_tokens + Output_tokens, put_dict(total_output_tokens, State, NewVal, State1).
 
@@ -79,7 +81,7 @@ total_tokens(State, Result) :-
 
 %% Format a one-line cost summary showing totals.
 get_summary(State, Result) :-
-    Result = format(atom(Formatted), "$~w (~w input, ~w output)", [State.total_cost, State.total_input_tokens, State.total_output_tokens]).
+    format(atom(Result), "$~w (~w input, ~w output)", [State.total_cost, State.total_input_tokens, State.total_output_tokens]).
 
 %% Set the per-token pricing for input and output.
 set_pricing(State, Input_price, Output_price, State1) :-
@@ -105,7 +107,7 @@ total_tokens(State, Result) :-
 
 %% Return a short cost summary string (e.g. $0.05).
 cost_summary_short(State, Result) :-
-    Result = format(atom(Formatted), "$~w", [State.total_cost]).
+    format(atom(Result), "$~w", [State.total_cost]).
 
 %% Check if the current model has zero cost (total_cost == 0 after usage).
 is_free_model(State, Result) :-

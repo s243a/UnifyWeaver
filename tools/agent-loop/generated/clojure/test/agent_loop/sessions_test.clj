@@ -27,3 +27,7 @@
 
 (deftest test-session-dir
   (is (string? (sessions/session-dir {:sessions-dir "/tmp/sessions"}))))
+
+(deftest test-session-is-recent
+  (is (true? (sessions/is-recent 100.0 105.0 10.0)))
+  (is (false? (sessions/is-recent 100.0 200.0 10.0))))

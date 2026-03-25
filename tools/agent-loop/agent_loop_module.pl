@@ -2092,6 +2092,13 @@ logic_slot(prolog, guard_leq(A, B), S) :-
     format(atom(S), "~w =< ~w", [AS, BS]).
 logic_slot(prolog, return_val(false), "Result = false").
 logic_slot(prolog, return_val(true), "Result = true").
+%% Special case: return_val(format_str(...)) → format(atom(Result), ...) directly
+logic_slot(prolog, return_val(format_str(Fmt, Args)), S) :-
+    format_args_list(Args, prolog, ArgStr),
+    atomic_list_concat(Parts, '{}', Fmt),
+    atomic_list_concat(Parts, '~w', PlFmt),
+    format(atom(S), "format(atom(Result), \"~w\", [~w])", [PlFmt, ArgStr]).
+
 logic_slot(prolog, return_val(Expr), S) :-
     Expr \= true, Expr \= false,
     expand_expr(prolog, Expr, ExprStr),
@@ -2445,7 +2452,7 @@ emit_shared_method(S, rust, MethodName) :-
     format_rust_typed_args(Props, Args, ArgsStr),
     (Container = none ->
         %% Standalone function (no self, top-level)
-        format(S, '/// ~w~n', [Doc]),
+        format(S, '#[allow(dead_code)]~n/// ~w~n', [Doc]),
         (RetType = void ->
             (Args = [] ->
                 format(S, '~wfn ~w() {~n', [Vis, Name])
@@ -2463,7 +2470,7 @@ emit_shared_method(S, rust, MethodName) :-
         Indent = '    '
     ; member(associated, Props) ->
         %% Associated function (no self, inside impl block)
-        format(S, '    /// ~w~n', [Doc]),
+        format(S, '    #[allow(dead_code)]~n    /// ~w~n', [Doc]),
         (RetType = void ->
             (Args = [] ->
                 format(S, '    ~wfn ~w() {~n', [Vis, Name])
@@ -2481,7 +2488,7 @@ emit_shared_method(S, rust, MethodName) :-
         Indent = '        '
     ;
         %% Method on struct (with self)
-        format(S, '    /// ~w~n', [Doc]),
+        format(S, '    #[allow(dead_code)]~n    /// ~w~n', [Doc]),
         (( RetType = void ; member(mutable, Props) ) ->
             MutSelf = '&mut self'
         ;
@@ -2633,24 +2640,26 @@ emit_shared_method(S, prolog, MethodName) :-
     compile_logic(prolog, MethodName, Body),
     member(container(Container), Props),
     (member(mutable, Props) -> Mutable = true ; Mutable = false),
+    %% Mark unused args with _ prefix to avoid Prolog singleton warnings
+    prolog_mark_unused_args(Args, Body, MArgs),
     %% Comment/doc
     format(S, '%% ~w~n', [Doc]),
     %% Build argument list
     (Container = none ->
         %% Standalone predicate
         (RetType = void ->
-            (Args = [] ->
+            (MArgs = [] ->
                 format(S, '~w :-~n', [Name])
             ;
-                atomic_list_concat(Args, ', ', ArgsStr),
+                atomic_list_concat(MArgs, ', ', ArgsStr),
                 prolog_capitalize_args(ArgsStr, CArgs),
                 format(S, '~w(~w) :-~n', [Name, CArgs])
             )
         ;
-            (Args = [] ->
+            (MArgs = [] ->
                 format(S, '~w(Result) :-~n', [Name])
             ;
-                atomic_list_concat(Args, ', ', ArgsStr),
+                atomic_list_concat(MArgs, ', ', ArgsStr),
                 prolog_capitalize_args(ArgsStr, CArgs),
                 format(S, '~w(~w, Result) :-~n', [Name, CArgs])
             )
@@ -2658,26 +2667,26 @@ emit_shared_method(S, prolog, MethodName) :-
     ;
         %% Method on state dict
         (Mutable = true ->
-            (Args = [] ->
+            (MArgs = [] ->
                 format(S, '~w(State, State1) :-~n', [Name])
             ;
-                atomic_list_concat(Args, ', ', ArgsStr),
+                atomic_list_concat(MArgs, ', ', ArgsStr),
                 prolog_capitalize_args(ArgsStr, CArgs),
                 format(S, '~w(State, ~w, State1) :-~n', [Name, CArgs])
             )
         ; RetType = void ->
-            (Args = [] ->
+            (MArgs = [] ->
                 format(S, '~w(State) :-~n', [Name])
             ;
-                atomic_list_concat(Args, ', ', ArgsStr),
+                atomic_list_concat(MArgs, ', ', ArgsStr),
                 prolog_capitalize_args(ArgsStr, CArgs),
                 format(S, '~w(State, ~w) :-~n', [Name, CArgs])
             )
         ;
-            (Args = [] ->
+            (MArgs = [] ->
                 format(S, '~w(State, Result) :-~n', [Name])
             ;
-                atomic_list_concat(Args, ', ', ArgsStr),
+                atomic_list_concat(MArgs, ', ', ArgsStr),
                 prolog_capitalize_args(ArgsStr, CArgs),
                 format(S, '~w(State, ~w, Result) :-~n', [Name, CArgs])
             )
@@ -2708,11 +2717,36 @@ prolog_capitalize_args(ArgsStr, Result) :-
     split_string(ArgsStr, ", ", "", Parts0),
     exclude([P]>>(P = ""), Parts0, Parts),
     maplist([P, Cap]>>(
-        string_chars(P, [H|T]),
-        upcase_atom(H, UH),
-        atom_chars(Cap, [UH|T])
+        string_chars(P, Chars),
+        prolog_capitalize_one_arg(Chars, CapChars),
+        atom_chars(Cap, CapChars)
     ), Parts, CapParts),
     atomic_list_concat(CapParts, ', ', Result).
+
+%% Capitalize first letter; handle _prefix by capitalizing second char
+prolog_capitalize_one_arg(['_', H|T], ['_', UH|T]) :- !,
+    upcase_atom(H, UH).
+prolog_capitalize_one_arg([H|T], [UH|T]) :-
+    upcase_atom(H, UH).
+
+%% Mark unused args with _ prefix for Prolog singleton avoidance
+%% prolog_mark_unused_args(+Args, +Body, -MarkedArgs)
+%% Checks if each capitalized arg appears in the body; if not, prepends _
+prolog_mark_unused_args([], _, []).
+prolog_mark_unused_args([Arg|Rest], Body, [Marked|RestMarked]) :-
+    atom_string(Arg, ArgStr),
+    atom_string(Body, BodyStr),
+    %% Check both lowercase (pre-capitalize) and capitalized forms
+    string_chars(ArgStr, [H|T]),
+    upcase_atom(H, UH),
+    atom_chars(CapArg, [UH|T]),
+    atom_string(CapArg, CapStr),
+    ((sub_string(BodyStr, _, _, _, ArgStr) ; sub_string(BodyStr, _, _, _, CapStr)) ->
+        Marked = Arg
+    ;
+        atom_concat('_', Arg, Marked)
+    ),
+    prolog_mark_unused_args(Rest, Body, RestMarked).
 
 %% Capitalize parameter names in the body text (budget → Budget, text → Text)
 %% Uses word-boundary replacement to avoid over-matching substrings
@@ -4350,7 +4384,7 @@ shared_logic(streaming, streaming_avg_token_rate, [
     arg_types([]),
     doc("Return average tokens per second. Returns 0.0 if elapsed time is zero."),
     container('StreamingHandler'),
-    body_template("if ~lte(self_direct(elapsed), literal(0))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(token_count)), self_direct(elapsed)))~")
+    body_template("if ~lte(self_direct(elapsed), literal(0.0))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(token_count)), self_direct(elapsed)))~")
 ]).
 
 %% --- Config module methods ---
@@ -4360,6 +4394,78 @@ shared_logic(config, config_merge, [
     doc("Return the value to use for a config key: the provided value if non-empty, otherwise the existing setting."),
     container('ConfigLoader'),
     body_template("if ~gt(len_of(value), literal(0))~:\n    ~return_val(value)~\n~return_val(self_direct(settings))~")
+]).
+
+%% --- Security module methods ---
+shared_logic(security, is_hidden_path, [
+    signature(is_hidden_path, [path], bool),
+    arg_types([string]),
+    doc("Check if a path component starts with a dot (hidden file/directory)."),
+    container(none),
+    body_template("~return_val(str_starts_with(path, \".\"))~")
+]).
+
+%% --- Streaming module methods ---
+shared_logic(streaming, streaming_is_active, [
+    signature(is_active, [], bool),
+    arg_types([]),
+    doc("Check if the streaming handler is actively receiving tokens (token_count > 0)."),
+    container('StreamingHandler'),
+    body_template("~return_val(gt(self_direct(token_count), literal(0)))~")
+]).
+
+%% --- Retry module methods ---
+shared_logic(retry, retry_attempts_left, [
+    signature(attempts_left, [], int),
+    arg_types([]),
+    doc("Return the number of retry attempts remaining."),
+    container('RetryHandler'),
+    body_template("~return_val(sub(self_direct(max_retries), self_direct(attempt)))~")
+]).
+
+%% --- Output parser module methods ---
+shared_logic(output_parser, content_is_json, [
+    signature(content_is_json, [text], bool),
+    arg_types([string]),
+    doc("Check if text starts with { or [ indicating JSON content."),
+    container(none),
+    body_template("~return_val(or_expr(str_starts_with(text, \"{\"), str_starts_with(text, \"[\")))~")
+]).
+
+%% --- MCP module methods ---
+shared_logic(mcp, mcp_server_name, [
+    signature(server_name, [], string),
+    arg_types([]),
+    doc("Return the name of this MCP server/client instance."),
+    container('MCPClient'),
+    body_template("~return_val(self_direct(name))~")
+]).
+
+%% --- Config module methods ---
+shared_logic(config, config_field_count, [
+    signature(field_count, [], int),
+    arg_types([]),
+    doc("Return the number of configuration fields currently set."),
+    container('ConfigLoader'),
+    body_template("~return_val(len_of(self_direct(settings)))~")
+]).
+
+%% --- Sessions module methods ---
+shared_logic(sessions, session_is_recent, [
+    signature(is_recent, [created_at, now, threshold], bool),
+    arg_types([float, float, float]),
+    doc("Check if a session was created within the threshold (seconds)."),
+    container(none),
+    body_template("~return_val(lte(sub(now, created_at), threshold))~")
+]).
+
+%% --- Tools module methods ---
+shared_logic(tools, tool_name_is_valid, [
+    signature(name_is_valid, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if a tool name is non-empty."),
+    container(none),
+    body_template("~return_val(gt(len_of(tool_name), literal(0)))~")
 ]).
 
 %% =============================================================================
@@ -6072,6 +6178,7 @@ generate_prolog_costs :-
                  cost_tracker_total/2, cost_tracker_format/2]),
         det([cost_tracker_init/1, cost_tracker_add/4,
              cost_tracker_total/2, cost_tracker_format/2]),
+        discontiguous([total_tokens/2]),
         dependencies([module(costs)])
     ]),
     agent_loop_components:emit_cost_facts(S, [target(prolog)]),
@@ -6387,7 +6494,7 @@ generate_rust_costs :-
     %% Emit shared_logic methods (replacing former fragment methods)
     emit_shared_method(S, rust, is_over_budget),
     emit_shared_method(S, rust, budget_remaining),
-    %% cost_total_messages skipped — CostTracker has no message_count field in Rust
+    emit_shared_method(S, rust, cost_total_messages),
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
     close(S),
@@ -6607,7 +6714,7 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_len),
     emit_shared_method(S, rust, context_is_empty),
     emit_shared_method(S, rust, estimate_tokens),
-    %% context_token_budget skipped — ContextManager has no max_tokens/token_count fields in Rust
+    emit_shared_method(S, rust, context_token_budget),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/context.rs~n', []).
@@ -6714,7 +6821,8 @@ generate_rust_tool_handler :-
     write_rust(S, tool_result_cache_body),
     emit_shared_method(S, rust, cache_clear),
     emit_shared_method(S, rust, cache_len),
-    %% cache_evict_oldest/cache_hit_rate skipped — ToolResultCache has no max_size/hits/total_lookups fields in Rust
+    emit_shared_method(S, rust, cache_evict_oldest),
+    emit_shared_method(S, rust, cache_hit_rate),
     write_rust(S, tool_result_cache_tail),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
@@ -6930,8 +7038,11 @@ generate_rust_main :-
     %% Emit shared_logic methods for streaming (replacing former fragment methods)
     emit_shared_method(S, rust, on_token),
     emit_shared_method(S, rust, format_summary),
-    %% chunk_is_complete/stream_byte_count/streaming_avg_token_rate skipped — struct field mismatches or standalone-in-impl-block issue
+    %% stream_byte_count skipped — len() returns usize, shared_logic returns i64
+    emit_shared_method(S, rust, streaming_avg_token_rate),
     write(S, '}\n\n'),
+    %% chunk_is_complete is standalone (container=none), emit outside impl block
+    emit_shared_method(S, rust, chunk_is_complete),
     %% Main loop (expects `config`, `matches`, `session_manager` to be defined)
     write_rust(S, main_loop),
     write(S, '}\n'),
@@ -9353,7 +9464,10 @@ generate_clojure_cost_test(Dir) :-
     write(S, '(deftest test-reset\n'),
     write(S, '  (let [state (costs/reset {:total-cost 5.0 :total-input-tokens 100 :total-output-tokens 50 :message-count 3})]\n'),
     write(S, '    (is (= 0.0 (:total-cost state)))\n'),
-    write(S, '    (is (= 0 (:total-input-tokens state)))))\n'),
+    write(S, '    (is (= 0 (:total-input-tokens state)))))\n\n'),
+    write(S, '(deftest test-total-messages\n'),
+    write(S, '  (is (= 5 (costs/total-messages {:message-count 5})))\n'),
+    write(S, '  (is (= 0 (costs/total-messages {:message-count 0}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -9390,7 +9504,13 @@ generate_clojure_context_test(Dir) :-
     write(S, '(deftest test-context-message-count\n'),
     write(S, '  (is (= 3 (ctx/context-message-count {:messages [{} {} {}]}))))\n\n'),
     write(S, '(deftest test-get-format\n'),
-    write(S, '  (is (= "json" (ctx/get-format {:format "json"}))))\n'),
+    write(S, '  (is (= "json" (ctx/get-format {:format "json"}))))\n\n'),
+    write(S, '(deftest test-token-budget\n'),
+    write(S, '  (is (= -1 (ctx/token-budget {:max-tokens 0 :token-count 0})))\n'),
+    write(S, '  (is (= 80 (ctx/token-budget {:max-tokens 100 :token-count 20}))))\n\n'),
+    write(S, '(deftest test-context-messages-remaining\n'),
+    write(S, '  (is (= -1 (ctx/messages-remaining {:max-messages 0 :messages []})))\n'),
+    write(S, '  (is (= 3 (ctx/messages-remaining {:max-messages 5 :messages [{} {}]}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/context_test.clj~n', []).
 
@@ -9425,7 +9545,13 @@ generate_clojure_tool_cache_test(Dir) :-
     write(S, '(deftest test-make-key\n'),
     write(S, '  (let [key (cache/make-key {:cache {}} "bash" {"cmd" "ls -la"})]\n'),
     write(S, '    (is (string? key))\n'),
-    write(S, '    (is (pos? (count key)))))\n'),
+    write(S, '    (is (pos? (count key)))))\n\n'),
+    write(S, '(deftest test-evict-oldest\n'),
+    write(S, '  (is (= 0 (cache/evict-oldest {:cache {} :max-size 100})))\n'),
+    write(S, '  (is (= 1 (cache/evict-oldest {:cache {"a" 1 "b" 2} :max-size 2}))))\n\n'),
+    write(S, '(deftest test-cache-hit-rate\n'),
+    write(S, '  (is (= 0.0 (cache/cache-hit-rate {:hits 0 :total-lookups 0})))\n'),
+    write(S, '  (is (= 0.5 (cache/cache-hit-rate {:hits 5 :total-lookups 10}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tool_cache_test.clj~n', []).
 
@@ -9457,7 +9583,10 @@ generate_clojure_retry_test(Dir) :-
     write(S, '  (is (false? (retry/max-retries-reached {:attempt 1 :max-retries 3}))))\n\n'),
     write(S, '(deftest test-is-first-attempt\n'),
     write(S, '  (is (true? (retry/is-first-attempt 0)))\n'),
-    write(S, '  (is (false? (retry/is-first-attempt 1))))\n'),
+    write(S, '  (is (false? (retry/is-first-attempt 1))))\n\n'),
+    write(S, '(deftest test-attempts-left\n'),
+    write(S, '  (is (= 2 (retry/attempts-left {:max-retries 3 :attempt 1})))\n'),
+    write(S, '  (is (= 0 (retry/attempts-left {:max-retries 3 :attempt 3}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -9524,7 +9653,13 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '  (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))\n\n'),
     write(S, '(deftest test-chunk-is-complete\n'),
     write(S, '  (is (streaming/chunk-is-complete "data: hello"))\n'),
-    write(S, '  (is (not (streaming/chunk-is-complete "partial"))))\n'),
+    write(S, '  (is (not (streaming/chunk-is-complete "partial"))))\n\n'),
+    write(S, '(deftest test-avg-token-rate\n'),
+    write(S, '  (is (= 0.0 (streaming/avg-token-rate {:token-count 100 :elapsed 0})))\n'),
+    write(S, '  (is (= 50.0 (streaming/avg-token-rate {:token-count 100 :elapsed 2.0}))))\n\n'),
+    write(S, '(deftest test-streaming-is-active\n'),
+    write(S, '  (is (true? (streaming/is-active {:token-count 5 :char-count 0})))\n'),
+    write(S, '  (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 
@@ -9570,7 +9705,12 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (not (config/is-debug {:debug "false"}))))\n\n'),
     write(S, '(deftest test-config-has-field\n'),
     write(S, '  (is (true? (config/config-has-field {:model "gpt-4"} :model)))\n'),
-    write(S, '  (is (false? (config/config-has-field {} :nonexistent))))\n'),
+    write(S, '  (is (false? (config/config-has-field {} :nonexistent))))\n\n'),
+    write(S, '(deftest test-config-merge\n'),
+    write(S, '  (is (= "new-val" (config/merge {:settings "old"} "k" "new-val")))\n'),
+    write(S, '  (is (= "old" (config/merge {:settings "old"} "k" ""))))\n\n'),
+    write(S, '(deftest test-config-field-count\n'),
+    write(S, '  (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 
@@ -9593,7 +9733,10 @@ generate_clojure_security_test(Dir) :-
     write(S, '  (is (pos? (count security/blocked-paths))))\n\n'),
     write(S, '(deftest test-path-blocked\n'),
     write(S, '  (is (some? (security/path-blocked? "/etc/shadow")))\n'),
-    write(S, '  (is (not (security/path-blocked? "src/main.rs"))))\n'),
+    write(S, '  (is (not (security/path-blocked? "src/main.rs"))))\n\n'),
+    write(S, '(deftest test-is-hidden-path\n'),
+    write(S, '  (is (true? (security/is-hidden-path ".git")))\n'),
+    write(S, '  (is (false? (security/is-hidden-path "src"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -9622,7 +9765,11 @@ generate_clojure_output_parser_test(Dir) :-
     write(S, '  (is (false? (parser/is-empty-response "hello"))))\n\n'),
     write(S, '(deftest test-content-exceeds-length\n'),
     write(S, '  (is (true? (parser/content-exceeds-length "hello world" 5)))\n'),
-    write(S, '  (is (false? (parser/content-exceeds-length "hi" 5))))\n'),
+    write(S, '  (is (false? (parser/content-exceeds-length "hi" 5))))\n\n'),
+    write(S, '(deftest test-content-is-json\n'),
+    write(S, '  (is (true? (parser/content-is-json "{key: 1}")))\n'),
+    write(S, '  (is (true? (parser/content-is-json "[1,2,3]")))\n'),
+    write(S, '  (is (false? (parser/content-is-json "hello"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
 
@@ -9651,7 +9798,10 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '  (is (= 0 (sessions/session-count [])))\n'),
     write(S, '  (is (= 2 (sessions/session-count ["a.json" "b.json" "readme.txt"]))))\n\n'),
     write(S, '(deftest test-session-dir\n'),
-    write(S, '  (is (string? (sessions/session-dir {:sessions-dir "/tmp/sessions"}))))\n'),
+    write(S, '  (is (string? (sessions/session-dir {:sessions-dir "/tmp/sessions"}))))\n\n'),
+    write(S, '(deftest test-session-is-recent\n'),
+    write(S, '  (is (true? (sessions/is-recent 100.0 105.0 10.0)))\n'),
+    write(S, '  (is (false? (sessions/is-recent 100.0 200.0 10.0))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
 
@@ -11729,6 +11879,7 @@ pub struct CostTracker {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub records: Vec<UsageRecord>,
+    pub message_count: i64,
 }
 
 impl CostTracker {
@@ -12149,6 +12300,8 @@ pub struct ContextManager {
     pub messages: Vec<Message>,
     pub max_messages: usize,
     pub max_context_tokens: i64,
+    pub max_tokens: i64,
+    pub token_count: i64,
     pub max_chars: i64,
     pub max_words: i64,
     pub context_mode: String,
@@ -12161,6 +12314,8 @@ impl Default for ContextManager {
             messages: Vec::new(),
             max_messages: 50,
             max_context_tokens: 100000,
+            max_tokens: 100000,
+            token_count: 0,
             max_chars: 0,
             max_words: 0,
             context_mode: "continue".to_string(),
@@ -12175,6 +12330,8 @@ impl ContextManager {
             messages: Vec::new(),
             max_messages,
             max_context_tokens,
+            max_tokens: max_context_tokens,
+            token_count: 0,
             max_chars,
             max_words,
             context_mode: context_mode.to_string(),
@@ -14219,11 +14376,13 @@ pub struct StreamingTokenCounter {
     pub token_count: usize,
     pub char_count: usize,
     pub show_live: bool,
+    pub elapsed: f64,
+    pub buffer: Vec<u8>,
 }
 
 impl StreamingTokenCounter {
     pub fn new(show_live: bool) -> Self {
-        Self { token_count: 0, char_count: 0, show_live }
+        Self { token_count: 0, char_count: 0, show_live, elapsed: 0.0, buffer: Vec::new() }
     }
 
 ').
@@ -14630,6 +14789,9 @@ pub struct ToolResultCache {
     cache: std::collections::HashMap<String, (Instant, ToolResult)>,
     ttl: std::time::Duration,
     skip_tools: std::collections::HashSet<String>,
+    pub max_size: usize,
+    pub hits: u64,
+    pub total_lookups: u64,
 }
 
 impl ToolResultCache {
@@ -14638,7 +14800,7 @@ impl ToolResultCache {
         skip.insert("bash".to_string());
         skip.insert("write".to_string());
         skip.insert("edit".to_string());
-        Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip }
+        Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip, max_size: 1000, hits: 0, total_lookups: 0 }
     }
 ').
 
@@ -17261,10 +17423,11 @@ fn test_shared_logic_security_is_path_safe() {
 }
 
 #[test]
-fn test_shared_logic_costs_budget_remaining() {
+fn test_shared_logic_costs_methods() {
     let src = include_str!("../src/costs.rs");
     assert!(src.contains("fn is_over_budget"), "costs.rs should have is_over_budget");
     assert!(src.contains("fn budget_remaining"), "costs.rs should have budget_remaining");
+    assert!(src.contains("fn total_messages"), "costs.rs should have total_messages");
 }
 
 #[test]
@@ -17277,6 +17440,29 @@ fn test_shared_logic_retry_methods() {
 fn test_shared_logic_sessions_methods() {
     let src = include_str!("../src/sessions.rs");
     assert!(src.contains("fn session_age"), "sessions.rs should have session_age");
+}
+
+#[test]
+fn test_shared_logic_context_methods() {
+    let src = include_str!("../src/context.rs");
+    assert!(src.contains("fn clear("), "context.rs should have clear");
+    assert!(src.contains("fn is_empty("), "context.rs should have is_empty");
+    assert!(src.contains("fn token_budget("), "context.rs should have token_budget");
+}
+
+#[test]
+fn test_shared_logic_streaming_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn avg_token_rate("), "main.rs should have avg_token_rate");
+    assert!(src.contains("fn chunk_is_complete("), "main.rs should have chunk_is_complete");
+}
+
+#[test]
+fn test_shared_logic_tool_cache_methods() {
+    let src = include_str!("../src/tool_handler.rs");
+    assert!(src.contains("fn clear("), "tool_handler.rs should have clear");
+    assert!(src.contains("fn evict_oldest("), "tool_handler.rs should have evict_oldest");
+    assert!(src.contains("fn cache_hit_rate("), "tool_handler.rs should have cache_hit_rate");
 }
 ').
 

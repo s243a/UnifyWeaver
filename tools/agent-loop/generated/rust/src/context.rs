@@ -16,6 +16,8 @@ pub struct ContextManager {
     pub messages: Vec<Message>,
     pub max_messages: usize,
     pub max_context_tokens: i64,
+    pub max_tokens: i64,
+    pub token_count: i64,
     pub max_chars: i64,
     pub max_words: i64,
     pub context_mode: String,
@@ -28,6 +30,8 @@ impl Default for ContextManager {
             messages: Vec::new(),
             max_messages: 50,
             max_context_tokens: 100000,
+            max_tokens: 100000,
+            token_count: 0,
             max_chars: 0,
             max_words: 0,
             context_mode: "continue".to_string(),
@@ -42,6 +46,8 @@ impl ContextManager {
             messages: Vec::new(),
             max_messages,
             max_context_tokens,
+            max_tokens: max_context_tokens,
+            token_count: 0,
             max_chars,
             max_words,
             context_mode: context_mode.to_string(),
@@ -255,24 +261,37 @@ impl ContextManager {
         out
     }
 
+    #[allow(dead_code)]
     /// Clear all messages from context.
     pub fn clear(&mut self) {
         self.messages.clear();
     }
 
+    #[allow(dead_code)]
     /// Return number of messages in context.
     pub fn len(&self) -> usize {
         return self.messages.len();
     }
 
+    #[allow(dead_code)]
     /// Check if context has no messages.
     pub fn is_empty(&self) -> bool {
         return self.messages.is_empty();
     }
 
+    #[allow(dead_code)]
     /// Estimate token count using chars/4 heuristic.
     pub fn estimate_tokens(&self) -> usize {
         return self.char_count() / 4;
+    }
+
+    #[allow(dead_code)]
+    /// Return the remaining token budget. Returns -1 if no max_tokens set.
+    pub fn token_budget(&self) -> i64 {
+        if self.max_tokens <= 0 {
+            return -1;
+        }
+        return self.max_tokens - self.token_count;
     }
 
 }

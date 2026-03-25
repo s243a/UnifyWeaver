@@ -26,3 +26,8 @@
 (deftest test-content-exceeds-length
   (is (true? (parser/content-exceeds-length "hello world" 5)))
   (is (false? (parser/content-exceeds-length "hi" 5))))
+
+(deftest test-content-is-json
+  (is (true? (parser/content-is-json "{key: 1}")))
+  (is (true? (parser/content-is-json "[1,2,3]")))
+  (is (false? (parser/content-is-json "hello"))))

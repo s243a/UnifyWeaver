@@ -108,7 +108,7 @@ truncate_string(Text, Max_len, Result) :-
 format_duration(Seconds, Result) :-
     Mins = (Seconds // 60),
     Secs = (Seconds mod 60),
-    Result = format(atom(Formatted), "~wm ~ws", [Mins, Secs]).
+    format(atom(Result), "~wm ~ws", [Mins, Secs]).
 
 %% Return the last N messages from context history.
 context_last_n(State, N, Result) :-
@@ -152,7 +152,7 @@ is_over_budget(State, Result) :-
 
 %% Return a formatted summary of context state: message count and estimated tokens.
 format_stats(State, Result) :-
-    format(atom(Formatted), "msgs=~w tok=~w", [length(State.messages, Result), estimate_tokens(State, Result)]).
+    format(atom(Result), "msgs=~w tok=~w", [length(State.messages, Result), estimate_tokens(State, Result)]).
 
 %% Return how many more messages can be added before reaching max_messages. Returns -1 if unlimited.
 messages_remaining(State, Result) :-
@@ -223,11 +223,15 @@ byte_count(State, Result) :-
 
 %% Return average tokens per second. Returns 0.0 if elapsed time is zero.
 avg_token_rate(State, Result) :-
-    (State.elapsed =< 0 ->
+    (State.elapsed =< 0.0 ->
         Result = 0.0
     ;
     Result is (float(State.token_count) / State.elapsed)
     ).
+
+%% Check if the streaming handler is actively receiving tokens (token_count > 0).
+is_active(State, Result) :-
+    (State.token_count > 0 -> Result = true ; Result = false).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -242,7 +246,7 @@ len(State, Result) :-
 
 %% Build a canonical cache key from tool name and arguments.
 make_key(State, Tool_name, Args, Result) :-
-    Result = format(atom(Formatted), "~w:~w", [Tool_name, atom_json_term(Args, JsonStr, [])]).
+    format(atom(Result), "~w:~w", [Tool_name, atom_json_term(Args, JsonStr, [])]).
 
 %% Check if a tool should skip the cache (destructive tools).
 should_skip(State, Tool_name, Result) :-
@@ -331,7 +335,7 @@ mcp_is_notification(Method_name, Result) :-
 
 %% Get the current request ID as a string for JSON-RPC message construction.
 mcp_request_id_str(State, Result) :-
-    Result = format(atom(Formatted), "~w", [State.request_id]).
+    format(atom(Result), "~w", [State.request_id]).
 
 %% Check if the MCP client has an active connection.
 is_connected(State, Result) :-
@@ -352,6 +356,10 @@ server_count(State, Result) :-
 %% Return the reason for the last MCP disconnection, or empty string if connected.
 disconnect_reason(State, Result) :-
     Result = State.disconnect_reason.
+
+%% Return the name of this MCP server/client instance.
+server_name(State, Result) :-
+    Result = State.name.
 
 
 %% --- shared_logic: retry (generated from compile_logic) ---
@@ -395,6 +403,10 @@ max_retries_reached(State, Result) :-
 %% Calculate exponential backoff delay: base_delay * 2^attempt.
 retry_delay(State, Result) :-
     Result is (State.base_delay * float((2 * State.attempt))).
+
+%% Return the number of retry attempts remaining.
+attempts_left(State, Result) :-
+    Result is (State.max_retries - State.attempt).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -440,6 +452,10 @@ content_exceeds_length(Text, Max_length, Result) :-
 is_empty_response(Text, Result) :-
     length(normalize_space(atom(Result), Text), Result) =:= 0.
 
+%% Check if text starts with { or [ indicating JSON content.
+content_is_json(Text, Result) :-
+    ((atom_concat('{', _, Text) ; atom_concat('[', _, Text)) -> Result = true ; Result = false).
+
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
 
@@ -453,7 +469,7 @@ session_exists(State, Session_id, Result) :-
 
 %% Build the filename for a session (id + .json extension).
 session_filename(Session_id, Result) :-
-    Result = format(atom(Formatted), "~w.json", [Session_id]).
+    format(atom(Result), "~w.json", [Session_id]).
 
 %% Check if a filename is a session file (ends with .json).
 session_list_filter(Filename, Result) :-
@@ -489,7 +505,7 @@ session_id_from_filename(Filename, Result) :-
 
 %% Build a session display name from its identifier.
 session_name_from_id(Session_id, Result) :-
-    Result = format(atom(Formatted), "session-~w", [Session_id]).
+    format(atom(Result), "session-~w", [Session_id]).
 
 %% Check if a session has exceeded its maximum age in seconds.
 is_expired(Age, Max_age, Result) :-
@@ -502,6 +518,10 @@ has_metadata(Data, Result) :-
 %% Return the age of a session in seconds given creation time and current time.
 session_age(Created_at, Now, Result) :-
     Result is (Now - Created_at).
+
+%% Check if a session was created within the threshold (seconds).
+is_recent(Created_at, Now, Threshold, Result) :-
+    ((Now - Created_at) =< Threshold -> Result = true ; Result = false).
 
 conversation([]).
 max_iterations(0).

@@ -71,6 +71,12 @@ defmodule AgentLoop.OutputParser do
     Enum.count(String.trim(text)) == 0
   end
 
+  @doc "Check if text starts with { or [ indicating JSON content."
+  @spec content_is_json(String.t()) :: boolean()
+  def content_is_json(text) do
+    (String.starts_with?(text, "{") or String.starts_with?(text, "["))
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

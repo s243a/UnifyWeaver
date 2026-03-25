@@ -28,3 +28,7 @@
 (deftest test-is-first-attempt
   (is (true? (retry/is-first-attempt 0)))
   (is (false? (retry/is-first-attempt 1))))
+
+(deftest test-attempts-left
+  (is (= 2 (retry/attempts-left {:max-retries 3 :attempt 1})))
+  (is (= 0 (retry/attempts-left {:max-retries 3 :attempt 3}))))

@@ -24,3 +24,10 @@
 (deftest test-config-has-field
   (is (true? (config/config-has-field {:model "gpt-4"} :model)))
   (is (false? (config/config-has-field {} :nonexistent))))
+
+(deftest test-config-merge
+  (is (= "new-val" (config/merge {:settings "old"} "k" "new-val")))
+  (is (= "old" (config/merge {:settings "old"} "k" ""))))
+
+(deftest test-config-field-count
+  (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))

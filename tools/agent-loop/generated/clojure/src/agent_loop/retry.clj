@@ -64,3 +64,9 @@
   (* (:base-delay state) (double (* 2 (:attempt state))))
 )
 
+(defn attempts-left
+  "Return the number of retry attempts remaining."
+  [state]
+  (- (:max-retries state) (:attempt state))
+)
+

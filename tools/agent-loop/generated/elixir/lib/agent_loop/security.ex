@@ -136,4 +136,10 @@ defmodule AgentLoop.Security do
     not String.starts_with?(filename, ".")
   end
 
+  @doc "Check if a path component starts with a dot (hidden file/directory)."
+  @spec is_hidden_path(String.t()) :: boolean()
+  def is_hidden_path(path) do
+    String.starts_with?(path, ".")
+  end
+
 end

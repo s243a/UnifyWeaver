@@ -53,6 +53,7 @@ pub struct CostTracker {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub records: Vec<UsageRecord>,
+    pub message_count: i64,
 }
 
 impl CostTracker {
@@ -94,6 +95,7 @@ impl CostTracker {
         )
     }
 
+    #[allow(dead_code)]
     /// Check if total cost exceeds budget. Budget of 0 means unlimited.
     pub fn is_over_budget(&self, budget: f64) -> bool {
         if budget <= 0.0 {
@@ -102,6 +104,7 @@ impl CostTracker {
         return self.total_cost() >= budget;
     }
 
+    #[allow(dead_code)]
     /// Return remaining budget in USD. Budget of 0 means unlimited (returns -1).
     pub fn budget_remaining(&self, budget: f64) -> f64 {
         if budget <= 0.0 {
@@ -110,8 +113,15 @@ impl CostTracker {
         return (budget - self.total_cost()).max(0.0);
     }
 
+    #[allow(dead_code)]
+    /// Return the total number of messages tracked by the cost tracker.
+    pub fn total_messages(&self) -> i64 {
+        return self.message_count;
+    }
+
 }
 
+#[allow(dead_code)]
 /// Compute cost from token count and price per 1M tokens.
 pub fn cost_compute(tokens: i64, price_per_million: f64) -> f64 {
     return (tokens as f64) * price_per_million / 1.0e+06;

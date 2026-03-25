@@ -90,9 +90,15 @@
 (defn avg-token-rate
   "Return average tokens per second. Returns 0.0 if elapsed time is zero."
   [state]
-  (if (<= (:elapsed state) 0)
+  (if (<= (:elapsed state) 0.0)
       0.0
       (/ (double (:token-count state)) (:elapsed state))
   )
+)
+
+(defn is-active
+  "Check if the streaming handler is actively receiving tokens (token_count > 0)."
+  [state]
+  (> (:token-count state) 0)
 )
 

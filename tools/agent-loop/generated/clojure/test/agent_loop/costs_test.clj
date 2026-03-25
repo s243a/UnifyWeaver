@@ -56,3 +56,7 @@
   (let [state (costs/reset {:total-cost 5.0 :total-input-tokens 100 :total-output-tokens 50 :message-count 3})]
     (is (= 0.0 (:total-cost state)))
     (is (= 0 (:total-input-tokens state)))))
+
+(deftest test-total-messages
+  (is (= 5 (costs/total-messages {:message-count 5})))
+  (is (= 0 (costs/total-messages {:message-count 0}))))

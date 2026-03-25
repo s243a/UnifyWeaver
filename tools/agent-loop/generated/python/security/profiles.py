@@ -154,3 +154,7 @@ def is_visible_file(filename):
     """Check if a filename is not a hidden dotfile."""
     return not filename.startswith(".")
 
+def is_hidden_path(path):
+    """Check if a path component starts with a dot (hidden file/directory)."""
+    return path.startswith(".")
+

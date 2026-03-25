@@ -113,3 +113,7 @@ is_path_safe(Path, Result) :-
 is_visible_file(Filename, Result) :-
     (\+ atom_concat('.', _, Filename) -> Result = true ; Result = false).
 
+%% Check if a path component starts with a dot (hidden file/directory).
+is_hidden_path(Path, Result) :-
+    (atom_concat('.', _, Path) -> Result = true ; Result = false).
+

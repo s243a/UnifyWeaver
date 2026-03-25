@@ -97,13 +97,21 @@ pub static PARANOID_CONFIRM: &[&str] = &[
 
 // --- shared_logic: security (generated from compile_logic) ---
 
+#[allow(dead_code)]
 /// Check if a path does not contain directory traversal sequences.
 pub fn is_path_safe(path: &str) -> bool {
     return !(path.starts_with("..")) && !(path.starts_with("/.."));
 }
 
+#[allow(dead_code)]
 /// Check if a filename is not a hidden dotfile.
 pub fn is_visible_file(filename: &str) -> bool {
     return !(filename.starts_with("."));
+}
+
+#[allow(dead_code)]
+/// Check if a path component starts with a dot (hidden file/directory).
+pub fn is_hidden_path(path: &str) -> bool {
+    return path.starts_with(".");
 }
 

@@ -159,4 +159,10 @@ defmodule AgentLoop.Config do
     end
   end
 
+  @doc "Return the number of configuration fields currently set."
+  @spec field_count(t()) :: integer()
+  def field_count(%__MODULE__{} = state) do
+    Enum.count(state.settings)
+  end
+
 end

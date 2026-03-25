@@ -31,3 +31,11 @@
 (deftest test-chunk-is-complete
   (is (streaming/chunk-is-complete "data: hello"))
   (is (not (streaming/chunk-is-complete "partial"))))
+
+(deftest test-avg-token-rate
+  (is (= 0.0 (streaming/avg-token-rate {:token-count 100 :elapsed 0})))
+  (is (= 50.0 (streaming/avg-token-rate {:token-count 100 :elapsed 2.0}))))
+
+(deftest test-streaming-is-active
+  (is (true? (streaming/is-active {:token-count 5 :char-count 0})))
+  (is (false? (streaming/is-active {:token-count 0 :char-count 0}))))

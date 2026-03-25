@@ -55,3 +55,9 @@
   (not (.startsWith filename "."))
 )
 
+(defn is-hidden-path
+  "Check if a path component starts with a dot (hidden file/directory)."
+  [path]
+  (.startsWith path ".")
+)
+
