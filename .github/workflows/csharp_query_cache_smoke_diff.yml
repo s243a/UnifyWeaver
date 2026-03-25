@@ -315,6 +315,78 @@ jobs:
               return $false
             }
 
+            function Format-SignedSecondsDelta {
+              param(
+                [Parameter(Mandatory = $false)]
+                $Seconds
+              )
+
+              if ($null -eq $Seconds) {
+                return $null
+              }
+
+              $numericSeconds = [double]$Seconds
+              $sign = if ($numericSeconds -ge 0) { '+' } else { '' }
+              return ("{0}{1:F1}s" -f $sign, $numericSeconds)
+            }
+
+            function Format-GeneratedAtUtc {
+              param(
+                [Parameter(Mandatory = $false)]
+                $Value
+              )
+
+              if ($null -eq $Value) {
+                return $null
+              }
+
+              if ($Value -is [DateTime]) {
+                return $Value.ToUniversalTime().ToString('o')
+              }
+
+              if ($Value -is [DateTimeOffset]) {
+                return $Value.ToUniversalTime().ToString('o')
+              }
+
+              $stringValue = [string]$Value
+              if ([string]::IsNullOrWhiteSpace($stringValue)) {
+                return $null
+              }
+
+              $parsedTimestamp = [DateTimeOffset]::MinValue
+              if ([DateTimeOffset]::TryParse($stringValue, [ref]$parsedTimestamp)) {
+                return $parsedTimestamp.ToUniversalTime().ToString('o')
+              }
+
+              return $stringValue
+            }
+
+            function Get-GeneratedAtDelta {
+              param(
+                [Parameter(Mandatory = $false)]
+                [string]$BaselineGeneratedAtUtc,
+
+                [Parameter(Mandatory = $false)]
+                [string]$CompareGeneratedAtUtc
+              )
+
+              if ([string]::IsNullOrWhiteSpace($BaselineGeneratedAtUtc) -or [string]::IsNullOrWhiteSpace($CompareGeneratedAtUtc)) {
+                return $null
+              }
+
+              $baselineTimestamp = [DateTimeOffset]::MinValue
+              $compareTimestamp = [DateTimeOffset]::MinValue
+              if (-not [DateTimeOffset]::TryParse($BaselineGeneratedAtUtc, [ref]$baselineTimestamp)) {
+                return $null
+              }
+
+              if (-not [DateTimeOffset]::TryParse($CompareGeneratedAtUtc, [ref]$compareTimestamp)) {
+                return $null
+              }
+
+              return Format-SignedSecondsDelta -Seconds (($compareTimestamp - $baselineTimestamp).TotalSeconds)
+            }
+
             $diff = Get-Content $env:CACHE_SMOKE_DIFF_JSON_PATH -Raw | ConvertFrom-Json
             $thresholds = $diff.thresholds
             $sliceMap = @{}
@@ -326,6 +398,9 @@ jobs:
             $remainingSliceNames = @($sliceMap.Keys | Where-Object { $_ -notin $orderedSliceNames } | Sort-Object)
             $sliceSummaryNames = @($orderedSliceNames + $remainingSliceNames | Select-Object -Unique)
             $regressionHighlights = @()
+            $baselineGeneratedAtUtc = Format-GeneratedAtUtc -Value $diff.generatedAtUtc.baseline
+            $compareGeneratedAtUtc = Format-GeneratedAtUtc -Value $diff.generatedAtUtc.compare
+            $generatedAtDelta = Get-GeneratedAtDelta -BaselineGeneratedAtUtc $baselineGeneratedAtUtc -CompareGeneratedAtUtc $compareGeneratedAtUtc
 
             if (Test-IsStatusRegression -BaselineStatus ([string]$diff.overallResult.baseline) -CompareStatus ([string]$diff.overallResult.compare)) {
               $regressionHighlights += "Overall result regressed: `"$($diff.overallResult.baseline)`" -> `"$($diff.overallResult.compare)`"`"
@@ -353,11 +428,13 @@ jobs:
               "- Baseline resolution: `"$($env:BASELINE_RESOLUTION_SOURCE)`"` (requested ref: `"$($env:BASELINE_REQUESTED_REF)`"`, resolved ref: `"$($env:BASELINE_RESOLVED_REF)`"`)",
               "- Baseline resolved SHA: `"$($env:BASELINE_RESOLVED_SHA)`"",
               "- Baseline run URL: `"$($env:BASELINE_RESOLVED_URL)`"",
+              "- Baseline summary generated at (UTC): $(if ([string]::IsNullOrWhiteSpace($baselineGeneratedAtUtc)) { 'n/a' } else { '`"' + $baselineGeneratedAtUtc + '`"' })",
               "- Baseline artifact: `"$($env:BASELINE_ARTIFACT_NAME)`"",
               "- Compare run ID: `"$($env:COMPARE_RESOLVED_RUN_ID)`"",
               "- Compare resolution: `"$($env:COMPARE_RESOLUTION_SOURCE)`"` (requested ref: `"$($env:COMPARE_REQUESTED_REF)`"`, resolved ref: `"$($env:COMPARE_RESOLVED_REF)`"`)",
               "- Compare resolved SHA: `"$($env:COMPARE_RESOLVED_SHA)`"",
               "- Compare run URL: `"$($env:COMPARE_RESOLVED_URL)`"",
+              "- Compare summary generated at (UTC): $(if ([string]::IsNullOrWhiteSpace($compareGeneratedAtUtc)) { 'n/a' } else { '`"' + $compareGeneratedAtUtc + '`"' })",
               "- Compare URL: `"$($env:CACHE_SMOKE_DIFF_COMPARE_URL)`"",
               "- Compare artifact: `"$($env:COMPARE_ARTIFACT_NAME)`"",
               "- Diff JSON artifact: `"$($env:CACHE_SMOKE_DIFF_ARTIFACT_NAME)`"",
@@ -368,6 +445,10 @@ jobs:
               "- Max slice duration delta seconds: $(if ($null -eq $thresholds.maxSliceDurationDeltaSeconds) { 'disabled' } else { $thresholds.maxSliceDurationDeltaSeconds })",
               "- Thresholds passed: $(if ($thresholds.passed) { 'true' } else { 'false' })"
             ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+            if (-not [string]::IsNullOrWhiteSpace($generatedAtDelta)) {
+              "- Generated-at delta: `"$generatedAtDelta`"" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            }
 
             if ($regressionHighlights.Count -gt 0) {
               @(

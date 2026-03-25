@@ -218,6 +218,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
         - resolved refs
         - resolved SHAs
         - resolved run URLs
+        - baseline `generatedAtUtc`
+        - compare `generatedAtUtc`
+        - generated-at delta when both timestamps are present
         - GitHub compare URL derived from the resolved SHAs
         - artifact names
         - overall result delta
