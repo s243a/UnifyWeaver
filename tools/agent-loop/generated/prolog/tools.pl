@@ -131,12 +131,16 @@ needs_path_validation(Tool_name, Result) :-
     ((atom_concat('read', _, Tool_name) ; (atom_concat('write', _, Tool_name) ; atom_concat('edit', _, Tool_name))) -> Result = true ; Result = false).
 
 %% Return the number of arguments a tool accepts. Returns 0 if tool not found.
-arg_count(State, Tool_name, Result) :-
+arg_count(State, _Tool_name, Result) :-
     length(State.args, Result).
 
 %% Check if a tool has a JSON schema definition for its parameters.
-has_schema(State, Tool_name, Result) :-
+has_schema(State, _Tool_name, Result) :-
     length(State.schema, Result) > 0.
+
+%% Check if a tool name is non-empty.
+name_is_valid(Tool_name, Result) :-
+    length(Tool_name, Result) > 0.
 
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-

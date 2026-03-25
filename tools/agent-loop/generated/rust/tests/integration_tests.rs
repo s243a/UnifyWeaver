@@ -1776,10 +1776,11 @@ fn test_shared_logic_security_is_path_safe() {
 }
 
 #[test]
-fn test_shared_logic_costs_budget_remaining() {
+fn test_shared_logic_costs_methods() {
     let src = include_str!("../src/costs.rs");
     assert!(src.contains("fn is_over_budget"), "costs.rs should have is_over_budget");
     assert!(src.contains("fn budget_remaining"), "costs.rs should have budget_remaining");
+    assert!(src.contains("fn total_messages"), "costs.rs should have total_messages");
 }
 
 #[test]
@@ -1792,4 +1793,27 @@ fn test_shared_logic_retry_methods() {
 fn test_shared_logic_sessions_methods() {
     let src = include_str!("../src/sessions.rs");
     assert!(src.contains("fn session_age"), "sessions.rs should have session_age");
+}
+
+#[test]
+fn test_shared_logic_context_methods() {
+    let src = include_str!("../src/context.rs");
+    assert!(src.contains("fn clear("), "context.rs should have clear");
+    assert!(src.contains("fn is_empty("), "context.rs should have is_empty");
+    assert!(src.contains("fn token_budget("), "context.rs should have token_budget");
+}
+
+#[test]
+fn test_shared_logic_streaming_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn avg_token_rate("), "main.rs should have avg_token_rate");
+    assert!(src.contains("fn chunk_is_complete("), "main.rs should have chunk_is_complete");
+}
+
+#[test]
+fn test_shared_logic_tool_cache_methods() {
+    let src = include_str!("../src/tool_handler.rs");
+    assert!(src.contains("fn clear("), "tool_handler.rs should have clear");
+    assert!(src.contains("fn evict_oldest("), "tool_handler.rs should have evict_oldest");
+    assert!(src.contains("fn cache_hit_rate("), "tool_handler.rs should have cache_hit_rate");
 }

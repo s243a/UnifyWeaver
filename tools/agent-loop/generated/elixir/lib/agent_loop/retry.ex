@@ -66,4 +66,10 @@ defmodule AgentLoop.Retry do
     state.base_delay * (2 * state.attempt * 1.0)
   end
 
+  @doc "Return the number of retry attempts remaining."
+  @spec attempts_left(t()) :: integer()
+  def attempts_left(%__MODULE__{} = state) do
+    (state.max_retries - state.attempt)
+  end
+
 end

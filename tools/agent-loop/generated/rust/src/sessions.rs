@@ -191,6 +191,7 @@ fn now_iso8601() -> String {
     }
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month + 1, remaining_days + 1, hours, minutes, seconds)
 }
+#[allow(dead_code)]
 /// Return the age of a session in seconds given creation time and current time.
 pub fn session_age(created_at: f64, now: f64) -> f64 {
     return now - created_at;

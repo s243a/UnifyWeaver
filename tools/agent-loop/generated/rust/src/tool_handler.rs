@@ -577,6 +577,9 @@ pub struct ToolResultCache {
     cache: std::collections::HashMap<String, (Instant, ToolResult)>,
     ttl: std::time::Duration,
     skip_tools: std::collections::HashSet<String>,
+    pub max_size: usize,
+    pub hits: u64,
+    pub total_lookups: u64,
 }
 
 impl ToolResultCache {
@@ -585,13 +588,15 @@ impl ToolResultCache {
         skip.insert("bash".to_string());
         skip.insert("write".to_string());
         skip.insert("edit".to_string());
-        Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip }
+        Self { cache: std::collections::HashMap::new(), ttl: std::time::Duration::from_secs(ttl_secs), skip_tools: skip, max_size: 1000, hits: 0, total_lookups: 0 }
     }
+    #[allow(dead_code)]
     /// Build a canonical cache key from tool name and arguments.
     fn make_key(tool_name: &str, args: &std::collections::HashMap<String, serde_json::Value>) -> String {
         return format!("{}:{}", tool_name, serde_json::to_string(args).unwrap_or_default());
     }
 
+    #[allow(dead_code)]
     /// Check if a tool should skip the cache (destructive tools).
     fn should_skip(&self, tool_name: &str) -> bool {
         return self.skip_tools.contains(tool_name);
@@ -614,14 +619,34 @@ impl ToolResultCache {
         let key = Self::make_key(tool_name, args);
         self.cache.insert(key, (Instant::now(), result));
     }
+    #[allow(dead_code)]
     /// Clear all cached tool results.
     pub fn clear(&mut self) {
         self.cache.clear();
     }
 
+    #[allow(dead_code)]
     /// Return number of cached entries.
     pub fn len(&self) -> usize {
         return self.cache.len();
+    }
+
+    #[allow(dead_code)]
+    /// Return the number of items that would be evicted to make room (1 if full, 0 otherwise).
+    pub fn evict_oldest(&self) -> i64 {
+        if self.cache.len() >= self.max_size {
+            return 1;
+        }
+        return 0;
+    }
+
+    #[allow(dead_code)]
+    /// Compute cache hit rate. Returns 0.0 if no lookups.
+    pub fn cache_hit_rate(&self) -> f64 {
+        if self.total_lookups == 0 {
+            return 0.0;
+        }
+        return (self.hits as f64) / (self.total_lookups as f64);
     }
 
 

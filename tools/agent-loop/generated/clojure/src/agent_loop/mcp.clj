@@ -71,3 +71,9 @@
   (:disconnect-reason state)
 )
 
+(defn server-name
+  "Return the name of this MCP server/client instance."
+  [state]
+  (:name state)
+)
+

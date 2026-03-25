@@ -38,3 +38,11 @@
 
 (deftest test-get-format
   (is (= "json" (ctx/get-format {:format "json"}))))
+
+(deftest test-token-budget
+  (is (= -1 (ctx/token-budget {:max-tokens 0 :token-count 0})))
+  (is (= 80 (ctx/token-budget {:max-tokens 100 :token-count 20}))))
+
+(deftest test-context-messages-remaining
+  (is (= -1 (ctx/messages-remaining {:max-messages 0 :messages []})))
+  (is (= 3 (ctx/messages-remaining {:max-messages 5 :messages [{} {}]}))))

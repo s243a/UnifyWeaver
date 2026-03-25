@@ -98,6 +98,12 @@ defmodule AgentLoop.Sessions do
     (now - created_at)
   end
 
+  @doc "Check if a session was created within the threshold (seconds)."
+  @spec is_recent(float(), float(), float()) :: boolean()
+  def is_recent(created_at, now, threshold) do
+    (now - created_at) <= threshold
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

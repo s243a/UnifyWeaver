@@ -33,3 +33,11 @@
   (let [key (cache/make-key {:cache {}} "bash" {"cmd" "ls -la"})]
     (is (string? key))
     (is (pos? (count key)))))
+
+(deftest test-evict-oldest
+  (is (= 0 (cache/evict-oldest {:cache {} :max-size 100})))
+  (is (= 1 (cache/evict-oldest {:cache {"a" 1 "b" 2} :max-size 2}))))
+
+(deftest test-cache-hit-rate
+  (is (= 0.0 (cache/cache-hit-rate {:hits 0 :total-lookups 0})))
+  (is (= 0.5 (cache/cache-hit-rate {:hits 5 :total-lookups 10}))))

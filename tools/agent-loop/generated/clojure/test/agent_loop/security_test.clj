@@ -19,3 +19,7 @@
 (deftest test-path-blocked
   (is (some? (security/path-blocked? "/etc/shadow")))
   (is (not (security/path-blocked? "src/main.rs"))))
+
+(deftest test-is-hidden-path
+  (is (true? (security/is-hidden-path ".git")))
+  (is (false? (security/is-hidden-path "src"))))

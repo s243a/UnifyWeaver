@@ -86,3 +86,9 @@
   (zero? (count (clojure.string/trim text)))
 )
 
+(defn content-is-json
+  "Check if text starts with { or [ indicating JSON content."
+  [text]
+  (or (.startsWith text "{") (.startsWith text "["))
+)
+

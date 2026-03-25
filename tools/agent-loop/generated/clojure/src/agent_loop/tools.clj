@@ -91,3 +91,9 @@
   (> (count (:schema state)) 0)
 )
 
+(defn name-is-valid
+  "Check if a tool name is non-empty."
+  [tool-name]
+  (> (count tool-name) 0)
+)
+

@@ -121,3 +121,9 @@
   )
 )
 
+(defn field-count
+  "Return the number of configuration fields currently set."
+  [state]
+  (count (:settings state))
+)
+

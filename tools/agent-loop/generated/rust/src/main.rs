@@ -229,16 +229,19 @@ where
     }
     Err(format!("Failed after {} attempts: {}", config.max_attempts, last_err))
 }
+#[allow(dead_code)]
 /// Check if an HTTP status code is retryable (408, 429, 5xx).
 pub fn is_retryable_status(status: i64) -> bool {
     return matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
 }
 
+#[allow(dead_code)]
 /// Calculate exponential backoff delay, capped at max_delay.
 pub fn compute_delay(base_delay: f64, exponential_base: f64, attempt: i64, max_delay: f64) -> f64 {
     return (base_delay * exponential_base.powi((attempt - 1) as i32)).min(max_delay);
 }
 
+#[allow(dead_code)]
 /// Check if an HTTP status code is retryable (429 or 5xx).
 pub fn is_retryable_error(status_code: i64) -> bool {
     return (status_code >= 429 && status_code <= 429) || status_code >= 500;
@@ -1223,13 +1226,16 @@ pub struct StreamingTokenCounter {
     pub token_count: usize,
     pub char_count: usize,
     pub show_live: bool,
+    pub elapsed: f64,
+    pub buffer: Vec<u8>,
 }
 
 impl StreamingTokenCounter {
     pub fn new(show_live: bool) -> Self {
-        Self { token_count: 0, char_count: 0, show_live }
+        Self { token_count: 0, char_count: 0, show_live, elapsed: 0.0, buffer: Vec::new() }
     }
 
+    #[allow(dead_code)]
     /// Process a streamed token chunk: print it, update char and token counts.
     pub fn on_token(&mut self, token: &str) {
         use std::io::Write;
@@ -1238,11 +1244,27 @@ impl StreamingTokenCounter {
         self.token_count = std::cmp::max(1, self.char_count / 4);
     }
 
+    #[allow(dead_code)]
     /// Format a one-line summary of streaming stats.
     pub fn format_summary(&self) -> String {
         return format!("~{} tokens, {} chars", self.token_count, self.char_count);
     }
 
+    #[allow(dead_code)]
+    /// Return average tokens per second. Returns 0.0 if elapsed time is zero.
+    pub fn avg_token_rate(&self) -> f64 {
+        if self.elapsed <= 0.0 {
+            return 0.0;
+        }
+        return (self.token_count as f64) / self.elapsed;
+    }
+
+}
+
+#[allow(dead_code)]
+/// Check if a streaming chunk starts with the SSE data prefix.
+pub fn chunk_is_complete(chunk: &str) -> bool {
+    return chunk.starts_with("data:");
 }
 
 
