@@ -208,6 +208,10 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
     - Outputs:
       - diff JSON artifact: `csharp-query-smoke-diff-json`
       - job summary with:
+        - compact `Regression Highlights` section when present
+        - overall result regressions
+        - per-slice status regressions
+        - positive per-slice duration deltas
         - baseline / compare run IDs
         - resolution source (`explicit` vs `latest-successful`)
         - requested refs
