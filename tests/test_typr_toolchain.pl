@@ -2193,6 +2193,74 @@ test(structural_tree_dual_mutual_multi_context_output_checks_with_typr, [conditi
     retractall(user:typr_mutual_even_tree_ctx2(_, _, _)),
     retractall(user:typr_mutual_odd_tree_ctx2(_, _, _)).
 
+test(structural_tree_dual_mutual_integer_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_tree([], 0)),
+    assertz(user:(typr_mutual_sum_even_tree([V, L, R], S) :-
+        typr_mutual_sum_odd_tree(L, SL),
+        typr_mutual_sum_odd_tree(R, SR),
+        S is V + SL + SR
+    )),
+    assertz(user:typr_mutual_sum_odd_tree([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_tree([V, L, R], S) :-
+        typr_mutual_sum_even_tree(L, SL),
+        typr_mutual_sum_even_tree(R, SR),
+        S is V + SL + SR + 1
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_tree/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_tree/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_tree/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_sum_even_tree(_, _)),
+    retractall(user:typr_mutual_sum_odd_tree(_, _)).
+
+test(structural_tree_dual_mutual_integer_context_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_even_tree([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_even_tree([V, L, R], W, S) :-
+        typr_mutual_weight_odd_tree(L, W, SL),
+        typr_mutual_weight_odd_tree(R, W, SR),
+        S is (V * W) + SL + SR
+    )),
+    assertz(user:typr_mutual_weight_odd_tree([_, [], []], _W1, 1)),
+    assertz(user:(typr_mutual_weight_odd_tree([V, L, R], W, S) :-
+        typr_mutual_weight_even_tree(L, W, SL),
+        typr_mutual_weight_even_tree(R, W, SR),
+        S is (V * W) + SL + SR + 1
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_even_tree/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_odd_tree/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_even_tree/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_weight_even_tree(_, _, _)),
+    retractall(user:typr_mutual_weight_odd_tree(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

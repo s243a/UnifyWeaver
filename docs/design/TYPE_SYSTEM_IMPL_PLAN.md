@@ -226,7 +226,10 @@ bring-up.
     call happens before guarded control that contains the second subtree
     call plus nested non-recursive post-call control, shared context
     updates before that first subtree call, or branch-local context
-    updates before the second subtree call
+    updates before the second subtree call, plus conservative integer-
+    return tree-structural SCCs with shared dual-subtree descent and
+    simple post-call arithmetic recombination over `value`,
+    `left_result`, `right_result`, and any threaded context args
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
