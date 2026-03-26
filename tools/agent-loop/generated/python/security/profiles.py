@@ -206,3 +206,7 @@ def is_network_cmd(cmd):
     """Check if command starts with a network tool (curl, wget, ssh, scp)."""
     return ((cmd.startswith("curl") or cmd.startswith("wget")) or (cmd.startswith("ssh") or cmd.startswith("scp")))
 
+def file_within_limit(size_bytes, max_bytes):
+    """Check if a file size is within the allowed maximum."""
+    return size_bytes <= max_bytes
+

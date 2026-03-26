@@ -193,6 +193,14 @@ format_tokens(Count, Result) :-
 is_under(State, Threshold, Result) :-
     (State.total_cost < Threshold -> Result = true ; Result = false).
 
+%% Return average cost per message. Returns 0.0 if no messages.
+per_message(State, Result) :-
+    (State.message_count =:= 0 ->
+        Result = 0.0
+    ;
+    Result is (State.total_cost / float(State.message_count))
+    ).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

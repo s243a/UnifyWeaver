@@ -219,3 +219,12 @@
   (< (:total-cost state) threshold)
 )
 
+(defn per-message
+  "Return average cost per message. Returns 0.0 if no messages."
+  [state]
+  (if (zero? (:message-count state))
+      0.0
+      (/ (:total-cost state) (double (:message-count state)))
+  )
+)
+

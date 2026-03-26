@@ -187,3 +187,9 @@
   (contains? (:settings state) "max_tokens")
 )
 
+(defn is-streaming
+  "Check if streaming mode is enabled in settings."
+  [state]
+  (contains? (:settings state) "stream")
+)
+

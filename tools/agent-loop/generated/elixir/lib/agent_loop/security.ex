@@ -214,4 +214,10 @@ defmodule AgentLoop.Security do
     ((String.starts_with?(cmd, "curl") or String.starts_with?(cmd, "wget")) or (String.starts_with?(cmd, "ssh") or String.starts_with?(cmd, "scp")))
   end
 
+  @doc "Check if a file size is within the allowed maximum."
+  @spec file_within_limit(integer(), integer()) :: boolean()
+  def file_within_limit(size_bytes, max_bytes) do
+    size_bytes <= max_bytes
+  end
+
 end

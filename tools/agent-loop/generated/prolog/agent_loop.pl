@@ -175,7 +175,7 @@ first_role(State, Result) :-
     (length(State.messages, Result) =:= 0 ->
         Result = 
     ;
-    get_dict("role", nth0(0, State.messages, Result), Val)
+    get_dict(role, nth0(0, State.messages, Result), Result)
     ).
 
 %% Return the role of the last message, or empty string if no messages.
@@ -183,7 +183,7 @@ last_role(State, Result) :-
     (length(State.messages, Result) =:= 0 ->
         Result = 
     ;
-    Result = get_dict("role", last(State.messages, Last), Val)
+    get_dict(role, last(State.messages, Last), Result)
     ).
 
 %% Return remaining word budget. Returns -1 if no max_words set.
@@ -241,6 +241,18 @@ is_continue_mode(State, Result) :-
 %% Check if context mode is set to sliding window.
 is_sliding_mode(State, Result) :-
     (State.context_mode == "Sliding" -> Result = true ; Result = false).
+
+%% Return how many messages to trim. 0 if under limit or unlimited.
+trim_count(State, Result) :-
+    (State.max_messages =< 0 ->
+        Result = 0
+    ;
+    (length(State.messages, Result) =< State.max_messages ->
+        Result = 0
+    ;
+    (length(State.messages, Result) - State.max_messages)
+    )
+    ).
 
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
@@ -360,6 +372,10 @@ buffer_pct(State, Max_bytes, Result) :-
 %% Check if live display mode is enabled.
 is_live_mode(State, Result) :-
     return_val(eq_str(self_direct(show_live), true)).
+
+%% Format a summary of streaming stats: token count and char count.
+format_stats(State, Result) :-
+    format(atom(Result), "~w tokens, ~w chars", [State.token_count, State.char_count]).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -529,6 +545,10 @@ is_progress(Method, Result) :-
 clients_at_capacity(State, Max_clients, Result) :-
     length(State.clients, Result) >= Max_clients.
 
+%% Format a request ID as a string.
+format_request_id(Id, Result) :-
+    format(atom(Result), "req-~w", [Id]).
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -615,6 +635,10 @@ delay_remaining(Elapsed, Max_total, Result) :-
 %% Check if success rate is above 10% (worth retrying).
 is_worthwhile(Success_rate, Result) :-
     (Success_rate > 0.1 -> Result = true ; Result = false).
+
+%% Compute exponential backoff delay: base * 2^attempt.
+exponential_delay(Base, Attempt, Result) :-
+    Result is (Base * (2.0 ** float(Attempt))).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -703,6 +727,10 @@ is_markdown(Text, Result) :-
 %% Check if text length exceeds a given limit.
 exceeds_limit(Text, Limit, Result) :-
     length(Text, Result) > Limit.
+
+%% Check if text likely contains JSON by having both { and } characters.
+json_block_indicator(Text, Result) :-
+    ((atom_concat('{', _, Text) , atom_concat(_, '}', Text)) -> Result = true ; Result = false).
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
@@ -814,6 +842,10 @@ is_stale(Age, Max_age, Result) :-
 %% Return the number of expired sessions (total minus active).
 expired_count(Total, Active, Result) :-
     Result is max(0.0, (Total - Active)).
+
+%% Return the age of a session in minutes.
+age_minutes(Created_at, Now, Result) :-
+    Result is ((Now - Created_at) / 60.0).
 
 conversation([]).
 max_iterations(0).

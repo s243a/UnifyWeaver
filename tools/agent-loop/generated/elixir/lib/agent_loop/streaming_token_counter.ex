@@ -182,4 +182,10 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.show_live == "true"
   end
 
+  @doc "Format a summary of streaming stats: token count and char count."
+  @spec format_stats(t()) :: String.t()
+  def format_stats(%__MODULE__{} = state) do
+    "#{state.token_count} tokens, #{state.char_count} chars"
+  end
+
 end

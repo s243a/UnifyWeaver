@@ -137,3 +137,9 @@
   (>= (int (count (:clients state))) max-clients)
 )
 
+(defn format-request-id
+  "Format a request ID as a string."
+  [id]
+  (format "req-%s" id)
+)
+

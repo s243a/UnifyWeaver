@@ -135,6 +135,12 @@ defmodule AgentLoop.OutputParser do
     Enum.count(text) > limit
   end
 
+  @doc "Check if text likely contains JSON by having both { and } characters."
+  @spec json_block_indicator(String.t()) :: boolean()
+  def json_block_indicator(text) do
+    (String.starts_with?(text, "{") and String.ends_with?(text, "}"))
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

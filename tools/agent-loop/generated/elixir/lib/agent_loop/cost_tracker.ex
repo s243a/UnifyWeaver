@@ -228,4 +228,14 @@ defmodule AgentLoop.CostTracker do
     state.total_cost < threshold
   end
 
+  @doc "Return average cost per message. Returns 0.0 if no messages."
+  @spec per_message(t()) :: float()
+  def per_message(%__MODULE__{} = state) do
+    if state.message_count == 0 do
+        0.0
+    else
+        (state.total_cost / (state.message_count * 1.0))
+    end
+  end
+
 end

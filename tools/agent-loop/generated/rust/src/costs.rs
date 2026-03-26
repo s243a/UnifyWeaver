@@ -174,6 +174,15 @@ impl CostTracker {
         return self.total_cost < threshold;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return average cost per message. Returns 0.0 if no messages.
+    pub fn per_message(&self) -> f64 {
+        if self.message_count == 0 {
+            return 0.0;
+        }
+        return self.total_cost / (self.message_count as f64);
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

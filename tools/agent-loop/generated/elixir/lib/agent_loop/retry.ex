@@ -130,4 +130,10 @@ defmodule AgentLoop.Retry do
     success_rate > 0.1
   end
 
+  @doc "Compute exponential backoff delay: base * 2^attempt."
+  @spec exponential_delay(float(), integer()) :: float()
+  def exponential_delay(base, attempt) do
+    base * :math.pow(2.0, (attempt * 1.0))
+  end
+
 end

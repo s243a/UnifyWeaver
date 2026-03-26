@@ -1646,3 +1646,104 @@ class TestSharedLogicFunctional:
         import multiline
         src = open(multiline.__file__).read()
         assert "heredoc" in src.lower() or "multiline" in src.lower() or "continuation" in src.lower()
+
+
+class TestPropertyBased:
+    """Property-based and invariant tests for shared_logic methods."""
+
+    def test_security_safe_and_blocked_are_disjoint(self):
+        """No command should be both safe and blocked."""
+        from security.profiles import is_safe_command, is_blocked_command
+        test_cmds = ["ls", "cat file", "rm -rf /", "echo hi", "dd if=/dev/zero",
+                     "grep pat", "curl url", "mkfs.ext4", "ssh host"]
+        for cmd in test_cmds:
+            safe = is_safe_command(cmd)
+            blocked = is_blocked_command(cmd)
+            assert not (safe and blocked), f"'{cmd}' is both safe and blocked"
+
+    def test_security_writable_excludes_system(self):
+        """System paths should never be writable."""
+        from security.profiles import is_writable_path
+        system_paths = ["/etc/passwd", "/usr/bin/python", "/bin/sh",
+                       "/etc/shadow", "/usr/lib/libc.so"]
+        for p in system_paths:
+            assert not is_writable_path(p), f"'{p}' should not be writable"
+
+    def test_context_add_increases_count(self):
+        """Adding a message always increases count by 1."""
+        from context import ContextManager
+        ctx = ContextManager()
+        for i in range(10):
+            before = len(ctx.messages)
+            ctx.add_message("user", f"msg {i}")
+            assert len(ctx.messages) == before + 1
+
+    def test_context_clear_resets_to_zero(self):
+        """Clear always brings count to 0 regardless of prior state."""
+        from context import ContextManager
+        for n in [0, 1, 5, 20]:
+            ctx = ContextManager()
+            for i in range(n):
+                ctx.add_message("user", f"msg {i}")
+            ctx.clear()
+            assert len(ctx.messages) == 0, f"clear after {n} messages"
+
+    def test_output_parser_no_false_positives(self):
+        """Plain text without JSON should never extract blocks."""
+        from output_parser import OutputParser
+        plain_texts = [
+            "Hello world",
+            "The result is 42",
+            "No JSON here at all",
+            "Even { partial braces don't count",
+            "",
+            "   ",
+        ]
+        for text in plain_texts:
+            result = OutputParser.parse_response(text)
+            assert len(result.json_blocks) == 0, f"False positive for: {text!r}"
+
+    def test_output_parser_valid_json_always_extracted(self):
+        """Well-formed JSON should always be found."""
+        from output_parser import OutputParser
+        json_texts = [
+            '{"key": "val"}',
+            '{"a": 1, "b": 2}',
+        ]
+        for text in json_texts:
+            result = OutputParser.parse_response(text)
+            assert len(result.json_blocks) >= 1, f"Missed JSON in: {text!r}"
+
+    def test_session_save_load_roundtrip(self):
+        """Saving then loading a session preserves data."""
+        import tempfile
+        from sessions import SessionManager
+        from context import ContextManager
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = SessionManager(tmpdir)
+            ctx = ContextManager()
+            ctx.add_message("user", "hello")
+            ctx.add_message("assistant", "world")
+            sid = mgr.save_session(ctx, name="roundtrip")
+            loaded = mgr.load_session(sid)
+            assert loaded is not None
+            # load_session may return (context, metadata) tuple or context directly
+            if isinstance(loaded, tuple):
+                loaded_ctx = loaded[0]
+            else:
+                loaded_ctx = loaded
+            assert len(loaded_ctx.messages) == 2
+
+    def test_security_path_safe_rejects_traversal(self):
+        """All traversal paths should be rejected."""
+        from security.profiles import is_path_safe
+        traversals = ["../etc", "../../root", "../../../tmp"]
+        for p in traversals:
+            assert not is_path_safe(p), f"'{p}' should not be safe"
+
+    def test_mcp_manager_empty_state(self):
+        """Fresh MCPManager should have empty clients and tools."""
+        from mcp_client import MCPManager
+        m = MCPManager()
+        assert len(m.clients) == 0
+        assert len(m.list_tools()) == 0

@@ -232,7 +232,7 @@ defmodule AgentLoop.ContextManager do
     if Enum.count(state.messages) == 0 do
         
     else
-        Map.get(List.first(state.messages), "role")
+        Map.get(List.first(state.messages), :role, "")
     end
   end
 
@@ -242,7 +242,7 @@ defmodule AgentLoop.ContextManager do
     if Enum.count(state.messages) == 0 do
         
     else
-        Map.get(List.last(state.messages), "role")
+        Map.get(List.last(state.messages), :role, "")
     end
   end
 
@@ -316,6 +316,18 @@ defmodule AgentLoop.ContextManager do
   @spec is_sliding_mode(t()) :: boolean()
   def is_sliding_mode(%__MODULE__{} = state) do
     state.context_mode == "sliding"
+  end
+
+  @doc "Return how many messages to trim. 0 if under limit or unlimited."
+  @spec trim_count(t()) :: integer()
+  def trim_count(%__MODULE__{} = state) do
+    if state.max_messages <= 0 do
+        0
+    else
+        if Enum.count(state.messages) <= state.max_messages:
+            0
+        (Enum.count(state.messages) - state.max_messages)
+    end
   end
 
 end

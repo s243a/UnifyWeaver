@@ -174,3 +174,9 @@
   (= (:show-live state) "true")
 )
 
+(defn format-stats
+  "Format a summary of streaming stats: token count and char count."
+  [state]
+  (format "%s tokens, %s chars" (:token-count state) (:char-count state))
+)
+

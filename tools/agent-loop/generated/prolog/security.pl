@@ -165,3 +165,7 @@ is_safe_extension(Filename, Result) :-
 is_network_cmd(Cmd, Result) :-
     (((atom_concat('curl', _, Cmd) ; atom_concat('wget', _, Cmd)) ; (atom_concat('ssh', _, Cmd) ; atom_concat('scp', _, Cmd))) -> Result = true ; Result = false).
 
+%% Check if a file size is within the allowed maximum.
+file_within_limit(Size_bytes, Max_bytes, Result) :-
+    (Size_bytes =< Max_bytes -> Result = true ; Result = false).
+

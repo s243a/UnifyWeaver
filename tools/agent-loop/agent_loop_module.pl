@@ -2057,6 +2057,7 @@ logic_slot(rust, guard_leq(A, B), S) :-
     format(atom(S), "~w <= ~w", [AS, BS]).
 logic_slot(rust, return_val(false), "return false;").
 logic_slot(rust, return_val(true), "return true;").
+logic_slot(rust, return_val(literal("")), "return String::new();").
 %% Clone self fields when returning owned String to avoid move from &self
 logic_slot(rust, return_val(self_direct(Field)), S) :-
     expand_expr(rust, self_direct(Field), FS),
@@ -4545,11 +4546,11 @@ shared_logic(costs, cost_exceeds, [
 
 %% --- Context: check if context has system message ---
 shared_logic(context, context_first_role, [
-    signature(first_role, [], string),
+    signature(first_role, [], owned_string),
     arg_types([]),
     doc("Return the role of the first message, or empty string if no messages."),
     container('ContextManager'),
-    body_template("if ~eq_zero(len_of(self_direct(messages)))~:\n    ~return_val(literal(\"\"))~\n~return_val(map_get(list_first(self_direct(messages)), \"role\"))~")
+    body_template("if ~eq_zero(len_of(self_direct(messages)))~:\n    ~return_val(literal(\"\"))~\n~return_val(field_of(list_first(self_direct(messages)), role))~")
 ]).
 
 %% --- Sessions: generate session filename with extension ---
@@ -4626,11 +4627,11 @@ shared_logic(costs, cost_input_ratio, [
 
 %% --- Context: get role of last message ---
 shared_logic(context, context_last_role, [
-    signature(last_role, [], string),
+    signature(last_role, [], owned_string),
     arg_types([]),
     doc("Return the role of the last message, or empty string if no messages."),
     container('ContextManager'),
-    body_template("if ~eq_zero(len_of(self_direct(messages)))~:\n    ~return_val(literal(\"\"))~\n~return_val(map_get(list_last(self_direct(messages)), \"role\"))~")
+    body_template("if ~eq_zero(len_of(self_direct(messages)))~:\n    ~return_val(literal(\"\"))~\n~return_val(field_of(list_last(self_direct(messages)), role))~")
 ]).
 
 %% --- Sessions: check if session data has messages ---
@@ -5390,6 +5391,96 @@ shared_logic(output_parser, output_exceeds_limit, [
     body_template("~return_val(gt(len_of(text), limit))~")
 ]).
 
+%% --- Security: check if file size is within limit ---
+shared_logic(security, security_file_within_limit, [
+    signature(file_within_limit, [size_bytes, max_bytes], bool),
+    arg_types([int, int]),
+    doc("Check if a file size is within the allowed maximum."),
+    container(none),
+    body_template("~return_val(lte(size_bytes, max_bytes))~")
+]).
+
+%% --- Config: check if streaming is enabled ---
+shared_logic(config, config_is_streaming, [
+    signature(is_streaming, [], bool),
+    arg_types([]),
+    doc("Check if streaming mode is enabled in settings."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_has_key(self_direct(settings), \"stream\"))~")
+]).
+
+%% --- Context: compute messages to trim ---
+shared_logic(context, context_trim_count, [
+    signature(trim_count, [], int),
+    arg_types([]),
+    doc("Return how many messages to trim. 0 if under limit or unlimited."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_messages), literal(0))~:\n    ~return_val(literal(0))~\nif ~lte(as_int(len_of(self_direct(messages))), as_int(self_direct(max_messages)))~:\n    ~return_val(literal(0))~\n~return_val(sub(as_int(len_of(self_direct(messages))), as_int(self_direct(max_messages))))~")
+]).
+
+%% --- Costs: cost per message ---
+shared_logic(costs, cost_per_message, [
+    signature(per_message, [], float),
+    arg_types([]),
+    doc("Return average cost per message. Returns 0.0 if no messages."),
+    container('CostTracker'),
+    body_template("if ~eq_zero(self_direct(message_count))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(self_direct(total_cost), as_float(self_direct(message_count))))~")
+]).
+
+%% --- Streaming: format stats summary ---
+shared_logic(streaming, streaming_format_stats, [
+    signature(format_stats, [], owned_string),
+    arg_types([]),
+    doc("Format a summary of streaming stats: token count and char count."),
+    container('StreamingHandler'),
+    body_template("~return_val(format_str(\"{} tokens, {} chars\", [self_direct(token_count), self_direct(char_count)]))~")
+]).
+
+%% --- Tools: list tool names as count ---
+shared_logic(tools, tool_schema_count, [
+    signature(schema_count, [], int),
+    arg_types([]),
+    doc("Return the number of tool schemas registered."),
+    container('ToolHandler'),
+    body_template("~return_val(as_int(len_of(self_direct(schema))))~")
+]).
+
+%% --- MCP: format a JSON-RPC request ID ---
+shared_logic(mcp, mcp_format_request_id, [
+    signature(format_request_id, [id], owned_string),
+    arg_types([int]),
+    doc("Format a request ID as a string."),
+    container(none),
+    body_template("~return_val(format_str(\"req-{}\", [id]))~")
+]).
+
+%% --- Retry: compute exponential delay ---
+shared_logic(retry, retry_exponential_delay, [
+    signature(exponential_delay, [base, attempt], float),
+    arg_types([float, int]),
+    doc("Compute exponential backoff delay: base * 2^attempt."),
+    container(none),
+    body_template("~return_val(mul(base, pow(literal(2.0), as_float(attempt))))~")
+]).
+
+%% --- Sessions: compute session age in minutes ---
+shared_logic(sessions, session_age_minutes, [
+    signature(age_minutes, [created_at, now], float),
+    arg_types([float, float]),
+    doc("Return the age of a session in minutes."),
+    container(none),
+    body_template("~return_val(div_float(sub(now, created_at), literal(60.0)))~")
+]).
+
+%% --- Output parser: count JSON blocks in text ---
+shared_logic(output_parser, output_json_block_indicator, [
+    signature(json_block_indicator, [text], bool),
+    arg_types([string]),
+    doc("Check if text likely contains JSON by having both { and } characters."),
+    container(none),
+    body_template("~return_val(and_expr(str_starts_with(text, \"{\"), str_ends_with(text, \"}\")))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -5434,6 +5525,24 @@ expand_expr(prolog, list_first(List), S) :-
     expand_expr(prolog, List, LS), format(atom(S), "nth0(0, ~w, Result)", [LS]).
 expand_expr(clojure, list_first(List), S) :-
     expand_expr(clojure, List, LS), format(atom(S), "(first ~w)", [LS]).
+
+%% --- field_of: access a named field/key on an object ---
+expand_expr(python, field_of(Obj, Field), S) :-
+    expand_expr(python, Obj, OS),
+    format(atom(S), '~w.get("~w", "")', [OS, Field]).
+expand_expr(rust, field_of(Obj, Field), S) :-
+    expand_expr(rust, Obj, OS),
+    format(atom(S), "~w.map(|x| x.~w.clone()).unwrap_or_default()", [OS, Field]).
+expand_expr(elixir, field_of(Obj, Field), S) :-
+    expand_expr(elixir, Obj, OS),
+    format(atom(S), "Map.get(~w, :~w, \"\")", [OS, Field]).
+expand_expr(prolog, field_of(Obj, Field), S) :-
+    expand_expr(prolog, Obj, OS),
+    format(atom(S), "get_dict(~w, ~w, Result)", [Field, OS]).
+expand_expr(clojure, field_of(Obj, Field), S) :-
+    expand_expr(clojure, Obj, OS),
+    clojure_kebab(Field, KF),
+    format(atom(S), '(:~w ~w)', [KF, OS]).
 
 %% --- list_rest: get all but first element ---
 expand_expr(python, list_rest(List), S) :-
@@ -7429,6 +7538,7 @@ generate_rust_config :-
     emit_shared_method(S, rust, config_has_stream),
     emit_shared_method(S, rust, config_has_max_tokens),
     emit_shared_method(S, rust, config_get_or_default),
+    emit_shared_method(S, rust, config_is_streaming),
     %% config_merge skipped — returns self.settings (HashMap) but signature expects string
     write(S, '}\n'),
     close(S),
@@ -7458,6 +7568,7 @@ generate_rust_costs :-
     emit_shared_method(S, rust, cost_is_output_heavy),
     emit_shared_method(S, rust, cost_is_zero),
     emit_shared_method(S, rust, cost_is_under),
+    emit_shared_method(S, rust, cost_per_message),
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
     close(S),
@@ -7695,7 +7806,9 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_usage_pct),
     emit_shared_method(S, rust, context_is_continue_mode),
     emit_shared_method(S, rust, context_is_sliding_mode),
-    %% context_first_role/context_last_role skipped — Message is a struct not a map in Rust
+    emit_shared_method(S, rust, context_trim_count),
+    emit_shared_method(S, rust, context_first_role),
+    emit_shared_method(S, rust, context_last_role),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/context.rs~n', []).
@@ -7810,6 +7923,7 @@ generate_rust_tool_handler :-
     emit_shared_method(S, rust, tool_has_schema),
     emit_shared_method(S, rust, tool_count),
     emit_shared_method(S, rust, tool_safe_count),
+    emit_shared_method(S, rust, tool_schema_count),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
@@ -8046,6 +8160,7 @@ generate_rust_main :-
     emit_shared_method(S, rust, streaming_has_elapsed),
     emit_shared_method(S, rust, streaming_is_balanced),
     emit_shared_method(S, rust, streaming_buffer_pct),
+    emit_shared_method(S, rust, streaming_format_stats),
     %% streaming_is_live_mode skipped — show_live is bool in Rust, eq_str expects String
     write(S, '}\n\n'),
     %% chunk_is_complete is standalone (container=none), emit outside impl block
