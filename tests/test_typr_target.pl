@@ -105,10 +105,14 @@ cleanup_typr_test :-
     retractall(user:typr_mutual_sum_odd_tree_recursive_branch(_, _)),
     retractall(user:typr_mutual_sum_even_tree_nested_recursive_branch(_, _)),
     retractall(user:typr_mutual_sum_odd_tree_nested_recursive_branch(_, _)),
+    retractall(user:typr_mutual_sum_even_tree_branch_part(_, _)),
+    retractall(user:typr_mutual_sum_odd_tree_branch_part(_, _)),
     retractall(user:typr_mutual_weight_even_tree_recursive_branch(_, _, _)),
     retractall(user:typr_mutual_weight_odd_tree_recursive_branch(_, _, _)),
     retractall(user:typr_mutual_weight_even_tree_nested_recursive_branch(_, _, _)),
     retractall(user:typr_mutual_weight_odd_tree_nested_recursive_branch(_, _, _)),
+    retractall(user:typr_mutual_weight_even_tree_branch_part(_, _, _)),
+    retractall(user:typr_mutual_weight_odd_tree_branch_part(_, _, _)),
     retractall(user:fib(_, _)),
     retractall(user:tree_sum(_, _)),
     retractall(user:tree_height(_, _)),
@@ -3561,6 +3565,100 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_integer_contex
     once(sub_string(Code, _, _, _, "result = (((.subset2(current_input, 1) * current_ctx) + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "left_result = typr_mutual_weight_odd_tree_nested_recursive_branch_impl(.subset2(current_input, 3), current_ctx);"),
     \+ sub_string(Code, _, _, _, "right_result = typr_mutual_weight_odd_tree_nested_recursive_branch_impl(.subset2(current_input, 2), current_ctx);"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_integer_branch_local_recombine_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_tree_branch_part([], 0)),
+    assertz(user:(typr_mutual_sum_even_tree_branch_part([V, L, R], S) :-
+        ( V > 0 ->
+            typr_mutual_sum_odd_tree_branch_part(L, SL),
+            typr_mutual_sum_odd_tree_branch_part(R, SR),
+            Part is V + SL + SR
+        ;   typr_mutual_sum_odd_tree_branch_part(R, SR),
+            typr_mutual_sum_odd_tree_branch_part(L, SL),
+            Part is V - SL + SR
+        ),
+        S is Part + 1
+    )),
+    assertz(user:typr_mutual_sum_odd_tree_branch_part([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_tree_branch_part([V, L, R], S) :-
+        ( V > 0 ->
+            typr_mutual_sum_even_tree_branch_part(L, SL),
+            typr_mutual_sum_even_tree_branch_part(R, SR),
+            Part is V + SL + SR
+        ;   typr_mutual_sum_even_tree_branch_part(R, SR),
+            typr_mutual_sum_even_tree_branch_part(L, SL),
+            Part is V - SL + SR
+        ),
+        S is Part + 1
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_branch_part/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_branch_part/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_branch_part/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_branch_part/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_tree_branch_part/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_tree_branch_part/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_tree_branch_part/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_sum_even_tree_branch_part/2, typr_mutual_sum_odd_tree_branch_part/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_sum_even_tree_branch_part <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_sum_even_tree_branch_part_impl <- function(current_input) {")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 0) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_sum_odd_tree_branch_part_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_sum_odd_tree_branch_part_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "result = (((.subset2(current_input, 1) + left_result) + right_result) + 1);")),
+    once(sub_string(Code, _, _, _, "result = (((.subset2(current_input, 1) - left_result) + right_result) + 1);")),
+    \+ sub_string(Code, _, _, _, "left_result = typr_mutual_sum_odd_tree_branch_part_impl(.subset2(current_input, 3));"),
+    \+ sub_string(Code, _, _, _, "right_result = typr_mutual_sum_odd_tree_branch_part_impl(.subset2(current_input, 2));"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_integer_context_branch_local_recombine_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_even_tree_branch_part([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_even_tree_branch_part([V, L, R], W, S) :-
+        ( V > W ->
+            typr_mutual_weight_odd_tree_branch_part(L, W, SL),
+            typr_mutual_weight_odd_tree_branch_part(R, W, SR),
+            Part is (V * W) + SL + SR
+        ;   typr_mutual_weight_odd_tree_branch_part(R, W, SR),
+            typr_mutual_weight_odd_tree_branch_part(L, W, SL),
+            Part is (V * W) - SL + SR
+        ),
+        S is Part + W
+    )),
+    assertz(user:typr_mutual_weight_odd_tree_branch_part([_, [], []], _W1, 1)),
+    assertz(user:(typr_mutual_weight_odd_tree_branch_part([V, L, R], W, S) :-
+        ( V > W ->
+            typr_mutual_weight_even_tree_branch_part(L, W, SL),
+            typr_mutual_weight_even_tree_branch_part(R, W, SR),
+            Part is (V * W) + SL + SR
+        ;   typr_mutual_weight_even_tree_branch_part(R, W, SR),
+            typr_mutual_weight_even_tree_branch_part(L, W, SL),
+            Part is (V * W) - SL + SR
+        ),
+        S is Part + W
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_branch_part/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_branch_part/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_branch_part/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_branch_part/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_branch_part/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_branch_part/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_even_tree_branch_part/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_odd_tree_branch_part/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_even_tree_branch_part/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_weight_even_tree_branch_part/3, typr_mutual_weight_odd_tree_branch_part/3")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_weight_even_tree_branch_part <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_weight_even_tree_branch_part_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > current_ctx) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_weight_odd_tree_branch_part_impl(.subset2(current_input, 2), current_ctx);")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_weight_odd_tree_branch_part_impl(.subset2(current_input, 3), current_ctx);")),
+    once(sub_string(Code, _, _, _, "result = ((((.subset2(current_input, 1) * current_ctx) + left_result) + right_result) + current_ctx);")),
+    once(sub_string(Code, _, _, _, "result = ((((.subset2(current_input, 1) * current_ctx) - left_result) + right_result) + current_ctx);")),
+    \+ sub_string(Code, _, _, _, "left_result = typr_mutual_weight_odd_tree_branch_part_impl(.subset2(current_input, 3), current_ctx);"),
+    \+ sub_string(Code, _, _, _, "right_result = typr_mutual_weight_odd_tree_branch_part_impl(.subset2(current_input, 2), current_ctx);"),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

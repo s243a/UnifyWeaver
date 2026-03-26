@@ -2517,6 +2517,98 @@ test(structural_tree_dual_mutual_integer_context_nested_recursive_branch_output_
     retractall(user:typr_mutual_weight_even_tree_nested_recursive_branch(_, _, _)),
     retractall(user:typr_mutual_weight_odd_tree_nested_recursive_branch(_, _, _)).
 
+test(structural_tree_dual_mutual_integer_branch_local_recombine_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_tree_branch_part([], 0)),
+    assertz(user:(typr_mutual_sum_even_tree_branch_part([V, L, R], S) :-
+        ( V > 0 ->
+            typr_mutual_sum_odd_tree_branch_part(L, SL),
+            typr_mutual_sum_odd_tree_branch_part(R, SR),
+            Part is V + SL + SR
+        ;   typr_mutual_sum_odd_tree_branch_part(R, SR),
+            typr_mutual_sum_odd_tree_branch_part(L, SL),
+            Part is V - SL + SR
+        ),
+        S is Part + 1
+    )),
+    assertz(user:typr_mutual_sum_odd_tree_branch_part([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_tree_branch_part([V, L, R], S) :-
+        ( V > 0 ->
+            typr_mutual_sum_even_tree_branch_part(L, SL),
+            typr_mutual_sum_even_tree_branch_part(R, SR),
+            Part is V + SL + SR
+        ;   typr_mutual_sum_even_tree_branch_part(R, SR),
+            typr_mutual_sum_even_tree_branch_part(L, SL),
+            Part is V - SL + SR
+        ),
+        S is Part + 1
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_branch_part/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_branch_part/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_branch_part/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_branch_part/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_tree_branch_part/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_tree_branch_part/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_tree_branch_part/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_sum_even_tree_branch_part(_, _)),
+    retractall(user:typr_mutual_sum_odd_tree_branch_part(_, _)).
+
+test(structural_tree_dual_mutual_integer_context_branch_local_recombine_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_even_tree_branch_part([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_even_tree_branch_part([V, L, R], W, S) :-
+        ( V > W ->
+            typr_mutual_weight_odd_tree_branch_part(L, W, SL),
+            typr_mutual_weight_odd_tree_branch_part(R, W, SR),
+            Part is (V * W) + SL + SR
+        ;   typr_mutual_weight_odd_tree_branch_part(R, W, SR),
+            typr_mutual_weight_odd_tree_branch_part(L, W, SL),
+            Part is (V * W) - SL + SR
+        ),
+        S is Part + W
+    )),
+    assertz(user:typr_mutual_weight_odd_tree_branch_part([_, [], []], _W1, 1)),
+    assertz(user:(typr_mutual_weight_odd_tree_branch_part([V, L, R], W, S) :-
+        ( V > W ->
+            typr_mutual_weight_even_tree_branch_part(L, W, SL),
+            typr_mutual_weight_even_tree_branch_part(R, W, SR),
+            Part is (V * W) + SL + SR
+        ;   typr_mutual_weight_even_tree_branch_part(R, W, SR),
+            typr_mutual_weight_even_tree_branch_part(L, W, SL),
+            Part is (V * W) - SL + SR
+        ),
+        S is Part + W
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_branch_part/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_branch_part/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_branch_part/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_branch_part/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_branch_part/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_branch_part/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_even_tree_branch_part/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_odd_tree_branch_part/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_even_tree_branch_part/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_weight_even_tree_branch_part(_, _, _)),
+    retractall(user:typr_mutual_weight_odd_tree_branch_part(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

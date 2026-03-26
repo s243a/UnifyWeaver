@@ -949,6 +949,12 @@ split_typr_mutual_multicall_goals(GroupPredicates, Goals, PreGoals, RecGoals, Po
     PostGoals \= [],
     \+ typr_contains_mutual_recursive_goal(GroupPredicates, PostGoals).
 
+split_typr_mutual_multicall_goals_allow_empty_post(GroupPredicates, Goals, PreGoals, RecGoals, PostGoals) :-
+    split_typr_mutual_non_recursive_prefix(GroupPredicates, Goals, PreGoals, RecAndPostGoals),
+    take_typr_mutual_recursive_goal_prefix(GroupPredicates, RecAndPostGoals, RecGoals, PostGoals),
+    RecGoals = [_|[_|_]],
+    \+ typr_contains_mutual_recursive_goal(GroupPredicates, PostGoals).
+
 split_typr_mutual_non_recursive_prefix(_GroupPredicates, [], [], []).
 split_typr_mutual_non_recursive_prefix(GroupPredicates, [Goal|Rest], [], [Goal|Rest]) :-
     typr_goal_calls_mutual_group(GroupPredicates, Goal),
@@ -1075,10 +1081,11 @@ typr_mutual_tree_value_side_calls(CallSpecs0, LeftCall, RightCall, LeftOutputVar
     RightCall = branch_call(RightHelperName, RightCallArgs).
 
 typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap0, PostBody, OutputVar, Body) :-
-    append(PreGoals, [NestedIfGoal], Goals),
+    append(PreGoals, [NestedIfGoal|TailPostGoals], Goals),
     typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap1, GuardExpr),
     GuardExpr == none,
     typr_if_then_else_goal(NestedIfGoal, IfGoal, ThenGoal0, ElseGoal0),
+    typr_mutual_tree_value_branch_post_body(TailPostGoals, PostBody, CombinedPostBody),
     typr_mutual_goal_list(ThenGoal0, ThenGoals0),
     maplist(typr_strip_module_goal, ThenGoals0, ThenGoals),
     typr_mutual_tree_value_branch_body(
@@ -1087,7 +1094,7 @@ typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, 
         ValueVar,
         AliasMap,
         ExtraArgMap1,
-        PostBody,
+        CombinedPostBody,
         OutputVar,
         ThenBody
     ),
@@ -1099,25 +1106,25 @@ typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, 
         ValueVar,
         AliasMap,
         ExtraArgMap1,
-        PostBody,
+        CombinedPostBody,
         OutputVar,
         ElseBody
     ),
     typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap1, BranchConditionExpr),
     Body = value_branch_if(BranchConditionExpr, ThenBody, ElseBody).
 typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap0, PostBody, OutputVar, Body) :-
-    append(PreGoals, RecGoals, Goals),
-    RecGoals = [GoalA, GoalB],
+    split_typr_mutual_multicall_goals_allow_empty_post(GroupPredicates, Goals, PreGoals, RecGoals, BranchPostGoals),
     typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap1, GuardExpr),
     GuardExpr == none,
     maplist(
         typr_mutual_tree_value_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap1),
-        [GoalA, GoalB],
+        RecGoals,
         GoalSpecs0
     ),
     typr_mutual_tree_value_side_calls(GoalSpecs0, LeftCall, RightCall, LeftOutputVar, RightOutputVar),
+    typr_mutual_tree_value_branch_post_body(BranchPostGoals, PostBody, CombinedPostBody),
     typr_mutual_tree_value_result_expr(
-        PostBody,
+        CombinedPostBody,
         OutputVar,
         ValueVar,
         AliasMap,
@@ -1127,6 +1134,17 @@ typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, 
         ResultExpr
     ),
     Body = value_branch_leaf(LeftCall, RightCall, ResultExpr).
+
+typr_mutual_tree_value_branch_post_body(BranchPostGoals, PostBody, CombinedPostBody) :-
+    typr_mutual_tree_value_post_body_goals(PostBody, SharedPostGoals),
+    append(BranchPostGoals, SharedPostGoals, CombinedPostGoals),
+    typr_goals_to_body(CombinedPostGoals, CombinedPostBody).
+
+typr_mutual_tree_value_post_body_goals(true, []) :-
+    !.
+typr_mutual_tree_value_post_body_goals(PostBody, Goals) :-
+    typr_mutual_goal_list(PostBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals).
 
 typr_mutual_tree_value_result_expr(PostBody, OutputVar, ValueVar, AliasMap, ExtraArgMap, LeftOutputVar, RightOutputVar, ResultExpr) :-
     typr_mutual_tree_condition_varmap(ValueVar, AliasMap, ExtraArgMap, ResultVarMap0),
