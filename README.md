@@ -270,8 +270,9 @@ includes:
   with shared dual-subtree descent, guarded branch-local alias selection
   before those shared subtree calls or direct recursive subtree calls
   inside supported guarded branch bodies, and simple post-call arithmetic
-  recombination over `value`, `left_result`, `right_result`, and any
-  threaded context args,
+  recombination, including branch-local post-call arithmetic steps inside
+  those supported guarded branch bodies, over `value`, `left_result`,
+  `right_result`, and any threaded context args,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback

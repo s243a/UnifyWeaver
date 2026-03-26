@@ -102,8 +102,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      before those shared subtree calls or direct recursive subtree calls
      inside supported guarded branch bodies with one nested branch-local
      control point around those calls, and simple post-call
-     arithmetic recombination over `value`, `left_result`, `right_result`,
-     and any threaded context args, emitted as TypR
+     arithmetic recombination, including branch-local post-call
+     arithmetic steps inside those supported guarded branch bodies, over
+     `value`, `left_result`, `right_result`, and any threaded context
+     args, emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
