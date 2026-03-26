@@ -286,4 +286,24 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Check if context usage exceeds threshold percentage of max_messages. Returns false if unlimited."
+  @spec is_near_full(t(), integer()) :: boolean()
+  def is_near_full(%__MODULE__{} = state, threshold_pct) do
+    if state.max_messages <= 0 do
+        false
+    else
+        Enum.count(state.messages) * 100 > state.max_messages * threshold_pct
+    end
+  end
+
+  @doc "Return context usage as percentage. Returns 0.0 if unlimited."
+  @spec usage_pct(t()) :: float()
+  def usage_pct(%__MODULE__{} = state) do
+    if state.max_messages <= 0 do
+        0.0
+    else
+        ((Enum.count(state.messages) * 1.0) / (state.max_messages * 1.0)) * 100.0
+    end
+  end
+
 end

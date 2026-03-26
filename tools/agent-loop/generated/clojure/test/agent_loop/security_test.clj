@@ -64,3 +64,11 @@
   (is (true? (security/is-home-path "/home/user/file.txt")))
   (is (true? (security/is-home-path "/data/data/com.termux/files")))
   (is (false? (security/is-home-path "/etc/passwd"))))
+
+(deftest test-security-has-pipe
+  (is (true? (security/has-pipe "| cat")))
+  (is (false? (security/has-pipe "ls"))))
+
+(deftest test-security-is-absolute-path
+  (is (true? (security/is-absolute-path "/usr/bin")))
+  (is (false? (security/is-absolute-path "src"))))

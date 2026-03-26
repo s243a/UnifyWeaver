@@ -204,4 +204,16 @@ defmodule AgentLoop.CostTracker do
     state.total_input_tokens > state.total_output_tokens
   end
 
+  @doc "Check if output tokens exceed input tokens."
+  @spec is_output_heavy(t()) :: boolean()
+  def is_output_heavy(%__MODULE__{} = state) do
+    state.total_output_tokens > state.total_input_tokens
+  end
+
+  @doc "Check if total cost is exactly zero."
+  @spec is_zero_cost(t()) :: boolean()
+  def is_zero_cost(%__MODULE__{} = state) do
+    state.total_cost <= 0.0
+  end
+
 end

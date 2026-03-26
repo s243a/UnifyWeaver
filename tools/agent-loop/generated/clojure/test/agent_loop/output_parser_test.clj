@@ -47,3 +47,12 @@
 (deftest test-output-is-short
   (is (true? (parser/is-short "hi" 10)))
   (is (false? (parser/is-short "hello world foo bar" 5))))
+
+(deftest test-output-is-blank
+  (is (true? (parser/is-blank "")))
+  (is (true? (parser/is-blank "   ")))
+  (is (false? (parser/is-blank "hello"))))
+
+(deftest test-output-has-json-array
+  (is (true? (parser/has-json-array "[1,2]")))
+  (is (false? (parser/has-json-array "{}"))))

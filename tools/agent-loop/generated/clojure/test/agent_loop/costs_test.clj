@@ -85,3 +85,11 @@
 (deftest test-cost-is-input-heavy
   (is (true? (costs/is-input-heavy {:total-input-tokens 200 :total-output-tokens 50})))
   (is (false? (costs/is-input-heavy {:total-input-tokens 10 :total-output-tokens 100}))))
+
+(deftest test-cost-is-output-heavy
+  (is (true? (costs/is-output-heavy {:total-input-tokens 10 :total-output-tokens 100})))
+  (is (false? (costs/is-output-heavy {:total-input-tokens 100 :total-output-tokens 10}))))
+
+(deftest test-cost-is-zero
+  (is (true? (costs/is-zero-cost {:total-cost 0.0})))
+  (is (false? (costs/is-zero-cost {:total-cost 5.0}))))

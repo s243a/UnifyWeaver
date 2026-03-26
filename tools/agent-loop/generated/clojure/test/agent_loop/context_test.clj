@@ -64,3 +64,11 @@
   (is (true? (ctx/has-room {:max-messages 0 :messages []})))
   (is (true? (ctx/has-room {:max-messages 5 :messages [{} {}]})))
   (is (false? (ctx/has-room {:max-messages 2 :messages [{} {}]}))))
+
+(deftest test-context-is-near-full
+  (is (false? (ctx/is-near-full {:max-messages 0 :messages []} 80)))
+  (is (true? (ctx/is-near-full {:max-messages 10 :messages [{} {} {} {} {} {} {} {} {}]} 80))))
+
+(deftest test-context-usage-pct
+  (is (= 0.0 (ctx/usage-pct {:max-messages 0 :messages []})))
+  (is (= 50.0 (ctx/usage-pct {:max-messages 10 :messages [{} {} {} {} {}]}))))

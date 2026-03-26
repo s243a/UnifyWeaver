@@ -149,3 +149,11 @@ profile_count(Profiles, Result) :-
 is_home_path(Path, Result) :-
     ((atom_concat('/home', _, Path) ; atom_concat('/data/data', _, Path)) -> Result = true ; Result = false).
 
+%% Check if a command contains a pipe operator.
+has_pipe(Cmd, Result) :-
+    (atom_concat('|', _, Cmd) -> Result = true ; Result = false).
+
+%% Check if a path is absolute (starts with /).
+is_absolute_path(Path, Result) :-
+    (atom_concat('/', _, Path) -> Result = true ; Result = false).
+

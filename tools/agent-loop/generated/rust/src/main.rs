@@ -299,6 +299,18 @@ impl RetryHandler {
         return self.attempt + 1;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if no retry attempts have been made yet.
+    pub fn is_fresh(&self) -> bool {
+        return self.attempt == 0;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if a positive base delay is configured.
+    pub fn has_delay(&self) -> bool {
+        return self.base_delay > 0.0;
+    }
+
 }
 
 
@@ -1361,6 +1373,18 @@ impl StreamingTokenCounter {
     /// Check if streaming handler is waiting (zero tokens and zero chars).
     pub fn is_waiting(&self) -> bool {
         return self.token_count == 0 && self.char_count == 0;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if any time has elapsed during streaming.
+    pub fn has_elapsed(&self) -> bool {
+        return self.elapsed > 0.0;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if char count is at least as large as token count (sanity check).
+    pub fn is_balanced(&self) -> bool {
+        return self.char_count >= self.token_count;
     }
 
 }

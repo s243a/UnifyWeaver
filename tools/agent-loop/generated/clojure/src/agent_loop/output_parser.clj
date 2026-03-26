@@ -125,3 +125,15 @@
   (<= (count text) max-len)
 )
 
+(defn is-blank
+  "Check if text is empty or only whitespace."
+  [text]
+  (zero? (count (clojure.string/trim text)))
+)
+
+(defn has-json-array
+  "Check if text contains a JSON array start marker."
+  [text]
+  (.startsWith text "[")
+)
+

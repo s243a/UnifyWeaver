@@ -5030,6 +5030,186 @@ shared_logic(security, security_is_home_path, [
     body_template("~return_val(or_expr(str_starts_with(path, \"/home\"), str_starts_with(path, \"/data/data\")))~")
 ]).
 
+%% --- Security: check if command uses pipe ---
+shared_logic(security, security_has_pipe, [
+    signature(has_pipe, [cmd], bool),
+    arg_types([string]),
+    doc("Check if a command contains a pipe operator."),
+    container(none),
+    body_template("~return_val(str_starts_with(cmd, \"|\"))~")
+]).
+
+%% --- Security: check if path is absolute ---
+shared_logic(security, security_is_absolute_path, [
+    signature(is_absolute_path, [path], bool),
+    arg_types([string]),
+    doc("Check if a path is absolute (starts with /)."),
+    container(none),
+    body_template("~return_val(str_starts_with(path, \"/\"))~")
+]).
+
+%% --- Config: check if settings has model key ---
+shared_logic(config, config_has_model, [
+    signature(has_model, [], bool),
+    arg_types([]),
+    doc("Check if a model is configured in settings."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_has_key(self_direct(settings), \"model\"))~")
+]).
+
+%% --- Config: check if config has API key ---
+shared_logic(config, config_has_api_key, [
+    signature(has_api_key, [], bool),
+    arg_types([]),
+    doc("Check if an API key is configured in settings."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_has_key(self_direct(settings), \"api_key\"))~")
+]).
+
+%% --- Context: check if context is nearly full ---
+shared_logic(context, context_is_near_full, [
+    signature(is_near_full, [threshold_pct], bool),
+    arg_types([int]),
+    doc("Check if context usage exceeds threshold percentage of max_messages. Returns false if unlimited."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_messages), literal(0))~:\n    ~return_val(false)~\n~return_val(gt(mul(as_int(len_of(self_direct(messages))), literal(100)), mul(as_int(self_direct(max_messages)), threshold_pct)))~")
+]).
+
+%% --- Context: get message count as percentage of max ---
+shared_logic(context, context_usage_pct, [
+    signature(usage_pct, [], float),
+    arg_types([]),
+    doc("Return context usage as percentage. Returns 0.0 if unlimited."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_messages), literal(0))~:\n    ~return_val(literal(0.0))~\n~return_val(mul(div_float(as_float(len_of(self_direct(messages))), as_float(self_direct(max_messages))), literal(100.0)))~")
+]).
+
+%% --- Costs: check if output tokens exceed input ---
+shared_logic(costs, cost_is_output_heavy, [
+    signature(is_output_heavy, [], bool),
+    arg_types([]),
+    doc("Check if output tokens exceed input tokens."),
+    container('CostTracker'),
+    body_template("~return_val(gt(self_direct(total_output_tokens), self_direct(total_input_tokens)))~")
+]).
+
+%% --- Costs: check if total cost is zero ---
+shared_logic(costs, cost_is_zero, [
+    signature(is_zero_cost, [], bool),
+    arg_types([]),
+    doc("Check if total cost is exactly zero."),
+    container('CostTracker'),
+    body_template("~return_val(lte(self_direct(total_cost), literal(0.0)))~")
+]).
+
+%% --- Streaming: check if elapsed time is positive ---
+shared_logic(streaming, streaming_has_elapsed, [
+    signature(has_elapsed, [], bool),
+    arg_types([]),
+    doc("Check if any time has elapsed during streaming."),
+    container('StreamingHandler'),
+    body_template("~return_val(gt(self_direct(elapsed), literal(0.0)))~")
+]).
+
+%% --- Streaming: check if char count matches token count ---
+shared_logic(streaming, streaming_is_balanced, [
+    signature(is_balanced, [], bool),
+    arg_types([]),
+    doc("Check if char count is at least as large as token count (sanity check)."),
+    container('StreamingHandler'),
+    body_template("~return_val(gte(self_direct(char_count), self_direct(token_count)))~")
+]).
+
+%% --- Sessions: check if session count is under limit ---
+shared_logic(sessions, session_under_limit, [
+    signature(under_limit, [count, limit], bool),
+    arg_types([int, int]),
+    doc("Check if session count is strictly below a limit."),
+    container(none),
+    body_template("~return_val(lt(count, limit))~")
+]).
+
+%% --- Sessions: compute sessions over limit ---
+shared_logic(sessions, session_overflow_count, [
+    signature(overflow_count, [count, limit], int),
+    arg_types([int, int]),
+    doc("Return how many sessions exceed the limit. Returns 0 if under limit."),
+    container(none),
+    body_template("if ~lte(count, limit)~:\n    ~return_val(literal(0))~\n~return_val(sub(count, limit))~")
+]).
+
+%% --- Tools: check if tool name is bash ---
+shared_logic(tools, tool_is_bash, [
+    signature(is_bash, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if tool is the bash command executor."),
+    container(none),
+    body_template("~return_val(eq_str(tool_name, bash))~")
+]).
+
+%% --- Tools: check if tool is edit ---
+shared_logic(tools, tool_is_edit, [
+    signature(is_edit, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if tool is the file editor."),
+    container(none),
+    body_template("~return_val(eq_str(tool_name, edit))~")
+]).
+
+%% --- MCP: check if MCP method is initialize ---
+shared_logic(mcp, mcp_is_initialize, [
+    signature(is_initialize, [method], bool),
+    arg_types([string]),
+    doc("Check if a JSON-RPC method is the initialize handshake."),
+    container(none),
+    body_template("~return_val(eq_str(method, initialize))~")
+]).
+
+%% --- MCP: check if MCP method is shutdown ---
+shared_logic(mcp, mcp_is_shutdown, [
+    signature(is_shutdown, [method], bool),
+    arg_types([string]),
+    doc("Check if a JSON-RPC method is the shutdown request."),
+    container(none),
+    body_template("~return_val(eq_str(method, shutdown))~")
+]).
+
+%% --- Retry: check if no retries attempted ---
+shared_logic(retry, retry_is_fresh, [
+    signature(is_fresh, [], bool),
+    arg_types([]),
+    doc("Check if no retry attempts have been made yet."),
+    container('RetryHandler'),
+    body_template("~return_val(eq_zero(self_direct(attempt)))~")
+]).
+
+%% --- Retry: check if base delay is positive ---
+shared_logic(retry, retry_has_delay, [
+    signature(has_delay, [], bool),
+    arg_types([]),
+    doc("Check if a positive base delay is configured."),
+    container('RetryHandler'),
+    body_template("~return_val(gt(self_direct(base_delay), literal(0.0)))~")
+]).
+
+%% --- Output parser: check if text is blank ---
+shared_logic(output_parser, output_is_blank, [
+    signature(is_blank, [text], bool),
+    arg_types([string]),
+    doc("Check if text is empty or only whitespace."),
+    container(none),
+    body_template("~return_val(eq_zero(len_of(str_strip(text))))~")
+]).
+
+%% --- Output parser: check if text starts with JSON array ---
+shared_logic(output_parser, output_has_json_array, [
+    signature(has_json_array, [text], bool),
+    arg_types([string]),
+    doc("Check if text contains a JSON array start marker."),
+    container(none),
+    body_template("~return_val(str_starts_with(text, \"[\"))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -7064,6 +7244,8 @@ generate_rust_config :-
     emit_shared_method(S, rust, config_key_count),
     emit_shared_method(S, rust, config_has_backend),
     emit_shared_method(S, rust, config_is_production),
+    emit_shared_method(S, rust, config_has_model),
+    emit_shared_method(S, rust, config_has_api_key),
     %% config_get_or_default skipped — unwrap_or(&str) vs String type mismatch
     write(S, '}\n'),
     close(S),
@@ -7090,6 +7272,8 @@ generate_rust_costs :-
     emit_shared_method(S, rust, cost_exceeds),
     emit_shared_method(S, rust, cost_output_ratio),
     emit_shared_method(S, rust, cost_is_input_heavy),
+    emit_shared_method(S, rust, cost_is_output_heavy),
+    emit_shared_method(S, rust, cost_is_zero),
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
     close(S),
@@ -7322,6 +7506,8 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_is_full),
     emit_shared_method(S, rust, context_char_budget),
     emit_shared_method(S, rust, context_has_room),
+    emit_shared_method(S, rust, context_is_near_full),
+    emit_shared_method(S, rust, context_usage_pct),
     %% context_first_role/context_last_role skipped — Message is a struct not a map in Rust
     write(S, '}\n'),
     close(S),
@@ -7573,6 +7759,8 @@ generate_rust_main :-
     emit_shared_method(S, rust, retry_attempts_left),
     emit_shared_method(S, rust, retry_is_last_attempt),
     emit_shared_method(S, rust, retry_total_attempts),
+    emit_shared_method(S, rust, retry_is_fresh),
+    emit_shared_method(S, rust, retry_has_delay),
     write(S, '}\n'),
     nl(S),
     %% Templates and skills
@@ -7668,6 +7856,8 @@ generate_rust_main :-
     emit_shared_method(S, rust, streaming_tokens_remaining),
     emit_shared_method(S, rust, streaming_exceeds_limit),
     emit_shared_method(S, rust, streaming_is_waiting),
+    emit_shared_method(S, rust, streaming_has_elapsed),
+    emit_shared_method(S, rust, streaming_is_balanced),
     write(S, '}\n\n'),
     %% chunk_is_complete is standalone (container=none), emit outside impl block
     emit_shared_method(S, rust, chunk_is_complete),
@@ -10114,7 +10304,13 @@ generate_clojure_cost_test(Dir) :-
     write(S, '  (is (= 0.5 (costs/output-ratio {:total-input-tokens 50 :total-output-tokens 50}))))\n\n'),
     write(S, '(deftest test-cost-is-input-heavy\n'),
     write(S, '  (is (true? (costs/is-input-heavy {:total-input-tokens 200 :total-output-tokens 50})))\n'),
-    write(S, '  (is (false? (costs/is-input-heavy {:total-input-tokens 10 :total-output-tokens 100}))))\n'),
+    write(S, '  (is (false? (costs/is-input-heavy {:total-input-tokens 10 :total-output-tokens 100}))))\n\n'),
+    write(S, '(deftest test-cost-is-output-heavy\n'),
+    write(S, '  (is (true? (costs/is-output-heavy {:total-input-tokens 10 :total-output-tokens 100})))\n'),
+    write(S, '  (is (false? (costs/is-output-heavy {:total-input-tokens 100 :total-output-tokens 10}))))\n\n'),
+    write(S, '(deftest test-cost-is-zero\n'),
+    write(S, '  (is (true? (costs/is-zero-cost {:total-cost 0.0})))\n'),
+    write(S, '  (is (false? (costs/is-zero-cost {:total-cost 5.0}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -10171,7 +10367,13 @@ generate_clojure_context_test(Dir) :-
     write(S, '(deftest test-context-has-room\n'),
     write(S, '  (is (true? (ctx/has-room {:max-messages 0 :messages []})))\n'),
     write(S, '  (is (true? (ctx/has-room {:max-messages 5 :messages [{} {}]})))\n'),
-    write(S, '  (is (false? (ctx/has-room {:max-messages 2 :messages [{} {}]}))))\n'),
+    write(S, '  (is (false? (ctx/has-room {:max-messages 2 :messages [{} {}]}))))\n\n'),
+    write(S, '(deftest test-context-is-near-full\n'),
+    write(S, '  (is (false? (ctx/is-near-full {:max-messages 0 :messages []} 80)))\n'),
+    write(S, '  (is (true? (ctx/is-near-full {:max-messages 10 :messages [{} {} {} {} {} {} {} {} {}]} 80))))\n\n'),
+    write(S, '(deftest test-context-usage-pct\n'),
+    write(S, '  (is (= 0.0 (ctx/usage-pct {:max-messages 0 :messages []})))\n'),
+    write(S, '  (is (= 50.0 (ctx/usage-pct {:max-messages 10 :messages [{} {} {} {} {}]}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/context_test.clj~n', []).
 
@@ -10265,7 +10467,13 @@ generate_clojure_retry_test(Dir) :-
     write(S, '(deftest test-retry-total-wait\n'),
     write(S, '  (is (= 0.0 (retry/total-wait 1.0 0)))\n'),
     write(S, '  (is (= 3.0 (retry/total-wait 1.5 2)))\n'),
-    write(S, '  (is (= 10.0 (retry/total-wait 2.0 5))))\n'),
+    write(S, '  (is (= 10.0 (retry/total-wait 2.0 5))))\n\n'),
+    write(S, '(deftest test-retry-is-fresh\n'),
+    write(S, '  (is (true? (retry/is-fresh {:attempt 0})))\n'),
+    write(S, '  (is (false? (retry/is-fresh {:attempt 1}))))\n\n'),
+    write(S, '(deftest test-retry-has-delay\n'),
+    write(S, '  (is (true? (retry/has-delay {:base-delay 1.0})))\n'),
+    write(S, '  (is (false? (retry/has-delay {:base-delay 0.0}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -10324,7 +10532,13 @@ generate_clojure_tools_test(Dir) :-
     write(S, '(deftest test-tool-is-write-op\n'),
     write(S, '  (is (true? (tools/is-write-op "write")))\n'),
     write(S, '  (is (true? (tools/is-write-op "edit")))\n'),
-    write(S, '  (is (false? (tools/is-write-op "read"))))\n'),
+    write(S, '  (is (false? (tools/is-write-op "read"))))\n\n'),
+    write(S, '(deftest test-tool-is-bash\n'),
+    write(S, '  (is (true? (tools/is-bash "bash")))\n'),
+    write(S, '  (is (false? (tools/is-bash "read"))))\n\n'),
+    write(S, '(deftest test-tool-is-edit\n'),
+    write(S, '  (is (true? (tools/is-edit "edit")))\n'),
+    write(S, '  (is (false? (tools/is-edit "bash"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -10383,7 +10597,13 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '(deftest test-streaming-is-waiting\n'),
     write(S, '  (is (true? (streaming/is-waiting {:token-count 0 :char-count 0})))\n'),
     write(S, '  (is (false? (streaming/is-waiting {:token-count 1 :char-count 0})))\n'),
-    write(S, '  (is (false? (streaming/is-waiting {:token-count 0 :char-count 5}))))\n'),
+    write(S, '  (is (false? (streaming/is-waiting {:token-count 0 :char-count 5}))))\n\n'),
+    write(S, '(deftest test-streaming-has-elapsed\n'),
+    write(S, '  (is (true? (streaming/has-elapsed {:elapsed 1.0})))\n'),
+    write(S, '  (is (false? (streaming/has-elapsed {:elapsed 0.0}))))\n\n'),
+    write(S, '(deftest test-streaming-is-balanced\n'),
+    write(S, '  (is (true? (streaming/is-balanced {:char-count 10 :token-count 5})))\n'),
+    write(S, '  (is (false? (streaming/is-balanced {:char-count 3 :token-count 10}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 
@@ -10450,7 +10670,13 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (false? (config/has-backend {:settings {"model" "gpt-4"}}))))\n\n'),
     write(S, '(deftest test-config-is-production\n'),
     write(S, '  (is (true? (config/is-production {:debug "false"})))\n'),
-    write(S, '  (is (false? (config/is-production {:debug "true"}))))\n'),
+    write(S, '  (is (false? (config/is-production {:debug "true"}))))\n\n'),
+    write(S, '(deftest test-config-has-model\n'),
+    write(S, '  (is (true? (config/has-model {:settings {"model" "gpt-4"}})))\n'),
+    write(S, '  (is (false? (config/has-model {:settings {}}))))\n\n'),
+    write(S, '(deftest test-config-has-api-key\n'),
+    write(S, '  (is (true? (config/has-api-key {:settings {"api_key" "sk-123"}})))\n'),
+    write(S, '  (is (false? (config/has-api-key {:settings {}}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 
@@ -10509,7 +10735,13 @@ generate_clojure_security_test(Dir) :-
     write(S, '(deftest test-security-is-home-path\n'),
     write(S, '  (is (true? (security/is-home-path "/home/user/file.txt")))\n'),
     write(S, '  (is (true? (security/is-home-path "/data/data/com.termux/files")))\n'),
-    write(S, '  (is (false? (security/is-home-path "/etc/passwd"))))\n'),
+    write(S, '  (is (false? (security/is-home-path "/etc/passwd"))))\n\n'),
+    write(S, '(deftest test-security-has-pipe\n'),
+    write(S, '  (is (true? (security/has-pipe "| cat")))\n'),
+    write(S, '  (is (false? (security/has-pipe "ls"))))\n\n'),
+    write(S, '(deftest test-security-is-absolute-path\n'),
+    write(S, '  (is (true? (security/is-absolute-path "/usr/bin")))\n'),
+    write(S, '  (is (false? (security/is-absolute-path "src"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -10554,7 +10786,14 @@ generate_clojure_output_parser_test(Dir) :-
     write(S, '  (is (false? (parser/has-code-block "no code here"))))\n\n'),
     write(S, '(deftest test-output-is-short\n'),
     write(S, '  (is (true? (parser/is-short "hi" 10)))\n'),
-    write(S, '  (is (false? (parser/is-short "hello world foo bar" 5))))\n'),
+    write(S, '  (is (false? (parser/is-short "hello world foo bar" 5))))\n\n'),
+    write(S, '(deftest test-output-is-blank\n'),
+    write(S, '  (is (true? (parser/is-blank "")))\n'),
+    write(S, '  (is (true? (parser/is-blank "   ")))\n'),
+    write(S, '  (is (false? (parser/is-blank "hello"))))\n\n'),
+    write(S, '(deftest test-output-has-json-array\n'),
+    write(S, '  (is (true? (parser/has-json-array "[1,2]")))\n'),
+    write(S, '  (is (false? (parser/has-json-array "{}"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
 
@@ -10604,7 +10843,13 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '  (is (false? (sessions/list-is-empty 5))))\n\n'),
     write(S, '(deftest test-session-count-exceeds\n'),
     write(S, '  (is (true? (sessions/count-exceeds 10 5)))\n'),
-    write(S, '  (is (false? (sessions/count-exceeds 3 5))))\n'),
+    write(S, '  (is (false? (sessions/count-exceeds 3 5))))\n\n'),
+    write(S, '(deftest test-session-under-limit\n'),
+    write(S, '  (is (true? (sessions/under-limit 3 10)))\n'),
+    write(S, '  (is (false? (sessions/under-limit 10 5))))\n\n'),
+    write(S, '(deftest test-session-overflow-count\n'),
+    write(S, '  (is (= 0 (sessions/overflow-count 3 10)))\n'),
+    write(S, '  (is (= 5 (sessions/overflow-count 15 10))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
 
@@ -10655,7 +10900,13 @@ generate_clojure_mcp_test(Dir) :-
     write(S, '  (is (= 3 (mcp/total-tools {:tools ["a" "b" "c"]}))))\n\n'),
     write(S, '(deftest test-mcp-is-response\n'),
     write(S, '  (is (true? (mcp/is-response "result/success")))\n'),
-    write(S, '  (is (false? (mcp/is-response "tools/call"))))\n'),
+    write(S, '  (is (false? (mcp/is-response "tools/call"))))\n\n'),
+    write(S, '(deftest test-mcp-is-initialize\n'),
+    write(S, '  (is (true? (mcp/is-initialize "initialize")))\n'),
+    write(S, '  (is (false? (mcp/is-initialize "shutdown"))))\n\n'),
+    write(S, '(deftest test-mcp-is-shutdown\n'),
+    write(S, '  (is (true? (mcp/is-shutdown "shutdown")))\n'),
+    write(S, '  (is (false? (mcp/is-shutdown "initialize"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/mcp_test.clj~n', []).
 

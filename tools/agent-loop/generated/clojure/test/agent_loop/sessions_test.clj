@@ -55,3 +55,11 @@
 (deftest test-session-count-exceeds
   (is (true? (sessions/count-exceeds 10 5)))
   (is (false? (sessions/count-exceeds 3 5))))
+
+(deftest test-session-under-limit
+  (is (true? (sessions/under-limit 3 10)))
+  (is (false? (sessions/under-limit 10 5))))
+
+(deftest test-session-overflow-count
+  (is (= 0 (sessions/overflow-count 3 10)))
+  (is (= 5 (sessions/overflow-count 15 10))))

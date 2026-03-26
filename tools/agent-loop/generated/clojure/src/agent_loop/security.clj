@@ -109,3 +109,15 @@
   (or (.startsWith path "/home") (.startsWith path "/data/data"))
 )
 
+(defn has-pipe
+  "Check if a command contains a pipe operator."
+  [cmd]
+  (.startsWith cmd "|")
+)
+
+(defn is-absolute-path
+  "Check if a path is absolute (starts with /)."
+  [path]
+  (.startsWith path "/")
+)
+

@@ -125,6 +125,18 @@ defmodule AgentLoop.MCPClient do
     String.starts_with?(method, "result")
   end
 
+  @doc "Check if a JSON-RPC method is the initialize handshake."
+  @spec is_initialize(String.t()) :: boolean()
+  def is_initialize(method) do
+    method == "initialize"
+  end
+
+  @doc "Check if a JSON-RPC method is the shutdown request."
+  @spec is_shutdown(String.t()) :: boolean()
+  def is_shutdown(method) do
+    method == "shutdown"
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

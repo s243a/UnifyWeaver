@@ -102,4 +102,16 @@ defmodule AgentLoop.Retry do
     base_delay * (attempts * 1.0)
   end
 
+  @doc "Check if no retry attempts have been made yet."
+  @spec is_fresh(t()) :: boolean()
+  def is_fresh(%__MODULE__{} = state) do
+    state.attempt == 0
+  end
+
+  @doc "Check if a positive base delay is configured."
+  @spec has_delay(t()) :: boolean()
+  def has_delay(%__MODULE__{} = state) do
+    state.base_delay > 0.0
+  end
+
 end

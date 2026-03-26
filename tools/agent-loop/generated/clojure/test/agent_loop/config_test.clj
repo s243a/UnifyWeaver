@@ -52,3 +52,11 @@
 (deftest test-config-is-production
   (is (true? (config/is-production {:debug "false"})))
   (is (false? (config/is-production {:debug "true"}))))
+
+(deftest test-config-has-model
+  (is (true? (config/has-model {:settings {"model" "gpt-4"}})))
+  (is (false? (config/has-model {:settings {}}))))
+
+(deftest test-config-has-api-key
+  (is (true? (config/has-api-key {:settings {"api_key" "sk-123"}})))
+  (is (false? (config/has-api-key {:settings {}}))))

@@ -177,6 +177,14 @@ output_ratio(State, Result) :-
 is_input_heavy(State, Result) :-
     (State.total_input_tokens > State.total_output_tokens -> Result = true ; Result = false).
 
+%% Check if output tokens exceed input tokens.
+is_output_heavy(State, Result) :-
+    (State.total_output_tokens > State.total_input_tokens -> Result = true ; Result = false).
+
+%% Check if total cost is exactly zero.
+is_zero_cost(State, Result) :-
+    (State.total_cost =< 0.0 -> Result = true ; Result = false).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

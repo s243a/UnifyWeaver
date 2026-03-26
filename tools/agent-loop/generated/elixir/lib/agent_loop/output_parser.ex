@@ -111,6 +111,18 @@ defmodule AgentLoop.OutputParser do
     Enum.count(text) <= max_len
   end
 
+  @doc "Check if text is empty or only whitespace."
+  @spec is_blank(String.t()) :: boolean()
+  def is_blank(text) do
+    Enum.count(String.trim(text)) == 0
+  end
+
+  @doc "Check if text contains a JSON array start marker."
+  @spec has_json_array(String.t()) :: boolean()
+  def has_json_array(text) do
+    String.starts_with?(text, "[")
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

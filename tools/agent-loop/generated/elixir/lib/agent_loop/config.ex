@@ -201,4 +201,16 @@ defmodule AgentLoop.Config do
     not state.debug == "true"
   end
 
+  @doc "Check if a model is configured in settings."
+  @spec has_model(t()) :: boolean()
+  def has_model(%__MODULE__{} = state) do
+    Map.has_key?(state.settings, "model")
+  end
+
+  @doc "Check if an API key is configured in settings."
+  @spec has_api_key(t()) :: boolean()
+  def has_api_key(%__MODULE__{} = state) do
+    Map.has_key?(state.settings, "api_key")
+  end
+
 end

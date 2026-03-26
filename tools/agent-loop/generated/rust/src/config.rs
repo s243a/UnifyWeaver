@@ -276,4 +276,16 @@ impl ConfigLoader {
         return !(self.debug == "true");
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if a model is configured in settings.
+    pub fn has_model(&self) -> bool {
+        return self.settings.contains_key("model");
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if an API key is configured in settings.
+    pub fn has_api_key(&self) -> bool {
+        return self.settings.contains_key("api_key");
+    }
+
 }

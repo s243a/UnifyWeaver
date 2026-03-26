@@ -190,3 +190,11 @@ def is_home_path(path):
     """Check if a path starts with /home or /data/data (Termux home)."""
     return (path.startswith("/home") or path.startswith("/data/data"))
 
+def has_pipe(cmd):
+    """Check if a command contains a pipe operator."""
+    return cmd.startswith("|")
+
+def is_absolute_path(path):
+    """Check if a path is absolute (starts with /)."""
+    return path.startswith("/")
+

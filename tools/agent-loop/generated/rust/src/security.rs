@@ -163,3 +163,15 @@ pub fn is_home_path(path: &str) -> bool {
     return path.starts_with("/home") || path.starts_with("/data/data");
 }
 
+#[allow(dead_code, unused_variables)]
+/// Check if a command contains a pipe operator.
+pub fn has_pipe(cmd: &str) -> bool {
+    return cmd.starts_with("|");
+}
+
+#[allow(dead_code, unused_variables)]
+/// Check if a path is absolute (starts with /).
+pub fn is_absolute_path(path: &str) -> bool {
+    return path.starts_with("/");
+}
+

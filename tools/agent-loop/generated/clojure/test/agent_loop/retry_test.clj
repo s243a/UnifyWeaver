@@ -55,3 +55,11 @@
   (is (= 0.0 (retry/total-wait 1.0 0)))
   (is (= 3.0 (retry/total-wait 1.5 2)))
   (is (= 10.0 (retry/total-wait 2.0 5))))
+
+(deftest test-retry-is-fresh
+  (is (true? (retry/is-fresh {:attempt 0})))
+  (is (false? (retry/is-fresh {:attempt 1}))))
+
+(deftest test-retry-has-delay
+  (is (true? (retry/has-delay {:base-delay 1.0})))
+  (is (false? (retry/has-delay {:base-delay 0.0}))))

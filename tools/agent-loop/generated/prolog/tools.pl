@@ -166,6 +166,14 @@ safe_count(State, Result) :-
 is_write_op(Tool_name, Result) :-
     ((Tool_name == "Write" ; Tool_name == "Edit") -> Result = true ; Result = false).
 
+%% Check if tool is the bash command executor.
+is_bash(Tool_name, Result) :-
+    (Tool_name == "Bash" -> Result = true ; Result = false).
+
+%% Check if tool is the file editor.
+is_edit(Tool_name, Result) :-
+    (Tool_name == "Edit" -> Result = true ; Result = false).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->
