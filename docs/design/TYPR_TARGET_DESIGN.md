@@ -98,7 +98,8 @@ This document focuses on architecture and rollout choices specific to TypR.
      context updates before that first subtree call, branch-local
      context updates before the second subtree call, and boolean return
      types, plus conservative integer-return tree-structural SCCs with
-     shared dual-subtree descent and simple post-call arithmetic
+     shared dual-subtree descent, guarded branch-local alias selection
+     before those shared subtree calls, and simple post-call arithmetic
      recombination over `value`, `left_result`, `right_result`, and any
      threaded context args, emitted as TypR
      functions with raw-expression memoized helper bodies

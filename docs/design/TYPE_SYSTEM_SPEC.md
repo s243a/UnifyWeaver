@@ -408,7 +408,8 @@ Current TypR lowering policy is intentionally mixed:
   context updates before the second subtree call, or multiple threaded
   context arguments carried through the same shared subtree-call families,
   plus conservative integer-return tree-structural SCCs with shared
-  dual-subtree descent and simple post-call arithmetic recombination over
+  dual-subtree descent, guarded branch-local alias selection before those
+  shared subtree calls, and simple post-call arithmetic recombination over
   `value`, `left_result`, `right_result`, and any threaded context args,
   using raw-expression memoized helper bodies inside TypR rather than
   wrapped-R fallback
