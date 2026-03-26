@@ -404,7 +404,9 @@ Current TypR lowering policy is intentionally mixed:
   and the same conservative guarded branch-body family, including branch
   bodies where one shared subtree call happens before guarded control that
   contains the second subtree call plus nested non-recursive post-call
-  control, shared context updates before that first subtree call, branch-local
+  control, or direct recursive subtree calls inside supported guarded
+  branch bodies with one nested branch-local control point around those
+  calls, shared context updates before that first subtree call, branch-local
   context updates before the second subtree call, or multiple threaded
   context arguments carried through the same shared subtree-call families,
   plus conservative integer-return tree-structural SCCs with shared

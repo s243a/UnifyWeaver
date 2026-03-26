@@ -249,7 +249,8 @@ includes:
   tree SCCs with
   alias-style prework, shared computed context updates, or guarded shared
   context selection before the two recursive subtree calls, or direct
-  recursive subtree calls inside supported guarded branch bodies with
+  recursive subtree calls inside supported guarded branch bodies with one
+  nested branch-local control point around those calls and
   limited branch-local alias or guard state around those calls, including
   one nested branch-local control point around those calls before the
   shared boolean rejoin, one nested branch-local control point between the
