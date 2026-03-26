@@ -2417,6 +2417,106 @@ test(structural_tree_dual_mutual_integer_context_recursive_branch_output_checks_
     retractall(user:typr_mutual_weight_even_tree_recursive_branch(_, _, _)),
     retractall(user:typr_mutual_weight_odd_tree_recursive_branch(_, _, _)).
 
+test(structural_tree_dual_mutual_integer_nested_recursive_branch_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_tree_nested_recursive_branch([], 0)),
+    assertz(user:(typr_mutual_sum_even_tree_nested_recursive_branch([V, L, R], S) :-
+        ( V > 0 ->
+            ( V > 10 ->
+                typr_mutual_sum_odd_tree_nested_recursive_branch(L, SL),
+                typr_mutual_sum_odd_tree_nested_recursive_branch(R, SR)
+            ;   typr_mutual_sum_odd_tree_nested_recursive_branch(R, SR),
+                typr_mutual_sum_odd_tree_nested_recursive_branch(L, SL)
+            )
+        ;   typr_mutual_sum_odd_tree_nested_recursive_branch(L, SL),
+            typr_mutual_sum_odd_tree_nested_recursive_branch(R, SR)
+        ),
+        S is V + SL + SR
+    )),
+    assertz(user:typr_mutual_sum_odd_tree_nested_recursive_branch([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_tree_nested_recursive_branch([V, L, R], S) :-
+        ( V > 0 ->
+            ( V > 10 ->
+                typr_mutual_sum_even_tree_nested_recursive_branch(L, SL),
+                typr_mutual_sum_even_tree_nested_recursive_branch(R, SR)
+            ;   typr_mutual_sum_even_tree_nested_recursive_branch(R, SR),
+                typr_mutual_sum_even_tree_nested_recursive_branch(L, SL)
+            )
+        ;   typr_mutual_sum_even_tree_nested_recursive_branch(L, SL),
+            typr_mutual_sum_even_tree_nested_recursive_branch(R, SR)
+        ),
+        S is V + SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_nested_recursive_branch/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_nested_recursive_branch/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_nested_recursive_branch/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_nested_recursive_branch/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_tree_nested_recursive_branch/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_tree_nested_recursive_branch/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_tree_nested_recursive_branch/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_sum_even_tree_nested_recursive_branch(_, _)),
+    retractall(user:typr_mutual_sum_odd_tree_nested_recursive_branch(_, _)).
+
+test(structural_tree_dual_mutual_integer_context_nested_recursive_branch_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_even_tree_nested_recursive_branch([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_even_tree_nested_recursive_branch([V, L, R], W, S) :-
+        ( V > W ->
+            ( V > W + 10 ->
+                typr_mutual_weight_odd_tree_nested_recursive_branch(L, W, SL),
+                typr_mutual_weight_odd_tree_nested_recursive_branch(R, W, SR)
+            ;   typr_mutual_weight_odd_tree_nested_recursive_branch(R, W, SR),
+                typr_mutual_weight_odd_tree_nested_recursive_branch(L, W, SL)
+            )
+        ;   typr_mutual_weight_odd_tree_nested_recursive_branch(L, W, SL),
+            typr_mutual_weight_odd_tree_nested_recursive_branch(R, W, SR)
+        ),
+        S is (V * W) + SL + SR
+    )),
+    assertz(user:typr_mutual_weight_odd_tree_nested_recursive_branch([_, [], []], _W1, 1)),
+    assertz(user:(typr_mutual_weight_odd_tree_nested_recursive_branch([V, L, R], W, S) :-
+        ( V > W ->
+            ( V > W + 10 ->
+                typr_mutual_weight_even_tree_nested_recursive_branch(L, W, SL),
+                typr_mutual_weight_even_tree_nested_recursive_branch(R, W, SR)
+            ;   typr_mutual_weight_even_tree_nested_recursive_branch(R, W, SR),
+                typr_mutual_weight_even_tree_nested_recursive_branch(L, W, SL)
+            )
+        ;   typr_mutual_weight_even_tree_nested_recursive_branch(L, W, SL),
+            typr_mutual_weight_even_tree_nested_recursive_branch(R, W, SR)
+        ),
+        S is (V * W) + SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_nested_recursive_branch/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_nested_recursive_branch/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_nested_recursive_branch/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_nested_recursive_branch/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_nested_recursive_branch/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_nested_recursive_branch/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_even_tree_nested_recursive_branch/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_odd_tree_nested_recursive_branch/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_even_tree_nested_recursive_branch/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_weight_even_tree_nested_recursive_branch(_, _, _)),
+    retractall(user:typr_mutual_weight_odd_tree_nested_recursive_branch(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-
