@@ -36,7 +36,12 @@
     % Multi-module import/export linking
     wat_module_imports/3,                % +ImportSpecs, +Options, -ImportCode
     wat_module_exports/3,                % +ExportSpecs, +Options, -ExportCode
-    wat_link_modules/3                   % +ModuleSpecs, +Options, -LinkedCode
+    wat_link_modules/3,                  % +ModuleSpecs, +Options, -LinkedCode
+
+    % Indirect call tables (dynamic dispatch)
+    wat_call_table/3,                    % +FuncSpecs, +Options, -TableCode
+    wat_dispatch_func/4,                 % +DispatchName, +TypeSig, +Options, -Code
+    wat_compile_with_dispatch/4          % +DispatchSpec, +Options, +Functions, -Code
 ]).
 
 :- use_module(library(lists)).
@@ -1165,6 +1170,144 @@ gen_linked_func(func(Name, Params, Result, Body), Line) :-
 
 gen_func_param(param(Name, Type), Str) :-
     format(string(Str), '(param $~w ~w) ', [Name, Type]).
+
+%% ============================================
+%% INDIRECT CALL TABLES (Dynamic Dispatch)
+%% ============================================
+%%
+%% WAT supports indirect function calls via tables + call_indirect.
+%% This enables dynamic dispatch: select a function at runtime by index.
+%%
+%% Use cases in Prolog compilation:
+%%   - Multi-clause dispatch (select clause by guard index)
+%%   - Higher-order predicates (call/N simulation)
+%%   - Module-level function pointers
+%%
+%% Table entry: each function registered in the table gets an index (0-based).
+%% Dispatch: call_indirect with a type signature and the index on the stack.
+
+%% wat_call_table(+FuncSpecs, +Options, -TableCode)
+%%   Generate a WAT function table, type declaration, and element segment.
+%%
+%%   FuncSpecs: list of table_func(Name, Params, Result, Body)
+%%     Name: function name (string/atom)
+%%     Params: list of WAT types [i64, i32, ...]
+%%     Result: return type (i64, i32, void)
+%%     Body: WAT body string
+%%
+%%   Generates:
+%%     (type $dispatch_t (func (param ...) (result ...)))
+%%     (table N funcref)
+%%     (elem (i32.const 0) $func0 $func1 ...)
+%%     (func $func0 ...) (func $func1 ...)
+wat_call_table(FuncSpecs, Options, TableCode) :-
+    length(FuncSpecs, Count),
+    (   Count > 0
+    ->  % Build type signature from first func (all must match)
+        FuncSpecs = [table_func(_, Params, Result, _)|_],
+        maplist(param_to_wat, Params, ParamStrs),
+        atomics_to_string(ParamStrs, ParamCode),
+        result_to_wat(Result, ResultCode),
+        format(string(TypeDecl),
+            '  (type $dispatch_t (func ~w~w))~n', [ParamCode, ResultCode]),
+
+        % Table declaration
+        format(string(TableDecl),
+            '  (table ~w funcref)~n', [Count]),
+
+        % Element segment
+        maplist(table_func_name, FuncSpecs, FuncNames),
+        atomic_list_concat(FuncNames, ' ', NameList),
+        format(string(ElemDecl),
+            '  (elem (i32.const 0) ~w)~n', [NameList]),
+
+        % Function bodies
+        maplist(gen_table_func(Params, Result, Options), FuncSpecs, FuncBodies),
+        atomics_to_string(FuncBodies, FuncCode),
+
+        atomics_to_string([TypeDecl, TableDecl, ElemDecl, FuncCode], TableCode)
+    ;   TableCode = ""
+    ).
+
+table_func_name(table_func(Name, _, _, _), Ref) :-
+    format(string(Ref), '$~w', [Name]).
+
+gen_table_func(Params, Result, _Options, table_func(Name, _, _, Body), Code) :-
+    length(Params, ParamCount),
+    gen_indexed_params(1, ParamCount, Params, ParamDecls),
+    atomics_to_string(ParamDecls, ParamCode),
+    result_to_wat(Result, ResultCode),
+    format(string(Code),
+'  (func $~w ~w~w
+~w
+  )~n', [Name, ParamCode, ResultCode, Body]).
+
+gen_indexed_params(_, 0, _, []) :- !.
+gen_indexed_params(I, Remaining, [Type|RestTypes], [Str|RestStrs]) :-
+    format(string(Str), '(param $p~w ~w) ', [I, Type]),
+    I1 is I + 1,
+    R1 is Remaining - 1,
+    gen_indexed_params(I1, R1, RestTypes, RestStrs).
+
+%% wat_dispatch_func(+DispatchName, +TypeSig, +Options, -Code)
+%%   Generate a dispatch function that does call_indirect with a
+%%   runtime index parameter.
+%%
+%%   TypeSig: type_sig(Params, Result)
+%%     Params: list of WAT types for the dispatched function's params
+%%     Result: return type
+%%
+%%   The generated function takes (index i32, params...) and calls
+%%   the function at table[index] with the remaining params.
+wat_dispatch_func(DispatchName, type_sig(Params, Result), _Options, Code) :-
+    % Build named param list for the dispatch function
+    length(Params, ParamCount),
+    gen_named_params(1, ParamCount, Params, NamedParamStrs),
+    atomics_to_string(NamedParamStrs, FwdParamCode),
+    result_to_wat(Result, ResultCode),
+
+    % Generate local.get for each forwarded param
+    gen_forward_gets(1, ParamCount, ForwardGets),
+    atomics_to_string(ForwardGets, ForwardCode),
+
+    format(string(Code),
+'  (func $~w (export "~w") (param $idx i32) ~w~w
+    ~w(call_indirect (type $dispatch_t) (local.get $idx))
+  )~n', [DispatchName, DispatchName, FwdParamCode, ResultCode, ForwardCode]).
+
+gen_named_params(_, 0, _, []) :- !.
+gen_named_params(I, Remaining, [Type|RestTypes], [Str|RestStrs]) :-
+    format(string(Str), '(param $p~w ~w) ', [I, Type]),
+    I1 is I + 1,
+    R1 is Remaining - 1,
+    gen_named_params(I1, R1, RestTypes, RestStrs).
+
+gen_forward_gets(_, 0, []) :- !.
+gen_forward_gets(I, Remaining, [Str|Rest]) :-
+    format(string(Str), '(local.get $p~w) ', [I]),
+    I1 is I + 1,
+    R1 is Remaining - 1,
+    gen_forward_gets(I1, R1, Rest).
+
+%% wat_compile_with_dispatch(+DispatchSpec, +Options, +Functions, -Code)
+%%   Compile a complete module with a function table and dispatch function.
+%%
+%%   DispatchSpec: dispatch(Name, Params, Result)
+%%   Functions: list of table_func(Name, Params, Result, Body)
+wat_compile_with_dispatch(dispatch(DispName, Params, Result), Options, Functions, Code) :-
+    wat_call_table(Functions, Options, TableCode),
+    wat_dispatch_func(DispName, type_sig(Params, Result), Options, DispatchCode),
+    wat_memory_decl(Options, MemDecl),
+    length(Functions, Count),
+    format(string(Code),
+'(module
+  ;; Generated by UnifyWeaver WAT Target - Dynamic Dispatch
+  ;; Dispatch: ~w (table of ~w functions)
+
+~w
+~w
+~w)
+', [DispName, Count, MemDecl, TableCode, DispatchCode]).
 
 %% combine_wat_conditions(+Conds, -Combined)
 combine_wat_conditions([C], C) :- !.
