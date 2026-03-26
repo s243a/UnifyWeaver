@@ -158,6 +158,14 @@ tool_count(State, Result) :-
 requires_confirm(Tool_name, Result) :-
     ((Tool_name == ""bash"" ; Tool_name == ""write"") -> Result = true ; Result = false).
 
+%% Return the number of tools in the schema (total tool count).
+safe_count(State, Result) :-
+    length(State.args, Result).
+
+%% Check if a tool performs write operations (write or edit).
+is_write_op(Tool_name, Result) :-
+    ((Tool_name == "Write" ; Tool_name == "Edit") -> Result = true ; Result = false).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

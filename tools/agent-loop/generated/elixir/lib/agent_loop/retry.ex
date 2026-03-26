@@ -90,4 +90,16 @@ defmodule AgentLoop.Retry do
     (state.attempt + 1)
   end
 
+  @doc "Check if error count has reached the maximum allowed errors."
+  @spec should_give_up(integer(), integer()) :: boolean()
+  def should_give_up(error_count, max_errors) do
+    error_count >= max_errors
+  end
+
+  @doc "Estimate total wait time as base_delay * attempts."
+  @spec total_wait(float(), integer()) :: float()
+  def total_wait(base_delay, attempts) do
+    base_delay * (attempts * 1.0)
+  end
+
 end

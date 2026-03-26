@@ -189,4 +189,16 @@ defmodule AgentLoop.Config do
     Enum.count(state.settings)
   end
 
+  @doc "Check if a backend is configured in settings."
+  @spec has_backend(t()) :: boolean()
+  def has_backend(%__MODULE__{} = state) do
+    Map.has_key?(state.settings, "backend")
+  end
+
+  @doc "Check if debug mode is disabled (production mode)."
+  @spec is_production(t()) :: boolean()
+  def is_production(%__MODULE__{} = state) do
+    not state.debug == "true"
+  end
+
 end

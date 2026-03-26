@@ -55,3 +55,12 @@
 (deftest test-is-full
   (is (false? (ctx/is-full {:max-messages 0 :messages []})))
   (is (true? (ctx/is-full {:max-messages 2 :messages [{} {}]}))))
+
+(deftest test-context-char-budget
+  (is (= -1 (ctx/char-budget {:max-chars 0 :token-count 0})))
+  (is (= 80 (ctx/char-budget {:max-chars 100 :token-count 20}))))
+
+(deftest test-context-has-room
+  (is (true? (ctx/has-room {:max-messages 0 :messages []})))
+  (is (true? (ctx/has-room {:max-messages 5 :messages [{} {}]})))
+  (is (false? (ctx/has-room {:max-messages 2 :messages [{} {}]}))))

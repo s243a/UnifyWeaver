@@ -165,6 +165,18 @@ format_dollars(Amount, Result) :-
 has_usage(State, Result) :-
     ((State.total_input_tokens + State.total_output_tokens) > 0 -> Result = true ; Result = false).
 
+%% Return the ratio of output tokens to total tokens. Returns 0.0 if no tokens.
+output_ratio(State, Result) :-
+    ((State.total_input_tokens + State.total_output_tokens) =:= 0 ->
+        Result = 0.0
+    ;
+    Result is (float(State.total_output_tokens) / float((State.total_input_tokens + State.total_output_tokens)))
+    ).
+
+%% Check if input tokens exceed output tokens.
+is_input_heavy(State, Result) :-
+    (State.total_input_tokens > State.total_output_tokens -> Result = true ; Result = false).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

@@ -238,3 +238,21 @@
   )
 )
 
+(defn char-budget
+  "Return remaining character budget. Returns -1 if no max_chars set."
+  [state]
+  (if (<= (:max-chars state) 0)
+      -1
+      (- (:max-chars state) (:token-count state))
+  )
+)
+
+(defn has-room
+  "Check if context can accept more messages (not full or unlimited)."
+  [state]
+  (if (<= (:max-messages state) 0)
+      true
+      (< (count (:messages state)) (:max-messages state))
+  )
+)
+

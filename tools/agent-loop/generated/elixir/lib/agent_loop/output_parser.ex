@@ -99,6 +99,18 @@ defmodule AgentLoop.OutputParser do
     String.starts_with?(text, "```")
   end
 
+  @doc "Check if text contains a JSON object start marker."
+  @spec has_json_object(String.t()) :: boolean()
+  def has_json_object(text) do
+    String.starts_with?(text, "{")
+  end
+
+  @doc "Check if content length is within max_len."
+  @spec is_short(String.t(), integer()) :: boolean()
+  def is_short(text, max_len) do
+    Enum.count(text) <= max_len
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

@@ -135,3 +135,15 @@
   (> (:token-count state) 0)
 )
 
+(defn exceeds-limit
+  "Check if token count exceeds a given limit."
+  [state limit]
+  (> (int (:token-count state)) limit)
+)
+
+(defn is-waiting
+  "Check if streaming handler is waiting (zero tokens and zero chars)."
+  [state]
+  (and (zero? (:token-count state)) (zero? (:char-count state)))
+)
+

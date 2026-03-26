@@ -312,4 +312,22 @@ impl ContextManager {
         return self.messages.len() >= self.max_messages;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return remaining character budget. Returns -1 if no max_chars set.
+    pub fn char_budget(&self) -> i64 {
+        if self.max_chars <= 0 {
+            return -1;
+        }
+        return self.max_chars - self.token_count;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if context can accept more messages (not full or unlimited).
+    pub fn has_room(&self) -> bool {
+        if self.max_messages <= 0 {
+            return true;
+        }
+        return self.messages.len() < self.max_messages;
+    }
+
 }

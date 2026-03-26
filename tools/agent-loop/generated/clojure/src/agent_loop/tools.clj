@@ -121,3 +121,15 @@
   (or (= tool-name "bash") (= tool-name "write"))
 )
 
+(defn safe-count
+  "Return the number of tools in the schema (total tool count)."
+  [state]
+  (int (count (:args state)))
+)
+
+(defn is-write-op
+  "Check if a tool performs write operations (write or edit)."
+  [tool-name]
+  (or (= tool-name "write") (= tool-name "edit"))
+)
+

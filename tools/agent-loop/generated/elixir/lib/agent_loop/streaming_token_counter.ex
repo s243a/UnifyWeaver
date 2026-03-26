@@ -142,4 +142,16 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.token_count > 0
   end
 
+  @doc "Check if token count exceeds a given limit."
+  @spec exceeds_limit(t(), integer()) :: boolean()
+  def exceeds_limit(%__MODULE__{} = state, limit) do
+    state.token_count > limit
+  end
+
+  @doc "Check if streaming handler is waiting (zero tokens and zero chars)."
+  @spec is_waiting(t()) :: boolean()
+  def is_waiting(%__MODULE__{} = state) do
+    (state.token_count == 0 and state.char_count == 0)
+  end
+
 end

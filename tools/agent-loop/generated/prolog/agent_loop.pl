@@ -202,6 +202,22 @@ is_full(State, Result) :-
     length(State.messages, Result) >= State.max_messages
     ).
 
+%% Return remaining character budget. Returns -1 if no max_chars set.
+char_budget(State, Result) :-
+    (State.max_chars =< 0 ->
+        Result = -1
+    ;
+    Result is (State.max_chars - State.token_count)
+    ).
+
+%% Check if context can accept more messages (not full or unlimited).
+has_room(State, Result) :-
+    (State.max_messages =< 0 ->
+        Result = true
+    ;
+    length(State.messages, Result) < State.max_messages
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -292,6 +308,14 @@ tokens_remaining(State, Max_tokens, Result) :-
 %% Check if at least one token has been received.
 has_started(State, Result) :-
     (State.token_count > 0 -> Result = true ; Result = false).
+
+%% Check if token count exceeds a given limit.
+exceeds_limit(State, Limit, Result) :-
+    (State.token_count > Limit -> Result = true ; Result = false).
+
+%% Check if streaming handler is waiting (zero tokens and zero chars).
+is_waiting(State, Result) :-
+    ((State.token_count =:= 0 , State.char_count =:= 0) -> Result = true ; Result = false).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -437,6 +461,14 @@ request_count(State, Result) :-
 has_clients(State, Result) :-
     length(State.clients, Result) > 0.
 
+%% Return total number of MCP tools discovered.
+total_tools(State, Result) :-
+    length(State.tools, Result).
+
+%% Check if a JSON-RPC method name is a response (starts with result).
+is_response(Method, Result) :-
+    (atom_concat('result', _, Method) -> Result = true ; Result = false).
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -495,6 +527,14 @@ is_last_attempt(State, Result) :-
 %% Return the total number of attempts made (attempt + 1 for zero-indexed).
 total_attempts(State, Result) :-
     Result is (State.attempt + 1).
+
+%% Check if error count has reached the maximum allowed errors.
+should_give_up(Error_count, Max_errors, Result) :-
+    (Error_count >= Max_errors -> Result = true ; Result = false).
+
+%% Estimate total wait time as base_delay * attempts.
+total_wait(Base_delay, Attempts, Result) :-
+    Result is (Base_delay * float(Attempts)).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -559,6 +599,14 @@ is_multiline(Text, Threshold, Result) :-
 %% Check if text contains a fenced code block marker (triple backticks).
 has_code_block(Text, Result) :-
     (atom_concat('```', _, Text) -> Result = true ; Result = false).
+
+%% Check if text contains a JSON object start marker.
+has_json_object(Text, Result) :-
+    (atom_concat('{', _, Text) -> Result = true ; Result = false).
+
+%% Check if content length is within max_len.
+is_short(Text, Max_len, Result) :-
+    length(Text, Result) =< Max_len.
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
@@ -642,6 +690,14 @@ id_is_long(Session_id, Min_len, Result) :-
 %% Check if the sessions directory has no session files.
 dir_is_empty(File_count, Result) :-
     (File_count =< 0 -> Result = true ; Result = false).
+
+%% Check if session list has no entries.
+list_is_empty(Count, Result) :-
+    (Count =< 0 -> Result = true ; Result = false).
+
+%% Check if session count exceeds a given limit.
+count_exceeds(Count, Limit, Result) :-
+    (Count > Limit -> Result = true ; Result = false).
 
 conversation([]).
 max_iterations(0).

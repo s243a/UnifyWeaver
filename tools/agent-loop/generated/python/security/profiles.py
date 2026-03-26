@@ -182,3 +182,11 @@ def allows_auto(profile):
     """Check if a security profile allows auto-approval of tools (only open does)."""
     return profile == "open"
 
+def profile_count(profiles):
+    """Return the number of available security profiles."""
+    return profiles
+
+def is_home_path(path):
+    """Check if a path starts with /home or /data/data (Termux home)."""
+    return (path.startswith("/home") or path.startswith("/data/data"))
+

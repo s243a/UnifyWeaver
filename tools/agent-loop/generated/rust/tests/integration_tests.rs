@@ -1896,4 +1896,56 @@ fn test_config_loader_struct_complete() {
     assert!(src.contains("fn is_empty("), "should have is_empty");
     assert!(src.contains("fn is_default_backend("), "should have is_default_backend");
     assert!(src.contains("fn key_count("), "should have key_count");
+    assert!(src.contains("fn has_backend("), "should have has_backend");
+    assert!(src.contains("fn is_production("), "should have is_production");
+}
+
+#[test]
+fn test_config_loader_functional() {
+    use agent_loop::ConfigLoader;
+    let mut loader = ConfigLoader::new();
+    assert!(loader.is_empty());
+    assert_eq!(loader.field_count(), 0);
+    assert_eq!(loader.key_count(), 0);
+    assert!(loader.is_default_backend());
+    assert!(!loader.has_backend());
+    assert!(loader.is_production());
+    loader.settings.insert("backend".to_string(), "openai".to_string());
+    assert!(!loader.is_empty());
+    assert_eq!(loader.field_count(), 1);
+    assert!(!loader.is_default_backend());
+    assert!(loader.has_backend());
+    assert!(loader.has_key("backend"));
+    assert!(!loader.has_key("model"));
+}
+
+#[test]
+fn test_round8_streaming_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn exceeds_limit("), "main.rs should have exceeds_limit");
+    assert!(src.contains("fn is_waiting("), "main.rs should have is_waiting");
+    assert!(src.contains("fn tokens_remaining("), "main.rs should have tokens_remaining");
+}
+
+#[test]
+fn test_round8_mcp_methods() {
+    let src = include_str!("../src/mcp_client.rs");
+    assert!(src.contains("fn total_tools("), "mcp_client.rs should have total_tools");
+    assert!(src.contains("fn has_clients("), "mcp_client.rs should have has_clients");
+}
+
+#[test]
+fn test_round8_context_methods() {
+    let src = include_str!("../src/context.rs");
+    assert!(src.contains("fn char_budget("), "context.rs should have char_budget");
+    assert!(src.contains("fn has_room("), "context.rs should have has_room");
+    assert!(src.contains("fn is_full("), "context.rs should have is_full");
+}
+
+#[test]
+fn test_round8_costs_methods() {
+    let src = include_str!("../src/costs.rs");
+    assert!(src.contains("fn output_ratio("), "costs.rs should have output_ratio");
+    assert!(src.contains("fn is_input_heavy("), "costs.rs should have is_input_heavy");
+    assert!(src.contains("fn has_usage("), "costs.rs should have has_usage");
 }

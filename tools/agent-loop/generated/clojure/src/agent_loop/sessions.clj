@@ -129,3 +129,15 @@
   (<= file-count 0)
 )
 
+(defn list-is-empty
+  "Check if session list has no entries."
+  [count]
+  (<= count 0)
+)
+
+(defn count-exceeds
+  "Check if session count exceeds a given limit."
+  [count limit]
+  (> count limit)
+)
+

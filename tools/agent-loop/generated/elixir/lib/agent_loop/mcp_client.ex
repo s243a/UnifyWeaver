@@ -113,6 +113,18 @@ defmodule AgentLoop.MCPClient do
     Enum.count(state.clients) > 0
   end
 
+  @doc "Return total number of MCP tools discovered."
+  @spec total_tools(t()) :: integer()
+  def total_tools(%__MODULE__{} = state) do
+    Enum.count(state.tools)
+  end
+
+  @doc "Check if a JSON-RPC method name is a response (starts with result)."
+  @spec is_response(String.t()) :: boolean()
+  def is_response(method) do
+    String.starts_with?(method, "result")
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

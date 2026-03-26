@@ -141,3 +141,11 @@ needs_audit(Profile, Result) :-
 allows_auto(Profile, Result) :-
     (Profile == "Open" -> Result = true ; Result = false).
 
+%% Return the number of available security profiles.
+profile_count(Profiles, Result) :-
+    Result = Profiles.
+
+%% Check if a path starts with /home or /data/data (Termux home).
+is_home_path(Path, Result) :-
+    ((atom_concat('/home', _, Path) ; atom_concat('/data/data', _, Path)) -> Result = true ; Result = false).
+

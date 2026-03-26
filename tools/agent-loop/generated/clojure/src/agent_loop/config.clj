@@ -151,3 +151,15 @@
   (int (count (:settings state)))
 )
 
+(defn has-backend
+  "Check if a backend is configured in settings."
+  [state]
+  (contains? (:settings state) "backend")
+)
+
+(defn is-production
+  "Check if debug mode is disabled (production mode)."
+  [state]
+  (not (= (:debug state) "true"))
+)
+

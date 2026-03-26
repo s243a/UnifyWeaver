@@ -113,3 +113,15 @@
   (.startsWith text "```")
 )
 
+(defn has-json-object
+  "Check if text contains a JSON object start marker."
+  [text]
+  (.startsWith text "{")
+)
+
+(defn is-short
+  "Check if content length is within max_len."
+  [text max-len]
+  (<= (count text) max-len)
+)
+
