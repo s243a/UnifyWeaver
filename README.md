@@ -267,7 +267,8 @@ includes:
   first subtree call, or branch-local context updates before the second
   subtree call, plus conservative integer-return tree-structural SCCs
   with shared dual-subtree descent, guarded branch-local alias selection
-  before those shared subtree calls, and simple post-call arithmetic
+  before those shared subtree calls or direct recursive subtree calls
+  inside supported guarded branch bodies, and simple post-call arithmetic
   recombination over `value`, `left_result`, `right_result`, and any
   threaded context args,
   lowered to TypR

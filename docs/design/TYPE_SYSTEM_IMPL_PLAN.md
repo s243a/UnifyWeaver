@@ -229,8 +229,9 @@ bring-up.
     updates before the second subtree call, plus conservative integer-
     return tree-structural SCCs with shared dual-subtree descent,
     guarded branch-local alias selection before those shared subtree
-    calls, and simple post-call arithmetic recombination over `value`,
-    `left_result`, `right_result`, and any threaded context args
+    calls or direct recursive subtree calls inside supported guarded
+    branch bodies, and simple post-call arithmetic recombination over
+    `value`, `left_result`, `right_result`, and any threaded context args
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
