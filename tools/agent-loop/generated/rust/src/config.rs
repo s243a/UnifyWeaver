@@ -252,4 +252,10 @@ impl ConfigLoader {
         return self.settings.len() == 0;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if no custom backend is configured (settings map is empty or has no backend key).
+    pub fn is_default_backend(&self) -> bool {
+        return !(self.settings.contains_key("backend"));
+    }
+
 }

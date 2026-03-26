@@ -6107,7 +6107,7 @@ test_shared_logic_infrastructure :-
             agent_loop_module:compile_logic(rust, M, _),
             agent_loop_module:compile_logic(elixir, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 160)
+        length(OkMs, 170)
     )),
     %% --- Elixir structure validation ---
     assert_true('elixir mix.exs exists', (
@@ -6252,7 +6252,7 @@ test_cross_target_integration :-
             agent_loop_module:compile_logic(prolog, M, _),
             agent_loop_module:compile_logic(clojure, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 160)
+        length(OkMs, 170)
     )),
     %% Prolog compile_logic produces Result = ... pattern for return methods
     assert_true('prolog is_over_budget has Result unification', (
@@ -6341,4 +6341,54 @@ test_cross_target_integration :-
     assert_true('parity report has Prolog column', (
         read_file_to_string('generated/PARITY_REPORT.md', PRContent, []),
         sub_string(PRContent, _, _, _, "Prolog")
+    )),
+    %% --- Cross-target file consistency: verify methods appear in generated output ---
+    %% Security shared_logic methods present in all file targets
+    assert_true('security methods in Python profiles.py', (
+        read_file_to_string('generated/python/security/profiles.py', PySecContent, []),
+        sub_string(PySecContent, _, _, _, "is_path_safe"),
+        sub_string(PySecContent, _, _, _, "is_visible_file"),
+        sub_string(PySecContent, _, _, _, "is_hidden_path")
+    )),
+    assert_true('security methods in Rust security.rs', (
+        read_file_to_string('generated/rust/src/security.rs', RsSecContent, []),
+        sub_string(RsSecContent, _, _, _, "is_path_safe"),
+        sub_string(RsSecContent, _, _, _, "is_visible_file")
+    )),
+    assert_true('security methods in Clojure security.clj', (
+        read_file_to_string('generated/clojure/src/agent_loop/security.clj', CljSecContent, []),
+        sub_string(CljSecContent, _, _, _, "is-path-safe"),
+        sub_string(CljSecContent, _, _, _, "is-visible-file")
+    )),
+    %% Config methods present across targets
+    assert_true('config methods in Rust config.rs', (
+        read_file_to_string('generated/rust/src/config.rs', RsCfgContent, []),
+        sub_string(RsCfgContent, _, _, _, "fn has_key"),
+        sub_string(RsCfgContent, _, _, _, "fn is_debug"),
+        sub_string(RsCfgContent, _, _, _, "fn field_count")
+    )),
+    assert_true('config methods in Clojure config.clj', (
+        read_file_to_string('generated/clojure/src/agent_loop/config.clj', CljCfgContent, []),
+        sub_string(CljCfgContent, _, _, _, "has-key"),
+        sub_string(CljCfgContent, _, _, _, "is-debug")
+    )),
+    %% Costs shared_logic methods cross-target
+    assert_true('costs methods in Elixir cost_tracker.ex', (
+        read_file_to_string('generated/elixir/lib/agent_loop/cost_tracker.ex', ExCostsContent, []),
+        sub_string(ExCostsContent, _, _, _, "is_over_budget"),
+        sub_string(ExCostsContent, _, _, _, "budget_remaining")
+    )),
+    %% Retry methods in Rust main.rs
+    assert_true('retry methods in Rust main.rs', (
+        read_file_to_string('generated/rust/src/main.rs', RsMainContent, []),
+        sub_string(RsMainContent, _, _, _, "struct RetryHandler"),
+        sub_string(RsMainContent, _, _, _, "fn max_retries_reached"),
+        sub_string(RsMainContent, _, _, _, "fn is_last_attempt")
+    )),
+    %% Streaming methods in Clojure streaming.clj
+    assert_true('streaming methods in Clojure streaming.clj', (
+        read_file_to_string('generated/clojure/src/agent_loop/streaming.clj', CljStreamContent, []),
+        sub_string(CljStreamContent, _, _, _, "on-token"),
+        sub_string(CljStreamContent, _, _, _, "avg-token-rate"),
+        sub_string(CljStreamContent, _, _, _, "chars-per-token")
     )).

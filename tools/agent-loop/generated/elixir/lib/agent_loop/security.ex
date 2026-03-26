@@ -154,4 +154,16 @@ defmodule AgentLoop.Security do
     ((String.starts_with?(cmd, "ls") or String.starts_with?(cmd, "cat")) or (String.starts_with?(cmd, "grep") or String.starts_with?(cmd, "echo")))
   end
 
+  @doc "Check if a command starts with a known dangerous prefix (rm -rf, dd, mkfs)."
+  @spec is_blocked_command(String.t()) :: boolean()
+  def is_blocked_command(cmd) do
+    (String.starts_with?(cmd, "rm -rf") or (String.starts_with?(cmd, "dd ") or String.starts_with?(cmd, "mkfs")))
+  end
+
+  @doc "Check if a path is in a writable location (not starting with /etc, /usr, /bin)."
+  @spec is_writable_path(String.t()) :: boolean()
+  def is_writable_path(path) do
+    not (String.starts_with?(path, "/etc") or (String.starts_with?(path, "/usr") or String.starts_with?(path, "/bin")))
+  end
+
 end

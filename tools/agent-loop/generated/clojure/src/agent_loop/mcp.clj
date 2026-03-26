@@ -89,3 +89,9 @@
   (format "error %s: %s" code message)
 )
 
+(defn request-count
+  "Return the current request ID counter (number of requests sent)."
+  [state]
+  (:request-id state)
+)
+

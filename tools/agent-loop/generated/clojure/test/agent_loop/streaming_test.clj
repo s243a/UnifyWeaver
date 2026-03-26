@@ -47,3 +47,8 @@
 (deftest test-progress-pct
   (is (= 0.0 (streaming/progress-pct {:token-count 50} 0)))
   (is (= 50.0 (streaming/progress-pct {:token-count 50} 100))))
+
+(deftest test-streaming-tokens-remaining
+  (is (= -1 (streaming/tokens-remaining {:token-count 10} 0)))
+  (is (= 80 (streaming/tokens-remaining {:token-count 20} 100)))
+  (is (= 0 (streaming/tokens-remaining {:token-count 50} 50))))

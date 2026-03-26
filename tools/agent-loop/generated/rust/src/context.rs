@@ -294,4 +294,13 @@ impl ContextManager {
         return self.max_tokens - self.token_count;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return remaining word budget. Returns -1 if no max_words set.
+    pub fn word_budget(&self) -> i64 {
+        if self.max_words <= 0 {
+            return -1;
+        }
+        return self.max_words - self.token_count;
+    }
+
 }

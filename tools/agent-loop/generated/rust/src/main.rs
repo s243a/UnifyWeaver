@@ -293,6 +293,12 @@ impl RetryHandler {
         return self.attempt >= (self.max_retries - 1);
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return the total number of attempts made (attempt + 1 for zero-indexed).
+    pub fn total_attempts(&self) -> i64 {
+        return self.attempt + 1;
+    }
+
 }
 
 

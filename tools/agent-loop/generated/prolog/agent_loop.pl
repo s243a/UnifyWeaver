@@ -186,6 +186,14 @@ last_role(State, Result) :-
     Result = get_dict("role", last(State.messages, Last), Val)
     ).
 
+%% Return remaining word budget. Returns -1 if no max_words set.
+word_budget(State, Result) :-
+    (State.max_words =< 0 ->
+        Result = -1
+    ;
+    Result is (State.max_words - State.token_count)
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -263,6 +271,14 @@ progress_pct(State, Max_tokens, Result) :-
         Result = 0.0
     ;
     Result is ((float(State.token_count) / float(Max_tokens)) * 100.0)
+    ).
+
+%% Estimate remaining tokens. Returns -1 if max_tokens is 0.
+tokens_remaining(State, Max_tokens, Result) :-
+    (Max_tokens =:= 0 ->
+        Result = -1
+    ;
+    Result is (Max_tokens - State.token_count)
     ).
 
 
@@ -401,6 +417,10 @@ is_tool_call(Method, Result) :-
 format_error(Code, Message, Result) :-
     format(atom(Result), "error ~w: ~w", [Code, Message]).
 
+%% Return the current request ID counter (number of requests sent).
+request_count(State, Result) :-
+    Result = State.request_id.
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -455,6 +475,10 @@ delay_exceeds_max(Delay, Max_delay, Result) :-
 %% Check if current attempt equals max_retries - 1 (last chance).
 is_last_attempt(State, Result) :-
     (State.attempt >= (State.max_retries - 1) -> Result = true ; Result = false).
+
+%% Return the total number of attempts made (attempt + 1 for zero-indexed).
+total_attempts(State, Result) :-
+    Result is (State.attempt + 1).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -590,6 +614,10 @@ json_path(Dir, Session_id, Result) :-
 %% Check if a session name is non-empty and usable.
 name_valid(Name, Result) :-
     length(normalize_space(atom(Result), Name), Result) > 0.
+
+%% Check if a session ID meets the minimum length requirement.
+id_is_long(Session_id, Min_len, Result) :-
+    length(Session_id, Result) >= Min_len.
 
 conversation([]).
 max_iterations(0).

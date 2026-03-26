@@ -68,3 +68,8 @@
 (deftest test-input-ratio
   (is (= 0.0 (costs/input-ratio {:total-input-tokens 0 :total-output-tokens 0})))
   (is (= 0.5 (costs/input-ratio {:total-input-tokens 50 :total-output-tokens 50}))))
+
+(deftest test-cost-format-dollars
+  (is (= "$1.5" (costs/format-dollars 1.5)))
+  (is (= "$0" (costs/format-dollars 0)))
+  (is (= "$99.99" (costs/format-dollars 99.99))))

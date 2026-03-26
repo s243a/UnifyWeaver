@@ -117,3 +117,9 @@
   (> (count (clojure.string/trim name)) 0)
 )
 
+(defn id-is-long
+  "Check if a session ID meets the minimum length requirement."
+  [session-id min-len]
+  (>= (count session-id) min-len)
+)
+

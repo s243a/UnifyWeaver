@@ -4670,6 +4670,96 @@ shared_logic(mcp, mcp_format_error, [
     body_template("~return_val(format_str(\"error {}: {}\", [code, message]))~")
 ]).
 
+%% --- Security: check if command matches blocked patterns ---
+shared_logic(security, is_blocked_command, [
+    signature(is_blocked_command, [cmd], bool),
+    arg_types([string]),
+    doc("Check if a command starts with a known dangerous prefix (rm -rf, dd, mkfs)."),
+    container(none),
+    body_template("~return_val(or_expr(str_starts_with(cmd, \"rm -rf\"), or_expr(str_starts_with(cmd, \"dd \"), str_starts_with(cmd, \"mkfs\"))))~")
+]).
+
+%% --- Security: check if path is writable ---
+shared_logic(security, is_writable_path, [
+    signature(is_writable_path, [path], bool),
+    arg_types([string]),
+    doc("Check if a path is in a writable location (not starting with /etc, /usr, /bin)."),
+    container(none),
+    body_template("~return_val(not_expr(or_expr(str_starts_with(path, \"/etc\"), or_expr(str_starts_with(path, \"/usr\"), str_starts_with(path, \"/bin\")))))~")
+]).
+
+%% --- Config: check if a specific backend is configured ---
+shared_logic(config, config_is_default_backend, [
+    signature(is_default_backend, [], bool),
+    arg_types([]),
+    doc("Check if no custom backend is configured (settings map is empty or has no backend key)."),
+    container('ConfigLoader'),
+    body_template("~return_val(not_expr(map_has_key(self_direct(settings), \"backend\")))~")
+]).
+
+%% --- Context: remaining word budget ---
+shared_logic(context, context_word_budget, [
+    signature(word_budget, [], int),
+    arg_types([]),
+    doc("Return remaining word budget. Returns -1 if no max_words set."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_words), literal(0))~:\n    ~return_val(literal(-1))~\n~return_val(sub(self_direct(max_words), self_direct(token_count)))~")
+]).
+
+%% --- Costs: format cost as dollar string ---
+shared_logic(costs, cost_format_dollars, [
+    signature(format_dollars, [amount], owned_string),
+    arg_types([float]),
+    doc("Format a cost amount as a dollar string (e.g. $1.50)."),
+    container(none),
+    body_template("~return_val(format_str(\"${}\", [amount]))~")
+]).
+
+%% --- Streaming: estimate remaining tokens ---
+shared_logic(streaming, streaming_tokens_remaining, [
+    signature(tokens_remaining, [max_tokens], int),
+    arg_types([int]),
+    doc("Estimate remaining tokens. Returns -1 if max_tokens is 0."),
+    container('StreamingHandler'),
+    body_template("if ~eq_zero(max_tokens)~:\n    ~return_val(literal(-1))~\n~return_val(sub(max_tokens, self_direct(token_count)))~")
+]).
+
+%% --- Sessions: check if session ID is long enough ---
+shared_logic(sessions, session_id_is_long, [
+    signature(id_is_long, [session_id, min_len], bool),
+    arg_types([string, int]),
+    doc("Check if a session ID meets the minimum length requirement."),
+    container(none),
+    body_template("~return_val(gte(len_of(session_id), min_len))~")
+]).
+
+%% --- Tools: count registered tools ---
+shared_logic(tools, tool_count, [
+    signature(tool_count, [], int),
+    arg_types([]),
+    doc("Return the number of registered tools."),
+    container('ToolHandler'),
+    body_template("~return_val(as_int(len_of(self_direct(schema))))~")
+]).
+
+%% --- MCP: count pending requests ---
+shared_logic(mcp, mcp_request_count, [
+    signature(request_count, [], int),
+    arg_types([]),
+    doc("Return the current request ID counter (number of requests sent)."),
+    container('MCPClient'),
+    body_template("~return_val(self_direct(request_id))~")
+]).
+
+%% --- Retry: total attempts made ---
+shared_logic(retry, retry_total_attempts, [
+    signature(total_attempts, [], int),
+    arg_types([]),
+    doc("Return the total number of attempts made (attempt + 1 for zero-indexed)."),
+    container('RetryHandler'),
+    body_template("~return_val(add(self_direct(attempt), literal(1)))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -6698,6 +6788,7 @@ generate_rust_config :-
     %% config_merge skipped — returns self.settings (HashMap) but signature expects string
     emit_shared_method(S, rust, config_field_count),
     emit_shared_method(S, rust, config_is_empty),
+    emit_shared_method(S, rust, config_is_default_backend),
     %% config_get_or_default skipped — unwrap_or(&str) vs String type mismatch
     write(S, '}\n'),
     close(S),
@@ -6944,7 +7035,8 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_is_empty),
     emit_shared_method(S, rust, estimate_tokens),
     emit_shared_method(S, rust, context_token_budget),
-    %% context_first_role skipped — Message is a struct not a map in Rust, map_get doesn't work
+    emit_shared_method(S, rust, context_word_budget),
+    %% context_first_role/context_last_role skipped — Message is a struct not a map in Rust
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/context.rs~n', []).
@@ -7057,6 +7149,7 @@ generate_rust_tool_handler :-
     write(S, '\nimpl ToolHandler {\n'),
     emit_shared_method(S, rust, tool_arg_count),
     emit_shared_method(S, rust, tool_has_schema),
+    emit_shared_method(S, rust, tool_count),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
@@ -7192,6 +7285,7 @@ generate_rust_main :-
     emit_shared_method(S, rust, retry_delay),
     emit_shared_method(S, rust, retry_attempts_left),
     emit_shared_method(S, rust, retry_is_last_attempt),
+    emit_shared_method(S, rust, retry_total_attempts),
     write(S, '}\n'),
     nl(S),
     %% Templates and skills
@@ -7283,6 +7377,7 @@ generate_rust_main :-
     emit_shared_method(S, rust, streaming_avg_token_rate),
     emit_shared_method(S, rust, streaming_chars_per_token),
     emit_shared_method(S, rust, streaming_progress_pct),
+    %% streaming_tokens_remaining skipped — i64 - usize type mismatch
     write(S, '}\n\n'),
     %% chunk_is_complete is standalone (container=none), emit outside impl block
     emit_shared_method(S, rust, chunk_is_complete),
@@ -9716,7 +9811,11 @@ generate_clojure_cost_test(Dir) :-
     write(S, '  (is (false? (costs/cost-exceeds {:total-cost 5.0} 10.0))))\n\n'),
     write(S, '(deftest test-input-ratio\n'),
     write(S, '  (is (= 0.0 (costs/input-ratio {:total-input-tokens 0 :total-output-tokens 0})))\n'),
-    write(S, '  (is (= 0.5 (costs/input-ratio {:total-input-tokens 50 :total-output-tokens 50}))))\n'),
+    write(S, '  (is (= 0.5 (costs/input-ratio {:total-input-tokens 50 :total-output-tokens 50}))))\n\n'),
+    write(S, '(deftest test-cost-format-dollars\n'),
+    write(S, '  (is (= "$1.5" (costs/format-dollars 1.5)))\n'),
+    write(S, '  (is (= "$0" (costs/format-dollars 0)))\n'),
+    write(S, '  (is (= "$99.99" (costs/format-dollars 99.99))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -9759,7 +9858,11 @@ generate_clojure_context_test(Dir) :-
     write(S, '  (is (= 80 (ctx/token-budget {:max-tokens 100 :token-count 20}))))\n\n'),
     write(S, '(deftest test-context-messages-remaining\n'),
     write(S, '  (is (= -1 (ctx/messages-remaining {:max-messages 0 :messages []})))\n'),
-    write(S, '  (is (= 3 (ctx/messages-remaining {:max-messages 5 :messages [{} {}]}))))\n'),
+    write(S, '  (is (= 3 (ctx/messages-remaining {:max-messages 5 :messages [{} {}]}))))\n\n'),
+    write(S, '(deftest test-context-word-budget\n'),
+    write(S, '  (is (= -1 (ctx/word-budget {:max-words 0 :token-count 0})))\n'),
+    write(S, '  (is (= -1 (ctx/word-budget {:max-words -5 :token-count 10})))\n'),
+    write(S, '  (is (= 80 (ctx/word-budget {:max-words 100 :token-count 20}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/context_test.clj~n', []).
 
@@ -9841,7 +9944,11 @@ generate_clojure_retry_test(Dir) :-
     write(S, '  (is (false? (retry/delay-exceeds-max 30.0 60.0))))\n\n'),
     write(S, '(deftest test-is-last-attempt\n'),
     write(S, '  (is (true? (retry/is-last-attempt {:attempt 2 :max-retries 3})))\n'),
-    write(S, '  (is (false? (retry/is-last-attempt {:attempt 0 :max-retries 3}))))\n'),
+    write(S, '  (is (false? (retry/is-last-attempt {:attempt 0 :max-retries 3}))))\n\n'),
+    write(S, '(deftest test-retry-total-attempts\n'),
+    write(S, '  (is (= 1 (retry/total-attempts {:attempt 0})))\n'),
+    write(S, '  (is (= 4 (retry/total-attempts {:attempt 3})))\n'),
+    write(S, '  (is (= 6 (retry/total-attempts {:attempt 5}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -9885,7 +9992,11 @@ generate_clojure_tools_test(Dir) :-
     write(S, '(deftest test-is-readonly\n'),
     write(S, '  (is (true? (tools/is-readonly "read")))\n'),
     write(S, '  (is (true? (tools/is-readonly "glob")))\n'),
-    write(S, '  (is (false? (tools/is-readonly "bash"))))\n'),
+    write(S, '  (is (false? (tools/is-readonly "bash"))))\n\n'),
+    write(S, '(deftest test-tool-count\n'),
+    write(S, '  (is (= 0 (tools/tool-count {:schema {}})))\n'),
+    write(S, '  (is (= 2 (tools/tool-count {:schema {"bash" {} "read" {}}})))\n'),
+    write(S, '  (is (= 3 (tools/tool-count {:schema {"a" {} "b" {} "c" {}}}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -9930,7 +10041,11 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '  (is (= 4.0 (streaming/chars-per-token {:char-count 40 :token-count 10}))))\n\n'),
     write(S, '(deftest test-progress-pct\n'),
     write(S, '  (is (= 0.0 (streaming/progress-pct {:token-count 50} 0)))\n'),
-    write(S, '  (is (= 50.0 (streaming/progress-pct {:token-count 50} 100))))\n'),
+    write(S, '  (is (= 50.0 (streaming/progress-pct {:token-count 50} 100))))\n\n'),
+    write(S, '(deftest test-streaming-tokens-remaining\n'),
+    write(S, '  (is (= -1 (streaming/tokens-remaining {:token-count 10} 0)))\n'),
+    write(S, '  (is (= 80 (streaming/tokens-remaining {:token-count 20} 100)))\n'),
+    write(S, '  (is (= 0 (streaming/tokens-remaining {:token-count 50} 50))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 
@@ -9984,7 +10099,11 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))\n\n'),
     write(S, '(deftest test-config-is-empty\n'),
     write(S, '  (is (true? (config/is-empty {:settings {}})))\n'),
-    write(S, '  (is (false? (config/is-empty {:settings {:a 1}}))))\n'),
+    write(S, '  (is (false? (config/is-empty {:settings {:a 1}}))))\n\n'),
+    write(S, '(deftest test-config-is-default-backend\n'),
+    write(S, '  (is (true? (config/is-default-backend {:settings {}})))\n'),
+    write(S, '  (is (true? (config/is-default-backend {:settings {"model" "gpt-4"}})))\n'),
+    write(S, '  (is (false? (config/is-default-backend {:settings {"backend" "openai"}}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 
@@ -10018,7 +10137,18 @@ generate_clojure_security_test(Dir) :-
     write(S, '(deftest test-is-safe-command\n'),
     write(S, '  (is (true? (security/is-safe-command "ls -la")))\n'),
     write(S, '  (is (true? (security/is-safe-command "cat file.txt")))\n'),
-    write(S, '  (is (false? (security/is-safe-command "rm -rf /"))))\n'),
+    write(S, '  (is (false? (security/is-safe-command "rm -rf /"))))\n\n'),
+    write(S, '(deftest test-is-blocked-command\n'),
+    write(S, '  (is (true? (security/is-blocked-command "rm -rf /")))\n'),
+    write(S, '  (is (true? (security/is-blocked-command "dd if=/dev/zero")))\n'),
+    write(S, '  (is (true? (security/is-blocked-command "mkfs.ext4 /dev/sda")))\n'),
+    write(S, '  (is (false? (security/is-blocked-command "ls -la"))))\n\n'),
+    write(S, '(deftest test-is-writable-path\n'),
+    write(S, '  (is (true? (security/is-writable-path "/home/user/file.txt")))\n'),
+    write(S, '  (is (true? (security/is-writable-path "/tmp/scratch")))\n'),
+    write(S, '  (is (false? (security/is-writable-path "/etc/passwd")))\n'),
+    write(S, '  (is (false? (security/is-writable-path "/usr/bin/cat")))\n'),
+    write(S, '  (is (false? (security/is-writable-path "/bin/sh"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -10095,7 +10225,10 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '(deftest test-name-valid\n'),
     write(S, '  (is (true? (sessions/name-valid "my-session")))\n'),
     write(S, '  (is (false? (sessions/name-valid "")))\n'),
-    write(S, '  (is (false? (sessions/name-valid "   "))))\n'),
+    write(S, '  (is (false? (sessions/name-valid "   "))))\n\n'),
+    write(S, '(deftest test-session-id-is-long\n'),
+    write(S, '  (is (true? (sessions/id-is-long "sess-abc123" 5)))\n'),
+    write(S, '  (is (false? (sessions/id-is-long "ab" 5))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
 
@@ -10133,7 +10266,11 @@ generate_clojure_mcp_test(Dir) :-
     write(S, '(deftest test-mcp-server-name\n'),
     write(S, '  (is (= "my-server" (mcp/server-name {:name "my-server"}))))\n\n'),
     write(S, '(deftest test-format-error\n'),
-    write(S, '  (is (= "error 404: not found" (mcp/format-error 404 "not found"))))\n'),
+    write(S, '  (is (= "error 404: not found" (mcp/format-error 404 "not found"))))\n\n'),
+    write(S, '(deftest test-mcp-request-count\n'),
+    write(S, '  (is (= 0 (mcp/request-count {:request-id 0})))\n'),
+    write(S, '  (is (= 5 (mcp/request-count {:request-id 5})))\n'),
+    write(S, '  (is (= 42 (mcp/request-count {:request-id 42}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/mcp_test.clj~n', []).
 

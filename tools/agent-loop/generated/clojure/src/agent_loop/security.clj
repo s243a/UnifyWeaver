@@ -73,3 +73,15 @@
   (or (or (.startsWith cmd "ls") (.startsWith cmd "cat")) (or (.startsWith cmd "grep") (.startsWith cmd "echo")))
 )
 
+(defn is-blocked-command
+  "Check if a command starts with a known dangerous prefix (rm -rf, dd, mkfs)."
+  [cmd]
+  (or (.startsWith cmd "rm -rf") (or (.startsWith cmd "dd ") (.startsWith cmd "mkfs")))
+)
+
+(defn is-writable-path
+  "Check if a path is in a writable location (not starting with /etc, /usr, /bin)."
+  [path]
+  (not (or (.startsWith path "/etc") (or (.startsWith path "/usr") (.startsWith path "/bin"))))
+)
+

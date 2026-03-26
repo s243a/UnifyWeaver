@@ -157,6 +157,10 @@ input_ratio(State, Result) :-
     Result is (float(State.total_input_tokens) / float((State.total_input_tokens + State.total_output_tokens)))
     ).
 
+%% Format a cost amount as a dollar string (e.g. $1.50).
+format_dollars(Amount, Result) :-
+    format(atom(Result), "$~w", [Amount]).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

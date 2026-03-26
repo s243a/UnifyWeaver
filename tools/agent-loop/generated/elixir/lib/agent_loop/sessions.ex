@@ -116,6 +116,12 @@ defmodule AgentLoop.Sessions do
     Enum.count(String.trim(name)) > 0
   end
 
+  @doc "Check if a session ID meets the minimum length requirement."
+  @spec id_is_long(String.t(), integer()) :: boolean()
+  def id_is_long(session_id, min_len) do
+    Enum.count(session_id) >= min_len
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

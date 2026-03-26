@@ -126,4 +126,14 @@ defmodule AgentLoop.StreamingTokenCounter do
     end
   end
 
+  @doc "Estimate remaining tokens. Returns -1 if max_tokens is 0."
+  @spec tokens_remaining(t(), integer()) :: integer()
+  def tokens_remaining(%__MODULE__{} = state, max_tokens) do
+    if max_tokens == 0 do
+        -1
+    else
+        (max_tokens - state.token_count)
+    end
+  end
+
 end

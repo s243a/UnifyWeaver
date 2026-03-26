@@ -139,3 +139,9 @@
   (get (:settings state) key default-val)
 )
 
+(defn is-default-backend
+  "Check if no custom backend is configured (settings map is empty or has no backend key)."
+  [state]
+  (not (contains? (:settings state) "backend"))
+)
+

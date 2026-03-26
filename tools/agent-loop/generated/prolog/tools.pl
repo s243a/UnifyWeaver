@@ -150,6 +150,10 @@ is_mcp_prefixed(Name, Result) :-
 is_readonly(Tool_name, Result) :-
     ((Tool_name == ""read"" ; Tool_name == ""glob"") -> Result = true ; Result = false).
 
+%% Return the number of registered tools.
+tool_count(State, Result) :-
+    length(State.schema, Result).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

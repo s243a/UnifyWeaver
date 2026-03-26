@@ -667,4 +667,10 @@ impl ToolHandler {
         return self.schema.len() > 0;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return the number of registered tools.
+    pub fn tool_count(&self) -> i64 {
+        return self.schema.len() as i64;
+    }
+
 }

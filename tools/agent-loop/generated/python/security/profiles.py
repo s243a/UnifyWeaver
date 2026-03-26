@@ -166,3 +166,11 @@ def is_safe_command(cmd):
     """Check if a command starts with a known safe prefix (ls, cat, grep, echo)."""
     return ((cmd.startswith("ls") or cmd.startswith("cat")) or (cmd.startswith("grep") or cmd.startswith("echo")))
 
+def is_blocked_command(cmd):
+    """Check if a command starts with a known dangerous prefix (rm -rf, dd, mkfs)."""
+    return (cmd.startswith("rm -rf") or (cmd.startswith("dd ") or cmd.startswith("mkfs")))
+
+def is_writable_path(path):
+    """Check if a path is in a writable location (not starting with /etc, /usr, /bin)."""
+    return not (path.startswith("/etc") or (path.startswith("/usr") or path.startswith("/bin")))
+

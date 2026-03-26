@@ -45,3 +45,8 @@
   (is (true? (tools/is-readonly "read")))
   (is (true? (tools/is-readonly "glob")))
   (is (false? (tools/is-readonly "bash"))))
+
+(deftest test-tool-count
+  (is (= 0 (tools/tool-count {:schema {}})))
+  (is (= 2 (tools/tool-count {:schema {"bash" {} "read" {}}})))
+  (is (= 3 (tools/tool-count {:schema {"a" {} "b" {} "c" {}}}))))

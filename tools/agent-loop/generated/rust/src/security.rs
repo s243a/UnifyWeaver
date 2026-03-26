@@ -127,3 +127,15 @@ pub fn is_safe_command(cmd: &str) -> bool {
     return (cmd.starts_with("ls") || cmd.starts_with("cat")) || (cmd.starts_with("grep") || cmd.starts_with("echo"));
 }
 
+#[allow(dead_code, unused_variables)]
+/// Check if a command starts with a known dangerous prefix (rm -rf, dd, mkfs).
+pub fn is_blocked_command(cmd: &str) -> bool {
+    return cmd.starts_with("rm -rf") || (cmd.starts_with("dd ") || cmd.starts_with("mkfs"));
+}
+
+#[allow(dead_code, unused_variables)]
+/// Check if a path is in a writable location (not starting with /etc, /usr, /bin).
+pub fn is_writable_path(path: &str) -> bool {
+    return !((path.starts_with("/etc") || (path.starts_with("/usr") || path.starts_with("/bin"))));
+}
+

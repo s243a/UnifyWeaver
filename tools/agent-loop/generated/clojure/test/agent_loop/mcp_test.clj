@@ -39,3 +39,8 @@
 
 (deftest test-format-error
   (is (= "error 404: not found" (mcp/format-error 404 "not found"))))
+
+(deftest test-mcp-request-count
+  (is (= 0 (mcp/request-count {:request-id 0})))
+  (is (= 5 (mcp/request-count {:request-id 5})))
+  (is (= 42 (mcp/request-count {:request-id 42}))))

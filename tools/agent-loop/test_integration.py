@@ -1348,3 +1348,82 @@ class TestStreamingTokenCounter:
         assert "_counter.on_token" in src
         assert "_counter.finish()" in src
         assert "[Streamed:" in src
+
+
+class TestSharedLogicRound3to6:
+    """Test shared_logic methods added in rounds 3-6 (methods 124-170)."""
+
+    def test_security_is_path_safe(self):
+        from security.profiles import is_path_safe
+        assert is_path_safe("src/main.rs") is True
+        assert is_path_safe("../../etc/passwd") is False
+
+    def test_security_is_visible_file(self):
+        from security.profiles import is_visible_file
+        assert is_visible_file("main.rs") is True
+        assert is_visible_file(".env") is False
+
+    def test_security_is_hidden_path(self):
+        from security.profiles import is_hidden_path
+        assert is_hidden_path(".git") is True
+        assert is_hidden_path("src") is False
+
+    def test_security_has_path_traversal(self):
+        from security.profiles import has_path_traversal
+        assert has_path_traversal("..") is True
+        assert has_path_traversal("../etc") is True
+        assert has_path_traversal("src/main") is False
+
+    def test_security_is_safe_command(self):
+        from security.profiles import is_safe_command
+        assert is_safe_command("ls -la") is True
+        assert is_safe_command("cat file.txt") is True
+        assert is_safe_command("rm -rf /") is False
+
+    def test_security_is_blocked_command(self):
+        from security.profiles import is_blocked_command
+        assert is_blocked_command("rm -rf /") is True
+        assert is_blocked_command("ls -la") is False
+
+    def test_security_is_writable_path(self):
+        from security.profiles import is_writable_path
+        assert is_writable_path("/home/user/file.txt") is True
+        assert is_writable_path("/etc/passwd") is False
+        assert is_writable_path("/usr/bin/ls") is False
+
+    def test_costs_module_importable(self):
+        import costs
+        assert hasattr(costs, 'CostTracker') or hasattr(costs, 'cost_compute')
+
+    def test_context_module_has_clear(self):
+        from context import ContextManager
+        ctx = ContextManager()
+        ctx.clear()
+        assert len(ctx.messages) == 0
+
+    def test_retry_module_importable(self):
+        import retry
+        assert hasattr(retry, 'is_retryable_status') or hasattr(retry, 'RetryConfig')
+
+    def test_streaming_counter_in_agent_loop(self):
+        import agent_loop
+        src = open(agent_loop.__file__).read()
+        assert "class StreamingTokenCounter" in src
+
+    def test_tool_cache_in_tools(self):
+        import tools
+        src = open(tools.__file__).read()
+        assert "class ToolResultCache" in src
+
+    def test_output_parser_importable(self):
+        from output_parser import OutputParser
+        result = OutputParser.parse_response('{"key": "val"}')
+        assert result is not None
+
+    def test_sessions_importable(self):
+        import sessions
+        assert hasattr(sessions, 'SessionManager')
+
+    def test_mcp_client_importable(self):
+        import mcp_client
+        assert hasattr(mcp_client, 'MCPClient')

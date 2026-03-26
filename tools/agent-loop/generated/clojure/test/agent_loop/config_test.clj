@@ -35,3 +35,8 @@
 (deftest test-config-is-empty
   (is (true? (config/is-empty {:settings {}})))
   (is (false? (config/is-empty {:settings {:a 1}}))))
+
+(deftest test-config-is-default-backend
+  (is (true? (config/is-default-backend {:settings {}})))
+  (is (true? (config/is-default-backend {:settings {"model" "gpt-4"}})))
+  (is (false? (config/is-default-backend {:settings {"backend" "openai"}}))))
