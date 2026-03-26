@@ -5392,7 +5392,11 @@ format_string(Format, Args, String) :-
 
 compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code) :-
     resolve_node_type(Pred/Arity, BasePred/2, NodeTypeTerm),
-    read_file_to_string('templates/targets/typr/transitive_closure.mustache', Template, []),
+    % Try relative path first (native), then VFS path (swipl-wasm package)
+    (   exists_file('templates/targets/typr/transitive_closure.mustache')
+    ->  read_file_to_string('templates/targets/typr/transitive_closure.mustache', Template, [])
+    ;   read_file_to_string('/user/templates/targets/typr/transitive_closure.mustache', Template, [])
+    ),
     atom_string(Pred, PredStr),
     atom_string(BasePred, BaseStr),
     annotation_suffix(TypedMode, NodeTypeTerm, NodeAnnotation),
