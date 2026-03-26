@@ -406,9 +406,12 @@ Current TypR lowering policy is intentionally mixed:
   contains the second subtree call plus nested non-recursive post-call
   control, shared context updates before that first subtree call, branch-local
   context updates before the second subtree call, or multiple threaded
-  context arguments carried through the same shared subtree-call families, using
-  raw-expression memoized helper bodies inside TypR rather than wrapped-R
-  fallback
+  context arguments carried through the same shared subtree-call families,
+  plus conservative integer-return tree-structural SCCs with shared
+  dual-subtree descent and simple post-call arithmetic recombination over
+  `value`, `left_result`, `right_result`, and any threaded context args,
+  using raw-expression memoized helper bodies inside TypR rather than
+  wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower
   to TypR-valid functions when they match the currently supported `[]` /
   `[V, L, R]` shape with one tree-driving argument, invariant context args,

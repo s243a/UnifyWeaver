@@ -265,7 +265,10 @@ includes:
   guarded control that contains the second subtree call plus nested
   non-recursive post-call control, shared context updates before that
   first subtree call, or branch-local context updates before the second
-  subtree call,
+  subtree call, plus conservative integer-return tree-structural SCCs
+  with shared dual-subtree descent and simple post-call arithmetic
+  recombination over `value`, `left_result`, `right_result`, and any
+  threaded context args,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
