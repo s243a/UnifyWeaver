@@ -1994,3 +1994,87 @@ fn test_round10_mcp_methods() {
     let src = include_str!("../src/mcp_client.rs");
     assert!(src.contains("fn clients_at_capacity("), "mcp_client.rs should have clients_at_capacity");
 }
+
+// ============================================================================
+// Functional tests using re-exported types
+// ============================================================================
+
+#[test]
+fn test_context_manager_functional() {
+    use agent_loop::ContextManager;
+    let mut ctx = ContextManager::default();
+    assert!(ctx.is_empty());
+    assert_eq!(ctx.len(), 0);
+    ctx.add_message("user", "hello");
+    assert!(!ctx.is_empty());
+    assert_eq!(ctx.len(), 1);
+    ctx.add_message("assistant", "hi");
+    assert_eq!(ctx.len(), 2);
+    assert!(ctx.has_room());
+    assert!(!ctx.is_full());
+    ctx.clear();
+    assert!(ctx.is_empty());
+    assert_eq!(ctx.len(), 0);
+}
+
+#[test]
+fn test_context_manager_budget() {
+    use agent_loop::ContextManager;
+    let ctx = ContextManager::default();
+    // Default has max_tokens = 100000
+    assert!(ctx.token_budget() > 0);
+    assert!(ctx.word_budget() < 0); // max_words = 0 means unlimited = -1
+    assert!(ctx.is_continue_mode());
+    assert!(!ctx.is_sliding_mode());
+    assert_eq!(ctx.trim_count(), 0);
+}
+
+#[test]
+fn test_context_first_last_role() {
+    use agent_loop::ContextManager;
+    let mut ctx = ContextManager::default();
+    // Empty context returns empty string
+    assert_eq!(ctx.first_role(), "");
+    assert_eq!(ctx.last_role(), "");
+    ctx.add_message("system", "You are helpful");
+    assert_eq!(ctx.first_role(), "system");
+    assert_eq!(ctx.last_role(), "system");
+    ctx.add_message("user", "Hello");
+    assert_eq!(ctx.first_role(), "system");
+    assert_eq!(ctx.last_role(), "user");
+}
+
+#[test]
+fn test_cost_tracker_functional() {
+    use agent_loop::CostTracker;
+    let tracker = CostTracker::default();
+    assert!(tracker.is_zero_cost());
+    assert!(!tracker.has_usage());
+    assert_eq!(tracker.total_messages(), 0);
+    assert!(!tracker.is_over_budget(10.0));
+    assert!(tracker.is_under(1.0));
+}
+
+#[test]
+fn test_config_merge_functional() {
+    use agent_loop::ConfigLoader;
+    let mut loader = ConfigLoader::new();
+    loader.settings.insert("model".to_string(), "gpt-4".to_string());
+    // Non-empty value wins
+    let result = loader.merge("model", "gpt-3.5");
+    assert_eq!(result, "gpt-3.5");
+    // Empty value falls back to settings
+    let result = loader.merge("model", "");
+    assert_eq!(result, "gpt-4");
+    // Missing key with empty value returns empty
+    let result = loader.merge("nonexistent", "");
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_config_merge_no_rust_skips() {
+    let src = include_str!("../src/config.rs");
+    assert!(src.contains("fn merge("), "config.rs should have merge — last Rust skip resolved");
+    assert!(src.contains("fn is_streaming("), "config.rs should have is_streaming");
+    assert!(src.contains("fn get_or_default("), "config.rs should have get_or_default");
+}

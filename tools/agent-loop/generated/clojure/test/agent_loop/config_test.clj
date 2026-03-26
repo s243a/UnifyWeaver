@@ -26,8 +26,8 @@
   (is (false? (config/config-has-field {} :nonexistent))))
 
 (deftest test-config-merge
-  (is (= "new-val" (config/merge {:settings "old"} "k" "new-val")))
-  (is (= "old" (config/merge {:settings "old"} "k" ""))))
+  (is (= "new-val" (config/merge {:settings {"k" "old"}} "k" "new-val")))
+  (is (= "old" (config/merge {:settings {"k" "old"}} "k" ""))))
 
 (deftest test-config-field-count
   (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))

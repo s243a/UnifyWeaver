@@ -2282,6 +2282,7 @@ expand_expr(rust, add(A, B), S) :-
     format(atom(S), "(~w + ~w)", [AS, BS]).
 
 %% --- Literal values ---
+expand_expr(rust, literal(""), "\"\"") :- !.
 expand_expr(_, literal(V), S) :- atom_string(V, S).
 
 %% Note: self_direct/self_field handled by generic bridge (expand_expr -> logic_slot) at line ~2208
@@ -2561,6 +2562,31 @@ emit_shared_method(S, rust, MethodName) :-
 %%
 %% Elixir methods are module functions. State is passed as first arg and
 %% returned for mutable methods (immutable update pattern).
+%% =============================================================================
+%% emit_rust_impl_block(+Stream, +RustStructName, +MethodNames)
+%% Wraps a list of shared_logic method names in an impl block for the given struct.
+%% Auto-filters to only emit methods whose container matches.
+%% =============================================================================
+emit_rust_impl_block(S, StructName, Methods) :-
+    format(S, '\nimpl ~w {\n', [StructName]),
+    forall(member(M, Methods), (
+        (shared_logic(_, M, _) ->
+            emit_shared_method(S, rust, M)
+        ;
+            true
+        )
+    )),
+    write(S, '}\n').
+
+%% emit_rust_module_methods(+Stream, +Module)
+%% Emit all standalone (container=none) shared_logic methods for a module.
+emit_rust_module_methods(S, Module) :-
+    forall(
+        (shared_logic(Module, MethodName, Props),
+         member(container(none), Props)),
+        emit_shared_method(S, rust, MethodName)
+    ).
+
 %% Container maps to module name (e.g., CostTracker → AgentLoop.CostTracker).
 %% private → defp; public → def.
 %% Mutable methods: body wrapped to return updated state.
@@ -4411,11 +4437,11 @@ shared_logic(streaming, streaming_avg_token_rate, [
 
 %% --- Config module methods ---
 shared_logic(config, config_merge, [
-    signature(merge, [key, value], string),
+    signature(merge, [key, value], owned_string),
     arg_types([string, string]),
-    doc("Return the value to use for a config key: the provided value if non-empty, otherwise the existing setting."),
+    doc("Return the value to use for a config key: the provided value if non-empty, otherwise look up key in settings."),
     container('ConfigLoader'),
-    body_template("if ~gt(len_of(value), literal(0))~:\n    ~return_val(value)~\n~return_val(self_direct(settings))~")
+    body_template("if ~gt(len_of(value), literal(0))~:\n    ~return_val(format_str(\"{}\", [value]))~\n~return_val(map_get_default(self_direct(settings), key, literal(\"\")))~")
 ]).
 
 %% --- Security module methods ---
@@ -7508,8 +7534,11 @@ generate_rust_lib :-
     write(S, 'pub mod output_parser;\n'),
     write(S, 'pub mod mcp_client;\n'),
     write(S, 'pub mod wasm_bindings;\n\n'),
-    write(S, '/// Re-export ConfigLoader for integration tests.\n'),
+    write(S, '/// Re-export types for integration tests.\n'),
     write(S, 'pub use config::ConfigLoader;\n'),
+    write(S, 'pub use context::ContextManager;\n'),
+    write(S, 'pub use costs::CostTracker;\n'),
+    write(S, 'pub use types::Message;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
 
@@ -7526,7 +7555,7 @@ generate_rust_config :-
     write(S, '\nimpl ConfigLoader {\n'),
     emit_shared_method(S, rust, config_has_key),
     emit_shared_method(S, rust, config_is_debug),
-    %% config_merge skipped — returns self.settings (HashMap) but signature expects string
+    emit_shared_method(S, rust, config_merge),
     emit_shared_method(S, rust, config_field_count),
     emit_shared_method(S, rust, config_is_empty),
     emit_shared_method(S, rust, config_is_default_backend),
@@ -7539,7 +7568,6 @@ generate_rust_config :-
     emit_shared_method(S, rust, config_has_max_tokens),
     emit_shared_method(S, rust, config_get_or_default),
     emit_shared_method(S, rust, config_is_streaming),
-    %% config_merge skipped — returns self.settings (HashMap) but signature expects string
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/config.rs~n', []).
@@ -10988,8 +11016,8 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (true? (config/config-has-field {:model "gpt-4"} :model)))\n'),
     write(S, '  (is (false? (config/config-has-field {} :nonexistent))))\n\n'),
     write(S, '(deftest test-config-merge\n'),
-    write(S, '  (is (= "new-val" (config/merge {:settings "old"} "k" "new-val")))\n'),
-    write(S, '  (is (= "old" (config/merge {:settings "old"} "k" ""))))\n\n'),
+    write(S, '  (is (= "new-val" (config/merge {:settings {"k" "old"}} "k" "new-val")))\n'),
+    write(S, '  (is (= "old" (config/merge {:settings {"k" "old"}} "k" ""))))\n\n'),
     write(S, '(deftest test-config-field-count\n'),
     write(S, '  (is (= 2 (config/field-count {:settings {:a 1 :b 2}}))))\n\n'),
     write(S, '(deftest test-config-is-empty\n'),
@@ -19112,6 +19140,90 @@ fn test_round10_streaming_methods() {
 fn test_round10_mcp_methods() {
     let src = include_str!("../src/mcp_client.rs");
     assert!(src.contains("fn clients_at_capacity("), "mcp_client.rs should have clients_at_capacity");
+}
+
+// ============================================================================
+// Functional tests using re-exported types
+// ============================================================================
+
+#[test]
+fn test_context_manager_functional() {
+    use agent_loop::ContextManager;
+    let mut ctx = ContextManager::default();
+    assert!(ctx.is_empty());
+    assert_eq!(ctx.len(), 0);
+    ctx.add_message("user", "hello");
+    assert!(!ctx.is_empty());
+    assert_eq!(ctx.len(), 1);
+    ctx.add_message("assistant", "hi");
+    assert_eq!(ctx.len(), 2);
+    assert!(ctx.has_room());
+    assert!(!ctx.is_full());
+    ctx.clear();
+    assert!(ctx.is_empty());
+    assert_eq!(ctx.len(), 0);
+}
+
+#[test]
+fn test_context_manager_budget() {
+    use agent_loop::ContextManager;
+    let ctx = ContextManager::default();
+    // Default has max_tokens = 100000
+    assert!(ctx.token_budget() > 0);
+    assert!(ctx.word_budget() < 0); // max_words = 0 means unlimited = -1
+    assert!(ctx.is_continue_mode());
+    assert!(!ctx.is_sliding_mode());
+    assert_eq!(ctx.trim_count(), 0);
+}
+
+#[test]
+fn test_context_first_last_role() {
+    use agent_loop::ContextManager;
+    let mut ctx = ContextManager::default();
+    // Empty context returns empty string
+    assert_eq!(ctx.first_role(), "");
+    assert_eq!(ctx.last_role(), "");
+    ctx.add_message("system", "You are helpful");
+    assert_eq!(ctx.first_role(), "system");
+    assert_eq!(ctx.last_role(), "system");
+    ctx.add_message("user", "Hello");
+    assert_eq!(ctx.first_role(), "system");
+    assert_eq!(ctx.last_role(), "user");
+}
+
+#[test]
+fn test_cost_tracker_functional() {
+    use agent_loop::CostTracker;
+    let tracker = CostTracker::default();
+    assert!(tracker.is_zero_cost());
+    assert!(!tracker.has_usage());
+    assert_eq!(tracker.total_messages(), 0);
+    assert!(!tracker.is_over_budget(10.0));
+    assert!(tracker.is_under(1.0));
+}
+
+#[test]
+fn test_config_merge_functional() {
+    use agent_loop::ConfigLoader;
+    let mut loader = ConfigLoader::new();
+    loader.settings.insert("model".to_string(), "gpt-4".to_string());
+    // Non-empty value wins
+    let result = loader.merge("model", "gpt-3.5");
+    assert_eq!(result, "gpt-3.5");
+    // Empty value falls back to settings
+    let result = loader.merge("model", "");
+    assert_eq!(result, "gpt-4");
+    // Missing key with empty value returns empty
+    let result = loader.merge("nonexistent", "");
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_config_merge_no_rust_skips() {
+    let src = include_str!("../src/config.rs");
+    assert!(src.contains("fn merge("), "config.rs should have merge — last Rust skip resolved");
+    assert!(src.contains("fn is_streaming("), "config.rs should have is_streaming");
+    assert!(src.contains("fn get_or_default("), "config.rs should have get_or_default");
 }
 ').
 
