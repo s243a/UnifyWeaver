@@ -19,5 +19,8 @@ pub mod output_parser;
 pub mod mcp_client;
 pub mod wasm_bindings;
 
-/// Re-export ConfigLoader for integration tests.
+/// Re-export types for integration tests.
 pub use config::ConfigLoader;
+pub use context::ContextManager;
+pub use costs::CostTracker;
+pub use types::Message;

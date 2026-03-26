@@ -149,13 +149,13 @@ defmodule AgentLoop.Config do
     state.debug == "true"
   end
 
-  @doc "Return the value to use for a config key: the provided value if non-empty, otherwise the existing setting."
+  @doc "Return the value to use for a config key: the provided value if non-empty, otherwise look up key in settings."
   @spec merge(t(), String.t(), String.t()) :: String.t()
   def merge(%__MODULE__{} = state, key, value) do
     if Enum.count(value) > 0 do
-        value
+        "#{value}"
     else
-        state.settings
+        Map.get(state.settings, key, )
     end
   end
 

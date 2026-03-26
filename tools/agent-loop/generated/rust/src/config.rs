@@ -241,6 +241,15 @@ impl ConfigLoader {
     }
 
     #[allow(dead_code, unused_variables)]
+    /// Return the value to use for a config key: the provided value if non-empty, otherwise look up key in settings.
+    pub fn merge(&self, key: &str, value: &str) -> String {
+        if value.len() > 0 {
+            return format!("{}", value);
+        }
+        return self.settings.get(key).cloned().unwrap_or_else(|| "".to_string());
+    }
+
+    #[allow(dead_code, unused_variables)]
     /// Return the number of configuration fields currently set.
     pub fn field_count(&self) -> i64 {
         return self.settings.len() as i64;
