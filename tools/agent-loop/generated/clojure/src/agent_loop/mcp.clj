@@ -101,3 +101,15 @@
   (> (int (count (:clients state))) 0)
 )
 
+(defn total-tools
+  "Return total number of MCP tools discovered."
+  [state]
+  (int (count (:tools state)))
+)
+
+(defn is-response
+  "Check if a JSON-RPC method name is a response (starts with result)."
+  [method]
+  (.startsWith method "result")
+)
+

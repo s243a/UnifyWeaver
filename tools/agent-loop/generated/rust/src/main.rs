@@ -1351,6 +1351,18 @@ impl StreamingTokenCounter {
         return max_tokens - (self.token_count as i64);
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if token count exceeds a given limit.
+    pub fn exceeds_limit(&self, limit: i64) -> bool {
+        return (self.token_count as i64) > limit;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if streaming handler is waiting (zero tokens and zero chars).
+    pub fn is_waiting(&self) -> bool {
+        return self.token_count == 0 && self.char_count == 0;
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

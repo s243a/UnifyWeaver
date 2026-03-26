@@ -44,3 +44,11 @@
 (deftest test-key-count
   (is (= 0 (config/key-count {:settings {}})))
   (is (= 2 (config/key-count {:settings {:a 1 :b 2}}))))
+
+(deftest test-config-has-backend
+  (is (true? (config/has-backend {:settings {"backend" "openai"}})))
+  (is (false? (config/has-backend {:settings {"model" "gpt-4"}}))))
+
+(deftest test-config-is-production
+  (is (true? (config/is-production {:debug "false"})))
+  (is (false? (config/is-production {:debug "true"}))))

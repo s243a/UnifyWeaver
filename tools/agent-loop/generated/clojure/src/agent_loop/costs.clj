@@ -180,3 +180,18 @@
   (> (+ (:total-input-tokens state) (:total-output-tokens state)) 0)
 )
 
+(defn output-ratio
+  "Return the ratio of output tokens to total tokens. Returns 0.0 if no tokens."
+  [state]
+  (if (zero? (+ (:total-input-tokens state) (:total-output-tokens state)))
+      0.0
+      (/ (double (:total-output-tokens state)) (double (+ (:total-input-tokens state) (:total-output-tokens state))))
+  )
+)
+
+(defn is-input-heavy
+  "Check if input tokens exceed output tokens."
+  [state]
+  (> (:total-input-tokens state) (:total-output-tokens state))
+)
+

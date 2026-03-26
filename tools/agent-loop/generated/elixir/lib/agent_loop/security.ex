@@ -178,4 +178,16 @@ defmodule AgentLoop.Security do
     profile == "open"
   end
 
+  @doc "Return the number of available security profiles."
+  @spec profile_count(integer()) :: integer()
+  def profile_count(profiles) do
+    profiles
+  end
+
+  @doc "Check if a path starts with /home or /data/data (Termux home)."
+  @spec is_home_path(String.t()) :: boolean()
+  def is_home_path(path) do
+    (String.starts_with?(path, "/home") or String.starts_with?(path, "/data/data"))
+  end
+
 end

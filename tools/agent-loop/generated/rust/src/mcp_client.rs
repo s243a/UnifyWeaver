@@ -181,4 +181,10 @@ impl McpManager {
         return (self.clients.len() as i64) > 0;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return total number of MCP tools discovered.
+    pub fn total_tools(&self) -> i64 {
+        return self.tools.len() as i64;
+    }
+
 }

@@ -673,4 +673,10 @@ impl ToolHandler {
         return self.schema.len() as i64;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return the number of tools in the schema (total tool count).
+    pub fn safe_count(&self) -> i64 {
+        return self.args.len() as i64;
+    }
+
 }

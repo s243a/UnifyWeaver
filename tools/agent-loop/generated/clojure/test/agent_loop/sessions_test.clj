@@ -47,3 +47,11 @@
 (deftest test-dir-is-empty
   (is (true? (sessions/dir-is-empty 0)))
   (is (false? (sessions/dir-is-empty 3))))
+
+(deftest test-session-list-is-empty
+  (is (true? (sessions/list-is-empty 0)))
+  (is (false? (sessions/list-is-empty 5))))
+
+(deftest test-session-count-exceeds
+  (is (true? (sessions/count-exceeds 10 5)))
+  (is (false? (sessions/count-exceeds 3 5))))

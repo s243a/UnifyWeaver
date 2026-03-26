@@ -39,3 +39,11 @@
 (deftest test-is-multiline
   (is (true? (parser/is-multiline "hello world this is long" 5)))
   (is (false? (parser/is-multiline "hi" 10))))
+
+(deftest test-output-has-code-block
+  (is (true? (parser/has-code-block "```python\nprint(1)\n```")))
+  (is (false? (parser/has-code-block "no code here"))))
+
+(deftest test-output-is-short
+  (is (true? (parser/is-short "hi" 10)))
+  (is (false? (parser/is-short "hello world foo bar" 5))))

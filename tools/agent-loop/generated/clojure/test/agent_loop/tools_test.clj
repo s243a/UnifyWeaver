@@ -55,3 +55,12 @@
   (is (true? (tools/requires-confirm "bash")))
   (is (true? (tools/requires-confirm "write")))
   (is (false? (tools/requires-confirm "read"))))
+
+(deftest test-tool-safe-count
+  (is (= 0 (tools/safe-count {:args []})))
+  (is (= 3 (tools/safe-count {:args ["read" "glob" "grep"]}))))
+
+(deftest test-tool-is-write-op
+  (is (true? (tools/is-write-op "write")))
+  (is (true? (tools/is-write-op "edit")))
+  (is (false? (tools/is-write-op "read"))))

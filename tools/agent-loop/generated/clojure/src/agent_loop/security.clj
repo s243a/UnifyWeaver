@@ -97,3 +97,15 @@
   (= profile "open")
 )
 
+(defn profile-count
+  "Return the number of available security profiles."
+  [profiles]
+  profiles
+)
+
+(defn is-home-path
+  "Check if a path starts with /home or /data/data (Termux home)."
+  [path]
+  (or (.startsWith path "/home") (.startsWith path "/data/data"))
+)
+

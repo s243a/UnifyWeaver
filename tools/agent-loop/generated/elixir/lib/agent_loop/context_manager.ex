@@ -266,4 +266,24 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Return remaining character budget. Returns -1 if no max_chars set."
+  @spec char_budget(t()) :: integer()
+  def char_budget(%__MODULE__{} = state) do
+    if state.max_chars <= 0 do
+        -1
+    else
+        (state.max_chars - state.token_count)
+    end
+  end
+
+  @doc "Check if context can accept more messages (not full or unlimited)."
+  @spec has_room(t()) :: boolean()
+  def has_room(%__MODULE__{} = state) do
+    if state.max_messages <= 0 do
+        true
+    else
+        Enum.count(state.messages) < state.max_messages
+    end
+  end
+
 end

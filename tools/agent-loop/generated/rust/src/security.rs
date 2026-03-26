@@ -151,3 +151,15 @@ pub fn allows_auto(profile: &str) -> bool {
     return profile == "open";
 }
 
+#[allow(dead_code, unused_variables)]
+/// Return the number of available security profiles.
+pub fn profile_count(profiles: i64) -> i64 {
+    return profiles;
+}
+
+#[allow(dead_code, unused_variables)]
+/// Check if a path starts with /home or /data/data (Termux home).
+pub fn is_home_path(path: &str) -> bool {
+    return path.starts_with("/home") || path.starts_with("/data/data");
+}
+

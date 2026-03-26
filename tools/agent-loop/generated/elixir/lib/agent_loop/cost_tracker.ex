@@ -188,4 +188,20 @@ defmodule AgentLoop.CostTracker do
     (state.total_input_tokens + state.total_output_tokens) > 0
   end
 
+  @doc "Return the ratio of output tokens to total tokens. Returns 0.0 if no tokens."
+  @spec output_ratio(t()) :: float()
+  def output_ratio(%__MODULE__{} = state) do
+    if (state.total_input_tokens + state.total_output_tokens) == 0 do
+        0.0
+    else
+        ((state.total_output_tokens * 1.0) / ((state.total_input_tokens + state.total_output_tokens) * 1.0))
+    end
+  end
+
+  @doc "Check if input tokens exceed output tokens."
+  @spec is_input_heavy(t()) :: boolean()
+  def is_input_heavy(%__MODULE__{} = state) do
+    state.total_input_tokens > state.total_output_tokens
+  end
+
 end

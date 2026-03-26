@@ -88,3 +88,15 @@
   (+ (:attempt state) 1)
 )
 
+(defn should-give-up
+  "Check if error count has reached the maximum allowed errors."
+  [error-count max-errors]
+  (>= error-count max-errors)
+)
+
+(defn total-wait
+  "Estimate total wait time as base_delay * attempts."
+  [base-delay attempts]
+  (* base-delay (double attempts))
+)
+

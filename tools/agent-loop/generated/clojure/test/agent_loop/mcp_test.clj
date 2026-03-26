@@ -48,3 +48,11 @@
 (deftest test-has-clients
   (is (false? (mcp/has-clients {:clients {}})))
   (is (true? (mcp/has-clients {:clients {"srv1" {:name "s1"}}}))))
+
+(deftest test-mcp-total-tools
+  (is (= 0 (mcp/total-tools {:tools []})))
+  (is (= 3 (mcp/total-tools {:tools ["a" "b" "c"]}))))
+
+(deftest test-mcp-is-response
+  (is (true? (mcp/is-response "result/success")))
+  (is (false? (mcp/is-response "tools/call"))))

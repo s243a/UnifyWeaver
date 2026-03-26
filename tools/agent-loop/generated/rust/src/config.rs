@@ -264,4 +264,16 @@ impl ConfigLoader {
         return self.settings.len() as i64;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if a backend is configured in settings.
+    pub fn has_backend(&self) -> bool {
+        return self.settings.contains_key("backend");
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if debug mode is disabled (production mode).
+    pub fn is_production(&self) -> bool {
+        return !(self.debug == "true");
+    }
+
 }

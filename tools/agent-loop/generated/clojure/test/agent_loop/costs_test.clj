@@ -77,3 +77,11 @@
 (deftest test-has-usage
   (is (false? (costs/has-usage {:total-input-tokens 0 :total-output-tokens 0})))
   (is (true? (costs/has-usage {:total-input-tokens 100 :total-output-tokens 0}))))
+
+(deftest test-cost-output-ratio
+  (is (= 0.0 (costs/output-ratio {:total-input-tokens 0 :total-output-tokens 0})))
+  (is (= 0.5 (costs/output-ratio {:total-input-tokens 50 :total-output-tokens 50}))))
+
+(deftest test-cost-is-input-heavy
+  (is (true? (costs/is-input-heavy {:total-input-tokens 200 :total-output-tokens 50})))
+  (is (false? (costs/is-input-heavy {:total-input-tokens 10 :total-output-tokens 100}))))

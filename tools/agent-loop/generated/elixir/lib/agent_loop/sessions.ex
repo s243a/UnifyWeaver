@@ -128,6 +128,18 @@ defmodule AgentLoop.Sessions do
     file_count <= 0
   end
 
+  @doc "Check if session list has no entries."
+  @spec list_is_empty(integer()) :: boolean()
+  def list_is_empty(count) do
+    count <= 0
+  end
+
+  @doc "Check if session count exceeds a given limit."
+  @spec count_exceeds(integer(), integer()) :: boolean()
+  def count_exceeds(count, limit) do
+    count > limit
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

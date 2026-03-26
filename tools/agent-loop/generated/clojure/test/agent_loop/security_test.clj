@@ -55,3 +55,12 @@
 (deftest test-allows-auto
   (is (true? (security/allows-auto "open")))
   (is (false? (security/allows-auto "paranoid"))))
+
+(deftest test-security-profile-count
+  (is (= 3 (security/profile-count 3)))
+  (is (= 0 (security/profile-count 0))))
+
+(deftest test-security-is-home-path
+  (is (true? (security/is-home-path "/home/user/file.txt")))
+  (is (true? (security/is-home-path "/data/data/com.termux/files")))
+  (is (false? (security/is-home-path "/etc/passwd"))))

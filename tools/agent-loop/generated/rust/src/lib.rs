@@ -18,3 +18,6 @@ pub mod plugin_manager;
 pub mod output_parser;
 pub mod mcp_client;
 pub mod wasm_bindings;
+
+/// Re-export ConfigLoader for integration tests.
+pub use config::ConfigLoader;

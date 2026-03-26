@@ -4850,6 +4850,186 @@ shared_logic(mcp, mcp_has_clients, [
     body_template("~return_val(gt(as_int(len_of(self_direct(clients))), literal(0)))~")
 ]).
 
+%% --- Security: count security profiles ---
+shared_logic(security, security_profile_count, [
+    signature(profile_count, [profiles], int),
+    arg_types([int]),
+    doc("Return the number of available security profiles."),
+    container(none),
+    body_template("~return_val(profiles)~")
+]).
+
+%% --- Config: check if backend key exists ---
+shared_logic(config, config_has_backend, [
+    signature(has_backend, [], bool),
+    arg_types([]),
+    doc("Check if a backend is configured in settings."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_has_key(self_direct(settings), \"backend\"))~")
+]).
+
+%% --- Context: remaining character budget ---
+shared_logic(context, context_char_budget, [
+    signature(char_budget, [], int),
+    arg_types([]),
+    doc("Return remaining character budget. Returns -1 if no max_chars set."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_chars), literal(0))~:\n    ~return_val(literal(-1))~\n~return_val(sub(self_direct(max_chars), self_direct(token_count)))~")
+]).
+
+%% --- Costs: output token ratio ---
+shared_logic(costs, cost_output_ratio, [
+    signature(output_ratio, [], float),
+    arg_types([]),
+    doc("Return the ratio of output tokens to total tokens. Returns 0.0 if no tokens."),
+    container('CostTracker'),
+    body_template("if ~eq_zero(add(self_direct(total_input_tokens), self_direct(total_output_tokens)))~:\n    ~return_val(literal(0.0))~\n~return_val(div_float(as_float(self_direct(total_output_tokens)), as_float(add(self_direct(total_input_tokens), self_direct(total_output_tokens)))))~")
+]).
+
+%% --- Streaming: check if token count exceeds threshold ---
+shared_logic(streaming, streaming_exceeds_limit, [
+    signature(exceeds_limit, [limit], bool),
+    arg_types([int]),
+    doc("Check if token count exceeds a given limit."),
+    container('StreamingHandler'),
+    body_template("~return_val(gt(as_int(self_direct(token_count)), limit))~")
+]).
+
+%% --- Sessions: check if session list is empty ---
+shared_logic(sessions, session_list_is_empty, [
+    signature(list_is_empty, [count], bool),
+    arg_types([int]),
+    doc("Check if session list has no entries."),
+    container(none),
+    body_template("~return_val(lte(count, literal(0)))~")
+]).
+
+%% --- Tools: count safe (read-only) tools ---
+shared_logic(tools, tool_safe_count, [
+    signature(safe_count, [], int),
+    arg_types([]),
+    doc("Return the number of tools in the schema (total tool count)."),
+    container('ToolHandler'),
+    body_template("~return_val(as_int(len_of(self_direct(args))))~")
+]).
+
+%% --- MCP: total tools discovered across all servers ---
+shared_logic(mcp, mcp_total_tools, [
+    signature(total_tools, [], int),
+    arg_types([]),
+    doc("Return total number of MCP tools discovered."),
+    container('MCPManager'),
+    body_template("~return_val(as_int(len_of(self_direct(tools))))~")
+]).
+
+%% --- Retry: check if should give up based on error count ---
+shared_logic(retry, retry_should_give_up, [
+    signature(should_give_up, [error_count, max_errors], bool),
+    arg_types([int, int]),
+    doc("Check if error count has reached the maximum allowed errors."),
+    container(none),
+    body_template("~return_val(gte(error_count, max_errors))~")
+]).
+
+%% --- Output parser: check if text has JSON object ---
+shared_logic(output_parser, output_has_json_object, [
+    signature(has_json_object, [text], bool),
+    arg_types([string]),
+    doc("Check if text contains a JSON object start marker."),
+    container(none),
+    body_template("~return_val(str_starts_with(text, \"{\"))~")
+]).
+
+%% --- Context: check if context has room for more messages ---
+shared_logic(context, context_has_room, [
+    signature(has_room, [], bool),
+    arg_types([]),
+    doc("Check if context can accept more messages (not full or unlimited)."),
+    container('ContextManager'),
+    body_template("if ~lte(self_direct(max_messages), literal(0))~:\n    ~return_val(true)~\n~return_val(lt(len_of(self_direct(messages)), self_direct(max_messages)))~")
+]).
+
+%% --- Costs: check if input tokens dominate ---
+shared_logic(costs, cost_is_input_heavy, [
+    signature(is_input_heavy, [], bool),
+    arg_types([]),
+    doc("Check if input tokens exceed output tokens."),
+    container('CostTracker'),
+    body_template("~return_val(gt(self_direct(total_input_tokens), self_direct(total_output_tokens)))~")
+]).
+
+%% --- Streaming: check if streaming is idle (no tokens yet) ---
+shared_logic(streaming, streaming_is_waiting, [
+    signature(is_waiting, [], bool),
+    arg_types([]),
+    doc("Check if streaming handler is waiting (zero tokens and zero chars)."),
+    container('StreamingHandler'),
+    body_template("~return_val(and_expr(eq_zero(self_direct(token_count)), eq_zero(self_direct(char_count))))~")
+]).
+
+%% --- Sessions: check if session count exceeds limit ---
+shared_logic(sessions, session_count_exceeds, [
+    signature(count_exceeds, [count, limit], bool),
+    arg_types([int, int]),
+    doc("Check if session count exceeds a given limit."),
+    container(none),
+    body_template("~return_val(gt(count, limit))~")
+]).
+
+%% --- Tools: check if tool is a write operation ---
+shared_logic(tools, tool_is_write_op, [
+    signature(is_write_op, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if a tool performs write operations (write or edit)."),
+    container(none),
+    body_template("~return_val(or_expr(eq_str(tool_name, write), eq_str(tool_name, edit)))~")
+]).
+
+%% --- MCP: check if a method is a response ---
+shared_logic(mcp, mcp_is_response, [
+    signature(is_response, [method], bool),
+    arg_types([string]),
+    doc("Check if a JSON-RPC method name is a response (starts with result)."),
+    container(none),
+    body_template("~return_val(str_starts_with(method, \"result\"))~")
+]).
+
+%% --- Retry: compute total wait time ---
+shared_logic(retry, retry_total_wait, [
+    signature(total_wait, [base_delay, attempts], float),
+    arg_types([float, int]),
+    doc("Estimate total wait time as base_delay * attempts."),
+    container(none),
+    body_template("~return_val(mul(base_delay, as_float(attempts)))~")
+]).
+
+%% --- Config: check if debug is disabled ---
+shared_logic(config, config_is_production, [
+    signature(is_production, [], bool),
+    arg_types([]),
+    doc("Check if debug mode is disabled (production mode)."),
+    container('ConfigLoader'),
+    body_template("~return_val(not_expr(eq_str(self_direct(debug), true)))~")
+]).
+
+%% --- Output parser: check if content is short ---
+shared_logic(output_parser, output_is_short, [
+    signature(is_short, [text, max_len], bool),
+    arg_types([string, int]),
+    doc("Check if content length is within max_len."),
+    container(none),
+    body_template("~return_val(lte(len_of(text), max_len))~")
+]).
+
+%% --- Security: check if path is in home directory ---
+shared_logic(security, security_is_home_path, [
+    signature(is_home_path, [path], bool),
+    arg_types([string]),
+    doc("Check if a path starts with /home or /data/data (Termux home)."),
+    container(none),
+    body_template("~return_val(or_expr(str_starts_with(path, \"/home\"), str_starts_with(path, \"/data/data\")))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -6858,7 +7038,9 @@ generate_rust_lib :-
     write(S, 'pub mod plugin_manager;\n'),
     write(S, 'pub mod output_parser;\n'),
     write(S, 'pub mod mcp_client;\n'),
-    write(S, 'pub mod wasm_bindings;\n'),
+    write(S, 'pub mod wasm_bindings;\n\n'),
+    write(S, '/// Re-export ConfigLoader for integration tests.\n'),
+    write(S, 'pub use config::ConfigLoader;\n'),
     close(S),
     format('  Generated rust/src/lib.rs~n', []).
 
@@ -6880,6 +7062,8 @@ generate_rust_config :-
     emit_shared_method(S, rust, config_is_empty),
     emit_shared_method(S, rust, config_is_default_backend),
     emit_shared_method(S, rust, config_key_count),
+    emit_shared_method(S, rust, config_has_backend),
+    emit_shared_method(S, rust, config_is_production),
     %% config_get_or_default skipped — unwrap_or(&str) vs String type mismatch
     write(S, '}\n'),
     close(S),
@@ -6904,6 +7088,8 @@ generate_rust_costs :-
     emit_shared_method(S, rust, cost_input_ratio),
     emit_shared_method(S, rust, cost_has_usage),
     emit_shared_method(S, rust, cost_exceeds),
+    emit_shared_method(S, rust, cost_output_ratio),
+    emit_shared_method(S, rust, cost_is_input_heavy),
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
     close(S),
@@ -6985,6 +7171,7 @@ generate_rust_mcp_client :-
     write(S, '}\n'),
     write(S, '\nimpl McpManager {\n'),
     emit_shared_method(S, rust, mcp_has_clients),
+    emit_shared_method(S, rust, mcp_total_tools),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/mcp_client.rs~n', []).
@@ -7133,6 +7320,8 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_token_budget),
     emit_shared_method(S, rust, context_word_budget),
     emit_shared_method(S, rust, context_is_full),
+    emit_shared_method(S, rust, context_char_budget),
+    emit_shared_method(S, rust, context_has_room),
     %% context_first_role/context_last_role skipped — Message is a struct not a map in Rust
     write(S, '}\n'),
     close(S),
@@ -7247,6 +7436,7 @@ generate_rust_tool_handler :-
     emit_shared_method(S, rust, tool_arg_count),
     emit_shared_method(S, rust, tool_has_schema),
     emit_shared_method(S, rust, tool_count),
+    emit_shared_method(S, rust, tool_safe_count),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/tool_handler.rs~n', []).
@@ -7476,6 +7666,8 @@ generate_rust_main :-
     emit_shared_method(S, rust, streaming_progress_pct),
     emit_shared_method(S, rust, streaming_has_started),
     emit_shared_method(S, rust, streaming_tokens_remaining),
+    emit_shared_method(S, rust, streaming_exceeds_limit),
+    emit_shared_method(S, rust, streaming_is_waiting),
     write(S, '}\n\n'),
     %% chunk_is_complete is standalone (container=none), emit outside impl block
     emit_shared_method(S, rust, chunk_is_complete),
@@ -9916,7 +10108,13 @@ generate_clojure_cost_test(Dir) :-
     write(S, '  (is (= "$99.99" (costs/format-dollars 99.99))))\n\n'),
     write(S, '(deftest test-has-usage\n'),
     write(S, '  (is (false? (costs/has-usage {:total-input-tokens 0 :total-output-tokens 0})))\n'),
-    write(S, '  (is (true? (costs/has-usage {:total-input-tokens 100 :total-output-tokens 0}))))\n'),
+    write(S, '  (is (true? (costs/has-usage {:total-input-tokens 100 :total-output-tokens 0}))))\n\n'),
+    write(S, '(deftest test-cost-output-ratio\n'),
+    write(S, '  (is (= 0.0 (costs/output-ratio {:total-input-tokens 0 :total-output-tokens 0})))\n'),
+    write(S, '  (is (= 0.5 (costs/output-ratio {:total-input-tokens 50 :total-output-tokens 50}))))\n\n'),
+    write(S, '(deftest test-cost-is-input-heavy\n'),
+    write(S, '  (is (true? (costs/is-input-heavy {:total-input-tokens 200 :total-output-tokens 50})))\n'),
+    write(S, '  (is (false? (costs/is-input-heavy {:total-input-tokens 10 :total-output-tokens 100}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -9966,7 +10164,14 @@ generate_clojure_context_test(Dir) :-
     write(S, '  (is (= 80 (ctx/word-budget {:max-words 100 :token-count 20}))))\n\n'),
     write(S, '(deftest test-is-full\n'),
     write(S, '  (is (false? (ctx/is-full {:max-messages 0 :messages []})))\n'),
-    write(S, '  (is (true? (ctx/is-full {:max-messages 2 :messages [{} {}]}))))\n'),
+    write(S, '  (is (true? (ctx/is-full {:max-messages 2 :messages [{} {}]}))))\n\n'),
+    write(S, '(deftest test-context-char-budget\n'),
+    write(S, '  (is (= -1 (ctx/char-budget {:max-chars 0 :token-count 0})))\n'),
+    write(S, '  (is (= 80 (ctx/char-budget {:max-chars 100 :token-count 20}))))\n\n'),
+    write(S, '(deftest test-context-has-room\n'),
+    write(S, '  (is (true? (ctx/has-room {:max-messages 0 :messages []})))\n'),
+    write(S, '  (is (true? (ctx/has-room {:max-messages 5 :messages [{} {}]})))\n'),
+    write(S, '  (is (false? (ctx/has-room {:max-messages 2 :messages [{} {}]}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/context_test.clj~n', []).
 
@@ -10052,7 +10257,15 @@ generate_clojure_retry_test(Dir) :-
     write(S, '(deftest test-retry-total-attempts\n'),
     write(S, '  (is (= 1 (retry/total-attempts {:attempt 0})))\n'),
     write(S, '  (is (= 4 (retry/total-attempts {:attempt 3})))\n'),
-    write(S, '  (is (= 6 (retry/total-attempts {:attempt 5}))))\n'),
+    write(S, '  (is (= 6 (retry/total-attempts {:attempt 5}))))\n\n'),
+    write(S, '(deftest test-retry-should-give-up\n'),
+    write(S, '  (is (true? (retry/should-give-up 5 5)))\n'),
+    write(S, '  (is (true? (retry/should-give-up 10 5)))\n'),
+    write(S, '  (is (false? (retry/should-give-up 2 5))))\n\n'),
+    write(S, '(deftest test-retry-total-wait\n'),
+    write(S, '  (is (= 0.0 (retry/total-wait 1.0 0)))\n'),
+    write(S, '  (is (= 3.0 (retry/total-wait 1.5 2)))\n'),
+    write(S, '  (is (= 10.0 (retry/total-wait 2.0 5))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -10104,7 +10317,14 @@ generate_clojure_tools_test(Dir) :-
     write(S, '(deftest test-requires-confirm\n'),
     write(S, '  (is (true? (tools/requires-confirm "bash")))\n'),
     write(S, '  (is (true? (tools/requires-confirm "write")))\n'),
-    write(S, '  (is (false? (tools/requires-confirm "read"))))\n'),
+    write(S, '  (is (false? (tools/requires-confirm "read"))))\n\n'),
+    write(S, '(deftest test-tool-safe-count\n'),
+    write(S, '  (is (= 0 (tools/safe-count {:args []})))\n'),
+    write(S, '  (is (= 3 (tools/safe-count {:args ["read" "glob" "grep"]}))))\n\n'),
+    write(S, '(deftest test-tool-is-write-op\n'),
+    write(S, '  (is (true? (tools/is-write-op "write")))\n'),
+    write(S, '  (is (true? (tools/is-write-op "edit")))\n'),
+    write(S, '  (is (false? (tools/is-write-op "read"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -10156,7 +10376,14 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '  (is (= 0 (streaming/tokens-remaining {:token-count 50} 50))))\n\n'),
     write(S, '(deftest test-has-started\n'),
     write(S, '  (is (false? (streaming/has-started {:token-count 0})))\n'),
-    write(S, '  (is (true? (streaming/has-started {:token-count 1}))))\n'),
+    write(S, '  (is (true? (streaming/has-started {:token-count 1}))))\n\n'),
+    write(S, '(deftest test-streaming-exceeds-limit\n'),
+    write(S, '  (is (true? (streaming/exceeds-limit {:token-count 150} 100)))\n'),
+    write(S, '  (is (false? (streaming/exceeds-limit {:token-count 50} 100))))\n\n'),
+    write(S, '(deftest test-streaming-is-waiting\n'),
+    write(S, '  (is (true? (streaming/is-waiting {:token-count 0 :char-count 0})))\n'),
+    write(S, '  (is (false? (streaming/is-waiting {:token-count 1 :char-count 0})))\n'),
+    write(S, '  (is (false? (streaming/is-waiting {:token-count 0 :char-count 5}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/streaming_test.clj~n', []).
 
@@ -10217,7 +10444,13 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (false? (config/is-default-backend {:settings {"backend" "openai"}}))))\n\n'),
     write(S, '(deftest test-key-count\n'),
     write(S, '  (is (= 0 (config/key-count {:settings {}})))\n'),
-    write(S, '  (is (= 2 (config/key-count {:settings {:a 1 :b 2}}))))\n'),
+    write(S, '  (is (= 2 (config/key-count {:settings {:a 1 :b 2}}))))\n\n'),
+    write(S, '(deftest test-config-has-backend\n'),
+    write(S, '  (is (true? (config/has-backend {:settings {"backend" "openai"}})))\n'),
+    write(S, '  (is (false? (config/has-backend {:settings {"model" "gpt-4"}}))))\n\n'),
+    write(S, '(deftest test-config-is-production\n'),
+    write(S, '  (is (true? (config/is-production {:debug "false"})))\n'),
+    write(S, '  (is (false? (config/is-production {:debug "true"}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 
@@ -10269,7 +10502,14 @@ generate_clojure_security_test(Dir) :-
     write(S, '  (is (false? (security/needs-audit "open"))))\n\n'),
     write(S, '(deftest test-allows-auto\n'),
     write(S, '  (is (true? (security/allows-auto "open")))\n'),
-    write(S, '  (is (false? (security/allows-auto "paranoid"))))\n'),
+    write(S, '  (is (false? (security/allows-auto "paranoid"))))\n\n'),
+    write(S, '(deftest test-security-profile-count\n'),
+    write(S, '  (is (= 3 (security/profile-count 3)))\n'),
+    write(S, '  (is (= 0 (security/profile-count 0))))\n\n'),
+    write(S, '(deftest test-security-is-home-path\n'),
+    write(S, '  (is (true? (security/is-home-path "/home/user/file.txt")))\n'),
+    write(S, '  (is (true? (security/is-home-path "/data/data/com.termux/files")))\n'),
+    write(S, '  (is (false? (security/is-home-path "/etc/passwd"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -10308,7 +10548,13 @@ generate_clojure_output_parser_test(Dir) :-
     write(S, '  (is (string? (parser/content-preview "hello world this is long" 5))))\n\n'),
     write(S, '(deftest test-is-multiline\n'),
     write(S, '  (is (true? (parser/is-multiline "hello world this is long" 5)))\n'),
-    write(S, '  (is (false? (parser/is-multiline "hi" 10))))\n'),
+    write(S, '  (is (false? (parser/is-multiline "hi" 10))))\n\n'),
+    write(S, '(deftest test-output-has-code-block\n'),
+    write(S, '  (is (true? (parser/has-code-block "```python\\nprint(1)\\n```")))\n'),
+    write(S, '  (is (false? (parser/has-code-block "no code here"))))\n\n'),
+    write(S, '(deftest test-output-is-short\n'),
+    write(S, '  (is (true? (parser/is-short "hi" 10)))\n'),
+    write(S, '  (is (false? (parser/is-short "hello world foo bar" 5))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
 
@@ -10352,7 +10598,13 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '  (is (false? (sessions/id-is-long "ab" 5))))\n\n'),
     write(S, '(deftest test-dir-is-empty\n'),
     write(S, '  (is (true? (sessions/dir-is-empty 0)))\n'),
-    write(S, '  (is (false? (sessions/dir-is-empty 3))))\n'),
+    write(S, '  (is (false? (sessions/dir-is-empty 3))))\n\n'),
+    write(S, '(deftest test-session-list-is-empty\n'),
+    write(S, '  (is (true? (sessions/list-is-empty 0)))\n'),
+    write(S, '  (is (false? (sessions/list-is-empty 5))))\n\n'),
+    write(S, '(deftest test-session-count-exceeds\n'),
+    write(S, '  (is (true? (sessions/count-exceeds 10 5)))\n'),
+    write(S, '  (is (false? (sessions/count-exceeds 3 5))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/sessions_test.clj~n', []).
 
@@ -10397,7 +10649,13 @@ generate_clojure_mcp_test(Dir) :-
     write(S, '  (is (= 42 (mcp/request-count {:request-id 42}))))\n\n'),
     write(S, '(deftest test-has-clients\n'),
     write(S, '  (is (false? (mcp/has-clients {:clients {}})))\n'),
-    write(S, '  (is (true? (mcp/has-clients {:clients {"srv1" {:name "s1"}}}))))\n'),
+    write(S, '  (is (true? (mcp/has-clients {:clients {"srv1" {:name "s1"}}}))))\n\n'),
+    write(S, '(deftest test-mcp-total-tools\n'),
+    write(S, '  (is (= 0 (mcp/total-tools {:tools []})))\n'),
+    write(S, '  (is (= 3 (mcp/total-tools {:tools ["a" "b" "c"]}))))\n\n'),
+    write(S, '(deftest test-mcp-is-response\n'),
+    write(S, '  (is (true? (mcp/is-response "result/success")))\n'),
+    write(S, '  (is (false? (mcp/is-response "tools/call"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/mcp_test.clj~n', []).
 
@@ -18139,6 +18397,58 @@ fn test_config_loader_struct_complete() {
     assert!(src.contains("fn is_empty("), "should have is_empty");
     assert!(src.contains("fn is_default_backend("), "should have is_default_backend");
     assert!(src.contains("fn key_count("), "should have key_count");
+    assert!(src.contains("fn has_backend("), "should have has_backend");
+    assert!(src.contains("fn is_production("), "should have is_production");
+}
+
+#[test]
+fn test_config_loader_functional() {
+    use agent_loop::ConfigLoader;
+    let mut loader = ConfigLoader::new();
+    assert!(loader.is_empty());
+    assert_eq!(loader.field_count(), 0);
+    assert_eq!(loader.key_count(), 0);
+    assert!(loader.is_default_backend());
+    assert!(!loader.has_backend());
+    assert!(loader.is_production());
+    loader.settings.insert("backend".to_string(), "openai".to_string());
+    assert!(!loader.is_empty());
+    assert_eq!(loader.field_count(), 1);
+    assert!(!loader.is_default_backend());
+    assert!(loader.has_backend());
+    assert!(loader.has_key("backend"));
+    assert!(!loader.has_key("model"));
+}
+
+#[test]
+fn test_round8_streaming_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn exceeds_limit("), "main.rs should have exceeds_limit");
+    assert!(src.contains("fn is_waiting("), "main.rs should have is_waiting");
+    assert!(src.contains("fn tokens_remaining("), "main.rs should have tokens_remaining");
+}
+
+#[test]
+fn test_round8_mcp_methods() {
+    let src = include_str!("../src/mcp_client.rs");
+    assert!(src.contains("fn total_tools("), "mcp_client.rs should have total_tools");
+    assert!(src.contains("fn has_clients("), "mcp_client.rs should have has_clients");
+}
+
+#[test]
+fn test_round8_context_methods() {
+    let src = include_str!("../src/context.rs");
+    assert!(src.contains("fn char_budget("), "context.rs should have char_budget");
+    assert!(src.contains("fn has_room("), "context.rs should have has_room");
+    assert!(src.contains("fn is_full("), "context.rs should have is_full");
+}
+
+#[test]
+fn test_round8_costs_methods() {
+    let src = include_str!("../src/costs.rs");
+    assert!(src.contains("fn output_ratio("), "costs.rs should have output_ratio");
+    assert!(src.contains("fn is_input_heavy("), "costs.rs should have is_input_heavy");
+    assert!(src.contains("fn has_usage("), "costs.rs should have has_usage");
 }
 ').
 

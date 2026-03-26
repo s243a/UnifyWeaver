@@ -141,6 +141,21 @@ impl CostTracker {
         return self.total_cost > threshold;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return the ratio of output tokens to total tokens. Returns 0.0 if no tokens.
+    pub fn output_ratio(&self) -> f64 {
+        if (self.total_input_tokens + self.total_output_tokens) == 0 {
+            return 0.0;
+        }
+        return (self.total_output_tokens as f64) / ((self.total_input_tokens + self.total_output_tokens) as f64);
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if input tokens exceed output tokens.
+    pub fn is_input_heavy(&self) -> bool {
+        return self.total_input_tokens > self.total_output_tokens;
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

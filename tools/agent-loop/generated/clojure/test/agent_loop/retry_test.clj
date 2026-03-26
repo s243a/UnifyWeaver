@@ -45,3 +45,13 @@
   (is (= 1 (retry/total-attempts {:attempt 0})))
   (is (= 4 (retry/total-attempts {:attempt 3})))
   (is (= 6 (retry/total-attempts {:attempt 5}))))
+
+(deftest test-retry-should-give-up
+  (is (true? (retry/should-give-up 5 5)))
+  (is (true? (retry/should-give-up 10 5)))
+  (is (false? (retry/should-give-up 2 5))))
+
+(deftest test-retry-total-wait
+  (is (= 0.0 (retry/total-wait 1.0 0)))
+  (is (= 3.0 (retry/total-wait 1.5 2)))
+  (is (= 10.0 (retry/total-wait 2.0 5))))

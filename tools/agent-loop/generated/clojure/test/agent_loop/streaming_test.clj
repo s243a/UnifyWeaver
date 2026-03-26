@@ -56,3 +56,12 @@
 (deftest test-has-started
   (is (false? (streaming/has-started {:token-count 0})))
   (is (true? (streaming/has-started {:token-count 1}))))
+
+(deftest test-streaming-exceeds-limit
+  (is (true? (streaming/exceeds-limit {:token-count 150} 100)))
+  (is (false? (streaming/exceeds-limit {:token-count 50} 100))))
+
+(deftest test-streaming-is-waiting
+  (is (true? (streaming/is-waiting {:token-count 0 :char-count 0})))
+  (is (false? (streaming/is-waiting {:token-count 1 :char-count 0})))
+  (is (false? (streaming/is-waiting {:token-count 0 :char-count 5}))))
