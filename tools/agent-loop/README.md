@@ -62,7 +62,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 |--------|--------|--------|
 | Python | `generated/python/` (15+ modules) | Full agent loop |
 | Prolog | `generated/prolog/` (8 modules) | Full agent loop |
-| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + OutputParser wiring + MCP lifecycle + tool schema validation + token budget/rate limiting + streaming token counting + 163 Rust integration tests |
+| Rust | `generated/rust/` (19 files + integration tests) | Data + imperative + CLI + config loading + streaming (with token parsing) + security wiring + YAML + tool schemas + multi-format API (OpenAI/Anthropic) + context modes + gemini model validation + OnceLock caching + RuntimeState + session resume + env var expansion + multi-format export + retry with backoff + templates (16 built-in + persistence) + skills + multiline input + history edit/undo + spinner + rich display + proot sandbox + paste detection + config gen (paste_mode) + data-driven help + data-driven dispatch + plugin system (ToolHandler wiring) + WASM bindings (feature-gated) + async/tokio runtime + async retry + streaming async + concurrent tool execution + plugin async + /init config command + binary packaging (Makefile, release profile, WASM targets) + config hot-reload (/reload) + tool approval UI (confirm_tool_execution) + streaming error recovery + context overflow notification + tool result caching + structured output parsing + MCP server support (stdio JSON-RPC) + cache/MCP wiring in ToolHandler + async API backend + OutputParser wiring + MCP lifecycle + tool schema validation + token budget/rate limiting + streaming token counting + 167 Rust integration tests |
 | Elixir | `generated/elixir/` (22 lib modules + 17 test files) | Structs + shared_logic methods + data layer (pricing/tools/backends) + security profiles + config loader + sessions (save/load/list/delete) + output parser (extract_fenced/extract_bare/parse_response) + MCP client (connect/send_request/discover_tools/call_tool/disconnect) + MCPManager + MCPManagerServer + OTP Application + 6 GenServer wrappers (CostServer, ContextServer, CacheServer, StreamingServer, MCPServer, MCPManagerServer) + supervision tree + **Plug.Router HTTP API** (data-driven from tool_spec/slash_command/elixir_server facts: 4 tool endpoints, 26 command endpoints, 6 server state endpoints, health check) + HTTPServer (Cowboy wrapper) + ExUnit tests (58 test cases) |
 | Clojure | `generated/clojure/` (13 modules + 8 test files + project.clj) | Full shared_logic methods with prefix S-expression notation + kebab-case identifiers + keyword state access + defn with docstrings + ns declarations + Cheshire JSON deps + data layer (pricing, backends, config, security) + clojure.test suite |
 
@@ -73,7 +73,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `py_fragment/2` facts | 95 |
 | `prolog_fragment/2` facts | 33 |
 | `rust_fragment/2` facts | 38 |
-| `shared_logic/3` facts | 220 (5-target parity: Python, Rust, Elixir, Prolog, Clojure) |
+| `shared_logic/3` facts | 240 (5-target parity: Python, Rust, Elixir, Prolog, Clojure) |
 | `logic_slot/3` facts | ~120 (25 python + 25 rust + ~35 elixir + ~35 prolog) |
 | `expand_expr/3` facts | ~130 (incl. lt, lte, neq, or_expr, and_expr, str_strip across 5 targets) |
 | `resolve_type/3` facts | 68 (15 python + 20 rust + 18 elixir + 15 prolog incl. `optional/1`, `owned_string`, `list_of_string`) |
@@ -82,7 +82,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 2631+ Prolog (incl. 1528 declarative) + 163 Rust + 178 Python + 173 Clojure |
+| Total tests | 2751+ Prolog (incl. 1648 declarative) + 167 Rust + 191 Python + 194 Clojure |
 
 ## Backends
 
@@ -520,7 +520,7 @@ resolve_type(rust, optional(T), S) :-
     format(atom(S), "Option<~w>", [Inner]).
 ```
 
-**220 shared methods** across 10 modules (compiled for Python, Rust, Elixir, Prolog, and Clojure):
+**240 shared methods** across 10 modules (compiled for Python, Rust, Elixir, Prolog, and Clojure):
 
 | Module | Count | Example Methods |
 |--------|-------|-----------------|
@@ -538,7 +538,7 @@ resolve_type(rust, optional(T), S) :-
 
 The `~~` escape in templates emits literal `~` (for display strings like `~42 tokens`). `emit_shared_method/3` and `write_shared_block/3` provide ready-to-use Rust/Python method emission with proper signatures, type resolution, and syntax fixups (semicolons, `if/else` blocks, `&mut self` for mutating methods).
 
-**All 220 shared_logic methods are actively wired (5 targets: Python, Rust, Elixir, Prolog, Clojure)** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
+**All 240 shared_logic methods are actively wired (5 targets: Python, Rust, Elixir, Prolog, Clojure)** — emitted from `compile_logic` during generation for Python, Rust, Elixir, and Prolog targets:
 
 | Method | Python | Rust | Notes |
 |--------|--------|------|-------|
@@ -858,7 +858,7 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Tool schema validation | Y | Y | Complete (required param check from tool_spec before execution) |
 | Token budget / rate limiting | Y | Y | Complete (CostTracker.is_over_budget, interactive prompt) |
 | Streaming token counting | Y | Y | Complete (StreamingTokenCounter class/struct, live char/token count during streaming, summary after completion) |
-| Integration tests (cargo test) | N | Y (163 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter) |
+| Integration tests (cargo test) | N | Y (167 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter) |
 
 ## Future Work (Elixir Target)
 

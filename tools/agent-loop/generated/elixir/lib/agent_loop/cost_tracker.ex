@@ -216,4 +216,16 @@ defmodule AgentLoop.CostTracker do
     state.total_cost <= 0.0
   end
 
+  @doc "Format a token count with a 'tokens' suffix."
+  @spec format_tokens(integer()) :: String.t()
+  def format_tokens(count) do
+    "#{count} tokens"
+  end
+
+  @doc "Check if total cost is strictly below a threshold."
+  @spec is_under(t(), float()) :: boolean()
+  def is_under(%__MODULE__{} = state, threshold) do
+    state.total_cost < threshold
+  end
+
 end

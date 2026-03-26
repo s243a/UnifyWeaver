@@ -121,3 +121,15 @@
   (.startsWith path "/")
 )
 
+(defn is-safe-extension
+  "Check if filename does not end with a dangerous extension (.sh, .exe, .bat)."
+  [filename]
+  (not (or (.endsWith filename ".sh") (or (.endsWith filename ".exe") (.endsWith filename ".bat"))))
+)
+
+(defn is-network-cmd
+  "Check if command starts with a network tool (curl, wget, ssh, scp)."
+  [cmd]
+  (or (or (.startsWith cmd "curl") (.startsWith cmd "wget")) (or (.startsWith cmd "ssh") (.startsWith cmd "scp")))
+)
+

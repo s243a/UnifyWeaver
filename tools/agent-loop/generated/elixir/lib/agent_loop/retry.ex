@@ -114,4 +114,20 @@ defmodule AgentLoop.Retry do
     state.base_delay > 0.0
   end
 
+  @doc "Return remaining delay budget. Returns 0.0 if exceeded."
+  @spec delay_remaining(float(), float()) :: float()
+  def delay_remaining(elapsed, max_total) do
+    if elapsed >= max_total do
+        0.0
+    else
+        (max_total - elapsed)
+    end
+  end
+
+  @doc "Check if success rate is above 10% (worth retrying)."
+  @spec is_worthwhile(float()) :: boolean()
+  def is_worthwhile(success_rate) do
+    success_rate > 0.1
+  end
+
 end

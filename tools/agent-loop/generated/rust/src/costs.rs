@@ -168,6 +168,12 @@ impl CostTracker {
         return self.total_cost <= 0.0;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if total cost is strictly below a threshold.
+    pub fn is_under(&self, threshold: f64) -> bool {
+        return self.total_cost < threshold;
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

@@ -156,6 +156,18 @@ defmodule AgentLoop.Sessions do
     end
   end
 
+  @doc "Check if a session age exceeds the maximum allowed age."
+  @spec is_stale(float(), float()) :: boolean()
+  def is_stale(age, max_age) do
+    age > max_age
+  end
+
+  @doc "Return the number of expired sessions (total minus active)."
+  @spec expired_count(integer(), integer()) :: integer()
+  def expired_count(total, active) do
+    max(0.0, (total - active))
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

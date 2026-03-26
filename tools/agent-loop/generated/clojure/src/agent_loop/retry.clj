@@ -112,3 +112,18 @@
   (> (:base-delay state) 0.0)
 )
 
+(defn delay-remaining
+  "Return remaining delay budget. Returns 0.0 if exceeded."
+  [elapsed max-total]
+  (if (>= elapsed max-total)
+      0.0
+      (- max-total elapsed)
+  )
+)
+
+(defn is-worthwhile
+  "Check if success rate is above 10% (worth retrying)."
+  [success-rate]
+  (> success-rate 0.1)
+)
+

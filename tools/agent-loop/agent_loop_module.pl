@@ -2185,7 +2185,7 @@ expand_expr(python, map_get_default(Coll, Key, Default), S) :-
 expand_expr(rust, map_get_default(Coll, Key, Default), S) :-
     expand_expr(rust, Coll, CS), expand_expr(rust, Key, KS),
     expand_expr(rust, Default, DS),
-    format(atom(S), "~w.get(~w).cloned().unwrap_or(~w)", [CS, KS, DS]).
+    format(atom(S), "~w.get(~w).cloned().unwrap_or_else(|| ~w.to_string())", [CS, KS, DS]).
 
 %% --- Map has_key ---
 expand_expr(python, map_has_key(Collection, Key), S) :-
@@ -5210,6 +5210,186 @@ shared_logic(output_parser, output_has_json_array, [
     body_template("~return_val(str_starts_with(text, \"[\"))~")
 ]).
 
+%% --- Security: check file extension is safe ---
+shared_logic(security, security_is_safe_extension, [
+    signature(is_safe_extension, [filename], bool),
+    arg_types([string]),
+    doc("Check if filename does not end with a dangerous extension (.sh, .exe, .bat)."),
+    container(none),
+    body_template("~return_val(not_expr(or_expr(str_ends_with(filename, \".sh\"), or_expr(str_ends_with(filename, \".exe\"), str_ends_with(filename, \".bat\")))))~")
+]).
+
+%% --- Security: check if command is a network tool ---
+shared_logic(security, security_is_network_cmd, [
+    signature(is_network_cmd, [cmd], bool),
+    arg_types([string]),
+    doc("Check if command starts with a network tool (curl, wget, ssh, scp)."),
+    container(none),
+    body_template("~return_val(or_expr(or_expr(str_starts_with(cmd, \"curl\"), str_starts_with(cmd, \"wget\")), or_expr(str_starts_with(cmd, \"ssh\"), str_starts_with(cmd, \"scp\"))))~")
+]).
+
+%% --- Config: check if streaming is enabled ---
+shared_logic(config, config_has_stream, [
+    signature(has_stream, [], bool),
+    arg_types([]),
+    doc("Check if streaming is configured in settings."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_has_key(self_direct(settings), \"stream\"))~")
+]).
+
+%% --- Config: check if config has max_tokens ---
+shared_logic(config, config_has_max_tokens, [
+    signature(has_max_tokens, [], bool),
+    arg_types([]),
+    doc("Check if max_tokens is configured."),
+    container('ConfigLoader'),
+    body_template("~return_val(map_has_key(self_direct(settings), \"max_tokens\"))~")
+]).
+
+%% --- Context: check if context mode is continue ---
+shared_logic(context, context_is_continue_mode, [
+    signature(is_continue_mode, [], bool),
+    arg_types([]),
+    doc("Check if context mode is set to continue (keep full history)."),
+    container('ContextManager'),
+    body_template("~return_val(eq_str(self_direct(context_mode), continue))~")
+]).
+
+%% --- Context: check if context mode is sliding ---
+shared_logic(context, context_is_sliding_mode, [
+    signature(is_sliding_mode, [], bool),
+    arg_types([]),
+    doc("Check if context mode is set to sliding window."),
+    container('ContextManager'),
+    body_template("~return_val(eq_str(self_direct(context_mode), sliding))~")
+]).
+
+%% --- Costs: format token count as string ---
+shared_logic(costs, cost_format_tokens, [
+    signature(format_tokens, [count], owned_string),
+    arg_types([int]),
+    doc("Format a token count with a 'tokens' suffix."),
+    container(none),
+    body_template("~return_val(format_str(\"{} tokens\", [count]))~")
+]).
+
+%% --- Costs: check if cost is under a threshold ---
+shared_logic(costs, cost_is_under, [
+    signature(is_under, [threshold], bool),
+    arg_types([float]),
+    doc("Check if total cost is strictly below a threshold."),
+    container('CostTracker'),
+    body_template("~return_val(lt(self_direct(total_cost), threshold))~")
+]).
+
+%% --- Streaming: compute total bytes as percentage of a limit ---
+shared_logic(streaming, streaming_buffer_pct, [
+    signature(buffer_pct, [max_bytes], float),
+    arg_types([int]),
+    doc("Return buffer usage as percentage of max_bytes. Returns 0.0 if max is 0."),
+    container('StreamingHandler'),
+    body_template("if ~eq_zero(max_bytes)~:\n    ~return_val(literal(0.0))~\n~return_val(mul(div_float(as_float(as_int(len_of(self_direct(buffer)))), as_float(max_bytes)), literal(100.0)))~")
+]).
+
+%% --- Streaming: check if show_live is enabled ---
+shared_logic(streaming, streaming_is_live_mode, [
+    signature(is_live_mode, [], bool),
+    arg_types([]),
+    doc("Check if live display mode is enabled."),
+    container('StreamingHandler'),
+    body_template("~return_val(eq_str(self_direct(show_live), true))~")
+]).
+
+%% --- Sessions: check if session age exceeds max ---
+shared_logic(sessions, session_is_stale, [
+    signature(is_stale, [age, max_age], bool),
+    arg_types([float, float]),
+    doc("Check if a session age exceeds the maximum allowed age."),
+    container(none),
+    body_template("~return_val(gt(age, max_age))~")
+]).
+
+%% --- Sessions: compute number of expired sessions ---
+shared_logic(sessions, session_expired_count, [
+    signature(expired_count, [total, active], int),
+    arg_types([int, int]),
+    doc("Return the number of expired sessions (total minus active)."),
+    container(none),
+    body_template("~return_val(max_zero(sub(total, active)))~")
+]).
+
+%% --- Tools: check if tool is read ---
+shared_logic(tools, tool_is_read, [
+    signature(is_read, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if tool is the file reader."),
+    container(none),
+    body_template("~return_val(eq_str(tool_name, read))~")
+]).
+
+%% --- Tools: check if tool is write ---
+shared_logic(tools, tool_is_write, [
+    signature(is_write, [tool_name], bool),
+    arg_types([string]),
+    doc("Check if tool is the file writer."),
+    container(none),
+    body_template("~return_val(eq_str(tool_name, write))~")
+]).
+
+%% --- MCP: check if method is a notification ---
+shared_logic(mcp, mcp_is_progress, [
+    signature(is_progress, [method], bool),
+    arg_types([string]),
+    doc("Check if a JSON-RPC method is a progress notification."),
+    container(none),
+    body_template("~return_val(str_starts_with(method, \"progress\"))~")
+]).
+
+%% --- MCP: check if client list is at capacity ---
+shared_logic(mcp, mcp_clients_at_capacity, [
+    signature(clients_at_capacity, [max_clients], bool),
+    arg_types([int]),
+    doc("Check if the number of connected clients has reached max_clients."),
+    container('MCPManager'),
+    body_template("~return_val(gte(as_int(len_of(self_direct(clients))), max_clients))~")
+]).
+
+%% --- Retry: compute remaining delay budget ---
+shared_logic(retry, retry_delay_remaining, [
+    signature(delay_remaining, [elapsed, max_total], float),
+    arg_types([float, float]),
+    doc("Return remaining delay budget. Returns 0.0 if exceeded."),
+    container(none),
+    body_template("if ~gte(elapsed, max_total)~:\n    ~return_val(literal(0.0))~\n~return_val(sub(max_total, elapsed))~")
+]).
+
+%% --- Retry: check if retry is worth attempting ---
+shared_logic(retry, retry_is_worthwhile, [
+    signature(is_worthwhile, [success_rate], bool),
+    arg_types([float]),
+    doc("Check if success rate is above 10% (worth retrying)."),
+    container(none),
+    body_template("~return_val(gt(success_rate, literal(0.1)))~")
+]).
+
+%% --- Output parser: check if text looks like markdown ---
+shared_logic(output_parser, output_is_markdown, [
+    signature(is_markdown, [text], bool),
+    arg_types([string]),
+    doc("Check if text starts with a markdown heading marker."),
+    container(none),
+    body_template("~return_val(str_starts_with(text, \"#\"))~")
+]).
+
+%% --- Output parser: check if response is too long ---
+shared_logic(output_parser, output_exceeds_limit, [
+    signature(exceeds_limit, [text, limit], bool),
+    arg_types([string, int]),
+    doc("Check if text length exceeds a given limit."),
+    container(none),
+    body_template("~return_val(gt(len_of(text), limit))~")
+]).
+
 %% =============================================================================
 %% Additional logic_slot/3 — Slots for expanded shared_logic coverage
 %% =============================================================================
@@ -7246,7 +7426,10 @@ generate_rust_config :-
     emit_shared_method(S, rust, config_is_production),
     emit_shared_method(S, rust, config_has_model),
     emit_shared_method(S, rust, config_has_api_key),
-    %% config_get_or_default skipped — unwrap_or(&str) vs String type mismatch
+    emit_shared_method(S, rust, config_has_stream),
+    emit_shared_method(S, rust, config_has_max_tokens),
+    emit_shared_method(S, rust, config_get_or_default),
+    %% config_merge skipped — returns self.settings (HashMap) but signature expects string
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/config.rs~n', []).
@@ -7274,6 +7457,7 @@ generate_rust_costs :-
     emit_shared_method(S, rust, cost_is_input_heavy),
     emit_shared_method(S, rust, cost_is_output_heavy),
     emit_shared_method(S, rust, cost_is_zero),
+    emit_shared_method(S, rust, cost_is_under),
     write(S, '}\n\n'),
     emit_shared_method(S, rust, cost_compute),
     close(S),
@@ -7356,6 +7540,7 @@ generate_rust_mcp_client :-
     write(S, '\nimpl McpManager {\n'),
     emit_shared_method(S, rust, mcp_has_clients),
     emit_shared_method(S, rust, mcp_total_tools),
+    emit_shared_method(S, rust, mcp_clients_at_capacity),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/mcp_client.rs~n', []).
@@ -7508,6 +7693,8 @@ generate_rust_context :-
     emit_shared_method(S, rust, context_has_room),
     emit_shared_method(S, rust, context_is_near_full),
     emit_shared_method(S, rust, context_usage_pct),
+    emit_shared_method(S, rust, context_is_continue_mode),
+    emit_shared_method(S, rust, context_is_sliding_mode),
     %% context_first_role/context_last_role skipped — Message is a struct not a map in Rust
     write(S, '}\n'),
     close(S),
@@ -7858,6 +8045,8 @@ generate_rust_main :-
     emit_shared_method(S, rust, streaming_is_waiting),
     emit_shared_method(S, rust, streaming_has_elapsed),
     emit_shared_method(S, rust, streaming_is_balanced),
+    emit_shared_method(S, rust, streaming_buffer_pct),
+    %% streaming_is_live_mode skipped — show_live is bool in Rust, eq_str expects String
     write(S, '}\n\n'),
     %% chunk_is_complete is standalone (container=none), emit outside impl block
     emit_shared_method(S, rust, chunk_is_complete),
@@ -10310,7 +10499,16 @@ generate_clojure_cost_test(Dir) :-
     write(S, '  (is (false? (costs/is-output-heavy {:total-input-tokens 100 :total-output-tokens 10}))))\n\n'),
     write(S, '(deftest test-cost-is-zero\n'),
     write(S, '  (is (true? (costs/is-zero-cost {:total-cost 0.0})))\n'),
-    write(S, '  (is (false? (costs/is-zero-cost {:total-cost 5.0}))))\n'),
+    write(S, '  (is (false? (costs/is-zero-cost {:total-cost 5.0}))))\n\n'),
+    write(S, '(deftest test-is-output-heavy\n'),
+    write(S, '  (is (true? (costs/is-output-heavy {:total-input-tokens 10 :total-output-tokens 100})))\n'),
+    write(S, '  (is (false? (costs/is-output-heavy {:total-input-tokens 100 :total-output-tokens 10}))))\n\n'),
+    write(S, '(deftest test-is-zero-cost\n'),
+    write(S, '  (is (true? (costs/is-zero-cost {:total-cost 0.0})))\n'),
+    write(S, '  (is (false? (costs/is-zero-cost {:total-cost 5.0}))))\n\n'),
+    write(S, '(deftest test-is-under\n'),
+    write(S, '  (is (true? (costs/is-under {:total-cost 5.0} 10.0)))\n'),
+    write(S, '  (is (false? (costs/is-under {:total-cost 15.0} 10.0))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/costs_test.clj~n', []).
 
@@ -10373,7 +10571,13 @@ generate_clojure_context_test(Dir) :-
     write(S, '  (is (true? (ctx/is-near-full {:max-messages 10 :messages [{} {} {} {} {} {} {} {} {}]} 80))))\n\n'),
     write(S, '(deftest test-context-usage-pct\n'),
     write(S, '  (is (= 0.0 (ctx/usage-pct {:max-messages 0 :messages []})))\n'),
-    write(S, '  (is (= 50.0 (ctx/usage-pct {:max-messages 10 :messages [{} {} {} {} {}]}))))\n'),
+    write(S, '  (is (= 50.0 (ctx/usage-pct {:max-messages 10 :messages [{} {} {} {} {}]}))))\n\n'),
+    write(S, '(deftest test-is-continue-mode\n'),
+    write(S, '  (is (true? (ctx/is-continue-mode {:context-mode "continue"})))\n'),
+    write(S, '  (is (false? (ctx/is-continue-mode {:context-mode "sliding"}))))\n\n'),
+    write(S, '(deftest test-is-sliding-mode\n'),
+    write(S, '  (is (true? (ctx/is-sliding-mode {:context-mode "sliding"})))\n'),
+    write(S, '  (is (false? (ctx/is-sliding-mode {:context-mode "continue"}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/context_test.clj~n', []).
 
@@ -10473,7 +10677,13 @@ generate_clojure_retry_test(Dir) :-
     write(S, '  (is (false? (retry/is-fresh {:attempt 1}))))\n\n'),
     write(S, '(deftest test-retry-has-delay\n'),
     write(S, '  (is (true? (retry/has-delay {:base-delay 1.0})))\n'),
-    write(S, '  (is (false? (retry/has-delay {:base-delay 0.0}))))\n'),
+    write(S, '  (is (false? (retry/has-delay {:base-delay 0.0}))))\n\n'),
+    write(S, '(deftest test-delay-remaining\n'),
+    write(S, '  (is (= 0.0 (retry/delay-remaining 100.0 50.0)))\n'),
+    write(S, '  (is (= 50.0 (retry/delay-remaining 50.0 100.0))))\n\n'),
+    write(S, '(deftest test-is-worthwhile\n'),
+    write(S, '  (is (true? (retry/is-worthwhile 0.5)))\n'),
+    write(S, '  (is (false? (retry/is-worthwhile 0.05))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/retry_test.clj~n', []).
 
@@ -10538,7 +10748,13 @@ generate_clojure_tools_test(Dir) :-
     write(S, '  (is (false? (tools/is-bash "read"))))\n\n'),
     write(S, '(deftest test-tool-is-edit\n'),
     write(S, '  (is (true? (tools/is-edit "edit")))\n'),
-    write(S, '  (is (false? (tools/is-edit "bash"))))\n'),
+    write(S, '  (is (false? (tools/is-edit "bash"))))\n\n'),
+    write(S, '(deftest test-is-read\n'),
+    write(S, '  (is (true? (tools/is-read "read")))\n'),
+    write(S, '  (is (false? (tools/is-read "bash"))))\n\n'),
+    write(S, '(deftest test-is-write\n'),
+    write(S, '  (is (true? (tools/is-write "write")))\n'),
+    write(S, '  (is (false? (tools/is-write "read"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/tools_test.clj~n', []).
 
@@ -10602,6 +10818,12 @@ generate_clojure_streaming_test(Dir) :-
     write(S, '  (is (true? (streaming/has-elapsed {:elapsed 1.0})))\n'),
     write(S, '  (is (false? (streaming/has-elapsed {:elapsed 0.0}))))\n\n'),
     write(S, '(deftest test-streaming-is-balanced\n'),
+    write(S, '  (is (true? (streaming/is-balanced {:char-count 10 :token-count 5})))\n'),
+    write(S, '  (is (false? (streaming/is-balanced {:char-count 3 :token-count 10}))))\n\n'),
+    write(S, '(deftest test-has-elapsed\n'),
+    write(S, '  (is (true? (streaming/has-elapsed {:elapsed 1.0})))\n'),
+    write(S, '  (is (false? (streaming/has-elapsed {:elapsed 0.0}))))\n\n'),
+    write(S, '(deftest test-is-balanced\n'),
     write(S, '  (is (true? (streaming/is-balanced {:char-count 10 :token-count 5})))\n'),
     write(S, '  (is (false? (streaming/is-balanced {:char-count 3 :token-count 10}))))\n'),
     close(S),
@@ -10676,7 +10898,13 @@ generate_clojure_config_test(Dir) :-
     write(S, '  (is (false? (config/has-model {:settings {}}))))\n\n'),
     write(S, '(deftest test-config-has-api-key\n'),
     write(S, '  (is (true? (config/has-api-key {:settings {"api_key" "sk-123"}})))\n'),
-    write(S, '  (is (false? (config/has-api-key {:settings {}}))))\n'),
+    write(S, '  (is (false? (config/has-api-key {:settings {}}))))\n\n'),
+    write(S, '(deftest test-has-stream\n'),
+    write(S, '  (is (true? (config/has-stream {:settings {"stream" "true"}})))\n'),
+    write(S, '  (is (false? (config/has-stream {:settings {}}))))\n\n'),
+    write(S, '(deftest test-has-max-tokens\n'),
+    write(S, '  (is (true? (config/has-max-tokens {:settings {"max_tokens" "100"}})))\n'),
+    write(S, '  (is (false? (config/has-max-tokens {:settings {}}))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/config_test.clj~n', []).
 
@@ -10741,7 +10969,13 @@ generate_clojure_security_test(Dir) :-
     write(S, '  (is (false? (security/has-pipe "ls"))))\n\n'),
     write(S, '(deftest test-security-is-absolute-path\n'),
     write(S, '  (is (true? (security/is-absolute-path "/usr/bin")))\n'),
-    write(S, '  (is (false? (security/is-absolute-path "src"))))\n'),
+    write(S, '  (is (false? (security/is-absolute-path "src"))))\n\n'),
+    write(S, '(deftest test-is-safe-extension\n'),
+    write(S, '  (is (true? (security/is-safe-extension "main.rs")))\n'),
+    write(S, '  (is (false? (security/is-safe-extension "run.sh"))))\n\n'),
+    write(S, '(deftest test-is-network-cmd\n'),
+    write(S, '  (is (true? (security/is-network-cmd "curl url")))\n'),
+    write(S, '  (is (false? (security/is-network-cmd "ls"))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/security_test.clj~n', []).
 
@@ -10793,7 +11027,13 @@ generate_clojure_output_parser_test(Dir) :-
     write(S, '  (is (false? (parser/is-blank "hello"))))\n\n'),
     write(S, '(deftest test-output-has-json-array\n'),
     write(S, '  (is (true? (parser/has-json-array "[1,2]")))\n'),
-    write(S, '  (is (false? (parser/has-json-array "{}"))))\n'),
+    write(S, '  (is (false? (parser/has-json-array "{}"))))\n\n'),
+    write(S, '(deftest test-is-markdown\n'),
+    write(S, '  (is (true? (parser/is-markdown "# heading")))\n'),
+    write(S, '  (is (false? (parser/is-markdown "plain"))))\n\n'),
+    write(S, '(deftest test-exceeds-limit\n'),
+    write(S, '  (is (true? (parser/exceeds-limit "hello world" 5)))\n'),
+    write(S, '  (is (false? (parser/exceeds-limit "hi" 10))))\n'),
     close(S),
     format('  Generated clojure/test/agent_loop/output_parser_test.clj~n', []).
 
@@ -10848,6 +11088,12 @@ generate_clojure_sessions_test(Dir) :-
     write(S, '  (is (true? (sessions/under-limit 3 10)))\n'),
     write(S, '  (is (false? (sessions/under-limit 10 5))))\n\n'),
     write(S, '(deftest test-session-overflow-count\n'),
+    write(S, '  (is (= 0 (sessions/overflow-count 3 10)))\n'),
+    write(S, '  (is (= 5 (sessions/overflow-count 15 10))))\n\n'),
+    write(S, '(deftest test-is-stale\n'),
+    write(S, '  (is (true? (sessions/is-stale 200.0 100.0)))\n'),
+    write(S, '  (is (false? (sessions/is-stale 50.0 100.0))))\n\n'),
+    write(S, '(deftest test-overflow-count\n'),
     write(S, '  (is (= 0 (sessions/overflow-count 3 10)))\n'),
     write(S, '  (is (= 5 (sessions/overflow-count 15 10))))\n'),
     close(S),
@@ -10905,6 +11151,12 @@ generate_clojure_mcp_test(Dir) :-
     write(S, '  (is (true? (mcp/is-initialize "initialize")))\n'),
     write(S, '  (is (false? (mcp/is-initialize "shutdown"))))\n\n'),
     write(S, '(deftest test-mcp-is-shutdown\n'),
+    write(S, '  (is (true? (mcp/is-shutdown "shutdown")))\n'),
+    write(S, '  (is (false? (mcp/is-shutdown "initialize"))))\n\n'),
+    write(S, '(deftest test-is-initialize\n'),
+    write(S, '  (is (true? (mcp/is-initialize "initialize")))\n'),
+    write(S, '  (is (false? (mcp/is-initialize "shutdown"))))\n\n'),
+    write(S, '(deftest test-is-shutdown\n'),
     write(S, '  (is (true? (mcp/is-shutdown "shutdown")))\n'),
     write(S, '  (is (false? (mcp/is-shutdown "initialize"))))\n'),
     close(S),
@@ -18700,6 +18952,51 @@ fn test_round8_costs_methods() {
     assert!(src.contains("fn output_ratio("), "costs.rs should have output_ratio");
     assert!(src.contains("fn is_input_heavy("), "costs.rs should have is_input_heavy");
     assert!(src.contains("fn has_usage("), "costs.rs should have has_usage");
+    assert!(src.contains("fn is_output_heavy("), "costs.rs should have is_output_heavy");
+    assert!(src.contains("fn is_zero_cost("), "costs.rs should have is_zero_cost");
+    assert!(src.contains("fn is_under("), "costs.rs should have is_under");
+}
+
+#[test]
+fn test_config_loader_round10() {
+    use agent_loop::ConfigLoader;
+    let mut loader = ConfigLoader::new();
+    assert!(!loader.has_backend());
+    assert!(!loader.has_model());
+    assert!(!loader.has_api_key());
+    assert!(!loader.has_stream());
+    assert!(!loader.has_max_tokens());
+    assert!(loader.is_production());
+    loader.settings.insert("model".to_string(), "gpt-4".to_string());
+    assert!(loader.has_model());
+    assert!(!loader.has_api_key());
+    let val = loader.get_or_default("model", "default");
+    assert_eq!(val, "gpt-4");
+    let missing = loader.get_or_default("nonexistent", "fallback");
+    assert_eq!(missing, "fallback");
+}
+
+#[test]
+fn test_round10_context_methods() {
+    let src = include_str!("../src/context.rs");
+    assert!(src.contains("fn is_continue_mode("), "context.rs should have is_continue_mode");
+    assert!(src.contains("fn is_sliding_mode("), "context.rs should have is_sliding_mode");
+    assert!(src.contains("fn is_near_full("), "context.rs should have is_near_full");
+    assert!(src.contains("fn usage_pct("), "context.rs should have usage_pct");
+}
+
+#[test]
+fn test_round10_streaming_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn has_elapsed("), "main.rs should have has_elapsed");
+    assert!(src.contains("fn is_balanced("), "main.rs should have is_balanced");
+    assert!(src.contains("fn buffer_pct("), "main.rs should have buffer_pct");
+}
+
+#[test]
+fn test_round10_mcp_methods() {
+    let src = include_str!("../src/mcp_client.rs");
+    assert!(src.contains("fn clients_at_capacity("), "mcp_client.rs should have clients_at_capacity");
 }
 ').
 

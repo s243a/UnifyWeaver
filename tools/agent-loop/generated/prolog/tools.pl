@@ -174,6 +174,14 @@ is_bash(Tool_name, Result) :-
 is_edit(Tool_name, Result) :-
     (Tool_name == "Edit" -> Result = true ; Result = false).
 
+%% Check if tool is the file reader.
+is_read(Tool_name, Result) :-
+    (Tool_name == "Read" -> Result = true ; Result = false).
+
+%% Check if tool is the file writer.
+is_write(Tool_name, Result) :-
+    (Tool_name == "Write" -> Result = true ; Result = false).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

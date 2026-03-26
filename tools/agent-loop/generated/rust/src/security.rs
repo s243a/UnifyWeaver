@@ -175,3 +175,15 @@ pub fn is_absolute_path(path: &str) -> bool {
     return path.starts_with("/");
 }
 
+#[allow(dead_code, unused_variables)]
+/// Check if filename does not end with a dangerous extension (.sh, .exe, .bat).
+pub fn is_safe_extension(filename: &str) -> bool {
+    return !((filename.ends_with(".sh") || (filename.ends_with(".exe") || filename.ends_with(".bat"))));
+}
+
+#[allow(dead_code, unused_variables)]
+/// Check if command starts with a network tool (curl, wget, ssh, scp).
+pub fn is_network_cmd(cmd: &str) -> bool {
+    return (cmd.starts_with("curl") || cmd.starts_with("wget")) || (cmd.starts_with("ssh") || cmd.starts_with("scp"));
+}
+

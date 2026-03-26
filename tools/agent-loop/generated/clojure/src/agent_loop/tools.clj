@@ -145,3 +145,15 @@
   (= tool-name "edit")
 )
 
+(defn is-read
+  "Check if tool is the file reader."
+  [tool-name]
+  (= tool-name "read")
+)
+
+(defn is-write
+  "Check if tool is the file writer."
+  [tool-name]
+  (= tool-name "write")
+)
+

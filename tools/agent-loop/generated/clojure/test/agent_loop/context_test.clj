@@ -72,3 +72,11 @@
 (deftest test-context-usage-pct
   (is (= 0.0 (ctx/usage-pct {:max-messages 0 :messages []})))
   (is (= 50.0 (ctx/usage-pct {:max-messages 10 :messages [{} {} {} {} {}]}))))
+
+(deftest test-is-continue-mode
+  (is (true? (ctx/is-continue-mode {:context-mode "continue"})))
+  (is (false? (ctx/is-continue-mode {:context-mode "sliding"}))))
+
+(deftest test-is-sliding-mode
+  (is (true? (ctx/is-sliding-mode {:context-mode "sliding"})))
+  (is (false? (ctx/is-sliding-mode {:context-mode "continue"}))))

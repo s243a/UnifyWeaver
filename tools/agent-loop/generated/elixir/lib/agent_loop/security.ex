@@ -202,4 +202,16 @@ defmodule AgentLoop.Security do
     String.starts_with?(path, "/")
   end
 
+  @doc "Check if filename does not end with a dangerous extension (.sh, .exe, .bat)."
+  @spec is_safe_extension(String.t()) :: boolean()
+  def is_safe_extension(filename) do
+    not (String.ends_with?(filename, ".sh") or (String.ends_with?(filename, ".exe") or String.ends_with?(filename, ".bat")))
+  end
+
+  @doc "Check if command starts with a network tool (curl, wget, ssh, scp)."
+  @spec is_network_cmd(String.t()) :: boolean()
+  def is_network_cmd(cmd) do
+    ((String.starts_with?(cmd, "curl") or String.starts_with?(cmd, "wget")) or (String.starts_with?(cmd, "ssh") or String.starts_with?(cmd, "scp")))
+  end
+
 end

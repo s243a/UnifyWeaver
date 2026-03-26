@@ -157,3 +157,11 @@ has_pipe(Cmd, Result) :-
 is_absolute_path(Path, Result) :-
     (atom_concat('/', _, Path) -> Result = true ; Result = false).
 
+%% Check if filename does not end with a dangerous extension (.sh, .exe, .bat).
+is_safe_extension(Filename, Result) :-
+    (\+ (atom_concat(_, '.sh', Filename) ; (atom_concat(_, '.exe', Filename) ; atom_concat(_, '.bat', Filename))) -> Result = true ; Result = false).
+
+%% Check if command starts with a network tool (curl, wget, ssh, scp).
+is_network_cmd(Cmd, Result) :-
+    (((atom_concat('curl', _, Cmd) ; atom_concat('wget', _, Cmd)) ; (atom_concat('ssh', _, Cmd) ; atom_concat('scp', _, Cmd))) -> Result = true ; Result = false).
+

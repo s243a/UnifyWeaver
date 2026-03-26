@@ -63,3 +63,11 @@
 (deftest test-session-overflow-count
   (is (= 0 (sessions/overflow-count 3 10)))
   (is (= 5 (sessions/overflow-count 15 10))))
+
+(deftest test-is-stale
+  (is (true? (sessions/is-stale 200.0 100.0)))
+  (is (false? (sessions/is-stale 50.0 100.0))))
+
+(deftest test-overflow-count
+  (is (= 0 (sessions/overflow-count 3 10)))
+  (is (= 5 (sessions/overflow-count 15 10))))

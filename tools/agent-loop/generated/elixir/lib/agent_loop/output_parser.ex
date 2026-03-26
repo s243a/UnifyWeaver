@@ -123,6 +123,18 @@ defmodule AgentLoop.OutputParser do
     String.starts_with?(text, "[")
   end
 
+  @doc "Check if text starts with a markdown heading marker."
+  @spec is_markdown(String.t()) :: boolean()
+  def is_markdown(text) do
+    String.starts_with?(text, "#")
+  end
+
+  @doc "Check if text length exceeds a given limit."
+  @spec exceeds_limit(String.t(), integer()) :: boolean()
+  def exceeds_limit(text, limit) do
+    Enum.count(text) > limit
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do
