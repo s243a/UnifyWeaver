@@ -93,3 +93,15 @@
 (deftest test-cost-is-zero
   (is (true? (costs/is-zero-cost {:total-cost 0.0})))
   (is (false? (costs/is-zero-cost {:total-cost 5.0}))))
+
+(deftest test-is-output-heavy
+  (is (true? (costs/is-output-heavy {:total-input-tokens 10 :total-output-tokens 100})))
+  (is (false? (costs/is-output-heavy {:total-input-tokens 100 :total-output-tokens 10}))))
+
+(deftest test-is-zero-cost
+  (is (true? (costs/is-zero-cost {:total-cost 0.0})))
+  (is (false? (costs/is-zero-cost {:total-cost 5.0}))))
+
+(deftest test-is-under
+  (is (true? (costs/is-under {:total-cost 5.0} 10.0)))
+  (is (false? (costs/is-under {:total-cost 15.0} 10.0))))

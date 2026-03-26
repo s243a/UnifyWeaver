@@ -274,3 +274,15 @@
   )
 )
 
+(defn is-continue-mode
+  "Check if context mode is set to continue (keep full history)."
+  [state]
+  (= (:context-mode state) "continue")
+)
+
+(defn is-sliding-mode
+  "Check if context mode is set to sliding window."
+  [state]
+  (= (:context-mode state) "sliding")
+)
+

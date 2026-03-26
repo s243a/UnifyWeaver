@@ -137,3 +137,15 @@
   (.startsWith text "[")
 )
 
+(defn is-markdown
+  "Check if text starts with a markdown heading marker."
+  [text]
+  (.startsWith text "#")
+)
+
+(defn exceeds-limit
+  "Check if text length exceeds a given limit."
+  [text limit]
+  (> (count text) limit)
+)
+

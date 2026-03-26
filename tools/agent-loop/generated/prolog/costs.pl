@@ -185,6 +185,14 @@ is_output_heavy(State, Result) :-
 is_zero_cost(State, Result) :-
     (State.total_cost =< 0.0 -> Result = true ; Result = false).
 
+%% Format a token count with a 'tokens' suffix.
+format_tokens(Count, Result) :-
+    format(atom(Result), "~w tokens", [Count]).
+
+%% Check if total cost is strictly below a threshold.
+is_under(State, Threshold, Result) :-
+    (State.total_cost < Threshold -> Result = true ; Result = false).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

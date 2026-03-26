@@ -72,3 +72,11 @@
 (deftest test-tool-is-edit
   (is (true? (tools/is-edit "edit")))
   (is (false? (tools/is-edit "bash"))))
+
+(deftest test-is-read
+  (is (true? (tools/is-read "read")))
+  (is (false? (tools/is-read "bash"))))
+
+(deftest test-is-write
+  (is (true? (tools/is-write "write")))
+  (is (false? (tools/is-write "read"))))

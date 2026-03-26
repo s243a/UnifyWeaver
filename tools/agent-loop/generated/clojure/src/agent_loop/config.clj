@@ -175,3 +175,15 @@
   (contains? (:settings state) "api_key")
 )
 
+(defn has-stream
+  "Check if streaming is configured in settings."
+  [state]
+  (contains? (:settings state) "stream")
+)
+
+(defn has-max-tokens
+  "Check if max_tokens is configured."
+  [state]
+  (contains? (:settings state) "max_tokens")
+)
+

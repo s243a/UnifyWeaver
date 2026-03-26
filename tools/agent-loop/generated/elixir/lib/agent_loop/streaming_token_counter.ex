@@ -166,4 +166,20 @@ defmodule AgentLoop.StreamingTokenCounter do
     state.char_count >= state.token_count
   end
 
+  @doc "Return buffer usage as percentage of max_bytes. Returns 0.0 if max is 0."
+  @spec buffer_pct(t(), integer()) :: float()
+  def buffer_pct(%__MODULE__{} = state, max_bytes) do
+    if max_bytes == 0 do
+        0.0
+    else
+        ((Enum.count(state.buffer) * 1.0) / (max_bytes * 1.0)) * 100.0
+    end
+  end
+
+  @doc "Check if live display mode is enabled."
+  @spec is_live_mode(t()) :: boolean()
+  def is_live_mode(%__MODULE__{} = state) do
+    state.show_live == "true"
+  end
+
 end

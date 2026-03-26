@@ -60,3 +60,11 @@
 (deftest test-config-has-api-key
   (is (true? (config/has-api-key {:settings {"api_key" "sk-123"}})))
   (is (false? (config/has-api-key {:settings {}}))))
+
+(deftest test-has-stream
+  (is (true? (config/has-stream {:settings {"stream" "true"}})))
+  (is (false? (config/has-stream {:settings {}}))))
+
+(deftest test-has-max-tokens
+  (is (true? (config/has-max-tokens {:settings {"max_tokens" "100"}})))
+  (is (false? (config/has-max-tokens {:settings {}}))))

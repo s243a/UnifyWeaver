@@ -1948,4 +1948,49 @@ fn test_round8_costs_methods() {
     assert!(src.contains("fn output_ratio("), "costs.rs should have output_ratio");
     assert!(src.contains("fn is_input_heavy("), "costs.rs should have is_input_heavy");
     assert!(src.contains("fn has_usage("), "costs.rs should have has_usage");
+    assert!(src.contains("fn is_output_heavy("), "costs.rs should have is_output_heavy");
+    assert!(src.contains("fn is_zero_cost("), "costs.rs should have is_zero_cost");
+    assert!(src.contains("fn is_under("), "costs.rs should have is_under");
+}
+
+#[test]
+fn test_config_loader_round10() {
+    use agent_loop::ConfigLoader;
+    let mut loader = ConfigLoader::new();
+    assert!(!loader.has_backend());
+    assert!(!loader.has_model());
+    assert!(!loader.has_api_key());
+    assert!(!loader.has_stream());
+    assert!(!loader.has_max_tokens());
+    assert!(loader.is_production());
+    loader.settings.insert("model".to_string(), "gpt-4".to_string());
+    assert!(loader.has_model());
+    assert!(!loader.has_api_key());
+    let val = loader.get_or_default("model", "default");
+    assert_eq!(val, "gpt-4");
+    let missing = loader.get_or_default("nonexistent", "fallback");
+    assert_eq!(missing, "fallback");
+}
+
+#[test]
+fn test_round10_context_methods() {
+    let src = include_str!("../src/context.rs");
+    assert!(src.contains("fn is_continue_mode("), "context.rs should have is_continue_mode");
+    assert!(src.contains("fn is_sliding_mode("), "context.rs should have is_sliding_mode");
+    assert!(src.contains("fn is_near_full("), "context.rs should have is_near_full");
+    assert!(src.contains("fn usage_pct("), "context.rs should have usage_pct");
+}
+
+#[test]
+fn test_round10_streaming_methods() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("fn has_elapsed("), "main.rs should have has_elapsed");
+    assert!(src.contains("fn is_balanced("), "main.rs should have is_balanced");
+    assert!(src.contains("fn buffer_pct("), "main.rs should have buffer_pct");
+}
+
+#[test]
+fn test_round10_mcp_methods() {
+    let src = include_str!("../src/mcp_client.rs");
+    assert!(src.contains("fn clients_at_capacity("), "mcp_client.rs should have clients_at_capacity");
 }

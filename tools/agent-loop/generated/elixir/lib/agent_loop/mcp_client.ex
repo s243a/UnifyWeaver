@@ -137,6 +137,18 @@ defmodule AgentLoop.MCPClient do
     method == "shutdown"
   end
 
+  @doc "Check if a JSON-RPC method is a progress notification."
+  @spec is_progress(String.t()) :: boolean()
+  def is_progress(method) do
+    String.starts_with?(method, "progress")
+  end
+
+  @doc "Check if the number of connected clients has reached max_clients."
+  @spec clients_at_capacity(t(), integer()) :: boolean()
+  def clients_at_capacity(%__MODULE__{} = state, max_clients) do
+    Enum.count(state.clients) >= max_clients
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

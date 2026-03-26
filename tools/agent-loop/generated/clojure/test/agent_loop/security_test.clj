@@ -72,3 +72,11 @@
 (deftest test-security-is-absolute-path
   (is (true? (security/is-absolute-path "/usr/bin")))
   (is (false? (security/is-absolute-path "src"))))
+
+(deftest test-is-safe-extension
+  (is (true? (security/is-safe-extension "main.rs")))
+  (is (false? (security/is-safe-extension "run.sh"))))
+
+(deftest test-is-network-cmd
+  (is (true? (security/is-network-cmd "curl url")))
+  (is (false? (security/is-network-cmd "ls"))))

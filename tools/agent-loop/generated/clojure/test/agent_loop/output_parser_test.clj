@@ -56,3 +56,11 @@
 (deftest test-output-has-json-array
   (is (true? (parser/has-json-array "[1,2]")))
   (is (false? (parser/has-json-array "{}"))))
+
+(deftest test-is-markdown
+  (is (true? (parser/is-markdown "# heading")))
+  (is (false? (parser/is-markdown "plain"))))
+
+(deftest test-exceeds-limit
+  (is (true? (parser/exceeds-limit "hello world" 5)))
+  (is (false? (parser/exceeds-limit "hi" 10))))

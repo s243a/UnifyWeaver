@@ -156,3 +156,15 @@
   )
 )
 
+(defn is-stale
+  "Check if a session age exceeds the maximum allowed age."
+  [age max-age]
+  (> age max-age)
+)
+
+(defn expired-count
+  "Return the number of expired sessions (total minus active)."
+  [total active]
+  (max 0.0 (- total active))
+)
+

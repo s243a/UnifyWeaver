@@ -187,4 +187,10 @@ impl McpManager {
         return self.tools.len() as i64;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if the number of connected clients has reached max_clients.
+    pub fn clients_at_capacity(&self, max_clients: i64) -> bool {
+        return (self.clients.len() as i64) >= max_clients;
+    }
+
 }

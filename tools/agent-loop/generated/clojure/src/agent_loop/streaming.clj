@@ -159,3 +159,18 @@
   (>= (:char-count state) (:token-count state))
 )
 
+(defn buffer-pct
+  "Return buffer usage as percentage of max_bytes. Returns 0.0 if max is 0."
+  [state max-bytes]
+  (if (zero? max-bytes)
+      0.0
+      (* (/ (double (int (count (:buffer state)))) (double max-bytes)) 100.0)
+  )
+)
+
+(defn is-live-mode
+  "Check if live display mode is enabled."
+  [state]
+  (= (:show-live state) "true")
+)
+

@@ -234,6 +234,14 @@ usage_pct(State, Result) :-
     ((float(length(State.messages, Result)) / float(State.max_messages)) * 100.0)
     ).
 
+%% Check if context mode is set to continue (keep full history).
+is_continue_mode(State, Result) :-
+    (State.context_mode == "Continue" -> Result = true ; Result = false).
+
+%% Check if context mode is set to sliding window.
+is_sliding_mode(State, Result) :-
+    (State.context_mode == "Sliding" -> Result = true ; Result = false).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -340,6 +348,18 @@ has_elapsed(State, Result) :-
 %% Check if char count is at least as large as token count (sanity check).
 is_balanced(State, Result) :-
     (State.char_count >= State.token_count -> Result = true ; Result = false).
+
+%% Return buffer usage as percentage of max_bytes. Returns 0.0 if max is 0.
+buffer_pct(State, Max_bytes, Result) :-
+    (Max_bytes =:= 0 ->
+        Result = 0.0
+    ;
+    ((float(length(State.buffer, Result)) / float(Max_bytes)) * 100.0)
+    ).
+
+%% Check if live display mode is enabled.
+is_live_mode(State, Result) :-
+    return_val(eq_str(self_direct(show_live), true)).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -501,6 +521,14 @@ is_initialize(Method, Result) :-
 is_shutdown(Method, Result) :-
     (Method == "Shutdown" -> Result = true ; Result = false).
 
+%% Check if a JSON-RPC method is a progress notification.
+is_progress(Method, Result) :-
+    (atom_concat('progress', _, Method) -> Result = true ; Result = false).
+
+%% Check if the number of connected clients has reached max_clients.
+clients_at_capacity(State, Max_clients, Result) :-
+    length(State.clients, Result) >= Max_clients.
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -575,6 +603,18 @@ is_fresh(State, Result) :-
 %% Check if a positive base delay is configured.
 has_delay(State, Result) :-
     (State.base_delay > 0.0 -> Result = true ; Result = false).
+
+%% Return remaining delay budget. Returns 0.0 if exceeded.
+delay_remaining(Elapsed, Max_total, Result) :-
+    (Elapsed >= Max_total ->
+        Result = 0.0
+    ;
+    Result is (Max_total - Elapsed)
+    ).
+
+%% Check if success rate is above 10% (worth retrying).
+is_worthwhile(Success_rate, Result) :-
+    (Success_rate > 0.1 -> Result = true ; Result = false).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -655,6 +695,14 @@ is_blank(Text, Result) :-
 %% Check if text contains a JSON array start marker.
 has_json_array(Text, Result) :-
     (atom_concat('[', _, Text) -> Result = true ; Result = false).
+
+%% Check if text starts with a markdown heading marker.
+is_markdown(Text, Result) :-
+    (atom_concat('#', _, Text) -> Result = true ; Result = false).
+
+%% Check if text length exceeds a given limit.
+exceeds_limit(Text, Limit, Result) :-
+    length(Text, Result) > Limit.
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
@@ -758,6 +806,14 @@ overflow_count(Count, Limit, Result) :-
     ;
     Result is (Count - Limit)
     ).
+
+%% Check if a session age exceeds the maximum allowed age.
+is_stale(Age, Max_age, Result) :-
+    (Age > Max_age -> Result = true ; Result = false).
+
+%% Return the number of expired sessions (total minus active).
+expired_count(Total, Active, Result) :-
+    Result is max(0.0, (Total - Active)).
 
 conversation([]).
 max_iterations(0).

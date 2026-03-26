@@ -306,4 +306,16 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Check if context mode is set to continue (keep full history)."
+  @spec is_continue_mode(t()) :: boolean()
+  def is_continue_mode(%__MODULE__{} = state) do
+    state.context_mode == "continue"
+  end
+
+  @doc "Check if context mode is set to sliding window."
+  @spec is_sliding_mode(t()) :: boolean()
+  def is_sliding_mode(%__MODULE__{} = state) do
+    state.context_mode == "sliding"
+  end
+
 end

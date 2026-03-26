@@ -213,4 +213,16 @@ defmodule AgentLoop.Config do
     Map.has_key?(state.settings, "api_key")
   end
 
+  @doc "Check if streaming is configured in settings."
+  @spec has_stream(t()) :: boolean()
+  def has_stream(%__MODULE__{} = state) do
+    Map.has_key?(state.settings, "stream")
+  end
+
+  @doc "Check if max_tokens is configured."
+  @spec has_max_tokens(t()) :: boolean()
+  def has_max_tokens(%__MODULE__{} = state) do
+    Map.has_key?(state.settings, "max_tokens")
+  end
+
 end

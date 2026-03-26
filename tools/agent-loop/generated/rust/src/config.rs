@@ -288,4 +288,22 @@ impl ConfigLoader {
         return self.settings.contains_key("api_key");
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if streaming is configured in settings.
+    pub fn has_stream(&self) -> bool {
+        return self.settings.contains_key("stream");
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if max_tokens is configured.
+    pub fn has_max_tokens(&self) -> bool {
+        return self.settings.contains_key("max_tokens");
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Look up a config key, returning default_val if not found.
+    pub fn get_or_default(&self, key: &str, default_val: &str) -> String {
+        return self.settings.get(key).cloned().unwrap_or_else(|| default_val.to_string());
+    }
+
 }

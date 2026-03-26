@@ -125,3 +125,15 @@
   (= method "shutdown")
 )
 
+(defn is-progress
+  "Check if a JSON-RPC method is a progress notification."
+  [method]
+  (.startsWith method "progress")
+)
+
+(defn clients-at-capacity
+  "Check if the number of connected clients has reached max_clients."
+  [state max-clients]
+  (>= (int (count (:clients state))) max-clients)
+)
+

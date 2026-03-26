@@ -207,3 +207,15 @@
   (<= (:total-cost state) 0.0)
 )
 
+(defn format-tokens
+  "Format a token count with a 'tokens' suffix."
+  [count]
+  (format "%s tokens" count)
+)
+
+(defn is-under
+  "Check if total cost is strictly below a threshold."
+  [state threshold]
+  (< (:total-cost state) threshold)
+)
+

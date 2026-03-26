@@ -63,3 +63,11 @@
 (deftest test-retry-has-delay
   (is (true? (retry/has-delay {:base-delay 1.0})))
   (is (false? (retry/has-delay {:base-delay 0.0}))))
+
+(deftest test-delay-remaining
+  (is (= 0.0 (retry/delay-remaining 100.0 50.0)))
+  (is (= 50.0 (retry/delay-remaining 50.0 100.0))))
+
+(deftest test-is-worthwhile
+  (is (true? (retry/is-worthwhile 0.5)))
+  (is (false? (retry/is-worthwhile 0.05))))

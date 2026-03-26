@@ -64,3 +64,11 @@
 (deftest test-mcp-is-shutdown
   (is (true? (mcp/is-shutdown "shutdown")))
   (is (false? (mcp/is-shutdown "initialize"))))
+
+(deftest test-is-initialize
+  (is (true? (mcp/is-initialize "initialize")))
+  (is (false? (mcp/is-initialize "shutdown"))))
+
+(deftest test-is-shutdown
+  (is (true? (mcp/is-shutdown "shutdown")))
+  (is (false? (mcp/is-shutdown "initialize"))))

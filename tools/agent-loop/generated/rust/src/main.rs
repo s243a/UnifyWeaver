@@ -1387,6 +1387,15 @@ impl StreamingTokenCounter {
         return self.char_count >= self.token_count;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return buffer usage as percentage of max_bytes. Returns 0.0 if max is 0.
+    pub fn buffer_pct(&self, max_bytes: i64) -> f64 {
+        if max_bytes == 0 {
+            return 0.0;
+        }
+        return (((self.buffer.len() as i64) as f64) / (max_bytes as f64)) * 100.0;
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

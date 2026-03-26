@@ -198,3 +198,11 @@ def is_absolute_path(path):
     """Check if a path is absolute (starts with /)."""
     return path.startswith("/")
 
+def is_safe_extension(filename):
+    """Check if filename does not end with a dangerous extension (.sh, .exe, .bat)."""
+    return not (filename.endswith(".sh") or (filename.endswith(".exe") or filename.endswith(".bat")))
+
+def is_network_cmd(cmd):
+    """Check if command starts with a network tool (curl, wget, ssh, scp)."""
+    return ((cmd.startswith("curl") or cmd.startswith("wget")) or (cmd.startswith("ssh") or cmd.startswith("scp")))
+

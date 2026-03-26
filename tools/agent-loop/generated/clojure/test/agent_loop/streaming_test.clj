@@ -73,3 +73,11 @@
 (deftest test-streaming-is-balanced
   (is (true? (streaming/is-balanced {:char-count 10 :token-count 5})))
   (is (false? (streaming/is-balanced {:char-count 3 :token-count 10}))))
+
+(deftest test-has-elapsed
+  (is (true? (streaming/has-elapsed {:elapsed 1.0})))
+  (is (false? (streaming/has-elapsed {:elapsed 0.0}))))
+
+(deftest test-is-balanced
+  (is (true? (streaming/is-balanced {:char-count 10 :token-count 5})))
+  (is (false? (streaming/is-balanced {:char-count 3 :token-count 10}))))

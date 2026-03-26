@@ -348,4 +348,16 @@ impl ContextManager {
         return ((self.messages.len() as f64) / (self.max_messages as f64)) * 100.0;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if context mode is set to continue (keep full history).
+    pub fn is_continue_mode(&self) -> bool {
+        return self.context_mode == "continue";
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if context mode is set to sliding window.
+    pub fn is_sliding_mode(&self) -> bool {
+        return self.context_mode == "sliding";
+    }
+
 }
