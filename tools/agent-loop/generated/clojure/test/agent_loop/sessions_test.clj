@@ -39,3 +39,7 @@
   (is (true? (sessions/name-valid "my-session")))
   (is (false? (sessions/name-valid "")))
   (is (false? (sessions/name-valid "   "))))
+
+(deftest test-session-id-is-long
+  (is (true? (sessions/id-is-long "sess-abc123" 5)))
+  (is (false? (sessions/id-is-long "ab" 5))))

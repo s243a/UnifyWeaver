@@ -220,3 +220,12 @@
   )
 )
 
+(defn word-budget
+  "Return remaining word budget. Returns -1 if no max_words set."
+  [state]
+  (if (<= (:max-words state) 0)
+      -1
+      (- (:max-words state) (:token-count state))
+  )
+)
+

@@ -125,3 +125,11 @@ has_path_traversal(Path, Result) :-
 is_safe_command(Cmd, Result) :-
     (((atom_concat('ls', _, Cmd) ; atom_concat('cat', _, Cmd)) ; (atom_concat('grep', _, Cmd) ; atom_concat('echo', _, Cmd))) -> Result = true ; Result = false).
 
+%% Check if a command starts with a known dangerous prefix (rm -rf, dd, mkfs).
+is_blocked_command(Cmd, Result) :-
+    ((atom_concat('rm -rf', _, Cmd) ; (atom_concat('dd ', _, Cmd) ; atom_concat('mkfs', _, Cmd))) -> Result = true ; Result = false).
+
+%% Check if a path is in a writable location (not starting with /etc, /usr, /bin).
+is_writable_path(Path, Result) :-
+    (\+ (atom_concat('/etc', _, Path) ; (atom_concat('/usr', _, Path) ; atom_concat('/bin', _, Path))) -> Result = true ; Result = false).
+

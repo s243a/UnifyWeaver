@@ -33,3 +33,16 @@
   (is (true? (security/is-safe-command "ls -la")))
   (is (true? (security/is-safe-command "cat file.txt")))
   (is (false? (security/is-safe-command "rm -rf /"))))
+
+(deftest test-is-blocked-command
+  (is (true? (security/is-blocked-command "rm -rf /")))
+  (is (true? (security/is-blocked-command "dd if=/dev/zero")))
+  (is (true? (security/is-blocked-command "mkfs.ext4 /dev/sda")))
+  (is (false? (security/is-blocked-command "ls -la"))))
+
+(deftest test-is-writable-path
+  (is (true? (security/is-writable-path "/home/user/file.txt")))
+  (is (true? (security/is-writable-path "/tmp/scratch")))
+  (is (false? (security/is-writable-path "/etc/passwd")))
+  (is (false? (security/is-writable-path "/usr/bin/cat")))
+  (is (false? (security/is-writable-path "/bin/sh"))))

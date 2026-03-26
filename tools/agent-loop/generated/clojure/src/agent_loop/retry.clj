@@ -82,3 +82,9 @@
   (>= (:attempt state) (- (:max-retries state) 1))
 )
 
+(defn total-attempts
+  "Return the total number of attempts made (attempt + 1 for zero-indexed)."
+  [state]
+  (+ (:attempt state) 1)
+)
+

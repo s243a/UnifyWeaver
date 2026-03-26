@@ -177,4 +177,10 @@ defmodule AgentLoop.Config do
     Map.get(state.settings, key, default_val)
   end
 
+  @doc "Check if no custom backend is configured (settings map is empty or has no backend key)."
+  @spec is_default_backend(t()) :: boolean()
+  def is_default_backend(%__MODULE__{} = state) do
+    not Map.has_key?(state.settings, "backend")
+  end
+
 end

@@ -246,4 +246,14 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Return remaining word budget. Returns -1 if no max_words set."
+  @spec word_budget(t()) :: integer()
+  def word_budget(%__MODULE__{} = state) do
+    if state.max_words <= 0 do
+        -1
+    else
+        (state.max_words - state.token_count)
+    end
+  end
+
 end

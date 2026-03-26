@@ -46,3 +46,8 @@
 (deftest test-context-messages-remaining
   (is (= -1 (ctx/messages-remaining {:max-messages 0 :messages []})))
   (is (= 3 (ctx/messages-remaining {:max-messages 5 :messages [{} {}]}))))
+
+(deftest test-context-word-budget
+  (is (= -1 (ctx/word-budget {:max-words 0 :token-count 0})))
+  (is (= -1 (ctx/word-budget {:max-words -5 :token-count 10})))
+  (is (= 80 (ctx/word-budget {:max-words 100 :token-count 20}))))

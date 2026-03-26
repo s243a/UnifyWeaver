@@ -109,3 +109,9 @@
   (or (= tool-name "read") (= tool-name "glob"))
 )
 
+(defn tool-count
+  "Return the number of registered tools."
+  [state]
+  (int (count (:schema state)))
+)
+

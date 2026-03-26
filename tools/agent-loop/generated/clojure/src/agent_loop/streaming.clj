@@ -120,3 +120,12 @@
   )
 )
 
+(defn tokens-remaining
+  "Estimate remaining tokens. Returns -1 if max_tokens is 0."
+  [state max-tokens]
+  (if (zero? max-tokens)
+      -1
+      (- max-tokens (:token-count state))
+  )
+)
+

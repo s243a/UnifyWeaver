@@ -84,4 +84,10 @@ defmodule AgentLoop.Retry do
     state.attempt >= (state.max_retries - 1)
   end
 
+  @doc "Return the total number of attempts made (attempt + 1 for zero-indexed)."
+  @spec total_attempts(t()) :: integer()
+  def total_attempts(%__MODULE__{} = state) do
+    (state.attempt + 1)
+  end
+
 end

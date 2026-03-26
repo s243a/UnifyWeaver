@@ -101,6 +101,12 @@ defmodule AgentLoop.MCPClient do
     "error #{code}: #{message}"
   end
 
+  @doc "Return the current request ID counter (number of requests sent)."
+  @spec request_count(t()) :: integer()
+  def request_count(%__MODULE__{} = state) do
+    state.request_id
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

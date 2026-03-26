@@ -176,4 +176,10 @@ defmodule AgentLoop.CostTracker do
     end
   end
 
+  @doc "Format a cost amount as a dollar string (e.g. $1.50)."
+  @spec format_dollars(float()) :: String.t()
+  def format_dollars(amount) do
+    "$#{amount}"
+  end
+
 end

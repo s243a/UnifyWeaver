@@ -40,3 +40,8 @@
 (deftest test-is-last-attempt
   (is (true? (retry/is-last-attempt {:attempt 2 :max-retries 3})))
   (is (false? (retry/is-last-attempt {:attempt 0 :max-retries 3}))))
+
+(deftest test-retry-total-attempts
+  (is (= 1 (retry/total-attempts {:attempt 0})))
+  (is (= 4 (retry/total-attempts {:attempt 3})))
+  (is (= 6 (retry/total-attempts {:attempt 5}))))

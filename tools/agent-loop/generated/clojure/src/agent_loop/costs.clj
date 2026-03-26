@@ -168,3 +168,9 @@
   )
 )
 
+(defn format-dollars
+  "Format a cost amount as a dollar string (e.g. $1.50)."
+  [amount]
+  (format "$%s" amount)
+)
+
