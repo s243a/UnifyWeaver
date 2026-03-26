@@ -542,4 +542,66 @@ test(link_empty_exports) :-
     wat_target:wat_module_exports([], [], Code),
     Code == "".
 
+% ============================================================================
+% Indirect call tables (dynamic dispatch)
+% ============================================================================
+
+test(call_table_basic) :-
+    wat_target:wat_call_table(
+        [table_func(double, [i64], i64,
+            "    (i64.mul (local.get $p1) (i64.const 2))"),
+         table_func(triple, [i64], i64,
+            "    (i64.mul (local.get $p1) (i64.const 3))")],
+        [],
+        Code),
+    has(Code, "(type $dispatch_t (func"),
+    has(Code, "(table 2 funcref)"),
+    has(Code, "(elem (i32.const 0) $double $triple)"),
+    has(Code, "(func $double"),
+    has(Code, "(func $triple").
+
+test(dispatch_func) :-
+    wat_target:wat_dispatch_func(
+        "apply",
+        type_sig([i64], i64),
+        [],
+        Code),
+    has(Code, "(func $apply (export \"apply\")"),
+    has(Code, "(param $idx i32)"),
+    has(Code, "call_indirect (type $dispatch_t)").
+
+test(compile_with_dispatch) :-
+    wat_target:wat_compile_with_dispatch(
+        dispatch("compute", [i64], i64),
+        [],
+        [table_func(inc, [i64], i64,
+            "    (i64.add (local.get $p1) (i64.const 1))"),
+         table_func(dec, [i64], i64,
+            "    (i64.sub (local.get $p1) (i64.const 1))"),
+         table_func(dbl, [i64], i64,
+            "    (i64.mul (local.get $p1) (i64.const 2))")],
+        Code),
+    has(Code, "(module"),
+    has(Code, "Dynamic Dispatch"),
+    has(Code, "(table 3 funcref)"),
+    has(Code, "(elem (i32.const 0) $inc $dec $dbl)"),
+    has(Code, "(func $compute (export \"compute\")"),
+    has(Code, "call_indirect").
+
+test(call_table_empty) :-
+    wat_target:wat_call_table([], [], Code),
+    Code == "".
+
+test(dispatch_multi_param) :-
+    wat_target:wat_dispatch_func(
+        "binop",
+        type_sig([i64, i64], i64),
+        [],
+        Code),
+    has(Code, "(param $idx i32)"),
+    has(Code, "(param $p1 i64)"),
+    has(Code, "(param $p2 i64)"),
+    has(Code, "(local.get $p1)"),
+    has(Code, "(local.get $p2)").
+
 :- end_tests(wat_native_lowering).
