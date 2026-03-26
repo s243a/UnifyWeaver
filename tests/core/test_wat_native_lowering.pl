@@ -604,4 +604,80 @@ test(dispatch_multi_param) :-
     has(Code, "(local.get $p1)"),
     has(Code, "(local.get $p2)").
 
+% ============================================================================
+% WASI I/O
+% ============================================================================
+
+test(wasi_imports) :-
+    wat_target:wat_wasi_imports(Code),
+    has(Code, "(import \"wasi_snapshot_preview1\" \"fd_write\""),
+    has(Code, "(func $fd_write").
+
+test(wasi_print_i64) :-
+    wat_target:wat_wasi_print_i64_func(Code),
+    has(Code, "(func $print_i64 (export \"print_i64\")"),
+    has(Code, "(param $val i64)"),
+    has(Code, "i64.rem_u"),
+    has(Code, "call $fd_write").
+
+test(wasi_print_str) :-
+    wat_target:wat_wasi_print_str_func(Code),
+    has(Code, "(func $print_str (export \"print_str\")"),
+    has(Code, "(param $ref i64)"),
+    has(Code, "i64.shr_u"),
+    has(Code, "call $fd_write").
+
+test(compile_with_wasi) :-
+    assert(user:(double(X, Y) :- Y is X * 2)),
+    wat_target:wat_compile_with_wasi(double/2, [], Code),
+    has(Code, "(import \"wasi_snapshot_preview1\""),
+    has(Code, "(func $print_i64"),
+    has(Code, "(func $print_str"),
+    has(Code, "(func $double"),
+    retractall(user:double(_, _)).
+
+% ============================================================================
+% SIMD helpers
+% ============================================================================
+
+test(simd_dot_product) :-
+    wat_target:wat_simd_dot_product_func(Code),
+    has(Code, "(func $simd_dot_i64x2"),
+    has(Code, "(param $a v128)"),
+    has(Code, "i64x2.mul"),
+    has(Code, "i64x2.extract_lane 0"),
+    has(Code, "i64x2.extract_lane 1").
+
+test(simd_sum_reduce) :-
+    wat_target:wat_simd_sum_reduce_func(Code),
+    has(Code, "(func $simd_sum_i64x2"),
+    has(Code, "i64x2.extract_lane 0"),
+    has(Code, "i64.add").
+
+% ============================================================================
+% Bulk memory helpers
+% ============================================================================
+
+test(bulk_memcpy) :-
+    wat_target:wat_bulk_memcpy_func(Code),
+    has(Code, "(func $memcpy (export \"memcpy\")"),
+    has(Code, "memory.copy").
+
+test(bulk_memset) :-
+    wat_target:wat_bulk_memset_func(Code),
+    has(Code, "(func $memset (export \"memset\")"),
+    has(Code, "memory.fill").
+
+% ============================================================================
+% Bindings registration
+% ============================================================================
+
+test(simd_bindings_registered) :-
+    wat_target:init_wat_target,
+    binding_registry:binding(wat, 'v128_i64x2_add'/3, 'i64x2.add', _, _, _).
+
+test(bulk_memory_bindings_registered) :-
+    wat_target:init_wat_target,
+    binding_registry:binding(wat, 'memory_copy'/4, 'memory.copy', _, _, _).
+
 :- end_tests(wat_native_lowering).

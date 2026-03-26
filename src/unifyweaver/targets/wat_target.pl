@@ -41,7 +41,21 @@
     % Indirect call tables (dynamic dispatch)
     wat_call_table/3,                    % +FuncSpecs, +Options, -TableCode
     wat_dispatch_func/4,                 % +DispatchName, +TypeSig, +Options, -Code
-    wat_compile_with_dispatch/4          % +DispatchSpec, +Options, +Functions, -Code
+    wat_compile_with_dispatch/4,         % +DispatchSpec, +Options, +Functions, -Code
+
+    % WASI I/O
+    wat_wasi_imports/1,                  % -ImportCode
+    wat_wasi_print_i64_func/1,           % -FuncCode
+    wat_wasi_print_str_func/1,           % -FuncCode
+    wat_compile_with_wasi/3,             % +PredIndicator, +Options, -WATCode
+
+    % SIMD helpers
+    wat_simd_dot_product_func/1,         % -FuncCode
+    wat_simd_sum_reduce_func/1,          % -FuncCode
+
+    % Bulk memory helpers
+    wat_bulk_memcpy_func/1,              % -FuncCode
+    wat_bulk_memset_func/1               % -FuncCode
 ]).
 
 :- use_module(library(lists)).
@@ -879,17 +893,7 @@ wat_compile_with_strings(PredIndicator, Options, Atoms, WATCode) :-
     string_concat("  (memory (export \"memory\") 1)\n", DataSegs, MemAndData),
     string_concat(MemAndData, LookupFunc, WithLookup),
     string_concat(WithLookup, EqFunc, StringSupport),
-    % Insert before closing paren of module
-    % Strip trailing whitespace, then find the final ')'
-    string_codes(BaseCode, BaseCodes),
-    reverse(BaseCodes, RevCodes),
-    strip_leading_ws(RevCodes, Stripped),
-    (   Stripped = [0')|RestRev]
-    ->  reverse(RestRev, PrefixCodes),
-        string_codes(Prefix, PrefixCodes),
-        format(string(WATCode), '~w\n~w)\n', [Prefix, StringSupport])
-    ;   WATCode = BaseCode
-    ).
+    inject_before_close(BaseCode, StringSupport, WATCode).
 
 strip_leading_ws([0' |T], R) :- !, strip_leading_ws(T, R).
 strip_leading_ws([0'\n|T], R) :- !, strip_leading_ws(T, R).
@@ -1308,6 +1312,187 @@ wat_compile_with_dispatch(dispatch(DispName, Params, Result), Options, Functions
 ~w
 ~w)
 ', [DispName, Count, MemDecl, TableCode, DispatchCode]).
+
+%% ============================================
+%% WASI I/O - Standard output via fd_write
+%% ============================================
+%%
+%% WASI (WebAssembly System Interface) provides fd_write for stdout.
+%% We import fd_write and provide helper functions for printing
+%% integers and strings from WAT modules.
+%%
+%% fd_write signature: (fd: i32, iovs: i32, iovs_len: i32, nwritten: i32) -> i32
+%% iov structure: [ptr: i32, len: i32] at a memory location
+
+%% wat_wasi_imports(-ImportCode)
+%%   Generate WASI import declarations for fd_write.
+wat_wasi_imports(ImportCode) :-
+    format(string(ImportCode),
+'  ;; WASI imports
+  (import "wasi_snapshot_preview1" "fd_write"
+    (func $fd_write (param i32 i32 i32 i32) (result i32)))~n', []).
+
+%% wat_wasi_print_i64_func(-FuncCode)
+%%   Generate a function that prints an i64 value to stdout as decimal.
+%%   Uses memory region starting at offset 60000 as scratch space.
+wat_wasi_print_i64_func(FuncCode) :-
+    format(string(FuncCode),
+'  ;; Print i64 to stdout as decimal
+  ;; Scratch space: 60000-60031 for digit buffer, 60032-60039 for iov
+  (func $print_i64 (export "print_i64") (param $val i64) (result i32)
+    (local $n i64) (local $pos i32) (local $neg i32)
+    (local $digit i32) (local $len i32)
+    ;; Handle negative
+    (if (i64.lt_s (local.get $val) (i64.const 0))
+      (then
+        (local.set $neg (i32.const 1))
+        (local.set $n (i64.sub (i64.const 0) (local.get $val)))
+      )
+      (else
+        (local.set $neg (i32.const 0))
+        (local.set $n (local.get $val))
+      )
+    )
+    ;; Convert digits right-to-left into buffer at 60000
+    (local.set $pos (i32.const 60031))
+    ;; Newline at end
+    (i32.store8 (local.get $pos) (i32.const 10))
+    (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+    ;; Special case: 0
+    (if (i64.eqz (local.get $n))
+      (then
+        (i32.store8 (local.get $pos) (i32.const 48))
+        (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+      )
+      (else
+        (block $done
+          (loop $digits
+            (br_if $done (i64.eqz (local.get $n)))
+            (local.set $digit (i32.wrap_i64 (i64.rem_u (local.get $n) (i64.const 10))))
+            (i32.store8 (local.get $pos) (i32.add (local.get $digit) (i32.const 48)))
+            (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+            (local.set $n (i64.div_u (local.get $n) (i64.const 10)))
+            (br $digits)
+          )
+        )
+      )
+    )
+    ;; Minus sign if negative
+    (if (local.get $neg)
+      (then
+        (i32.store8 (local.get $pos) (i32.const 45))
+        (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+      )
+    )
+    ;; Set up iov at 60032: ptr = pos+1, len = 60032 - (pos+1)
+    (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+    (local.set $len (i32.sub (i32.const 60032) (local.get $pos)))
+    (i32.store (i32.const 60032) (local.get $pos))
+    (i32.store (i32.const 60036) (local.get $len))
+    ;; fd_write(stdout=1, iovs=60032, iovs_len=1, nwritten=60040)
+    (call $fd_write (i32.const 1) (i32.const 60032) (i32.const 1) (i32.const 60040))
+  )~n', []).
+
+%% wat_wasi_print_str_func(-FuncCode)
+%%   Generate a function that prints a packed i64 string ref to stdout.
+%%   String ref: high 32 bits = offset, low 32 bits = length.
+wat_wasi_print_str_func(FuncCode) :-
+    format(string(FuncCode),
+'  ;; Print string ref (offset<<32|length) to stdout
+  ;; Uses iov at 60032
+  (func $print_str (export "print_str") (param $ref i64) (result i32)
+    (local $off i32) (local $len i32)
+    (local.set $off (i32.wrap_i64 (i64.shr_u (local.get $ref) (i64.const 32))))
+    (local.set $len (i32.wrap_i64 (local.get $ref)))
+    ;; Set up iov: ptr, len
+    (i32.store (i32.const 60032) (local.get $off))
+    (i32.store (i32.const 60036) (local.get $len))
+    ;; fd_write(stdout=1, iovs=60032, iovs_len=1, nwritten=60040)
+    (call $fd_write (i32.const 1) (i32.const 60032) (i32.const 1) (i32.const 60040))
+  )~n', []).
+
+%% wat_compile_with_wasi(+PredIndicator, +Options, -WATCode)
+%%   Compile a predicate to WAT with WASI I/O support.
+%%   The module includes fd_write import and print helpers.
+wat_compile_with_wasi(PredIndicator, Options, WATCode) :-
+    compile_predicate_to_wat(PredIndicator, Options, BaseCode),
+    wat_wasi_imports(WasiImports),
+    wat_wasi_print_i64_func(PrintI64),
+    wat_wasi_print_str_func(PrintStr),
+    string_concat(WasiImports, PrintI64, WasiCode1),
+    string_concat(WasiCode1, PrintStr, WasiCode),
+    % Inject WASI support into the module
+    inject_before_close(BaseCode, WasiCode, WATCode).
+
+%% ============================================
+%% SIMD HELPER FUNCTIONS
+%% ============================================
+%%
+%% Higher-level SIMD operations built from the v128 primitives.
+
+%% wat_simd_dot_product_func(-FuncCode)
+%%   Dot product of two i64x2 vectors: a0*b0 + a1*b1
+%%   Takes two v128 (each containing 2 x i64), returns i64 scalar.
+wat_simd_dot_product_func(FuncCode) :-
+    format(string(FuncCode),
+'  ;; SIMD dot product: (a0*b0 + a1*b1) for i64x2 vectors
+  (func $simd_dot_i64x2 (export "simd_dot_i64x2")
+    (param $a v128) (param $b v128) (result i64)
+    (local $prod v128)
+    (local.set $prod (i64x2.mul (local.get $a) (local.get $b)))
+    (i64.add
+      (i64x2.extract_lane 0 (local.get $prod))
+      (i64x2.extract_lane 1 (local.get $prod)))
+  )~n', []).
+
+%% wat_simd_sum_reduce_func(-FuncCode)
+%%   Sum-reduce an i64x2 vector: lane0 + lane1
+wat_simd_sum_reduce_func(FuncCode) :-
+    format(string(FuncCode),
+'  ;; SIMD sum reduce: lane0 + lane1 for i64x2
+  (func $simd_sum_i64x2 (export "simd_sum_i64x2")
+    (param $v v128) (result i64)
+    (i64.add
+      (i64x2.extract_lane 0 (local.get $v))
+      (i64x2.extract_lane 1 (local.get $v)))
+  )~n', []).
+
+%% ============================================
+%% BULK MEMORY HELPER FUNCTIONS
+%% ============================================
+%%
+%% Wrappers around bulk memory instructions for common patterns.
+
+%% wat_bulk_memcpy_func(-FuncCode)
+%%   memory.copy wrapper: copy N bytes from src to dest.
+wat_bulk_memcpy_func(FuncCode) :-
+    format(string(FuncCode),
+'  ;; Bulk memory copy: dest, src, len (all i32)
+  (func $memcpy (export "memcpy") (param $dest i32) (param $src i32) (param $len i32)
+    (memory.copy (local.get $dest) (local.get $src) (local.get $len))
+  )~n', []).
+
+%% wat_bulk_memset_func(-FuncCode)
+%%   memory.fill wrapper: fill N bytes at dest with a value.
+wat_bulk_memset_func(FuncCode) :-
+    format(string(FuncCode),
+'  ;; Bulk memory fill: dest, val, len (all i32)
+  (func $memset (export "memset") (param $dest i32) (param $val i32) (param $len i32)
+    (memory.fill (local.get $dest) (local.get $val) (local.get $len))
+  )~n', []).
+
+%% inject_before_close(+BaseCode, +Injection, -Result)
+%%   Inject code before the closing ')' of a WAT module.
+inject_before_close(BaseCode, Injection, Result) :-
+    string_codes(BaseCode, BaseCodes),
+    reverse(BaseCodes, RevCodes),
+    strip_leading_ws(RevCodes, Stripped),
+    (   Stripped = [0')|RestRev]
+    ->  reverse(RestRev, PrefixCodes),
+        string_codes(Prefix, PrefixCodes),
+        format(string(Result), '~w\n~w)\n', [Prefix, Injection])
+    ;   Result = BaseCode
+    ).
 
 %% combine_wat_conditions(+Conds, -Combined)
 combine_wat_conditions([C], C) :- !.
