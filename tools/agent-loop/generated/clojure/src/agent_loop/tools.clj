@@ -157,3 +157,9 @@
   (= tool-name "write")
 )
 
+(defn schema-count
+  "Return the number of tool schemas registered."
+  [state]
+  (int (count (:schema state)))
+)
+

@@ -306,4 +306,10 @@ impl ConfigLoader {
         return self.settings.get(key).cloned().unwrap_or_else(|| default_val.to_string());
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if streaming mode is enabled in settings.
+    pub fn is_streaming(&self) -> bool {
+        return self.settings.contains_key("stream");
+    }
+
 }

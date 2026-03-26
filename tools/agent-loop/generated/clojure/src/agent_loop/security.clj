@@ -133,3 +133,9 @@
   (or (or (.startsWith cmd "curl") (.startsWith cmd "wget")) (or (.startsWith cmd "ssh") (.startsWith cmd "scp")))
 )
 
+(defn file-within-limit
+  "Check if a file size is within the allowed maximum."
+  [size-bytes max-bytes]
+  (<= size-bytes max-bytes)
+)
+

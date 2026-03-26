@@ -168,6 +168,12 @@ defmodule AgentLoop.Sessions do
     max(0.0, (total - active))
   end
 
+  @doc "Return the age of a session in minutes."
+  @spec age_minutes(float(), float()) :: float()
+  def age_minutes(created_at, now) do
+    ((now - created_at) / 60.0)
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

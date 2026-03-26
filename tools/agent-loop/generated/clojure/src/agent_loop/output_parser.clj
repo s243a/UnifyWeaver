@@ -149,3 +149,9 @@
   (> (count text) limit)
 )
 
+(defn json-block-indicator
+  "Check if text likely contains JSON by having both { and } characters."
+  [text]
+  (and (.startsWith text "{") (.endsWith text "}"))
+)
+

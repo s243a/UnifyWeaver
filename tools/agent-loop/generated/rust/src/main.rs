@@ -1396,6 +1396,12 @@ impl StreamingTokenCounter {
         return (((self.buffer.len() as i64) as f64) / (max_bytes as f64)) * 100.0;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Format a summary of streaming stats: token count and char count.
+    pub fn format_stats(&self) -> String {
+        return format!("{} tokens, {} chars", self.token_count, self.char_count);
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

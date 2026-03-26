@@ -225,4 +225,10 @@ defmodule AgentLoop.Config do
     Map.has_key?(state.settings, "max_tokens")
   end
 
+  @doc "Check if streaming mode is enabled in settings."
+  @spec is_streaming(t()) :: boolean()
+  def is_streaming(%__MODULE__{} = state) do
+    Map.has_key?(state.settings, "stream")
+  end
+
 end

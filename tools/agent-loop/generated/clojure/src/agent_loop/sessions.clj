@@ -168,3 +168,9 @@
   (max 0.0 (- total active))
 )
 
+(defn age-minutes
+  "Return the age of a session in minutes."
+  [created-at now]
+  (/ (- now created-at) 60.0)
+)
+

@@ -187,3 +187,9 @@ pub fn is_network_cmd(cmd: &str) -> bool {
     return (cmd.starts_with("curl") || cmd.starts_with("wget")) || (cmd.starts_with("ssh") || cmd.starts_with("scp"));
 }
 
+#[allow(dead_code, unused_variables)]
+/// Check if a file size is within the allowed maximum.
+pub fn file_within_limit(size_bytes: i64, max_bytes: i64) -> bool {
+    return size_bytes <= max_bytes;
+}
+

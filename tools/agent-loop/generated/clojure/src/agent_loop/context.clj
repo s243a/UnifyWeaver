@@ -207,7 +207,7 @@
   [state]
   (if (zero? (count (:messages state)))
       
-      (get (first (:messages state)) "role")
+      (:role (first (:messages state)))
   )
 )
 
@@ -216,7 +216,7 @@
   [state]
   (if (zero? (count (:messages state)))
       
-      (get (last (:messages state)) "role")
+      (:role (last (:messages state)))
   )
 )
 
@@ -284,5 +284,17 @@
   "Check if context mode is set to sliding window."
   [state]
   (= (:context-mode state) "sliding")
+)
+
+(defn trim-count
+  "Return how many messages to trim. 0 if under limit or unlimited."
+  [state]
+  (if (<= (:max-messages state) 0)
+      0
+      (if (<= (int (count (:messages state))) (int (:max-messages state)))
+          0
+          (- (int (count (:messages state))) (int (:max-messages state)))
+      )
+  )
 )
 

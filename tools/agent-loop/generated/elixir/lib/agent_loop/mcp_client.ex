@@ -149,6 +149,12 @@ defmodule AgentLoop.MCPClient do
     Enum.count(state.clients) >= max_clients
   end
 
+  @doc "Format a request ID as a string."
+  @spec format_request_id(integer()) :: String.t()
+  def format_request_id(id) do
+    "req-#{id}"
+  end
+
   @doc "Connect to MCP server via stdio subprocess"
   @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
   def connect(%__MODULE__{} = client) do

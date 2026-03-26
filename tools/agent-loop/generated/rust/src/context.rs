@@ -360,4 +360,34 @@ impl ContextManager {
         return self.context_mode == "sliding";
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return how many messages to trim. 0 if under limit or unlimited.
+    pub fn trim_count(&self) -> i64 {
+        if self.max_messages <= 0 {
+            return 0;
+        }
+        if (self.messages.len() as i64) <= (self.max_messages as i64) {
+            return 0;
+        }
+        return (self.messages.len() as i64) - (self.max_messages as i64);
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Return the role of the first message, or empty string if no messages.
+    pub fn first_role(&self) -> String {
+        if self.messages.len() == 0 {
+            return String::new();
+        }
+        return self.messages.first().cloned().map(|x| x.role.clone()).unwrap_or_default();
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Return the role of the last message, or empty string if no messages.
+    pub fn last_role(&self) -> String {
+        if self.messages.len() == 0 {
+            return String::new();
+        }
+        return self.messages.last().cloned().map(|x| x.role.clone()).unwrap_or_default();
+    }
+
 }

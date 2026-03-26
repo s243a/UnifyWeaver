@@ -127,3 +127,9 @@
   (> success-rate 0.1)
 )
 
+(defn exponential-delay
+  "Compute exponential backoff delay: base * 2^attempt."
+  [base attempt]
+  (* base (Math/pow 2.0 (double attempt)))
+)
+

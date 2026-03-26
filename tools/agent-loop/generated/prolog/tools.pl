@@ -182,6 +182,10 @@ is_read(Tool_name, Result) :-
 is_write(Tool_name, Result) :-
     (Tool_name == "Write" -> Result = true ; Result = false).
 
+%% Return the number of tool schemas registered.
+schema_count(State, Result) :-
+    length(State.schema, Result).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->
