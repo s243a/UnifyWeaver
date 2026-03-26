@@ -441,6 +441,8 @@ jobs:
               "- Compare artifact: `"$($env:COMPARE_ARTIFACT_NAME)`"",
               "- Diff JSON artifact: `"$($env:CACHE_SMOKE_DIFF_ARTIFACT_NAME)`"",
               "- Overall result delta: `"$($diff.overallResult.delta)`"",
+              "- Baseline total duration: `"$($diff.totalDuration.baseline)`"",
+              "- Compare total duration: `"$($diff.totalDuration.compare)`"",
               "- Total duration delta: `"$($diff.totalDuration.delta)`"",
               "- Fail on status regression: $(if ($thresholds.failOnStatusRegression) { 'true' } else { 'false' })",
               "- Max total duration delta seconds: $(if ($null -eq $thresholds.maxTotalDurationDeltaSeconds) { 'disabled' } else { $thresholds.maxTotalDurationDeltaSeconds })",
