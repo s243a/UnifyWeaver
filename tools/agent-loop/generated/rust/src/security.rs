@@ -139,3 +139,15 @@ pub fn is_writable_path(path: &str) -> bool {
     return !((path.starts_with("/etc") || (path.starts_with("/usr") || path.starts_with("/bin"))));
 }
 
+#[allow(dead_code, unused_variables)]
+/// Check if a security profile requires audit logging (guarded or paranoid).
+pub fn needs_audit(profile: &str) -> bool {
+    return profile == "paranoid" || profile == "guarded";
+}
+
+#[allow(dead_code, unused_variables)]
+/// Check if a security profile allows auto-approval of tools (only open does).
+pub fn allows_auto(profile: &str) -> bool {
+    return profile == "open";
+}
+

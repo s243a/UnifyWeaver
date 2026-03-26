@@ -123,3 +123,9 @@
   (>= (count session-id) min-len)
 )
 
+(defn dir-is-empty
+  "Check if the sessions directory has no session files."
+  [file-count]
+  (<= file-count 0)
+)
+

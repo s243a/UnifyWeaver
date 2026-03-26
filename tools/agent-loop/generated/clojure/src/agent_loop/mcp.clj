@@ -92,6 +92,12 @@
 (defn request-count
   "Return the current request ID counter (number of requests sent)."
   [state]
-  (:request-id state)
+  (int (:request-id state))
+)
+
+(defn has-clients
+  "Check if the MCP manager has any connected clients."
+  [state]
+  (> (int (count (:clients state))) 0)
 )
 

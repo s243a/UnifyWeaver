@@ -93,6 +93,12 @@ defmodule AgentLoop.OutputParser do
     Enum.count(text) > threshold
   end
 
+  @doc "Check if text contains a fenced code block marker (triple backticks)."
+  @spec has_code_block(String.t()) :: boolean()
+  def has_code_block(text) do
+    String.starts_with?(text, "```")
+  end
+
   @doc "Extract JSON from fenced code blocks (```json ... ```)"
   @spec extract_fenced(String.t()) :: [map()]
   def extract_fenced(text) do

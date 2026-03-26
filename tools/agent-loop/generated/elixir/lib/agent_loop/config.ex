@@ -183,4 +183,10 @@ defmodule AgentLoop.Config do
     not Map.has_key?(state.settings, "backend")
   end
 
+  @doc "Return the number of keys in the settings map."
+  @spec key_count(t()) :: integer()
+  def key_count(%__MODULE__{} = state) do
+    Enum.count(state.settings)
+  end
+
 end

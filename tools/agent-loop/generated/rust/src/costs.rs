@@ -54,6 +54,7 @@ pub struct CostTracker {
     pub total_output_tokens: u64,
     pub records: Vec<UsageRecord>,
     pub message_count: i64,
+    pub total_cost: f64,
 }
 
 impl CostTracker {
@@ -126,6 +127,18 @@ impl CostTracker {
             return 0.0;
         }
         return (self.total_input_tokens as f64) / ((self.total_input_tokens + self.total_output_tokens) as f64);
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if any tokens have been tracked (input or output > 0).
+    pub fn has_usage(&self) -> bool {
+        return (self.total_input_tokens + self.total_output_tokens) > 0;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if total cost exceeds a given threshold.
+    pub fn cost_exceeds(&self, threshold: f64) -> bool {
+        return self.total_cost > threshold;
     }
 
 }

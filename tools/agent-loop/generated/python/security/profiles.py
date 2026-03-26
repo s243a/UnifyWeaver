@@ -174,3 +174,11 @@ def is_writable_path(path):
     """Check if a path is in a writable location (not starting with /etc, /usr, /bin)."""
     return not (path.startswith("/etc") or (path.startswith("/usr") or path.startswith("/bin")))
 
+def needs_audit(profile):
+    """Check if a security profile requires audit logging (guarded or paranoid)."""
+    return (profile == "paranoid" or profile == "guarded")
+
+def allows_auto(profile):
+    """Check if a security profile allows auto-approval of tools (only open does)."""
+    return profile == "open"
+

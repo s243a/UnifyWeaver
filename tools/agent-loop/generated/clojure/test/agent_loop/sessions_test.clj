@@ -43,3 +43,7 @@
 (deftest test-session-id-is-long
   (is (true? (sessions/id-is-long "sess-abc123" 5)))
   (is (false? (sessions/id-is-long "ab" 5))))
+
+(deftest test-dir-is-empty
+  (is (true? (sessions/dir-is-empty 0)))
+  (is (false? (sessions/dir-is-empty 3))))

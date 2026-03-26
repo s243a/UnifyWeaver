@@ -303,4 +303,13 @@ impl ContextManager {
         return self.max_words - self.token_count;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if context has reached max_messages limit. Returns false if unlimited (max_messages <= 0).
+    pub fn is_full(&self) -> bool {
+        if self.max_messages <= 0 {
+            return false;
+        }
+        return self.messages.len() >= self.max_messages;
+    }
+
 }

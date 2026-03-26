@@ -182,4 +182,10 @@ defmodule AgentLoop.CostTracker do
     "$#{amount}"
   end
 
+  @doc "Check if any tokens have been tracked (input or output > 0)."
+  @spec has_usage(t()) :: boolean()
+  def has_usage(%__MODULE__{} = state) do
+    (state.total_input_tokens + state.total_output_tokens) > 0
+  end
+
 end

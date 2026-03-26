@@ -1852,4 +1852,48 @@ fn test_shared_logic_new_standalone_methods() {
     assert!(src.contains("fn byte_count("), "main.rs should have byte_count");
     assert!(src.contains("fn chars_per_token("), "main.rs should have chars_per_token");
     assert!(src.contains("fn progress_pct("), "main.rs should have progress_pct");
+    assert!(src.contains("fn has_started("), "main.rs should have has_started");
+    assert!(src.contains("fn tokens_remaining("), "main.rs should have tokens_remaining");
+    assert!(src.contains("fn total_attempts("), "main.rs should have total_attempts");
+}
+
+#[test]
+fn test_shared_logic_round7_costs() {
+    let src = include_str!("../src/costs.rs");
+    assert!(src.contains("fn cost_exceeds("), "costs.rs should have cost_exceeds");
+    assert!(src.contains("fn has_usage("), "costs.rs should have has_usage");
+    assert!(src.contains("fn input_ratio("), "costs.rs should have input_ratio");
+}
+
+#[test]
+fn test_shared_logic_round7_context() {
+    let src = include_str!("../src/context.rs");
+    assert!(src.contains("fn word_budget("), "context.rs should have word_budget");
+    assert!(src.contains("fn is_full("), "context.rs should have is_full");
+}
+
+#[test]
+fn test_shared_logic_round7_mcp() {
+    let src = include_str!("../src/mcp_client.rs");
+    assert!(src.contains("fn request_count("), "mcp_client.rs should have request_count");
+    assert!(src.contains("fn has_clients("), "mcp_client.rs should have has_clients");
+    assert!(src.contains("impl McpManager"), "mcp_client.rs should have impl McpManager");
+}
+
+#[test]
+fn test_retry_handler_struct_complete() {
+    let src = include_str!("../src/main.rs");
+    assert!(src.contains("pub struct RetryHandler"), "should define RetryHandler");
+    assert!(src.contains("pub fn new(max_retries"), "should have RetryHandler::new");
+    assert!(src.contains("fn total_attempts("), "should have total_attempts");
+}
+
+#[test]
+fn test_config_loader_struct_complete() {
+    let src = include_str!("../src/config.rs");
+    assert!(src.contains("pub struct ConfigLoader"), "should define ConfigLoader");
+    assert!(src.contains("fn has_key("), "should have has_key");
+    assert!(src.contains("fn is_empty("), "should have is_empty");
+    assert!(src.contains("fn is_default_backend("), "should have is_default_backend");
+    assert!(src.contains("fn key_count("), "should have key_count");
 }

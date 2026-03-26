@@ -115,3 +115,9 @@
   (int (count (:schema state)))
 )
 
+(defn requires-confirm
+  "Check if a tool requires user confirmation (bash or write)."
+  [tool-name]
+  (or (= tool-name "bash") (= tool-name "write"))
+)
+

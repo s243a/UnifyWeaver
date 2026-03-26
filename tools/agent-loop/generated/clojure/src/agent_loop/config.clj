@@ -145,3 +145,9 @@
   (not (contains? (:settings state) "backend"))
 )
 
+(defn key-count
+  "Return the number of keys in the settings map."
+  [state]
+  (int (count (:settings state)))
+)
+

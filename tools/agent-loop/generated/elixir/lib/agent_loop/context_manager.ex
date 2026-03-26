@@ -256,4 +256,14 @@ defmodule AgentLoop.ContextManager do
     end
   end
 
+  @doc "Check if context has reached max_messages limit. Returns false if unlimited (max_messages <= 0)."
+  @spec is_full(t()) :: boolean()
+  def is_full(%__MODULE__{} = state) do
+    if state.max_messages <= 0 do
+        false
+    else
+        Enum.count(state.messages) >= state.max_messages
+    end
+  end
+
 end

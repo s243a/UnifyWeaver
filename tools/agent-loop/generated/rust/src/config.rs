@@ -258,4 +258,10 @@ impl ConfigLoader {
         return !(self.settings.contains_key("backend"));
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return the number of keys in the settings map.
+    pub fn key_count(&self) -> i64 {
+        return self.settings.len() as i64;
+    }
+
 }

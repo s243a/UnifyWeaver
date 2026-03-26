@@ -136,4 +136,10 @@ defmodule AgentLoop.StreamingTokenCounter do
     end
   end
 
+  @doc "Check if at least one token has been received."
+  @spec has_started(t()) :: boolean()
+  def has_started(%__MODULE__{} = state) do
+    state.token_count > 0
+  end
+
 end
