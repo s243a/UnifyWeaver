@@ -217,10 +217,10 @@ bring-up.
     symbolic context or alias state before the second call combined with
     that shared post-call control, nested non-recursive boolean post-call
     control after the shared dual-subtree calls, shared branch-local
-    guard prework before a nested mutual branch, and conservative arity-2
+    guard prework before a nested mutual branch, and conservative `N`-ary
     tree-structural SCCs with one
-    invariant context argument threaded through the shared dual-subtree
-    calls, shared computed context updates or guarded shared context
+    tree-driving argument and one or more threaded context arguments carried
+    through the shared dual-subtree calls, shared computed context updates or guarded shared context
     selection before those calls, and the same conservative guarded
     branch-body family, including branch bodies where one shared subtree
     call happens before guarded control that contains the second subtree

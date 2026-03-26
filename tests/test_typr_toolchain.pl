@@ -2152,6 +2152,47 @@ test(structural_tree_dual_mutual_context_branch_step_second_call_post_output_che
     retractall(user:typr_mutual_even_tree_ctx_branch_step_post(_, _)),
     retractall(user:typr_mutual_odd_tree_ctx_branch_step_post(_, _)).
 
+test(structural_tree_dual_mutual_multi_context_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_ctx2([], _T0, _B0)),
+    assertz(user:(typr_mutual_even_tree_ctx2([V, L, R], T, B) :-
+        T1 is T + 1,
+        B1 is B + 2,
+        typr_mutual_odd_tree_ctx2(L, T1, B1),
+        typr_mutual_odd_tree_ctx2(R, T1, B1),
+        V >= T,
+        V >= B
+    )),
+    assertz(user:typr_mutual_odd_tree_ctx2([_, [], []], _T1, _B1)),
+    assertz(user:(typr_mutual_odd_tree_ctx2([V, L, R], T, B) :-
+        T1 is T + 1,
+        B1 is B + 2,
+        typr_mutual_even_tree_ctx2(L, T1, B1),
+        typr_mutual_even_tree_ctx2(R, T1, B1),
+        V >= T,
+        V >= B
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx2/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx2/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_ctx2/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx2/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx2/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_ctx2/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_ctx2/3, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_ctx2/3, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_ctx2/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_even_tree_ctx2(_, _, _)),
+    retractall(user:typr_mutual_odd_tree_ctx2(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

@@ -263,7 +263,7 @@ typr_mutual_tree_dual_spec(GroupPredicates, Pred/Arity, Spec) :-
     }.
 
 typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
-    Arity =:= 2,
+    Arity >= 2,
     findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
     Clauses \= [],
     generic_typr_return_type(Pred/Arity, Clauses, "bool"),
@@ -274,12 +274,12 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
     BaseClauses \= [],
     maplist(typr_mutual_tree_base_case_condition, BaseClauses, BaseConds0),
     sort(BaseConds0, BaseConditions),
-    RecHead =.. [_PredName, RecInputPattern, ContextVar],
+    RecHead =.. [_PredName, RecInputPattern|ContextVars],
     RecInputPattern = [ValueVar, LeftVar, RightVar],
     typr_mutual_goal_list(RecBody, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
     typr_mutual_tree_alias_map([], LeftVar, RightVar, AliasMap0),
-    ExtraArgMap0 = [ContextVar-"current_ctx"],
+    typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap0, HelperParams, WrapperCallArgs, MemoKeyExpr),
     typr_mutual_tree_ordered_dual_context_goals(
         GroupPredicates,
         Goals,
@@ -288,7 +288,6 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
         ExtraArgMap0,
         Body
     ),
-    typr_mutual_tree_context_fields(Pred, ContextVar, HelperName, _ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
     atom_string(Pred, PredStr),
     Spec = mutual_spec{
         kind: tree_dual_body,
@@ -307,7 +306,7 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
     }.
 
 typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
-    Arity =:= 2,
+    Arity >= 2,
     findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
     Clauses \= [],
     generic_typr_return_type(Pred/Arity, Clauses, "bool"),
@@ -318,14 +317,14 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
     BaseClauses \= [],
     maplist(typr_mutual_tree_base_case_condition, BaseClauses, BaseConds0),
     sort(BaseConds0, BaseConditions),
-    RecHead =.. [_PredName, RecInputPattern, ContextVar],
+    RecHead =.. [_PredName, RecInputPattern|ContextVars],
     RecInputPattern = [ValueVar, LeftVar, RightVar],
     typr_mutual_goal_list(RecBody, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
     append(PreGoals, RecGoals, Goals),
     RecGoals = [GoalA, GoalB],
     typr_mutual_tree_alias_map([], LeftVar, RightVar, AliasMap0),
-    ExtraArgMap0 = [ContextVar-"current_ctx"],
+    typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap0, HelperParams, WrapperCallArgs, MemoKeyExpr),
     typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap, PreGuardExpr),
     maplist(
         typr_mutual_tree_recursive_goal(GroupPredicates, AliasMap, ExtraArgMap),
@@ -334,20 +333,14 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
     ),
     select(call_spec(left, LeftNextPred, LeftCallArgs), GoalSpecs0, GoalSpecs1),
     select(call_spec(right, RightNextPred, RightCallArgs), GoalSpecs1, []),
-    LeftCallArgs = ['.subset2(current_input, 2)', CurrentCtxExpr],
-    RightCallArgs = ['.subset2(current_input, 3)', CurrentCtxExpr],
+    LeftCallArgs = ['.subset2(current_input, 2)'|CurrentCtxExprs],
+    RightCallArgs = ['.subset2(current_input, 3)'|CurrentCtxExprs],
     atom_string(Pred, PredStr),
     atom_string(LeftNextPred, LeftNextPredStr),
     atom_string(RightNextPred, RightNextPredStr),
-    format(string(HelperName), '~w_impl', [PredStr]),
     format(string(LeftNextHelperName), '~w_impl', [LeftNextPredStr]),
     format(string(RightNextHelperName), '~w_impl', [RightNextPredStr]),
     typr_mutual_tree_top_guard_expr(PreGuardExpr, GuardExpr),
-    format(
-        string(MemoKeyExpr),
-        'paste0("~w:", paste(deparse(list(current_input, current_ctx)), collapse=""))',
-        [PredStr]
-    ),
     Spec = mutual_spec{
         kind: tree_dual,
         pred: Pred,
@@ -356,8 +349,8 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
         typed_arg_list: TypedArgList,
         return_type: "bool",
         helper_name: HelperName,
-        helper_params: ["current_input", "current_ctx"],
-        wrapper_call_args: ["arg1", "arg2"],
+        helper_params: HelperParams,
+        wrapper_call_args: WrapperCallArgs,
         memo_key_expr: MemoKeyExpr,
         left_call: branch_call(LeftNextHelperName, LeftCallArgs),
         right_call: branch_call(RightNextHelperName, RightCallArgs),
@@ -365,17 +358,43 @@ typr_mutual_tree_dual_context_spec(GroupPredicates, Pred/Arity, Spec) :-
         guard_expr: GuardExpr
     }.
 
-typr_mutual_tree_context_fields(Pred, ContextVar, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr) :-
+typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr) :-
     atom_string(Pred, PredStr),
     format(string(HelperName), '~w_impl', [PredStr]),
-    ExtraArgMap = [ContextVar-"current_ctx"],
-    HelperParams = ["current_input", "current_ctx"],
-    WrapperCallArgs = ["arg1", "arg2"],
+    typr_mutual_tree_context_param_names(ContextVars, ContextParamNames),
+    typr_mutual_tree_context_varmap(ContextVars, ContextParamNames, ExtraArgMap),
+    HelperParams = ["current_input"|ContextParamNames],
+    length(ContextVars, ContextArity),
+    WrapperArity is ContextArity + 1,
+    typr_mutual_wrapper_arg_names(WrapperArity, WrapperCallArgs),
+    atomic_list_concat(HelperParams, ', ', HelperParamText),
     format(
         string(MemoKeyExpr),
-        'paste0("~w:", paste(deparse(list(current_input, current_ctx)), collapse=""))',
-        [PredStr]
+        'paste0("~w:", paste(deparse(list(~w)), collapse=""))',
+        [PredStr, HelperParamText]
     ).
+
+typr_mutual_tree_context_param_names([], []).
+typr_mutual_tree_context_param_names([_], ["current_ctx"]) :-
+    !.
+typr_mutual_tree_context_param_names([_|Rest], ["current_ctx"|Names]) :-
+    typr_mutual_tree_context_param_names(Rest, 2, Names).
+
+typr_mutual_tree_context_param_names([], _Index, []).
+typr_mutual_tree_context_param_names([_|Rest], Index, [Name|Names]) :-
+    format(string(Name), 'current_ctx_~d', [Index]),
+    NextIndex is Index + 1,
+    typr_mutual_tree_context_param_names(Rest, NextIndex, Names).
+
+typr_mutual_tree_context_varmap([], [], []).
+typr_mutual_tree_context_varmap([Var|Vars], [Name|Names], [Var-Name|Pairs]) :-
+    typr_mutual_tree_context_varmap(Vars, Names, Pairs).
+
+typr_mutual_wrapper_arg_names(Arity, Names) :-
+    findall(Name, (
+        between(1, Arity, Index),
+        format(string(Name), 'arg~d', [Index])
+    ), Names).
 
 typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     Arity =:= 1,
@@ -472,7 +491,7 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     }.
 
 typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
-    Arity =:= 2,
+    Arity >= 2,
     findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
     Clauses \= [],
     generic_typr_return_type(Pred/Arity, Clauses, "bool"),
@@ -483,10 +502,10 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     BaseClauses \= [],
     maplist(typr_mutual_tree_base_case_condition, BaseClauses, BaseConds0),
     sort(BaseConds0, BaseConditions),
-    RecHead =.. [_PredName, RecInputPattern, ContextVar],
+    RecHead =.. [_PredName, RecInputPattern|ContextVars],
     RecInputPattern = [ValueVar, LeftVar, RightVar],
     typr_mutual_tree_alias_map([], LeftVar, RightVar, AliasMap0),
-    typr_mutual_tree_context_fields(Pred, ContextVar, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
+    typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
     typr_mutual_goal_list(RecBody, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
     Goals = [BranchGoal],
@@ -518,7 +537,7 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     }.
 
 typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
-    Arity =:= 2,
+    Arity >= 2,
     findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
     Clauses \= [],
     generic_typr_return_type(Pred/Arity, Clauses, "bool"),
@@ -529,7 +548,7 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     BaseClauses \= [],
     maplist(typr_mutual_tree_base_case_condition, BaseClauses, BaseConds0),
     sort(BaseConds0, BaseConditions),
-    RecHead =.. [_PredName, RecInputPattern, ContextVar],
+    RecHead =.. [_PredName, RecInputPattern|ContextVars],
     RecInputPattern = [ValueVar, LeftVar, RightVar],
     typr_mutual_goal_list(RecBody, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
@@ -540,7 +559,7 @@ typr_mutual_tree_dual_branch_spec(GroupPredicates, Pred/Arity, Spec) :-
     typr_mutual_goal_list(ElseGoal0, ElseGoals0),
     maplist(typr_strip_module_goal, ElseGoals0, ElseGoals),
     typr_mutual_tree_alias_map([], LeftVar, RightVar, AliasMap0),
-    typr_mutual_tree_context_fields(Pred, ContextVar, HelperName, ExtraArgMap0, HelperParams, WrapperCallArgs, MemoKeyExpr),
+    typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap0, HelperParams, WrapperCallArgs, MemoKeyExpr),
     typr_mutual_tree_branch_prework(
         ThenGoals,
         ValueVar,
