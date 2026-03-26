@@ -229,3 +229,12 @@
   )
 )
 
+(defn is-full
+  "Check if context has reached max_messages limit. Returns false if unlimited (max_messages <= 0)."
+  [state]
+  (if (<= (:max-messages state) 0)
+      false
+      (>= (count (:messages state)) (:max-messages state))
+  )
+)
+

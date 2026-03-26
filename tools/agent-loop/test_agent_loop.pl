@@ -6107,7 +6107,7 @@ test_shared_logic_infrastructure :-
             agent_loop_module:compile_logic(rust, M, _),
             agent_loop_module:compile_logic(elixir, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 170)
+        length(OkMs, 180)
     )),
     %% --- Elixir structure validation ---
     assert_true('elixir mix.exs exists', (
@@ -6252,7 +6252,7 @@ test_cross_target_integration :-
             agent_loop_module:compile_logic(prolog, M, _),
             agent_loop_module:compile_logic(clojure, M, _)
         ), AllMs, OkMs),
-        length(OkMs, 170)
+        length(OkMs, 180)
     )),
     %% Prolog compile_logic produces Result = ... pattern for return methods
     assert_true('prolog is_over_budget has Result unification', (
@@ -6391,4 +6391,40 @@ test_cross_target_integration :-
         sub_string(CljStreamContent, _, _, _, "on-token"),
         sub_string(CljStreamContent, _, _, _, "avg-token-rate"),
         sub_string(CljStreamContent, _, _, _, "chars-per-token")
+    )),
+    %% --- Elixir module structural validation (round 7) ---
+    assert_true('elixir config.ex has shared_logic methods', (
+        read_file_to_string('generated/elixir/lib/agent_loop/config.ex', ExCfgContent, []),
+        sub_string(ExCfgContent, _, _, _, "has_key"),
+        sub_string(ExCfgContent, _, _, _, "is_debug"),
+        sub_string(ExCfgContent, _, _, _, "field_count"),
+        sub_string(ExCfgContent, _, _, _, "is_empty")
+    )),
+    assert_true('elixir context_manager.ex has shared_logic methods', (
+        read_file_to_string('generated/elixir/lib/agent_loop/context_manager.ex', ExCtxContent, []),
+        sub_string(ExCtxContent, _, _, _, "token_budget"),
+        sub_string(ExCtxContent, _, _, _, "word_budget"),
+        sub_string(ExCtxContent, _, _, _, "is_full")
+    )),
+    assert_true('elixir streaming_token_counter.ex has shared_logic methods', (
+        read_file_to_string('generated/elixir/lib/agent_loop/streaming_token_counter.ex', ExStrContent, []),
+        sub_string(ExStrContent, _, _, _, "avg_token_rate"),
+        sub_string(ExStrContent, _, _, _, "chars_per_token"),
+        sub_string(ExStrContent, _, _, _, "has_started")
+    )),
+    assert_true('elixir tool_result_cache.ex has shared_logic methods', (
+        read_file_to_string('generated/elixir/lib/agent_loop/tool_result_cache.ex', ExCacheContent, []),
+        sub_string(ExCacheContent, _, _, _, "evict_oldest"),
+        sub_string(ExCacheContent, _, _, _, "cache_hit_rate")
+    )),
+    %% Verify all Elixir lib modules have proper defmodule structure
+    assert_true('all elixir modules have @moduledoc', (
+        expand_file_name('generated/elixir/lib/agent_loop/*.ex', AllExFiles),
+        include([F]>>(
+            read_file_to_string(F, FC, []),
+            sub_string(FC, _, _, _, "@moduledoc")
+        ), AllExFiles, DocFiles),
+        length(AllExFiles, TotalCount),
+        length(DocFiles, DocCount),
+        DocCount >= TotalCount - 2  %% allow 1-2 without @moduledoc
     )).

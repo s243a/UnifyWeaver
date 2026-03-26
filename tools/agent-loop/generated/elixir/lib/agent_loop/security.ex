@@ -166,4 +166,16 @@ defmodule AgentLoop.Security do
     not (String.starts_with?(path, "/etc") or (String.starts_with?(path, "/usr") or String.starts_with?(path, "/bin")))
   end
 
+  @doc "Check if a security profile requires audit logging (guarded or paranoid)."
+  @spec needs_audit(String.t()) :: boolean()
+  def needs_audit(profile) do
+    (profile == "paranoid" or profile == "guarded")
+  end
+
+  @doc "Check if a security profile allows auto-approval of tools (only open does)."
+  @spec allows_auto(String.t()) :: boolean()
+  def allows_auto(profile) do
+    profile == "open"
+  end
+
 end

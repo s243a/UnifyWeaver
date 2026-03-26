@@ -122,6 +122,12 @@ defmodule AgentLoop.Sessions do
     Enum.count(session_id) >= min_len
   end
 
+  @doc "Check if the sessions directory has no session files."
+  @spec dir_is_empty(integer()) :: boolean()
+  def dir_is_empty(file_count) do
+    file_count <= 0
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

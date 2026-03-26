@@ -1336,6 +1336,21 @@ impl StreamingTokenCounter {
         return ((self.token_count as f64) / (max_tokens as f64)) * 100.0;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if at least one token has been received.
+    pub fn has_started(&self) -> bool {
+        return self.token_count > 0;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Estimate remaining tokens. Returns -1 if max_tokens is 0.
+    pub fn tokens_remaining(&self, max_tokens: i64) -> i64 {
+        if max_tokens == 0 {
+            return -1;
+        }
+        return max_tokens - (self.token_count as i64);
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

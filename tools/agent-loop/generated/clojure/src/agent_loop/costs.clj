@@ -174,3 +174,9 @@
   (format "$%s" amount)
 )
 
+(defn has-usage
+  "Check if any tokens have been tracked (input or output > 0)."
+  [state]
+  (> (+ (:total-input-tokens state) (:total-output-tokens state)) 0)
+)
+

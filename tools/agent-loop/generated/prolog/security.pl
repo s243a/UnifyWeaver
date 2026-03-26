@@ -133,3 +133,11 @@ is_blocked_command(Cmd, Result) :-
 is_writable_path(Path, Result) :-
     (\+ (atom_concat('/etc', _, Path) ; (atom_concat('/usr', _, Path) ; atom_concat('/bin', _, Path))) -> Result = true ; Result = false).
 
+%% Check if a security profile requires audit logging (guarded or paranoid).
+needs_audit(Profile, Result) :-
+    ((Profile == "Paranoid" ; Profile == "Guarded") -> Result = true ; Result = false).
+
+%% Check if a security profile allows auto-approval of tools (only open does).
+allows_auto(Profile, Result) :-
+    (Profile == "Open" -> Result = true ; Result = false).
+

@@ -161,6 +161,10 @@ input_ratio(State, Result) :-
 format_dollars(Amount, Result) :-
     format(atom(Result), "$~w", [Amount]).
 
+%% Check if any tokens have been tracked (input or output > 0).
+has_usage(State, Result) :-
+    ((State.total_input_tokens + State.total_output_tokens) > 0 -> Result = true ; Result = false).
+
 
 %% Cost tracker using dynamic state
 :- dynamic cost_state/3.  %% cost_state(TrackerID, TotalInputTokens, TotalOutputTokens)

@@ -194,6 +194,14 @@ word_budget(State, Result) :-
     Result is (State.max_words - State.token_count)
     ).
 
+%% Check if context has reached max_messages limit. Returns false if unlimited (max_messages <= 0).
+is_full(State, Result) :-
+    (State.max_messages =< 0 ->
+        Result = false
+    ;
+    length(State.messages, Result) >= State.max_messages
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -280,6 +288,10 @@ tokens_remaining(State, Max_tokens, Result) :-
     ;
     Result is (Max_tokens - State.token_count)
     ).
+
+%% Check if at least one token has been received.
+has_started(State, Result) :-
+    (State.token_count > 0 -> Result = true ; Result = false).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -421,6 +433,10 @@ format_error(Code, Message, Result) :-
 request_count(State, Result) :-
     Result = State.request_id.
 
+%% Check if the MCP manager has any connected clients.
+has_clients(State, Result) :-
+    length(State.clients, Result) > 0.
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -540,6 +556,10 @@ content_preview(Text, Max_len, Result) :-
 is_multiline(Text, Threshold, Result) :-
     length(Text, Result) > Threshold.
 
+%% Check if text contains a fenced code block marker (triple backticks).
+has_code_block(Text, Result) :-
+    (atom_concat('```', _, Text) -> Result = true ; Result = false).
+
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
 
@@ -618,6 +638,10 @@ name_valid(Name, Result) :-
 %% Check if a session ID meets the minimum length requirement.
 id_is_long(Session_id, Min_len, Result) :-
     length(Session_id, Result) >= Min_len.
+
+%% Check if the sessions directory has no session files.
+dir_is_empty(File_count, Result) :-
+    (File_count =< 0 -> Result = true ; Result = false).
 
 conversation([]).
 max_iterations(0).

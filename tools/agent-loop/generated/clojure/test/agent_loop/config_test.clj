@@ -40,3 +40,7 @@
   (is (true? (config/is-default-backend {:settings {}})))
   (is (true? (config/is-default-backend {:settings {"model" "gpt-4"}})))
   (is (false? (config/is-default-backend {:settings {"backend" "openai"}}))))
+
+(deftest test-key-count
+  (is (= 0 (config/key-count {:settings {}})))
+  (is (= 2 (config/key-count {:settings {:a 1 :b 2}}))))

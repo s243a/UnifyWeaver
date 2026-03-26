@@ -46,3 +46,12 @@
   (is (false? (security/is-writable-path "/etc/passwd")))
   (is (false? (security/is-writable-path "/usr/bin/cat")))
   (is (false? (security/is-writable-path "/bin/sh"))))
+
+(deftest test-needs-audit
+  (is (true? (security/needs-audit "paranoid")))
+  (is (true? (security/needs-audit "guarded")))
+  (is (false? (security/needs-audit "open"))))
+
+(deftest test-allows-auto
+  (is (true? (security/allows-auto "open")))
+  (is (false? (security/allows-auto "paranoid"))))

@@ -107,3 +107,9 @@
   (> (count text) threshold)
 )
 
+(defn has-code-block
+  "Check if text contains a fenced code block marker (triple backticks)."
+  [text]
+  (.startsWith text "```")
+)
+

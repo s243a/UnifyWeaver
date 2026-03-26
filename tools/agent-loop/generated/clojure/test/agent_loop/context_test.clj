@@ -51,3 +51,7 @@
   (is (= -1 (ctx/word-budget {:max-words 0 :token-count 0})))
   (is (= -1 (ctx/word-budget {:max-words -5 :token-count 10})))
   (is (= 80 (ctx/word-budget {:max-words 100 :token-count 20}))))
+
+(deftest test-is-full
+  (is (false? (ctx/is-full {:max-messages 0 :messages []})))
+  (is (true? (ctx/is-full {:max-messages 2 :messages [{} {}]}))))

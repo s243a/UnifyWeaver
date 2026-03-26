@@ -50,3 +50,8 @@
   (is (= 0 (tools/tool-count {:schema {}})))
   (is (= 2 (tools/tool-count {:schema {"bash" {} "read" {}}})))
   (is (= 3 (tools/tool-count {:schema {"a" {} "b" {} "c" {}}}))))
+
+(deftest test-requires-confirm
+  (is (true? (tools/requires-confirm "bash")))
+  (is (true? (tools/requires-confirm "write")))
+  (is (false? (tools/requires-confirm "read"))))

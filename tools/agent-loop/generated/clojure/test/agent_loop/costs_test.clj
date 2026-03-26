@@ -73,3 +73,7 @@
   (is (= "$1.5" (costs/format-dollars 1.5)))
   (is (= "$0" (costs/format-dollars 0)))
   (is (= "$99.99" (costs/format-dollars 99.99))))
+
+(deftest test-has-usage
+  (is (false? (costs/has-usage {:total-input-tokens 0 :total-output-tokens 0})))
+  (is (true? (costs/has-usage {:total-input-tokens 100 :total-output-tokens 0}))))

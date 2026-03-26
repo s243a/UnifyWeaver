@@ -154,6 +154,10 @@ is_readonly(Tool_name, Result) :-
 tool_count(State, Result) :-
     length(State.schema, Result).
 
+%% Check if a tool requires user confirmation (bash or write).
+requires_confirm(Tool_name, Result) :-
+    ((Tool_name == ""bash"" ; Tool_name == ""write"") -> Result = true ; Result = false).
+
 %% Execute a tool by name
 execute_tool(ToolName, Params, Result) :-
     (tool_handler(ToolName, _) ->

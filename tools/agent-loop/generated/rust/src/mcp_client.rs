@@ -166,4 +166,19 @@ impl McpClient {
         return self.name.clone();
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Return the current request ID counter (number of requests sent).
+    pub fn request_count(&self) -> i64 {
+        return self.request_id as i64;
+    }
+
+}
+
+impl McpManager {
+    #[allow(dead_code, unused_variables)]
+    /// Check if the MCP manager has any connected clients.
+    pub fn has_clients(&self) -> bool {
+        return (self.clients.len() as i64) > 0;
+    }
+
 }

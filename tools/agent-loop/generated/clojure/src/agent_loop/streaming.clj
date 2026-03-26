@@ -125,7 +125,13 @@
   [state max-tokens]
   (if (zero? max-tokens)
       -1
-      (- max-tokens (:token-count state))
+      (- max-tokens (int (:token-count state)))
   )
+)
+
+(defn has-started
+  "Check if at least one token has been received."
+  [state]
+  (> (:token-count state) 0)
 )
 

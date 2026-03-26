@@ -52,3 +52,7 @@
   (is (= -1 (streaming/tokens-remaining {:token-count 10} 0)))
   (is (= 80 (streaming/tokens-remaining {:token-count 20} 100)))
   (is (= 0 (streaming/tokens-remaining {:token-count 50} 50))))
+
+(deftest test-has-started
+  (is (false? (streaming/has-started {:token-count 0})))
+  (is (true? (streaming/has-started {:token-count 1}))))

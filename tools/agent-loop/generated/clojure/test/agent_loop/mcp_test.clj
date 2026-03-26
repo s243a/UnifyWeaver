@@ -44,3 +44,7 @@
   (is (= 0 (mcp/request-count {:request-id 0})))
   (is (= 5 (mcp/request-count {:request-id 5})))
   (is (= 42 (mcp/request-count {:request-id 42}))))
+
+(deftest test-has-clients
+  (is (false? (mcp/has-clients {:clients {}})))
+  (is (true? (mcp/has-clients {:clients {"srv1" {:name "s1"}}}))))

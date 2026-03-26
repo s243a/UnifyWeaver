@@ -85,3 +85,15 @@
   (not (or (.startsWith path "/etc") (or (.startsWith path "/usr") (.startsWith path "/bin"))))
 )
 
+(defn needs-audit
+  "Check if a security profile requires audit logging (guarded or paranoid)."
+  [profile]
+  (or (= profile "paranoid") (= profile "guarded"))
+)
+
+(defn allows-auto
+  "Check if a security profile allows auto-approval of tools (only open does)."
+  [profile]
+  (= profile "open")
+)
+
