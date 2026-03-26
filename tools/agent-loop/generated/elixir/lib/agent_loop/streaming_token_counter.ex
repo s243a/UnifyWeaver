@@ -154,4 +154,16 @@ defmodule AgentLoop.StreamingTokenCounter do
     (state.token_count == 0 and state.char_count == 0)
   end
 
+  @doc "Check if any time has elapsed during streaming."
+  @spec has_elapsed(t()) :: boolean()
+  def has_elapsed(%__MODULE__{} = state) do
+    state.elapsed > 0.0
+  end
+
+  @doc "Check if char count is at least as large as token count (sanity check)."
+  @spec is_balanced(t()) :: boolean()
+  def is_balanced(%__MODULE__{} = state) do
+    state.char_count >= state.token_count
+  end
+
 end

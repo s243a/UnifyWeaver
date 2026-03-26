@@ -113,3 +113,15 @@
   (.startsWith method "result")
 )
 
+(defn is-initialize
+  "Check if a JSON-RPC method is the initialize handshake."
+  [method]
+  (= method "initialize")
+)
+
+(defn is-shutdown
+  "Check if a JSON-RPC method is the shutdown request."
+  [method]
+  (= method "shutdown")
+)
+

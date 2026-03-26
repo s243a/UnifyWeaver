@@ -147,3 +147,15 @@
   (and (zero? (:token-count state)) (zero? (:char-count state)))
 )
 
+(defn has-elapsed
+  "Check if any time has elapsed during streaming."
+  [state]
+  (> (:elapsed state) 0.0)
+)
+
+(defn is-balanced
+  "Check if char count is at least as large as token count (sanity check)."
+  [state]
+  (>= (:char-count state) (:token-count state))
+)
+

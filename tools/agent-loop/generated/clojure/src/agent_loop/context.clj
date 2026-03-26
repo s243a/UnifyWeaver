@@ -256,3 +256,21 @@
   )
 )
 
+(defn is-near-full
+  "Check if context usage exceeds threshold percentage of max_messages. Returns false if unlimited."
+  [state threshold-pct]
+  (if (<= (:max-messages state) 0)
+      false
+      (> (* (int (count (:messages state))) 100) (* (int (:max-messages state)) threshold-pct))
+  )
+)
+
+(defn usage-pct
+  "Return context usage as percentage. Returns 0.0 if unlimited."
+  [state]
+  (if (<= (:max-messages state) 0)
+      0.0
+      (* (/ (double (count (:messages state))) (double (:max-messages state))) 100.0)
+  )
+)
+

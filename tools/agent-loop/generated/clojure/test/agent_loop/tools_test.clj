@@ -64,3 +64,11 @@
   (is (true? (tools/is-write-op "write")))
   (is (true? (tools/is-write-op "edit")))
   (is (false? (tools/is-write-op "read"))))
+
+(deftest test-tool-is-bash
+  (is (true? (tools/is-bash "bash")))
+  (is (false? (tools/is-bash "read"))))
+
+(deftest test-tool-is-edit
+  (is (true? (tools/is-edit "edit")))
+  (is (false? (tools/is-edit "bash"))))

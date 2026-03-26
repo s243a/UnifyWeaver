@@ -56,3 +56,11 @@
 (deftest test-mcp-is-response
   (is (true? (mcp/is-response "result/success")))
   (is (false? (mcp/is-response "tools/call"))))
+
+(deftest test-mcp-is-initialize
+  (is (true? (mcp/is-initialize "initialize")))
+  (is (false? (mcp/is-initialize "shutdown"))))
+
+(deftest test-mcp-is-shutdown
+  (is (true? (mcp/is-shutdown "shutdown")))
+  (is (false? (mcp/is-shutdown "initialize"))))

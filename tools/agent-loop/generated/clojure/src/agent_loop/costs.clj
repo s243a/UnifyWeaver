@@ -195,3 +195,15 @@
   (> (:total-input-tokens state) (:total-output-tokens state))
 )
 
+(defn is-output-heavy
+  "Check if output tokens exceed input tokens."
+  [state]
+  (> (:total-output-tokens state) (:total-input-tokens state))
+)
+
+(defn is-zero-cost
+  "Check if total cost is exactly zero."
+  [state]
+  (<= (:total-cost state) 0.0)
+)
+

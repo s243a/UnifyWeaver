@@ -330,4 +330,22 @@ impl ContextManager {
         return self.messages.len() < self.max_messages;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if context usage exceeds threshold percentage of max_messages. Returns false if unlimited.
+    pub fn is_near_full(&self, threshold_pct: i64) -> bool {
+        if self.max_messages <= 0 {
+            return false;
+        }
+        return (self.messages.len() as i64) * 100 > (self.max_messages as i64) * threshold_pct;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Return context usage as percentage. Returns 0.0 if unlimited.
+    pub fn usage_pct(&self) -> f64 {
+        if self.max_messages <= 0 {
+            return 0.0;
+        }
+        return ((self.messages.len() as f64) / (self.max_messages as f64)) * 100.0;
+    }
+
 }

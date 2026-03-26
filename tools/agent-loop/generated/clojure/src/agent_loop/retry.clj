@@ -100,3 +100,15 @@
   (* base-delay (double attempts))
 )
 
+(defn is-fresh
+  "Check if no retry attempts have been made yet."
+  [state]
+  (zero? (:attempt state))
+)
+
+(defn has-delay
+  "Check if a positive base delay is configured."
+  [state]
+  (> (:base-delay state) 0.0)
+)
+

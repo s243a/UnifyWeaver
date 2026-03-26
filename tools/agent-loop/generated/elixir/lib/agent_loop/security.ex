@@ -190,4 +190,16 @@ defmodule AgentLoop.Security do
     (String.starts_with?(path, "/home") or String.starts_with?(path, "/data/data"))
   end
 
+  @doc "Check if a command contains a pipe operator."
+  @spec has_pipe(String.t()) :: boolean()
+  def has_pipe(cmd) do
+    String.starts_with?(cmd, "|")
+  end
+
+  @doc "Check if a path is absolute (starts with /)."
+  @spec is_absolute_path(String.t()) :: boolean()
+  def is_absolute_path(path) do
+    String.starts_with?(path, "/")
+  end
+
 end

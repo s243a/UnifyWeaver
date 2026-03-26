@@ -156,6 +156,18 @@ impl CostTracker {
         return self.total_input_tokens > self.total_output_tokens;
     }
 
+    #[allow(dead_code, unused_variables)]
+    /// Check if output tokens exceed input tokens.
+    pub fn is_output_heavy(&self) -> bool {
+        return self.total_output_tokens > self.total_input_tokens;
+    }
+
+    #[allow(dead_code, unused_variables)]
+    /// Check if total cost is exactly zero.
+    pub fn is_zero_cost(&self) -> bool {
+        return self.total_cost <= 0.0;
+    }
+
 }
 
 #[allow(dead_code, unused_variables)]

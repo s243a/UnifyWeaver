@@ -141,3 +141,18 @@
   (> count limit)
 )
 
+(defn under-limit
+  "Check if session count is strictly below a limit."
+  [count limit]
+  (< count limit)
+)
+
+(defn overflow-count
+  "Return how many sessions exceed the limit. Returns 0 if under limit."
+  [count limit]
+  (if (<= count limit)
+      0
+      (- count limit)
+  )
+)
+

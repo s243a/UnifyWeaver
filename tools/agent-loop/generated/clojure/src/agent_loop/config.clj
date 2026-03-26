@@ -163,3 +163,15 @@
   (not (= (:debug state) "true"))
 )
 
+(defn has-model
+  "Check if a model is configured in settings."
+  [state]
+  (contains? (:settings state) "model")
+)
+
+(defn has-api-key
+  "Check if an API key is configured in settings."
+  [state]
+  (contains? (:settings state) "api_key")
+)
+

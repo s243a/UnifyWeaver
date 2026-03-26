@@ -218,6 +218,22 @@ has_room(State, Result) :-
     length(State.messages, Result) < State.max_messages
     ).
 
+%% Check if context usage exceeds threshold percentage of max_messages. Returns false if unlimited.
+is_near_full(State, Threshold_pct, Result) :-
+    (State.max_messages =< 0 ->
+        Result = false
+    ;
+    (length(State.messages, Result) * 100) > (State.max_messages * Threshold_pct)
+    ).
+
+%% Return context usage as percentage. Returns 0.0 if unlimited.
+usage_pct(State, Result) :-
+    (State.max_messages =< 0 ->
+        Result = 0.0
+    ;
+    ((float(length(State.messages, Result)) / float(State.max_messages)) * 100.0)
+    ).
+
 
 %% --- shared_logic: streaming (generated from compile_logic) ---
 
@@ -316,6 +332,14 @@ exceeds_limit(State, Limit, Result) :-
 %% Check if streaming handler is waiting (zero tokens and zero chars).
 is_waiting(State, Result) :-
     ((State.token_count =:= 0 , State.char_count =:= 0) -> Result = true ; Result = false).
+
+%% Check if any time has elapsed during streaming.
+has_elapsed(State, Result) :-
+    (State.elapsed > 0.0 -> Result = true ; Result = false).
+
+%% Check if char count is at least as large as token count (sanity check).
+is_balanced(State, Result) :-
+    (State.char_count >= State.token_count -> Result = true ; Result = false).
 
 
 %% --- shared_logic: tool_cache (generated from compile_logic) ---
@@ -469,6 +493,14 @@ total_tools(State, Result) :-
 is_response(Method, Result) :-
     (atom_concat('result', _, Method) -> Result = true ; Result = false).
 
+%% Check if a JSON-RPC method is the initialize handshake.
+is_initialize(Method, Result) :-
+    (Method == "Initialize" -> Result = true ; Result = false).
+
+%% Check if a JSON-RPC method is the shutdown request.
+is_shutdown(Method, Result) :-
+    (Method == "Shutdown" -> Result = true ; Result = false).
+
 
 %% --- shared_logic: retry (generated from compile_logic) ---
 
@@ -535,6 +567,14 @@ should_give_up(Error_count, Max_errors, Result) :-
 %% Estimate total wait time as base_delay * attempts.
 total_wait(Base_delay, Attempts, Result) :-
     Result is (Base_delay * float(Attempts)).
+
+%% Check if no retry attempts have been made yet.
+is_fresh(State, Result) :-
+    (State.attempt =:= 0 -> Result = true ; Result = false).
+
+%% Check if a positive base delay is configured.
+has_delay(State, Result) :-
+    (State.base_delay > 0.0 -> Result = true ; Result = false).
 
 
 %% --- shared_logic: output_parser (generated from compile_logic) ---
@@ -607,6 +647,14 @@ has_json_object(Text, Result) :-
 %% Check if content length is within max_len.
 is_short(Text, Max_len, Result) :-
     length(Text, Result) =< Max_len.
+
+%% Check if text is empty or only whitespace.
+is_blank(Text, Result) :-
+    length(normalize_space(atom(Result), Text), Result) =:= 0.
+
+%% Check if text contains a JSON array start marker.
+has_json_array(Text, Result) :-
+    (atom_concat('[', _, Text) -> Result = true ; Result = false).
 
 
 %% --- shared_logic: sessions (generated from compile_logic) ---
@@ -698,6 +746,18 @@ list_is_empty(Count, Result) :-
 %% Check if session count exceeds a given limit.
 count_exceeds(Count, Limit, Result) :-
     (Count > Limit -> Result = true ; Result = false).
+
+%% Check if session count is strictly below a limit.
+under_limit(Count, Limit, Result) :-
+    (Count < Limit -> Result = true ; Result = false).
+
+%% Return how many sessions exceed the limit. Returns 0 if under limit.
+overflow_count(Count, Limit, Result) :-
+    (Count =< Limit ->
+        Result = 0
+    ;
+    Result is (Count - Limit)
+    ).
 
 conversation([]).
 max_iterations(0).

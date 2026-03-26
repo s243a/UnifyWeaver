@@ -140,6 +140,22 @@ defmodule AgentLoop.Sessions do
     count > limit
   end
 
+  @doc "Check if session count is strictly below a limit."
+  @spec under_limit(integer(), integer()) :: boolean()
+  def under_limit(count, limit) do
+    count < limit
+  end
+
+  @doc "Return how many sessions exceed the limit. Returns 0 if under limit."
+  @spec overflow_count(integer(), integer()) :: integer()
+  def overflow_count(count, limit) do
+    if count <= limit do
+        0
+    else
+        (count - limit)
+    end
+  end
+
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
   def save_session(%__MODULE__{} = state, session_id, name, messages) do

@@ -133,3 +133,15 @@
   (or (= tool-name "write") (= tool-name "edit"))
 )
 
+(defn is-bash
+  "Check if tool is the bash command executor."
+  [tool-name]
+  (= tool-name "bash")
+)
+
+(defn is-edit
+  "Check if tool is the file editor."
+  [tool-name]
+  (= tool-name "edit")
+)
+
