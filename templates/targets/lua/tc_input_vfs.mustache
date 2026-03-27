@@ -1,0 +1,12 @@
+
+-- Read {{base}} facts from notebook cell: {{vfs_source}}
+local cell_data = nb.read("{{vfs_source}}", "{{vfs_prop}}")
+if cell_data then
+    for line in cell_data:gmatch("[^\n]+") do
+        line = line:match("^%s*(.-)%s*$")  -- trim
+        local from, to = line:match("^(.+):(.+)$")
+        if from and to then
+            add_fact(from:match("^%s*(.-)%s*$"), to:match("^%s*(.-)%s*$"))
+        end
+    end
+end

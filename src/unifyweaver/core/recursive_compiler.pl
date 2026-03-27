@@ -36,6 +36,7 @@
 :- use_module('../targets/ruby_target', []).     % registers multifile tail/linear patterns for Ruby
 :- use_module('../targets/perl_target', []).     % registers multifile tail/linear patterns for Perl
 :- use_module(template_system).
+:- use_module(input_source).
 :- use_module(library(lists)).
 :- use_module(constraint_analyzer).
 :- use_module(optimizer).
@@ -334,6 +335,7 @@ is_linear_recursive(Pred, RecClauses) :-
 %% compile_tc_from_template(+Target, +Pred, +BasePred, +ExtraDict, -Code)
 %  Load a mustache template from templates/targets/<target>/transitive_closure.mustache
 %  and render it with pred, base, and any extra dict entries (e.g. pred_cap).
+%  Backward-compatible: always uses stdin mode (monolithic template).
 compile_tc_from_template(Target, Pred, BasePred, ExtraDict, Code) :-
     atom_string(Pred, PredStr),
     atom_string(BasePred, BaseStr),
@@ -350,6 +352,107 @@ compile_tc_from_template(Target, Pred, BasePred, ExtraDict, Code) :-
     ),
     append([pred=PredStr, base=BaseStr], ExtraDict, Dict),
     template_system:render_template(Template, Dict, Code).
+
+%% compile_tc_from_template(+Target, +Pred, +BasePred, +ExtraDict, +Options, -Code)
+%  Composable version: assembles definitions + input section + interface
+%  based on input(Mode) in Options. Falls back to monolithic template
+%  if composable templates don't exist for this target.
+compile_tc_from_template(Target, Pred, BasePred, ExtraDict, Options, Code) :-
+    input_source:resolve_input_mode(Options, InputMode),
+    atom_string(Target, TargetStr),
+    atom_string(Pred, PredStr),
+    atom_string(BasePred, BaseStr),
+    %  Check if composable templates exist for this target
+    format(string(DefRelPath), 'templates/targets/~w/tc_definitions.mustache', [TargetStr]),
+    format(string(DefVfsPath), '/user/templates/targets/~w/tc_definitions.mustache', [TargetStr]),
+    (   (exists_file(DefRelPath) ; exists_file(DefVfsPath))
+    ->  %% Composable path: definitions + input section + interface
+        compile_tc_composable(Target, TargetStr, Pred, PredStr, BasePred, BaseStr,
+                              ExtraDict, InputMode, Options, Code)
+    ;   %% Fallback: monolithic template (stdin only)
+        (   InputMode \= stdin
+        ->  format(user_error,
+                   'Warning: target ~w has no composable templates, falling back to stdin~n',
+                   [Target])
+        ;   true
+        ),
+        compile_tc_from_template(Target, Pred, BasePred, ExtraDict, Code)
+    ).
+
+%% compile_tc_composable/10
+%  Assemble code from composable template parts.
+compile_tc_composable(Target, TargetStr, _Pred, PredStr, BasePred, BaseStr,
+                      ExtraDict, InputMode, Options, Code) :-
+    %% 1. Load and render definitions
+    load_tc_part(TargetStr, "tc_definitions", DefTemplate),
+    append([pred=PredStr, base=BaseStr], ExtraDict, BaseDict),
+    template_system:render_template(DefTemplate, BaseDict, DefCode),
+    %% 2. Load and render input section
+    input_mode_template_name(InputMode, InputTemplateName),
+    load_tc_part(TargetStr, InputTemplateName, InputTemplate),
+    build_input_dict(Target, BasePred, InputMode, Options, BaseDict, InputDict),
+    template_system:render_template(InputTemplate, InputDict, InputCode),
+    %% 3. Load and render interface (CLI for stdin/file, none for embedded/function)
+    (   input_mode_has_cli(InputMode)
+    ->  load_tc_part(TargetStr, "tc_interface_cli", InterfaceTemplate),
+        template_system:render_template(InterfaceTemplate, BaseDict, InterfaceCode)
+    ;   InterfaceCode = ""
+    ),
+    %% 4. Concatenate
+    atomic_list_concat([DefCode, InputCode, InterfaceCode], Code).
+
+%% input_mode_template_name(+Mode, -TemplateName)
+input_mode_template_name(stdin, "tc_input_stdin").
+input_mode_template_name(embedded, "tc_input_embedded").
+input_mode_template_name(file(_), "tc_input_file").
+input_mode_template_name(vfs(_), "tc_input_vfs").
+input_mode_template_name(vfs(_, _), "tc_input_vfs").
+input_mode_template_name(function, "tc_input_function").
+
+%% input_mode_has_cli(+Mode)
+%  CLI interface is only emitted for stdin and file modes.
+input_mode_has_cli(stdin).
+input_mode_has_cli(file(_)).
+
+%% build_input_dict(+Target, +BasePred, +InputMode, +Options, +BaseDict, -InputDict)
+%  Build the template dictionary for the input section.
+build_input_dict(Target, BasePred, embedded, Options, BaseDict, InputDict) :-
+    %% Generate seed code from asserted Prolog facts
+    (   member(module(Module), Options)
+    ->  true
+    ;   Module = user
+    ),
+    input_source:base_seed_code(Target, Module, BasePred, SeedCode),
+    append(BaseDict, [seed_code=SeedCode], InputDict).
+
+build_input_dict(_Target, _BasePred, file(Path), _Options, BaseDict, InputDict) :-
+    atom_string(Path, PathStr),
+    append(BaseDict, [input_path=PathStr], InputDict).
+
+build_input_dict(_Target, _BasePred, vfs(Cell), _Options, BaseDict, InputDict) :-
+    atom_string(Cell, CellStr),
+    append(BaseDict, [vfs_source=CellStr, vfs_prop=".output"], InputDict).
+
+build_input_dict(_Target, _BasePred, vfs(Cell, Prop), _Options, BaseDict, InputDict) :-
+    atom_string(Cell, CellStr),
+    atom_string(Prop, PropStr),
+    append(BaseDict, [vfs_source=CellStr, vfs_prop=PropStr], InputDict).
+
+build_input_dict(_Target, _BasePred, stdin, _Options, BaseDict, BaseDict).
+build_input_dict(_Target, _BasePred, function, _Options, BaseDict, BaseDict).
+
+%% load_tc_part(+TargetStr, +PartName, -Template)
+%  Load a template part, trying relative then VFS path.
+load_tc_part(TargetStr, PartName, Template) :-
+    format(string(RelPath), 'templates/targets/~w/~w.mustache', [TargetStr, PartName]),
+    format(string(VfsPath), '/user/templates/targets/~w/~w.mustache', [TargetStr, PartName]),
+    (   exists_file(RelPath)
+    ->  read_file_to_string(RelPath, Template, [])
+    ;   exists_file(VfsPath)
+    ->  read_file_to_string(VfsPath, Template, [])
+    ;   format(user_error, 'Template part not found: ~w (tried ~w)~n', [RelPath, VfsPath]),
+        fail
+    ).
 
 %% Compile transitive closure pattern
 compile_transitive_closure(bash, Pred, _Arity, BasePred, Options, GeneratedCode) :-
@@ -672,9 +775,9 @@ compile_transitive_closure(haskell, Pred, _Arity, BasePred, _Options, GeneratedC
     compile_tc_from_template(haskell, Pred, BasePred, [], GeneratedCode),
     !.
 
-%% Lua transitive closure — loaded from templates/targets/lua/transitive_closure.mustache
-compile_transitive_closure(lua, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(lua, Pred, BasePred, [], GeneratedCode),
+%% Lua transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(lua, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(lua, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
 compile_transitive_closure(Target, Pred, Arity, BasePred, _Options, _GeneratedCode) :-
