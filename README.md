@@ -272,7 +272,9 @@ includes:
   inside supported guarded branch bodies, and simple post-call arithmetic
   recombination, including branch-local post-call arithmetic steps inside
   those supported guarded branch bodies, over `value`, `left_result`,
-  `right_result`, and any threaded context args,
+  `right_result`, and any threaded context args, including mixed-shape
+  SCCs where different predicates in the same group use different
+  supported shared-call or guarded branch-body forms,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback

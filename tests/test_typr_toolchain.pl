@@ -2609,6 +2609,115 @@ test(structural_tree_dual_mutual_integer_context_branch_local_recombine_output_c
     retractall(user:typr_mutual_weight_even_tree_branch_part(_, _, _)),
     retractall(user:typr_mutual_weight_odd_tree_branch_part(_, _, _)).
 
+test(structural_tree_dual_mutual_asymmetric_boolean_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_asym([])),
+    assertz(user:(typr_mutual_even_tree_asym([_, L, R]) :-
+        typr_mutual_odd_tree_asym(L),
+        typr_mutual_odd_tree_asym(R)
+    )),
+    assertz(user:typr_mutual_odd_tree_asym([_, [], []])),
+    assertz(user:(typr_mutual_odd_tree_asym([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_even_tree_asym(L),
+            typr_mutual_even_tree_asym(R)
+        ;   typr_mutual_even_tree_asym(R),
+            typr_mutual_even_tree_asym(L)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_asym/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_asym/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_asym/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_asym/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_asym/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_even_tree_asym(_)),
+    retractall(user:typr_mutual_odd_tree_asym(_)).
+
+test(structural_tree_dual_mutual_integer_asymmetric_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_tree_asym([], 0)),
+    assertz(user:(typr_mutual_sum_even_tree_asym([V, L, R], S) :-
+        typr_mutual_sum_odd_tree_asym(L, SL),
+        typr_mutual_sum_odd_tree_asym(R, SR),
+        S is V + SL + SR
+    )),
+    assertz(user:typr_mutual_sum_odd_tree_asym([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_tree_asym([V, L, R], S) :-
+        ( V > 0 ->
+            typr_mutual_sum_even_tree_asym(L, SL),
+            typr_mutual_sum_even_tree_asym(R, SR)
+        ;   typr_mutual_sum_even_tree_asym(R, SR),
+            typr_mutual_sum_even_tree_asym(L, SL)
+        ),
+        S is V - SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_asym/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_asym/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_asym/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_asym/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_tree_asym/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_tree_asym/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_tree_asym/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_sum_even_tree_asym(_, _)),
+    retractall(user:typr_mutual_sum_odd_tree_asym(_, _)).
+
+test(structural_tree_dual_mutual_integer_context_asymmetric_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_even_tree_asym([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_even_tree_asym([V, L, R], W, S) :-
+        typr_mutual_weight_odd_tree_asym(L, W, SL),
+        typr_mutual_weight_odd_tree_asym(R, W, SR),
+        S is (V * W) + SL + SR
+    )),
+    assertz(user:typr_mutual_weight_odd_tree_asym([_, [], []], _W1, 1)),
+    assertz(user:(typr_mutual_weight_odd_tree_asym([V, L, R], W, S) :-
+        ( V > W ->
+            typr_mutual_weight_even_tree_asym(L, W, SL),
+            typr_mutual_weight_even_tree_asym(R, W, SR)
+        ;   typr_mutual_weight_even_tree_asym(R, W, SR),
+            typr_mutual_weight_even_tree_asym(L, W, SL)
+        ),
+        S is (V * W) - SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_asym/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_asym/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_asym/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_asym/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_asym/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_asym/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_even_tree_asym/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_odd_tree_asym/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_even_tree_asym/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_weight_even_tree_asym(_, _, _)),
+    retractall(user:typr_mutual_weight_odd_tree_asym(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

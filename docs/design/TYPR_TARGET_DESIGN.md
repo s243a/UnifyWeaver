@@ -105,7 +105,9 @@ This document focuses on architecture and rollout choices specific to TypR.
      arithmetic recombination, including branch-local post-call
      arithmetic steps inside those supported guarded branch bodies, over
      `value`, `left_result`, `right_result`, and any threaded context
-     args, emitted as TypR
+     args, including mixed-shape SCCs where different predicates in the
+     same group use different supported shared-call or guarded branch-
+     body forms, emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving

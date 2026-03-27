@@ -433,8 +433,8 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_recursion_path
     once(sub_string(Code, _, _, _, "let typr_mutual_even_tree <- fn(arg1: [#N, Any]): bool")),
     once(sub_string(Code, _, _, _, "let typr_mutual_odd_tree <- fn(arg1: [#N, Any]): bool")),
     once(sub_string(Code, _, _, _, "typr_mutual_even_tree_typr_mutual_odd_tree_memo <- new.env(hash=TRUE, parent=emptyenv())")),
-    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree:\", paste(deparse(current_input), collapse=\"\"));")),
-    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_odd_tree:\", paste(deparse(current_input), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree:\", paste(deparse(list(current_input)), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_odd_tree:\", paste(deparse(list(current_input)), collapse=\"\"));")),
     once(sub_string(Code, _, _, _, "length(current_input) == 0")),
     once(sub_string(Code, _, _, _, "length(current_input) == 3 && length(.subset2(current_input, 2)) == 0 && length(.subset2(current_input, 3)) == 0")),
     once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_impl(.subset2(current_input, 2));")),
@@ -470,8 +470,8 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_prework_path) 
     once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_pre <- fn(arg1: [#N, Any]): bool")),
     once(sub_string(Code, _, _, _, "let typr_mutual_odd_tree_pre <- fn(arg1: [#N, Any]): bool")),
     once(sub_string(Code, _, _, _, "typr_mutual_even_tree_pre_typr_mutual_odd_tree_pre_memo <- new.env(hash=TRUE, parent=emptyenv())")),
-    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree_pre:\", paste(deparse(current_input), collapse=\"\"));")),
-    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_odd_tree_pre:\", paste(deparse(current_input), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_even_tree_pre:\", paste(deparse(list(current_input)), collapse=\"\"));")),
+    once(sub_string(Code, _, _, _, "key <- paste0(\"typr_mutual_odd_tree_pre:\", paste(deparse(list(current_input)), collapse=\"\"));")),
     once(sub_string(Code, _, _, _, "length(current_input) == 0")),
     once(sub_string(Code, _, _, _, "length(current_input) == 3 && length(.subset2(current_input, 2)) == 0 && length(.subset2(current_input, 3)) == 0")),
     once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_pre_impl(.subset2(current_input, 2));")),
@@ -3659,6 +3659,110 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_integer_contex
     once(sub_string(Code, _, _, _, "result = ((((.subset2(current_input, 1) * current_ctx) - left_result) + right_result) + current_ctx);")),
     \+ sub_string(Code, _, _, _, "left_result = typr_mutual_weight_odd_tree_branch_part_impl(.subset2(current_input, 3), current_ctx);"),
     \+ sub_string(Code, _, _, _, "right_result = typr_mutual_weight_odd_tree_branch_part_impl(.subset2(current_input, 2), current_ctx);"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_asymmetric_boolean_group) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_even_tree_asym([])),
+    assertz(user:(typr_mutual_even_tree_asym([_, L, R]) :-
+        typr_mutual_odd_tree_asym(L),
+        typr_mutual_odd_tree_asym(R)
+    )),
+    assertz(user:typr_mutual_odd_tree_asym([_, [], []])),
+    assertz(user:(typr_mutual_odd_tree_asym([V, L, R]) :-
+        ( V > 0 ->
+            typr_mutual_even_tree_asym(L),
+            typr_mutual_even_tree_asym(R)
+        ;   typr_mutual_even_tree_asym(R),
+            typr_mutual_even_tree_asym(L)
+        )
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_even_tree_asym/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_odd_tree_asym/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_mutual_even_tree_asym/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_mutual_odd_tree_asym/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_mutual_even_tree_asym/1, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_even_tree_asym/1, typr_mutual_odd_tree_asym/1")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_even_tree_asym <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "typr_mutual_even_tree_asym_impl <- function(current_input) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_odd_tree_asym_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_odd_tree_asym_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 0) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_even_tree_asym_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_even_tree_asym_impl(.subset2(current_input, 2));")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_integer_asymmetric_group) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_tree_asym([], 0)),
+    assertz(user:(typr_mutual_sum_even_tree_asym([V, L, R], S) :-
+        typr_mutual_sum_odd_tree_asym(L, SL),
+        typr_mutual_sum_odd_tree_asym(R, SR),
+        S is V + SL + SR
+    )),
+    assertz(user:typr_mutual_sum_odd_tree_asym([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_tree_asym([V, L, R], S) :-
+        ( V > 0 ->
+            typr_mutual_sum_even_tree_asym(L, SL),
+            typr_mutual_sum_even_tree_asym(R, SR)
+        ;   typr_mutual_sum_even_tree_asym(R, SR),
+            typr_mutual_sum_even_tree_asym(L, SL)
+        ),
+        S is V - SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_asym/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_tree_asym/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_asym/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_tree_asym/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_tree_asym/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_tree_asym/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_tree_asym/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_sum_even_tree_asym/2, typr_mutual_sum_odd_tree_asym/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_sum_even_tree_asym <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_sum_even_tree_asym_impl <- function(current_input) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_sum_odd_tree_asym_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_sum_odd_tree_asym_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 0) {")),
+    once(sub_string(Code, _, _, _, "result = ((.subset2(current_input, 1) - left_result) + right_result);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_dual_mutual_integer_context_asymmetric_group) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_even_tree_asym([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_even_tree_asym([V, L, R], W, S) :-
+        typr_mutual_weight_odd_tree_asym(L, W, SL),
+        typr_mutual_weight_odd_tree_asym(R, W, SR),
+        S is (V * W) + SL + SR
+    )),
+    assertz(user:typr_mutual_weight_odd_tree_asym([_, [], []], _W1, 1)),
+    assertz(user:(typr_mutual_weight_odd_tree_asym([V, L, R], W, S) :-
+        ( V > W ->
+            typr_mutual_weight_even_tree_asym(L, W, SL),
+            typr_mutual_weight_even_tree_asym(R, W, SR)
+        ;   typr_mutual_weight_even_tree_asym(R, W, SR),
+            typr_mutual_weight_even_tree_asym(L, W, SL)
+        ),
+        S is (V * W) - SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_asym/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_asym/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_even_tree_asym/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_asym/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_asym/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_odd_tree_asym/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_even_tree_asym/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_odd_tree_asym/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_even_tree_asym/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_weight_even_tree_asym/3, typr_mutual_weight_odd_tree_asym/3")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_weight_even_tree_asym <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_weight_even_tree_asym_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_weight_odd_tree_asym_impl(.subset2(current_input, 2), current_ctx);")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_weight_odd_tree_asym_impl(.subset2(current_input, 3), current_ctx);")),
+    once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > current_ctx) {")),
+    once(sub_string(Code, _, _, _, "result = (((.subset2(current_input, 1) * current_ctx) - left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
