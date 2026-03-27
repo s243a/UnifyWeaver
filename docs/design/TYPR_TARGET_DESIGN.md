@@ -108,8 +108,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      args, including mixed-shape SCCs where different predicates in the
      same group use different supported one-subtree, shared-call, or
      guarded branch-body forms, and mixed tree/list structural SCCs
-     where tree-shaped predicates recurse through paired-forest helpers
-     while list-shaped predicates recurse through head/tail decomposition,
+     where tree-shaped predicates recurse through paired-forest helpers,
+     including guarded branch-local paired-forest call selection on the
+     tree side, while list-shaped predicates recurse through head/tail
+     decomposition,
      emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
