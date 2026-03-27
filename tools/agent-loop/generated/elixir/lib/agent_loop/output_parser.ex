@@ -13,8 +13,8 @@ defmodule AgentLoop.OutputParser do
 # --- shared_logic: output_parser (generated from compile_logic) ---
 
   @doc "Extract JSON blocks: try fenced code blocks first, fall back to bare objects."
-  @spec extract_json(t(), String.t()) :: [map()]
-  def extract_json(%__MODULE__{} = state, text) do
+  @spec extract_json(map(), String.t()) :: [map()]
+  def extract_json(state, text) do
     results = extract_fenced(text)
     if results != [] do
         results

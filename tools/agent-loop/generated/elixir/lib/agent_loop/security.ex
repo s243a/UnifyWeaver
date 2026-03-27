@@ -58,37 +58,37 @@ defmodule AgentLoop.Security do
   ]
 
   @guarded_extra_blocks [
-    r'^sudo\s',
-    r'\bbase64\b.*\|\s*(bash|sh)',
-    r'\beval\s',
-    r'\bnohup\s',
-    r'\bdisown\s',
-    r'&\s*$',
-    r'\bpython[23]?\s+-c\s.*os\.system',
-    r'\bpython[23]?\s+-c\s.*subprocess',
-    r'\bpython[23]?\s+-c\s.*__import__',
-    r'\bnode\s+-e\s.*child_process',
+    "^sudo\s",
+    "\bbase64\b.*\|\s*(bash|sh)",
+    "\beval\s",
+    "\bnohup\s",
+    "\bdisown\s",
+    "&\s*$",
+    "\bpython[23]?\s+-c\s.*os\.system",
+    "\bpython[23]?\s+-c\s.*subprocess",
+    "\bpython[23]?\s+-c\s.*__import__",
+    "\bnode\s+-e\s.*child_process",
   ]
 
   @paranoid_safe [
-    r'^ls(\s|$)',
-    r'^cat\s',
-    r'^head\s',
-    r'^tail\s',
-    r'^grep\s',
-    r'^echo\s',
-    r'^pwd$',
-    r'^cd\s',
-    r'^wc\s',
-    r'^sort\s',
-    r'^diff\s',
-    r'^git\s+(status|log|diff|show|branch)',
+    "^ls(\s|$)",
+    "^cat\s",
+    "^head\s",
+    "^tail\s",
+    "^grep\s",
+    "^echo\s",
+    "^pwd$",
+    "^cd\s",
+    "^wc\s",
+    "^sort\s",
+    "^diff\s",
+    "^git\s+(status|log|diff|show|branch)",
   ]
 
   @paranoid_confirm [
-    r'^find\s+(?!.*(-exec|-execdir|-delete|-ok)\b)[^;|&]*$',
-    r'^python3\s+[^-].*\.py$',
-    r'^node\s+[^-].*\.js$',
+    "^find\s+(?!.*(-exec|-execdir|-delete|-ok)\b)[^;|&]*$",
+    "^python3\s+[^-].*\.py$",
+    "^node\s+[^-].*\.js$",
   ]
 
   @doc "Get a security profile by name."

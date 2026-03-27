@@ -154,19 +154,19 @@ impl McpManager {
 }
 
 impl McpClient {
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the reason for the last MCP disconnection, or empty string if connected.
     pub fn disconnect_reason(&self) -> String {
         return self.disconnect_reason.clone();
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the name of this MCP server/client instance.
     pub fn server_name(&self) -> String {
         return self.name.clone();
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the current request ID counter (number of requests sent).
     pub fn request_count(&self) -> i64 {
         return self.request_id as i64;
@@ -175,19 +175,19 @@ impl McpClient {
 }
 
 impl McpManager {
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if the MCP manager has any connected clients.
     pub fn has_clients(&self) -> bool {
         return (self.clients.len() as i64) > 0;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return total number of MCP tools discovered.
     pub fn total_tools(&self) -> i64 {
         return self.tools.len() as i64;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if the number of connected clients has reached max_clients.
     pub fn clients_at_capacity(&self, max_clients: i64) -> bool {
         return (self.clients.len() as i64) >= max_clients;

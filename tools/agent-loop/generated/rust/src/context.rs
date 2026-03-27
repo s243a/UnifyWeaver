@@ -261,31 +261,31 @@ impl ContextManager {
         out
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Clear all messages from context.
     pub fn clear(&mut self) {
         self.messages.clear();
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return number of messages in context.
     pub fn len(&self) -> usize {
         return self.messages.len();
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if context has no messages.
     pub fn is_empty(&self) -> bool {
         return self.messages.is_empty();
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Estimate token count using chars/4 heuristic.
     pub fn estimate_tokens(&self) -> usize {
         return self.char_count() / 4;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the remaining token budget. Returns -1 if no max_tokens set.
     pub fn token_budget(&self) -> i64 {
         if self.max_tokens <= 0 {
@@ -294,7 +294,7 @@ impl ContextManager {
         return self.max_tokens - self.token_count;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return remaining word budget. Returns -1 if no max_words set.
     pub fn word_budget(&self) -> i64 {
         if self.max_words <= 0 {
@@ -303,7 +303,7 @@ impl ContextManager {
         return self.max_words - self.token_count;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if context has reached max_messages limit. Returns false if unlimited (max_messages <= 0).
     pub fn is_full(&self) -> bool {
         if self.max_messages <= 0 {
@@ -312,7 +312,7 @@ impl ContextManager {
         return self.messages.len() >= self.max_messages;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return remaining character budget. Returns -1 if no max_chars set.
     pub fn char_budget(&self) -> i64 {
         if self.max_chars <= 0 {
@@ -321,7 +321,7 @@ impl ContextManager {
         return self.max_chars - self.token_count;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if context can accept more messages (not full or unlimited).
     pub fn has_room(&self) -> bool {
         if self.max_messages <= 0 {
@@ -330,7 +330,7 @@ impl ContextManager {
         return self.messages.len() < self.max_messages;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if context usage exceeds threshold percentage of max_messages. Returns false if unlimited.
     pub fn is_near_full(&self, threshold_pct: i64) -> bool {
         if self.max_messages <= 0 {
@@ -339,7 +339,7 @@ impl ContextManager {
         return (self.messages.len() as i64) * 100 > (self.max_messages as i64) * threshold_pct;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return context usage as percentage. Returns 0.0 if unlimited.
     pub fn usage_pct(&self) -> f64 {
         if self.max_messages <= 0 {
@@ -348,31 +348,28 @@ impl ContextManager {
         return ((self.messages.len() as f64) / (self.max_messages as f64)) * 100.0;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if context mode is set to continue (keep full history).
     pub fn is_continue_mode(&self) -> bool {
         return self.context_mode == "continue";
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if context mode is set to sliding window.
     pub fn is_sliding_mode(&self) -> bool {
         return self.context_mode == "sliding";
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return how many messages to trim. 0 if under limit or unlimited.
     pub fn trim_count(&self) -> i64 {
-        if self.max_messages <= 0 {
-            return 0;
-        }
-        if (self.messages.len() as i64) <= (self.max_messages as i64) {
+        if (self.max_messages <= 0 || (self.messages.len() as i64) <= (self.max_messages as i64)) {
             return 0;
         }
         return (self.messages.len() as i64) - (self.max_messages as i64);
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the role of the first message, or empty string if no messages.
     pub fn first_role(&self) -> String {
         if self.messages.len() == 0 {
@@ -381,7 +378,7 @@ impl ContextManager {
         return self.messages.first().cloned().map(|x| x.role.clone()).unwrap_or_default();
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the role of the last message, or empty string if no messages.
     pub fn last_role(&self) -> String {
         if self.messages.len() == 0 {

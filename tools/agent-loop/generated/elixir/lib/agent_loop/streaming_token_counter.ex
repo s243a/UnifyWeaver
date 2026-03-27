@@ -21,60 +21,60 @@ defmodule AgentLoop.StreamingTokenCounter do
 # --- shared_logic: streaming (generated from compile_logic) ---
 
   @doc "Process a streamed token chunk: print it, update char and token counts."
-  @spec on_token(t(), String.t()) :: t()
-  def on_token(%__MODULE__{} = state, token) do
+  @spec on_token(map(), String.t()) :: map()
+  def on_token(state, token) do
     IO.write(token)
     state = %{state | char_count: state.char_count + String.length(token)}
     %{state | token_count: max(1, div(state.char_count, 4))}
   end
 
   @doc "Format a one-line summary of streaming stats."
-  @spec format_summary(t()) :: String.t()
-  def format_summary(%__MODULE__{} = state) do
+  @spec format_summary(map()) :: String.t()
+  def format_summary(state) do
     "#{state.token_count} tokens, #{state.char_count} chars"
   end
 
   @doc "Reset streaming counters to zero."
-  @spec reset(t()) :: t()
-  def reset(%__MODULE__{} = state) do
+  @spec reset(map()) :: map()
+  def reset(state) do
     state = %{state | token_count: 0}
     %{state | char_count: 0}
   end
 
   @doc "Check if live token display is enabled."
-  @spec is_live(t()) :: boolean()
-  def is_live(%__MODULE__{} = state) do
+  @spec is_live(map()) :: boolean()
+  def is_live(state) do
     state.show_live
   end
 
   @doc "Return the current character count from streaming."
-  @spec streaming_char_count(t()) :: integer()
-  def streaming_char_count(%__MODULE__{} = state) do
+  @spec streaming_char_count(map()) :: integer()
+  def streaming_char_count(state) do
     state.char_count
   end
 
   @doc "Return the current approximate token count from streaming."
-  @spec streaming_token_count(t()) :: integer()
-  def streaming_token_count(%__MODULE__{} = state) do
+  @spec streaming_token_count(map()) :: integer()
+  def streaming_token_count(state) do
     state.token_count
   end
 
   @doc "Reset token and character counters to zero."
-  @spec reset_counts(t()) :: t()
-  def reset_counts(%__MODULE__{} = state) do
+  @spec reset_counts(map()) :: map()
+  def reset_counts(state) do
     state = %{state | token_count: 0}
     %{state | char_count: 0}
   end
 
   @doc "Check if streaming has received any tokens (char_count > 0)."
-  @spec is_active(t()) :: boolean()
-  def is_active(%__MODULE__{} = state) do
+  @spec is_active(map()) :: boolean()
+  def is_active(state) do
     state.char_count > 0
   end
 
   @doc "Check if the streaming counter is idle (no tokens counted)."
-  @spec is_idle(t()) :: boolean()
-  def is_idle(%__MODULE__{} = state) do
+  @spec is_idle(map()) :: boolean()
+  def is_idle(state) do
     state.token_count == 0
   end
 
@@ -85,14 +85,14 @@ defmodule AgentLoop.StreamingTokenCounter do
   end
 
   @doc "Return the total number of bytes received in the stream."
-  @spec byte_count(t()) :: integer()
-  def byte_count(%__MODULE__{} = state) do
+  @spec byte_count(map()) :: integer()
+  def byte_count(state) do
     Enum.count(state.buffer)
   end
 
   @doc "Return average tokens per second. Returns 0.0 if elapsed time is zero."
-  @spec avg_token_rate(t()) :: float()
-  def avg_token_rate(%__MODULE__{} = state) do
+  @spec avg_token_rate(map()) :: float()
+  def avg_token_rate(state) do
     if state.elapsed <= 0.0 do
         0.0
     else
@@ -101,14 +101,14 @@ defmodule AgentLoop.StreamingTokenCounter do
   end
 
   @doc "Check if the streaming handler is actively receiving tokens (token_count > 0)."
-  @spec is_active(t()) :: boolean()
-  def is_active(%__MODULE__{} = state) do
+  @spec is_active(map()) :: boolean()
+  def is_active(state) do
     state.token_count > 0
   end
 
   @doc "Return average characters per token. Returns 0.0 if no tokens."
-  @spec chars_per_token(t()) :: float()
-  def chars_per_token(%__MODULE__{} = state) do
+  @spec chars_per_token(map()) :: float()
+  def chars_per_token(state) do
     if state.token_count == 0 do
         0.0
     else
@@ -117,8 +117,8 @@ defmodule AgentLoop.StreamingTokenCounter do
   end
 
   @doc "Estimate streaming progress as percentage of max_tokens. Returns 0.0 if max_tokens is 0."
-  @spec progress_pct(t(), integer()) :: float()
-  def progress_pct(%__MODULE__{} = state, max_tokens) do
+  @spec progress_pct(map(), integer()) :: float()
+  def progress_pct(state, max_tokens) do
     if max_tokens == 0 do
         0.0
     else
@@ -127,8 +127,8 @@ defmodule AgentLoop.StreamingTokenCounter do
   end
 
   @doc "Estimate remaining tokens. Returns -1 if max_tokens is 0."
-  @spec tokens_remaining(t(), integer()) :: integer()
-  def tokens_remaining(%__MODULE__{} = state, max_tokens) do
+  @spec tokens_remaining(map(), integer()) :: integer()
+  def tokens_remaining(state, max_tokens) do
     if max_tokens == 0 do
         -1
     else
@@ -137,38 +137,38 @@ defmodule AgentLoop.StreamingTokenCounter do
   end
 
   @doc "Check if at least one token has been received."
-  @spec has_started(t()) :: boolean()
-  def has_started(%__MODULE__{} = state) do
+  @spec has_started(map()) :: boolean()
+  def has_started(state) do
     state.token_count > 0
   end
 
   @doc "Check if token count exceeds a given limit."
-  @spec exceeds_limit(t(), integer()) :: boolean()
-  def exceeds_limit(%__MODULE__{} = state, limit) do
+  @spec exceeds_limit(map(), integer()) :: boolean()
+  def exceeds_limit(state, limit) do
     state.token_count > limit
   end
 
   @doc "Check if streaming handler is waiting (zero tokens and zero chars)."
-  @spec is_waiting(t()) :: boolean()
-  def is_waiting(%__MODULE__{} = state) do
+  @spec is_waiting(map()) :: boolean()
+  def is_waiting(state) do
     (state.token_count == 0 and state.char_count == 0)
   end
 
   @doc "Check if any time has elapsed during streaming."
-  @spec has_elapsed(t()) :: boolean()
-  def has_elapsed(%__MODULE__{} = state) do
+  @spec has_elapsed(map()) :: boolean()
+  def has_elapsed(state) do
     state.elapsed > 0.0
   end
 
   @doc "Check if char count is at least as large as token count (sanity check)."
-  @spec is_balanced(t()) :: boolean()
-  def is_balanced(%__MODULE__{} = state) do
+  @spec is_balanced(map()) :: boolean()
+  def is_balanced(state) do
     state.char_count >= state.token_count
   end
 
   @doc "Return buffer usage as percentage of max_bytes. Returns 0.0 if max is 0."
-  @spec buffer_pct(t(), integer()) :: float()
-  def buffer_pct(%__MODULE__{} = state, max_bytes) do
+  @spec buffer_pct(map(), integer()) :: float()
+  def buffer_pct(state, max_bytes) do
     if max_bytes == 0 do
         0.0
     else
@@ -177,14 +177,14 @@ defmodule AgentLoop.StreamingTokenCounter do
   end
 
   @doc "Check if live display mode is enabled."
-  @spec is_live_mode(t()) :: boolean()
-  def is_live_mode(%__MODULE__{} = state) do
+  @spec is_live_mode(map()) :: boolean()
+  def is_live_mode(state) do
     state.show_live == "true"
   end
 
   @doc "Format a summary of streaming stats: token count and char count."
-  @spec format_stats(t()) :: String.t()
-  def format_stats(%__MODULE__{} = state) do
+  @spec format_stats(map()) :: String.t()
+  def format_stats(state) do
     "#{state.token_count} tokens, #{state.char_count} chars"
   end
 

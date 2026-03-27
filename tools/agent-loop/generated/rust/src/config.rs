@@ -228,19 +228,19 @@ pub static CLI_OVERRIDES: &[CliOverride] = &[
 
 
 impl ConfigLoader {
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if a configuration key exists in the settings map.
     pub fn has_key(&self, key: &str) -> bool {
         return self.settings.contains_key(key);
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if debug mode is enabled in configuration.
     pub fn is_debug(&self) -> bool {
         return self.debug == "true";
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the value to use for a config key: the provided value if non-empty, otherwise look up key in settings.
     pub fn merge(&self, key: &str, value: &str) -> String {
         if value.len() > 0 {
@@ -249,73 +249,73 @@ impl ConfigLoader {
         return self.settings.get(key).cloned().unwrap_or_else(|| "".to_string());
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the number of configuration fields currently set.
     pub fn field_count(&self) -> i64 {
         return self.settings.len() as i64;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if the configuration has no settings.
     pub fn is_empty(&self) -> bool {
         return self.settings.len() == 0;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if no custom backend is configured (settings map is empty or has no backend key).
     pub fn is_default_backend(&self) -> bool {
         return !(self.settings.contains_key("backend"));
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the number of keys in the settings map.
     pub fn key_count(&self) -> i64 {
         return self.settings.len() as i64;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if a backend is configured in settings.
     pub fn has_backend(&self) -> bool {
         return self.settings.contains_key("backend");
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if debug mode is disabled (production mode).
     pub fn is_production(&self) -> bool {
         return !(self.debug == "true");
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if a model is configured in settings.
     pub fn has_model(&self) -> bool {
         return self.settings.contains_key("model");
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if an API key is configured in settings.
     pub fn has_api_key(&self) -> bool {
         return self.settings.contains_key("api_key");
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if streaming is configured in settings.
     pub fn has_stream(&self) -> bool {
         return self.settings.contains_key("stream");
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if max_tokens is configured.
     pub fn has_max_tokens(&self) -> bool {
         return self.settings.contains_key("max_tokens");
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Look up a config key, returning default_val if not found.
     pub fn get_or_default(&self, key: &str, default_val: &str) -> String {
         return self.settings.get(key).cloned().unwrap_or_else(|| default_val.to_string());
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if streaming mode is enabled in settings.
     pub fn is_streaming(&self) -> bool {
         return self.settings.contains_key("stream");

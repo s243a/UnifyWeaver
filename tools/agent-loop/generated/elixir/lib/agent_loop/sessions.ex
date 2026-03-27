@@ -13,14 +13,14 @@ defmodule AgentLoop.Sessions do
 # --- shared_logic: sessions (generated from compile_logic) ---
 
   @doc "Build the filesystem path for a session file."
-  @spec session_path(t(), String.t()) :: String.t()
-  def session_path(%__MODULE__{} = state, session_id) do
+  @spec session_path(map(), String.t()) :: String.t()
+  def session_path(state, session_id) do
     Path.join(state.sessions_dir, "#{session_id}.json")
   end
 
   @doc "Check if a session file exists on disk."
-  @spec session_exists(t(), String.t()) :: boolean()
-  def session_exists(%__MODULE__{} = state, session_id) do
+  @spec session_exists(map(), String.t()) :: boolean()
+  def session_exists(state, session_id) do
     File.exists?(Path.join(state.sessions_dir, "#{session_id}.json"))
   end
 
@@ -59,8 +59,8 @@ defmodule AgentLoop.Sessions do
   end
 
   @doc "Return the configured sessions directory path."
-  @spec session_dir(t()) :: String.t()
-  def session_dir(%__MODULE__{} = state) do
+  @spec session_dir(map()) :: String.t()
+  def session_dir(state) do
     state.sessions_dir
   end
 
@@ -176,7 +176,7 @@ defmodule AgentLoop.Sessions do
 
   @doc "Save a conversation session to disk"
   @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}
-  def save_session(%__MODULE__{} = state, session_id, name, messages) do
+  def save_session(state, session_id, name, messages) do
     path = session_path(state, session_id)
     File.mkdir_p!(Path.dirname(path))
     data = %{
@@ -191,7 +191,7 @@ defmodule AgentLoop.Sessions do
 
   @doc "Load a session from disk"
   @spec load_session(t(), String.t()) :: {:ok, map()} | {:error, String.t()}
-  def load_session(%__MODULE__{} = state, session_id) do
+  def load_session(state, session_id) do
     path = session_path(state, session_id)
     case File.read(path) do
       {:ok, content} -> Jason.decode(content)
@@ -201,7 +201,7 @@ defmodule AgentLoop.Sessions do
 
   @doc "List all saved sessions"
   @spec list_sessions(t()) :: [map()]
-  def list_sessions(%__MODULE__{} = state) do
+  def list_sessions(state) do
     dir = state.sessions_dir
     case File.ls(dir) do
       {:ok, files} ->
@@ -225,7 +225,7 @@ defmodule AgentLoop.Sessions do
 
   @doc "Delete a session file"
   @spec delete_session(t(), String.t()) :: :ok | {:error, String.t()}
-  def delete_session(%__MODULE__{} = state, session_id) do
+  def delete_session(state, session_id) do
     path = session_path(state, session_id)
     case File.rm(path) do
       :ok -> :ok

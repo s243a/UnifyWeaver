@@ -25,8 +25,8 @@ defmodule AgentLoop.MCPClient do
 # --- shared_logic: mcp (generated from compile_logic) ---
 
   @doc "Increment and return the next JSON-RPC request ID."
-  @spec next_request_id(t()) :: t()
-  def next_request_id(%__MODULE__{} = state) do
+  @spec next_request_id(map()) :: map()
+  def next_request_id(state) do
     %{state | request_id: state.request_id + 1}
     state.request_id
   end
@@ -48,44 +48,44 @@ defmodule AgentLoop.MCPClient do
   end
 
   @doc "Get the current request ID as a string for JSON-RPC message construction."
-  @spec mcp_request_id_str(t()) :: String.t()
-  def mcp_request_id_str(%__MODULE__{} = state) do
+  @spec mcp_request_id_str(map()) :: String.t()
+  def mcp_request_id_str(state) do
     "#{state.request_id}"
   end
 
   @doc "Check if the MCP client has an active connection."
-  @spec is_connected(t()) :: boolean()
-  def is_connected(%__MODULE__{} = state) do
+  @spec is_connected(map()) :: boolean()
+  def is_connected(state) do
     state.request_id > 0
   end
 
   @doc "Return the number of tools discovered from MCP servers."
-  @spec tool_count(t()) :: integer()
-  def tool_count(%__MODULE__{} = state) do
+  @spec tool_count(map()) :: integer()
+  def tool_count(state) do
     Enum.count(state.tools)
   end
 
   @doc "Check if any tools have been discovered from MCP servers."
-  @spec has_tools(t()) :: boolean()
-  def has_tools(%__MODULE__{} = state) do
+  @spec has_tools(map()) :: boolean()
+  def has_tools(state) do
     Enum.count(state.tools) > 0
   end
 
   @doc "Return the number of registered MCP server connections."
-  @spec server_count(t()) :: integer()
-  def server_count(%__MODULE__{} = state) do
+  @spec server_count(map()) :: integer()
+  def server_count(state) do
     Enum.count(state.servers)
   end
 
   @doc "Return the reason for the last MCP disconnection, or empty string if connected."
-  @spec disconnect_reason(t()) :: String.t()
-  def disconnect_reason(%__MODULE__{} = state) do
+  @spec disconnect_reason(map()) :: String.t()
+  def disconnect_reason(state) do
     state.disconnect_reason
   end
 
   @doc "Return the name of this MCP server/client instance."
-  @spec server_name(t()) :: String.t()
-  def server_name(%__MODULE__{} = state) do
+  @spec server_name(map()) :: String.t()
+  def server_name(state) do
     state.name
   end
 
@@ -102,20 +102,20 @@ defmodule AgentLoop.MCPClient do
   end
 
   @doc "Return the current request ID counter (number of requests sent)."
-  @spec request_count(t()) :: integer()
-  def request_count(%__MODULE__{} = state) do
+  @spec request_count(map()) :: integer()
+  def request_count(state) do
     state.request_id
   end
 
   @doc "Check if the MCP manager has any connected clients."
-  @spec has_clients(t()) :: boolean()
-  def has_clients(%__MODULE__{} = state) do
+  @spec has_clients(map()) :: boolean()
+  def has_clients(state) do
     Enum.count(state.clients) > 0
   end
 
   @doc "Return total number of MCP tools discovered."
-  @spec total_tools(t()) :: integer()
-  def total_tools(%__MODULE__{} = state) do
+  @spec total_tools(map()) :: integer()
+  def total_tools(state) do
     Enum.count(state.tools)
   end
 
@@ -144,8 +144,8 @@ defmodule AgentLoop.MCPClient do
   end
 
   @doc "Check if the number of connected clients has reached max_clients."
-  @spec clients_at_capacity(t(), integer()) :: boolean()
-  def clients_at_capacity(%__MODULE__{} = state, max_clients) do
+  @spec clients_at_capacity(map(), integer()) :: boolean()
+  def clients_at_capacity(state, max_clients) do
     Enum.count(state.clients) >= max_clients
   end
 
@@ -176,7 +176,7 @@ defmodule AgentLoop.MCPClient do
     payload = Jason.encode!(%{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params})
     Port.command(client.port, payload <> "\n")
     receive do
-      {^(client.port), {:data, data}} ->
+      {port_ref, {:data, data}} when port_ref == client.port ->
         case Jason.decode(data) do
           {:ok, %{"result" => result}} -> {:ok, result, client}
           {:ok, %{"error" => error}} -> {:error, inspect(error)}

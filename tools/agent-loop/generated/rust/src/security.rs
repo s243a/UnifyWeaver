@@ -97,97 +97,97 @@ pub static PARANOID_CONFIRM: &[&str] = &[
 
 // --- shared_logic: security (generated from compile_logic) ---
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a path does not contain directory traversal sequences.
 pub fn is_path_safe(path: &str) -> bool {
     return !(path.starts_with("..")) && !(path.starts_with("/.."));
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a filename is not a hidden dotfile.
 pub fn is_visible_file(filename: &str) -> bool {
     return !(filename.starts_with("."));
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a path component starts with a dot (hidden file/directory).
 pub fn is_hidden_path(path: &str) -> bool {
     return path.starts_with(".");
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a path contains .. traversal sequences.
 pub fn has_path_traversal(path: &str) -> bool {
     return path.starts_with("..");
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a command starts with a known safe prefix (ls, cat, grep, echo).
 pub fn is_safe_command(cmd: &str) -> bool {
     return (cmd.starts_with("ls") || cmd.starts_with("cat")) || (cmd.starts_with("grep") || cmd.starts_with("echo"));
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a command starts with a known dangerous prefix (rm -rf, dd, mkfs).
 pub fn is_blocked_command(cmd: &str) -> bool {
     return cmd.starts_with("rm -rf") || (cmd.starts_with("dd ") || cmd.starts_with("mkfs"));
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a path is in a writable location (not starting with /etc, /usr, /bin).
 pub fn is_writable_path(path: &str) -> bool {
     return !((path.starts_with("/etc") || (path.starts_with("/usr") || path.starts_with("/bin"))));
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a security profile requires audit logging (guarded or paranoid).
 pub fn needs_audit(profile: &str) -> bool {
     return profile == "paranoid" || profile == "guarded";
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a security profile allows auto-approval of tools (only open does).
 pub fn allows_auto(profile: &str) -> bool {
     return profile == "open";
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Return the number of available security profiles.
 pub fn profile_count(profiles: i64) -> i64 {
     return profiles;
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a path starts with /home or /data/data (Termux home).
 pub fn is_home_path(path: &str) -> bool {
     return path.starts_with("/home") || path.starts_with("/data/data");
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a command contains a pipe operator.
 pub fn has_pipe(cmd: &str) -> bool {
     return cmd.starts_with("|");
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a path is absolute (starts with /).
 pub fn is_absolute_path(path: &str) -> bool {
     return path.starts_with("/");
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if filename does not end with a dangerous extension (.sh, .exe, .bat).
 pub fn is_safe_extension(filename: &str) -> bool {
     return !((filename.ends_with(".sh") || (filename.ends_with(".exe") || filename.ends_with(".bat"))));
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if command starts with a network tool (curl, wget, ssh, scp).
 pub fn is_network_cmd(cmd: &str) -> bool {
     return (cmd.starts_with("curl") || cmd.starts_with("wget")) || (cmd.starts_with("ssh") || cmd.starts_with("scp"));
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Check if a file size is within the allowed maximum.
 pub fn file_within_limit(size_bytes: i64, max_bytes: i64) -> bool {
     return size_bytes <= max_bytes;

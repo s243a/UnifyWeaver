@@ -117,7 +117,7 @@
   [state key value]
   (if (> (count value) 0)
       (format "%s" value)
-      (get (:settings state) key )
+      (get (:settings state) key "")
   )
 )
 

@@ -55,20 +55,20 @@ defmodule AgentLoop.Retry do
   end
 
   @doc "Check if the current attempt count has reached max_retries."
-  @spec max_retries_reached(t()) :: boolean()
-  def max_retries_reached(%__MODULE__{} = state) do
+  @spec max_retries_reached(map()) :: boolean()
+  def max_retries_reached(state) do
     state.attempt >= state.max_retries
   end
 
   @doc "Calculate exponential backoff delay: base_delay * 2^attempt."
-  @spec retry_delay(t()) :: float()
-  def retry_delay(%__MODULE__{} = state) do
+  @spec retry_delay(map()) :: float()
+  def retry_delay(state) do
     state.base_delay * 2.0 * (state.attempt * 1.0)
   end
 
   @doc "Return the number of retry attempts remaining."
-  @spec attempts_left(t()) :: integer()
-  def attempts_left(%__MODULE__{} = state) do
+  @spec attempts_left(map()) :: integer()
+  def attempts_left(state) do
     (state.max_retries - state.attempt)
   end
 
@@ -79,14 +79,14 @@ defmodule AgentLoop.Retry do
   end
 
   @doc "Check if current attempt equals max_retries - 1 (last chance)."
-  @spec is_last_attempt(t()) :: boolean()
-  def is_last_attempt(%__MODULE__{} = state) do
+  @spec is_last_attempt(map()) :: boolean()
+  def is_last_attempt(state) do
     state.attempt >= (state.max_retries - 1)
   end
 
   @doc "Return the total number of attempts made (attempt + 1 for zero-indexed)."
-  @spec total_attempts(t()) :: integer()
-  def total_attempts(%__MODULE__{} = state) do
+  @spec total_attempts(map()) :: integer()
+  def total_attempts(state) do
     (state.attempt + 1)
   end
 
@@ -103,14 +103,14 @@ defmodule AgentLoop.Retry do
   end
 
   @doc "Check if no retry attempts have been made yet."
-  @spec is_fresh(t()) :: boolean()
-  def is_fresh(%__MODULE__{} = state) do
+  @spec is_fresh(map()) :: boolean()
+  def is_fresh(state) do
     state.attempt == 0
   end
 
   @doc "Check if a positive base delay is configured."
-  @spec has_delay(t()) :: boolean()
-  def has_delay(%__MODULE__{} = state) do
+  @spec has_delay(map()) :: boolean()
+  def has_delay(state) do
     state.base_delay > 0.0
   end
 

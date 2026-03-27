@@ -206,7 +206,7 @@
   "Return the role of the first message, or empty string if no messages."
   [state]
   (if (zero? (count (:messages state)))
-      
+      ""
       (:role (first (:messages state)))
   )
 )
@@ -215,7 +215,7 @@
   "Return the role of the last message, or empty string if no messages."
   [state]
   (if (zero? (count (:messages state)))
-      
+      ""
       (:role (last (:messages state)))
   )
 )
@@ -289,12 +289,9 @@
 (defn trim-count
   "Return how many messages to trim. 0 if under limit or unlimited."
   [state]
-  (if (<= (:max-messages state) 0)
+  (if (or (<= (:max-messages state) 0) (<= (int (count (:messages state))) (int (:max-messages state))))
       0
-      (if (<= (int (count (:messages state))) (int (:max-messages state)))
-          0
-          (- (int (count (:messages state))) (int (:max-messages state)))
-      )
+      (- (int (count (:messages state))) (int (:max-messages state)))
   )
 )
 

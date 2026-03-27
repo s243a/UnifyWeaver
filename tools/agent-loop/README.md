@@ -82,7 +82,7 @@ The agent loop is generated from declarative Prolog facts into multiple targets:
 | `emit_config_section/3` clauses | 11 (python + prolog + rust) |
 | `compile_component/4` targets | 3 (python, prolog, rust) |
 | `declare_binding` per target | 11 |
-| Total tests | 2811+ Prolog (incl. 1708 declarative) + 173 Rust + 200 Python + 194 Clojure |
+| Total tests | 2811+ Prolog (incl. 1708 declarative) + 173 Rust + 200 Python + 194 Clojure + 67 Elixir (mix test) |
 
 ## Backends
 
@@ -858,7 +858,7 @@ python3 agent_loop.py -i 5 "prompt"  # Max 5 tool iterations
 | Tool schema validation | Y | Y | Complete (required param check from tool_spec before execution) |
 | Token budget / rate limiting | Y | Y | Complete (CostTracker.is_over_budget, interactive prompt) |
 | Streaming token counting | Y | Y | Complete (StreamingTokenCounter class/struct, live char/token count during streaming, summary after completion) |
-| Integration tests (cargo test) | N | Y (173 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter, ConfigLoader functional) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter) |
+| Integration tests (cargo test) | N | Y (173 tests) | Rust-only (incl. E2E mock, async retry, streaming, plugin async, WASM, cache, MCP, approval, OutputParser, schema validation, budget, streaming counter, ConfigLoader functional) |
 
 ## Future Work (Elixir Target)
 
