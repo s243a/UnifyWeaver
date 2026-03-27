@@ -21,14 +21,14 @@ defmodule AgentLoop.ToolResultCache do
 # --- shared_logic: tool_cache (generated from compile_logic) ---
 
   @doc "Clear all cached tool results."
-  @spec clear(t()) :: t()
-  def clear(%__MODULE__{} = state) do
+  @spec clear(map()) :: map()
+  def clear(state) do
     %{state | cache: %{}}
   end
 
   @doc "Return number of cached entries."
-  @spec len(t()) :: non_neg_integer()
-  def len(%__MODULE__{} = state) do
+  @spec len(map()) :: non_neg_integer()
+  def len(state) do
     Enum.count(state.cache)
   end
 
@@ -39,69 +39,69 @@ defmodule AgentLoop.ToolResultCache do
   end
 
   @doc "Check if a tool should skip the cache (destructive tools)."
-  @spec should_skip(t(), String.t()) :: boolean()
-  defp should_skip(%__MODULE__{} = state, tool_name) do
+  @spec should_skip(map(), String.t()) :: boolean()
+  defp should_skip(state, tool_name) do
     MapSet.member?(state.skip_tools, tool_name)
   end
 
   @doc "Look up a cached result by key. Returns nil if not found."
-  @spec cache_get(t(), String.t()) :: String.t() | nil
-  def cache_get(%__MODULE__{} = state, key) do
+  @spec cache_get(map(), String.t()) :: String.t() | nil
+  def cache_get(state, key) do
     Map.get(state.cache, key)
   end
 
   @doc "Store a result in the cache."
-  @spec put(t(), String.t(), String.t()) :: t()
-  def put(%__MODULE__{} = state, key, value) do
+  @spec put(map(), String.t(), String.t()) :: map()
+  def put(state, key, value) do
     %{state | cache: Map.put(state.cache, key, value)}
   end
 
   @doc "Check if a key exists in the cache."
-  @spec has_key(t(), any()) :: boolean()
-  def has_key(%__MODULE__{} = state, key) do
+  @spec has_key(map(), any()) :: boolean()
+  def has_key(state, key) do
     Map.has_key?(state.cache, key)
   end
 
   @doc "Return the number of cached tool results."
-  @spec cache_count(t()) :: integer()
-  def cache_count(%__MODULE__{} = state) do
+  @spec cache_count(map()) :: integer()
+  def cache_count(state) do
     Enum.count(state.cache)
   end
 
   @doc "Return the list of all cache keys."
-  @spec cache_keys(t()) :: [String.t()]
-  def cache_keys(%__MODULE__{} = state) do
+  @spec cache_keys(map()) :: [String.t()]
+  def cache_keys(state) do
     Map.keys(state.cache)
   end
 
   @doc "Remove a single cache entry by key. Returns true if key existed."
-  @spec cache_invalidate(t(), String.t()) :: t()
-  def cache_invalidate(%__MODULE__{} = state, key) do
+  @spec cache_invalidate(map(), String.t()) :: map()
+  def cache_invalidate(state, key) do
     %{state | cache: Map.delete(state.cache, key)}
     true
   end
 
   @doc "Check if the tool result cache is empty."
-  @spec is_empty_cache(t()) :: boolean()
-  def is_empty_cache(%__MODULE__{} = state) do
+  @spec is_empty_cache(map()) :: boolean()
+  def is_empty_cache(state) do
     Enum.count(state.cache) == 0
   end
 
   @doc "Return the maximum cache size limit."
-  @spec cache_max_size(t()) :: integer()
-  def cache_max_size(%__MODULE__{} = state) do
+  @spec cache_max_size(map()) :: integer()
+  def cache_max_size(state) do
     state.max_size
   end
 
   @doc "Check if the cache has reached its maximum size."
-  @spec cache_is_full(t()) :: boolean()
-  def cache_is_full(%__MODULE__{} = state) do
+  @spec cache_is_full(map()) :: boolean()
+  def cache_is_full(state) do
     Enum.count(state.cache) >= state.max_size
   end
 
   @doc "Compute cache hit rate. Returns 0.0 if no lookups."
-  @spec cache_hit_rate(t()) :: float()
-  def cache_hit_rate(%__MODULE__{} = state) do
+  @spec cache_hit_rate(map()) :: float()
+  def cache_hit_rate(state) do
     if state.total_lookups == 0 do
         0.0
     else
@@ -110,8 +110,8 @@ defmodule AgentLoop.ToolResultCache do
   end
 
   @doc "Compute cache utilization as fraction of max size. Returns 0.0 if max_size is 0."
-  @spec cache_utilization(t()) :: float()
-  def cache_utilization(%__MODULE__{} = state) do
+  @spec cache_utilization(map()) :: float()
+  def cache_utilization(state) do
     if state.max_size == 0 do
         0.0
     else
@@ -120,8 +120,8 @@ defmodule AgentLoop.ToolResultCache do
   end
 
   @doc "Return the number of items that would be evicted to make room (1 if full, 0 otherwise)."
-  @spec evict_oldest(t()) :: integer()
-  def evict_oldest(%__MODULE__{} = state) do
+  @spec evict_oldest(map()) :: integer()
+  def evict_oldest(state) do
     if Enum.count(state.cache) >= state.max_size do
         1
     else

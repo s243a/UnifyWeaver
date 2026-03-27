@@ -35,7 +35,8 @@ defmodule AgentLoop.MCPServer do
 
   @impl true
   def handle_call(:next_request_id, _from, state) do
-    {id, new_state} = MCPClient.next_request_id(state)
+    id = MCPClient.next_request_id(state)
+    new_state = %{state | request_id: state.request_id + 1}
     {:reply, id, new_state}
   end
 

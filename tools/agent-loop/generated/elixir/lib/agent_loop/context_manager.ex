@@ -25,7 +25,7 @@ defmodule AgentLoop.ContextManager do
 
   @doc "Count total characters across all messages."
   @spec char_count(t()) :: non_neg_integer()
-  def char_count(%__MODULE__{} = state) do
+  def char_count(state) do
     Enum.reduce(state.messages, 0, fn msg, acc ->
       acc + String.length(Map.get(msg, "content", ""))
     end)
@@ -35,38 +35,38 @@ defmodule AgentLoop.ContextManager do
 # --- shared_logic: context (generated from compile_logic) ---
 
   @doc "Estimate token count using chars/4 heuristic."
-  @spec estimate_tokens(t()) :: non_neg_integer()
-  def estimate_tokens(%__MODULE__{} = state) do
+  @spec estimate_tokens(map()) :: non_neg_integer()
+  def estimate_tokens(state) do
     div(char_count(state), 4)
   end
 
   @doc "Clear all messages from context."
-  @spec clear(t()) :: t()
-  def clear(%__MODULE__{} = state) do
+  @spec clear(map()) :: map()
+  def clear(state) do
     %{state | messages: []}
   end
 
   @doc "Return number of messages in context."
-  @spec len(t()) :: non_neg_integer()
-  def len(%__MODULE__{} = state) do
+  @spec len(map()) :: non_neg_integer()
+  def len(state) do
     Enum.count(state.messages)
   end
 
   @doc "Check if context has no messages."
-  @spec is_empty(t()) :: boolean()
-  def is_empty(%__MODULE__{} = state) do
+  @spec is_empty(map()) :: boolean()
+  def is_empty(state) do
     Enum.empty?(state.messages)
   end
 
   @doc "Append a message to the context history."
-  @spec add_message(t(), map()) :: t()
-  def add_message(%__MODULE__{} = state, message) do
+  @spec add_message(map(), map()) :: map()
+  def add_message(state, message) do
     %{state | messages: state.messages ++ [message]}
   end
 
   @doc "Get the last message from history, or nil if empty."
-  @spec last_message(t()) :: map() | nil
-  def last_message(%__MODULE__{} = state) do
+  @spec last_message(map()) :: map() | nil
+  def last_message(state) do
     if Enum.empty?(state.messages) do
         nil
     else
@@ -75,8 +75,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Check if context token count exceeds the budget for trimming."
-  @spec context_needs_trim(t(), integer()) :: boolean()
-  def context_needs_trim(%__MODULE__{} = state, max_tokens) do
+  @spec context_needs_trim(map(), integer()) :: boolean()
+  def context_needs_trim(state, max_tokens) do
     if max_tokens <= 0 do
         false
     else
@@ -85,14 +85,14 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return the number of messages in the context window."
-  @spec context_message_count(t()) :: integer()
-  def context_message_count(%__MODULE__{} = state) do
+  @spec context_message_count(map()) :: integer()
+  def context_message_count(state) do
     Enum.count(state.messages)
   end
 
   @doc "Compute how many oldest messages to drop to fit within count limit."
-  @spec trim_excess_count(t(), integer()) :: integer()
-  def trim_excess_count(%__MODULE__{} = state, max_messages) do
+  @spec trim_excess_count(map(), integer()) :: integer()
+  def trim_excess_count(state, max_messages) do
     if max_messages <= 0 do
         0
     else
@@ -101,8 +101,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Check if estimated token count exceeds the max token budget."
-  @spec tokens_over_budget(t(), integer()) :: boolean()
-  def tokens_over_budget(%__MODULE__{} = state, max_tokens) do
+  @spec tokens_over_budget(map(), integer()) :: boolean()
+  def tokens_over_budget(state, max_tokens) do
     if max_tokens <= 0 do
         false
     else
@@ -123,8 +123,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return the current context format setting."
-  @spec get_format(t()) :: String.t()
-  def get_format(%__MODULE__{} = state) do
+  @spec get_format(map()) :: String.t()
+  def get_format(state) do
     state.format
   end
 
@@ -147,14 +147,14 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return the last N messages from context history."
-  @spec context_last_n(t(), integer()) :: list()
-  def context_last_n(%__MODULE__{} = state, n) do
+  @spec context_last_n(map(), integer()) :: list()
+  def context_last_n(state, n) do
     Enum.take(state.messages, -n)
   end
 
   @doc "Get the first (oldest) message from history, or nil if empty."
-  @spec context_oldest_message(t()) :: String.t() | nil
-  def context_oldest_message(%__MODULE__{} = state) do
+  @spec context_oldest_message(map()) :: String.t() | nil
+  def context_oldest_message(state) do
     if Enum.empty?(state.messages) do
         nil
     else
@@ -163,20 +163,20 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Remove the oldest message from context history."
-  @spec context_drop_oldest(t()) :: t()
-  def context_drop_oldest(%__MODULE__{} = state) do
+  @spec context_drop_oldest(map()) :: map()
+  def context_drop_oldest(state) do
     %{state | messages: tl(state.messages)}
   end
 
   @doc "Check if context has at least one message."
-  @spec has_messages(t()) :: boolean()
-  def has_messages(%__MODULE__{} = state) do
+  @spec has_messages(map()) :: boolean()
+  def has_messages(state) do
     state.messages != []
   end
 
   @doc "Get a message at a specific index, or nil if out of range."
-  @spec message_at(t(), integer()) :: String.t()
-  def message_at(%__MODULE__{} = state, index) do
+  @spec message_at(map(), integer()) :: String.t()
+  def message_at(state, index) do
     if index >= Enum.count(state.messages) do
         nil
     else
@@ -185,14 +185,14 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return total character count across all messages in context."
-  @spec total_chars(t()) :: integer()
-  def total_chars(%__MODULE__{} = state) do
+  @spec total_chars(map()) :: integer()
+  def total_chars(state) do
     Enum.count(state.messages)
   end
 
   @doc "Check if context has exceeded the maximum token budget."
-  @spec is_over_budget(t()) :: boolean()
-  def is_over_budget(%__MODULE__{} = state) do
+  @spec is_over_budget(map()) :: boolean()
+  def is_over_budget(state) do
     if state.max_context_tokens <= 0 do
         false
     else
@@ -201,14 +201,14 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return a formatted summary of context state: message count and estimated tokens."
-  @spec format_stats(t()) :: String.t()
-  def format_stats(%__MODULE__{} = state) do
+  @spec format_stats(map()) :: String.t()
+  def format_stats(state) do
     "msgs=#{Enum.count(state.messages)} tok=#{estimate_tokens(state)}"
   end
 
   @doc "Return how many more messages can be added before reaching max_messages. Returns -1 if unlimited."
-  @spec messages_remaining(t()) :: integer()
-  def messages_remaining(%__MODULE__{} = state) do
+  @spec messages_remaining(map()) :: integer()
+  def messages_remaining(state) do
     if state.max_messages <= 0 do
         -1
     else
@@ -217,8 +217,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return the remaining token budget. Returns -1 if no max_tokens set."
-  @spec token_budget(t()) :: integer()
-  def token_budget(%__MODULE__{} = state) do
+  @spec token_budget(map()) :: integer()
+  def token_budget(state) do
     if state.max_tokens <= 0 do
         -1
     else
@@ -227,28 +227,28 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return the role of the first message, or empty string if no messages."
-  @spec first_role(t()) :: String.t()
-  def first_role(%__MODULE__{} = state) do
+  @spec first_role(map()) :: String.t()
+  def first_role(state) do
     if Enum.count(state.messages) == 0 do
-        
+        ""
     else
         Map.get(List.first(state.messages), :role, "")
     end
   end
 
   @doc "Return the role of the last message, or empty string if no messages."
-  @spec last_role(t()) :: String.t()
-  def last_role(%__MODULE__{} = state) do
+  @spec last_role(map()) :: String.t()
+  def last_role(state) do
     if Enum.count(state.messages) == 0 do
-        
+        ""
     else
         Map.get(List.last(state.messages), :role, "")
     end
   end
 
   @doc "Return remaining word budget. Returns -1 if no max_words set."
-  @spec word_budget(t()) :: integer()
-  def word_budget(%__MODULE__{} = state) do
+  @spec word_budget(map()) :: integer()
+  def word_budget(state) do
     if state.max_words <= 0 do
         -1
     else
@@ -257,8 +257,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Check if context has reached max_messages limit. Returns false if unlimited (max_messages <= 0)."
-  @spec is_full(t()) :: boolean()
-  def is_full(%__MODULE__{} = state) do
+  @spec is_full(map()) :: boolean()
+  def is_full(state) do
     if state.max_messages <= 0 do
         false
     else
@@ -267,8 +267,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return remaining character budget. Returns -1 if no max_chars set."
-  @spec char_budget(t()) :: integer()
-  def char_budget(%__MODULE__{} = state) do
+  @spec char_budget(map()) :: integer()
+  def char_budget(state) do
     if state.max_chars <= 0 do
         -1
     else
@@ -277,8 +277,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Check if context can accept more messages (not full or unlimited)."
-  @spec has_room(t()) :: boolean()
-  def has_room(%__MODULE__{} = state) do
+  @spec has_room(map()) :: boolean()
+  def has_room(state) do
     if state.max_messages <= 0 do
         true
     else
@@ -287,8 +287,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Check if context usage exceeds threshold percentage of max_messages. Returns false if unlimited."
-  @spec is_near_full(t(), integer()) :: boolean()
-  def is_near_full(%__MODULE__{} = state, threshold_pct) do
+  @spec is_near_full(map(), integer()) :: boolean()
+  def is_near_full(state, threshold_pct) do
     if state.max_messages <= 0 do
         false
     else
@@ -297,8 +297,8 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Return context usage as percentage. Returns 0.0 if unlimited."
-  @spec usage_pct(t()) :: float()
-  def usage_pct(%__MODULE__{} = state) do
+  @spec usage_pct(map()) :: float()
+  def usage_pct(state) do
     if state.max_messages <= 0 do
         0.0
     else
@@ -307,25 +307,23 @@ defmodule AgentLoop.ContextManager do
   end
 
   @doc "Check if context mode is set to continue (keep full history)."
-  @spec is_continue_mode(t()) :: boolean()
-  def is_continue_mode(%__MODULE__{} = state) do
+  @spec is_continue_mode(map()) :: boolean()
+  def is_continue_mode(state) do
     state.context_mode == "continue"
   end
 
   @doc "Check if context mode is set to sliding window."
-  @spec is_sliding_mode(t()) :: boolean()
-  def is_sliding_mode(%__MODULE__{} = state) do
+  @spec is_sliding_mode(map()) :: boolean()
+  def is_sliding_mode(state) do
     state.context_mode == "sliding"
   end
 
   @doc "Return how many messages to trim. 0 if under limit or unlimited."
-  @spec trim_count(t()) :: integer()
-  def trim_count(%__MODULE__{} = state) do
-    if state.max_messages <= 0 do
+  @spec trim_count(map()) :: integer()
+  def trim_count(state) do
+    if (state.max_messages <= 0 or Enum.count(state.messages) <= state.max_messages) do
         0
     else
-        if Enum.count(state.messages) <= state.max_messages:
-            0
         (Enum.count(state.messages) - state.max_messages)
     end
   end

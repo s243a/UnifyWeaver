@@ -9,8 +9,8 @@ defmodule AgentLoop.MCPServerTest do
   end
 
   test "next_request_id increments", %{server: s} do
-    {id1, _} = MCPServer.next_request_id(s)
-    {id2, _} = MCPServer.next_request_id(s)
+    id1 = MCPServer.next_request_id(s)
+    id2 = MCPServer.next_request_id(s)
     assert id2 > id1
   end
 

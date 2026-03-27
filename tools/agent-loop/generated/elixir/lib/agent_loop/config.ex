@@ -8,6 +8,9 @@ defmodule AgentLoop.Config do
   and looks up API keys from environment variables.
   """
 
+  @type t :: %__MODULE__{settings: map(), debug: String.t()}
+  defstruct settings: %{}, debug: "false"
+
   @config_search_paths [
     {"uwsal.json", :required},
     {"~/uwsal.json", :required},
@@ -54,7 +57,7 @@ defmodule AgentLoop.Config do
   @loop_config %{
     max_context_tokens: 100000,
     max_messages: 50,
-    trim_strategy: oldest_first,
+    trim_strategy: :oldest_first,
     display_tokens: true,
     display_tool_calls: true,
     confirm_destructive_tools: true,
@@ -138,96 +141,96 @@ defmodule AgentLoop.Config do
   end
 
   @doc "Check if a configuration key exists in the settings map."
-  @spec has_key(t(), String.t()) :: boolean()
-  def has_key(%__MODULE__{} = state, key) do
+  @spec has_key(map(), String.t()) :: boolean()
+  def has_key(state, key) do
     Map.has_key?(state.settings, key)
   end
 
   @doc "Check if debug mode is enabled in configuration."
-  @spec is_debug(t()) :: boolean()
-  def is_debug(%__MODULE__{} = state) do
+  @spec is_debug(map()) :: boolean()
+  def is_debug(state) do
     state.debug == "true"
   end
 
   @doc "Return the value to use for a config key: the provided value if non-empty, otherwise look up key in settings."
-  @spec merge(t(), String.t(), String.t()) :: String.t()
-  def merge(%__MODULE__{} = state, key, value) do
+  @spec merge(map(), String.t(), String.t()) :: String.t()
+  def merge(state, key, value) do
     if Enum.count(value) > 0 do
         "#{value}"
     else
-        Map.get(state.settings, key, )
+        Map.get(state.settings, key, "")
     end
   end
 
   @doc "Return the number of configuration fields currently set."
-  @spec field_count(t()) :: integer()
-  def field_count(%__MODULE__{} = state) do
+  @spec field_count(map()) :: integer()
+  def field_count(state) do
     Enum.count(state.settings)
   end
 
   @doc "Check if the configuration has no settings."
-  @spec is_empty(t()) :: boolean()
-  def is_empty(%__MODULE__{} = state) do
+  @spec is_empty(map()) :: boolean()
+  def is_empty(state) do
     Enum.count(state.settings) == 0
   end
 
   @doc "Look up a config key, returning default_val if not found."
-  @spec get_or_default(t(), String.t(), String.t()) :: String.t()
-  def get_or_default(%__MODULE__{} = state, key, default_val) do
+  @spec get_or_default(map(), String.t(), String.t()) :: String.t()
+  def get_or_default(state, key, default_val) do
     Map.get(state.settings, key, default_val)
   end
 
   @doc "Check if no custom backend is configured (settings map is empty or has no backend key)."
-  @spec is_default_backend(t()) :: boolean()
-  def is_default_backend(%__MODULE__{} = state) do
+  @spec is_default_backend(map()) :: boolean()
+  def is_default_backend(state) do
     not Map.has_key?(state.settings, "backend")
   end
 
   @doc "Return the number of keys in the settings map."
-  @spec key_count(t()) :: integer()
-  def key_count(%__MODULE__{} = state) do
+  @spec key_count(map()) :: integer()
+  def key_count(state) do
     Enum.count(state.settings)
   end
 
   @doc "Check if a backend is configured in settings."
-  @spec has_backend(t()) :: boolean()
-  def has_backend(%__MODULE__{} = state) do
+  @spec has_backend(map()) :: boolean()
+  def has_backend(state) do
     Map.has_key?(state.settings, "backend")
   end
 
   @doc "Check if debug mode is disabled (production mode)."
-  @spec is_production(t()) :: boolean()
-  def is_production(%__MODULE__{} = state) do
+  @spec is_production(map()) :: boolean()
+  def is_production(state) do
     not state.debug == "true"
   end
 
   @doc "Check if a model is configured in settings."
-  @spec has_model(t()) :: boolean()
-  def has_model(%__MODULE__{} = state) do
+  @spec has_model(map()) :: boolean()
+  def has_model(state) do
     Map.has_key?(state.settings, "model")
   end
 
   @doc "Check if an API key is configured in settings."
-  @spec has_api_key(t()) :: boolean()
-  def has_api_key(%__MODULE__{} = state) do
+  @spec has_api_key(map()) :: boolean()
+  def has_api_key(state) do
     Map.has_key?(state.settings, "api_key")
   end
 
   @doc "Check if streaming is configured in settings."
-  @spec has_stream(t()) :: boolean()
-  def has_stream(%__MODULE__{} = state) do
+  @spec has_stream(map()) :: boolean()
+  def has_stream(state) do
     Map.has_key?(state.settings, "stream")
   end
 
   @doc "Check if max_tokens is configured."
-  @spec has_max_tokens(t()) :: boolean()
-  def has_max_tokens(%__MODULE__{} = state) do
+  @spec has_max_tokens(map()) :: boolean()
+  def has_max_tokens(state) do
     Map.has_key?(state.settings, "max_tokens")
   end
 
   @doc "Check if streaming mode is enabled in settings."
-  @spec is_streaming(t()) :: boolean()
-  def is_streaming(%__MODULE__{} = state) do
+  @spec is_streaming(map()) :: boolean()
+  def is_streaming(state) do
     Map.has_key?(state.settings, "stream")
   end
 

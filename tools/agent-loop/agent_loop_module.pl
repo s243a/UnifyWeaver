@@ -2283,6 +2283,10 @@ expand_expr(rust, add(A, B), S) :-
 
 %% --- Literal values ---
 expand_expr(rust, literal(""), "\"\"") :- !.
+expand_expr(python, literal(""), "\"\"") :- !.
+expand_expr(elixir, literal(""), "\"\"") :- !.
+expand_expr(clojure, literal(""), "\"\"") :- !.
+expand_expr(prolog, literal(""), "\"\"") :- !.
 expand_expr(_, literal(V), S) :- atom_string(V, S).
 
 %% Note: self_direct/self_field handled by generic bridge (expand_expr -> logic_slot) at line ~2208
@@ -2475,7 +2479,7 @@ emit_shared_method(S, rust, MethodName) :-
     format_rust_typed_args(Props, Args, ArgsStr),
     (Container = none ->
         %% Standalone function (no self, top-level)
-        format(S, '#[allow(dead_code, unused_variables)]~n/// ~w~n', [Doc]),
+        format(S, '#[allow(dead_code, unused_variables, unused_parens)]~n/// ~w~n', [Doc]),
         (RetType = void ->
             (Args = [] ->
                 format(S, '~wfn ~w() {~n', [Vis, Name])
@@ -2493,7 +2497,7 @@ emit_shared_method(S, rust, MethodName) :-
         Indent = '    '
     ; member(associated, Props) ->
         %% Associated function (no self, inside impl block)
-        format(S, '    #[allow(dead_code, unused_variables)]~n    /// ~w~n', [Doc]),
+        format(S, '    #[allow(dead_code, unused_variables, unused_parens)]~n    /// ~w~n', [Doc]),
         (RetType = void ->
             (Args = [] ->
                 format(S, '    ~wfn ~w() {~n', [Vis, Name])
@@ -2511,7 +2515,7 @@ emit_shared_method(S, rust, MethodName) :-
         Indent = '        '
     ;
         %% Method on struct (with self)
-        format(S, '    #[allow(dead_code, unused_variables)]~n    /// ~w~n', [Doc]),
+        format(S, '    #[allow(dead_code, unused_variables, unused_parens)]~n    /// ~w~n', [Doc]),
         (( RetType = void ; member(mutable, Props) ) ->
             MutSelf = '&mut self'
         ;
@@ -2632,22 +2636,22 @@ emit_shared_method(S, elixir, MethodName) :-
         (Mutable = true ->
             format(S, '  @doc "~w"~n', [Doc]),
             (Args = [] ->
-                format(S, '  @spec ~w(t()) :: t()~n', [Name]),
-                format(S, '  ~w ~w(%__MODULE__{} = state) do~n', [DefKw, Name])
+                format(S, '  @spec ~w(map()) :: map()~n', [Name]),
+                format(S, '  ~w ~w(state) do~n', [DefKw, Name])
             ;
-                format(S, '  @spec ~w(t(), ~w) :: t()~n', [Name, SpecArgs]),
+                format(S, '  @spec ~w(map(), ~w) :: map()~n', [Name, SpecArgs]),
                 atomic_list_concat(Args, ', ', ArgsStr),
-                format(S, '  ~w ~w(%__MODULE__{} = state, ~w) do~n', [DefKw, Name, ArgsStr])
+                format(S, '  ~w ~w(state, ~w) do~n', [DefKw, Name, ArgsStr])
             )
         ;
             format(S, '  @doc "~w"~n', [Doc]),
             (Args = [] ->
-                format(S, '  @spec ~w(t()) :: ~w~n', [Name, ElixirRetType]),
-                format(S, '  ~w ~w(%__MODULE__{} = state) do~n', [DefKw, Name])
+                format(S, '  @spec ~w(map()) :: ~w~n', [Name, ElixirRetType]),
+                format(S, '  ~w ~w(state) do~n', [DefKw, Name])
             ;
-                format(S, '  @spec ~w(t(), ~w) :: ~w~n', [Name, SpecArgs, ElixirRetType]),
+                format(S, '  @spec ~w(map(), ~w) :: ~w~n', [Name, SpecArgs, ElixirRetType]),
                 atomic_list_concat(Args, ', ', ArgsStr),
-                format(S, '  ~w ~w(%__MODULE__{} = state, ~w) do~n', [DefKw, Name, ArgsStr])
+                format(S, '  ~w ~w(state, ~w) do~n', [DefKw, Name, ArgsStr])
             )
         )
     ),
@@ -5441,7 +5445,7 @@ shared_logic(context, context_trim_count, [
     arg_types([]),
     doc("Return how many messages to trim. 0 if under limit or unlimited."),
     container('ContextManager'),
-    body_template("if ~lte(self_direct(max_messages), literal(0))~:\n    ~return_val(literal(0))~\nif ~lte(as_int(len_of(self_direct(messages))), as_int(self_direct(max_messages)))~:\n    ~return_val(literal(0))~\n~return_val(sub(as_int(len_of(self_direct(messages))), as_int(self_direct(max_messages))))~")
+    body_template("if ~or_expr(lte(self_direct(max_messages), literal(0)), lte(as_int(len_of(self_direct(messages))), as_int(self_direct(max_messages))))~:\n    ~return_val(literal(0))~\n~return_val(sub(as_int(len_of(self_direct(messages))), as_int(self_direct(max_messages))))~")
 ]).
 
 %% --- Costs: cost per message ---
@@ -8430,7 +8434,7 @@ generate_elixir_context :-
     %% char_count helper used by estimate_tokens
     write(S, '  @doc "Count total characters across all messages."\n'),
     write(S, '  @spec char_count(t()) :: non_neg_integer()\n'),
-    write(S, '  def char_count(%__MODULE__{} = state) do\n'),
+    write(S, '  def char_count(state) do\n'),
     write(S, '    Enum.reduce(state.messages, 0, fn msg, acc ->\n'),
     write(S, '      acc + String.length(Map.get(msg, "content", ""))\n'),
     write(S, '    end)\n'),
@@ -8483,7 +8487,7 @@ generate_elixir_mcp_client :-
     write(S, '    payload = Jason.encode!(%{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params})\n'),
     write(S, '    Port.command(client.port, payload <> "\\n")\n'),
     write(S, '    receive do\n'),
-    write(S, '      {^(client.port), {:data, data}} ->\n'),
+    write(S, '      {port_ref, {:data, data}} when port_ref == client.port ->\n'),
     write(S, '        case Jason.decode(data) do\n'),
     write(S, '          {:ok, %{"result" => result}} -> {:ok, result, client}\n'),
     write(S, '          {:ok, %{"error" => error}} -> {:error, inspect(error)}\n'),
@@ -8632,7 +8636,7 @@ generate_elixir_sessions :-
     write_shared_block_elixir(S, sessions),
     write(S, '  @doc "Save a conversation session to disk"\n'),
     write(S, '  @spec save_session(t(), String.t(), String.t(), [map()]) :: :ok | {:error, String.t()}\n'),
-    write(S, '  def save_session(%__MODULE__{} = state, session_id, name, messages) do\n'),
+    write(S, '  def save_session(state, session_id, name, messages) do\n'),
     write(S, '    path = session_path(state, session_id)\n'),
     write(S, '    File.mkdir_p!(Path.dirname(path))\n'),
     write(S, '    data = %{\n'),
@@ -8646,7 +8650,7 @@ generate_elixir_sessions :-
     write(S, '  end\n\n'),
     write(S, '  @doc "Load a session from disk"\n'),
     write(S, '  @spec load_session(t(), String.t()) :: {:ok, map()} | {:error, String.t()}\n'),
-    write(S, '  def load_session(%__MODULE__{} = state, session_id) do\n'),
+    write(S, '  def load_session(state, session_id) do\n'),
     write(S, '    path = session_path(state, session_id)\n'),
     write(S, '    case File.read(path) do\n'),
     write(S, '      {:ok, content} -> Jason.decode(content)\n'),
@@ -8655,7 +8659,7 @@ generate_elixir_sessions :-
     write(S, '  end\n\n'),
     write(S, '  @doc "List all saved sessions"\n'),
     write(S, '  @spec list_sessions(t()) :: [map()]\n'),
-    write(S, '  def list_sessions(%__MODULE__{} = state) do\n'),
+    write(S, '  def list_sessions(state) do\n'),
     write(S, '    dir = state.sessions_dir\n'),
     write(S, '    case File.ls(dir) do\n'),
     write(S, '      {:ok, files} ->\n'),
@@ -8678,7 +8682,7 @@ generate_elixir_sessions :-
     write(S, '  end\n\n'),
     write(S, '  @doc "Delete a session file"\n'),
     write(S, '  @spec delete_session(t(), String.t()) :: :ok | {:error, String.t()}\n'),
-    write(S, '  def delete_session(%__MODULE__{} = state, session_id) do\n'),
+    write(S, '  def delete_session(state, session_id) do\n'),
     write(S, '    path = session_path(state, session_id)\n'),
     write(S, '    case File.rm(path) do\n'),
     write(S, '      :ok -> :ok\n'),
@@ -8758,11 +8762,18 @@ generate_elixir_security :-
         format(S, '    {~q, "~w"},~n', [Pattern, Reason])
     )),
     write(S, '  ]\n\n'),
-    %% --- Regex lists ---
+    %% --- Regex lists (convert Python r'...' to Elixir "..." strings) ---
     forall(regex_list(ListName, Patterns), (
         format(S, '  @~w [~n', [ListName]),
         forall(member(P, Patterns), (
-            format(S, '    ~w,~n', [P])
+            atom_string(P, PS),
+            %% Strip r'...' wrapper if present
+            (sub_string(PS, 0, 2, _, "r'"), sub_string(PS, _, 1, 0, "'") ->
+                sub_string(PS, 2, _, 1, Inner),
+                format(S, '    "~w",~n', [Inner])
+            ;
+                format(S, '    "~w",~n', [P])
+            )
         )),
         write(S, '  ]\n\n')
     )),
@@ -8810,6 +8821,8 @@ generate_elixir_config :-
     write(S, '  Configuration loading — searches config paths, resolves agent settings,\n'),
     write(S, '  and looks up API keys from environment variables.\n'),
     write(S, '  """\n\n'),
+    write(S, '  @type t :: %__MODULE__{settings: map(), debug: String.t()}\n'),
+    write(S, '  defstruct settings: %{}, debug: "false"\n\n'),
     %% --- Config search paths ---
     write(S, '  @config_search_paths [\n'),
     forall(config_search_path(CSP, Priority), (
@@ -8836,7 +8849,15 @@ generate_elixir_config :-
         write(S, '  @loop_config %{\n'),
         forall(member(LCProp, LCProps), (
             LCProp =.. [Key, Val],
-            format(S, '    ~w: ~w,~n', [Key, Val])
+            (number(Val) ->
+                format(S, '    ~w: ~w,~n', [Key, Val])
+            ; Val = true ->
+                format(S, '    ~w: true,~n', [Key])
+            ; Val = false ->
+                format(S, '    ~w: false,~n', [Key])
+            ;
+                format(S, '    ~w: :~w,~n', [Key, Val])
+            )
         )),
         write(S, '  }\n\n')
     ; true),
@@ -9245,7 +9266,7 @@ generate_elixir_cache_server :-
     write(S, '  def init(state), do: {:ok, state}\n\n'),
     write(S, '  @impl true\n'),
     write(S, '  def handle_call({:get, key}, _from, state) do\n'),
-    write(S, '    {:reply, ToolResultCache.get(state, key), state}\n'),
+    write(S, '    {:reply, ToolResultCache.cache_get(state, key), state}\n'),  %% shared_logic name=cache_get, sig name=cache_get
     write(S, '  end\n\n'),
     write(S, '  @impl true\n'),
     write(S, '  def handle_call({:put, key, value}, _from, state) do\n'),
@@ -9356,7 +9377,8 @@ generate_elixir_mcp_server :-
     write(S, '  def init(state), do: {:ok, state}\n\n'),
     write(S, '  @impl true\n'),
     write(S, '  def handle_call(:next_request_id, _from, state) do\n'),
-    write(S, '    {id, new_state} = MCPClient.next_request_id(state)\n'),
+    write(S, '    id = MCPClient.next_request_id(state)\n'),
+    write(S, '    new_state = %{state | request_id: state.request_id + 1}\n'),
     write(S, '    {:reply, id, new_state}\n'),
     write(S, '  end\n\n'),
     write(S, '  @impl true\n'),
@@ -9824,8 +9846,8 @@ generate_elixir_mcp_server_test(Dir) :-
     write(S, '    %{server: pid}\n'),
     write(S, '  end\n\n'),
     write(S, '  test "next_request_id increments", %{server: s} do\n'),
-    write(S, '    {id1, _} = MCPServer.next_request_id(s)\n'),
-    write(S, '    {id2, _} = MCPServer.next_request_id(s)\n'),
+    write(S, '    id1 = MCPServer.next_request_id(s)\n'),
+    write(S, '    id2 = MCPServer.next_request_id(s)\n'),
     write(S, '    assert id2 > id1\n'),
     write(S, '  end\n\n'),
     write(S, '  test "get_state returns MCPClient struct", %{server: s} do\n'),
@@ -10039,7 +10061,9 @@ emit_elixir_tool_route(S, Name, Props) :-
 
 %% Emit required param validation for a tool route
 format_elixir_required_check(S, Name, ReqParams, ConfRequired) :-
-    format(S, '    required = ~w~n', [ReqParams]),
+    maplist([P, AP]>>(format(atom(AP), ':~w', [P])), ReqParams, AtomParams),
+    atomic_list_concat(AtomParams, ', ', AtomStr),
+    format(S, '    required = [~w]~n', [AtomStr]),
     write(S, '    params = conn.body_params\n'),
     write(S, '    missing = Enum.filter(required, fn k -> not Map.has_key?(params, Atom.to_string(k)) end)\n\n'),
     write(S, '    if missing != [] do\n'),

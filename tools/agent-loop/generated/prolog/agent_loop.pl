@@ -173,7 +173,7 @@ token_budget(State, Result) :-
 %% Return the role of the first message, or empty string if no messages.
 first_role(State, Result) :-
     (length(State.messages, Result) =:= 0 ->
-        Result = 
+        Result = ""
     ;
     get_dict(role, nth0(0, State.messages, Result), Result)
     ).
@@ -181,7 +181,7 @@ first_role(State, Result) :-
 %% Return the role of the last message, or empty string if no messages.
 last_role(State, Result) :-
     (length(State.messages, Result) =:= 0 ->
-        Result = 
+        Result = ""
     ;
     get_dict(role, last(State.messages, Last), Result)
     ).
@@ -244,14 +244,10 @@ is_sliding_mode(State, Result) :-
 
 %% Return how many messages to trim. 0 if under limit or unlimited.
 trim_count(State, Result) :-
-    (State.max_messages =< 0 ->
-        Result = 0
-    ;
-    (length(State.messages, Result) =< State.max_messages ->
+    ((State.max_messages =< 0 ; length(State.messages, Result) =< State.max_messages) ->
         Result = 0
     ;
     (length(State.messages, Result) - State.max_messages)
-    )
     ).
 
 

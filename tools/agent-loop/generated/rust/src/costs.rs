@@ -96,7 +96,7 @@ impl CostTracker {
         )
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if total cost exceeds budget. Budget of 0 means unlimited.
     pub fn is_over_budget(&self, budget: f64) -> bool {
         if budget <= 0.0 {
@@ -105,7 +105,7 @@ impl CostTracker {
         return self.total_cost() >= budget;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return remaining budget in USD. Budget of 0 means unlimited (returns -1).
     pub fn budget_remaining(&self, budget: f64) -> f64 {
         if budget <= 0.0 {
@@ -114,13 +114,13 @@ impl CostTracker {
         return (budget - self.total_cost()).max(0.0);
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the total number of messages tracked by the cost tracker.
     pub fn total_messages(&self) -> i64 {
         return self.message_count.clone();
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the ratio of input tokens to total tokens. Returns 0.0 if no tokens.
     pub fn input_ratio(&self) -> f64 {
         if (self.total_input_tokens + self.total_output_tokens) == 0 {
@@ -129,19 +129,19 @@ impl CostTracker {
         return (self.total_input_tokens as f64) / ((self.total_input_tokens + self.total_output_tokens) as f64);
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if any tokens have been tracked (input or output > 0).
     pub fn has_usage(&self) -> bool {
         return (self.total_input_tokens + self.total_output_tokens) > 0;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if total cost exceeds a given threshold.
     pub fn cost_exceeds(&self, threshold: f64) -> bool {
         return self.total_cost > threshold;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return the ratio of output tokens to total tokens. Returns 0.0 if no tokens.
     pub fn output_ratio(&self) -> f64 {
         if (self.total_input_tokens + self.total_output_tokens) == 0 {
@@ -150,31 +150,31 @@ impl CostTracker {
         return (self.total_output_tokens as f64) / ((self.total_input_tokens + self.total_output_tokens) as f64);
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if input tokens exceed output tokens.
     pub fn is_input_heavy(&self) -> bool {
         return self.total_input_tokens > self.total_output_tokens;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if output tokens exceed input tokens.
     pub fn is_output_heavy(&self) -> bool {
         return self.total_output_tokens > self.total_input_tokens;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if total cost is exactly zero.
     pub fn is_zero_cost(&self) -> bool {
         return self.total_cost <= 0.0;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Check if total cost is strictly below a threshold.
     pub fn is_under(&self, threshold: f64) -> bool {
         return self.total_cost < threshold;
     }
 
-    #[allow(dead_code, unused_variables)]
+    #[allow(dead_code, unused_variables, unused_parens)]
     /// Return average cost per message. Returns 0.0 if no messages.
     pub fn per_message(&self) -> f64 {
         if self.message_count == 0 {
@@ -185,7 +185,7 @@ impl CostTracker {
 
 }
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code, unused_variables, unused_parens)]
 /// Compute cost from token count and price per 1M tokens.
 pub fn cost_compute(tokens: i64, price_per_million: f64) -> f64 {
     return (tokens as f64) * price_per_million / 1.0e+06;

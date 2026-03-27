@@ -55,7 +55,7 @@ defmodule AgentLoop.CacheServer do
 
   @impl true
   def handle_call({:get, key}, _from, state) do
-    {:reply, ToolResultCache.get(state, key), state}
+    {:reply, ToolResultCache.cache_get(state, key), state}
   end
 
   @impl true

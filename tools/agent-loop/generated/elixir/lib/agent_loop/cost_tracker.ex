@@ -23,8 +23,8 @@ defmodule AgentLoop.CostTracker do
 # --- shared_logic: costs (generated from compile_logic) ---
 
   @doc "Check if total cost exceeds budget. Budget of 0 means unlimited."
-  @spec is_over_budget(t(), float()) :: boolean()
-  def is_over_budget(%__MODULE__{} = state, budget) do
+  @spec is_over_budget(map(), float()) :: boolean()
+  def is_over_budget(state, budget) do
     if budget <= 0 do
         false
     else
@@ -33,8 +33,8 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Return remaining budget in USD. Budget of 0 means unlimited (returns -1)."
-  @spec budget_remaining(t(), float()) :: float()
-  def budget_remaining(%__MODULE__{} = state, budget) do
+  @spec budget_remaining(map(), float()) :: float()
+  def budget_remaining(state, budget) do
     if budget <= 0 do
         -1.0
     else
@@ -43,8 +43,8 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Reset all cost tracking state."
-  @spec reset(t()) :: t()
-  def reset(%__MODULE__{} = state) do
+  @spec reset(map()) :: map()
+  def reset(state) do
     state = %{state | records: []}
     state = %{state | total_input_tokens: 0}
     state = %{state | total_output_tokens: 0}
@@ -58,34 +58,34 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Record a usage entry and update running totals."
-  @spec record_usage(t(), integer(), integer(), String.t()) :: t()
-  def record_usage(%__MODULE__{} = state, input_tokens, output_tokens, model) do
+  @spec record_usage(map(), integer(), integer(), String.t()) :: map()
+  def record_usage(state, input_tokens, output_tokens, model) do
     state = %{state | total_input_tokens: state.total_input_tokens + input_tokens}
     %{state | total_output_tokens: state.total_output_tokens + output_tokens}
   end
 
   @doc "Return total token count (input + output)."
-  @spec total_tokens(t()) :: integer()
-  def total_tokens(%__MODULE__{} = state) do
+  @spec total_tokens(map()) :: integer()
+  def total_tokens(state) do
     (state.total_input_tokens + state.total_output_tokens)
   end
 
   @doc "Format a one-line cost summary showing totals."
-  @spec get_summary(t()) :: String.t()
-  def get_summary(%__MODULE__{} = state) do
+  @spec get_summary(map()) :: String.t()
+  def get_summary(state) do
     "$#{state.total_cost} (#{state.total_input_tokens} input, #{state.total_output_tokens} output)"
   end
 
   @doc "Set the per-token pricing for input and output."
-  @spec set_pricing(t(), float(), float()) :: t()
-  def set_pricing(%__MODULE__{} = state, input_price, output_price) do
+  @spec set_pricing(map(), float(), float()) :: map()
+  def set_pricing(state, input_price, output_price) do
     state = %{state | input_price: input_price}
     %{state | output_price: output_price}
   end
 
   @doc "Compute the average cost per token. Returns 0.0 if no tokens used."
-  @spec cost_per_token(t()) :: float()
-  def cost_per_token(%__MODULE__{} = state) do
+  @spec cost_per_token(map()) :: float()
+  def cost_per_token(state) do
     total = (state.total_input_tokens + state.total_output_tokens)
     if total <= 0 do
         0.0
@@ -95,32 +95,32 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Check if any usage records have been logged."
-  @spec has_records(t()) :: boolean()
-  def has_records(%__MODULE__{} = state) do
+  @spec has_records(map()) :: boolean()
+  def has_records(state) do
     not Enum.count(state.records) == 0
   end
 
   @doc "Return total token count (input + output)."
-  @spec total_tokens(t()) :: integer()
-  def total_tokens(%__MODULE__{} = state) do
+  @spec total_tokens(map()) :: integer()
+  def total_tokens(state) do
     (state.total_input_tokens + state.total_output_tokens)
   end
 
   @doc "Return a short cost summary string (e.g. $0.05)."
-  @spec cost_summary_short(t()) :: String.t()
-  def cost_summary_short(%__MODULE__{} = state) do
+  @spec cost_summary_short(map()) :: String.t()
+  def cost_summary_short(state) do
     "$#{state.total_cost}"
   end
 
   @doc "Check if the current model has zero cost (total_cost == 0 after usage)."
-  @spec is_free_model(t()) :: boolean()
-  def is_free_model(%__MODULE__{} = state) do
+  @spec is_free_model(map()) :: boolean()
+  def is_free_model(state) do
     state.total_cost == 0
   end
 
   @doc "Compute ratio of input to output tokens. Returns 0.0 if no output tokens."
-  @spec input_output_ratio(t()) :: float()
-  def input_output_ratio(%__MODULE__{} = state) do
+  @spec input_output_ratio(map()) :: float()
+  def input_output_ratio(state) do
     if state.total_output_tokens == 0 do
         0.0
     else
@@ -129,8 +129,8 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Calculate average cost per message. Returns 0.0 if no messages recorded."
-  @spec average_cost_per_message(t()) :: float()
-  def average_cost_per_message(%__MODULE__{} = state) do
+  @spec average_cost_per_message(map()) :: float()
+  def average_cost_per_message(state) do
     if state.message_count == 0 do
         0.0
     else
@@ -139,14 +139,14 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Check if cost tracking is active (has recorded any usage)."
-  @spec is_tracking(t()) :: boolean()
-  def is_tracking(%__MODULE__{} = state) do
+  @spec is_tracking(map()) :: boolean()
+  def is_tracking(state) do
     state.message_count > 0
   end
 
   @doc "Calculate average cost per input token. Returns 0.0 if no input tokens recorded."
-  @spec cost_per_input_token(t()) :: float()
-  def cost_per_input_token(%__MODULE__{} = state) do
+  @spec cost_per_input_token(map()) :: float()
+  def cost_per_input_token(state) do
     if state.total_input_tokens == 0 do
         0.0
     else
@@ -155,20 +155,20 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Return the total number of messages tracked by the cost tracker."
-  @spec total_messages(t()) :: integer()
-  def total_messages(%__MODULE__{} = state) do
+  @spec total_messages(map()) :: integer()
+  def total_messages(state) do
     state.message_count
   end
 
   @doc "Check if total cost exceeds a given threshold."
-  @spec cost_exceeds(t(), float()) :: boolean()
-  def cost_exceeds(%__MODULE__{} = state, threshold) do
+  @spec cost_exceeds(map(), float()) :: boolean()
+  def cost_exceeds(state, threshold) do
     state.total_cost > threshold
   end
 
   @doc "Return the ratio of input tokens to total tokens. Returns 0.0 if no tokens."
-  @spec input_ratio(t()) :: float()
-  def input_ratio(%__MODULE__{} = state) do
+  @spec input_ratio(map()) :: float()
+  def input_ratio(state) do
     if (state.total_input_tokens + state.total_output_tokens) == 0 do
         0.0
     else
@@ -183,14 +183,14 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Check if any tokens have been tracked (input or output > 0)."
-  @spec has_usage(t()) :: boolean()
-  def has_usage(%__MODULE__{} = state) do
+  @spec has_usage(map()) :: boolean()
+  def has_usage(state) do
     (state.total_input_tokens + state.total_output_tokens) > 0
   end
 
   @doc "Return the ratio of output tokens to total tokens. Returns 0.0 if no tokens."
-  @spec output_ratio(t()) :: float()
-  def output_ratio(%__MODULE__{} = state) do
+  @spec output_ratio(map()) :: float()
+  def output_ratio(state) do
     if (state.total_input_tokens + state.total_output_tokens) == 0 do
         0.0
     else
@@ -199,20 +199,20 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Check if input tokens exceed output tokens."
-  @spec is_input_heavy(t()) :: boolean()
-  def is_input_heavy(%__MODULE__{} = state) do
+  @spec is_input_heavy(map()) :: boolean()
+  def is_input_heavy(state) do
     state.total_input_tokens > state.total_output_tokens
   end
 
   @doc "Check if output tokens exceed input tokens."
-  @spec is_output_heavy(t()) :: boolean()
-  def is_output_heavy(%__MODULE__{} = state) do
+  @spec is_output_heavy(map()) :: boolean()
+  def is_output_heavy(state) do
     state.total_output_tokens > state.total_input_tokens
   end
 
   @doc "Check if total cost is exactly zero."
-  @spec is_zero_cost(t()) :: boolean()
-  def is_zero_cost(%__MODULE__{} = state) do
+  @spec is_zero_cost(map()) :: boolean()
+  def is_zero_cost(state) do
     state.total_cost <= 0.0
   end
 
@@ -223,14 +223,14 @@ defmodule AgentLoop.CostTracker do
   end
 
   @doc "Check if total cost is strictly below a threshold."
-  @spec is_under(t(), float()) :: boolean()
-  def is_under(%__MODULE__{} = state, threshold) do
+  @spec is_under(map(), float()) :: boolean()
+  def is_under(state, threshold) do
     state.total_cost < threshold
   end
 
   @doc "Return average cost per message. Returns 0.0 if no messages."
-  @spec per_message(t()) :: float()
-  def per_message(%__MODULE__{} = state) do
+  @spec per_message(map()) :: float()
+  def per_message(state) do
     if state.message_count == 0 do
         0.0
     else

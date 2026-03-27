@@ -36,7 +36,7 @@ defmodule AgentLoop.Router do
 
   @doc "Execute a bash command"
   post "/api/tools/bash" do
-    required = [command]
+    required = [:command]
     params = conn.body_params
     missing = Enum.filter(required, fn k -> not Map.has_key?(params, Atom.to_string(k)) end)
 
@@ -49,7 +49,7 @@ defmodule AgentLoop.Router do
 
   @doc "Read a file"
   post "/api/tools/read" do
-    required = [file_path]
+    required = [:file_path]
     params = conn.body_params
     missing = Enum.filter(required, fn k -> not Map.has_key?(params, Atom.to_string(k)) end)
 
@@ -62,7 +62,7 @@ defmodule AgentLoop.Router do
 
   @doc "Write content to a file"
   post "/api/tools/write" do
-    required = [file_path,content]
+    required = [:file_path, :content]
     params = conn.body_params
     missing = Enum.filter(required, fn k -> not Map.has_key?(params, Atom.to_string(k)) end)
 
@@ -75,7 +75,7 @@ defmodule AgentLoop.Router do
 
   @doc "Edit a file with search/replace"
   post "/api/tools/edit" do
-    required = [file_path,old_string,new_string]
+    required = [:file_path, :old_string, :new_string]
     params = conn.body_params
     missing = Enum.filter(required, fn k -> not Map.has_key?(params, Atom.to_string(k)) end)
 
