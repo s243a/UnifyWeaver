@@ -149,30 +149,39 @@ local code = nb.read("{{vfs_source}}", ".code")
 {{/input_vfs}}
 ```
 
-## Implementation Plan
+## Implementation Status
 
-### Phase 1: Embedded mode for all targets
-- Generalize TypR's `base_seed_code` to all targets
-- Add `input(embedded)` option to `compile_recursive`
-- Generate `add_fact()` / `add_parent()` calls from asserted facts
+All four phases are implemented for the sciREPL targets (Lua, Python,
+R, Bash). TypR already supported embedded mode natively.
+
+### Phase 1: Embedded mode — DONE
+- `input_source.pl` generalizes TypR's `base_seed_code` to all targets
+- `input(embedded)` extracts Prolog facts and generates target-native
+  seed statements (e.g. `add_fact("alice", "bob")` for Lua)
+- Literal quoting for 12 target languages
+
+### Phase 2: File mode — DONE
+- `input(file(Path))` generates native file-reading code per target
+- Lua: `io.lines(path)`, Python: `open(path)`, R: `readLines(path)`,
+  Bash: `< path`
+
+### Phase 3: VFS mode — DONE
+- `input(vfs(Cell))` and `input(vfs(Cell, Prop))` generate code that
+  reads from NotebookVFS
+- Lua: `nb.read(cell, prop)`, Python: `sharedfs.read_text("/nb/...")`
+  with fallback to `js.window.notebookVFS`, R: `nb_read(cell, prop)`,
+  Bash: `< /nb/cell/prop` (native brush-wasm VFS)
+
+### Phase 4: Function mode — DONE
+- `input(function)` generates callable APIs with no I/O
+- Lua: `ancestor_from_pairs(pairs)`, Python: `ancestor_from_pairs(pairs)`,
+  R: `ancestor_from_pairs(data.frame)`, Bash: `ancestor_from_pairs "x:y" ...`
+
+### Remaining work
+- Add composable templates for remaining non-sciREPL targets (C, C++,
+  Rust, Go, TypeScript, etc.)
 - Make `embedded` the default when `context(notebook)` is set
-
-### Phase 2: File mode for all targets
-- Add `input(file(Path))` option
-- Each target generates its native file-reading code
-- Lua: `io.lines(path)`, Python: `open(path)`, R: `readLines(path)`, etc.
-
-### Phase 3: VFS mode for notebook targets
-- Add `input(vfs(Cell))` option
-- Generate code that reads from NotebookVFS
-- Parse Prolog-style facts from the cell content
-- Lua: `nb.read(cell, ".code")`, Python: `nb_read(cell, ".code")`, etc.
-
-### Phase 4: Function mode
-- Add `input(function)` option
-- Generate functions that accept data as arguments
-- No I/O — pure functions for embedding in larger programs
-- Useful for library generation and testing
+- Update the prolog-generates-lua workbook to use `input(vfs(...))`
 
 ## Relationship to Stdin
 
