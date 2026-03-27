@@ -204,17 +204,157 @@ test(same_predicate_both_targets) :-
 test(jamaica_registered) :-
     target_registry:registered_target(jamaica, jvm, Caps),
     once(member(assembly, Caps)),
-    once(member(macros, Caps)).
+    once(member(macros, Caps)),
+    once(member(recursion, Caps)),
+    once(member(bindings, Caps)),
+    once(member(components, Caps)).
 
 test(krakatau_registered) :-
     target_registry:registered_target(krakatau, jvm, Caps),
     once(member(assembly, Caps)),
-    once(member(roundtrip, Caps)).
+    once(member(roundtrip, Caps)),
+    once(member(recursion, Caps)),
+    once(member(bindings, Caps)),
+    once(member(components, Caps)).
 
 test(jamaica_module_linked) :-
     target_registry:target_module(jamaica, jamaica_target).
 
 test(krakatau_module_linked) :-
     target_registry:target_module(krakatau, krakatau_target).
+
+% ============================================================================
+% Recursion bytecode generators (shared layer)
+% ============================================================================
+
+test(jvm_tail_recursion_symbolic) :-
+    jvm_bytecode:jvm_tail_recursion_bytecode("sum", 2, symbolic, Instrs),
+    once(member("    goto LOOP", Instrs)),
+    once(member("LOOP:", Instrs)),
+    once(member("DONE:", Instrs)),
+    once(member("    iadd", Instrs)),
+    once(member("    ireturn", Instrs)).
+
+test(jvm_tail_recursion_numeric) :-
+    jvm_bytecode:jvm_tail_recursion_bytecode("sum", 2, numeric, Instrs),
+    once(member("    goto LOOP", Instrs)),
+    once(member("    iload 0", Instrs)).
+
+test(jvm_linear_recursion) :-
+    jvm_bytecode:jvm_linear_recursion_bytecode("lin_sum", 2, symbolic, Instrs),
+    once(member("    invokestatic lin_sum(I)I", Instrs)),
+    once(member("    iadd", Instrs)).
+
+test(jvm_tree_recursion) :-
+    jvm_bytecode:jvm_tree_recursion_bytecode("fib", 2, symbolic, Instrs),
+    % Tree recursion should have TWO recursive calls
+    include(sub_string_match("invokestatic fib(I)I"), Instrs, Calls),
+    length(Calls, 2).
+
+test(jvm_mutual_recursion) :-
+    jvm_bytecode:jvm_mutual_recursion_bytecode(
+        [is_even, is_odd], "Prolog_is_even", symbolic, Methods),
+    length(Methods, 2),
+    Methods = [method("is_even", _), method("is_odd", _)].
+
+test(jvm_entry_method) :-
+    jvm_bytecode:jvm_entry_method_bytecode("sum", 2, symbolic, Instrs),
+    once(member("    iconst_0", Instrs)),
+    once(member("    invokestatic sum(II)I", Instrs)).
+
+% ============================================================================
+% Jamaica recursion patterns
+% ============================================================================
+
+test(jamaica_tail_recursion) :-
+    jamaica_target:compile_tail_recursion_jamaica(sum/2, [], Code),
+    has(Code, "public class Prolog_sum"),
+    has(Code, "goto LOOP"),
+    has(Code, "sum_entry").
+
+test(jamaica_linear_recursion) :-
+    jamaica_target:compile_linear_recursion_jamaica(lin_sum/2, [], Code),
+    has(Code, "public class Prolog_lin_sum"),
+    has(Code, "invokestatic lin_sum").
+
+test(jamaica_tree_recursion) :-
+    jamaica_target:compile_tree_recursion_jamaica(fib/2, [], Code),
+    has(Code, "public class Prolog_fib"),
+    has(Code, "invokestatic fib").
+
+test(jamaica_mutual_recursion) :-
+    jamaica_target:compile_mutual_recursion_jamaica([is_even, is_odd], [], Code),
+    has(Code, "public class Prolog_is_even"),
+    has(Code, "public static int is_even"),
+    has(Code, "public static int is_odd").
+
+% ============================================================================
+% Krakatau recursion patterns
+% ============================================================================
+
+test(krakatau_tail_recursion) :-
+    krakatau_target:compile_tail_recursion_krakatau(sum/2, [], Code),
+    has(Code, ".class public Prolog_sum"),
+    has(Code, "goto LOOP"),
+    has(Code, ".end method"),
+    has(Code, "sum_entry").
+
+test(krakatau_linear_recursion) :-
+    krakatau_target:compile_linear_recursion_krakatau(lin_sum/2, [], Code),
+    has(Code, ".class public Prolog_lin_sum"),
+    has(Code, "invokestatic lin_sum").
+
+test(krakatau_tree_recursion) :-
+    krakatau_target:compile_tree_recursion_krakatau(fib/2, [], Code),
+    has(Code, ".class public Prolog_fib"),
+    has(Code, "invokestatic fib").
+
+test(krakatau_mutual_recursion) :-
+    krakatau_target:compile_mutual_recursion_krakatau([is_even, is_odd], [], Code),
+    has(Code, ".class public Prolog_is_even"),
+    has(Code, ".method public static is_even"),
+    has(Code, ".method public static is_odd").
+
+% ============================================================================
+% Bindings
+% ============================================================================
+
+test(jamaica_arithmetic_binding) :-
+    jamaica_target:init_jamaica_target,
+    once(binding_registry:binding(jamaica, '+'/3, 'iadd', _, _, _)).
+
+test(krakatau_arithmetic_binding) :-
+    krakatau_target:init_krakatau_target,
+    once(binding_registry:binding(krakatau, '+'/3, 'iadd', _, _, _)).
+
+test(jamaica_math_binding) :-
+    once(binding_registry:binding(jamaica, 'abs'/2, 'invokestatic java/lang/Math abs (I)I', _, _, _)).
+
+test(krakatau_comparison_binding) :-
+    once(binding_registry:binding(krakatau, '>'/2, 'if_icmpgt', _, _, _)).
+
+test(dual_binding_both_registered) :-
+    once(binding_registry:binding(jamaica, 'max'/3, _, _, _, _)),
+    once(binding_registry:binding(krakatau, 'max'/3, _, _, _, _)).
+
+% ============================================================================
+% Cross-target: same recursion pattern, both syntaxes
+% ============================================================================
+
+test(tail_recursion_same_bytecodes) :-
+    jamaica_target:compile_tail_recursion_jamaica(sum/2, [], JaCode),
+    krakatau_target:compile_tail_recursion_krakatau(sum/2, [], KrCode),
+    % Both contain the same core bytecodes
+    has(JaCode, "goto LOOP"),
+    has(KrCode, "goto LOOP"),
+    has(JaCode, "iadd"),
+    has(KrCode, "iadd"),
+    % Different syntax wrapping
+    has(JaCode, "public class"),
+    has(KrCode, ".class public").
+
+% Helper for inclusion check
+sub_string_match(Substr, Str) :-
+    sub_string(Str, _, _, _, Substr).
 
 :- end_tests(jvm_asm_native_lowering).
