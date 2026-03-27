@@ -4,7 +4,7 @@
 
 {{base}}_graph <- @{ new.env(hash = TRUE, parent = emptyenv()) }@;
 
-let add_{{base}} <- fn(from_node{{add_from_annotation}}, to_node{{add_to_annotation}}): bool {
+let add_{{base}} <- function(from_node{{add_from_annotation}}, to_node{{add_to_annotation}}): bool {
 	result <- @{ (function() {
 		if (!exists(from_node, envir = {{base}}_graph, inherits = FALSE)) {
 			assign(from_node, {{empty_nodes_expr}}, envir = {{base}}_graph)
@@ -21,7 +21,7 @@ let add_{{base}} <- fn(from_node{{add_from_annotation}}, to_node{{add_to_annotat
 
 {{seed_code}}
 
-let {{pred}}_all <- fn(start{{node_annotation}}){{all_return_annotation}} {
+let {{pred}}_all <- function(start{{node_annotation}}){{all_return_annotation}} {
 	result <- @{ (function() {
 		visited <- start
 		queue <- start
@@ -50,7 +50,7 @@ let {{pred}}_all <- fn(start{{node_annotation}}){{all_return_annotation}} {
 	result
 };
 
-let {{pred}}_check <- fn(start{{node_annotation}}, target{{node_annotation}}){{check_return_annotation}} {
+let {{pred}}_check <- function(start{{node_annotation}}, target{{node_annotation}}){{check_return_annotation}} {
 	result <- @{ (function() {
 		if (identical(start, target)) {
 			FALSE
