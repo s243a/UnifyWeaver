@@ -1,0 +1,10 @@
+
+
+(when (seq *command-line-args*)
+  (load-facts)
+  (case (count *command-line-args*)
+    1 (doseq [r (find-all (first *command-line-args*))]
+        (println (str (first *command-line-args*) ":" r)))
+    (if (check-path (first *command-line-args*) (second *command-line-args*))
+      (println (str (first *command-line-args*) ":" (second *command-line-args*)))
+      (System/exit 1))))

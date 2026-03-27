@@ -1,0 +1,9 @@
+# Read {{base}} facts from file (format: from:to)
+open(my $fh, '<', $filename) or die "Cannot open $filename: $!";
+while (<$fh>) {
+    chomp;
+    if (/^([^:]+):(.+)$/) {
+        add_fact($1, $2);
+    }
+}
+close($fh);

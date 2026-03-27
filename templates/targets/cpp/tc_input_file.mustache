@@ -1,0 +1,18 @@
+    // Read {{base}} facts from file
+    {
+        std::ifstream infile(input_path);
+        if (!infile.is_open()) {
+            std::cerr << "Error: cannot open file '" << input_path << "'" << std::endl;
+            return 1;
+        }
+        std::string fline;
+        while (std::getline(infile, fline)) {
+            if (fline.empty()) continue;
+            size_t pos = fline.find(':');
+            if (pos != std::string::npos) {
+                std::string from = fline.substr(0, pos);
+                std::string to = fline.substr(pos + 1);
+                query.addFact(from, to);
+            }
+        }
+    }

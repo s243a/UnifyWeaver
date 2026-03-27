@@ -1,0 +1,7 @@
+
+
+  def {{pred}}_from_pairs(pairs) do
+    Enum.reduce(pairs, %{}, fn {from, to}, acc ->
+      add_fact(acc, from, to)
+    end)
+  end

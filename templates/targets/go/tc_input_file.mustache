@@ -1,0 +1,17 @@
+	// Read {{base}} facts from file
+	{
+		file, err := os.Open(inputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot open file '%s': %v\n", inputPath, err)
+			os.Exit(1)
+		}
+		defer file.Close()
+		fileScanner := bufio.NewScanner(file)
+		for fileScanner.Scan() {
+			line := fileScanner.Text()
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				query.AddFact(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+			}
+		}
+	}

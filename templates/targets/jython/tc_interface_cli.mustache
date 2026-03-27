@@ -1,0 +1,13 @@
+
+
+if len(sys.argv) < 2:
+    sys.stderr.write("Usage: jython {{pred}}_query.py <start> [target]\n")
+    sys.exit(1)
+elif len(sys.argv) == 2:
+    for r in query.find_all(sys.argv[1]):
+        print("%s:%s" % (sys.argv[1], r))
+else:
+    if query.check(sys.argv[1], sys.argv[2]):
+        print("%s:%s" % (sys.argv[1], sys.argv[2]))
+    else:
+        sys.exit(1)

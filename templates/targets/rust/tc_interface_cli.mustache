@@ -1,0 +1,26 @@
+fn main() {
+    let mut query = {{pred_cap}}Query::new();
+    let stdin = io::stdin();
+
+    {{> tc_input_stdin}}
+
+    let args: Vec<String> = std::env::args().collect();
+    match args.len() {
+        2 => {
+            for r in query.find_all(&args[1]) {
+                println!("{}:{}", args[1], r);
+            }
+        }
+        3 => {
+            if query.check(&args[1], &args[2]) {
+                println!("{}:{}", args[1], args[2]);
+            } else {
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            eprintln!("Usage: {} <start> [target]", args[0]);
+            std::process::exit(1);
+        }
+    }
+}

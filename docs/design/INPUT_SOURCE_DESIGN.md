@@ -178,10 +178,9 @@ R, Bash). TypR already supported embedded mode natively.
   R: `ancestor_from_pairs(data.frame)`, Bash: `ancestor_from_pairs "x:y" ...`
 
 ### Remaining work
-- Add composable templates for remaining non-sciREPL targets (C, C++,
-  Rust, Go, TypeScript, etc.)
-- Make `embedded` the default when `context(notebook)` is set
-- Update the prolog-generates-lua workbook to use `input(vfs(...))`
+- Update the prolog-generates-lua workbook to use `input(embedded)`
+  or `input(vfs(...))` instead of manual seed workaround
+- TypR and WAT targets still use their own compilation paths
 
 ## Relationship to Stdin
 

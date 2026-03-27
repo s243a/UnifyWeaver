@@ -1,0 +1,7 @@
+# Function API: accepts a list of [from, to] arrayrefs
+sub load_facts {
+    my (@pairs) = @_;
+    for my $pair (@pairs) {
+        add_fact($pair->[0], $pair->[1]);
+    }
+}

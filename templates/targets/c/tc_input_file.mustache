@@ -1,0 +1,18 @@
+    /* Read {{base}} facts from file */
+    {
+        FILE* fp = fopen(input_path, "r");
+        if (!fp) {
+            fprintf(stderr, "Error: cannot open file '%s'\n", input_path);
+            return 1;
+        }
+        while (fgets(line, sizeof(line), fp)) {
+            char* colon = strchr(line, ':');
+            if (!colon) continue;
+            *colon = '\0';
+            char* to = colon + 1;
+            size_t len = strlen(to);
+            if (len > 0 && to[len-1] == '\n') to[len-1] = '\0';
+            add_edge(line, to);
+        }
+        fclose(fp);
+    }

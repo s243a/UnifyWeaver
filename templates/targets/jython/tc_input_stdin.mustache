@@ -1,0 +1,11 @@
+
+
+query = {{pred}}Query()
+
+# Read base facts from stdin
+for line in sys.stdin:
+    line = line.strip()
+    if line:
+        parts = line.split(":")
+        if len(parts) >= 2:
+            query.add_fact(parts[0].strip(), parts[1].strip())

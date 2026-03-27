@@ -1,0 +1,6 @@
+  # Function API: accepts an array of [from, to] pairs
+  def load_facts(pairs)
+    pairs.each do |from, to|
+      query.add_fact(from, to)
+    end
+  end

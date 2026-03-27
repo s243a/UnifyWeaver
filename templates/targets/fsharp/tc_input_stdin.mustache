@@ -1,0 +1,12 @@
+
+
+[<EntryPoint>]
+let main argv =
+    let rel = Dictionary<string, ResizeArray<string>>()
+    let mutable line = Console.ReadLine()
+    while line <> null do
+        let trimmed = line.Trim()
+        if trimmed.Contains(":") then
+            let parts = trimmed.Split([|':' |], 2)
+            addFact rel (parts.[0].Trim()) (parts.[1].Trim())
+        line <- Console.ReadLine()

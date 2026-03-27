@@ -1,0 +1,12 @@
+
+
+query = {{pred}}Query()
+
+# Read {{base}} facts from file (format: from:to)
+with open("{{input_path}}") as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            parts = line.split(":")
+            if len(parts) >= 2:
+                query.add_fact(parts[0].strip(), parts[1].strip())

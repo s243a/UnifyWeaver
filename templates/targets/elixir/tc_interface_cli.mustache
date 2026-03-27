@@ -1,0 +1,23 @@
+
+
+    case args do
+      [] ->
+        IO.puts(:stderr, "Usage: elixir {{pred}}_query.exs <start> [target]")
+        System.halt(1)
+      [start] ->
+        find_all(start, rel)
+        |> Enum.each(&IO.puts("#{start}:#{&1}"))
+      [start, target | _] ->
+        if check(start, target, rel) do
+          IO.puts("#{start}:#{target}")
+        else
+          System.halt(1)
+        end
+    end
+  end
+end
+
+case System.argv() do
+  [] -> :ok
+  args -> Generated.{{pred_cap}}Query.main(args)
+end

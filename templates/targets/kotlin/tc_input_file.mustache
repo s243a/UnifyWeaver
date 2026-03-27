@@ -1,0 +1,9 @@
+
+
+fun main(args: Array<String>) {
+    java.io.File("{{input_path}}").useLines { lines ->
+        lines.filter { it.isNotBlank() }.forEach { line ->
+            val parts = line.split(":")
+            if (parts.size >= 2) {{pred_cap}}Query.addFact(parts[0].trim(), parts[1].trim())
+        }
+    }

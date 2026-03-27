@@ -1,0 +1,13 @@
+// Read {{base}} facts from stdin (format: from:to)
+import * as readline from "readline";
+
+const rl = readline.createInterface({ input: process.stdin });
+const lines: string[] = [];
+
+rl.on("line", (line: string) => {
+  const trimmed = line.trim();
+  if (trimmed.includes(":")) {
+    const [from, to] = trimmed.split(":", 2).map(s => s.trim());
+    addFact(from, to);
+  }
+});

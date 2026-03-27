@@ -1,0 +1,12 @@
+
+
+# Main execution
+$query = [{{pred}}Query]::new()
+
+# Read {{base}} facts from stdin (format: from:to)
+$input | ForEach-Object {
+    $line = $_.Trim()
+    if ($line -match "^([^:]+):(.+)$") {
+        $query.AddFact($Matches[1].Trim(), $Matches[2].Trim())
+    }
+}

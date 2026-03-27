@@ -1,0 +1,7 @@
+
+
+fun {{pred}}FromPairs(pairs: List<Pair<String, String>>) {
+    for ((from, to) in pairs) {
+        {{pred_cap}}Query.addFact(from, to)
+    }
+}
