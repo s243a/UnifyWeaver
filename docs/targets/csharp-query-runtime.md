@@ -234,6 +234,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
         - baseline project filter
         - compare project filter
         - project-filter delta
+        - baseline failure detail
+        - compare failure detail
+        - failure-detail delta
         - per-slice `admission` / `reuse` / `lru` status deltas
         - per-slice `admission` / `reuse` / `lru` duration deltas
         - threshold settings
