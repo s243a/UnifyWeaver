@@ -55,7 +55,28 @@
 
     % Bulk memory helpers
     wat_bulk_memcpy_func/1,              % -FuncCode
-    wat_bulk_memset_func/1               % -FuncCode
+    wat_bulk_memset_func/1,              % -FuncCode
+
+    % Feature flags (like GHC extensions)
+    wat_enable_feature/1,                % +Feature
+    wat_disable_feature/1,              % +Feature
+    wat_feature_enabled/1,              % +Feature
+    wat_list_features/1,                 % -Features
+
+    % Exception handling (try_table/throw/catch) — requires: exceptions
+    wat_exception_tag/3,                 % +TagName, +ParamTypes, -TagDecl
+    wat_try_catch/5,                     % +TryBody, +TagName, +CatchBody, +ResultType, -Code
+    wat_compile_with_exceptions/4,       % +PredIndicator, +Options, +Tags, -WATCode
+
+    % GC / Reference types (struct, array) — requires: gc
+    wat_gc_struct_type/3,                % +TypeName, +Fields, -TypeDecl
+    wat_gc_array_type/3,                 % +TypeName, +ElemType, -TypeDecl
+    wat_gc_struct_new/3,                 % +TypeName, +FieldValues, -Code
+    wat_gc_struct_get/4,                 % +TypeName, +FieldName, +RefExpr, -Code
+    wat_gc_struct_set/5,                 % +TypeName, +FieldName, +RefExpr, +ValExpr, -Code
+    wat_gc_array_new/4,                  % +TypeName, +InitVal, +Length, -Code
+    wat_gc_array_get/4,                  % +TypeName, +RefExpr, +IndexExpr, -Code
+    wat_gc_compile_module/3              % +GCSpec, +Options, -WATCode
 ]).
 
 :- use_module(library(lists)).
@@ -87,6 +108,107 @@
 :- multifile multicall_linear_recursion:compile_multicall_pattern/6.
 :- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
 :- multifile mutual_recursion:compile_mutual_pattern/5.
+
+%% ============================================
+%% FEATURE FLAGS (like GHC language extensions)
+%% ============================================
+%%
+%% WAT proposal features must be explicitly enabled before use.
+%% This mirrors how GHC requires {-# LANGUAGE ExtensionName #-}
+%% and how wasmtime/wat2wasm require --enable-* flags.
+%%
+%% Available features:
+%%   exceptions       — try_table/throw/catch (wasm exception handling)
+%%   gc               — struct/array types (wasm GC proposal)
+%%   simd             — v128 SIMD operations
+%%   bulk_memory      — memory.copy/memory.fill
+%%   multi_memory     — multiple memory instances
+%%   tail_call        — return_call for proper tail calls
+%%   threads          — shared memory and atomics
+%%   reference_types  — externref/funcref (required by gc)
+
+:- dynamic wat_feature_flag/1.
+
+%% wat_enable_feature(+Feature)
+%%   Enable a WAT proposal feature. Automatically enables prerequisites.
+wat_enable_feature(Feature) :-
+    valid_wat_feature(Feature),
+    (   wat_feature_flag(Feature)
+    ->  true  % already enabled
+    ;   assert(wat_feature_flag(Feature)),
+        enable_prerequisites(Feature)
+    ).
+
+%% wat_disable_feature(+Feature)
+%%   Disable a WAT proposal feature.
+wat_disable_feature(Feature) :-
+    retractall(wat_feature_flag(Feature)).
+
+%% wat_feature_enabled(+Feature)
+%%   Check if a feature is currently enabled.
+wat_feature_enabled(Feature) :-
+    wat_feature_flag(Feature).
+
+%% wat_list_features(-Features)
+%%   List all currently enabled features.
+wat_list_features(Features) :-
+    findall(F, wat_feature_flag(F), Features).
+
+%% require_feature(+Feature)
+%%   Guard: throws an error if the feature is not enabled.
+require_feature(Feature) :-
+    (   wat_feature_enabled(Feature)
+    ->  true
+    ;   format(string(Msg),
+            'WAT feature "~w" is not enabled. Call wat_enable_feature(~w) first.',
+            [Feature, Feature]),
+        throw(error(feature_not_enabled(Feature), context(Msg)))
+    ).
+
+%% Feature validation and prerequisites
+valid_wat_feature(exceptions).
+valid_wat_feature(gc).
+valid_wat_feature(simd).
+valid_wat_feature(bulk_memory).
+valid_wat_feature(multi_memory).
+valid_wat_feature(tail_call).
+valid_wat_feature(threads).
+valid_wat_feature(reference_types).
+
+enable_prerequisites(gc) :- !,
+    wat_enable_feature(reference_types).
+enable_prerequisites(_).
+
+%% wat_feature_flags_for_tool(+Tool, -Flags)
+%%   Generate command-line flags for the compilation tool.
+%%   Tool: wasm_tools | wabt | wasmtime
+wat_feature_flags_for_tool(wasm_tools, "") :- !.
+    % wasm-tools enables everything by default
+wat_feature_flags_for_tool(wabt, Flags) :-
+    findall(Flag, (
+        wat_feature_flag(F),
+        wabt_flag(F, Flag)
+    ), FlagList),
+    atomic_list_concat(FlagList, ' ', Flags).
+wat_feature_flags_for_tool(wasmtime, Flags) :-
+    findall(Flag, (
+        wat_feature_flag(F),
+        wasmtime_flag(F, Flag)
+    ), FlagList),
+    atomic_list_concat(FlagList, ' ', Flags).
+
+wabt_flag(exceptions, '--enable-exceptions').
+wabt_flag(gc, '--enable-gc').
+wabt_flag(simd, '--enable-simd').
+wabt_flag(bulk_memory, '--enable-bulk-memory').
+wabt_flag(threads, '--enable-threads').
+wabt_flag(tail_call, '--enable-tail-call').
+wabt_flag(reference_types, '--enable-function-references').
+wabt_flag(multi_memory, '--enable-multi-memory').
+
+wasmtime_flag(exceptions, '-W exceptions=y').
+wasmtime_flag(gc, '-W gc=y').
+wasmtime_flag(reference_types, '-W function-references=y').
 
 %% ============================================
 %% MEMORY LAYOUT CONSTANTS
@@ -1493,6 +1615,165 @@ inject_before_close(BaseCode, Injection, Result) :-
         format(string(Result), '~w\n~w)\n', [Prefix, Injection])
     ;   Result = BaseCode
     ).
+
+%% ============================================
+%% EXCEPTION HANDLING (try_table / throw / catch)
+%% ============================================
+%%
+%% WebAssembly exception handling uses:
+%%   (tag $name (param types...)) — declares an exception tag
+%%   (throw $tag args...)         — throws an exception
+%%   (try_table (result type) (catch $tag $label) body...) — catches exceptions
+%%
+%% This maps naturally to Prolog's throw/catch:
+%%   throw(Error) → (throw $error_tag encoded_error)
+%%   catch(Goal, Catcher, Recovery) → try_table + catch
+%%
+%% Note: requires wasm-tools for compilation (not wabt) and
+%%       wasmtime -W exceptions=y for runtime.
+
+%% wat_exception_tag(+TagName, +ParamTypes, -TagDecl)
+%%   Generate a tag declaration for exception handling.
+wat_exception_tag(TagName, ParamTypes, TagDecl) :-
+    require_feature(exceptions),
+    maplist(param_to_wat, ParamTypes, ParamStrs),
+    atomics_to_string(ParamStrs, ParamCode),
+    format(string(TagDecl),
+        '  (tag $~w ~w)~n', [TagName, ParamCode]).
+
+%% wat_try_catch(+TryBody, +TagName, +CatchBody, +ResultType, -Code)
+%%   Generate a try_table block that catches exceptions from TagName.
+%%   TryBody: WAT code to execute (may throw)
+%%   CatchBody: WAT code for the catch handler (receives tag params on stack)
+%%   ResultType: the result type of the block (i32, i64, etc.)
+wat_try_catch(TryBody, TagName, CatchBody, ResultType, Code) :-
+    require_feature(exceptions),
+    result_to_wat(ResultType, ResultDecl),
+    format(string(Code),
+'    (block $catch_~w ~w
+      (try_table ~w(catch $~w $catch_~w)
+~w
+      )
+    )
+    ;; catch handler: ~w
+~w', [TagName, ResultDecl, ResultDecl, TagName, TagName,
+      TryBody, TagName, CatchBody]).
+
+%% wat_compile_with_exceptions(+PredIndicator, +Options, +Tags, -WATCode)
+%%   Compile a predicate to WAT with exception handling support.
+%%   Tags: list of tag(Name, ParamTypes) declarations to include.
+wat_compile_with_exceptions(PredIndicator, Options, Tags, WATCode) :-
+    require_feature(exceptions),
+    compile_predicate_to_wat(PredIndicator, Options, BaseCode),
+    maplist(gen_tag_decl, Tags, TagDecls),
+    atomics_to_string(TagDecls, TagCode),
+    inject_before_close(BaseCode, TagCode, WATCode).
+
+gen_tag_decl(tag(Name, Types), Decl) :-
+    wat_exception_tag(Name, Types, Decl).
+
+%% ============================================
+%% GC / REFERENCE TYPES (struct, array)
+%% ============================================
+%%
+%% WebAssembly GC proposal adds managed heap types:
+%%   (type $name (struct (field $f type) ...)) — struct type
+%%   (type $name (array type))                 — array type
+%%   (struct.new $type args...)                — create struct
+%%   (struct.get $type $field ref)             — read field
+%%   (struct.set $type $field ref val)         — write field (if mutable)
+%%   (array.new $type init len)                — create array
+%%   (array.get $type ref idx)                 — read element
+%%
+%% This maps to Prolog terms:
+%%   f(a, b, c) → struct with fields for functor + args
+%%   [H|T]      → struct with head + tail ref
+%%   Atoms      → i64 hash or string ref (existing system)
+%%
+%% Note: requires wasm-tools for compilation (not wabt 1.0.40) and
+%%       wasmtime -W gc=y for runtime.
+
+%% wat_gc_struct_type(+TypeName, +Fields, -TypeDecl)
+%%   Generate a GC struct type declaration.
+%%   Fields: list of field(Name, Type) or field(Name, Type, mutable)
+wat_gc_struct_type(TypeName, Fields, TypeDecl) :-
+    require_feature(gc),
+    maplist(gen_struct_field, Fields, FieldStrs),
+    atomics_to_string(FieldStrs, FieldCode),
+    format(string(TypeDecl),
+        '  (type $~w (struct ~w))~n', [TypeName, FieldCode]).
+
+gen_struct_field(field(Name, Type), Str) :-
+    format(string(Str), '(field $~w ~w) ', [Name, Type]).
+gen_struct_field(field(Name, Type, mutable), Str) :-
+    format(string(Str), '(field $~w (mut ~w)) ', [Name, Type]).
+
+%% wat_gc_array_type(+TypeName, +ElemType, -TypeDecl)
+%%   Generate a GC array type declaration.
+wat_gc_array_type(TypeName, ElemType, TypeDecl) :-
+    format(string(TypeDecl),
+        '  (type $~w (array ~w))~n', [TypeName, ElemType]).
+
+%% wat_gc_struct_new(+TypeName, +FieldValues, -Code)
+%%   Generate code to create a new struct instance.
+%%   FieldValues: list of WAT value expressions
+wat_gc_struct_new(TypeName, FieldValues, Code) :-
+    atomic_list_concat(FieldValues, ' ', ValueCode),
+    format(string(Code),
+        '(struct.new $~w ~w)', [TypeName, ValueCode]).
+
+%% wat_gc_struct_get(+TypeName, +FieldName, +RefExpr, -Code)
+%%   Generate code to read a field from a struct reference.
+wat_gc_struct_get(TypeName, FieldName, RefExpr, Code) :-
+    format(string(Code),
+        '(struct.get $~w $~w ~w)', [TypeName, FieldName, RefExpr]).
+
+%% wat_gc_struct_set(+TypeName, +FieldName, +RefExpr, +ValExpr, -Code)
+%%   Generate code to set a mutable field on a struct reference.
+wat_gc_struct_set(TypeName, FieldName, RefExpr, ValExpr, Code) :-
+    format(string(Code),
+        '(struct.set $~w $~w ~w ~w)', [TypeName, FieldName, RefExpr, ValExpr]).
+
+%% wat_gc_array_new(+TypeName, +InitVal, +Length, -Code)
+%%   Generate code to create a new array with uniform initial value.
+wat_gc_array_new(TypeName, InitVal, Length, Code) :-
+    format(string(Code),
+        '(array.new $~w ~w ~w)', [TypeName, InitVal, Length]).
+
+%% wat_gc_array_get(+TypeName, +RefExpr, +IndexExpr, -Code)
+%%   Generate code to read an element from an array reference.
+wat_gc_array_get(TypeName, RefExpr, IndexExpr, Code) :-
+    format(string(Code),
+        '(array.get $~w ~w ~w)', [TypeName, RefExpr, IndexExpr]).
+
+%% wat_gc_compile_module(+GCSpec, +Options, -WATCode)
+%%   Compile a complete module with GC type declarations and functions.
+%%
+%%   GCSpec: gc_module(Name, Types, Functions)
+%%     Types: list of struct_type(Name, Fields) or array_type(Name, ElemType)
+%%     Functions: list of func(Name, Params, Result, Body)
+wat_gc_compile_module(gc_module(Name, Types, Functions), Options, Code) :-
+    require_feature(gc),
+    maplist(gen_gc_type, Types, TypeDecls),
+    atomics_to_string(TypeDecls, TypeCode),
+    wat_memory_decl(Options, MemDecl),
+    maplist(gen_linked_func, Functions, FuncLines),
+    atomics_to_string(FuncLines, FuncCode),
+    format(string(Code),
+'(module
+  ;; Generated by UnifyWeaver WAT Target - GC/Reference Types
+  ;; Module: ~w
+
+~w
+~w
+
+~w)
+', [Name, TypeCode, MemDecl, FuncCode]).
+
+gen_gc_type(struct_type(Name, Fields), Decl) :-
+    wat_gc_struct_type(Name, Fields, Decl).
+gen_gc_type(array_type(Name, ElemType), Decl) :-
+    wat_gc_array_type(Name, ElemType, Decl).
 
 %% combine_wat_conditions(+Conds, -Combined)
 combine_wat_conditions([C], C) :- !.
