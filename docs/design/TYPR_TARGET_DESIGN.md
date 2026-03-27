@@ -111,7 +111,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      where tree-shaped predicates recurse through paired-forest helpers,
      including guarded branch-local paired-forest call selection on the
      tree side, while list-shaped predicates recurse through head/tail
-     decomposition,
+     decomposition, plus mixed list/numeric SCCs where list-shaped
+     predicates recurse through head/tail decomposition while numeric
+     predicates recurse through scalar step descent or singleton-list
+     re-entry, including integer-return and threaded-context variants,
      emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match

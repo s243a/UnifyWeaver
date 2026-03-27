@@ -278,7 +278,11 @@ includes:
   branch-body forms, and mixed tree/list structural SCCs where tree-shaped
   predicates recurse through paired-forest helpers, including guarded
   branch-local paired-forest call selection on the tree side, while
-  list-shaped predicates recurse through head/tail decomposition,
+  list-shaped predicates recurse through head/tail decomposition, plus
+  mixed list/numeric SCCs where list-shaped predicates recurse through
+  head/tail decomposition while numeric predicates recurse through scalar
+  step descent or singleton-list re-entry, including integer-return and
+  threaded-context variants,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
