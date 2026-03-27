@@ -1,0 +1,8 @@
+
+-- Function API: call {{pred}}_from_list() or {{pred}}_from_pairs()
+-- No I/O — caller provides data via function arguments
+local function {{pred}}_from_pairs(pairs)
+    for _, pair in ipairs(pairs) do
+        add_fact(pair[1], pair[2])
+    end
+end

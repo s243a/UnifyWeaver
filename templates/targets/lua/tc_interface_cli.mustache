@@ -1,0 +1,16 @@
+
+if #arg == 1 then
+    local results = find_all(arg[1])
+    for _, r in ipairs(results) do
+        print(arg[1] .. ":" .. r)
+    end
+elseif #arg == 2 then
+    if check(arg[1], arg[2]) then
+        print(arg[1] .. ":" .. arg[2])
+    else
+        os.exit(1)
+    end
+else
+    io.stderr:write("Usage: lua {{pred}}.lua <start> [target]\n")
+    os.exit(1)
+end

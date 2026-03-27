@@ -1,0 +1,9 @@
+
+-- Read {{base}} facts from file (format: from:to)
+for line in io.lines("{{input_path}}") do
+    line = line:match("^%s*(.-)%s*$")  -- trim
+    local from, to = line:match("^(.+):(.+)$")
+    if from and to then
+        add_fact(from:match("^%s*(.-)%s*$"), to:match("^%s*(.-)%s*$"))
+    end
+end
