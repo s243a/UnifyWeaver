@@ -93,6 +93,10 @@ cleanup_typr_test :-
     retractall(user:typr_mutual_odd_tree_ctx_branch_step_post(_, _)),
     retractall(user:typr_mutual_even_tree_ctx2(_, _, _)),
     retractall(user:typr_mutual_odd_tree_ctx2(_, _, _)),
+    retractall(user:typr_mutual_sum_even_left_tree(_, _)),
+    retractall(user:typr_mutual_sum_odd_left_tree(_, _)),
+    retractall(user:typr_mutual_sum_even_mixed_tree(_, _)),
+    retractall(user:typr_mutual_sum_odd_mixed_tree(_, _)),
     retractall(user:typr_mutual_sum_even_tree(_, _)),
     retractall(user:typr_mutual_sum_odd_tree(_, _)),
     retractall(user:typr_mutual_weight_even_tree(_, _, _)),
@@ -3271,6 +3275,66 @@ test(recursive_compiler_supports_typr_structural_tree_dual_mutual_integer_output
     once(sub_string(Code, _, _, _, "right_result = typr_mutual_sum_odd_tree_impl(.subset2(current_input, 3));")),
     once(sub_string(Code, _, _, _, "result = ((.subset2(current_input, 1) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "result = (((.subset2(current_input, 1) + left_result) + right_result) + 1);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_single_subtree_mutual_integer_output_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_left_tree([], 0)),
+    assertz(user:(typr_mutual_sum_even_left_tree([V, L, _], S) :-
+        typr_mutual_sum_odd_left_tree(L, SL),
+        S is V + SL
+    )),
+    assertz(user:typr_mutual_sum_odd_left_tree([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_left_tree([V, L, _], S) :-
+        typr_mutual_sum_even_left_tree(L, SL),
+        S is V - SL
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_left_tree/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_left_tree/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_left_tree/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_left_tree/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_left_tree/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_left_tree/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_left_tree/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_sum_even_left_tree/2, typr_mutual_sum_odd_left_tree/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_sum_even_left_tree <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_sum_even_left_tree_impl <- function(current_input) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_sum_odd_left_tree_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "result = (.subset2(current_input, 1) + left_result);")),
+    once(sub_string(Code, _, _, _, "result = (.subset2(current_input, 1) - left_result);")),
+    \+ sub_string(Code, _, _, _, "right_result = typr_mutual_sum_odd_left_tree_impl"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_structural_tree_mixed_mutual_integer_output_path) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_even_mixed_tree([], 0)),
+    assertz(user:(typr_mutual_sum_even_mixed_tree([V, L, _], S) :-
+        typr_mutual_sum_odd_mixed_tree(L, SL),
+        S is V + SL
+    )),
+    assertz(user:typr_mutual_sum_odd_mixed_tree([_, [], []], 1)),
+    assertz(user:(typr_mutual_sum_odd_mixed_tree([V, L, R], S) :-
+        typr_mutual_sum_even_mixed_tree(L, SL),
+        typr_mutual_sum_even_mixed_tree(R, SR),
+        S is V + SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_mixed_tree/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_even_mixed_tree/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_mixed_tree/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_odd_mixed_tree/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_even_mixed_tree/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_odd_mixed_tree/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_even_mixed_tree/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_sum_even_mixed_tree/2, typr_mutual_sum_odd_mixed_tree/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_sum_even_mixed_tree <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_sum_even_mixed_tree_impl <- function(current_input) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_sum_odd_mixed_tree_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "result = (.subset2(current_input, 1) + left_result);")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_sum_even_mixed_tree_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_sum_even_mixed_tree_impl(.subset2(current_input, 3));")),
+    once(sub_string(Code, _, _, _, "result = ((.subset2(current_input, 1) + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

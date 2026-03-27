@@ -409,15 +409,15 @@ Current TypR lowering policy is intentionally mixed:
   calls, shared context updates before that first subtree call, branch-local
   context updates before the second subtree call, or multiple threaded
   context arguments carried through the same shared subtree-call families,
-  plus conservative integer-return tree-structural SCCs with shared
-  dual-subtree descent, guarded branch-local alias selection before those
-  shared subtree calls or direct recursive subtree calls inside supported
-  guarded branch bodies, and simple post-call arithmetic recombination,
-  including branch-local post-call arithmetic steps inside those
-  supported guarded branch bodies, over `value`, `left_result`,
+  plus conservative integer-return tree-structural SCCs with one-subtree
+  or shared dual-subtree descent, guarded branch-local alias selection
+  before those shared subtree calls or direct recursive subtree calls
+  inside supported guarded branch bodies, and simple post-call arithmetic
+  recombination, including branch-local post-call arithmetic steps inside
+  those supported guarded branch bodies, over `value`, `left_result`,
   `right_result`, and any threaded context args, including mixed-shape
   SCCs where different predicates in the same group use different
-  supported shared-call or guarded branch-body forms, using raw-expression
+  supported one-subtree, shared-call, or guarded branch-body forms, using raw-expression
   memoized helper bodies inside TypR rather than wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower
   to TypR-valid functions when they match the currently supported `[]` /

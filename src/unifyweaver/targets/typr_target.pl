@@ -1063,6 +1063,12 @@ split_typr_mutual_multicall_goals_allow_empty_post(GroupPredicates, Goals, PreGo
     RecGoals = [_|[_|_]],
     \+ typr_contains_mutual_recursive_goal(GroupPredicates, PostGoals).
 
+split_typr_mutual_recursive_goals_allow_empty_post(GroupPredicates, Goals, PreGoals, RecGoals, PostGoals) :-
+    split_typr_mutual_non_recursive_prefix(GroupPredicates, Goals, PreGoals, RecAndPostGoals),
+    take_typr_mutual_recursive_goal_prefix(GroupPredicates, RecAndPostGoals, RecGoals, PostGoals),
+    RecGoals = [_|_],
+    \+ typr_contains_mutual_recursive_goal(GroupPredicates, PostGoals).
+
 split_typr_mutual_non_recursive_prefix(_GroupPredicates, [], [], []).
 split_typr_mutual_non_recursive_prefix(GroupPredicates, [Goal|Rest], [], [Goal|Rest]) :-
     typr_goal_calls_mutual_group(GroupPredicates, Goal),
@@ -1188,6 +1194,32 @@ typr_mutual_tree_value_side_calls(CallSpecs0, LeftCall, RightCall, LeftOutputVar
     LeftCall = branch_call(LeftHelperName, LeftCallArgs),
     RightCall = branch_call(RightHelperName, RightCallArgs).
 
+typr_mutual_tree_value_call_bindings(CallSpecs0, CallBindings, ResultBindings) :-
+    findall(
+        Side,
+        member(value_call_spec(Side, _NextPred, _CallArgs, _OutputVar), CallSpecs0),
+        Sides0
+    ),
+    sort(Sides0, UniqueSides),
+    length(Sides0, SideCount),
+    length(UniqueSides, SideCount),
+    typr_mutual_tree_value_call_binding(CallSpecs0, left, LeftCallBindings, LeftResultBindings),
+    typr_mutual_tree_value_call_binding(CallSpecs0, right, RightCallBindings, RightResultBindings),
+    append(LeftCallBindings, RightCallBindings, CallBindings),
+    append(LeftResultBindings, RightResultBindings, ResultBindings).
+
+typr_mutual_tree_value_call_binding(CallSpecs0, Side, [value_call_binding(Side, Call)], [result_binding(OutputVar, ResultName)]) :-
+    member(value_call_spec(Side, NextPred, CallArgs, OutputVar), CallSpecs0),
+    !,
+    atom_string(NextPred, NextPredStr),
+    format(string(HelperName), '~w_impl', [NextPredStr]),
+    Call = branch_call(HelperName, CallArgs),
+    typr_mutual_tree_result_name(Side, ResultName).
+typr_mutual_tree_value_call_binding(_CallSpecs0, _Side, [], []).
+
+typr_mutual_tree_result_name(left, left_result).
+typr_mutual_tree_result_name(right, right_result).
+
 typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap0, PostBody, OutputVar, Body) :-
     append(PreGoals, [NestedIfGoal|TailPostGoals], Goals),
     typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap1, GuardExpr),
@@ -1221,7 +1253,7 @@ typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, 
     typr_mutual_tree_branch_condition_expr(IfGoal, ValueVar, AliasMap, ExtraArgMap1, BranchConditionExpr),
     Body = value_branch_if(BranchConditionExpr, ThenBody, ElseBody).
 typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap0, PostBody, OutputVar, Body) :-
-    split_typr_mutual_multicall_goals_allow_empty_post(GroupPredicates, Goals, PreGoals, RecGoals, BranchPostGoals),
+    split_typr_mutual_recursive_goals_allow_empty_post(GroupPredicates, Goals, PreGoals, RecGoals, BranchPostGoals),
     typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap0, AliasMap, ExtraArgMap1, GuardExpr),
     GuardExpr == none,
     maplist(
@@ -1229,19 +1261,18 @@ typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, 
         RecGoals,
         GoalSpecs0
     ),
-    typr_mutual_tree_value_side_calls(GoalSpecs0, LeftCall, RightCall, LeftOutputVar, RightOutputVar),
+    typr_mutual_tree_value_call_bindings(GoalSpecs0, CallBindings, ResultBindings),
     typr_mutual_tree_value_branch_post_body(BranchPostGoals, PostBody, CombinedPostBody),
-    typr_mutual_tree_value_result_expr(
+    typr_mutual_tree_value_result_expr_from_bindings(
         CombinedPostBody,
         OutputVar,
         ValueVar,
         AliasMap,
         ExtraArgMap1,
-        LeftOutputVar,
-        RightOutputVar,
+        ResultBindings,
         ResultExpr
     ),
-    Body = value_branch_leaf(LeftCall, RightCall, ResultExpr).
+    Body = value_branch_leaf(CallBindings, ResultExpr).
 
 typr_mutual_tree_value_branch_post_body(BranchPostGoals, PostBody, CombinedPostBody) :-
     typr_mutual_tree_value_post_body_goals(PostBody, SharedPostGoals),
@@ -1259,6 +1290,14 @@ typr_mutual_tree_value_result_expr(PostBody, OutputVar, ValueVar, AliasMap, Extr
     update_typr_expr_varmap(ResultVarMap0, LeftOutputVar, left_result, ResultVarMap1),
     update_typr_expr_varmap(ResultVarMap1, RightOutputVar, right_result, ResultVarMap),
     linear_recursive_output_expr(PostBody, OutputVar, ResultVarMap, ResultExpr).
+
+typr_mutual_tree_value_result_expr_from_bindings(PostBody, OutputVar, ValueVar, AliasMap, ExtraArgMap, ResultBindings, ResultExpr) :-
+    typr_mutual_tree_condition_varmap(ValueVar, AliasMap, ExtraArgMap, ResultVarMap0),
+    foldl(typr_mutual_tree_result_binding_varmap, ResultBindings, ResultVarMap0, ResultVarMap),
+    linear_recursive_output_expr(PostBody, OutputVar, ResultVarMap, ResultExpr).
+
+typr_mutual_tree_result_binding_varmap(result_binding(OutputVar, ResultName), VarMap0, VarMap) :-
+    update_typr_expr_varmap(VarMap0, OutputVar, ResultName, VarMap).
 
 typr_mutual_extra_arg_expr(ExtraArgMap, Arg, Expr) :-
     var(Arg),
@@ -2860,13 +2899,10 @@ typr_mutual_tree_value_body_lines_from(value_branch_if(BranchConditionExpr, Then
     append(Lines0, [ElseLine], Lines1),
     append(Lines1, ElseLines, Lines2),
     append(Lines2, [EndLine], Lines).
-typr_mutual_tree_value_body_lines_from(value_branch_leaf(LeftCall, RightCall, ResultExpr), Prefix, Lines) :-
-    typr_mutual_tree_call_expr(LeftCall, LeftExpr),
-    typr_mutual_tree_call_expr(RightCall, RightExpr),
-    format(string(LeftLine), '~wleft_result = ~w;', [Prefix, LeftExpr]),
-    format(string(RightLine), '~wright_result = ~w;', [Prefix, RightExpr]),
+typr_mutual_tree_value_body_lines_from(value_branch_leaf(CallBindings, ResultExpr), Prefix, Lines) :-
+    typr_mutual_tree_value_call_binding_lines(CallBindings, Prefix, CallLines),
     format(string(ResultLine), '~wresult = ~w;', [Prefix, ResultExpr]),
-    Lines = [LeftLine, RightLine, ResultLine].
+    append(CallLines, [ResultLine], Lines).
 
 typr_mutual_tree_value_body_lines_no_memo(Body, Prefix, Lines) :-
     typr_mutual_tree_value_body_lines_no_memo_from(Body, Prefix, Lines).
@@ -2882,13 +2918,17 @@ typr_mutual_tree_value_body_lines_no_memo_from(value_branch_if(BranchConditionEx
     append(Lines0, [ElseLine], Lines1),
     append(Lines1, ElseLines, Lines2),
     append(Lines2, [EndLine], Lines).
-typr_mutual_tree_value_body_lines_no_memo_from(value_branch_leaf(LeftCall, RightCall, ResultExpr), Prefix, Lines) :-
-    typr_mutual_tree_call_expr(LeftCall, LeftExpr),
-    typr_mutual_tree_call_expr(RightCall, RightExpr),
-    format(string(LeftLine), '~wleft_result = ~w;', [Prefix, LeftExpr]),
-    format(string(RightLine), '~wright_result = ~w;', [Prefix, RightExpr]),
+typr_mutual_tree_value_body_lines_no_memo_from(value_branch_leaf(CallBindings, ResultExpr), Prefix, Lines) :-
+    typr_mutual_tree_value_call_binding_lines(CallBindings, Prefix, CallLines),
     format(string(ResultLine), '~w~w', [Prefix, ResultExpr]),
-    Lines = [LeftLine, RightLine, ResultLine].
+    append(CallLines, [ResultLine], Lines).
+
+typr_mutual_tree_value_call_binding_lines([], _Prefix, []).
+typr_mutual_tree_value_call_binding_lines([value_call_binding(Side, Call)|Rest], Prefix, [CallLine|RestLines]) :-
+    typr_mutual_tree_result_name(Side, ResultName),
+    typr_mutual_tree_call_expr(Call, CallExpr),
+    format(string(CallLine), '~w~w = ~w;', [Prefix, ResultName, CallExpr]),
+    typr_mutual_tree_value_call_binding_lines(Rest, Prefix, RestLines).
 
 typr_mutual_tree_branch_body_lines(Body, Prefix, Lines) :-
     typr_mutual_tree_branch_body_lines_from(Body, Prefix, 1, Lines).
