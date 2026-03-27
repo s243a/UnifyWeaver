@@ -1,0 +1,7 @@
+
+
+# Read {{base}} facts from stdin (format: from:to)
+while IFS=: read -r from to; do
+    [[ -z "$from" || -z "$to" ]] && continue
+    {{pred}}_add_fact "$(echo "$from" | xargs)" "$(echo "$to" | xargs)"
+done

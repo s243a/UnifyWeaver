@@ -1,0 +1,11 @@
+
+
+# Read {{base}} facts from notebook cell: {{vfs_source}}
+cell_data <- nb_read("{{vfs_source}}", "{{vfs_prop}}")
+if (!is.null(cell_data) && nchar(cell_data) > 0) {
+    lines <- strsplit(cell_data, "\n")[[1]]
+    for (line in lines) {
+        parts <- strsplit(trimws(line), ":")[[1]]
+        if (length(parts) == 2) add_{{base}}(trimws(parts[1]), trimws(parts[2]))
+    }
+}

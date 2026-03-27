@@ -1,0 +1,12 @@
+
+
+# Read {{base}} facts from notebook cell: {{vfs_source}}
+# (works in sciREPL via brush-wasm's VFS integration)
+if [[ -r "/nb/{{vfs_source}}/{{vfs_prop}}" ]]; then
+    while IFS=: read -r from to; do
+        [[ -z "$from" || -z "$to" ]] && continue
+        {{pred}}_add_fact "$(echo "$from" | xargs)" "$(echo "$to" | xargs)"
+    done < "/nb/{{vfs_source}}/{{vfs_prop}}"
+else
+    echo "Warning: cell '{{vfs_source}}' not found at /nb/{{vfs_source}}/{{vfs_prop}}" >&2
+fi

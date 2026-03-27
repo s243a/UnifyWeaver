@@ -1,0 +1,17 @@
+
+
+query = {{pred_cap}}Query()
+
+# Read {{base}} facts from notebook cell: {{vfs_source}}
+try:
+    import sharedfs
+    cell_data = sharedfs.read_text("/nb/{{vfs_source}}/{{vfs_prop}}")
+except ImportError:
+    from js import window
+    cell_data = str(window.notebookVFS.readFile("/nb/{{vfs_source}}/{{vfs_prop}}"))
+
+for line in cell_data.splitlines():
+    line = line.strip()
+    if ":" in line:
+        from_node, to_node = line.split(":", 1)
+        query.add_fact(from_node.strip(), to_node.strip())

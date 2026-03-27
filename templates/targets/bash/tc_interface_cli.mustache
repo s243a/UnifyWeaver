@@ -1,0 +1,15 @@
+
+
+# CLI entry point
+if [[ $# -eq 1 ]]; then
+    {{pred}}_all "$1"
+elif [[ $# -eq 2 ]]; then
+    if {{pred}}_check "$1" "$2"; then
+        echo "$1:$2"
+    else
+        exit 1
+    fi
+else
+    echo "Usage: $0 <start> [target]" >&2
+    exit 1
+fi

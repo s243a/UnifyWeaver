@@ -60,9 +60,14 @@ High — stdin doesn't work in:
 The TypR target already uses embedded seeds — this pattern should be
 generalized to all targets.
 
-## Implementation Plan
-1. Add `input_mode` option to `compile_recursive`
-2. Add `base_seed_code` (like TypR has) to all targets
-3. Make `embedded` the default for notebook/WASM contexts
-4. Keep `stdin` as default for CLI contexts
-5. Add `file` mode with target-specific file reading
+## Implementation Status
+
+Steps 1, 2, 4, 5 are done for Lua, Python, R, and Bash via
+`input_source.pl` and composable mustache templates. Step 3
+(context-aware defaults) is specified but not yet wired.
+
+1. ~~Add `input_mode` option to `compile_recursive`~~ — DONE (`input(Mode)`)
+2. ~~Add `base_seed_code` (like TypR has) to all targets~~ — DONE (12 targets)
+3. Make `embedded` the default for notebook/WASM contexts — TODO
+4. ~~Keep `stdin` as default for CLI contexts~~ — DONE
+5. ~~Add `file` mode with target-specific file reading~~ — DONE
