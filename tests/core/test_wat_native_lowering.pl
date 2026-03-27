@@ -680,4 +680,159 @@ test(bulk_memory_bindings_registered) :-
     wat_target:init_wat_target,
     binding_registry:binding(wat, 'memory_copy'/4, 'memory.copy', _, _, _).
 
+% ============================================================================
+% Feature flags
+% ============================================================================
+
+test(feature_enable_disable) :-
+    wat_target:wat_disable_feature(exceptions),
+    \+ wat_target:wat_feature_enabled(exceptions),
+    wat_target:wat_enable_feature(exceptions),
+    wat_target:wat_feature_enabled(exceptions),
+    wat_target:wat_disable_feature(exceptions).
+
+test(feature_gc_enables_reference_types) :-
+    wat_target:wat_disable_feature(gc),
+    wat_target:wat_disable_feature(reference_types),
+    wat_target:wat_enable_feature(gc),
+    wat_target:wat_feature_enabled(gc),
+    wat_target:wat_feature_enabled(reference_types),
+    wat_target:wat_disable_feature(gc),
+    wat_target:wat_disable_feature(reference_types).
+
+test(feature_list) :-
+    wat_target:wat_disable_feature(simd),
+    wat_target:wat_enable_feature(simd),
+    wat_target:wat_list_features(Fs),
+    once(member(simd, Fs)),
+    wat_target:wat_disable_feature(simd).
+
+test(feature_guard_blocks_without_enable) :-
+    wat_target:wat_disable_feature(exceptions),
+    catch(
+        wat_target:wat_exception_tag(e, [i32], _),
+        error(feature_not_enabled(exceptions), _),
+        true
+    ).
+
+test(feature_wabt_flags) :-
+    wat_target:wat_disable_feature(exceptions),
+    wat_target:wat_enable_feature(exceptions),
+    wat_target:wat_feature_flags_for_tool(wabt, Flags),
+    has(Flags, "--enable-exceptions"),
+    wat_target:wat_disable_feature(exceptions).
+
+test(feature_wasmtime_flags) :-
+    wat_target:wat_enable_feature(gc),
+    wat_target:wat_feature_flags_for_tool(wasmtime, Flags),
+    has(Flags, "-W gc=y"),
+    wat_target:wat_disable_feature(gc),
+    wat_target:wat_disable_feature(reference_types).
+
+% ============================================================================
+% Exception handling
+% ============================================================================
+
+test(exception_tag) :-
+    wat_target:wat_enable_feature(exceptions),
+    wat_target:wat_exception_tag(err, [i32], Code),
+    has(Code, "(tag $err"),
+    has(Code, "(param i32)"),
+    wat_target:wat_disable_feature(exceptions).
+
+test(try_catch) :-
+    wat_target:wat_enable_feature(exceptions),
+    wat_target:wat_try_catch(
+        "        (throw $err (i32.const 99))",
+        err,
+        "    ;; caught value on stack",
+        i32,
+        Code),
+    has(Code, "try_table"),
+    has(Code, "catch $err"),
+    has(Code, "(result i32)"),
+    wat_target:wat_disable_feature(exceptions).
+
+% ============================================================================
+% GC / Reference types
+% ============================================================================
+
+test(gc_struct_type) :-
+    wat_target:wat_enable_feature(gc),
+    wat_target:wat_gc_struct_type(point,
+        [field(x, i32), field(y, i32)], Code),
+    has(Code, "(type $point (struct"),
+    has(Code, "(field $x i32)"),
+    has(Code, "(field $y i32)"),
+    wat_target:wat_disable_feature(gc),
+    wat_target:wat_disable_feature(reference_types).
+
+test(gc_struct_type_mutable) :-
+    wat_target:wat_enable_feature(gc),
+    wat_target:wat_gc_struct_type(cell,
+        [field(val, i64, mutable)], Code),
+    has(Code, "(field $val (mut i64))"),
+    wat_target:wat_disable_feature(gc),
+    wat_target:wat_disable_feature(reference_types).
+
+test(gc_array_type) :-
+    wat_target:wat_enable_feature(gc),
+    wat_target:wat_gc_array_type(int_array, i32, Code),
+    has(Code, "(type $int_array (array i32))"),
+    wat_target:wat_disable_feature(gc),
+    wat_target:wat_disable_feature(reference_types).
+
+test(gc_struct_new) :-
+    wat_target:wat_gc_struct_new(point,
+        ["(i32.const 3)", "(i32.const 7)"], Code),
+    has(Code, "(struct.new $point"),
+    has(Code, "(i32.const 3)"),
+    has(Code, "(i32.const 7)").
+
+test(gc_struct_get) :-
+    wat_target:wat_gc_struct_get(point, x, "(local.get $p)", Code),
+    has(Code, "(struct.get $point $x"),
+    has(Code, "(local.get $p)").
+
+test(gc_struct_set) :-
+    wat_target:wat_gc_struct_set(cell, val,
+        "(local.get $c)", "(i64.const 42)", Code),
+    has(Code, "(struct.set $cell $val"),
+    has(Code, "(local.get $c)"),
+    has(Code, "(i64.const 42)").
+
+test(gc_array_new) :-
+    wat_target:wat_gc_array_new(int_array,
+        "(i32.const 0)", "(i32.const 10)", Code),
+    has(Code, "(array.new $int_array").
+
+test(gc_array_get) :-
+    wat_target:wat_gc_array_get(int_array,
+        "(local.get $arr)", "(i32.const 5)", Code),
+    has(Code, "(array.get $int_array").
+
+test(gc_compile_module) :-
+    wat_target:wat_enable_feature(gc),
+    wat_target:wat_gc_compile_module(
+        gc_module("points",
+            [struct_type(point, [field(x, i32), field(y, i32)])],
+            [func("sum_xy", [param(p, '(ref $point)')], i32,
+                "    (i32.add (struct.get $point $x (local.get $p)) (struct.get $point $y (local.get $p)))")]),
+        [],
+        Code),
+    has(Code, "(module"),
+    has(Code, "(type $point (struct"),
+    has(Code, "(func $sum_xy"),
+    has(Code, "struct.get $point $x"),
+    wat_target:wat_disable_feature(gc),
+    wat_target:wat_disable_feature(reference_types).
+
+test(gc_guard_blocks_without_enable) :-
+    wat_target:wat_disable_feature(gc),
+    catch(
+        wat_target:wat_gc_struct_type(point, [field(x, i32)], _),
+        error(feature_not_enabled(gc), _),
+        true
+    ).
+
 :- end_tests(wat_native_lowering).
