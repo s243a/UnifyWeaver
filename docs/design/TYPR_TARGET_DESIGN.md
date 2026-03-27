@@ -98,16 +98,16 @@ This document focuses on architecture and rollout choices specific to TypR.
      context updates before that first subtree call, branch-local
      context updates before the second subtree call, and boolean return
      types, plus conservative integer-return tree-structural SCCs with
-     shared dual-subtree descent, guarded branch-local alias selection
-     before those shared subtree calls or direct recursive subtree calls
-     inside supported guarded branch bodies with one nested branch-local
-     control point around those calls, and simple post-call
+     one-subtree or shared dual-subtree descent, guarded branch-local
+     alias selection before those shared subtree calls or direct recursive
+     subtree calls inside supported guarded branch bodies with one nested
+     branch-local control point around those calls, and simple post-call
      arithmetic recombination, including branch-local post-call
      arithmetic steps inside those supported guarded branch bodies, over
      `value`, `left_result`, `right_result`, and any threaded context
      args, including mixed-shape SCCs where different predicates in the
-     same group use different supported shared-call or guarded branch-
-     body forms, emitted as TypR
+     same group use different supported one-subtree, shared-call, or
+     guarded branch-body forms, emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
