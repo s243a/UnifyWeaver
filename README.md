@@ -275,7 +275,9 @@ includes:
   `value`, `left_result`, `right_result`, and any threaded context args,
   including mixed-shape SCCs where different predicates in the same group
   use different supported one-subtree, shared-call, or guarded
-  branch-body forms,
+  branch-body forms, and mixed tree/list structural SCCs where tree-shaped
+  predicates recurse through paired-forest helpers while list-shaped
+  predicates recurse through head/tail decomposition,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback

@@ -79,18 +79,23 @@ mutual_recursion:compile_mutual_pattern(typr, Predicates, MemoEnabled, _MemoStra
 
 compile_typr_mutual_recursion_group(Predicates0, MemoEnabled, Code) :-
     sort(Predicates0, Predicates),
-    (   maplist(typr_mutual_numeric_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_list_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_dual_value_full_body_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_dual_value_branch_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_dual_value_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_dual_body_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_dual_context_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_dual_branch_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_dual_spec(Predicates), Predicates, Specs)
-    ;   maplist(typr_mutual_tree_spec(Predicates), Predicates, Specs)
-    ),
+    maplist(typr_mutual_supported_spec(Predicates), Predicates, Specs),
     typr_mutual_group_code(Specs, MemoEnabled, Code).
+
+typr_mutual_supported_spec(GroupPredicates, PredArity, Spec) :-
+    (   typr_mutual_numeric_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_list_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_mixed_tree_list_value_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_mixed_tree_list_bool_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_dual_value_full_body_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_dual_value_branch_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_dual_value_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_dual_body_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_dual_context_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_dual_branch_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_dual_spec(GroupPredicates, PredArity, Spec)
+    ;   typr_mutual_tree_spec(GroupPredicates, PredArity, Spec)
+    ).
 
 typr_mutual_numeric_spec(GroupPredicates, Pred/Arity, Spec) :-
     Arity =:= 1,
@@ -178,6 +183,279 @@ typr_mutual_list_base_case_length(clause(Head, true), 0) :-
 typr_mutual_list_base_case_length(clause(Head, true), 1) :-
     Head =.. [_Pred, [Elem]],
     var(Elem).
+
+typr_mutual_list_empty_base_condition(clause(Head, true), 'length(current_input) == 0') :-
+    Head =.. [_Pred, []|_].
+
+typr_mutual_list_empty_value_base_case(ContextParamNames, clause(Head, true), base_case('length(current_input) == 0', OutputExpr)) :-
+    Head =.. [_Pred, []|ContextAndOutputVars],
+    append(ContextVars, [BaseOutput], ContextAndOutputVars),
+    typr_mutual_tree_context_varmap(ContextVars, ContextParamNames, VarMap),
+    typr_translate_r_expr(BaseOutput, VarMap, OutputExpr).
+
+typr_mutual_tree_pair_expr('list(.subset2(current_input, 2), .subset2(current_input, 3))').
+
+typr_mutual_tree_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, Goal0, NextPred, CallArgs) :-
+    typr_mutual_tree_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, [], Goal0, NextPred, CallArgs).
+
+typr_mutual_tree_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, NextPred, CallArgs) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Goal =.. [NextPred, RecArg|ExtraArgs],
+    length(ExtraArgs, ExtraArity),
+    Arity is ExtraArity + 1,
+    memberchk(NextPred/Arity, GroupPredicates),
+    RecArg = [PairLeft, PairRight],
+    PairLeft == LeftVar,
+    PairRight == RightVar,
+    typr_mutual_tree_pair_expr(PairExpr),
+    maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
+    CallArgs = [PairExpr|ExtraArgExprs].
+
+typr_mutual_tree_pair_value_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, NextPred, CallArgs, OutputVar) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Goal =.. [NextPred, RecArg|ExtraAndOutputArgs],
+    append(ExtraArgs, [OutputVar], ExtraAndOutputArgs),
+    var(OutputVar),
+    length(ExtraAndOutputArgs, TailArity),
+    Arity is TailArity + 1,
+    memberchk(NextPred/Arity, GroupPredicates),
+    RecArg = [PairLeft, PairRight],
+    PairLeft == LeftVar,
+    PairRight == RightVar,
+    typr_mutual_tree_pair_expr(PairExpr),
+    maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
+    CallArgs = [PairExpr|ExtraArgExprs].
+
+typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar, Goal0, CallSpec) :-
+    typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar, [], Goal0, CallSpec).
+
+typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar, ExtraArgMap, Goal0, call_spec(Side, NextPred, CallArgs)) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Goal =.. [NextPred, RecArg|ExtraArgs],
+    length(ExtraArgs, ExtraArity),
+    Arity is ExtraArity + 1,
+    memberchk(NextPred/Arity, GroupPredicates),
+    (   RecArg == HeadVar
+    ->  Side = left,
+        DriverExpr = '.subset2(current_input, 1)'
+    ;   RecArg == TailVar
+    ->  Side = right,
+        DriverExpr = 'tail(current_input, -1)'
+    ),
+    maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
+    CallArgs = [DriverExpr|ExtraArgExprs].
+
+typr_mutual_list_head_tail_value_recursive_goal(GroupPredicates, HeadVar, TailVar, ExtraArgMap, Goal0, value_call_spec(Side, NextPred, CallArgs, OutputVar)) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Goal =.. [NextPred, RecArg|ExtraAndOutputArgs],
+    append(ExtraArgs, [OutputVar], ExtraAndOutputArgs),
+    var(OutputVar),
+    length(ExtraAndOutputArgs, TailArity),
+    Arity is TailArity + 1,
+    memberchk(NextPred/Arity, GroupPredicates),
+    (   RecArg == HeadVar
+    ->  Side = left,
+        DriverExpr = '.subset2(current_input, 1)'
+    ;   RecArg == TailVar
+    ->  Side = right,
+        DriverExpr = 'tail(current_input, -1)'
+    ),
+    maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
+    CallArgs = [DriverExpr|ExtraArgExprs].
+
+typr_mutual_mixed_tree_list_bool_spec(GroupPredicates, Pred/Arity, Spec) :-
+    typr_mutual_tree_to_list_bool_spec(GroupPredicates, Pred/Arity, Spec).
+typr_mutual_mixed_tree_list_bool_spec(GroupPredicates, Pred/Arity, Spec) :-
+    typr_mutual_list_tree_dual_bool_spec(GroupPredicates, Pred/Arity, Spec).
+
+typr_mutual_tree_to_list_bool_spec(GroupPredicates, Pred/Arity, Spec) :-
+    Arity =:= 1,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "bool"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    maplist(typr_mutual_tree_base_case_condition, BaseClauses, BaseConds0),
+    sort(BaseConds0, BaseConditions),
+    RecHead =.. [_PredName, [_, LeftVar, RightVar]],
+    typr_mutual_goal_list(RecBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    Goals = [RecGoal],
+    typr_mutual_tree_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, RecGoal, NextPred, [StepExpr]),
+    atom_string(Pred, PredStr),
+    atom_string(NextPred, NextPredStr),
+    format(string(HelperName), '~w_impl', [PredStr]),
+    format(string(NextHelperName), '~w_impl', [NextPredStr]),
+    Spec = mutual_spec{
+        kind: tree,
+        pred: Pred,
+        arity: Arity,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "bool",
+        helper_name: HelperName,
+        next_helper_name: NextHelperName,
+        base_conditions: BaseConditions,
+        guard_expr: 'length(current_input) == 3',
+        step_expr: StepExpr
+    }.
+
+typr_mutual_list_tree_dual_bool_spec(GroupPredicates, Pred/Arity, Spec) :-
+    Arity =:= 1,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "bool"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    maplist(typr_mutual_list_empty_base_condition, BaseClauses, BaseConds0),
+    sort(BaseConds0, BaseConditions),
+    RecHead =.. [_PredName, [HeadVar|TailVar]],
+    var(TailVar),
+    typr_mutual_goal_list(RecBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    Goals = [GoalA, GoalB],
+    maplist(typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar), [GoalA, GoalB], GoalSpecs0),
+    select(call_spec(left, LeftNextPred, LeftCallArgs), GoalSpecs0, GoalSpecs1),
+    select(call_spec(right, RightNextPred, RightCallArgs), GoalSpecs1, []),
+    atom_string(Pred, PredStr),
+    atom_string(LeftNextPred, LeftNextPredStr),
+    atom_string(RightNextPred, RightNextPredStr),
+    format(string(HelperName), '~w_impl', [PredStr]),
+    format(string(LeftNextHelperName), '~w_impl', [LeftNextPredStr]),
+    format(string(RightNextHelperName), '~w_impl', [RightNextPredStr]),
+    Spec = mutual_spec{
+        kind: tree_dual,
+        pred: Pred,
+        arity: Arity,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "bool",
+        helper_name: HelperName,
+        left_call: branch_call(LeftNextHelperName, LeftCallArgs),
+        right_call: branch_call(RightNextHelperName, RightCallArgs),
+        base_conditions: BaseConditions,
+        guard_expr: 'length(current_input) > 0'
+    }.
+
+typr_mutual_mixed_tree_list_value_spec(GroupPredicates, Pred/Arity, Spec) :-
+    typr_mutual_tree_to_list_value_spec(GroupPredicates, Pred/Arity, Spec).
+typr_mutual_mixed_tree_list_value_spec(GroupPredicates, Pred/Arity, Spec) :-
+    typr_mutual_list_tree_dual_value_spec(GroupPredicates, Pred/Arity, Spec).
+
+typr_mutual_tree_to_list_value_spec(GroupPredicates, Pred/Arity, Spec) :-
+    Arity >= 2,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "int"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    RecHead =.. [_PredName, [ValueVar, LeftVar, RightVar]|ContextAndOutputVars],
+    append(ContextVars, [OutputVar], ContextAndOutputVars),
+    var(OutputVar),
+    typr_mutual_tree_context_param_names(ContextVars, ContextParamNames),
+    maplist(typr_mutual_tree_value_base_case(ContextParamNames), BaseClauses, BaseCases),
+    typr_mutual_goal_list(RecBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    split_typr_mutual_recursive_goals_allow_empty_post(GroupPredicates, Goals, PreGoals, RecGoals, PostGoals),
+    PreGoals == [],
+    RecGoals = [RecGoal],
+    typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
+    typr_mutual_tree_pair_value_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, RecGoal, NextPred, CallArgs, PartVar),
+    atom_string(NextPred, NextPredStr),
+    format(string(NextHelperName), '~w_impl', [NextPredStr]),
+    typr_goals_to_body(PostGoals, PostBody),
+    typr_mutual_tree_condition_varmap(ValueVar, [], ExtraArgMap, ResultVarMap0),
+    typr_mutual_result_expr_from_bindings(
+        PostBody,
+        OutputVar,
+        ResultVarMap0,
+        [result_binding(PartVar, left_result)],
+        ResultExpr
+    ),
+    atom_string(Pred, PredStr),
+    Spec = mutual_spec{
+        kind: tree_dual_value_full_body,
+        pred: Pred,
+        arity: Arity,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "int",
+        helper_name: HelperName,
+        helper_params: HelperParams,
+        wrapper_call_args: WrapperCallArgs,
+        memo_key_expr: MemoKeyExpr,
+        base_cases: BaseCases,
+        guard_expr: 'length(current_input) == 3',
+        body: value_branch_leaf([value_call_binding(left, branch_call(NextHelperName, CallArgs))], ResultExpr)
+    }.
+
+typr_mutual_list_tree_dual_value_spec(GroupPredicates, Pred/Arity, Spec) :-
+    Arity >= 2,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "int"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    RecHead =.. [_PredName, [HeadVar|TailVar]|ContextAndOutputVars],
+    var(TailVar),
+    append(ContextVars, [OutputVar], ContextAndOutputVars),
+    var(OutputVar),
+    typr_mutual_tree_context_param_names(ContextVars, ContextParamNames),
+    maplist(typr_mutual_list_empty_value_base_case(ContextParamNames), BaseClauses, BaseCases),
+    typr_mutual_goal_list(RecBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    split_typr_mutual_multicall_goals(GroupPredicates, Goals, PreGoals, RecGoals, PostGoals),
+    PreGoals == [],
+    typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
+    maplist(
+        typr_mutual_list_head_tail_value_recursive_goal(GroupPredicates, HeadVar, TailVar, ExtraArgMap),
+        RecGoals,
+        GoalSpecs0
+    ),
+    select(value_call_spec(left, LeftNextPred, LeftCallArgs, LeftOutputVar), GoalSpecs0, GoalSpecs1),
+    select(value_call_spec(right, RightNextPred, RightCallArgs, RightOutputVar), GoalSpecs1, []),
+    atom_string(LeftNextPred, LeftNextPredStr),
+    atom_string(RightNextPred, RightNextPredStr),
+    format(string(LeftNextHelperName), '~w_impl', [LeftNextPredStr]),
+    format(string(RightNextHelperName), '~w_impl', [RightNextPredStr]),
+    typr_goals_to_body(PostGoals, PostBody),
+    typr_mutual_result_expr_from_bindings(
+        PostBody,
+        OutputVar,
+        ExtraArgMap,
+        [result_binding(LeftOutputVar, left_result), result_binding(RightOutputVar, right_result)],
+        ResultExpr
+    ),
+    atom_string(Pred, PredStr),
+    Spec = mutual_spec{
+        kind: tree_dual_value,
+        pred: Pred,
+        arity: Arity,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "int",
+        helper_name: HelperName,
+        helper_params: HelperParams,
+        wrapper_call_args: WrapperCallArgs,
+        memo_key_expr: MemoKeyExpr,
+        base_cases: BaseCases,
+        guard_expr: 'length(current_input) > 0',
+        left_call: branch_call(LeftNextHelperName, LeftCallArgs),
+        right_call: branch_call(RightNextHelperName, RightCallArgs),
+        result_expr: ResultExpr
+    }.
 
 typr_mutual_tree_dual_value_spec(GroupPredicates, Pred/Arity, Spec) :-
     Arity >= 2,
@@ -1287,12 +1565,19 @@ typr_mutual_tree_value_post_body_goals(PostBody, Goals) :-
 
 typr_mutual_tree_value_result_expr(PostBody, OutputVar, ValueVar, AliasMap, ExtraArgMap, LeftOutputVar, RightOutputVar, ResultExpr) :-
     typr_mutual_tree_condition_varmap(ValueVar, AliasMap, ExtraArgMap, ResultVarMap0),
-    update_typr_expr_varmap(ResultVarMap0, LeftOutputVar, left_result, ResultVarMap1),
-    update_typr_expr_varmap(ResultVarMap1, RightOutputVar, right_result, ResultVarMap),
-    linear_recursive_output_expr(PostBody, OutputVar, ResultVarMap, ResultExpr).
+    typr_mutual_result_expr_from_bindings(
+        PostBody,
+        OutputVar,
+        ResultVarMap0,
+        [result_binding(LeftOutputVar, left_result), result_binding(RightOutputVar, right_result)],
+        ResultExpr
+    ).
 
 typr_mutual_tree_value_result_expr_from_bindings(PostBody, OutputVar, ValueVar, AliasMap, ExtraArgMap, ResultBindings, ResultExpr) :-
     typr_mutual_tree_condition_varmap(ValueVar, AliasMap, ExtraArgMap, ResultVarMap0),
+    typr_mutual_result_expr_from_bindings(PostBody, OutputVar, ResultVarMap0, ResultBindings, ResultExpr).
+
+typr_mutual_result_expr_from_bindings(PostBody, OutputVar, ResultVarMap0, ResultBindings, ResultExpr) :-
     foldl(typr_mutual_tree_result_binding_varmap, ResultBindings, ResultVarMap0, ResultVarMap),
     linear_recursive_output_expr(PostBody, OutputVar, ResultVarMap, ResultExpr).
 
