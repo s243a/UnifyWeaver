@@ -1,0 +1,8 @@
+
+
+(defn load-facts []
+  (doseq [line (line-seq (java.io.BufferedReader. *in*))]
+    (when (seq line)
+      (let [[from to] (clojure.string/split line #":")]
+        (when (and from to)
+          (add-fact (clojure.string/trim from) (clojure.string/trim to)))))))

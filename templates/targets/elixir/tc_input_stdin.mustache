@@ -1,0 +1,16 @@
+
+
+  def main(args) do
+    rel =
+      IO.stream(:stdio, :line)
+      |> Enum.reduce(%{}, fn line, acc ->
+        line = String.trim(line)
+        if line != "" do
+          case String.split(line, ":") do
+            [from, to | _] -> add_fact(acc, String.trim(from), String.trim(to))
+            _ -> acc
+          end
+        else
+          acc
+        end
+      end)

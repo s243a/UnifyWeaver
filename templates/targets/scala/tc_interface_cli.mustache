@@ -1,0 +1,9 @@
+
+
+    args.toList match {
+      case Nil => System.err.println("Usage: scala {{pred_cap}}Query <start> [target]"); sys.exit(1)
+      case start :: Nil => findAll(start).foreach(r => println(s"$start:$r"))
+      case start :: target :: _ => if (check(start, target)) println(s"$start:$target") else sys.exit(1)
+    }
+  }
+}

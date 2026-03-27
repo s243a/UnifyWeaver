@@ -1,0 +1,6 @@
+
+
+(defn {{pred}}-from-pairs [pairs]
+  "Load facts from a sequence of [from to] vectors."
+  (doseq [[from to] pairs]
+    (add-fact from to)))

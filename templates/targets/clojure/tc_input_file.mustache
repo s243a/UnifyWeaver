@@ -1,0 +1,9 @@
+
+
+(defn load-facts []
+  (with-open [rdr (clojure.java.io/reader "{{input_path}}")]
+    (doseq [line (line-seq rdr)]
+      (when (seq line)
+        (let [[from to] (clojure.string/split line #":")]
+          (when (and from to)
+            (add-fact (clojure.string/trim from) (clojure.string/trim to))))))))

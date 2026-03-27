@@ -1,0 +1,8 @@
+  # Read {{base}} facts from file (format: from:to)
+  File.foreach(filename) do |line|
+    line = line.strip
+    if line.include?(":")
+      from, to = line.split(":", 2).map(&:strip)
+      query.add_fact(from, to)
+    end
+  end

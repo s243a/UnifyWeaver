@@ -101,6 +101,28 @@ test_bash_file :-
     recursive_compiler:compile_recursive(ancestor/2, [target(bash), input(file("facts.txt"))], Code),
     (sub_string(Code, _, _, _, "facts.txt") -> writeln('  PASS: contains file path') ; (writeln('  FAIL'), fail)).
 
+%% --- Context-aware default tests ---
+test_context_notebook :-
+    writeln('=== TEST: context(notebook) defaults to embedded ==='),
+    recursive_compiler:compile_recursive(ancestor/2, [target(lua), context(notebook)], Code),
+    (sub_string(Code, _, _, _, "add_fact(\"alice\"") -> writeln('  PASS: embedded seed facts') ; (writeln('  FAIL'), fail)),
+    (\+ sub_string(Code, _, _, _, "io.lines()") -> writeln('  PASS: no stdin') ; (writeln('  FAIL'), fail)).
+
+test_context_workbook :-
+    writeln('=== TEST: context(workbook) defaults to embedded ==='),
+    recursive_compiler:compile_recursive(ancestor/2, [target(python), context(workbook)], Code),
+    (sub_string(Code, _, _, _, "query.add_fact(\"alice\"") -> writeln('  PASS: embedded seed facts') ; (writeln('  FAIL'), fail)).
+
+test_context_cli :-
+    writeln('=== TEST: context(cli) defaults to stdin ==='),
+    recursive_compiler:compile_recursive(ancestor/2, [target(lua), context(cli)], Code),
+    (sub_string(Code, _, _, _, "io.lines()") -> writeln('  PASS: stdin') ; (writeln('  FAIL'), fail)).
+
+test_context_override :-
+    writeln('=== TEST: explicit input() overrides context ==='),
+    recursive_compiler:compile_recursive(ancestor/2, [target(lua), context(notebook), input(stdin)], Code),
+    (sub_string(Code, _, _, _, "io.lines()") -> writeln('  PASS: stdin overrides notebook') ; (writeln('  FAIL'), fail)).
+
 %% --- Run all ---
 run_tests :-
     %% Lua
@@ -111,4 +133,6 @@ run_tests :-
     test_r_stdin, test_r_embedded, test_r_vfs,
     %% Bash
     test_bash_stdin, test_bash_embedded, test_bash_vfs, test_bash_file,
-    nl, writeln('=== ALL 16 INPUT SOURCE TESTS PASSED ===').
+    %% Context defaults
+    test_context_notebook, test_context_workbook, test_context_cli, test_context_override,
+    nl, writeln('=== ALL 20 INPUT SOURCE TESTS PASSED ===').

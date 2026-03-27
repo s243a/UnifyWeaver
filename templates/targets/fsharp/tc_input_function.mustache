@@ -1,0 +1,6 @@
+
+
+let rel = Dictionary<string, ResizeArray<string>>()
+
+let {{pred}}FromPairs (pairs: (string * string) list) =
+    pairs |> List.iter (fun (from_node, to_node) -> addFact rel from_node to_node)

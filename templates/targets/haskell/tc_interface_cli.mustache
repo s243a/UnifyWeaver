@@ -1,0 +1,13 @@
+
+
+    args <- getArgs
+    case args of
+      [start] ->
+        mapM_ (\r -> putStrLn (start ++ ":" ++ r)) (findAll rel start)
+      [start, target] ->
+        if check rel start target
+          then putStrLn (start ++ ":" ++ target)
+          else exitFailure
+      _ -> do
+        putStrLn "Usage: {{pred}} <start> [target]"
+        exitFailure

@@ -1,0 +1,4 @@
+
+
+{{pred}}FromPairs :: [(String, String)] -> Rel
+{{pred}}FromPairs pairs = foldl (\acc (from, to) -> addFact acc from to) Map.empty pairs

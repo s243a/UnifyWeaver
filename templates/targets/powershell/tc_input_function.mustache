@@ -1,0 +1,10 @@
+
+
+$query = [{{pred}}Query]::new()
+
+function {{pred}}-FromPairs {
+    param([array]$Pairs)
+    foreach ($pair in $Pairs) {
+        $query.AddFact($pair[0], $pair[1])
+    }
+}

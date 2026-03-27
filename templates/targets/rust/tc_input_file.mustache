@@ -1,0 +1,14 @@
+    // Read {{base}} facts from file
+    {
+        use std::fs::File;
+        use std::io::BufReader;
+        let file = File::open(input_path).expect("Cannot open input file");
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                if let Some((from, to)) = line.split_once(':') {
+                    query.add_fact(from.trim(), to.trim());
+                }
+            }
+        }
+    }

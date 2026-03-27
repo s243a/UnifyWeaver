@@ -1,0 +1,7 @@
+
+
+  def main(args: Array[String]): Unit = {
+    scala.io.Source.fromFile("{{input_path}}").getLines().filter(_.nonEmpty).foreach { line =>
+      val parts = line.split(":")
+      if (parts.length >= 2) addFact(parts(0).trim, parts(1).trim)
+    }

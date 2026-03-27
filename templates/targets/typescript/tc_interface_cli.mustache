@@ -1,0 +1,17 @@
+rl.on("close", () => {
+  const args = process.argv.slice(2);
+  if (args.length === 1) {
+    for (const r of findAll(args[0])) {
+      console.log(`${args[0]}:${r}`);
+    }
+  } else if (args.length === 2) {
+    if (check(args[0], args[1])) {
+      console.log(`${args[0]}:${args[1]}`);
+    } else {
+      process.exit(1);
+    }
+  } else {
+    console.error("Usage: ts-node script.ts <start> [target]");
+    process.exit(1);
+  }
+});

@@ -1,0 +1,15 @@
+
+
+    match argv with
+    | [| start |] ->
+        findAll rel start
+        |> List.iter (fun r -> printfn "%s:%s" start r)
+        0
+    | [| start; target |] ->
+        if check rel start target then
+            printfn "%s:%s" start target
+            0
+        else 1
+    | _ ->
+        eprintfn "Usage: {{pred}} <start> [target]"
+        1

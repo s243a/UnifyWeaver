@@ -1,0 +1,7 @@
+# Read {{base}} facts from stdin (format: from:to)
+while (<STDIN>) {
+    chomp;
+    if (/^([^:]+):(.+)$/) {
+        add_fact($1, $2);
+    }
+}

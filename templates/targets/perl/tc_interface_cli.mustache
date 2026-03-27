@@ -1,0 +1,13 @@
+if (@ARGV == 1) {
+    for my $r (find_all($ARGV[0])) {
+        print "$ARGV[0]:$r\n";
+    }
+} elsif (@ARGV == 2) {
+    if (check($ARGV[0], $ARGV[1])) {
+        print "$ARGV[0]:$ARGV[1]\n";
+    } else {
+        exit 1;
+    }
+} else {
+    die "Usage: $0 <start> [target]\n";
+}

@@ -1,0 +1,11 @@
+
+
+main :: IO ()
+main = do
+    input <- readFile "{{input_path}}"
+    let rel = foldl (\acc line ->
+                let trimmed = trim line
+                    (from, to) = splitOn ':' trimmed
+                in if null from || null to then acc
+                   else addFact acc (trim from) (trim to)
+              ) Map.empty (lines input)

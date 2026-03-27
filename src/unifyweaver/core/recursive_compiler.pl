@@ -616,42 +616,42 @@ public class ~w {
     !.
 
 %% Kotlin transitive closure — loaded from templates/targets/kotlin/transitive_closure.mustache
-compile_transitive_closure(kotlin, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+compile_transitive_closure(kotlin, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     upcase_atom(Pred, PredCap),
-    compile_tc_from_template(kotlin, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(kotlin, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
-%% Scala transitive closure — loaded from templates/targets/scala/transitive_closure.mustache
-compile_transitive_closure(scala, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+%% Scala transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(scala, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     upcase_atom(Pred, PredCap),
-    compile_tc_from_template(scala, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(scala, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
-%% Clojure transitive closure — loaded from templates/targets/clojure/transitive_closure.mustache
-compile_transitive_closure(clojure, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(clojure, Pred, BasePred, [], GeneratedCode),
+%% Clojure transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(clojure, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(clojure, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
-%% Jython transitive closure — loaded from templates/targets/jython/transitive_closure.mustache
-compile_transitive_closure(jython, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(jython, Pred, BasePred, [], GeneratedCode),
+%% Jython transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(jython, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(jython, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
-%% Elixir transitive closure — loaded from templates/targets/elixir/transitive_closure.mustache
-compile_transitive_closure(elixir, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+%% Elixir transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(elixir, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     elixir_target:snake_to_camel(Pred, PredCap),
-    compile_tc_from_template(elixir, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(elixir, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
-%% C transitive closure - generates BFS with hash table
-compile_transitive_closure(c, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(c, Pred, BasePred, [], GeneratedCode),
+%% C transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(c, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(c, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
-%% C++ transitive closure — loaded from templates/targets/cpp/transitive_closure.mustache
-compile_transitive_closure(cpp, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+%% C++ transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(cpp, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     upcase_atom(Pred, PredCap),
-    compile_tc_from_template(cpp, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(cpp, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
 %% SQL transitive closure - generates recursive CTE
@@ -721,15 +721,15 @@ CREATE VIEW IF NOT EXISTS ~w_view AS
 
 %% Rust transitive closure - generates BFS with HashSet
 %% Rust transitive closure — loaded from templates/targets/rust/transitive_closure.mustache
-compile_transitive_closure(rust, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+compile_transitive_closure(rust, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     upcase_atom(Pred, PredCap),
-    compile_tc_from_template(rust, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(rust, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
-%% Go transitive closure — loaded from templates/targets/go/transitive_closure.mustache
-compile_transitive_closure(go, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+%% Go transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(go, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     upcase_atom(Pred, PredCap),
-    compile_tc_from_template(go, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(go, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
 %% Python transitive closure — loaded from templates/targets/python/transitive_closure.mustache
@@ -738,9 +738,9 @@ compile_transitive_closure(python, Pred, _Arity, BasePred, Options, GeneratedCod
     compile_tc_from_template(python, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
-%% Powershell transitive closure — loaded from templates/targets/powershell/transitive_closure.mustache
-compile_transitive_closure(powershell, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(powershell, Pred, BasePred, [], GeneratedCode),
+%% Powershell transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(powershell, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(powershell, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
 %% R transitive closure — supports input(Mode) via composable templates
@@ -753,30 +753,30 @@ compile_transitive_closure(typr, Pred, _Arity, BasePred, Options, GeneratedCode)
     compile_predicate_to_typr(Pred/2, [base_pred(BasePred)|Options], GeneratedCode),
     !.
 
-%% Ruby transitive closure — loaded from templates/targets/ruby/transitive_closure.mustache
-compile_transitive_closure(ruby, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+%% Ruby transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(ruby, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     upcase_atom(Pred, PredCap),
-    compile_tc_from_template(ruby, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(ruby, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
-%% Perl transitive closure — loaded from templates/targets/perl/transitive_closure.mustache
-compile_transitive_closure(perl, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(perl, Pred, BasePred, [], GeneratedCode),
+%% Perl transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(perl, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(perl, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
-%% Typescript transitive closure — loaded from templates/targets/typescript/transitive_closure.mustache
-compile_transitive_closure(typescript, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(typescript, Pred, BasePred, [], GeneratedCode),
+%% Typescript transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(typescript, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(typescript, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
-%% Fsharp transitive closure — loaded from templates/targets/fsharp/transitive_closure.mustache
-compile_transitive_closure(fsharp, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(fsharp, Pred, BasePred, [], GeneratedCode),
+%% Fsharp transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(fsharp, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(fsharp, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
-%% Haskell transitive closure — loaded from templates/targets/haskell/transitive_closure.mustache
-compile_transitive_closure(haskell, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(haskell, Pred, BasePred, [], GeneratedCode),
+%% Haskell transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(haskell, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(haskell, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
 %% Lua transitive closure — supports input(Mode) via composable templates

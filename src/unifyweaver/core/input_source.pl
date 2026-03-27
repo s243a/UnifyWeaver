@@ -29,13 +29,23 @@ resolve_input_mode(Options, Mode) :-
     ->  Mode = M
     ;   member(context(Ctx), Options)
     ->  input_default(Ctx, Mode)
+    ;   detect_context(DetectedCtx)
+    ->  input_default(DetectedCtx, Mode)
     ;   Mode = stdin
     ).
+
+%% detect_context(-Context)
+%  Auto-detect the execution context. In swipl-wasm (sciREPL),
+%  the nb_read/3 predicate is available from the prelude.
+detect_context(notebook) :-
+    predicate_property(user:nb_read(_,_,_), defined), !.
+detect_context(cli).
 
 %% input_default(+Context, -Mode)
 %  Context-aware defaults (from design doc).
 input_default(wasm, embedded).
-input_default(notebook, vfs).
+input_default(notebook, embedded).
+input_default(workbook, embedded).
 input_default(browser, embedded).
 input_default(test, embedded).
 input_default(cli, stdin).
@@ -123,16 +133,35 @@ seed_statement(javascript, _BasePred, From, To, Statement) :-
     js_literal(To, TL),
     format(string(Statement), 'addFact(~w, ~w);', [FL, TL]).
 
+seed_statement(kotlin, _BasePred, From, To, Statement) :-
+    format(string(Statement), '    addFact("~w", "~w")', [From, To]).
+
+seed_statement(scala, _BasePred, From, To, Statement) :-
+    format(string(Statement), '    addFact("~w", "~w")', [From, To]).
+
+seed_statement(clojure, _BasePred, From, To, Statement) :-
+    format(string(Statement), '(add-fact "~w" "~w")', [From, To]).
+
+seed_statement(jython, _BasePred, From, To, Statement) :-
+    format(string(Statement), 'add_fact("~w", "~w")', [From, To]).
+
+seed_statement(elixir, _BasePred, From, To, Statement) :-
+    format(string(Statement), '    add_fact.({"~w", "~w"})', [From, To]).
+
+seed_statement(fsharp, _BasePred, From, To, Statement) :-
+    format(string(Statement), '    addFact "~w" "~w"', [From, To]).
+
+seed_statement(haskell, _BasePred, From, To, Statement) :-
+    format(string(Statement), '    addFact "~w" "~w"', [From, To]).
+
+seed_statement(powershell, _BasePred, From, To, Statement) :-
+    format(string(Statement), 'Add-Fact "~w" "~w"', [From, To]).
+
 bash_literal(Value, Literal) :-
     (   number(Value)
     ->  format(string(Literal), '~w', [Value])
     ;   format(string(Literal), '"~w"', [Value])
     ).
-
-%% Fallback: quote as strings (only if no specific clause matched)
-seed_statement(Target, _BasePred, From, To, Statement) :-
-    \+ member(Target, [lua, python, r, ruby, perl, c, cpp, rust, go, typescript, javascript, bash]),
-    format(string(Statement), 'add_fact("~w", "~w")', [From, To]).
 
 %% --- Target-specific literal quoting ---
 

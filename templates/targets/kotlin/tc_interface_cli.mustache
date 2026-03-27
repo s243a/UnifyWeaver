@@ -1,0 +1,8 @@
+
+
+    when {
+        args.isEmpty() -> { System.err.println("Usage: kotlin {{pred_cap}}QueryKt <start> [target]"); kotlin.system.exitProcess(1) }
+        args.size == 1 -> {{pred_cap}}Query.findAll(args[0]).forEach { println("${args[0]}:$it") }
+        else -> if ({{pred_cap}}Query.check(args[0], args[1])) println("${args[0]}:${args[1]}") else kotlin.system.exitProcess(1)
+    }
+}

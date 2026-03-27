@@ -1,0 +1,8 @@
+    // Read {{base}} facts from stdin (format: from:to)
+    for line in stdin.lock().lines() {
+        if let Ok(line) = line {
+            if let Some((from, to)) = line.split_once(':') {
+                query.add_fact(from.trim(), to.trim());
+            }
+        }
+    }

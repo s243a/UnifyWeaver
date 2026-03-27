@@ -1,0 +1,23 @@
+func main() {
+	query := New{{pred_cap}}Query()
+	scanner := bufio.NewScanner(os.Stdin)
+
+	{{> tc_input_stdin}}
+
+	args := os.Args[1:]
+	switch len(args) {
+	case 1:
+		for _, r := range query.FindAll(args[0]) {
+			fmt.Printf("%s:%s\n", args[0], r)
+		}
+	case 2:
+		if query.Check(args[0], args[1]) {
+			fmt.Printf("%s:%s\n", args[0], args[1])
+		} else {
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "Usage: %s <start> [target]\n", os.Args[0])
+		os.Exit(1)
+	}
+}
