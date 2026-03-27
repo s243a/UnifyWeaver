@@ -281,7 +281,10 @@ includes:
   list-shaped predicates recurse through head/tail decomposition, plus
   mixed list/numeric SCCs where list-shaped predicates recurse through
   head/tail decomposition while numeric predicates recurse through scalar
-  step descent or singleton-list re-entry, including integer-return and
+  step descent or singleton-list re-entry, plus mixed tree/numeric SCCs
+  where tree-shaped predicates recurse through current-value and one-
+  subtree descent while numeric predicates recurse through scalar step
+  descent or constructed tree re-entry, including integer-return and
   threaded-context variants,
   lowered to TypR
   functions that use raw-expression
