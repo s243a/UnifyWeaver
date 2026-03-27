@@ -1,0 +1,11 @@
+
+
+if __name__ == "__main__":
+    query = {{pred_cap}}Query()
+
+    # Read {{base}} facts from stdin (format: from:to)
+    for line in sys.stdin:
+        line = line.strip()
+        if ":" in line:
+            from_node, to_node = line.split(":", 1)
+            query.add_fact(from_node.strip(), to_node.strip())

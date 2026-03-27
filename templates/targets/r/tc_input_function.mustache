@@ -1,0 +1,8 @@
+
+
+# Function API: call {{pred}}_from_pairs() with a data frame or matrix
+{{pred}}_from_pairs <- function(pairs) {
+    for (i in seq_len(nrow(pairs))) {
+        add_{{base}}(as.character(pairs[i, 1]), as.character(pairs[i, 2]))
+    }
+}

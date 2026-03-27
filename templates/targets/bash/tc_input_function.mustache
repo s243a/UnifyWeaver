@@ -1,0 +1,9 @@
+
+
+# Function API: call {{pred}}_from_pairs "from1:to1" "from2:to2" ...
+{{pred}}_from_pairs() {
+    for pair in "$@"; do
+        IFS=: read -r from to <<< "$pair"
+        [[ -n "$from" && -n "$to" ]] && {{pred}}_add_fact "$from" "$to"
+    done
+}

@@ -1,0 +1,15 @@
+
+
+    if (length(args) == 1) {
+        for (r in {{pred}}_all(args[1])) cat(args[1], ":", r, "\n", sep = "")
+    } else if (length(args) == 2) {
+        if ({{pred}}_check(args[1], args[2])) {
+            cat(args[1], ":", args[2], "\n", sep = "")
+        } else {
+            quit(status = 1)
+        }
+    } else {
+        cat("Usage: Rscript script.R <start> [target]\n", file = stderr())
+        quit(status = 1)
+    }
+}

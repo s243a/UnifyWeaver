@@ -1,0 +1,12 @@
+
+
+if __name__ == "__main__":
+    query = {{pred_cap}}Query()
+
+    # Read {{base}} facts from file (format: from:to)
+    with open("{{input_path}}") as f:
+        for line in f:
+            line = line.strip()
+            if ":" in line:
+                from_node, to_node = line.split(":", 1)
+                query.add_fact(from_node.strip(), to_node.strip())

@@ -1,0 +1,11 @@
+
+
+# Run when script executed directly
+if (!interactive()) {
+    args <- commandArgs(TRUE)
+    # Read {{base}} facts from stdin (format: from:to)
+    lines <- readLines(file("stdin"))
+    for (line in lines) {
+        parts <- strsplit(trimws(line), ":")[[1]]
+        if (length(parts) == 2) add_{{base}}(trimws(parts[1]), trimws(parts[2]))
+    }

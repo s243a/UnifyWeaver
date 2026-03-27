@@ -456,8 +456,12 @@ load_tc_part(TargetStr, PartName, Template) :-
 
 %% Compile transitive closure pattern
 compile_transitive_closure(bash, Pred, _Arity, BasePred, Options, GeneratedCode) :-
-    % Use the template_system's new constraint-aware predicate
-    template_system:generate_transitive_closure(Pred, BasePred, Options, GeneratedCode),
+    %% If input(Mode) is specified (non-stdin), use composable templates
+    (   member(input(Mode), Options), Mode \= stdin
+    ->  compile_tc_from_template(bash, Pred, BasePred, [], Options, GeneratedCode)
+    ;   %% Default: use template_system's constraint-aware predicate (stdin)
+        template_system:generate_transitive_closure(Pred, BasePred, Options, GeneratedCode)
+    ),
     !.
 
 %% Java transitive closure - generates BFS iterative implementation
@@ -729,9 +733,9 @@ compile_transitive_closure(go, Pred, _Arity, BasePred, _Options, GeneratedCode) 
     !.
 
 %% Python transitive closure — loaded from templates/targets/python/transitive_closure.mustache
-compile_transitive_closure(python, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
+compile_transitive_closure(python, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     upcase_atom(Pred, PredCap),
-    compile_tc_from_template(python, Pred, BasePred, [pred_cap=PredCap], GeneratedCode),
+    compile_tc_from_template(python, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
     !.
 
 %% Powershell transitive closure — loaded from templates/targets/powershell/transitive_closure.mustache
@@ -739,9 +743,9 @@ compile_transitive_closure(powershell, Pred, _Arity, BasePred, _Options, Generat
     compile_tc_from_template(powershell, Pred, BasePred, [], GeneratedCode),
     !.
 
-%% R transitive closure — loaded from templates/targets/r/transitive_closure.mustache
-compile_transitive_closure(r, Pred, _Arity, BasePred, _Options, GeneratedCode) :-
-    compile_tc_from_template(r, Pred, BasePred, [], GeneratedCode),
+%% R transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(r, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(r, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
 %% TypR transitive closure — loaded from templates/targets/typr/transitive_closure.mustache

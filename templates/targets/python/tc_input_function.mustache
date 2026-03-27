@@ -1,0 +1,8 @@
+
+
+query = {{pred_cap}}Query()
+
+def {{pred}}_from_pairs(pairs):
+    """Load facts from a list of (from, to) tuples."""
+    for from_node, to_node in pairs:
+        query.add_fact(from_node, to_node)

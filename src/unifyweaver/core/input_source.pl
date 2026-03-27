@@ -71,12 +71,17 @@ seed_statement(lua, _BasePred, From, To, Statement) :-
 seed_statement(python, _BasePred, From, To, Statement) :-
     python_literal(From, FL),
     python_literal(To, TL),
-    format(string(Statement), 'add_fact(~w, ~w)', [FL, TL]).
+    format(string(Statement), 'query.add_fact(~w, ~w)', [FL, TL]).
 
 seed_statement(r, BasePred, From, To, Statement) :-
     r_literal(From, FL),
     r_literal(To, TL),
     format(string(Statement), 'add_~w(~w, ~w)', [BasePred, FL, TL]).
+
+seed_statement(bash, _BasePred, From, To, Statement) :-
+    bash_literal(From, FL),
+    bash_literal(To, TL),
+    format(string(Statement), 'add_fact ~w ~w', [FL, TL]).
 
 seed_statement(ruby, _BasePred, From, To, Statement) :-
     ruby_literal(From, FL),
@@ -118,9 +123,15 @@ seed_statement(javascript, _BasePred, From, To, Statement) :-
     js_literal(To, TL),
     format(string(Statement), 'addFact(~w, ~w);', [FL, TL]).
 
+bash_literal(Value, Literal) :-
+    (   number(Value)
+    ->  format(string(Literal), '~w', [Value])
+    ;   format(string(Literal), '"~w"', [Value])
+    ).
+
 %% Fallback: quote as strings (only if no specific clause matched)
 seed_statement(Target, _BasePred, From, To, Statement) :-
-    \+ member(Target, [lua, python, r, ruby, perl, c, cpp, rust, go, typescript, javascript]),
+    \+ member(Target, [lua, python, r, ruby, perl, c, cpp, rust, go, typescript, javascript, bash]),
     format(string(Statement), 'add_fact("~w", "~w")', [From, To]).
 
 %% --- Target-specific literal quoting ---
