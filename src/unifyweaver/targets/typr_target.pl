@@ -5618,7 +5618,7 @@ base_seed_code(Module, BasePred, SeedCode) :-
 seed_statement(Index, BasePred, From, To, Statement) :-
     r_literal(From, FromLiteral),
     r_literal(To, ToLiteral),
-    format(string(Statement), '_seed_~w_~w <- add_~w(~w, ~w);', [BasePred, Index, BasePred, FromLiteral, ToLiteral]).
+    format(string(Statement), 'let seed_~w_~w <- add_~w(~w, ~w);', [BasePred, Index, BasePred, FromLiteral, ToLiteral]).
 
 empty_collection_expr(atom, 'character()').
 empty_collection_expr(string, 'character()').
