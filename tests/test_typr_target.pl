@@ -4002,4 +4002,102 @@ test(recursive_compiler_supports_typr_mixed_tree_list_mutual_integer_context_bra
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
+test(recursive_compiler_supports_typr_mixed_list_numeric_mutual_boolean_group) :-
+    clear_type_declarations,
+    assertz(user:typr_list_num_ok([])),
+    assertz(user:(typr_list_num_ok([N|Ns]) :-
+        typr_num_list_ok(N),
+        typr_list_num_ok(Ns)
+    )),
+    assertz(user:typr_num_list_ok(0)),
+    assertz(user:(typr_num_list_ok(N) :-
+        N > 0,
+        N1 is N - 1,
+        typr_list_num_ok([N1])
+    )),
+    assertz(type_declarations:uw_type(typr_list_num_ok/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_num_list_ok/1, 1, integer)),
+    assertz(type_declarations:uw_return_type(typr_list_num_ok/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_num_list_ok/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_list_num_ok/1, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_list_num_ok/1, typr_num_list_ok/1")),
+    once(sub_string(Code, _, _, _, "let typr_list_num_ok <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "typr_num_list_ok_impl <- function(current_input) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_num_list_ok_impl(.subset2(current_input, 1));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_list_num_ok_impl(tail(current_input, -1));")),
+    once(sub_string(Code, _, _, _, "result = typr_list_num_ok_impl(list((current_input + -1)));")),
+    \+ sub_string(Code, _, _, _, "result = typr_list_num_ok_impl((current_input + -1));"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_mixed_list_numeric_mutual_integer_group) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_list_num([], 0)),
+    assertz(user:(typr_mutual_sum_list_num([N|Ns], S) :-
+        typr_mutual_sum_num_list(N, SN),
+        typr_mutual_sum_list_num(Ns, SS),
+        S is SN + SS
+    )),
+    assertz(user:typr_mutual_sum_num_list(0, 0)),
+    assertz(user:(typr_mutual_sum_num_list(N, S) :-
+        N > 0,
+        N1 is N - 1,
+        typr_mutual_sum_list_num([N1], Parts),
+        S is N + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_list_num/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_list_num/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_num_list/2, 1, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_num_list/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_list_num/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_num_list/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_list_num/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_sum_list_num/2, typr_mutual_sum_num_list/2")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_sum_list_num <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_sum_num_list_impl <- function(current_input) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_sum_num_list_impl(.subset2(current_input, 1));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_sum_list_num_impl(tail(current_input, -1));")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_sum_list_num_impl(list((current_input + -1)));")),
+    once(sub_string(Code, _, _, _, "result = (left_result + right_result);")),
+    once(sub_string(Code, _, _, _, "result = (current_input + left_result);")),
+    \+ sub_string(Code, _, _, _, "left_result = typr_mutual_sum_list_num_impl((current_input + -1));"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_mixed_list_numeric_mutual_integer_context_group) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_list_num([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_list_num([N|Ns], W, S) :-
+        typr_mutual_weight_num_list(N, W, SN),
+        typr_mutual_weight_list_num(Ns, W, SS),
+        S is SN + SS
+    )),
+    assertz(user:typr_mutual_weight_num_list(0, _W1, 0)),
+    assertz(user:(typr_mutual_weight_num_list(N, W, S) :-
+        N > 0,
+        N1 is N - 1,
+        typr_mutual_weight_list_num([N1], W, Parts),
+        S is (N * W) + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_list_num/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_list_num/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_list_num/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_num_list/3, 1, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_num_list/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_num_list/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_list_num/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_num_list/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_list_num/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_mutual_weight_list_num/3, typr_mutual_weight_num_list/3")),
+    once(sub_string(Code, _, _, _, "let typr_mutual_weight_list_num <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "typr_mutual_weight_num_list_impl <- function(current_input, current_ctx) {")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_weight_num_list_impl(.subset2(current_input, 1), current_ctx);")),
+    once(sub_string(Code, _, _, _, "right_result = typr_mutual_weight_list_num_impl(tail(current_input, -1), current_ctx);")),
+    once(sub_string(Code, _, _, _, "left_result = typr_mutual_weight_list_num_impl(list((current_input + -1)), current_ctx);")),
+    once(sub_string(Code, _, _, _, "result = (left_result + right_result);")),
+    once(sub_string(Code, _, _, _, "result = ((current_input * current_ctx) + left_result);")),
+    \+ sub_string(Code, _, _, _, "left_result = typr_mutual_weight_list_num_impl((current_input + -1), current_ctx);"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
 :- end_tests(typr_target).

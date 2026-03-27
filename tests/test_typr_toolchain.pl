@@ -2969,6 +2969,106 @@ test(mixed_tree_list_mutual_integer_context_branch_output_checks_with_typr, [con
     retractall(user:typr_tree_weight_sum_branch(_, _, _)),
     retractall(user:typr_forest_weight_sum_branch(_, _, _)).
 
+test(mixed_list_numeric_mutual_boolean_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_list_num_ok([])),
+    assertz(user:(typr_list_num_ok([N|Ns]) :-
+        typr_num_list_ok(N),
+        typr_list_num_ok(Ns)
+    )),
+    assertz(user:typr_num_list_ok(0)),
+    assertz(user:(typr_num_list_ok(N) :-
+        N > 0,
+        N1 is N - 1,
+        typr_list_num_ok([N1])
+    )),
+    assertz(type_declarations:uw_type(typr_list_num_ok/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_num_list_ok/1, 1, integer)),
+    assertz(type_declarations:uw_return_type(typr_list_num_ok/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_num_list_ok/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_list_num_ok/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_list_num_ok(_)),
+    retractall(user:typr_num_list_ok(_)).
+
+test(mixed_list_numeric_mutual_integer_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_sum_list_num([], 0)),
+    assertz(user:(typr_mutual_sum_list_num([N|Ns], S) :-
+        typr_mutual_sum_num_list(N, SN),
+        typr_mutual_sum_list_num(Ns, SS),
+        S is SN + SS
+    )),
+    assertz(user:typr_mutual_sum_num_list(0, 0)),
+    assertz(user:(typr_mutual_sum_num_list(N, S) :-
+        N > 0,
+        N1 is N - 1,
+        typr_mutual_sum_list_num([N1], Parts),
+        S is N + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_sum_list_num/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_sum_list_num/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_num_list/2, 1, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_sum_num_list/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_list_num/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_sum_num_list/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_sum_list_num/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_sum_list_num(_, _)),
+    retractall(user:typr_mutual_sum_num_list(_, _)).
+
+test(mixed_list_numeric_mutual_integer_context_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_mutual_weight_list_num([], _W0, 0)),
+    assertz(user:(typr_mutual_weight_list_num([N|Ns], W, S) :-
+        typr_mutual_weight_num_list(N, W, SN),
+        typr_mutual_weight_list_num(Ns, W, SS),
+        S is SN + SS
+    )),
+    assertz(user:typr_mutual_weight_num_list(0, _W1, 0)),
+    assertz(user:(typr_mutual_weight_num_list(N, W, S) :-
+        N > 0,
+        N1 is N - 1,
+        typr_mutual_weight_list_num([N1], W, Parts),
+        S is (N * W) + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_mutual_weight_list_num/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_mutual_weight_list_num/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_list_num/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_num_list/3, 1, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_num_list/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_mutual_weight_num_list/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_list_num/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_mutual_weight_num_list/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_mutual_weight_list_num/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_mutual_weight_list_num(_, _, _)),
+    retractall(user:typr_mutual_weight_num_list(_, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-
