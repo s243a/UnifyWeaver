@@ -419,9 +419,10 @@ Current TypR lowering policy is intentionally mixed:
   SCCs where different predicates in the same group use different
   supported one-subtree, shared-call, or guarded branch-body forms, and
   mixed tree/list structural SCCs where tree-shaped predicates recurse
-  through paired-forest helpers while list-shaped predicates recurse
-  through head/tail decomposition, using raw-expression memoized helper
-  bodies inside TypR rather than wrapped-R fallback
+  through paired-forest helpers, including guarded branch-local paired-
+  forest call selection on the tree side, while list-shaped predicates
+  recurse through head/tail decomposition, using raw-expression memoized
+  helper bodies inside TypR rather than wrapped-R fallback
 - conservative `N`-ary structural tree-recursive predicates may also lower
   to TypR-valid functions when they match the currently supported `[]` /
   `[V, L, R]` shape with one tree-driving argument, invariant context args,

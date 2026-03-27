@@ -237,8 +237,10 @@ bring-up.
     including mixed-shape SCCs where different predicates in the same
     group use different supported one-subtree, shared-call, or guarded
     branch-body forms, and mixed tree/list structural SCCs where
-    tree-shaped predicates recurse through paired-forest helpers while
-    list-shaped predicates recurse through head/tail decomposition
+    tree-shaped predicates recurse through paired-forest helpers,
+    including guarded branch-local paired-forest call selection on the
+    tree side, while list-shaped predicates recurse through head/tail
+    decomposition
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
