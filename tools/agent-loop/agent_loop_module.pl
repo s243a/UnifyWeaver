@@ -2582,6 +2582,18 @@ emit_rust_impl_block(S, StructName, Methods) :-
     )),
     write(S, '}\n').
 
+%% emit_rust_methods_list(+Stream, +MethodNames)
+%% Emit a list of shared_logic methods without impl wrapping.
+%% Use inside an already-open impl block (from a fragment).
+emit_rust_methods_list(S, Methods) :-
+    forall(member(M, Methods), (
+        (shared_logic(_, M, _) ->
+            emit_shared_method(S, rust, M)
+        ;
+            true
+        )
+    )).
+
 %% emit_rust_module_methods(+Stream, +Module)
 %% Emit all standalone (container=none) shared_logic methods for a module.
 emit_rust_module_methods(S, Module) :-
@@ -7578,20 +7590,14 @@ generate_rust_costs :-
     %% Emit pricing table via component registry
     agent_loop_components:emit_rust_cost_facts(S, [target(rust)]),
     write_rust(S, costs_tracker),
-    %% Emit shared_logic methods (replacing former fragment methods)
-    emit_shared_method(S, rust, is_over_budget),
-    emit_shared_method(S, rust, budget_remaining),
-    emit_shared_method(S, rust, cost_total_messages),
-    emit_shared_method(S, rust, cost_input_ratio),
-    emit_shared_method(S, rust, cost_has_usage),
-    emit_shared_method(S, rust, cost_exceeds),
-    emit_shared_method(S, rust, cost_output_ratio),
-    emit_shared_method(S, rust, cost_is_input_heavy),
-    emit_shared_method(S, rust, cost_is_output_heavy),
-    emit_shared_method(S, rust, cost_is_zero),
-    emit_shared_method(S, rust, cost_is_under),
-    emit_shared_method(S, rust, cost_per_message),
+    %% Shared_logic methods inside impl CostTracker (opened by costs_tracker fragment)
+    emit_rust_methods_list(S, [
+        is_over_budget, budget_remaining, cost_total_messages, cost_input_ratio,
+        cost_has_usage, cost_exceeds, cost_output_ratio, cost_is_input_heavy,
+        cost_is_output_heavy, cost_is_zero, cost_is_under, cost_per_message
+    ]),
     write(S, '}\n\n'),
+    %% Standalone function (outside impl)
     emit_shared_method(S, rust, cost_compute),
     close(S),
     format('  Generated rust/src/costs.rs~n', []).
@@ -7810,23 +7816,14 @@ generate_rust_context :-
     ]),
     write(S, 'use crate::types::*;\n\n'),
     write_rust(S, context_manager),
-    %% Emit shared_logic methods (replacing former fragment methods)
-    emit_shared_method(S, rust, context_clear),
-    emit_shared_method(S, rust, context_len),
-    emit_shared_method(S, rust, context_is_empty),
-    emit_shared_method(S, rust, estimate_tokens),
-    emit_shared_method(S, rust, context_token_budget),
-    emit_shared_method(S, rust, context_word_budget),
-    emit_shared_method(S, rust, context_is_full),
-    emit_shared_method(S, rust, context_char_budget),
-    emit_shared_method(S, rust, context_has_room),
-    emit_shared_method(S, rust, context_is_near_full),
-    emit_shared_method(S, rust, context_usage_pct),
-    emit_shared_method(S, rust, context_is_continue_mode),
-    emit_shared_method(S, rust, context_is_sliding_mode),
-    emit_shared_method(S, rust, context_trim_count),
-    emit_shared_method(S, rust, context_first_role),
-    emit_shared_method(S, rust, context_last_role),
+    %% Shared_logic methods inside impl ContextManager (opened by context_manager fragment)
+    emit_rust_methods_list(S, [
+        context_clear, context_len, context_is_empty, estimate_tokens,
+        context_token_budget, context_word_budget, context_is_full,
+        context_char_budget, context_has_room, context_is_near_full,
+        context_usage_pct, context_is_continue_mode, context_is_sliding_mode,
+        context_trim_count, context_first_role, context_last_role
+    ]),
     write(S, '}\n'),
     close(S),
     format('  Generated rust/src/context.rs~n', []).
@@ -7928,13 +7925,9 @@ generate_rust_tool_handler :-
     write_rust(S, tool_handler_validation),
     write_rust(S, tool_handler_dispatch),
     write_rust(S, tool_result_cache),
-    emit_shared_method(S, rust, make_key),
-    emit_shared_method(S, rust, should_skip),
+    emit_rust_methods_list(S, [make_key, should_skip]),
     write_rust(S, tool_result_cache_body),
-    emit_shared_method(S, rust, cache_clear),
-    emit_shared_method(S, rust, cache_len),
-    emit_shared_method(S, rust, cache_evict_oldest),
-    emit_shared_method(S, rust, cache_hit_rate),
+    emit_rust_methods_list(S, [cache_clear, cache_len, cache_evict_oldest, cache_hit_rate]),
     write_rust(S, tool_result_cache_tail),
     emit_rust_impl_block(S, 'ToolHandler', [
         tool_arg_count, tool_has_schema, tool_count, tool_safe_count, tool_schema_count
@@ -8036,9 +8029,8 @@ generate_rust_sessions :-
     open(Path, write, S),
     write_rust_header(S, sessions, 'Session persistence — save, load, list, delete'),
     write_rust(S, sessions_module),
-    emit_shared_method(S, rust, session_age),
-    emit_shared_method(S, rust, session_is_recent),
-    emit_shared_method(S, rust, session_json_path),
+    %% Standalone session methods (no impl block, container=none)
+    emit_rust_methods_list(S, [session_age, session_is_recent, session_json_path]),
     close(S),
     format('  Generated rust/src/sessions.rs~n', []).
 
@@ -8063,11 +8055,10 @@ generate_rust_main :-
     nl(S),
     %% Retry logic with exponential backoff
     write_rust(S, retry_logic),
-    %% Emit shared_logic standalone function (replacing former fragment code)
-    emit_shared_method(S, rust, is_retryable_status),
-    emit_shared_method(S, rust, compute_delay),
-    emit_shared_method(S, rust, is_retryable_error),
-    emit_shared_method(S, rust, retry_delay_exceeds_max),
+    %% Standalone retry functions (no impl block)
+    emit_rust_methods_list(S, [
+        is_retryable_status, compute_delay, is_retryable_error, retry_delay_exceeds_max
+    ]),
     emit_rust_impl_block(S, 'RetryHandler', [
         max_retries_reached, retry_delay, retry_attempts_left,
         retry_is_last_attempt, retry_total_attempts, retry_is_fresh, retry_has_delay
@@ -8155,24 +8146,17 @@ generate_rust_main :-
     nl(S),
     %% Streaming token counter struct
     write_rust(S, streaming_token_counter),
-    %% Emit shared_logic methods for streaming (replacing former fragment methods)
-    emit_shared_method(S, rust, on_token),
-    emit_shared_method(S, rust, format_summary),
-    emit_shared_method(S, rust, stream_byte_count),
-    emit_shared_method(S, rust, streaming_avg_token_rate),
-    emit_shared_method(S, rust, streaming_chars_per_token),
-    emit_shared_method(S, rust, streaming_progress_pct),
-    emit_shared_method(S, rust, streaming_has_started),
-    emit_shared_method(S, rust, streaming_tokens_remaining),
-    emit_shared_method(S, rust, streaming_exceeds_limit),
-    emit_shared_method(S, rust, streaming_is_waiting),
-    emit_shared_method(S, rust, streaming_has_elapsed),
-    emit_shared_method(S, rust, streaming_is_balanced),
-    emit_shared_method(S, rust, streaming_buffer_pct),
-    emit_shared_method(S, rust, streaming_format_stats),
-    %% streaming_is_live_mode skipped — show_live is bool in Rust, eq_str expects String
+    %% Shared_logic methods inside impl StreamingTokenCounter (opened by fragment)
+    emit_rust_methods_list(S, [
+        on_token, format_summary, stream_byte_count, streaming_avg_token_rate,
+        streaming_chars_per_token, streaming_progress_pct, streaming_has_started,
+        streaming_tokens_remaining, streaming_exceeds_limit, streaming_is_waiting,
+        streaming_has_elapsed, streaming_is_balanced, streaming_buffer_pct,
+        streaming_format_stats
+        %% streaming_is_live_mode skipped — show_live is bool in Rust, eq_str expects String
+    ]),
     write(S, '}\n\n'),
-    %% chunk_is_complete is standalone (container=none), emit outside impl block
+    %% Standalone function (outside impl)
     emit_shared_method(S, rust, chunk_is_complete),
     %% Main loop (expects `config`, `matches`, `session_manager` to be defined)
     write_rust(S, main_loop),
