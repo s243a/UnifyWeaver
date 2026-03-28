@@ -3024,8 +3024,11 @@ python_arg_split(Arity, ClausePairs, InputArity) :-
             ;   InputArity is Arity - 1
             )
         )
-    ;   %% Pure fact: count unique variables to find input count
-        python_fact_input_count(HeadArgs, InputArity)
+    ;   %% Pure fact: try multi-clause lookup table detection first
+        (   python_fact_input_count_multi(ClausePairs, Arity, InputArity0)
+        ->  InputArity = InputArity0
+        ;   python_fact_input_count(HeadArgs, InputArity)
+        )
     ),
     InputArity >= 1,
     !.
@@ -3043,6 +3046,38 @@ python_fact_input_count(HeadArgs, InputCount) :-
     (   RawCount < Arity
     ->  InputCount = RawCount  %% has repeated vars — use detected count
     ;   InputCount is max(1, Arity - 1)  %% all unique — last is output
+    ).
+
+%% python_fact_input_count_multi(+ClausePairs, +Arity, -InputCount)
+%  For multi-clause all-constant facts, detect lookup table pattern.
+%  Find how many leading arg positions vary across clauses — those are inputs.
+%  e.g. color_rgb(red,255,0,0). color_rgb(green,0,255,0). → 1 input (first arg varies)
+python_fact_input_count_multi(ClausePairs, Arity, InputCount) :-
+    ClausePairs = [_,_|_],  %% at least 2 clauses
+    %% Collect head arg lists from all clauses
+    findall(Args, (member(Head-_, ClausePairs), Head =.. [_|Args]), AllArgs),
+    %% For each position, check if the value varies across clauses
+    find_key_width(AllArgs, 1, Arity, InputCount).
+
+find_key_width(AllArgs, Pos, Arity, KeyWidth) :-
+    Pos =< Arity,
+    %% Collect values at position Pos across all clauses
+    findall(Val, (member(Args, AllArgs), nth1(Pos, Args, Val)), Vals),
+    sort(Vals, Unique),
+    length(Vals, Total), length(Unique, UniqueCount),
+    (   UniqueCount =:= Total
+    ->  %% All values at this position are unique — this is (part of) the key
+        (   Pos < Arity
+        ->  %% Check if remaining positions are just "return values"
+            %% Key is positions 1..Pos
+            KeyWidth = Pos
+        ;   KeyWidth is max(1, Arity - 1)  %% last position, fall back
+        )
+    ;   %% Values repeat — this position is NOT part of the key
+        (   Pos > 1
+        ->  KeyWidth is Pos - 1  %% key is positions 1..Pos-1
+        ;   KeyWidth is max(1, Arity - 1)  %% no clear key, default
+        )
     ).
 
 %% python_typed_arg_list(+PredSpec, +InputArity, -ArgList)
@@ -3214,11 +3249,15 @@ native_python_clause_body(PredSpec, [Head-Body], Code) :-
 % Multi-clause: emit if/elif/else chain
 native_python_clause_body(PredSpec, Clauses, Code) :-
     Clauses = [Head-_|[_|_]],
-    maplist(native_python_clause_pair(PredSpec), Clauses, Branches),
+    %% Compute input count ONCE for all clauses
+    Head =.. [_|HeadArgs], length(HeadArgs, HArity),
+    (   python_fact_input_count_multi(Clauses, HArity, MultiIC)
+    ->  InputCount = MultiIC
+    ;   InputCount = none  %% let per-clause handler decide
+    ),
+    maplist(native_python_clause_pair_ic(PredSpec, InputCount), Clauses, Branches),
     Branches \= [],
     branches_to_python_if_chain(Branches, IfChain),
-    %% For arity-1 (boolean predicates), else returns False
-    Head =.. [_|HeadArgs], length(HeadArgs, HArity),
     (   HArity =:= 1
     ->  ElseBranch = '        return False'
     ;   format(string(ElseBranch), '        raise ValueError("No matching clause for ~w")', [PredSpec])
@@ -3227,6 +3266,48 @@ native_python_clause_body(PredSpec, Clauses, Code) :-
 '~w
     else:
 ~w', [IfChain, ElseBranch]).
+
+native_python_clause_pair_ic(PredSpec, InputCount, Head-Body, branch(Condition, ClauseCode)) :-
+    native_python_clause_ic(PredSpec, InputCount, Head, Body, Condition, ClauseCode),
+    !.
+
+%% Wrapper that passes input count hint to native_python_clause
+native_python_clause_ic(PredSpec, none, Head, Body, Condition, Code) :-
+    !,
+    native_python_clause(PredSpec, Head, Body, Condition, Code).
+native_python_clause_ic(PredSpec, InputCount, Head, Body, Condition, Code) :-
+    integer(InputCount),
+    native_python_clause_with_ic(PredSpec, InputCount, Head, Body, Condition, Code).
+
+%% native_python_clause_with_ic: uses pre-computed InputCount
+native_python_clause_with_ic(_PredSpec, InputCount, Head, Body, Condition, Code) :-
+    Head =.. [_Pred|HeadArgs],
+    length(HeadArgs, Arity),
+    Arity >= 2,
+    build_head_varmap(HeadArgs, 1, VarMap),
+    length(InputHeadArgs, InputCount),
+    append(InputHeadArgs, OutputHeadArgs, HeadArgs),
+    (OutputHeadArgs = [OutputHeadArg|_] -> true ; OutputHeadArg = _),
+    python_head_conditions(InputHeadArgs, 1, HeadConditions),
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  python_fact_return(HeadArgs, InputHeadArgs, VarMap, Code),
+        GoalConditions = []
+    ;   nonvar(OutputHeadArg)
+    ->  clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+        maplist(python_guard_condition(VarMap), GuardGoals, GoalConditions),
+        (   OutputGoals == []
+        ->  python_literal(OutputHeadArg, OutputLit),
+            format(string(Code), '    return ~w', [OutputLit])
+        ;   python_output_goals(OutputGoals, VarMap, Code)
+        )
+    ;   OutputHeadArgs == []
+    ->  maplist(python_guard_condition(VarMap), Goals, GoalConditions),
+        Code = '    return True'
+    ;   native_python_goal_sequence(Goals, VarMap, GoalConditions, Code)
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_python_conditions(AllConditions, Condition).
 
 native_python_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
     native_python_clause(PredSpec, Head, Body, Condition, ClauseCode),
