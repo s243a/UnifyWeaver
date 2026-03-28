@@ -1,0 +1,18 @@
+
+END {
+    if (start == "") exit 0
+
+    if (target != "") {
+        if (check(start, target)) {
+            print start ":" target
+            exit 0
+        } else {
+            exit 1
+        }
+    } else {
+        count = find_all(start, results)
+        for (i = 1; i <= count; i++) {
+            print start ":" results[i]
+        }
+    }
+}

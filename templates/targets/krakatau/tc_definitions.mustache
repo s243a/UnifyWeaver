@@ -5,14 +5,11 @@
 .class public {{pred_cap}}Query
 .super java/lang/Object
 
-; Edge storage: HashMap<String, ArrayList<String>>
 .field static edges Ljava/util/HashMap;
 
-; Static initializer
 .method static <clinit> : ()V
     .limit stack 2
     .limit locals 0
-
     new java/util/HashMap
     dup
     invokespecial java/util/HashMap <init> ()V
@@ -20,18 +17,13 @@
     return
 .end method
 
-; add_fact(from, to): register a base relation edge
-.method public static add_fact : (Ljava/lang/String;Ljava/lang/String;)V
+.method public static addFact : (Ljava/lang/String;Ljava/lang/String;)V
     .limit stack 3
     .limit locals 3
-
-    ; Get existing list for 'from'
     getstatic {{pred_cap}}Query edges Ljava/util/HashMap;
     aload_0
     invokevirtual java/util/HashMap get (Ljava/lang/Object;)Ljava/lang/Object;
     astore_2
-
-    ; Create ArrayList if null
     aload_2
     ifnonnull LHAS_LIST
     new java/util/ArrayList
@@ -52,23 +44,17 @@ LHAS_LIST:
     return
 .end method
 
-; check(start, target): BFS reachability
 .method public static check : (Ljava/lang/String;Ljava/lang/String;)Z
     .limit stack 3
     .limit locals 6
-
-    ; visited = new HashSet(), queue = new LinkedList()
     new java/util/HashSet
     dup
     invokespecial java/util/HashSet <init> ()V
     astore_2
-
     new java/util/LinkedList
     dup
     invokespecial java/util/LinkedList <init> ()V
     astore_3
-
-    ; visited.add(start), queue.add(start)
     aload_2
     aload_0
     invokevirtual java/util/HashSet add (Ljava/lang/Object;)Z
@@ -77,19 +63,14 @@ LHAS_LIST:
     aload_0
     invokevirtual java/util/LinkedList add (Ljava/lang/Object;)Z
     pop
-
 LBFS_LOOP:
     aload_3
     invokevirtual java/util/LinkedList isEmpty ()Z
     ifne LNOT_FOUND
-
-    ; current = queue.poll()
     aload_3
     invokevirtual java/util/LinkedList poll ()Ljava/lang/Object;
     checkcast java/lang/String
     astore 4
-
-    ; neighbors = edges.get(current)
     getstatic {{pred_cap}}Query edges Ljava/util/HashMap;
     aload 4
     invokevirtual java/util/HashMap get (Ljava/lang/Object;)Ljava/lang/Object;
@@ -98,29 +79,22 @@ LBFS_LOOP:
     checkcast java/util/ArrayList
     invokevirtual java/util/ArrayList iterator ()Ljava/util/Iterator;
     astore 5
-
 LEDGE_LOOP:
     aload 5
     invokeinterface java/util/Iterator hasNext ()Z 1
     ifeq LBFS_LOOP
-
     aload 5
     invokeinterface java/util/Iterator next ()Ljava/lang/Object; 1
     checkcast java/lang/String
     dup
-
-    ; if next.equals(target) -> found
     aload_1
     invokevirtual java/lang/String equals (Ljava/lang/Object;)Z
     ifne LFOUND_POP
-
-    ; if not visited, add to queue
     dup
     aload_2
     swap
     invokevirtual java/util/HashSet contains (Ljava/lang/Object;)Z
     ifne LPOP_EDGE_CONTINUE
-
     dup
     aload_2
     swap
@@ -131,20 +105,16 @@ LEDGE_LOOP:
     invokevirtual java/util/LinkedList add (Ljava/lang/Object;)Z
     pop
     goto LEDGE_LOOP
-
 LPOP_EDGE_CONTINUE:
     pop
     goto LEDGE_LOOP
-
 LPOP_CONTINUE:
     pop
     goto LBFS_LOOP
-
 LFOUND_POP:
     pop
     iconst_1
     ireturn
-
 LNOT_FOUND:
     iconst_0
     ireturn

@@ -12,7 +12,13 @@
     compile_predicate/3,                 % +PredIndicator, +Options, -Code
     compile_krakatau_class/4,            % +ClassName, +Methods, +Options, -Code
     write_krakatau_program/2,            % +Code, +Filename
-    init_krakatau_target/0
+    init_krakatau_target/0,
+    compile_tail_recursion_krakatau/3,
+    compile_linear_recursion_krakatau/3,
+    compile_tree_recursion_krakatau/3,
+    compile_multicall_recursion_krakatau/3,
+    compile_direct_multicall_krakatau/3,
+    compile_mutual_recursion_krakatau/2
 ]).
 
 :- use_module(library(lists)).

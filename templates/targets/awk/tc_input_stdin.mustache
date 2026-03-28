@@ -1,0 +1,8 @@
+
+# Read {{base}} facts from stdin (format: from:to)
+/:/ {
+    split($0, parts, ":")
+    gsub(/^[ \t]+|[ \t]+$/, "", parts[1])
+    gsub(/^[ \t]+|[ \t]+$/, "", parts[2])
+    add_fact(parts[1], parts[2])
+}

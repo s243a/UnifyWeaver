@@ -1,0 +1,9 @@
+
+
+    Private Shared query As New {{pred_cap}}Query()
+
+    Public Shared Sub LoadFacts(pairs As List(Of Tuple(Of String, String)))
+        For Each pair In pairs
+            query.AddFact(pair.Item1, pair.Item2)
+        Next
+    End Sub

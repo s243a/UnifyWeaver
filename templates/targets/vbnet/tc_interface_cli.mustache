@@ -1,0 +1,18 @@
+
+
+        If args.Length = 1 Then
+            For Each r As String In query.FindAll(args(0))
+                Console.WriteLine(args(0) & ":" & r)
+            Next
+        ElseIf args.Length = 2 Then
+            If query.Check(args(0), args(1)) Then
+                Console.WriteLine(args(0) & ":" & args(1))
+            Else
+                Environment.Exit(1)
+            End If
+        Else
+            Console.Error.WriteLine("Usage: {{pred}} <start> [target]")
+            Environment.Exit(1)
+        End If
+    End Sub
+End Class

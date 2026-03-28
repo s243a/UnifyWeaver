@@ -1,0 +1,42 @@
+
+; Main method: read edges from stdin, run query
+.method public static main : ([Ljava/lang/String;)V
+    .limit stack 5
+    .limit locals 6
+
+    ; BufferedReader(InputStreamReader(System.in))
+    new java/io/BufferedReader
+    dup
+    new java/io/InputStreamReader
+    dup
+    getstatic java/lang/System in Ljava/io/InputStream;
+    invokespecial java/io/InputStreamReader <init> (Ljava/io/InputStream;)V
+    invokespecial java/io/BufferedReader <init> (Ljava/io/Reader;)V
+    astore_1
+
+LREAD_LOOP:
+    aload_1
+    invokevirtual java/io/BufferedReader readLine ()Ljava/lang/String;
+    astore_2
+    aload_2
+    ifnull LREAD_DONE
+    aload_2
+    ldc ":"
+    invokevirtual java/lang/String contains (Ljava/lang/CharSequence;)Z
+    ifeq LREAD_LOOP
+    aload_2
+    ldc ":"
+    iconst_2
+    invokevirtual java/lang/String split (Ljava/lang/String;I)[Ljava/lang/String;
+    astore_3
+    aload_3
+    iconst_0
+    aaload
+    invokevirtual java/lang/String trim ()Ljava/lang/String;
+    aload_3
+    iconst_1
+    aaload
+    invokevirtual java/lang/String trim ()Ljava/lang/String;
+    invokestatic {{pred_cap}}Query addFact (Ljava/lang/String;Ljava/lang/String;)V
+    goto LREAD_LOOP
+LREAD_DONE:

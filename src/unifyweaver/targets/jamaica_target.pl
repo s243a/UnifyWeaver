@@ -12,7 +12,13 @@
     compile_predicate/3,                 % +PredIndicator, +Options, -Code
     compile_jamaica_class/4,             % +ClassName, +Methods, +Options, -Code
     write_jamaica_program/2,             % +Code, +Filename
-    init_jamaica_target/0
+    init_jamaica_target/0,
+    compile_tail_recursion_jamaica/3,
+    compile_linear_recursion_jamaica/3,
+    compile_tree_recursion_jamaica/3,
+    compile_multicall_recursion_jamaica/3,
+    compile_direct_multicall_jamaica/3,
+    compile_mutual_recursion_jamaica/2
 ]).
 
 :- use_module(library(lists)).
