@@ -63,7 +63,17 @@
 
     % Clause structure analysis
     analyze_clauses/2,              % +Clauses, -Analysis
-    clause_guard_output_split/4     % +Goals, +VarMap, -Guards, -Outputs
+    clause_guard_output_split/4,    % +Goals, +VarMap, -Guards, -Outputs
+
+    % Advanced goal sequence analysis (inspired by TypR native lowering)
+    classify_goal_sequence/3,       % +Goals, +VarMap, -ClassifiedGoals
+    is_output_control_flow/3,       % +Goal, +VarMap, -OutputInfo
+    if_then_else_output_info/4,     % +If, +Then, +Else, -OutputInfo
+    disjunction_output_info/2,      % +Alternatives, -OutputInfo
+    if_then_output_info/3,          % +If, +Then, -OutputInfo
+
+    % Multi-clause compilation helper
+    compile_multi_clause/4          % +Clauses, +VarMap, +Strategy, -Analysis
 ]).
 
 :- use_module(library(lists)).
@@ -278,7 +288,7 @@ shared_output_var([Alternative|Rest], VarMap, SharedVar) :-
 %  Find all variables that all alternatives assign to.
 shared_output_vars([Alternative|Rest], VarMap, SharedVars) :-
     alternative_output_vars(Alternative, FirstOutputVars0),
-    exclude_varmap_vars(VarMap, FirstOutputVars0, FirstOutputVars),
+    include(output_var_allowed(VarMap), FirstOutputVars0, FirstOutputVars),
     foldl(intersect_output_vars, Rest, FirstOutputVars, SharedVars),
     SharedVars \= [].
 
@@ -291,9 +301,11 @@ if_then_else_shared_output_var(ThenGoal, ElseGoal, VarMap, SharedVar) :-
     ElseVar == SharedVar.
 
 %% if_then_else_shared_output_vars(+Then, +Else, +VarMap, -SharedVars)
+%  Find variables bound by both branches. Allows head arg variables
+%  (arg1, arg2...) since these are output positions in the clause.
 if_then_else_shared_output_vars(ThenGoal, ElseGoal, VarMap, SharedVars) :-
     alternative_output_vars(ThenGoal, ThenOutputVars0),
-    exclude_varmap_vars(VarMap, ThenOutputVars0, ThenOutputVars),
+    include(output_var_allowed(VarMap), ThenOutputVars0, ThenOutputVars),
     intersect_output_vars(ElseGoal, ThenOutputVars, SharedVars),
     SharedVars \= [].
 
@@ -306,7 +318,7 @@ if_then_output_var(ThenGoal, VarMap, OutputVar) :-
 %% if_then_output_vars(+Then, +VarMap, -OutputVars)
 if_then_output_vars(ThenGoal, VarMap, OutputVars) :-
     alternative_output_vars(ThenGoal, OutputVars0),
-    exclude_varmap_vars(VarMap, OutputVars0, OutputVars),
+    include(output_var_allowed(VarMap), OutputVars0, OutputVars),
     OutputVars \= [].
 
 %% output_var_allowed(+VarMap, +Var)
@@ -569,3 +581,151 @@ clause_guard_output_split([Goal|Rest], VarMap, [Goal|Guards], Outputs) :-
     !,
     clause_guard_output_split(Rest, VarMap, Guards, Outputs).
 clause_guard_output_split(Outputs, _VarMap, [], Outputs).
+
+% ============================================================================
+% ADVANCED GOAL SEQUENCE ANALYSIS
+% ============================================================================
+%
+% Inspired by TypR's native_typr_prefix_goals, but target-agnostic.
+% Returns a classified list of goals rather than generating code.
+%
+% Classifications:
+%   guard(Goal, Expr)           — boolean test, no new bindings
+%   output(Goal, Var, Expr)     — binds a new variable
+%   output_ite(If, Then, Else, SharedVars) — if-then-else that binds shared var(s)
+%   output_disj(Alternatives, SharedVars)  — disjunction binding shared var(s)
+%   output_if_then(If, Then, OutputVars)   — if-then binding var(s) (no else)
+%   passthrough(Goal)           — unclassified goal (target must handle)
+
+%% classify_goal_sequence(+Goals, +VarMap, -ClassifiedGoals)
+%  Walk a list of goals and classify each one.
+%  VarMap is updated as outputs are encountered.
+classify_goal_sequence([], _VarMap, []).
+classify_goal_sequence([Goal|Rest], VarMap, [Classified|RestClassified]) :-
+    classify_single_goal(Goal, VarMap, Classified, VarMap1),
+    classify_goal_sequence(Rest, VarMap1, RestClassified).
+
+%% classify_single_goal(+Goal, +VarMap, -Classified, -VarMapOut)
+classify_single_goal(Goal, VarMap, Classified, VarMapOut) :-
+    %% Strip module qualification
+    (Goal = _Module:InnerGoal -> G = InnerGoal ; G = Goal),
+    classify_single_goal_(G, VarMap, Classified, VarMapOut).
+
+classify_single_goal_(Goal, VarMap, output_ite(If, Then, Else, SharedVars), VarMapOut) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    if_then_else_shared_output_vars(Then, Else, VarMap, SharedVars),
+    SharedVars \= [],
+    !,
+    ensure_vars(SharedVars, VarMap, _, VarMapOut).
+
+classify_single_goal_(Goal, VarMap, output_disj(Alternatives, SharedVars), VarMapOut) :-
+    disjunction_alternatives(Goal, Alternatives),
+    Alternatives = [_,_|_],  %% at least 2 alternatives
+    shared_output_vars(Alternatives, VarMap, SharedVars),
+    SharedVars \= [],
+    !,
+    ensure_vars(SharedVars, VarMap, _, VarMapOut).
+
+classify_single_goal_(Goal, VarMap, output_if_then(If, Then, OutputVars), VarMapOut) :-
+    if_then_goal(Goal, If, Then),
+    if_then_output_vars(Then, VarMap, OutputVars),
+    OutputVars \= [],
+    !,
+    ensure_vars(OutputVars, VarMap, _, VarMapOut).
+
+classify_single_goal_(Goal, VarMap, guard(Goal, Expr), VarMap) :-
+    is_guard_goal(Goal, VarMap),
+    !,
+    translate_expr(Goal, VarMap, Expr).
+
+classify_single_goal_(Goal, VarMap, output(Goal, Var, Expr), VarMapOut) :-
+    goal_output_var(Goal, Var),
+    var(Var),
+    \+ varmap_contains_var(VarMap, Var),
+    !,
+    ensure_var(VarMap, Var, _, VarMapOut),
+    translate_output_expr(Goal, VarMap, Expr).
+
+classify_single_goal_(Goal, VarMap, passthrough(Goal), VarMap).
+
+%% translate_output_expr(+Goal, +VarMap, -Expr)
+%  Extract the expression part of an output goal.
+translate_output_expr(Var is ArithExpr, VarMap, Expr) :-
+    var(Var), !,
+    translate_expr(ArithExpr, VarMap, Expr).
+translate_output_expr(Var = Value, VarMap, Expr) :-
+    var(Var), !,
+    translate_expr(Value, VarMap, Expr).
+translate_output_expr(_ = Var, VarMap, Expr) :-
+    var(Var), !,
+    translate_expr(Var, VarMap, Expr).
+translate_output_expr(Goal, VarMap, call(Fn, TranslatedArgs)) :-
+    compound(Goal),
+    Goal =.. [Fn|Args],
+    maplist(translate_expr_arg(VarMap), Args, TranslatedArgs).
+translate_output_expr(Goal, _, literal(Goal)).
+
+% ============================================================================
+% OUTPUT CONTROL FLOW DETECTION
+% ============================================================================
+
+%% is_output_control_flow(+Goal, +VarMap, -OutputInfo)
+%  Check if a control flow goal (if-then-else, disjunction) produces output.
+is_output_control_flow(Goal, VarMap, OutputInfo) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    if_then_else_output_info(If, Then, Else, OutputInfo0),
+    OutputInfo0 = ite_output(_, _, _, SharedVars),
+    exclude_varmap_vars(VarMap, SharedVars, NewVars),
+    NewVars \= [],
+    OutputInfo = ite_output(If, Then, Else, NewVars).
+is_output_control_flow(Goal, VarMap, OutputInfo) :-
+    disjunction_alternatives(Goal, Alternatives),
+    Alternatives = [_,_|_],
+    disjunction_output_info(Alternatives, OutputInfo0),
+    OutputInfo0 = disj_output(_, SharedVars),
+    exclude_varmap_vars(VarMap, SharedVars, NewVars),
+    NewVars \= [],
+    OutputInfo = disj_output(Alternatives, NewVars).
+is_output_control_flow(Goal, VarMap, OutputInfo) :-
+    if_then_goal(Goal, If, Then),
+    if_then_output_info(If, Then, OutputInfo0),
+    OutputInfo0 = if_then_output(_, _, OutputVars),
+    exclude_varmap_vars(VarMap, OutputVars, NewVars),
+    NewVars \= [],
+    OutputInfo = if_then_output(If, Then, NewVars).
+
+%% if_then_else_output_info(+If, +Then, +Else, -OutputInfo)
+if_then_else_output_info(If, Then, Else, ite_output(If, Then, Else, SharedVars)) :-
+    alternative_output_vars(Then, ThenVars),
+    intersect_output_vars(Else, ThenVars, SharedVars),
+    SharedVars \= [].
+
+%% disjunction_output_info(+Alternatives, -OutputInfo)
+disjunction_output_info(Alternatives, disj_output(Alternatives, SharedVars)) :-
+    Alternatives = [First|Rest],
+    alternative_output_vars(First, FirstVars),
+    foldl(intersect_output_vars, Rest, FirstVars, SharedVars),
+    SharedVars \= [].
+
+%% if_then_output_info(+If, +Then, -OutputInfo)
+if_then_output_info(If, Then, if_then_output(If, Then, OutputVars)) :-
+    alternative_output_vars(Then, OutputVars),
+    OutputVars \= [].
+
+% ============================================================================
+% MULTI-CLAUSE COMPILATION HELPER
+% ============================================================================
+
+%% compile_multi_clause(+Clauses, +VarMap, +Strategy, -Analysis)
+%  Analyze multiple clauses for compilation.
+%  Strategy is: if_else_chain | match_arms | pattern_heads | switch_cases
+%  Returns a list of clause_branch(HeadConditions, GuardExprs, ClassifiedGoals).
+compile_multi_clause([], _VarMap, _Strategy, []).
+compile_multi_clause([Head-Body|Rest], VarMap, Strategy, [Branch|RestBranches]) :-
+    Head =.. [_Pred|HeadArgs],
+    head_conditions(HeadArgs, 1, HeadConditions),
+    build_head_varmap(HeadArgs, 1, ClauseVarMap),
+    normalize_goals(Body, Goals),
+    classify_goal_sequence(Goals, ClauseVarMap, ClassifiedGoals),
+    Branch = clause_branch(HeadConditions, ClassifiedGoals, Strategy),
+    compile_multi_clause(Rest, VarMap, Strategy, RestBranches).
