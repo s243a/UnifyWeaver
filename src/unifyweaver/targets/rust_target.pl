@@ -3457,10 +3457,146 @@ rust_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     rust_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_rust_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_rust_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    rust_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_rust_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(rust_guard_condition(VarMap), GuardGoals, Conditions),
     rust_output_goals(OutputGoals, VarMap, Code).
+
+%% rust_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+rust_render_classified_goals([], _VarMap, [], []).
+rust_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    rust_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+rust_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    rust_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    rust_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(rust_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "_"
+    ),
+    format(string(IfLine), '        if ~w {', [GuardExpr]),
+    format(string(RetLine), '            return ~w;', [OutName]),
+    CloseLine = '        }',
+    Lines = [AssignLine, IfLine, RetLine, CloseLine].
+rust_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    rust_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    rust_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% rust_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+rust_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    rust_guard_condition(VarMap, Goal, Cond).
+rust_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    rust_output_goal(Goal, VarMap0, Line, VarMapOut).
+rust_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    rust_guard_condition(VarMap0, If, Cond),
+    rust_branch_value(Then, VarMap0, ThenExpr),
+    rust_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '        if ~w {', [Cond]),
+    format(string(ThenLine), '            return ~w;', [ThenExpr]),
+    ElseLine = '        } else {',
+    format(string(ElseRetLine), '            return ~w;', [ElseExpr]),
+    CloseLine = '        }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+rust_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    rust_output_goal(Goal, VarMap0, Line, VarMapOut).
+rust_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% rust_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+rust_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    rust_guard_condition(VarMap, Goal, Cond).
+rust_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    rust_render_output_goal_last(Goal, VarMap, Lines).
+rust_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    rust_guard_condition(VarMap, If, Cond),
+    rust_branch_value(Then, VarMap, ThenExpr),
+    rust_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '        if ~w {', [Cond]),
+    format(string(ThenLine), '            return ~w;', [ThenExpr]),
+    ElseLine = '        } else {',
+    format(string(ElseRetLine), '            return ~w;', [ElseExpr]),
+    CloseLine = '        }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+rust_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    rust_disj_if_chain(Alternatives, VarMap, Lines).
+rust_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    rust_render_output_goal_last(Goal, VarMap, Lines).
+rust_render_classified_last(_, _, [], []).
+
+%% rust_render_output_goal_last(+Goal, +VarMap, -Lines)
+%  3-arg wrapper used by classified goal renderers.
+rust_render_output_goal_last(Goal, VarMap, [Line]) :-
+    rust_output_goal(Goal, VarMap, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(Line), '~w\n        return ~w;', [AssignLine, OutName])
+    ;   Line = AssignLine
+    ).
+rust_render_output_goal_last(Goal, VarMap, [Line]) :-
+    rust_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '        return ~w;', [Expr]).
+
+%% rust_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+rust_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, rust_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+rust_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% rust_disj_if_chain(+Alternatives, +VarMap, -Lines)
+rust_disj_if_chain([], _, []).
+rust_disj_if_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    rust_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '        } else {',
+    format(string(RetLine), '            return ~w;', [ValExpr]),
+    CloseLine = '        }'.
+rust_disj_if_chain([Alt|Rest], VarMap, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(rust_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    rust_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '        if ~w {', [CondExpr]),
+    format(string(RetLine), '            return ~w;', [ValExpr]),
+    rust_disj_elif_chain(Rest, VarMap, RestLines),
+    append([IfLine, RetLine], RestLines, Lines).
+
+%% rust_disj_elif_chain(+Alternatives, +VarMap, -Lines)
+rust_disj_elif_chain([], _, []).
+rust_disj_elif_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    rust_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '        } else {',
+    format(string(RetLine), '            return ~w;', [ValExpr]),
+    CloseLine = '        }'.
+rust_disj_elif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(rust_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    rust_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElifLine), '        } else if ~w {', [CondExpr]),
+    format(string(RetLine), '            return ~w;', [ValExpr]),
+    rust_disj_elif_chain(Rest, VarMap, RestLines).
 
 %% rust_guard_condition(+VarMap, +Goal, -Condition)
 rust_guard_condition(VarMap, _Module:Goal, Condition) :-
