@@ -1,11 +1,21 @@
 
   public static void main(String[] args) {
+    Object reader;
+    String line;
+    String[] parts;
     // Read {{base}} facts from stdin (format: from:to)
-    %object java.io.BufferedReader[%object java.io.InputStreamReader[getstatic System.in java.io.InputStream]]
+    new BufferedReader
+    dup
+    new InputStreamReader
+    dup
+    getstatic System.in java.io.InputStream
+    invokespecial InputStreamReader(java.io.InputStream)void
+    invokespecial BufferedReader(java.io.Reader)void
     astore reader
   READ_LOOP:
     aload reader
-    invokevirtual java.io.BufferedReader.readLine()String
+    checkcast BufferedReader
+    invokevirtual BufferedReader.readLine()String
     astore line
     aload line
     ifnull READ_DONE
@@ -16,7 +26,7 @@
     aload line
     ldc ":"
     iconst_2
-    invokevirtual String.split(String int)String[]
+    invokevirtual String.split(String, int)String[]
     astore parts
     aload parts
     iconst_0
@@ -26,6 +36,6 @@
     iconst_1
     aaload
     invokevirtual String.trim()String
-    invokestatic {{pred_cap}}Query.addFact(String String)void
+    invokestatic addFact(String, String)void
     goto READ_LOOP
   READ_DONE:

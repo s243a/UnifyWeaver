@@ -389,7 +389,7 @@ test(awk_tc_template_exists) :-
 test(jamaica_tc_template_content) :-
     read_file_to_string('templates/targets/jamaica/transitive_closure.mustache', Content, []),
     has(Content, "{{pred_cap}}Query"),
-    has(Content, "add_fact"),
+    has(Content, "addFact"),
     has(Content, "BFS"),
     has(Content, "invokevirtual").
 

@@ -5,29 +5,36 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 
 public class {{pred_cap}}Query {
 
+  static HashMap edges;
+
+  // Static initializer
+  static {
+    %object HashMap
+    putstatic edges HashMap
+  }
+
   %default_constructor public
 
-  // Edge storage
-  static HashMap edges = new HashMap();
-
-  public static void add_fact(String from, String to) {
+  public static void addFact(String from, String to) {
     Object existing;
+    getstatic edges HashMap
     aload from
-    invokestatic {{pred_cap}}Query.edges HashMap
     invokevirtual HashMap.get(Object)Object
     astore existing
-    // Create list if null
     aload existing
     ifnonnull HAS_LIST
     %object ArrayList
     astore existing
+    getstatic edges HashMap
     aload from
     aload existing
-    invokestatic {{pred_cap}}Query.edges HashMap
-    invokevirtual HashMap.put(Object Object)Object
+    invokevirtual HashMap.put(Object, Object)Object
     pop
   HAS_LIST:
     aload existing
@@ -39,7 +46,12 @@ public class {{pred_cap}}Query {
   }
 
   public static boolean check(String start, String target) {
-    // BFS reachability
+    HashSet visited;
+    LinkedList queue;
+    String current;
+    Object neighbors;
+    Iterator iter;
+    String next;
     %object HashSet
     astore visited
     %object LinkedList
@@ -60,9 +72,8 @@ public class {{pred_cap}}Query {
     invokevirtual LinkedList.poll()Object
     checkcast String
     astore current
-    // Check edges from current
+    getstatic edges HashMap
     aload current
-    invokestatic {{pred_cap}}Query.edges HashMap
     invokevirtual HashMap.get(Object)Object
     astore neighbors
     aload neighbors
@@ -102,5 +113,65 @@ public class {{pred_cap}}Query {
   NOT_FOUND:
     iconst_0
     ireturn
+  }
+
+  public static void main(String[] args) {
+    Object reader;
+    String line;
+    String[] parts;
+    // Build BufferedReader(InputStreamReader(System.in))
+    %object InputStreamReader(java.io.InputStream)(getstatic System.in java.io.InputStream)
+    astore reader
+    %object BufferedReader(java.io.Reader)(aload reader)
+    astore reader
+  READ_LOOP:
+    aload reader
+    checkcast BufferedReader
+    invokevirtual BufferedReader.readLine()String
+    astore line
+    aload line
+    ifnull READ_DONE
+    aload line
+    ldc ":"
+    invokevirtual String.contains(CharSequence)boolean
+    ifeq READ_LOOP
+    aload line
+    ldc ":"
+    iconst_2
+    invokevirtual String.split(String, int)String[]
+    astore parts
+    aload parts
+    iconst_0
+    aaload
+    invokevirtual String.trim()String
+    aload parts
+    iconst_1
+    aaload
+    invokevirtual String.trim()String
+    invokestatic addFact(String, String)void
+    goto READ_LOOP
+  READ_DONE:
+    // CLI: check(args[0], args[1])
+    aload args
+    arraylength
+    iconst_2
+    if_icmpne USAGE
+    aload args
+    iconst_0
+    aaload
+    aload args
+    iconst_1
+    aaload
+    invokestatic check(String, String)boolean
+    ifeq NOT_REACHABLE
+    %println args[0], ":", args[1]
+    return
+  NOT_REACHABLE:
+    iconst_1
+    invokestatic System.exit(int)void
+  USAGE:
+    %println <err> "Usage: {{pred}} <start> <target>"
+    iconst_1
+    invokestatic System.exit(int)void
   }
 }

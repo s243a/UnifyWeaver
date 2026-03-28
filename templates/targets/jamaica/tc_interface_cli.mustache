@@ -2,19 +2,6 @@
     // CLI interface
     aload args
     arraylength
-    iconst_1
-    if_icmpne CHECK_TWO
-    // find_all mode: print all reachable from args[0]
-    aload args
-    iconst_0
-    aaload
-    astore start
-    // TODO: iterate find_all results
-    %println "find_all not yet supported in Jamaica TC"
-    return
-  CHECK_TWO:
-    aload args
-    arraylength
     iconst_2
     if_icmpne USAGE
     aload args
@@ -23,16 +10,15 @@
     aload args
     iconst_1
     aaload
-    invokestatic {{pred_cap}}Query.check(String String)boolean
+    invokestatic check(String, String)boolean
     ifeq NOT_REACHABLE
-    %print args[0], ":", args[1]
-    %println
+    %println args[0], ":", args[1]
     return
   NOT_REACHABLE:
     iconst_1
     invokestatic System.exit(int)void
   USAGE:
-    %println <err> "Usage: {{pred}} <start> [target]"
+    %println <err> "Usage: {{pred}} <start> <target>"
     iconst_1
     invokestatic System.exit(int)void
   }
