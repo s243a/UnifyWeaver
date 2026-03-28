@@ -784,6 +784,42 @@ compile_transitive_closure(lua, Pred, _Arity, BasePred, Options, GeneratedCode) 
     compile_tc_from_template(lua, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
+%% capitalize_atom(+Atom, -Capitalized)
+%%   PascalCase: ancestor -> Ancestor, my_pred -> MyPred
+capitalize_atom(Atom, Capitalized) :-
+    atom_string(Atom, String),
+    split_string(String, "_", "", Parts),
+    maplist(capitalize_first, Parts, CapParts),
+    atomic_list_concat(CapParts, Capitalized).
+
+capitalize_first(Str, Cap) :-
+    string_chars(Str, [First|Rest]),
+    upcase_atom(First, Upper),
+    atomic_list_concat([Upper|Rest], Cap).
+
+%% Jamaica transitive closure — JVM bytecode BFS via template
+compile_transitive_closure(jamaica, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    capitalize_atom(Pred, PredCap),
+    compile_tc_from_template(jamaica, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
+    !.
+
+%% Krakatau transitive closure — JVM bytecode BFS via template
+compile_transitive_closure(krakatau, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    capitalize_atom(Pred, PredCap),
+    compile_tc_from_template(krakatau, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
+    !.
+
+%% VB.NET transitive closure — .NET BFS via template
+compile_transitive_closure(vbnet, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    capitalize_atom(Pred, PredCap),
+    compile_tc_from_template(vbnet, Pred, BasePred, [pred_cap=PredCap], Options, GeneratedCode),
+    !.
+
+%% AWK transitive closure — associative array BFS via template
+compile_transitive_closure(awk, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(awk, Pred, BasePred, [], Options, GeneratedCode),
+    !.
+
 compile_transitive_closure(Target, Pred, Arity, BasePred, _Options, _GeneratedCode) :-
     format(user_error,
            'Transitive closure for target ~w not yet supported (~w/~w via ~w).~n',

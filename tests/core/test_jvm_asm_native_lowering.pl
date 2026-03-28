@@ -4,6 +4,7 @@
 :- use_module('../../src/unifyweaver/targets/krakatau_target').
 :- use_module('../../src/unifyweaver/core/jvm_bytecode').
 :- use_module('../../src/unifyweaver/core/target_registry').
+:- use_module('../../src/unifyweaver/core/recursive_compiler').
 
 test_jvm_asm_native_lowering :-
     run_tests([jvm_asm_native_lowering]).
@@ -352,6 +353,91 @@ test(tail_recursion_same_bytecodes) :-
     % Different syntax wrapping
     has(JaCode, "public class"),
     has(KrCode, ".class public").
+
+% ============================================================================
+% Transitive closure templates
+% ============================================================================
+
+test(jamaica_tc_template_exists) :-
+    exists_file('templates/targets/jamaica/transitive_closure.mustache').
+
+test(krakatau_tc_template_exists) :-
+    exists_file('templates/targets/krakatau/transitive_closure.mustache').
+
+test(vbnet_tc_template_exists) :-
+    exists_file('templates/targets/vbnet/transitive_closure.mustache').
+
+test(awk_tc_template_exists) :-
+    exists_file('templates/targets/awk/transitive_closure.mustache').
+
+test(jamaica_tc_template_content) :-
+    read_file_to_string('templates/targets/jamaica/transitive_closure.mustache', Content, []),
+    has(Content, "{{pred_cap}}Query"),
+    has(Content, "add_fact"),
+    has(Content, "BFS"),
+    has(Content, "invokevirtual").
+
+test(krakatau_tc_template_content) :-
+    read_file_to_string('templates/targets/krakatau/transitive_closure.mustache', Content, []),
+    has(Content, ".class public"),
+    has(Content, ".method"),
+    has(Content, "add_fact"),
+    has(Content, "BFS_LOOP").
+
+test(vbnet_tc_template_content) :-
+    read_file_to_string('templates/targets/vbnet/transitive_closure.mustache', Content, []),
+    has(Content, "Public Class"),
+    has(Content, "AddFact"),
+    has(Content, "Queue"),
+    has(Content, "HashSet").
+
+test(awk_tc_template_content) :-
+    read_file_to_string('templates/targets/awk/transitive_closure.mustache', Content, []),
+    has(Content, "BEGIN"),
+    has(Content, "queue"),
+    has(Content, "visited"),
+    has(Content, "adj").
+
+test(jamaica_tc_dispatch) :-
+    % Verify the dispatch clause compiles the template
+    catch(
+        recursive_compiler:compile_transitive_closure(
+            jamaica, ancestor, 2, parent, [], Code),
+        _,
+        fail
+    ),
+    has(Code, "AncestorQuery"),
+    has(Code, "add_fact").
+
+test(krakatau_tc_dispatch) :-
+    catch(
+        recursive_compiler:compile_transitive_closure(
+            krakatau, ancestor, 2, parent, [], Code),
+        _,
+        fail
+    ),
+    has(Code, ".class public AncestorQuery"),
+    has(Code, "add_fact").
+
+test(vbnet_tc_dispatch) :-
+    catch(
+        recursive_compiler:compile_transitive_closure(
+            vbnet, ancestor, 2, parent, [], Code),
+        _,
+        fail
+    ),
+    has(Code, "Public Class AncestorQuery"),
+    has(Code, "AddFact").
+
+test(awk_tc_dispatch) :-
+    catch(
+        recursive_compiler:compile_transitive_closure(
+            awk, ancestor, 2, parent, [], Code),
+        _,
+        fail
+    ),
+    has(Code, "queue"),
+    has(Code, "visited").
 
 % Helper for inclusion check
 sub_string_match(Substr, Str) :-
