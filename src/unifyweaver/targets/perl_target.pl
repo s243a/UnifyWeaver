@@ -1302,6 +1302,41 @@ perl_branch_value(is(_, Expr), VarMap, Value) :-
 perl_branch_value(Goal, VarMap, Value) :-
     perl_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Perl renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(perl, Goal, VarMap, Line, VarName, VarMapOut) :-
+    perl_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(perl, Goal, VarMap, CondStr) :-
+    perl_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(perl, Branch, VarMap, ExprStr) :-
+    perl_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(perl, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Indent, Cond]),
+    perl_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        perl_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(EndLine), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreEnd),
+        append(PreEnd, [EndLine], Lines)
+    ;   format(string(EndLine), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [EndLine], Lines)
+    ).
+
+perl_indent_lines([], _, []).
+perl_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    perl_indent_lines(Rest, Indent, RestIndented).
+
 %% perl_expr — convert Prolog expression to Perl syntax
 perl_expr(Var, VarMap, PExpr) :-
     var(Var), !,

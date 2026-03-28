@@ -835,6 +835,41 @@ ts_branch_value(is(_, Expr), VarMap, Value) :-
 ts_branch_value(Goal, VarMap, Value) :-
     ts_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register TypeScript renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(typescript, Goal, VarMap, Line, VarName, VarMapOut) :-
+    ts_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(typescript, Goal, VarMap, CondStr) :-
+    ts_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(typescript, Branch, VarMap, ExprStr) :-
+    ts_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(typescript, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Indent, Cond]),
+    ts_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        ts_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(EndLine), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreEnd),
+        append(PreEnd, [EndLine], Lines)
+    ;   format(string(EndLine), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [EndLine], Lines)
+    ).
+
+ts_indent_lines([], _, []).
+ts_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    ts_indent_lines(Rest, Indent, RestIndented).
+
 %% ts_expr — convert Prolog expression to TypeScript syntax
 ts_expr(Var, VarMap, TExpr) :-
     var(Var), !,

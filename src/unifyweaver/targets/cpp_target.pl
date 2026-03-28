@@ -755,6 +755,41 @@ cpp_branch_value(is(_, Expr), VarMap, Value) :-
 cpp_branch_value(Goal, VarMap, Value) :-
     cpp_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register C++ renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(cpp, Goal, VarMap, Line, VarName, VarMapOut) :-
+    cpp_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(cpp, Goal, VarMap, CondStr) :-
+    cpp_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(cpp, Branch, VarMap, ExprStr) :-
+    cpp_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(cpp, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Indent, Cond]),
+    cpp_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(CloseThen), '~w}', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        cpp_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(CloseElse), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreClose),
+        append(PreClose, [CloseElse], Lines)
+    ;   append([IfLine|IndentedThen], [CloseThen], Lines)
+    ).
+
+cpp_indent_lines([], _, []).
+cpp_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    cpp_indent_lines(Rest, Indent, RestIndented).
+
 %% cpp_expr — convert Prolog expression to C++ syntax
 cpp_expr(Var, VarMap, CExpr) :-
     var(Var), !,

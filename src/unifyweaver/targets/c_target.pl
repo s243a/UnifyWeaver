@@ -804,6 +804,41 @@ c_branch_value(is(_, Expr), VarMap, Value) :-
 c_branch_value(Goal, VarMap, Value) :-
     c_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register C renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(c, Goal, VarMap, Line, VarName, VarMapOut) :-
+    c_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(c, Goal, VarMap, CondStr) :-
+    c_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(c, Branch, VarMap, ExprStr) :-
+    c_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(c, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Indent, Cond]),
+    c_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(CloseThen), '~w}', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        c_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(CloseElse), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreClose),
+        append(PreClose, [CloseElse], Lines)
+    ;   append([IfLine|IndentedThen], [CloseThen], Lines)
+    ).
+
+c_indent_lines([], _, []).
+c_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    c_indent_lines(Rest, Indent, RestIndented).
+
 %% c_expr — convert Prolog expression to C syntax
 c_expr(Var, VarMap, CExpr) :-
     var(Var), !,

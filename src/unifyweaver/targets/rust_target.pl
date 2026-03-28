@@ -3578,6 +3578,41 @@ rust_branch_value(is(_, Expr), VarMap, Value) :-
 rust_branch_value(Goal, VarMap, Value) :-
     rust_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Rust renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(rust, Goal, VarMap, Line, VarName, VarMapOut) :-
+    rust_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(rust, Goal, VarMap, CondStr) :-
+    rust_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(rust, Branch, VarMap, ExprStr) :-
+    rust_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(rust, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w {', [Indent, Cond]),
+    rust_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(CloseThen), '~w}', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        rust_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(CloseElse), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreClose),
+        append(PreClose, [CloseElse], Lines)
+    ;   append([IfLine|IndentedThen], [CloseThen], Lines)
+    ).
+
+rust_indent_lines([], _, []).
+rust_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    rust_indent_lines(Rest, Indent, RestIndented).
+
 %% rust_expr — convert Prolog expression to Rust syntax
 rust_expr(Var, VarMap, RsExpr) :-
     var(Var), !,

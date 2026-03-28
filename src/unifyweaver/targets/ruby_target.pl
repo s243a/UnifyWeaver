@@ -1181,6 +1181,41 @@ ruby_branch_value(is(_, Expr), VarMap, Value) :-
 ruby_branch_value(Goal, VarMap, Value) :-
     ruby_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Ruby renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(ruby, Goal, VarMap, Line, VarName, VarMapOut) :-
+    ruby_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(ruby, Goal, VarMap, CondStr) :-
+    ruby_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(ruby, Branch, VarMap, ExprStr) :-
+    ruby_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(ruby, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w', [Indent, Cond]),
+    ruby_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~welsif', [Indent]),
+        ruby_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(EndLine), '~wend', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreEnd),
+        append(PreEnd, [EndLine], Lines)
+    ;   format(string(EndLine), '~wend', [Indent]),
+        append([IfLine|IndentedThen], [EndLine], Lines)
+    ).
+
+ruby_indent_lines([], _, []).
+ruby_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    ruby_indent_lines(Rest, Indent, RestIndented).
+
 %% ruby_expr — convert Prolog expression to Ruby syntax
 ruby_expr(Var, VarMap, RExpr) :-
     var(Var), !,
