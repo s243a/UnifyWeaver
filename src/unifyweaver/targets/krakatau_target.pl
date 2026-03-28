@@ -18,7 +18,10 @@
     compile_tree_recursion_krakatau/3,
     compile_multicall_recursion_krakatau/3,
     compile_direct_multicall_krakatau/3,
-    compile_mutual_recursion_krakatau/2
+    compile_mutual_recursion_krakatau/2,
+    krakatau_type_info/1,
+    krakatau_validate_config/1,
+    krakatau_compile_component/4
 ]).
 
 :- use_module(library(lists)).
@@ -345,3 +348,31 @@ clause_body_analysis:render_ite_block(krakatau, Cond, ThenLines, ElseLines, _Ind
         append(Pre, ['L_end:'], Lines)
     ;   append([Cond, 'L_then:'|ThenLines], ['L_end:'], Lines)
     ).
+
+%% ============================================
+%% COMPONENT SYSTEM HOOKS
+%% ============================================
+
+krakatau_type_info(info(
+    name('Custom Krakatau Component'),
+    version('1.0.0'),
+    description('Injects custom Krakatau JVM bytecode as a component')
+)).
+
+krakatau_validate_config(Config) :-
+    (   member(code(Code), Config), string(Code)
+    ->  true
+    ;   throw(error(missing_or_invalid_code_option))
+    ).
+
+krakatau_compile_component(Name, Config, _Options, Code) :-
+    member(code(Body), Config),
+    atom_string(Name, NameStr),
+    format(string(Code),
+'.method public static comp_~w : (I)I
+    .limit stack 10
+    .limit locals 10
+    ; Custom Component: ~w
+~w
+.end method
+', [NameStr, NameStr, Body]).

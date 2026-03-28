@@ -18,7 +18,11 @@
     compile_tree_recursion_jamaica/3,
     compile_multicall_recursion_jamaica/3,
     compile_direct_multicall_jamaica/3,
-    compile_mutual_recursion_jamaica/2
+    compile_mutual_recursion_jamaica/2,
+    % Component system
+    jamaica_type_info/1,
+    jamaica_validate_config/1,
+    jamaica_compile_component/4
 ]).
 
 :- use_module(library(lists)).
@@ -37,6 +41,30 @@
         true
     )
 ), now).
+
+%% ============================================
+%% IMPORT MANAGEMENT
+%% ============================================
+
+:- dynamic jamaica_import/1.
+
+clear_jamaica_imports :-
+    retractall(jamaica_import(_)).
+
+collect_jamaica_import(Import) :-
+    (   jamaica_import(Import) -> true
+    ;   assert(jamaica_import(Import))
+    ).
+
+get_jamaica_imports(Imports) :-
+    findall(I, jamaica_import(I), Imports).
+
+format_jamaica_imports(Imports, Code) :-
+    maplist(format_one_import, Imports, Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+format_one_import(Import, Line) :-
+    format(string(Line), 'import ~w;', [Import]).
 
 % Advanced recursion multifile hooks
 :- use_module('../core/advanced/tail_recursion', []).
@@ -343,6 +371,32 @@ clause_body_analysis:render_ite_block(jamaica, Cond, ThenLines, ElseLines, _Inde
         append(Pre, [EndLabel], Lines)
     ;   append([CondLine, ThenLabel|ThenLines], [EndLabel], Lines)
     ).
+
+%% ============================================
+%% COMPONENT SYSTEM HOOKS
+%% ============================================
+
+jamaica_type_info(info(
+    name('Custom Jamaica Component'),
+    version('1.0.0'),
+    description('Injects custom Jamaica JVM assembly code as a component')
+)).
+
+jamaica_validate_config(Config) :-
+    (   member(code(Code), Config), string(Code)
+    ->  true
+    ;   throw(error(missing_or_invalid_code_option))
+    ).
+
+jamaica_compile_component(Name, Config, _Options, Code) :-
+    member(code(Body), Config),
+    atom_string(Name, NameStr),
+    format(string(Code),
+'  // Custom Component: ~w
+  public static int comp_~w(int input) {
+~w
+  }
+', [NameStr, NameStr, Body]).
 
 ensure_string(Atom, Str) :- atom(Atom), !, atom_string(Atom, Str).
 ensure_string(Str, Str) :- string(Str), !.
