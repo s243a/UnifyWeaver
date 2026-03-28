@@ -37,6 +37,10 @@
 :- use_module('../targets/perl_target', []).     % registers multifile tail/linear patterns for Perl
 :- use_module('../targets/typescript_target', [compile_predicate_to_typescript/3]).
 :- use_module('../targets/python_target', [compile_predicate_to_python/3]).
+:- use_module('../targets/wat_target', []).        % registers multifile hooks for WAT
+:- use_module('../targets/jamaica_target', []).     % registers multifile hooks for Jamaica
+:- use_module('../targets/krakatau_target', []).    % registers multifile hooks for Krakatau
+:- use_module('../targets/llvm_target', []).        % registers multifile hooks for LLVM
 :- use_module(template_system).
 :- use_module(input_source).
 :- use_module(library(lists)).
