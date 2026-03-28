@@ -3688,6 +3688,35 @@ python_expr(max(A, B), VarMap, PyExpr) :-
     python_expr(A, VarMap, PyA),
     python_expr(B, VarMap, PyB),
     format(string(PyExpr), 'max(~w, ~w)', [PyA, PyB]).
+python_expr(sqrt(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.sqrt(~w)', [PyA]).
+python_expr(sin(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.sin(~w)', [PyA]).
+python_expr(cos(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.cos(~w)', [PyA]).
+python_expr(log(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.log(~w)', [PyA]).
+python_expr(round(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'round(~w)', [PyA]).
+%% General unary function call fallback
+python_expr(Expr, VarMap, PyExpr) :-
+    compound(Expr),
+    Expr =.. [Fn, Arg],
+    \+ expr_op(Fn, _),
+    Fn \= (-),
+    !,
+    python_expr(Arg, VarMap, PyArg),
+    format(string(PyExpr), '~w(~w)', [Fn, PyArg]).
 python_expr(Atom, _VarMap, PyExpr) :-
     atom(Atom), !,
     python_literal(Atom, PyExpr).
@@ -3735,7 +3764,7 @@ python_op('!=', '!=').
 python_op('+', '+').
 python_op('-', '-').
 python_op('*', '*').
-python_op('/', '//').
+python_op('/', '/').
 python_op('%', '%').
 python_op('&&', 'and').
 python_op('||', 'or').

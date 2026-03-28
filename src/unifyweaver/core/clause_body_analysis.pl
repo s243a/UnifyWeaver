@@ -503,6 +503,7 @@ expr_op(<, '<').
 expr_op(>=, '>=').
 expr_op(=<, '<=').
 expr_op(=:=, '==').
+expr_op(=\=, '!=').
 expr_op(==, '==').
 expr_op(\=, '!=').
 expr_op(\==, '!=').
