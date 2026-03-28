@@ -193,21 +193,30 @@ compile_ite_output_template(Target, If, Then, Else, SharedVars,
                VarMap, Code, VarMapOut).
 ```
 
-## Relationship to Existing Code
+## Implementation Status
 
-The current `classify_goal_sequence` + `python_render_classified_goals`
-is already a partial implementation of this architecture:
+The shared `compile_expression` framework is now implemented in
+`clause_body_analysis.pl` (PR #1026+). It provides:
 
-- `classify_goal_sequence` is the "try templates" step
-- `passthrough` is the "fall back to native lowering" step
-- The classified renderers call `python_guard_condition` and
-  `python_output_goal` which are the target-specific lowerers
+- `compile_expression/6` — recursive entry point
+- `compile_branch/6` — compile branch bodies through full pipeline
+- `compile_classified_sequence/5` — render classified goal sequences
+- `compile_classified_goal/5` — dispatch per classification type
 
-The missing piece: the branch bodies in ite/disjunction templates
-are rendered as opaque blocks (via `python_branch_value`), not
-recursively through `compile_expression`. Making `python_branch_value`
-call `compile_expression` instead of extracting a single value
-would complete the recursive architecture.
+Targets register multifile renderer hooks:
+- `render_output_goal/6` — compile output goal to code line
+- `render_guard_condition/4` — compile guard to condition string
+- `render_branch_value/4` — extract simple expression from branch
+- `render_ite_block/7` — format if-then-else block
+
+Python is the first target with registered hooks. The architecture
+is proven with multi-result containers, binding calls inside
+branches, and nested control flow.
+
+To add this to another target (e.g., Go):
+1. Register the 4 multifile hooks in the target file
+2. The shared `compile_expression` handles classification and dispatch
+3. Target-specific rendering is isolated in the hooks
 
 ## Non-Goals
 
