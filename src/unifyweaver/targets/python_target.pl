@@ -2983,9 +2983,9 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     pairs_from_clauses(Clauses, ClausePairs),
     native_python_clause_body(Name/Arity, ClausePairs, NativeBody),
     !,
-    % Build standalone function
-    Arity1 is Arity - 1,  % Last arg is output
-    build_python_arg_list(Arity1, ArgList),
+    % Determine input/output arg split
+    python_arg_split(Arity, ClausePairs, InputArity),
+    build_python_arg_list(InputArity, ArgList),
     format(string(FuncCode),
 'def ~w(~w):
 ~w', [Name, ArgList, NativeBody]),
@@ -2993,6 +2993,46 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     helpers(Helpers),
     generate_python_main(Options, Main),
     format(string(PythonCode), "~s~s\n~s\n~s", [Header, Helpers, FuncCode, Main]).
+
+%% python_arg_split(+Arity, +ClausePairs, -InputArity)
+%  Determine how many args are inputs vs outputs.
+%  Arity 1: all args are inputs (boolean predicate — guard-only)
+%  Arity 2+: last arg is output (default convention)
+%  Multi-output: detect from clause body output var count
+python_arg_split(1, _, 1) :- !.
+python_arg_split(Arity, ClausePairs, InputArity) :-
+    Arity >= 2,
+    %% Count output args from the first clause
+    ClausePairs = [Head-Body|_],
+    Head =.. [_|HeadArgs],
+    build_head_varmap(HeadArgs, 1, VarMap),
+    normalize_goals(Body, Goals),
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
+    (   OutputCount > 0
+    ->  InputArity is Arity - OutputCount
+    ;   InputArity is Arity - 1  %% default: last arg is output
+    ),
+    InputArity >= 1,
+    !.
+python_arg_split(Arity, _, InputArity) :-
+    InputArity is max(1, Arity - 1).
+
+%% count_output_vars(+ClassifiedGoals, +HeadArgs, -Count)
+%  Count how many head args are assigned as outputs in the body.
+count_output_vars(ClassifiedGoals, HeadArgs, Count) :-
+    findall(Var, (
+        member(Classified, ClassifiedGoals),
+        classified_output_var(Classified, Var),
+        var_member_by_identity(Var, HeadArgs)
+    ), OutputVars),
+    unique_vars_by_identity(OutputVars, UniqueOutputVars),
+    length(UniqueOutputVars, Count).
+
+classified_output_var(output(_, Var, _), Var).
+classified_output_var(output_ite(_, _, _, Vars), Var) :- member(Var, Vars).
+classified_output_var(output_disj(_, Vars), Var) :- member(Var, Vars).
+classified_output_var(output_if_then(_, _, Vars), Var) :- member(Var, Vars).
 compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
     % Fallback: per-clause functions with yield
     % Generate clause functions
@@ -3065,23 +3105,35 @@ native_python_clause_body(PredSpec, [Head-Body], Code) :-
     (   Condition == 'True'
     ->  Code = ClauseCode
     ;   indent_python(ClauseCode, IndentedCode),
+        %% For arity-1 (boolean predicates), else returns False
+        Head =.. [_|HeadArgs], length(HeadArgs, HArity),
+        (   HArity =:= 1
+        ->  ElseBranch = '        return False'
+        ;   format(string(ElseBranch), '        raise ValueError("No matching clause for ~w")', [PredSpec])
+        ),
         format(string(Code),
 '    if ~w:
 ~w
     else:
-        raise ValueError("No matching clause for ~w")', [Condition, IndentedCode, PredSpec])
+~w', [Condition, IndentedCode, ElseBranch])
     ).
 
 % Multi-clause: emit if/elif/else chain
 native_python_clause_body(PredSpec, Clauses, Code) :-
-    Clauses = [_|[_|_]],
+    Clauses = [Head-_|[_|_]],
     maplist(native_python_clause_pair(PredSpec), Clauses, Branches),
     Branches \= [],
     branches_to_python_if_chain(Branches, IfChain),
+    %% For arity-1 (boolean predicates), else returns False
+    Head =.. [_|HeadArgs], length(HeadArgs, HArity),
+    (   HArity =:= 1
+    ->  ElseBranch = '        return False'
+    ;   format(string(ElseBranch), '        raise ValueError("No matching clause for ~w")', [PredSpec])
+    ),
     format(string(Code),
 '~w
     else:
-        raise ValueError("No matching clause for ~w")', [IfChain, PredSpec]).
+~w', [IfChain, ElseBranch]).
 
 native_python_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
     native_python_clause(PredSpec, Head, Body, Condition, ClauseCode),
@@ -3089,20 +3141,35 @@ native_python_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
 
 %% native_python_clause(+PredSpec, +Head, +Body, -Condition, -Code)
 %  Compile a single clause to a condition and Python code.
+
+% Arity-1 predicates: boolean predicate — all goals are guards, return True
+native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
+    Head =.. [_Pred|HeadArgs],
+    length(HeadArgs, 1),
+    !,
+    build_head_varmap(HeadArgs, 1, VarMap),
+    python_head_conditions(HeadArgs, 1, HeadConditions),
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  Code = '    return True', GoalConditions = []
+    ;   maplist(python_guard_condition(VarMap), Goals, GoalConditions),
+        Code = '    return True'
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_python_conditions(AllConditions, Condition).
+
+% Arity 2+: last arg(s) are output
 native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
     Head =.. [_Pred|HeadArgs],
     length(HeadArgs, Arity),
+    Arity >= 2,
     % Build VarMap from head arguments
     build_head_varmap(HeadArgs, 1, VarMap),
     % Extract head conditions — only from input args (not the output arg)
     % The last argument is treated as the output
-    (   Arity > 1
-    ->  append(InputHeadArgs, [OutputHeadArg], HeadArgs),
-        % Conditions from input args only
-        python_head_conditions(InputHeadArgs, 1, HeadConditions)
-    ;   OutputHeadArg = _,
-        python_head_conditions(HeadArgs, 1, HeadConditions)
-    ),
+    append(InputHeadArgs, [OutputHeadArg], HeadArgs),
+    % Conditions from input args only
+    python_head_conditions(InputHeadArgs, 1, HeadConditions),
     % Process body goals
     normalize_goals(Body, Goals),
     (   Goals == []
@@ -3120,8 +3187,19 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
                 format(string(Code), '    return ~w', [OutputLit])
             ;   python_output_goals(OutputGoals, VarMap, Code)
             )
-        ;   % Output is a variable — goals should compute it
-            native_python_goal_sequence(Goals, VarMap, GoalConditions, Code)
+        ;   % Output is a variable
+            (   var(OutputHeadArg),
+                lookup_var(OutputHeadArg, VarMap, OutputArgName),
+                %% Check it's also an INPUT arg (appears earlier in head)
+                var_member_by_identity(OutputHeadArg, InputHeadArgs)
+            ->  % Output var is an input arg (e.g., max2(X,Y,X) — output = input X)
+                %% All goals are guards, return the input arg
+                clause_guard_output_split(Goals, VarMap, GuardGoals, _OutputGoals),
+                maplist(python_guard_condition(VarMap), GuardGoals, GoalConditions),
+                format(string(Code), '    return ~w', [OutputArgName])
+            ;   % Output is a fresh variable — goals should compute it
+                native_python_goal_sequence(Goals, VarMap, GoalConditions, Code)
+            )
         )
     ),
     append(HeadConditions, GoalConditions, AllConditions),
@@ -3144,11 +3222,261 @@ python_head_conditions([HeadArg|Rest], Index, Conditions) :-
 
 %% native_python_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
 %  Process a sequence of body goals into guard conditions and Python code.
-%  Guards become conditions; outputs become assignments; last output becomes return.
+%  Uses classify_goal_sequence for advanced pattern detection (if-then-else
+%  outputs, disjunction outputs, interleaved guards/outputs).
+native_python_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    python_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
+%% Fallback to original simple split if classification fails
 native_python_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(python_guard_condition(VarMap), GuardGoals, Conditions),
     python_output_goals(OutputGoals, VarMap, Code).
+
+%% python_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+%  Render classified goals to Python code. Guards become conditions,
+%  outputs become assignments, the last output becomes a return.
+%  Multi-output: if 2+ outputs, return a tuple.
+python_render_classified_goals(ClassifiedGoals, VarMap, Conds, Lines) :-
+    python_render_classified_goals_multi_return(ClassifiedGoals, VarMap, Conds, Lines),
+    !.
+python_render_classified_goals([], _VarMap, [], []).
+python_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    python_render_classified_last(Classified, VarMap, Conds, Lines).
+python_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    python_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    python_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% python_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+%  Render a non-last classified goal.
+python_render_classified_mid(guard(Goal, _Expr), VarMap, [Cond], [], VarMap) :-
+    python_guard_condition(VarMap, Goal, Cond).
+python_render_classified_mid(output(Goal, _Var, _Expr), VarMap0, [], [Line], VarMapOut) :-
+    python_output_goal(Goal, VarMap0, Line, VarMapOut).
+python_render_classified_mid(output_ite(If, Then, Else, SharedVars), VarMap0, [], Lines, VarMapOut) :-
+    python_classified_ite_assign(If, Then, Else, SharedVars, VarMap0, Lines, VarMapOut).
+python_render_classified_mid(output_disj(Alternatives, SharedVars), VarMap0, [], Lines, VarMapOut) :-
+    python_classified_disj_assign(Alternatives, SharedVars, VarMap0, Lines, VarMapOut).
+python_render_classified_mid(output_if_then(If, Then, OutputVars), VarMap0, [], Lines, VarMapOut) :-
+    python_classified_if_then_assign(If, Then, OutputVars, VarMap0, Lines, VarMapOut).
+python_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    python_output_goal(Goal, VarMap0, Line, VarMapOut).
+
+%% python_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+%  Render the last classified goal (produce return statement).
+python_render_classified_last(guard(Goal, _Expr), VarMap, [Cond], []) :-
+    python_guard_condition(VarMap, Goal, Cond).
+python_render_classified_last(output(Goal, _Var, _Expr), VarMap, [], Lines) :-
+    python_output_goal_last(Goal, VarMap, Lines, _).
+
+%% Multi-output: when there are previous output assignments, return tuple
+python_render_classified_goals_multi_return(ClassifiedGoals, VarMap, Conds, Lines) :-
+    %% Collect all output var names
+    collect_output_var_names(ClassifiedGoals, VarMap, OutputNames),
+    OutputNames = [_,_|_],  %% at least 2 outputs
+    !,
+    %% Render all goals as mid (assignments), then add tuple return
+    python_render_all_as_mid(ClassifiedGoals, VarMap, Conds, MidLines, _),
+    format(string(TupleStr), '~w', [OutputNames]),
+    atomic_list_concat(OutputNames, ', ', TupleInner),
+    format(string(ReturnLine), '    return (~w)', [TupleInner]),
+    append(MidLines, [ReturnLine], Lines).
+
+python_render_all_as_mid([], _VarMap, [], [], _VarMap).
+python_render_all_as_mid([C|Rest], VarMap, Conds, Lines, VarMapOut) :-
+    python_render_classified_mid(C, VarMap, MConds, MLines, VarMap1),
+    python_render_all_as_mid(Rest, VarMap1, RConds, RLines, VarMapOut),
+    append(MConds, RConds, Conds),
+    append(MLines, RLines, Lines).
+
+collect_output_var_names([], _, []).
+collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
+    goal_output_var(Goal, OutVar),
+    lookup_var(OutVar, VarMap, Name), !,
+    collect_output_var_names(Rest, VarMap, Names).
+collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
+    %% Fallback: ensure the var gets a name
+    goal_output_var(Goal, OutVar),
+    ensure_var(VarMap, OutVar, Name, VarMap1), !,
+    collect_output_var_names(Rest, VarMap1, Names).
+collect_output_var_names([_|Rest], VarMap, Names) :-
+    collect_output_var_names(Rest, VarMap, Names).
+python_render_classified_last(output_ite(If, Then, Else, _SharedVars), VarMap, [], Lines) :-
+    %% Try ternary return first (cleaner for simple cases)
+    (   python_guard_condition(VarMap, If, Cond),
+        python_branch_value(Then, VarMap, ThenExpr),
+        python_branch_value(Else, VarMap, ElseExpr)
+    ->  format(string(Line), '    return ~w if ~w else ~w', [ThenExpr, Cond, ElseExpr]),
+        Lines = [Line]
+    ;   %% Fallback to if/else block
+        python_if_then_else_output(If, Then, Else, VarMap, Lines, _)
+    ).
+python_render_classified_last(output_disj(Alternatives, SharedVars), VarMap, [], Lines) :-
+    python_classified_disj_return(Alternatives, SharedVars, VarMap, Lines).
+python_render_classified_last(output_if_then(If, Then, OutputVars), VarMap, [], Lines) :-
+    python_classified_if_then_return(If, Then, OutputVars, VarMap, Lines).
+python_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    python_output_goal_last(Goal, VarMap, Lines, _).
+
+%% === If-then-else output (assignment, not return) ===
+python_classified_ite_assign(If, Then, Else, SharedVars, VarMap0, Lines, VarMapOut) :-
+    SharedVars = [SV|_],
+    ensure_var(VarMap0, SV, VarName, VarMapOut),
+    python_guard_condition(VarMap0, If, Cond),
+    python_branch_value(Then, VarMap0, ThenExpr),
+    python_branch_value(Else, VarMap0, ElseExpr),
+    format(string(Line), '    ~w = ~w if ~w else ~w', [VarName, ThenExpr, Cond, ElseExpr]),
+    Lines = [Line].
+
+%% === Disjunction output (assignment) ===
+python_classified_disj_assign(Alternatives, SharedVars, VarMap0, Lines, VarMapOut) :-
+    SharedVars = [SV|_],
+    ensure_var(VarMap0, SV, VarName, VarMapOut),
+    python_disj_if_elif_lines(Alternatives, VarName, VarMap0, Lines).
+
+%% === Disjunction output (return) ===
+python_classified_disj_return(Alternatives, _SharedVars, VarMap, Lines) :-
+    python_disj_if_elif_return_lines(Alternatives, VarMap, Lines).
+
+%% === If-then output (assignment, no else) ===
+python_classified_if_then_assign(If, Then, OutputVars, VarMap0, Lines, VarMapOut) :-
+    OutputVars = [OV|_],
+    ensure_var(VarMap0, OV, VarName, VarMapOut),
+    python_guard_condition(VarMap0, If, Cond),
+    python_branch_value(Then, VarMap0, ThenExpr),
+    format(string(L1), '    if ~w:', [Cond]),
+    format(string(L2), '        ~w = ~w', [VarName, ThenExpr]),
+    Lines = [L1, L2].
+
+%% === If-then output (return) ===
+python_classified_if_then_return(If, Then, _OutputVars, VarMap, Lines) :-
+    python_guard_condition(VarMap, If, Cond),
+    python_branch_value(Then, VarMap, ThenExpr),
+    format(string(L1), '    if ~w:', [Cond]),
+    format(string(L2), '        return ~w', [ThenExpr]),
+    Lines = [L1, L2].
+
+%% python_branch_value(+Branch, +VarMap, -PyExpr)
+%  Extract the output value from a branch (Then or Else).
+python_branch_value(Branch, VarMap, PyExpr) :-
+    normalize_goals(Branch, Goals),
+    reverse(Goals, [LastGoal|_]),
+    python_goal_value(LastGoal, VarMap, PyExpr),
+    !.
+python_branch_value(Branch, VarMap, PyExpr) :-
+    python_expr(Branch, VarMap, PyExpr).
+
+%% python_goal_value(+Goal, +VarMap, -PyExpr)
+python_goal_value(_Module:Goal, VarMap, Expr) :- !, python_goal_value(Goal, VarMap, Expr).
+python_goal_value((_Var = Expr), VarMap, PyExpr) :- !, python_expr(Expr, VarMap, PyExpr).
+python_goal_value((_Var is Expr), VarMap, PyExpr) :- !, python_expr(Expr, VarMap, PyExpr).
+python_goal_value(Goal, VarMap, PyExpr) :- python_expr(Goal, VarMap, PyExpr).
+
+%% python_disj_if_elif_lines(+Alternatives, +VarName, +VarMap, -Lines)
+%  Generate if/elif chain for disjunction assignment.
+python_disj_if_elif_lines([], _VarName, _VarMap, []).
+python_disj_if_elif_lines([Alt], VarName, VarMap, Lines) :-
+    !,
+    %% Last alternative: else branch
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
+    (   Outputs = [LastOutput|_],
+        python_goal_value(LastOutput, VarMap, ValExpr)
+    ->  L1 = '    else:',
+        format(string(L2), '        ~w = ~w', [VarName, ValExpr]),
+        Lines = [L1, L2]
+    ;   Lines = []
+    ).
+python_disj_if_elif_lines([Alt|Rest], VarName, VarMap, [CondLine, AssignLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, Outputs),
+    (   Guards \= []
+    ->  maplist(python_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = "True"
+    ),
+    (   Outputs = [LastOutput|_],
+        python_goal_value(LastOutput, VarMap, ValExpr)
+    ->  true
+    ;   ValExpr = "None"
+    ),
+    (   Rest == [] -> Kw = "else" ; python_disj_if_elif_lines([], _, _, _) -> Kw = "if" ; Kw = "if"  ),
+    %% First alt uses "if", rest use "elif"
+    format(string(CondLine), '    if ~w:', [CondExpr]),
+    format(string(AssignLine), '        ~w = ~w', [VarName, ValExpr]),
+    python_disj_elif_lines(Rest, VarName, VarMap, RestLines).
+
+%% python_disj_elif_lines — continuation with "elif"
+python_disj_elif_lines([], _VarName, _VarMap, []).
+python_disj_elif_lines([Alt], VarName, VarMap, [ElseLine, AssignLine]) :-
+    !,
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
+    (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
+    ElseLine = '    else:',
+    format(string(AssignLine), '        ~w = ~w', [VarName, ValExpr]).
+python_disj_elif_lines([Alt|Rest], VarName, VarMap, [ElifLine, AssignLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, Outputs),
+    (   Guards \= []
+    ->  maplist(python_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = "True"
+    ),
+    (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
+    format(string(ElifLine), '    elif ~w:', [CondExpr]),
+    format(string(AssignLine), '        ~w = ~w', [VarName, ValExpr]),
+    python_disj_elif_lines(Rest, VarName, VarMap, RestLines).
+
+%% python_disj_if_elif_return_lines — for last-position disjunction (return)
+python_disj_if_elif_return_lines([], _VarMap, []).
+python_disj_if_elif_return_lines([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
+    (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
+    ElseLine = '    else:',
+    format(string(RetLine), '        return ~w', [ValExpr]).
+python_disj_if_elif_return_lines([Alt|Rest], VarMap, [CondLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, Outputs),
+    (   Guards \= []
+    ->  maplist(python_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = "True"
+    ),
+    (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
+    format(string(CondLine), '    if ~w:', [CondExpr]),
+    format(string(RetLine), '        return ~w', [ValExpr]),
+    python_disj_elif_return_lines(Rest, VarMap, RestLines).
+
+python_disj_elif_return_lines([], _VarMap, []).
+python_disj_elif_return_lines([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
+    (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
+    ElseLine = '    else:',
+    format(string(RetLine), '        return ~w', [ValExpr]).
+python_disj_elif_return_lines([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, Outputs),
+    (   Guards \= []
+    ->  maplist(python_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = "True"
+    ),
+    (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
+    format(string(ElifLine), '    elif ~w:', [CondExpr]),
+    format(string(RetLine), '        return ~w', [ValExpr]),
+    python_disj_elif_return_lines(Rest, VarMap, RestLines).
 
 %% python_guard_condition(+VarMap, +Goal, -Condition)
 %  Convert a guard goal to a Python condition string.

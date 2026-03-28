@@ -144,32 +144,118 @@ binding coverage.
 
 **Risk:** Low — validation is opt-in, failure is informational.
 
-## Phase 5: Fallback Chains
+## Phase 5: Shared Clause Body Analysis
 
-**Goal:** Maximum predicate coverage for targets with natural
-fallback languages.
+**Goal:** Extract TypR's target-independent clause body taxonomy
+into a shared module so all targets benefit from structural analysis.
 
-**Scope:** TypeScript→JavaScript, Kotlin→Java, Jython→Python
+**Key insight:** TypR's native lowering classifies goals as guards,
+outputs, or control flow — this operates on Prolog AST, not target
+syntax. The taxonomy (multi-clause dispatch, if-then-else, nested
+conditionals, disjunctions, fanout/rejoin, asymmetric branches) is
+reusable across all targets. Without it, a predicate like
+`classify(X, small) :- X > 0, X < 10.` fails silently for 18 of
+19 non-TypR targets.
 
 **Changes:**
 
-1. Register fallback chains:
+1. Extract target-independent analysis from `typr_target.pl` into
+   `clause_body_analysis.pl`:
    ```prolog
-   fallback_target(typescript, javascript).
-   fallback_target(kotlin, java).
+   %% classify_goal(+Goal, -Kind)
+   %% Kind = guard(Expr) | output(Var, Expr) | control(IfThenElse)
+   classify_goal((A =:= B), guard(eq(A, B))).
+   classify_goal((A > B), guard(gt(A, B))).
    ```
 
-2. When native lowering fails and a fallback exists:
-   - Compile to fallback target
-   - Embed via FFI mechanism (TypeScript: `eval()` or `Function()`,
-     Kotlin: inline Java via `@JvmStatic`)
+2. Each target registers how to render classified goals:
+   ```prolog
+   render_guard(rust, eq(A, B), Code) :-
+       format(string(Code), "~w == ~w", [A, B]).
+   render_guard(python, eq(A, B), Code) :-
+       format(string(Code), "~w == ~w", [A, B]).
+   ```
 
-3. TypR's `@{ }@` mechanism is the model — each target needs
-   its own embedding syntax.
+3. Multi-clause predicates use target-specific idioms:
+   - Rust: `match` arms with guard patterns
+   - Haskell/Elixir: function head pattern matching
+   - Go: `switch` statement
+   - Python/Lua: `if/elif/else` chains
 
-**Effort:** High — requires understanding each target's FFI.
+**Effort:** High — extracting from 1000+ lines of TypR-specific code.
 
-**Risk:** Medium — embedding foreign code can break type safety.
+**Risk:** Medium — must verify extracted analysis produces identical
+results for TypR predicates that currently work.
+
+## Phase 6: Environment-Aware Fallback Chains
+
+**Goal:** Maximum predicate coverage with fallbacks that respect
+deployment environment constraints.
+
+**Key insight:** Same-level fallbacks (TypR→R, TypeScript→JS) are
+environment-dependent. WAM is a lower-level fallback that preserves
+Prolog semantics for predicates needing genuine unification and
+backtracking, then fans out to assembly targets (WAT, Jamaica,
+Krakatau) that already exist.
+
+**Changes:**
+
+1. Replace `fallback_target/2` with environment-aware
+   `fallback_chain/3`:
+   ```prolog
+   %% environment_capability(+Env, +Target)
+   environment_capability(wasm, wat).
+   environment_capability(wasm, javascript).
+   environment_capability(wasm, python).     % via Pyodide (memory-limited)
+   environment_capability(wasm, r).          % via webR (memory-limited)
+   environment_capability(wasm, rust).       % first-class WASM target
+   environment_capability(jvm, java).
+   environment_capability(jvm, jamaica).
+   environment_capability(jvm, krakatau).
+   environment_capability(jvm, jython).
+   environment_capability(native, gnu_prolog).
+   environment_capability(native, python).
+   environment_capability(native, r).
+
+   %% fallback_chain(+Target, +Env, -Fallback)
+   fallback_chain(Target, Env, Fallback) :-
+       fallback_target(Target, Candidate),
+       environment_capability(Env, Candidate),
+       Fallback = Candidate.
+   fallback_chain(Target, Env, wam) :-
+       wam_compatible(Target),
+       environment_capability(Env, _AsmTarget).
+   ```
+
+2. WAM target as universal fallback hub:
+   ```
+   Prolog → WAM bytecode → WAT (WASM environments)
+                         → Jamaica (JVM environments)
+                         → Krakatau (JVM environments)
+                         → GNU Prolog native (native environments)
+   ```
+   WAM is only needed for predicates that resist native lowering
+   (genuine unification, backtracking, choice points). Ship
+   recursive WAM output first (correct but unoptimized), then
+   apply tail/linear recursion transformations as a post-pass.
+
+3. JavaScript as target family, not single target:
+   ```prolog
+   runtime_family(js_browser, wasm_host).
+   runtime_family(js_node, native_v8).
+   runtime_family(js_deno, native_v8).
+   runtime_family(js_rhino, jvm).       % ES5 only, very limited
+   runtime_family(js_quickjs, embedded).
+   ```
+
+4. Rust as first-class WASM fallback — Rust→WASM is a first-class
+   compilation target, and WASM's `extern "C"` lets Rust modules
+   call imported C functions from the host.
+
+**Effort:** Very high — WAM target is a major undertaking.
+
+**Risk:** High — WAM recursion must be managed; start with
+correct-but-slow, optimize incrementally.
 
 ## Priority and Dependencies
 
@@ -184,7 +270,9 @@ Phase 3 (second native lowering) ← independent of Phase 2
   ↓
 Phase 4 (validation) ← independent, can start anytime
   ↓
-Phase 5 (fallback chains) ← depends on Phase 3 for framework
+Phase 5 (shared clause body analysis) ← depends on Phase 3
+  ↓
+Phase 6 (environment-aware fallback + WAM) ← depends on Phase 5
 ```
 
 ## Metrics
@@ -196,4 +284,5 @@ Phase 5 (fallback chains) ← depends on Phase 3 for framework
 | 2 | 4 new | — | TypR | ~5 |
 | 3 | 0 new | 1 new target | 1 | ~50 |
 | 4 | 0 | — | all with compilers | ~5 |
-| 5 | 0 | — | 3 (TS, Kotlin, Jython) | ~15 |
+| 5 | 0 | shared analysis module | all | ~100 |
+| 6 | 0 | WAM hub + env chains | 5+ (WAT, Jamaica, etc.) | ~50 |

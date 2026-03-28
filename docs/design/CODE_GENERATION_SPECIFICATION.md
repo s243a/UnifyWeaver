@@ -167,21 +167,89 @@ target_binding(lua, length/2, [List, Len], "local ~Len = #~List").
 target_binding(go, length/2, [List, Len], "~Len := len(~List)").
 ```
 
-### Fallback Chains
+### Fallback Chains (Environment-Aware)
 
-Not every target has an obvious fallback, but some do:
+Same-level fallbacks depend on the deployment environment. WAM
+provides a lower-level alternative for Prolog-semantics-preserving
+fallback.
 
 ```prolog
-%% fallback_target(+Target, -FallbackTarget)
-fallback_target(typr, r).           % TypR → R (existing)
-fallback_target(typescript, javascript).  % TS → JS
-fallback_target(kotlin, java).      % Kotlin → Java
-fallback_target(jython, python).    % Jython → Python
-fallback_target(cpp, c).            % C++ → C (limited)
+%% Same-level fallbacks (language embedding via FFI)
+fallback_target(typr, r).
+fallback_target(typescript, javascript).
+fallback_target(kotlin, java).
+fallback_target(jython, python).
+fallback_target(cpp, c).
+
+%% Environment capability matrix
+environment_capability(wasm, wat).
+environment_capability(wasm, javascript).
+environment_capability(wasm, rust).       % first-class WASM target
+environment_capability(wasm, python).     % Pyodide (memory-limited)
+environment_capability(wasm, r).          % webR (memory-limited)
+environment_capability(jvm, java).
+environment_capability(jvm, jamaica).
+environment_capability(jvm, krakatau).
+environment_capability(jvm, jython).
+environment_capability(native, gnu_prolog).
+environment_capability(native, python).
+environment_capability(native, r).
+environment_capability(native, wat).      % via wasmtime
+
+%% Environment-aware resolution
+fallback_chain(Target, Env, Fallback) :-
+    fallback_target(Target, Candidate),
+    environment_capability(Env, Candidate),
+    Fallback = Candidate.
+fallback_chain(_Target, Env, wam) :-
+    wam_compatible(_Target),
+    environment_capability(Env, _AsmTarget).
 ```
 
-When native lowering fails and a fallback exists, compile to the
-fallback target and embed via the target's FFI mechanism.
+### WAM as Universal Hub
+
+For predicates requiring genuine unification, backtracking, or
+choice points — which native lowering cannot handle — WAM bytecode
+preserves Prolog semantics and fans out to existing assembly targets:
+
+```
+WAM bytecode → WAT       (WASM environments)
+             → Jamaica   (JVM environments)
+             → Krakatau  (JVM environments)
+             → gprolog   (native environments)
+```
+
+### Shared Clause Body Analysis
+
+TypR's goal taxonomy is target-independent. Extract into shared
+module:
+
+```prolog
+%% clause_body_analysis.pl — shared across all targets
+
+%% classify_goal(+Goal, -Kind)
+classify_goal((A =:= B), guard(comparison(eq, A, B))).
+classify_goal((A > B), guard(comparison(gt, A, B))).
+classify_goal((A < B), guard(comparison(lt, A, B))).
+classify_goal((If -> Then ; Else), control(if_then_else(If, Then, Else))).
+classify_goal((If -> Then), control(if_then(If, Then))).
+classify_goal((A ; B), control(disjunction(A, B))).
+
+%% classify_clause_body(+Body, -ClassifiedGoals)
+%  Returns a list of classified goals for native rendering.
+
+%% multi_clause_strategy(+Target, +Clauses, -Strategy)
+%  Target-specific idiom for multi-clause dispatch:
+multi_clause_strategy(rust, _, match_arms).
+multi_clause_strategy(haskell, _, pattern_heads).
+multi_clause_strategy(elixir, _, pattern_heads).
+multi_clause_strategy(go, _, switch_cases).
+multi_clause_strategy(_, _, if_else_chain).  % default
+```
+
+Each target then renders the classified structure using its
+idiomatic constructs — Rust emits `match` arms, Haskell emits
+function head patterns, Python emits `if/elif/else`.
 
 ## Composable Templates + Type Awareness
 

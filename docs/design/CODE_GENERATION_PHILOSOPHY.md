@@ -173,3 +173,105 @@ When adding a new target language, the choice is:
 
 Most targets should start at level 1 and progress as needed. TypR
 is at level 4 because its relationship with R makes fallback natural.
+
+## Robustness Against Input Variation
+
+The fundamental goal of a transpiler is robustness across the full
+input space of Prolog predicates. Templates and native lowering fail
+in complementary ways:
+
+- **Templates fail on structural variation.** A three-clause
+  predicate with mixed arithmetic and guards has no template and
+  fails silently for 18 of 19 non-TypR targets. Templates only
+  handle predicates that match a recognized pattern.
+
+- **Native lowering fails on idiomatic quality.** It produces
+  mechanically correct but aesthetically wrong code. A Rust
+  developer expects `match` arms, not `if/else if` chains. An
+  Elixir developer expects function head pattern matching, not
+  imperative branching.
+
+The hybrid priority chain is a **coverage architecture** with
+graceful degradation:
+
+```
+1. Pattern detected → Template        (maximum idiom)
+2. Clause structure analyzable → Native lowering  (correct, less idiomatic)
+3. Native lowering fails → Wrapped fallback       (100% coverage, zero idiom)
+```
+
+Each step expands the input space covered without breaking the
+steps above it. Adding native lowering never regresses template
+output — it only rescues predicates that would have failed outright.
+
+The key insight: **templates encode the generalization steps that
+are idiomatic per target; native lowering handles the combinatorial
+variation within those idioms.** A template for Rust multi-clause
+output says "use `match`"; native lowering fills in what goes inside
+each arm based on the actual clause bodies.
+
+## The Clause Body Taxonomy Is Target-Independent
+
+TypR's native lowering classifies goals as guards, outputs, or
+control flow. This classification operates on Prolog AST — not on
+target syntax. The taxonomy covers:
+
+- Multi-clause predicates with guard sequences
+- If-then-else, nested conditionals, disjunctions
+- Fanout/rejoin, asymmetric branches
+- Branch-local alternatives and shared output variables
+- Tail, linear, tree, and mutual recursion with guards
+
+This is the most immediately portable contribution from TypR to
+other targets. A shared `clause_body_analysis.pl` module would let
+every target benefit from structural analysis without reimplementing
+1000+ lines of pattern matching.
+
+## WAM as Universal Low-Level Fallback
+
+Same-level language fallbacks (TypR→R, TypeScript→JS) are
+environment-dependent — R isn't available in every WASM runtime,
+JS isn't useful on the JVM (Rhino is extremely limited).
+
+WAM (Warren Abstract Machine) bytecode occupies a different stratum.
+It preserves Prolog's actual execution model (unification,
+backtracking, choice points) for predicates that resist native
+lowering, then fans out to assembly targets:
+
+```
+Prolog predicate
+  └─ (resists native lowering) → WAM bytecode
+        ├─ WAT  → WASM environments (browser, wasmtime)
+        ├─ Jamaica → JVM environments
+        └─ Krakatau → JVM environments
+```
+
+WAT, Jamaica, and Krakatau targets already exist in UnifyWeaver.
+WAM as an intermediate representation is the missing hub. The
+recursion inherent in WAM's instruction set (environments, choice
+points) can be addressed incrementally: ship recursive WAM output
+first (correct but unoptimized), then apply the tail/linear
+recursion transformations from TypR's native lowering as a post-pass.
+
+## JavaScript Is a Target Family
+
+JavaScript (ECMAScript) is minimal as a standalone language — no
+I/O, no filesystem, no networking. Everything useful comes from the
+host environment. This means "JavaScript target" is ambiguous:
+
+| Context | Runtime | Available APIs | Usefulness as fallback |
+|---------|---------|---------------|----------------------|
+| Browser | V8/SpiderMonkey | DOM, fetch, WASM host | High (it IS the env) |
+| Node.js | V8 | fs, http, child_process | High (full OS access) |
+| Deno | V8 | Sandboxed FS/net, TS native | Medium |
+| Rhino | JVM | JVM class library, ES5 only | Very low |
+| QuickJS | embedded | Minimal, no async | Low |
+
+The fallback chain needs to classify JavaScript by context, not
+treat it as a single target. A TypeScript→JS fallback using `fetch`
+works in browser/Node but is broken in Rhino.
+
+More broadly, Rust is uniquely positioned for WASM fallback:
+Rust→WASM is a first-class compilation target, and WASM's
+`extern "C"` interface lets Rust WASM modules call imported C
+functions from the host.
