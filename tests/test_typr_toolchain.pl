@@ -3298,6 +3298,119 @@ test(mixed_tree_list_numeric_mutual_integer_context_output_checks_with_typr, [co
     retractall(user:typr_forest_tree_num_weight(_, _, _)),
     retractall(user:typr_num_forest_tree_weight(_, _, _)).
 
+test(mixed_tree_numeric_mutual_boolean_branch_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_tree_num_ok_branch([])),
+    assertz(user:(typr_tree_num_ok_branch([V, L, R]) :-
+        typr_num_tree_ok_branch(V),
+        ( V > 0 -> typr_tree_num_ok_branch(L) ; typr_tree_num_ok_branch(R) )
+    )),
+    assertz(user:typr_num_tree_ok_branch(0)),
+    assertz(user:(typr_num_tree_ok_branch(N) :-
+        N > 0,
+        N1 is N - 1,
+        typr_tree_num_ok_branch([N1, [], []])
+    )),
+    assertz(type_declarations:uw_type(typr_tree_num_ok_branch/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_num_tree_ok_branch/1, 1, integer)),
+    assertz(type_declarations:uw_return_type(typr_tree_num_ok_branch/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_num_tree_ok_branch/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_tree_num_ok_branch/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_tree_num_ok_branch(_)),
+    retractall(user:typr_num_tree_ok_branch(_)).
+
+test(mixed_tree_numeric_mutual_integer_branch_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_tree_num_sum_branch([], 0)),
+    assertz(user:(typr_tree_num_sum_branch([V, L, R], S) :-
+        typr_num_tree_sum_branch(V, SV),
+        ( V > 0 -> typr_tree_num_sum_branch(L, SL) ; typr_tree_num_sum_branch(R, SL) ),
+        S is SV + SL
+    )),
+    assertz(user:typr_num_tree_sum_branch(0, 0)),
+    assertz(user:(typr_num_tree_sum_branch(N, S) :-
+        N > 0,
+        N1 is N - 1,
+        typr_tree_num_sum_branch([N1, [], []], Parts),
+        S is N + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_tree_num_sum_branch/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_tree_num_sum_branch/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_num_tree_sum_branch/2, 1, integer)),
+    assertz(type_declarations:uw_type(typr_num_tree_sum_branch/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_tree_num_sum_branch/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_num_tree_sum_branch/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_tree_num_sum_branch/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_tree_num_sum_branch(_, _)),
+    retractall(user:typr_num_tree_sum_branch(_, _)).
+
+test(mixed_tree_list_numeric_mutual_integer_context_branch_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_tree_forest_num_weight_branch([], _W0, 0)),
+    assertz(user:(typr_tree_forest_num_weight_branch([V, L, R], W, S) :-
+        typr_num_forest_tree_weight_branch(V, W, SV),
+        ( V > W -> typr_forest_tree_num_weight_branch([L, R], W, Parts)
+        ; typr_forest_tree_num_weight_branch([R, L], W, Parts)
+        ),
+        S is SV + Parts
+    )),
+    assertz(user:typr_forest_tree_num_weight_branch([], _W1, 0)),
+    assertz(user:(typr_forest_tree_num_weight_branch([T|Ts], W, S) :-
+        typr_tree_forest_num_weight_branch(T, W, ST),
+        typr_forest_tree_num_weight_branch(Ts, W, SS),
+        S is ST + SS
+    )),
+    assertz(user:typr_num_forest_tree_weight_branch(0, _W2, 0)),
+    assertz(user:(typr_num_forest_tree_weight_branch(N, W, S) :-
+        N > 0,
+        N1 is N - 1,
+        typr_tree_forest_num_weight_branch([N1, [], []], W, Parts),
+        S is (N * W) + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_tree_forest_num_weight_branch/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_tree_forest_num_weight_branch/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_tree_forest_num_weight_branch/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_forest_tree_num_weight_branch/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_forest_tree_num_weight_branch/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_forest_tree_num_weight_branch/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_num_forest_tree_weight_branch/3, 1, integer)),
+    assertz(type_declarations:uw_type(typr_num_forest_tree_weight_branch/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_num_forest_tree_weight_branch/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_tree_forest_num_weight_branch/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_forest_tree_num_weight_branch/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_num_forest_tree_weight_branch/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_tree_forest_num_weight_branch/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_tree_forest_num_weight_branch(_, _, _)),
+    retractall(user:typr_forest_tree_num_weight_branch(_, _, _)),
+    retractall(user:typr_num_forest_tree_weight_branch(_, _, _)).
+
 test(tree_pair_mutual_boolean_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:typr_tree_pair_ok([])),
