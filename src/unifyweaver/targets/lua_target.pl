@@ -1222,10 +1222,140 @@ lua_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     lua_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_lua_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_lua_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    lua_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_lua_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(lua_guard_condition(VarMap), GuardGoals, Conditions),
     lua_output_goals(OutputGoals, VarMap, Code).
+
+%% lua_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+lua_render_classified_goals([], _VarMap, [], []).
+lua_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    lua_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+lua_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    lua_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    lua_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(lua_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' and ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "nil"
+    ),
+    format(string(IfLine), '    if ~w then', [GuardExpr]),
+    format(string(RetLine), '        return ~w', [OutName]),
+    Lines = [AssignLine, IfLine, RetLine, '    end'].
+lua_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    lua_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    lua_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% lua_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+lua_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    lua_guard_condition(VarMap, Goal, Cond).
+lua_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    lua_output_goal(Goal, VarMap0, Line, VarMapOut).
+lua_render_classified_mid(output_ite(If, Then, Else, _), VarMap0, [], Lines, VarMap0) :-
+    lua_guard_condition(VarMap0, If, Cond),
+    lua_branch_value(Then, VarMap0, ThenExpr),
+    lua_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '    if ~w then', [Cond]),
+    format(string(ThenLine), '        return ~w', [ThenExpr]),
+    ElseLine = '    else',
+    format(string(ElseRetLine), '        return ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '    end'].
+lua_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    lua_output_goal(Goal, VarMap0, Line, VarMapOut).
+lua_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% lua_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+lua_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    lua_guard_condition(VarMap, Goal, Cond).
+lua_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    lua_output_goal_last(Goal, VarMap, Lines).
+lua_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    lua_guard_condition(VarMap, If, Cond),
+    lua_branch_value(Then, VarMap, ThenExpr),
+    lua_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if ~w then', [Cond]),
+    format(string(ThenLine), '        return ~w', [ThenExpr]),
+    ElseLine = '    else',
+    format(string(ElseRetLine), '        return ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '    end'].
+lua_render_classified_last(output_disj(Alternatives, _), VarMap, [], Lines) :-
+    lua_disj_if_chain(Alternatives, VarMap, Lines).
+lua_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    lua_output_goal_last(Goal, VarMap, Lines).
+lua_render_classified_last(_, _, [], []).
+
+%% lua_output_goal_last(+Goal, +VarMap, -Lines)
+lua_output_goal_last(Goal, VarMap, [Line]) :-
+    lua_output_goal(Goal, VarMap, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(Line), '~w\n    return ~w', [AssignLine, OutName])
+    ;   Line = AssignLine
+    ).
+lua_output_goal_last(Goal, VarMap, [Line]) :-
+    lua_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '    return ~w', [Expr]).
+
+%% lua_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+lua_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, lua_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+lua_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% lua_disj_if_chain(+Alternatives, +VarMap, -Lines)
+lua_disj_if_chain([], _, []).
+lua_disj_if_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    lua_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    else',
+    format(string(RetLine), '        return ~w', [ValExpr]).
+lua_disj_if_chain([Alt|Rest], VarMap, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(lua_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    lua_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '    if ~w then', [CondExpr]),
+    format(string(RetLine), '        return ~w', [ValExpr]),
+    lua_disj_elseif_chain(Rest, VarMap, RestLines),
+    append([IfLine, RetLine], RestLines, PreEnd),
+    append(PreEnd, ['    end'], Lines).
+
+lua_disj_elseif_chain([], _, []).
+lua_disj_elseif_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    lua_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    else',
+    format(string(RetLine), '        return ~w', [ValExpr]).
+lua_disj_elseif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(lua_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    lua_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElifLine), '    elseif ~w then', [CondExpr]),
+    format(string(RetLine), '        return ~w', [ValExpr]),
+    lua_disj_elseif_chain(Rest, VarMap, RestLines).
 
 %% lua_guard_condition(+VarMap, +Goal, -Condition)
 lua_guard_condition(VarMap, _Module:Goal, Condition) :-
