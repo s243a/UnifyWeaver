@@ -64,6 +64,30 @@ color_name(2, green).
 color_name(3, blue).
 color_name(_, unknown).
 
+%% --- Patterns pushing deeper ---
+
+%% Conjunction in output position
+:- dynamic full_name/3.
+full_name(First, Last, Full) :- atom_concat(First, ' ', Temp), atom_concat(Temp, Last, Full).
+
+%% Predicate calling another predicate
+:- dynamic double_abs/2.
+double_abs(X, Y) :- abs_custom(X, A), Y is A * 2.
+
+%% Negation
+:- dynamic is_not_empty/1.
+is_not_empty(X) :- X \== [].
+
+%% List membership (recursive)
+%% member/2 is built-in, test detection only
+:- dynamic my_member/2.
+my_member(X, [X|_]).
+my_member(X, [_|T]) :- my_member(X, T).
+
+%% Functor inspection
+:- dynamic arity_of/2.
+arity_of(Term, A) :- functor(Term, _, A).
+
 run_failures :-
     try('sum_pair/3', sum_pair/3),
     try('valid_age/1', valid_age/1),
@@ -73,4 +97,6 @@ run_failures :-
     try('direction/2', direction/2),
     try('between_check/4', between_check/4),
     try('color_name/2', color_name/2),
+    try('is_not_empty/1', is_not_empty/1),
+    try('my_member/2', my_member/2),
     nl, writeln('=== FAILURE SCAN DONE ===').

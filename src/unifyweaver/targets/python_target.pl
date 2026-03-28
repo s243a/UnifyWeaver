@@ -3012,16 +3012,10 @@ python_arg_split(Arity, ClausePairs, InputArity) :-
         count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
         (   OutputCount > 0
         ->  InputArity is Arity - OutputCount
-        ;   %% No body outputs: check if this is truly boolean
-            %% Boolean only if: all guards, last arg is a fresh variable
-            %% (not a constant, not a repeated variable from earlier position)
-            last(HeadArgs, LastArg),
-            append(EarlierArgs, [LastArg], HeadArgs),
-            (   forall(member(CG, ClassifiedGoals), CG = guard(_, _)),
-                var(LastArg),
-                \+ var_member_by_identity(LastArg, EarlierArgs)  %% not repeated
-            ->  InputArity = Arity  %% Boolean: all args are inputs
-            ;   InputArity is Arity - 1  %% Last arg is output
+        ;   %% No body outputs: boolean or output-from-head?
+            (   python_is_boolean_predicate(HeadArgs, Goals, VarMap)
+            ->  InputArity = Arity
+            ;   InputArity is Arity - 1
             )
         )
     ;   %% Pure fact: count unique variables to find input count
@@ -3044,6 +3038,18 @@ python_fact_input_count(HeadArgs, InputCount) :-
     ->  InputCount = RawCount  %% has repeated vars — use detected count
     ;   InputCount is max(1, Arity - 1)  %% all unique — last is output
     ).
+
+%% python_is_boolean_predicate(+HeadArgs, +Goals, +VarMap)
+%  True if a predicate is boolean: all body goals are guards AND the last
+%  head arg is a fresh variable (not constant, not repeated from earlier).
+python_is_boolean_predicate(HeadArgs, Goals, VarMap) :-
+    classify_goal_sequence(Goals, VarMap, CGs),
+    CGs \= [],
+    forall(member(CG, CGs), CG = guard(_, _)),
+    last(HeadArgs, LastArg),
+    var(LastArg),
+    append(EarlierArgs, [LastArg], HeadArgs),
+    \+ var_member_by_identity(LastArg, EarlierArgs).
 
 python_count_first_occurrences([], _, Count, Count).
 python_count_first_occurrences([Arg|Rest], Seen, Acc, Count) :-
@@ -3213,12 +3219,7 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
     (   Goals == []
     ->  python_fact_input_count(HeadArgs, InputCount)
     ;   %% Check if all body goals are guards (boolean predicate)
-        classify_goal_sequence(Goals, VarMap, CGs),
-        last(HeadArgs, LastHA),
-        append(EarlierHA, [LastHA], HeadArgs),
-        (   forall(member(CG, CGs), CG = guard(_, _)),
-            var(LastHA),
-            \+ var_member_by_identity(LastHA, EarlierHA)
+        (   python_is_boolean_predicate(HeadArgs, Goals, VarMap)
         ->  InputCount = Arity
         ;   InputCount is Arity - 1
         )
