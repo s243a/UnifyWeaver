@@ -293,27 +293,81 @@ jvm_guard_to_bytecode_with(VarMap, VarStyle, Label, Guard, Instructions) :-
 %%   Shared native clause lowering for JVM bytecode targets.
 %%   OutputFmt: format(FormatPred) where FormatPred formats instruction list to string.
 %%   Returns the bytecode instruction list as a newline-joined string.
-jvm_native_clause_body(PredStr/Arity, Clauses, VarStyle, _OutputFmt, Code) :-
+jvm_native_clause_body(_PredStr/Arity, Clauses, VarStyle, _OutputFmt, Code) :-
     Arity1 is Arity - 1,
-    findall(branch(GuardInstrs, ValueInstrs), (
-        member(Head-Body, Clauses),
+    jvm_clauses_to_branches(Clauses, Arity1, VarStyle, Branches),
+    Branches \= [],
+    jvm_compiled_if_chain(Branches, 0, "CL", AllInstrs),
+    jvm_ensure_strings(AllInstrs, StrInstrs),
+    atomic_list_concat(StrInstrs, '\n', Code).
+
+%% jvm_compiled_if_chain(+Branches, +N, +Prefix, -Instructions)
+%%   Assemble pre-compiled branches into an if/else chain with labels.
+%%   Guard instructions already contain "NEXT" as placeholder label.
+jvm_compiled_if_chain([], _, _, ErrInstrs) :- !,
+    ErrInstrs = [
+        "    new java/lang/RuntimeException",
+        "    dup",
+        "    ldc \"No matching clause\"",
+        "    invokespecial java/lang/RuntimeException <init> (Ljava/lang/String;)V",
+        "    athrow"
+    ].
+jvm_compiled_if_chain([branch([], ValueInstrs)], _, _, Instructions) :- !,
+    append(ValueInstrs, ["    ireturn"], Instructions).
+jvm_compiled_if_chain([branch(GuardInstrs, ValueInstrs)|Rest], N, Prefix, Instructions) :-
+    N1 is N + 1,
+    format(string(NextLabel), '~w_~w', [Prefix, N1]),
+    format(string(EndLabel), '~w_end', [Prefix]),
+    % Replace "NEXT" placeholder in guard instructions with actual label
+    maplist(replace_next_label(NextLabel), GuardInstrs, FixedGuards),
+    % Value + return
+    append(ValueInstrs, ["    ireturn"], ValueWithRet),
+    format(string(GotoEnd), '    goto ~w', [EndLabel]),
+    format(string(NextLabelDecl), '~w:', [NextLabel]),
+    jvm_compiled_if_chain(Rest, N1, Prefix, RestInstrs),
+    append(FixedGuards, ValueWithRet, GuardAndValue),
+    append(GuardAndValue, [GotoEnd, NextLabelDecl], WithLabel),
+    append(WithLabel, RestInstrs, BeforeEnd),
+    (   N =:= 0
+    ->  format(string(EndLabelDecl), '~w:', [EndLabel]),
+        append(BeforeEnd, [EndLabelDecl], Instructions)
+    ;   Instructions = BeforeEnd
+    ).
+
+replace_next_label(Label, Instr, Fixed) :-
+    (   sub_string(Instr, _, _, _, "NEXT")
+    ->  split_string(Instr, "", "", _),
+        string_concat(Pre, "NEXT", Instr),
+        string_concat(Pre, Label, Fixed)
+    ;   Fixed = Instr
+    ).
+
+jvm_clauses_to_branches([], _, _, []).
+jvm_clauses_to_branches([Head-Body|Rest], Arity1, VarStyle, Result) :-
+    jvm_clauses_to_branches(Rest, Arity1, VarStyle, RestBranches),
+    (   Body \== true,
         Head =.. [_|AllArgs],
         length(InputArgs, Arity1),
         append(InputArgs, [OutputArg], AllArgs),
         build_head_varmap(InputArgs, 1, VarMap),
-        Body \== true,
         normalize_goals(Body, Goals),
         once(clause_guard_output_split(Goals, VarMap, Guards, Outputs)),
-        % Compile guards to bytecode
-        maplist(jvm_guard_goal_to_bytecode(VarMap, VarStyle), Guards, GuardInstrLists),
-        append(GuardInstrLists, GuardInstrs),
-        % Compile output to bytecode
+        jvm_compile_guards(Guards, VarMap, VarStyle, GuardInstrs),
         jvm_output_to_bytecode(OutputArg, Outputs, VarMap, VarStyle, ValueInstrs)
-    ), Branches),
-    Branches \= [],
-    jvm_if_chain_to_bytecode(Branches, _, VarStyle, "CL", AllInstrs),
-    maplist(ensure_string, AllInstrs, StrInstrs),
-    atomic_list_concat(StrInstrs, '\n', Code).
+    ->  Result = [branch(GuardInstrs, ValueInstrs)|RestBranches]
+    ;   Result = RestBranches
+    ).
+
+jvm_compile_guards([], _, _, []).
+jvm_compile_guards([G|Gs], VarMap, VarStyle, AllInstrs) :-
+    jvm_guard_to_bytecode(G, VarMap, VarStyle, "NEXT", GInstrs),
+    jvm_compile_guards(Gs, VarMap, VarStyle, RestInstrs),
+    append(GInstrs, RestInstrs, AllInstrs).
+
+jvm_ensure_strings([], []).
+jvm_ensure_strings([H|T], [S|Rest]) :-
+    (string(H) -> S = H ; atom_string(H, S)),
+    jvm_ensure_strings(T, Rest).
 
 jvm_guard_goal_to_bytecode(VarMap, VarStyle, Guard, Instructions) :-
     % Use a placeholder label — will be replaced in if_chain

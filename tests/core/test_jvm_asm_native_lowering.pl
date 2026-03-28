@@ -371,6 +371,142 @@ test(tail_recursion_same_bytecodes) :-
     has(KrCode, ".class public").
 
 % ============================================================================
+% Expanded native lowering tests — Jamaica
+% ============================================================================
+
+test(jamaica_three_clause_classify) :-
+    assert(user:(grade_j(X, low) :- X < 50)),
+    assert(user:(grade_j(X, mid) :- X >= 50, X < 80)),
+    assert(user:(grade_j(X, high) :- X >= 80)),
+    jamaica_target:compile_predicate_to_jamaica(grade_j/2, [], Code),
+    has(Code, "if_icmp"),
+    has(Code, "ireturn"),
+    retractall(user:grade_j(_, _)).
+
+test(jamaica_arithmetic_guard) :-
+    assert(user:(even_check_j(X, yes) :- 0 =:= X mod 2)),
+    assert(user:(even_check_j(X, no) :- 0 =\= X mod 2)),
+    jamaica_target:compile_predicate_to_jamaica(even_check_j/2, [], Code),
+    has(Code, "irem"),
+    has(Code, "if_icmp"),
+    retractall(user:even_check_j(_, _)).
+
+test(jamaica_subtraction_output) :-
+    assert(user:(negate_j(X, Y) :- Y is 0 - X)),
+    jamaica_target:compile_predicate_to_jamaica(negate_j/2, [], Code),
+    has(Code, "isub"),
+    has(Code, "iconst_0"),
+    retractall(user:negate_j(_, _)).
+
+test(jamaica_complex_arithmetic) :-
+    assert(user:(formula_j(X, Y) :- Y is (X * X) + (X * 2) + 1)),
+    jamaica_target:compile_predicate_to_jamaica(formula_j/2, [], Code),
+    has(Code, "imul"),
+    has(Code, "iadd"),
+    retractall(user:formula_j(_, _)).
+
+test(jamaica_division_guard) :-
+    assert(user:(divisible_j(X, Y, yes) :- 0 =:= X mod Y)),
+    assert(user:(divisible_j(X, Y, no) :- 0 =\= X mod Y)),
+    jamaica_target:compile_predicate_to_jamaica(divisible_j/3, [], Code),
+    has(Code, "irem"),
+    has(Code, "int arg1, int arg2"),
+    retractall(user:divisible_j(_, _, _)).
+
+test(jamaica_single_guard_return) :-
+    assert(user:(positive_j(X, 1) :- X > 0)),
+    assert(user:(positive_j(X, 0) :- X =< 0)),
+    jamaica_target:compile_predicate_to_jamaica(positive_j/2, [], Code),
+    has(Code, "if_icmp"),
+    has(Code, "ireturn"),
+    retractall(user:positive_j(_, _)).
+
+% ============================================================================
+% Expanded native lowering tests — Krakatau
+% ============================================================================
+
+test(krakatau_three_clause_classify) :-
+    assert(user:(grade_k(X, low) :- X < 50)),
+    assert(user:(grade_k(X, mid) :- X >= 50, X < 80)),
+    assert(user:(grade_k(X, high) :- X >= 80)),
+    krakatau_target:compile_predicate_to_krakatau(grade_k/2, [], Code),
+    has(Code, "if_icmp"),
+    has(Code, "ireturn"),
+    has(Code, ".method"),
+    retractall(user:grade_k(_, _)).
+
+test(krakatau_arithmetic_guard) :-
+    assert(user:(even_check_k(X, yes) :- 0 =:= X mod 2)),
+    assert(user:(even_check_k(X, no) :- 0 =\= X mod 2)),
+    krakatau_target:compile_predicate_to_krakatau(even_check_k/2, [], Code),
+    has(Code, "irem"),
+    has(Code, "if_icmp"),
+    retractall(user:even_check_k(_, _)).
+
+test(krakatau_numeric_slots_arity3) :-
+    assert(user:(add3_k(X, Y, Z) :- Z is X + Y)),
+    krakatau_target:compile_predicate_to_krakatau(add3_k/3, [], Code),
+    % Krakatau uses numeric slots: arg1=slot 0, arg2=slot 1
+    has(Code, "iload_0"),
+    has(Code, "iload_1"),
+    has(Code, "iadd"),
+    has(Code, "(II)I"),
+    retractall(user:add3_k(_, _, _)).
+
+test(krakatau_complex_arithmetic) :-
+    assert(user:(formula_k(X, Y) :- Y is (X * X) + (X * 2) + 1)),
+    krakatau_target:compile_predicate_to_krakatau(formula_k/2, [], Code),
+    has(Code, "imul"),
+    has(Code, "iadd"),
+    has(Code, ".limit stack"),
+    retractall(user:formula_k(_, _)).
+
+test(krakatau_division_guard) :-
+    assert(user:(divisible_k(X, Y, yes) :- 0 =:= X mod Y)),
+    assert(user:(divisible_k(X, Y, no) :- 0 =\= X mod Y)),
+    krakatau_target:compile_predicate_to_krakatau(divisible_k/3, [], Code),
+    has(Code, "irem"),
+    has(Code, "(II)I"),
+    retractall(user:divisible_k(_, _, _)).
+
+test(krakatau_single_guard_return) :-
+    assert(user:(positive_k(X, 1) :- X > 0)),
+    assert(user:(positive_k(X, 0) :- X =< 0)),
+    krakatau_target:compile_predicate_to_krakatau(positive_k/2, [], Code),
+    has(Code, "if_icmp"),
+    has(Code, "ireturn"),
+    has(Code, ".end method"),
+    retractall(user:positive_k(_, _)).
+
+% ============================================================================
+% Cross-target expanded: same complex predicate, both outputs
+% ============================================================================
+
+test(cross_target_three_clause) :-
+    assert(user:(sign_shared(X, negative) :- X < 0)),
+    assert(user:(sign_shared(X, zero) :- X =:= 0)),
+    assert(user:(sign_shared(X, positive) :- X > 0)),
+    jamaica_target:compile_predicate_to_jamaica(sign_shared/2, [], JaCode),
+    krakatau_target:compile_predicate_to_krakatau(sign_shared/2, [], KrCode),
+    % Both should have multiple branch comparisons
+    has(JaCode, "if_icmp"),
+    has(KrCode, "if_icmp"),
+    % Different wrapping
+    has(JaCode, "public static int sign_shared"),
+    has(KrCode, ".method public static sign_shared"),
+    retractall(user:sign_shared(_, _)).
+
+test(cross_target_mod_guard) :-
+    assert(user:(mod_test(X, even) :- 0 =:= X mod 2)),
+    assert(user:(mod_test(X, odd) :- 0 =\= X mod 2)),
+    jamaica_target:compile_predicate_to_jamaica(mod_test/2, [], JaCode),
+    krakatau_target:compile_predicate_to_krakatau(mod_test/2, [], KrCode),
+    % Both contain irem for modulo
+    has(JaCode, "irem"),
+    has(KrCode, "irem"),
+    retractall(user:mod_test(_, _)).
+
+% ============================================================================
 % Transitive closure templates
 % ============================================================================
 
