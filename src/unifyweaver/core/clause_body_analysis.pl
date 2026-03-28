@@ -641,7 +641,7 @@ classify_single_goal_(Goal, VarMap, guard(Goal, Expr), VarMap) :-
 classify_single_goal_(Goal, VarMap, output(Goal, Var, Expr), VarMapOut) :-
     goal_output_var(Goal, Var),
     var(Var),
-    \+ varmap_contains_var(VarMap, Var),
+    output_var_allowed(VarMap, Var),
     !,
     ensure_var(VarMap, Var, _, VarMapOut),
     translate_output_expr(Goal, VarMap, Expr).

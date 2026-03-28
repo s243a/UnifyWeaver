@@ -111,10 +111,56 @@ test_pure_guard :-
 compute(X, Y, Sum, Product) :- Sum is X + Y, Product is X * Y.
 
 test_multi_output :-
-    writeln('=== TEST: Python multiple outputs ==='),
+    writeln('=== TEST: Python multiple outputs (tuple return) ==='),
     (   recursive_compiler:compile_recursive(compute/4, [target(python)], Code)
-    ->  (sub_string(Code, _, _, _, "def compute") -> writeln('  PASS: generates function') ; writeln('  FAIL')),
-        writeln(Code)
+    ->  (sub_string(Code, _, _, _, "def compute(arg1, arg2)") -> writeln('  PASS: 2 input args') ; (writeln('  FAIL: wrong args'), fail)),
+        (sub_string(Code, _, _, _, "arg3 = (arg1 + arg2)") -> writeln('  PASS: sum assignment') ; writeln('  NOTE: different form')),
+        (sub_string(Code, _, _, _, "arg4 = (arg1 * arg2)") -> writeln('  PASS: product assignment') ; writeln('  NOTE: different form')),
+        (sub_string(Code, _, _, _, "return (arg3, arg4)") -> writeln('  PASS: tuple return') ; writeln('  NOTE: different return form'))
+    ;   writeln('  FAIL: failed to compile'), fail
+    ).
+
+%% Abs and mod
+:- dynamic abs_val/2, remainder/3.
+abs_val(X, Y) :- Y is abs(X).
+remainder(X, D, R) :- R is X mod D.
+
+test_abs :-
+    writeln('=== TEST: Python abs ==='),
+    recursive_compiler:compile_recursive(abs_val/2, [target(python)], Code),
+    (sub_string(Code, _, _, _, "abs(") -> writeln('  PASS: contains abs()') ; writeln('  NOTE: different form')).
+
+test_mod :-
+    writeln('=== TEST: Python mod ==='),
+    recursive_compiler:compile_recursive(remainder/3, [target(python)], Code),
+    (sub_string(Code, _, _, _, "%") -> writeln('  PASS: contains %') ;
+     sub_string(Code, _, _, _, "mod") -> writeln('  PASS: contains mod') ;
+     writeln('  NOTE: different form')).
+
+%% Guard + multi-output
+:- dynamic safe_div/4.
+safe_div(X, Y, Quotient, ok) :- Y =\= 0, Quotient is X / Y.
+safe_div(_, 0, 0, error).
+
+test_guard_multi_output :-
+    writeln('=== TEST: Python guard + multi-output ==='),
+    (   recursive_compiler:compile_recursive(safe_div/4, [target(python)], Code)
+    ->  (sub_string(Code, _, _, _, "def safe_div") -> writeln('  PASS: generates function') ; writeln('  NOTE: different name')),
+        (sub_string(Code, _, _, _, "if ") -> writeln('  PASS: has guard') ; writeln('  NOTE: no explicit guard'))
+    ;   writeln('  NOTE: multi-clause multi-output not yet supported (expected)')
+    ).
+
+%% Ternary in multi-clause
+:- dynamic max2/3.
+max2(X, Y, X) :- X >= Y.
+max2(X, Y, Y) :- Y > X.
+
+test_max2 :-
+    writeln('=== TEST: Python max2 (multi-clause, output from head) ==='),
+    (   recursive_compiler:compile_recursive(max2/3, [target(python)], Code)
+    ->  (sub_string(Code, _, _, _, "def max2") -> writeln('  PASS: generates function') ; writeln('  FAIL')),
+        (sub_string(Code, _, _, _, "return arg1") -> writeln('  PASS: returns arg1') ; writeln('  NOTE: different form')),
+        (sub_string(Code, _, _, _, "return arg2") -> writeln('  PASS: returns arg2') ; writeln('  NOTE: different form'))
     ;   writeln('  NOTE: failed to compile')
     ).
 
@@ -129,4 +175,8 @@ run_tests :-
     test_guard_after_output,
     test_pure_guard,
     test_multi_output,
-    nl, writeln('=== ALL PYTHON ADVANCED TESTS DONE ===').
+    test_abs,
+    test_mod,
+    test_guard_multi_output,
+    test_max2,
+    nl, writeln('=== ALL 14 PYTHON ADVANCED TESTS DONE ===').

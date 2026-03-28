@@ -3187,8 +3187,19 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
                 format(string(Code), '    return ~w', [OutputLit])
             ;   python_output_goals(OutputGoals, VarMap, Code)
             )
-        ;   % Output is a variable — goals should compute it
-            native_python_goal_sequence(Goals, VarMap, GoalConditions, Code)
+        ;   % Output is a variable
+            (   var(OutputHeadArg),
+                lookup_var(OutputHeadArg, VarMap, OutputArgName),
+                %% Check it's also an INPUT arg (appears earlier in head)
+                var_member_by_identity(OutputHeadArg, InputHeadArgs)
+            ->  % Output var is an input arg (e.g., max2(X,Y,X) — output = input X)
+                %% All goals are guards, return the input arg
+                clause_guard_output_split(Goals, VarMap, GuardGoals, _OutputGoals),
+                maplist(python_guard_condition(VarMap), GuardGoals, GoalConditions),
+                format(string(Code), '    return ~w', [OutputArgName])
+            ;   % Output is a fresh variable — goals should compute it
+                native_python_goal_sequence(Goals, VarMap, GoalConditions, Code)
+            )
         )
     ),
     append(HeadConditions, GoalConditions, AllConditions),
@@ -3229,6 +3240,10 @@ native_python_goal_sequence(Goals, VarMap, Conditions, Code) :-
 %% python_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
 %  Render classified goals to Python code. Guards become conditions,
 %  outputs become assignments, the last output becomes a return.
+%  Multi-output: if 2+ outputs, return a tuple.
+python_render_classified_goals(ClassifiedGoals, VarMap, Conds, Lines) :-
+    python_render_classified_goals_multi_return(ClassifiedGoals, VarMap, Conds, Lines),
+    !.
 python_render_classified_goals([], _VarMap, [], []).
 python_render_classified_goals([Classified], VarMap, Conds, Lines) :-
     !,
@@ -3260,6 +3275,39 @@ python_render_classified_last(guard(Goal, _Expr), VarMap, [Cond], []) :-
     python_guard_condition(VarMap, Goal, Cond).
 python_render_classified_last(output(Goal, _Var, _Expr), VarMap, [], Lines) :-
     python_output_goal_last(Goal, VarMap, Lines, _).
+
+%% Multi-output: when there are previous output assignments, return tuple
+python_render_classified_goals_multi_return(ClassifiedGoals, VarMap, Conds, Lines) :-
+    %% Collect all output var names
+    collect_output_var_names(ClassifiedGoals, VarMap, OutputNames),
+    OutputNames = [_,_|_],  %% at least 2 outputs
+    !,
+    %% Render all goals as mid (assignments), then add tuple return
+    python_render_all_as_mid(ClassifiedGoals, VarMap, Conds, MidLines, _),
+    format(string(TupleStr), '~w', [OutputNames]),
+    atomic_list_concat(OutputNames, ', ', TupleInner),
+    format(string(ReturnLine), '    return (~w)', [TupleInner]),
+    append(MidLines, [ReturnLine], Lines).
+
+python_render_all_as_mid([], _VarMap, [], [], _VarMap).
+python_render_all_as_mid([C|Rest], VarMap, Conds, Lines, VarMapOut) :-
+    python_render_classified_mid(C, VarMap, MConds, MLines, VarMap1),
+    python_render_all_as_mid(Rest, VarMap1, RConds, RLines, VarMapOut),
+    append(MConds, RConds, Conds),
+    append(MLines, RLines, Lines).
+
+collect_output_var_names([], _, []).
+collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
+    goal_output_var(Goal, OutVar),
+    lookup_var(OutVar, VarMap, Name), !,
+    collect_output_var_names(Rest, VarMap, Names).
+collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
+    %% Fallback: ensure the var gets a name
+    goal_output_var(Goal, OutVar),
+    ensure_var(VarMap, OutVar, Name, VarMap1), !,
+    collect_output_var_names(Rest, VarMap1, Names).
+collect_output_var_names([_|Rest], VarMap, Names) :-
+    collect_output_var_names(Rest, VarMap, Names).
 python_render_classified_last(output_ite(If, Then, Else, _SharedVars), VarMap, [], Lines) :-
     %% Try ternary return first (cleaner for simple cases)
     (   python_guard_condition(VarMap, If, Cond),
