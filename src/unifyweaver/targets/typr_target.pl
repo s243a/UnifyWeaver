@@ -332,6 +332,9 @@ typr_mutual_tree_pair_arg_expr(AliasMap, PairArg, Expr) :-
 typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar, Goal0, CallSpec) :-
     typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar, [], Goal0, CallSpec).
 
+typr_mutual_list_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, Goal0, CallSpec) :-
+    typr_mutual_list_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, [], Goal0, CallSpec).
+
 typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar, ExtraArgMap, Goal0, call_spec(Side, NextPred, CallArgs)) :-
     typr_strip_module_goal(Goal0, Goal),
     Goal =.. [NextPred, RecArg|ExtraArgs],
@@ -344,6 +347,22 @@ typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar, Ext
     ;   RecArg == TailVar
     ->  Side = right,
         DriverExpr = 'tail(current_input, -1)'
+    ),
+    maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
+    CallArgs = [DriverExpr|ExtraArgExprs].
+
+typr_mutual_list_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, call_spec(Side, NextPred, CallArgs)) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Goal =.. [NextPred, RecArg|ExtraArgs],
+    length(ExtraArgs, ExtraArity),
+    Arity is ExtraArity + 1,
+    memberchk(NextPred/Arity, GroupPredicates),
+    (   RecArg == LeftVar
+    ->  Side = left,
+        DriverExpr = '.subset2(current_input, 1)'
+    ;   RecArg == RightVar
+    ->  Side = right,
+        DriverExpr = '.subset2(current_input, 2)'
     ),
     maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
     CallArgs = [DriverExpr|ExtraArgExprs].
@@ -365,6 +384,41 @@ typr_mutual_list_head_tail_value_recursive_goal(GroupPredicates, HeadVar, TailVa
     ),
     maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
     CallArgs = [DriverExpr|ExtraArgExprs].
+
+typr_mutual_list_pair_value_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, value_call_spec(Side, NextPred, CallArgs, OutputVar)) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Goal =.. [NextPred, RecArg|ExtraAndOutputArgs],
+    append(ExtraArgs, [OutputVar], ExtraAndOutputArgs),
+    var(OutputVar),
+    length(ExtraAndOutputArgs, TailArity),
+    Arity is TailArity + 1,
+    memberchk(NextPred/Arity, GroupPredicates),
+    (   RecArg == LeftVar
+    ->  Side = left,
+        DriverExpr = '.subset2(current_input, 1)'
+    ;   RecArg == RightVar
+    ->  Side = right,
+        DriverExpr = '.subset2(current_input, 2)'
+    ),
+    maplist(typr_mutual_extra_arg_expr(ExtraArgMap), ExtraArgs, ExtraArgExprs),
+    CallArgs = [DriverExpr|ExtraArgExprs].
+
+typr_mutual_list_dual_driver([HeadVar|TailVar], head_tail, HeadVar, TailVar, 'length(current_input) > 0') :-
+    var(TailVar),
+    !.
+typr_mutual_list_dual_driver([LeftVar, RightVar], pair, LeftVar, RightVar, 'length(current_input) == 2') :-
+    var(LeftVar),
+    var(RightVar).
+
+typr_mutual_list_dual_recursive_goal(head_tail, GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec) :-
+    typr_mutual_list_head_tail_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec).
+typr_mutual_list_dual_recursive_goal(pair, GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec) :-
+    typr_mutual_list_pair_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec).
+
+typr_mutual_list_dual_value_recursive_goal(head_tail, GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec) :-
+    typr_mutual_list_head_tail_value_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec).
+typr_mutual_list_dual_value_recursive_goal(pair, GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec) :-
+    typr_mutual_list_pair_value_recursive_goal(GroupPredicates, LeftVar, RightVar, ExtraArgMap, Goal0, CallSpec).
 
 typr_mutual_tree_value_subtree_driver_expr(ValueVar, _AliasMap, RecArg, left, '.subset2(current_input, 1)') :-
     var(RecArg),
@@ -705,12 +759,16 @@ typr_mutual_list_tree_dual_bool_spec(GroupPredicates, Pred/Arity, Spec) :-
     BaseClauses \= [],
     maplist(typr_mutual_list_empty_base_condition, BaseClauses, BaseConds0),
     sort(BaseConds0, BaseConditions),
-    RecHead =.. [_PredName, [HeadVar|TailVar]],
-    var(TailVar),
+    RecHead =.. [_PredName, RecInputPattern],
+    typr_mutual_list_dual_driver(RecInputPattern, DriverKind, LeftVar, RightVar, GuardExpr),
     typr_mutual_goal_list(RecBody, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
     Goals = [GoalA, GoalB],
-    maplist(typr_mutual_list_head_tail_recursive_goal(GroupPredicates, HeadVar, TailVar), [GoalA, GoalB], GoalSpecs0),
+    maplist(
+        typr_mutual_list_dual_recursive_goal(DriverKind, GroupPredicates, LeftVar, RightVar, []),
+        [GoalA, GoalB],
+        GoalSpecs0
+    ),
     select(call_spec(left, LeftNextPred, LeftCallArgs), GoalSpecs0, GoalSpecs1),
     select(call_spec(right, RightNextPred, RightCallArgs), GoalSpecs1, []),
     atom_string(Pred, PredStr),
@@ -730,7 +788,7 @@ typr_mutual_list_tree_dual_bool_spec(GroupPredicates, Pred/Arity, Spec) :-
         left_call: branch_call(LeftNextHelperName, LeftCallArgs),
         right_call: branch_call(RightNextHelperName, RightCallArgs),
         base_conditions: BaseConditions,
-        guard_expr: 'length(current_input) > 0'
+        guard_expr: GuardExpr
     }.
 
 typr_mutual_mixed_tree_list_value_spec(GroupPredicates, Pred/Arity, Spec) :-
@@ -794,8 +852,8 @@ typr_mutual_list_tree_dual_value_spec(GroupPredicates, Pred/Arity, Spec) :-
     partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
     RecClauses = [clause(RecHead, RecBody)],
     BaseClauses \= [],
-    RecHead =.. [_PredName, [HeadVar|TailVar]|ContextAndOutputVars],
-    var(TailVar),
+    RecHead =.. [_PredName, RecInputPattern|ContextAndOutputVars],
+    typr_mutual_list_dual_driver(RecInputPattern, DriverKind, LeftVar, RightVar, GuardExpr),
     append(ContextVars, [OutputVar], ContextAndOutputVars),
     var(OutputVar),
     typr_mutual_tree_context_param_names(ContextVars, ContextParamNames),
@@ -806,7 +864,7 @@ typr_mutual_list_tree_dual_value_spec(GroupPredicates, Pred/Arity, Spec) :-
     PreGoals == [],
     typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
     maplist(
-        typr_mutual_list_head_tail_value_recursive_goal(GroupPredicates, HeadVar, TailVar, ExtraArgMap),
+        typr_mutual_list_dual_value_recursive_goal(DriverKind, GroupPredicates, LeftVar, RightVar, ExtraArgMap),
         RecGoals,
         GoalSpecs0
     ),
@@ -837,7 +895,7 @@ typr_mutual_list_tree_dual_value_spec(GroupPredicates, Pred/Arity, Spec) :-
         wrapper_call_args: WrapperCallArgs,
         memo_key_expr: MemoKeyExpr,
         base_cases: BaseCases,
-        guard_expr: 'length(current_input) > 0',
+        guard_expr: GuardExpr,
         left_call: branch_call(LeftNextHelperName, LeftCallArgs),
         right_call: branch_call(RightNextHelperName, RightCallArgs),
         result_expr: ResultExpr
