@@ -3002,19 +3002,52 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
 python_arg_split(1, _, 1) :- !.
 python_arg_split(Arity, ClausePairs, InputArity) :-
     Arity >= 2,
-    %% Count output args from the first clause
     ClausePairs = [Head-Body|_],
     Head =.. [_|HeadArgs],
     build_head_varmap(HeadArgs, 1, VarMap),
     normalize_goals(Body, Goals),
-    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
-    count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
-    (   OutputCount > 0
-    ->  InputArity is Arity - OutputCount
-    ;   InputArity is Arity - 1  %% default: last arg is output
+    (   Goals \= []
+    ->  %% Count output args from classified body goals
+        classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+        count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
+        (   OutputCount > 0
+        ->  InputArity is Arity - OutputCount
+        ;   InputArity is Arity - 1
+        )
+    ;   %% Pure fact: count unique variables to find input count
+        python_fact_input_count(HeadArgs, InputArity)
     ),
     InputArity >= 1,
     !.
+
+%% python_fact_input_count(+HeadArgs, -InputCount)
+%  For pure facts, count the number of distinct first-occurrence variables.
+%  e.g. swap(X, Y, Y, X) → 2 distinct vars (X, Y) → 2 inputs
+%  For all-constant facts like factorial_base(0, 1), default to Arity-1
+%  (last arg is output convention).
+python_fact_input_count(HeadArgs, InputCount) :-
+    python_count_first_occurrences(HeadArgs, [], 0, RawCount),
+    length(HeadArgs, Arity),
+    %% If all args are constants or first-occurrences, use Arity-1
+    %% (the repeated-variable pattern like swap needs fewer inputs)
+    (   RawCount < Arity
+    ->  InputCount = RawCount  %% has repeated vars — use detected count
+    ;   InputCount is max(1, Arity - 1)  %% all unique — last is output
+    ).
+
+python_count_first_occurrences([], _, Count, Count).
+python_count_first_occurrences([Arg|Rest], Seen, Acc, Count) :-
+    (   var(Arg), \+ var_member_by_identity(Arg, Seen)
+    ->  %% First occurrence of this variable — it's an input
+        Acc1 is Acc + 1,
+        python_count_first_occurrences(Rest, [Arg|Seen], Acc1, Count)
+    ;   var(Arg)
+    ->  %% Repeated variable — it's an output (alias of earlier input)
+        python_count_first_occurrences(Rest, Seen, Acc, Count)
+    ;   %% Constant — it's an input (pattern match)
+        Acc1 is Acc + 1,
+        python_count_first_occurrences(Rest, Seen, Acc1, Count)
+    ).
 python_arg_split(Arity, _, InputArity) :-
     InputArity is max(1, Arity - 1).
 
@@ -3165,17 +3198,21 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
     Arity >= 2,
     % Build VarMap from head arguments
     build_head_varmap(HeadArgs, 1, VarMap),
-    % Extract head conditions — only from input args (not the output arg)
-    % The last argument is treated as the output
-    append(InputHeadArgs, [OutputHeadArg], HeadArgs),
+    % Determine input/output split
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  python_fact_input_count(HeadArgs, InputCount)
+    ;   InputCount is Arity - 1
+    ),
+    length(InputHeadArgs, InputCount),
+    append(InputHeadArgs, OutputHeadArgs, HeadArgs),
+    (OutputHeadArgs = [OutputHeadArg|_] -> true ; OutputHeadArg = _),
     % Conditions from input args only
     python_head_conditions(InputHeadArgs, 1, HeadConditions),
     % Process body goals
-    normalize_goals(Body, Goals),
     (   Goals == []
-    ->  % Pure fact clause: return the output arg value
-        python_resolve_value(VarMap, OutputHeadArg, OutputExpr),
-        format(string(Code), '    return ~w', [OutputExpr]),
+    ->  % Pure fact clause: determine outputs and return
+        python_fact_return(HeadArgs, InputHeadArgs, VarMap, Code),
         GoalConditions = []
     ;   % Body goals: check if output arg is bound in head (constant)
         (   Arity > 1, nonvar(OutputHeadArg)
@@ -3208,6 +3245,29 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
 %% python_head_conditions(+HeadArgs, +Index, -Conditions)
 %  Generate conditions from head argument patterns.
 %  Variables produce no condition; constants produce equality checks.
+%% python_fact_return(+HeadArgs, +InputArgs, +VarMap, -Code)
+%  Generate return statement for a pure fact clause.
+%  Single output: return value. Multiple outputs: return tuple.
+python_fact_return(HeadArgs, InputHeadArgs, VarMap, Code) :-
+    length(HeadArgs, Arity),
+    length(InputHeadArgs, InputCount),
+    OutputCount is Arity - InputCount,
+    (   OutputCount =:= 1
+    ->  %% Single output (last arg)
+        last(HeadArgs, OutputArg),
+        python_resolve_value(VarMap, OutputArg, OutputExpr),
+        format(string(Code), '    return ~w', [OutputExpr])
+    ;   OutputCount > 1
+    ->  %% Multi-output: return tuple of output args
+        length(OutputArgs, OutputCount),
+        append(_, OutputArgs, HeadArgs),
+        maplist(python_resolve_value(VarMap), OutputArgs, OutputExprs),
+        atomic_list_concat(OutputExprs, ', ', TupleInner),
+        format(string(Code), '    return (~w)', [TupleInner])
+    ;   %% No outputs (all args are inputs, fact predicate)
+        Code = '    return True'
+    ).
+
 python_head_conditions([], _, []).
 python_head_conditions([HeadArg|Rest], Index, Conditions) :-
     (   var(HeadArg)
@@ -3790,7 +3850,11 @@ branches_to_python_if_chain([branch(Condition, ClauseCode)|Rest], Code) :-
 branches_to_python_elif_chain([branch(Condition, ClauseCode)], Code) :-
     !,
     indent_python(ClauseCode, IndentedCode),
-    format(string(Code), '    elif ~w:\n~w', [Condition, IndentedCode]).
+    %% Use 'else' for catch-all conditions (True, no guards)
+    (   (Condition == 'True' ; Condition == "True")
+    ->  format(string(Code), '    else:\n~w', [IndentedCode])
+    ;   format(string(Code), '    elif ~w:\n~w', [Condition, IndentedCode])
+    ).
 branches_to_python_elif_chain([branch(Condition, ClauseCode)|Rest], Code) :-
     indent_python(ClauseCode, IndentedCode),
     branches_to_python_elif_chain(Rest, RestCode),
