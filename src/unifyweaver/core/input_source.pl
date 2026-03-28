@@ -157,6 +157,22 @@ seed_statement(haskell, _BasePred, From, To, Statement) :-
 seed_statement(powershell, _BasePred, From, To, Statement) :-
     format(string(Statement), 'Add-Fact "~w" "~w"', [From, To]).
 
+seed_statement(jamaica, _BasePred, From, To, Statement) :-
+    format(string(Statement),
+        '    ldc "~w"\n    ldc "~w"\n    invokestatic addFact(String, String)void',
+        [From, To]).
+
+seed_statement(krakatau, _BasePred, From, To, Statement) :-
+    format(string(Statement),
+        '    ldc "~w"\n    ldc "~w"\n    invokestatic AncestorQuery addFact (Ljava/lang/String;Ljava/lang/String;)V',
+        [From, To]).
+
+seed_statement(awk, _BasePred, From, To, Statement) :-
+    format(string(Statement), '    add_fact("~w", "~w")', [From, To]).
+
+seed_statement(vbnet, _BasePred, From, To, Statement) :-
+    format(string(Statement), '        query.AddFact("~w", "~w")', [From, To]).
+
 bash_literal(Value, Literal) :-
     (   number(Value)
     ->  format(string(Literal), '~w', [Value])

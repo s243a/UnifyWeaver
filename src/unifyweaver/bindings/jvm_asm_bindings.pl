@@ -15,7 +15,8 @@ init_jvm_asm_bindings :-
     register_jvm_asm_comparison_bindings,
     register_jvm_asm_bitwise_bindings,
     register_jvm_asm_math_bindings,
-    register_jvm_asm_io_bindings.
+    register_jvm_asm_io_bindings,
+    register_jvm_asm_string_bindings.
 
 %% declare_dual_binding(+Pred, +Instruction, +Inputs, +Outputs, +Options)
 %%   Register a binding for both jamaica and krakatau targets.
@@ -87,3 +88,45 @@ register_jvm_asm_io_bindings :-
         ['String'], [],
         [deterministic, pattern(io_op),
          description("Print string to stdout")]).
+
+register_jvm_asm_string_bindings :-
+    declare_dual_binding('string_equals'/3,
+        'invokevirtual java/lang/String equals (Ljava/lang/Object;)Z',
+        ['String', 'String'], [boolean],
+        [pure, deterministic, total, pattern(function),
+         description("Compare two strings for equality")]),
+    declare_dual_binding('string_concat'/3,
+        'invokevirtual java/lang/String concat (Ljava/lang/String;)Ljava/lang/String;',
+        ['String', 'String'], ['String'],
+        [pure, deterministic, total, pattern(function),
+         description("Concatenate two strings")]),
+    declare_dual_binding('string_length'/2,
+        'invokevirtual java/lang/String length ()I',
+        ['String'], [int],
+        [pure, deterministic, total, pattern(function),
+         description("Get string length")]),
+    declare_dual_binding('string_valueof'/2,
+        'invokestatic java/lang/String valueOf (I)Ljava/lang/String;',
+        [int], ['String'],
+        [pure, deterministic, total, pattern(function),
+         description("Convert int to string")]),
+    declare_dual_binding('string_charat'/3,
+        'invokevirtual java/lang/String charAt (I)C',
+        ['String', int], [char],
+        [pure, deterministic, total, pattern(function),
+         description("Get character at index")]),
+    declare_dual_binding('string_substring'/4,
+        'invokevirtual java/lang/String substring (II)Ljava/lang/String;',
+        ['String', int, int], ['String'],
+        [pure, deterministic, total, pattern(function),
+         description("Extract substring by start and end index")]),
+    declare_dual_binding('string_tolower'/2,
+        'invokevirtual java/lang/String toLowerCase ()Ljava/lang/String;',
+        ['String'], ['String'],
+        [pure, deterministic, total, pattern(function),
+         description("Convert string to lowercase")]),
+    declare_dual_binding('string_toupper'/2,
+        'invokevirtual java/lang/String toUpperCase ()Ljava/lang/String;',
+        ['String'], ['String'],
+        [pure, deterministic, total, pattern(function),
+         description("Convert string to uppercase")]).
