@@ -246,7 +246,12 @@ bring-up.
     re-entry, plus mixed tree/numeric SCCs where tree-shaped predicates
     recurse through current-value and one-subtree descent while numeric
     predicates recurse through scalar step descent or constructed tree
-    re-entry, including integer-return and threaded-context variants
+    re-entry, plus mixed tree/list/numeric SCCs where tree-shaped
+    predicates recurse through current-value and paired-forest helpers
+    while list-shaped predicates recurse through head/tail decomposition
+    and numeric predicates recurse through scalar step descent or
+    constructed tree re-entry, including integer-return and threaded-
+    context variants
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
