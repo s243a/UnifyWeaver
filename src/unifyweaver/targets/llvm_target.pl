@@ -1606,3 +1606,46 @@ llvm_gen_blocks([branch(Conditions, ResultExpr)|Rest], BranchIdx, _Reg, [EntryBl
                 ThenLabel, ResultExpr.setup, ResultExpr.value])
     ),
     llvm_gen_blocks(Rest, NextIdx, 0, RestBlocks).
+
+% ============================================================================
+% MULTIFILE HOOKS — Register LLVM renderers for shared compile_expression
+% ============================================================================
+%
+% LLVM IR produces SSA-style instructions. Output goals become
+% alloca/store instructions. Guards become icmp + br instructions.
+
+clause_body_analysis:render_output_goal(llvm, Goal, VarMap, Line, VarName, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        llvm_resolve_value(VarMap, Expr, LLVMVal),
+        format(string(Line), '  %%~w = add i64 ~w, 0', [VarName, LLVMVal])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        llvm_arith_expr(ArithExpr, VarMap, LLVMVal, SetupCode),
+        (   SetupCode \= ""
+        ->  format(string(Line), '~w\n  %%~w = add i64 ~w, 0', [SetupCode, VarName, LLVMVal])
+        ;   format(string(Line), '  %%~w = add i64 ~w, 0', [VarName, LLVMVal])
+        )
+    ;   VarName = "_", VarMapOut = VarMap,
+        Line = "  ; unsupported output goal"
+    ).
+
+clause_body_analysis:render_guard_condition(llvm, Goal, VarMap, CondStr) :-
+    llvm_goal_to_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(llvm, Branch, VarMap, ExprStr) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    (   LastGoal = (_ = Expr) -> llvm_resolve_value(VarMap, Expr, ExprStr)
+    ;   LastGoal = (_ is Expr) -> llvm_arith_expr(Expr, VarMap, ExprStr, _)
+    ;   llvm_resolve_value(VarMap, LastGoal, ExprStr)
+    ).
+
+clause_body_analysis:render_ite_block(llvm, Cond, ThenLines, ElseLines, _Indent, _ReturnVars, Lines) :-
+    format(string(CmpLine), '  %%cmp_ce = ~w', [Cond]),
+    format(string(BrLine), '  br i1 %%cmp_ce, label %%then_ce, label %%else_ce', []),
+    (   ElseLines \= []
+    ->  append([CmpLine, BrLine, 'then_ce:'|ThenLines], ['  br label %%end_ce', 'else_ce:'|ElseLines], Pre),
+        append(Pre, ['  br label %%end_ce', 'end_ce:'], Lines)
+    ;   append([CmpLine, BrLine, 'then_ce:'|ThenLines], ['  br label %%end_ce', 'end_ce:'], Lines)
+    ).

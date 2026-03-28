@@ -771,6 +771,57 @@ wat_cmp_op(=\=, "i64.ne").
 wat_cmp_op(==, "i64.eq").
 wat_cmp_op(\==, "i64.ne").
 
+% ============================================================================
+% MULTIFILE HOOKS — Register WAT renderers for shared compile_expression
+% ============================================================================
+%
+% WAT produces S-expression text, which fits the hook model.
+% Output goals produce (local.set $var expr) lines.
+% Guards produce condition S-expressions.
+% ITE blocks produce (if (result type) cond (then ...) (else ...)).
+
+clause_body_analysis:render_output_goal(wat, Goal, VarMap, Line, VarName, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        wat_resolve_value(Expr, VarMap, ExprStr),
+        format(string(Line), '(local.set $~w ~w)', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        wat_arith_expr(ArithExpr, VarMap, ExprStr),
+        format(string(Line), '(local.set $~w ~w)', [VarName, ExprStr])
+    ;   VarName = "_", VarMapOut = VarMap,
+        Line = ";; unsupported output goal"
+    ).
+
+clause_body_analysis:render_guard_condition(wat, Goal, VarMap, CondStr) :-
+    wat_guard_condition(Goal, VarMap, CondStr).
+
+clause_body_analysis:render_branch_value(wat, Branch, VarMap, ExprStr) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    wat_expr(LastGoal, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(wat, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~w(if (result i64) ~w', [Indent, Cond]),
+    wat_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(ThenOpen), '~w  (then', [Indent]),
+    format(string(ThenClose), '~w  )', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseOpen), '~w  (else', [Indent]),
+        wat_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(ElseClose), '~w  )', [Indent]),
+        format(string(EndLine), '~w)', [Indent]),
+        append([IfLine, ThenOpen|IndentedThen], [ThenClose, ElseOpen|IndentedElse], Pre),
+        append(Pre, [ElseClose, EndLine], Lines)
+    ;   format(string(EndLine), '~w)', [Indent]),
+        append([IfLine, ThenOpen|IndentedThen], [ThenClose, EndLine], Lines)
+    ).
+
+wat_indent_lines([], _, []).
+wat_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    wat_indent_lines(Rest, Indent, RestIndented).
+
 %% wat_output_goals(+Outputs, +VarMap, -Value)
 wat_output_goals(Outputs, VarMap, Value) :-
     last(Outputs, LastGoal),

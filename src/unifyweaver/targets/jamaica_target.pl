@@ -295,3 +295,55 @@ write_jamaica_program(Code, Filename) :-
     write(Stream, Code),
     close(Stream),
     format('Jamaica program written to: ~w~n', [Filename]).
+
+% ============================================================================
+% MULTIFILE HOOKS — Register Jamaica renderers for shared compile_expression
+% ============================================================================
+%
+% Jamaica produces JVM assembly text. Output goals become istore/astore
+% instructions. Guards become comparison + branch instructions.
+
+clause_body_analysis:render_output_goal(jamaica, Goal, VarMap, Line, VarName, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        jvm_bytecode:jvm_expr_to_bytecode(Expr, VarMap, symbolic, ExprInstrs),
+        maplist(ensure_string, ExprInstrs, StrInstrs),
+        atomic_list_concat(StrInstrs, '\n', ExprCode),
+        format(string(Line), '~w\nastore ~w', [ExprCode, VarName])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        jvm_bytecode:jvm_expr_to_bytecode(ArithExpr, VarMap, symbolic, ExprInstrs),
+        maplist(ensure_string, ExprInstrs, StrInstrs),
+        atomic_list_concat(StrInstrs, '\n', ExprCode),
+        format(string(Line), '~w\nlstore ~w', [ExprCode, VarName])
+    ;   VarName = "_", VarMapOut = VarMap,
+        Line = "; unsupported output goal"
+    ).
+
+clause_body_analysis:render_guard_condition(jamaica, Goal, VarMap, CondStr) :-
+    jvm_bytecode:jvm_guard_to_bytecode(Goal, VarMap, symbolic, "L_false", Instrs),
+    maplist(ensure_string, Instrs, StrInstrs),
+    atomic_list_concat(StrInstrs, '\n', CondStr).
+
+clause_body_analysis:render_branch_value(jamaica, Branch, VarMap, ExprStr) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    (   LastGoal = (_ = Expr) -> true ; LastGoal = (_ is Expr) -> true ; Expr = LastGoal),
+    jvm_bytecode:jvm_expr_to_bytecode(Expr, VarMap, symbolic, Instrs),
+    maplist(ensure_string, Instrs, StrInstrs),
+    atomic_list_concat(StrInstrs, '\n', ExprStr).
+
+clause_body_analysis:render_ite_block(jamaica, Cond, ThenLines, ElseLines, _Indent, _ReturnVars, Lines) :-
+    format(string(CondLine), '~w', [Cond]),
+    format(string(ThenLabel), 'L_then:', []),
+    format(string(ElseLabel), 'L_else:', []),
+    format(string(EndLabel), 'L_end:', []),
+    (   ElseLines \= []
+    ->  append([CondLine, ThenLabel|ThenLines], ['goto L_end', ElseLabel|ElseLines], Pre),
+        append(Pre, [EndLabel], Lines)
+    ;   append([CondLine, ThenLabel|ThenLines], [EndLabel], Lines)
+    ).
+
+ensure_string(Atom, Str) :- atom(Atom), !, atom_string(Atom, Str).
+ensure_string(Str, Str) :- string(Str), !.
+ensure_string(Term, Str) :- term_string(Term, Str).

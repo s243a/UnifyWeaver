@@ -304,3 +304,44 @@ write_krakatau_program(Code, Filename) :-
     write(Stream, Code),
     close(Stream),
     format('Krakatau program written to: ~w~n', [Filename]).
+
+% ============================================================================
+% MULTIFILE HOOKS — Register Krakatau renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(krakatau, Goal, VarMap, Line, VarName, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        jvm_bytecode:jvm_expr_to_bytecode(Expr, VarMap, numeric, ExprInstrs),
+        maplist(ensure_string, ExprInstrs, StrInstrs),
+        atomic_list_concat(StrInstrs, '\n', ExprCode),
+        format(string(Line), '~w\n    lstore ~w', [ExprCode, VarName])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        jvm_bytecode:jvm_expr_to_bytecode(ArithExpr, VarMap, numeric, ExprInstrs),
+        maplist(ensure_string, ExprInstrs, StrInstrs),
+        atomic_list_concat(StrInstrs, '\n', ExprCode),
+        format(string(Line), '~w\n    lstore ~w', [ExprCode, VarName])
+    ;   VarName = "_", VarMapOut = VarMap,
+        Line = "    ; unsupported output goal"
+    ).
+
+clause_body_analysis:render_guard_condition(krakatau, Goal, VarMap, CondStr) :-
+    jvm_bytecode:jvm_guard_to_bytecode(Goal, VarMap, numeric, "L_false", Instrs),
+    maplist(ensure_string, Instrs, StrInstrs),
+    atomic_list_concat(StrInstrs, '\n', CondStr).
+
+clause_body_analysis:render_branch_value(krakatau, Branch, VarMap, ExprStr) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    (   LastGoal = (_ = Expr) -> true ; LastGoal = (_ is Expr) -> true ; Expr = LastGoal),
+    jvm_bytecode:jvm_expr_to_bytecode(Expr, VarMap, numeric, Instrs),
+    maplist(ensure_string, Instrs, StrInstrs),
+    atomic_list_concat(StrInstrs, '\n', ExprStr).
+
+clause_body_analysis:render_ite_block(krakatau, Cond, ThenLines, ElseLines, _Indent, _ReturnVars, Lines) :-
+    (   ElseLines \= []
+    ->  append([Cond, 'L_then:'|ThenLines], ['    goto L_end', 'L_else:'|ElseLines], Pre),
+        append(Pre, ['L_end:'], Lines)
+    ;   append([Cond, 'L_then:'|ThenLines], ['L_end:'], Lines)
+    ).
