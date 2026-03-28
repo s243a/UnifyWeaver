@@ -1,20 +1,19 @@
 
   public static void main(String[] args) {
-    Object reader;
+    java.io.InputStream sysIn;
+    InputStreamReader isr;
+    BufferedReader reader;
     String line;
     String[] parts;
     // Read {{base}} facts from stdin (format: from:to)
-    new BufferedReader
-    dup
-    new InputStreamReader
-    dup
     getstatic System.in java.io.InputStream
-    invokespecial InputStreamReader(java.io.InputStream)void
-    invokespecial BufferedReader(java.io.Reader)void
+    astore sysIn
+    %object InputStreamReader(java.io.InputStream)(sysIn)
+    astore isr
+    %object BufferedReader(java.io.Reader)(isr)
     astore reader
   READ_LOOP:
     aload reader
-    checkcast BufferedReader
     invokevirtual BufferedReader.readLine()String
     astore line
     aload line

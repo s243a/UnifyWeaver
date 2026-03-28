@@ -116,17 +116,20 @@ public class {{pred_cap}}Query {
   }
 
   public static void main(String[] args) {
-    Object reader;
+    java.io.InputStream sysIn;
+    InputStreamReader isr;
+    BufferedReader reader;
     String line;
     String[] parts;
     // Build BufferedReader(InputStreamReader(System.in))
-    %object InputStreamReader(java.io.InputStream)(getstatic System.in java.io.InputStream)
-    astore reader
-    %object BufferedReader(java.io.Reader)(aload reader)
+    getstatic System.in java.io.InputStream
+    astore sysIn
+    %object InputStreamReader(java.io.InputStream)(sysIn)
+    astore isr
+    %object BufferedReader(java.io.Reader)(isr)
     astore reader
   READ_LOOP:
     aload reader
-    checkcast BufferedReader
     invokevirtual BufferedReader.readLine()String
     astore line
     aload line
