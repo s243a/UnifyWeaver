@@ -6,26 +6,35 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 
 public class {{pred_cap}}Query {
 
+  static HashMap edges;
+
+  // Static initializer
+  static {
+    %object HashMap
+    putstatic edges HashMap
+  }
+
   %default_constructor public
 
-  static HashMap edges = new HashMap();
-
   public static void addFact(String from, String to) {
+    Object existing;
+    getstatic edges HashMap
     aload from
-    invokestatic {{pred_cap}}Query.edges HashMap
     invokevirtual HashMap.get(Object)Object
     astore existing
     aload existing
     ifnonnull HAS_LIST
     %object ArrayList
     astore existing
+    getstatic edges HashMap
     aload from
     aload existing
-    invokestatic {{pred_cap}}Query.edges HashMap
-    invokevirtual HashMap.put(Object Object)Object
+    invokevirtual HashMap.put(Object, Object)Object
     pop
   HAS_LIST:
     aload existing
@@ -37,6 +46,12 @@ public class {{pred_cap}}Query {
   }
 
   public static boolean check(String start, String target) {
+    HashSet visited;
+    LinkedList queue;
+    String current;
+    Object neighbors;
+    Iterator iter;
+    String next;
     %object HashSet
     astore visited
     %object LinkedList
@@ -57,8 +72,8 @@ public class {{pred_cap}}Query {
     invokevirtual LinkedList.poll()Object
     checkcast String
     astore current
+    getstatic edges HashMap
     aload current
-    invokestatic {{pred_cap}}Query.edges HashMap
     invokevirtual HashMap.get(Object)Object
     astore neighbors
     aload neighbors
