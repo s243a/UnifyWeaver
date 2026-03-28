@@ -3772,6 +3772,35 @@ reindent_branch_line(Line, Reindented) :-
     ;   format(string(Reindented), '        ~w', [LineStr])
     ).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Python renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(python, Goal, VarMap, Line, VarName, VarMapOut) :-
+    python_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   python_varmap_new_var(VarMap, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(python, Goal, VarMap, CondStr) :-
+    python_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(python, Branch, VarMap, ExprStr) :-
+    python_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(python, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w:', [Indent, Cond]),
+    indent_branch_lines(ThenLines, '        ', IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~welse:', [Indent]),
+        indent_branch_lines(ElseLines, '        ', IndentedElse),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], Lines)
+    ;   Lines = [IfLine|IndentedThen]
+    ).
+
 %% python_disj_if_elif_lines(+Alternatives, +VarName, +VarMap, -Lines)
 %  Generate if/elif chain for disjunction assignment.
 python_disj_if_elif_lines([], _VarName, _VarMap, []).

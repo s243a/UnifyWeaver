@@ -73,8 +73,21 @@
     if_then_output_info/3,          % +If, +Then, -OutputInfo
 
     % Multi-clause compilation helper
-    compile_multi_clause/4          % +Clauses, +VarMap, +Strategy, -Analysis
+    compile_multi_clause/4,         % +Clauses, +VarMap, +Strategy, -Analysis
+
+    % Recursive compile_expression framework
+    compile_expression/6,           % +Target, +Goal, +VarMap, -Code, -OutputVars, -VarMapOut
+    compile_branch/6,               % +Target, +Branch, +VarMap, -Lines, -OutputVars, -VarMapOut
+    compile_classified_sequence/5   % +Target, +ClassifiedGoals, +VarMap, -Lines, -VarMapOut
 ]).
+
+%% Multifile hooks for target-specific rendering
+:- multifile render_output_goal/6.      % +Target, +Goal, +VarMap, -Line, -VarName, -VarMapOut
+:- multifile render_guard_condition/4.  % +Target, +Goal, +VarMap, -CondStr
+:- multifile render_branch_value/4.     % +Target, +Branch, +VarMap, -ExprStr
+:- multifile render_assignment/5.       % +Target, +VarName, +ExprStr, +Indent, -Line
+:- multifile render_return/4.           % +Target, +VarNames, +Indent, -Line
+:- multifile render_ite_block/7.        % +Target, +Cond, +ThenLines, +ElseLines, +Indent, +ReturnVars, -Lines
 
 :- use_module(library(lists)).
 
@@ -739,3 +752,155 @@ compile_multi_clause([Head-Body|Rest], VarMap, Strategy, [Branch|RestBranches]) 
     classify_goal_sequence(Goals, ClauseVarMap, ClassifiedGoals),
     Branch = clause_branch(HeadConditions, ClassifiedGoals, Strategy),
     compile_multi_clause(Rest, VarMap, Strategy, RestBranches).
+
+% ============================================================================
+% RECURSIVE COMPILE_EXPRESSION FRAMEWORK
+% ============================================================================
+%
+% The shared entry point for recursive template-then-lower compilation.
+% Targets register multifile hooks for rendering; the shared module
+% provides the classification and dispatch logic.
+%
+% This enables templates and native lowering to compose at every
+% nesting level — branch bodies, sub-expressions, and nested control
+% flow all go through the same pipeline.
+
+%% compile_expression(+Target, +Goal, +VarMap, -Code, -OutputVars, -VarMapOut)
+%  The recursive entry point. Classifies a single goal and dispatches
+%  to target-specific rendering via multifile hooks.
+compile_expression(Target, Goal, VarMap, Code, OutputVars, VarMapOut) :-
+    %% Strip module qualification
+    (Goal = _Module:InnerGoal -> G = InnerGoal ; G = Goal),
+    compile_expression_(Target, G, VarMap, Code, OutputVars, VarMapOut).
+
+%% Try output_ite template
+compile_expression_(Target, Goal, VarMap, Code, OutputVars, VarMapOut) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    if_then_else_shared_output_vars(Then, Else, VarMap, SharedVars),
+    SharedVars \= [],
+    !,
+    render_guard_condition(Target, If, VarMap, Cond),
+    compile_branch(Target, Then, VarMap, ThenLines, _ThenVars, _),
+    compile_branch(Target, Else, VarMap, ElseLines, _ElseVars, _),
+    ensure_vars(SharedVars, VarMap, _, VarMapOut),
+    maplist(ensure_var_name_from(VarMapOut), SharedVars, OutputVars),
+    render_ite_block(Target, Cond, ThenLines, ElseLines, "    ", OutputVars, CodeLines),
+    atomic_list_concat(CodeLines, '\n', Code).
+
+%% Try output_disj template
+compile_expression_(Target, Goal, VarMap, Code, OutputVars, VarMapOut) :-
+    disjunction_alternatives(Goal, Alternatives),
+    Alternatives = [_,_|_],
+    shared_output_vars(Alternatives, VarMap, SharedVars),
+    SharedVars \= [],
+    !,
+    ensure_vars(SharedVars, VarMap, _, VarMapOut),
+    maplist(ensure_var_name_from(VarMapOut), SharedVars, OutputVars),
+    compile_disj_branches(Target, Alternatives, VarMap, OutputVars, CodeLines),
+    atomic_list_concat(CodeLines, '\n', Code).
+
+%% Try output goal (assignment)
+compile_expression_(Target, Goal, VarMap, Code, [VarName], VarMapOut) :-
+    render_output_goal(Target, Goal, VarMap, Code, VarName, VarMapOut),
+    !.
+
+%% Try guard (produces condition, no code lines)
+compile_expression_(Target, Goal, VarMap, Code, [], VarMap) :-
+    is_guard_goal(Goal, VarMap),
+    render_guard_condition(Target, Goal, VarMap, Code),
+    !.
+
+%% Passthrough: target-specific fallback
+compile_expression_(Target, Goal, VarMap, Code, OutputVars, VarMapOut) :-
+    render_output_goal(Target, Goal, VarMap, Code, VarName, VarMapOut),
+    !,
+    OutputVars = [VarName].
+compile_expression_(_Target, _Goal, VarMap, "", [], VarMap).
+
+%% compile_branch(+Target, +Branch, +VarMap, -Lines, -OutputVars, -VarMapOut)
+%  Compile a branch body (Then or Else) through the full pipeline.
+compile_branch(Target, Branch, VarMap, Lines, OutputVars, VarMapOut) :-
+    normalize_goals(Branch, Goals),
+    Goals \= [],
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    !,
+    compile_classified_sequence(Target, ClassifiedGoals, VarMap, Lines, VarMapOut),
+    collect_classified_output_vars(ClassifiedGoals, VarMapOut, OutputVars).
+compile_branch(Target, Branch, VarMap, [ExprStr], [ExprStr], VarMap) :-
+    render_branch_value(Target, Branch, VarMap, ExprStr),
+    !.
+compile_branch(_Target, _Branch, VarMap, [], [], VarMap).
+
+%% compile_classified_sequence(+Target, +ClassifiedGoals, +VarMap, -Lines, -VarMapOut)
+%  Render a sequence of classified goals via target hooks.
+compile_classified_sequence(_Target, [], VarMap, [], VarMap).
+compile_classified_sequence(Target, [Classified|Rest], VarMap, Lines, VarMapOut) :-
+    compile_classified_goal(Target, Classified, VarMap, MidLines, VarMap1),
+    compile_classified_sequence(Target, Rest, VarMap1, RestLines, VarMapOut),
+    append(MidLines, RestLines, Lines).
+
+%% compile_classified_goal(+Target, +Classified, +VarMap, -Lines, -VarMapOut)
+compile_classified_goal(_Target, guard(_, _), VarMap, [], VarMap) :- !.
+
+compile_classified_goal(Target, output(Goal, _Var, _Expr), VarMap0, [Line], VarMapOut) :-
+    !,
+    render_output_goal(Target, Goal, VarMap0, Line, _, VarMapOut).
+
+compile_classified_goal(Target, output_ite(If, Then, Else, SharedVars), VarMap0, Lines, VarMapOut) :-
+    !,
+    render_guard_condition(Target, If, VarMap0, Cond),
+    compile_branch(Target, Then, VarMap0, ThenLines, _ThenVars, _),
+    compile_branch(Target, Else, VarMap0, ElseLines, _ElseVars, _),
+    ensure_vars(SharedVars, VarMap0, _, VarMapOut),
+    maplist(ensure_var_name_from(VarMapOut), SharedVars, VarNames),
+    render_ite_block(Target, Cond, ThenLines, ElseLines, "    ", VarNames, Lines).
+
+compile_classified_goal(Target, passthrough(Goal), VarMap0, Lines, VarMapOut) :-
+    !,
+    (   render_output_goal(Target, Goal, VarMap0, Line, _, VarMapOut)
+    ->  Lines = [Line]
+    ;   Lines = [], VarMapOut = VarMap0
+    ).
+
+compile_classified_goal(_Target, _, VarMap, [], VarMap).
+
+%% collect_classified_output_vars(+ClassifiedGoals, +VarMap, -OutputVarNames)
+collect_classified_output_vars([], _, []).
+collect_classified_output_vars([output(Goal, _, _)|Rest], VarMap, [Name|Names]) :-
+    goal_output_var(Goal, Var),
+    lookup_var(Var, VarMap, Name),
+    !,
+    collect_classified_output_vars(Rest, VarMap, Names).
+collect_classified_output_vars([output_ite(_, _, _, SharedVars)|Rest], VarMap, Names) :-
+    !,
+    maplist(ensure_var_name_from(VarMap), SharedVars, SVNames),
+    collect_classified_output_vars(Rest, VarMap, RestNames),
+    append(SVNames, RestNames, Names).
+collect_classified_output_vars([_|Rest], VarMap, Names) :-
+    collect_classified_output_vars(Rest, VarMap, Names).
+
+%% compile_disj_branches(+Target, +Alternatives, +VarMap, +OutputVars, -Lines)
+%  Compile disjunction alternatives into target-specific if/elif/else.
+compile_disj_branches(_Target, [], _VarMap, _OutputVars, []).
+compile_disj_branches(Target, [Alt], VarMap, _OutputVars, Lines) :-
+    !,
+    compile_branch(Target, Alt, VarMap, BranchLines, _BranchVars, _),
+    Lines = BranchLines.
+compile_disj_branches(Target, [Alt|Rest], VarMap, OutputVars, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(render_guard_condition(Target), Guards, [VarMap], CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = "True"
+    ),
+    compile_branch(Target, Alt, VarMap, BranchLines, _BranchVars, _),
+    render_ite_block(Target, CondExpr, BranchLines, [], "    ", OutputVars, AltLines),
+    compile_disj_branches(Target, Rest, VarMap, OutputVars, RestLines),
+    append(AltLines, RestLines, Lines).
+
+%% ensure_var_name_from(+VarMap, +Var, -Name)
+ensure_var_name_from(VarMap, Var, Name) :-
+    lookup_var(Var, VarMap, Name), !.
+ensure_var_name_from(_, _, "_").
