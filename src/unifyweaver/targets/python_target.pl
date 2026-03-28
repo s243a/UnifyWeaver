@@ -3633,9 +3633,17 @@ python_disj_elif_return_lines([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines])
 
 %% python_guard_condition(+VarMap, +Goal, -Condition)
 %  Convert a guard goal to a Python condition string.
+python_guard_condition(_VarMap, true, 'True') :- !.
+python_guard_condition(_VarMap, fail, 'False') :- !.
+python_guard_condition(_VarMap, false, 'False') :- !.
 python_guard_condition(VarMap, _Module:Goal, Condition) :-
     !,
     python_guard_condition(VarMap, Goal, Condition).
+%% Simplify (If -> true ; fail) to just If
+python_guard_condition(VarMap, Goal, Condition) :-
+    if_then_else_goal(Goal, IfGoal, true, fail),
+    !,
+    python_guard_condition(VarMap, IfGoal, Condition).
 python_guard_condition(VarMap, Goal, Condition) :-
     if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
     !,
@@ -3918,6 +3926,7 @@ python_op('+', '+').
 python_op('-', '-').
 python_op('*', '*').
 python_op('/', '/').
+python_op('floor_div', '//').
 python_op('%', '%').
 python_op('&&', 'and').
 python_op('||', 'or').
