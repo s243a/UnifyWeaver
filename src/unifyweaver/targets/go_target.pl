@@ -5635,6 +5635,41 @@ go_branch_value(is(_, Expr), VarMap, Value) :-
 go_branch_value(Goal, VarMap, Value) :-
     go_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Go renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(go, Goal, VarMap, Line, VarName, VarMapOut) :-
+    go_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(go, Goal, VarMap, CondStr) :-
+    go_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(go, Branch, VarMap, ExprStr) :-
+    go_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(go, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w {', [Indent, Cond]),
+    go_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(CloseThen), '~w}', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        go_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(CloseElse), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreClose),
+        append(PreClose, [CloseElse], Lines)
+    ;   append([IfLine|IndentedThen], [CloseThen], Lines)
+    ).
+
+go_indent_lines([], _, []).
+go_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w\t~w', [Indent, Line]),
+    go_indent_lines(Rest, Indent, RestIndented).
+
 %% go_expr — convert Prolog expression to Go syntax
 go_expr(Var, VarMap, GoExpr) :-
     var(Var), !,
