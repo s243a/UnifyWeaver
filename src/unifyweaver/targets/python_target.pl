@@ -2983,9 +2983,9 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     pairs_from_clauses(Clauses, ClausePairs),
     native_python_clause_body(Name/Arity, ClausePairs, NativeBody),
     !,
-    % Build standalone function
-    Arity1 is Arity - 1,  % Last arg is output
-    build_python_arg_list(Arity1, ArgList),
+    % Determine input/output arg split
+    python_arg_split(Arity, ClausePairs, InputArity),
+    build_python_arg_list(InputArity, ArgList),
     format(string(FuncCode),
 'def ~w(~w):
 ~w', [Name, ArgList, NativeBody]),
@@ -2993,6 +2993,46 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     helpers(Helpers),
     generate_python_main(Options, Main),
     format(string(PythonCode), "~s~s\n~s\n~s", [Header, Helpers, FuncCode, Main]).
+
+%% python_arg_split(+Arity, +ClausePairs, -InputArity)
+%  Determine how many args are inputs vs outputs.
+%  Arity 1: all args are inputs (boolean predicate — guard-only)
+%  Arity 2+: last arg is output (default convention)
+%  Multi-output: detect from clause body output var count
+python_arg_split(1, _, 1) :- !.
+python_arg_split(Arity, ClausePairs, InputArity) :-
+    Arity >= 2,
+    %% Count output args from the first clause
+    ClausePairs = [Head-Body|_],
+    Head =.. [_|HeadArgs],
+    build_head_varmap(HeadArgs, 1, VarMap),
+    normalize_goals(Body, Goals),
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
+    (   OutputCount > 0
+    ->  InputArity is Arity - OutputCount
+    ;   InputArity is Arity - 1  %% default: last arg is output
+    ),
+    InputArity >= 1,
+    !.
+python_arg_split(Arity, _, InputArity) :-
+    InputArity is max(1, Arity - 1).
+
+%% count_output_vars(+ClassifiedGoals, +HeadArgs, -Count)
+%  Count how many head args are assigned as outputs in the body.
+count_output_vars(ClassifiedGoals, HeadArgs, Count) :-
+    findall(Var, (
+        member(Classified, ClassifiedGoals),
+        classified_output_var(Classified, Var),
+        var_member_by_identity(Var, HeadArgs)
+    ), OutputVars),
+    unique_vars_by_identity(OutputVars, UniqueOutputVars),
+    length(UniqueOutputVars, Count).
+
+classified_output_var(output(_, Var, _), Var).
+classified_output_var(output_ite(_, _, _, Vars), Var) :- member(Var, Vars).
+classified_output_var(output_disj(_, Vars), Var) :- member(Var, Vars).
+classified_output_var(output_if_then(_, _, Vars), Var) :- member(Var, Vars).
 compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
     % Fallback: per-clause functions with yield
     % Generate clause functions
@@ -3065,23 +3105,35 @@ native_python_clause_body(PredSpec, [Head-Body], Code) :-
     (   Condition == 'True'
     ->  Code = ClauseCode
     ;   indent_python(ClauseCode, IndentedCode),
+        %% For arity-1 (boolean predicates), else returns False
+        Head =.. [_|HeadArgs], length(HeadArgs, HArity),
+        (   HArity =:= 1
+        ->  ElseBranch = '        return False'
+        ;   format(string(ElseBranch), '        raise ValueError("No matching clause for ~w")', [PredSpec])
+        ),
         format(string(Code),
 '    if ~w:
 ~w
     else:
-        raise ValueError("No matching clause for ~w")', [Condition, IndentedCode, PredSpec])
+~w', [Condition, IndentedCode, ElseBranch])
     ).
 
 % Multi-clause: emit if/elif/else chain
 native_python_clause_body(PredSpec, Clauses, Code) :-
-    Clauses = [_|[_|_]],
+    Clauses = [Head-_|[_|_]],
     maplist(native_python_clause_pair(PredSpec), Clauses, Branches),
     Branches \= [],
     branches_to_python_if_chain(Branches, IfChain),
+    %% For arity-1 (boolean predicates), else returns False
+    Head =.. [_|HeadArgs], length(HeadArgs, HArity),
+    (   HArity =:= 1
+    ->  ElseBranch = '        return False'
+    ;   format(string(ElseBranch), '        raise ValueError("No matching clause for ~w")', [PredSpec])
+    ),
     format(string(Code),
 '~w
     else:
-        raise ValueError("No matching clause for ~w")', [IfChain, PredSpec]).
+~w', [IfChain, ElseBranch]).
 
 native_python_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
     native_python_clause(PredSpec, Head, Body, Condition, ClauseCode),
@@ -3089,20 +3141,35 @@ native_python_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
 
 %% native_python_clause(+PredSpec, +Head, +Body, -Condition, -Code)
 %  Compile a single clause to a condition and Python code.
+
+% Arity-1 predicates: boolean predicate — all goals are guards, return True
+native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
+    Head =.. [_Pred|HeadArgs],
+    length(HeadArgs, 1),
+    !,
+    build_head_varmap(HeadArgs, 1, VarMap),
+    python_head_conditions(HeadArgs, 1, HeadConditions),
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  Code = '    return True', GoalConditions = []
+    ;   maplist(python_guard_condition(VarMap), Goals, GoalConditions),
+        Code = '    return True'
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_python_conditions(AllConditions, Condition).
+
+% Arity 2+: last arg(s) are output
 native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
     Head =.. [_Pred|HeadArgs],
     length(HeadArgs, Arity),
+    Arity >= 2,
     % Build VarMap from head arguments
     build_head_varmap(HeadArgs, 1, VarMap),
     % Extract head conditions — only from input args (not the output arg)
     % The last argument is treated as the output
-    (   Arity > 1
-    ->  append(InputHeadArgs, [OutputHeadArg], HeadArgs),
-        % Conditions from input args only
-        python_head_conditions(InputHeadArgs, 1, HeadConditions)
-    ;   OutputHeadArg = _,
-        python_head_conditions(HeadArgs, 1, HeadConditions)
-    ),
+    append(InputHeadArgs, [OutputHeadArg], HeadArgs),
+    % Conditions from input args only
+    python_head_conditions(InputHeadArgs, 1, HeadConditions),
     % Process body goals
     normalize_goals(Body, Goals),
     (   Goals == []
