@@ -179,40 +179,31 @@ touching Prolog:
 | Generic R fallback IIFE | `generic_r_wrapper.mustache` |
 | TC template (monolithic) | Split like other targets |
 
-## Revised Implementation Order
+## Implementation Status
 
-### Step 1: Wire TypR to the shared module
+### Step 1: Wire TypR to shared module — DEFERRED
 
-Replace TypR's duplicated predicates with imports from
-`clause_body_analysis`:
-- `normalize_typr_goals` → `normalize_goals`
-- `typr_if_then_else_goal` → `if_then_else_goal`
-- `typr_if_then_goal` → `if_then_goal`
-- `typr_disjunction_alternatives` → `disjunction_alternatives`
-- `build_head_varmap` (TypR) → `build_head_varmap` (shared)
+TypR is under active development by Codex. Wiring it to the
+shared module would interfere. Instead, we improved the shared
+module and used it in the Python target as proof of concept.
 
-This is a mechanical refactor. The shared versions are
-functionally identical. Verify TypR tests still pass after.
+### Step 2: Python target uses shared module — DONE
 
-### Step 2: Audit target usage depth
+Python now uses `classify_goal_sequence` for all non-recursive
+predicate compilation. Nearly every TypR native lowering pattern
+has been implemented (18 of 20 applicable patterns).
 
-The shared module has `classify_goal/3`, `analyze_clauses/2`,
-`translate_expr/3` — but most targets only use
-`clause_guard_output_split`. Audit which targets could use
-more of the shared analysis to handle more predicate structures.
+50 tests across 4 test files, all passing.
 
-### Step 3: TypR template extraction
+### Step 3: TypR template extraction — FUTURE
 
-Move TypR's large format strings (tree recursion body, mutual
-recursion wrapper, linear recursion loops) into `.mustache` files.
-Independent of the shared module work.
+Move TypR's large format strings into `.mustache` files.
+Deferred to avoid interfering with Codex's TypR development.
 
-### Step 4: Identify shared module gaps
+### Step 4: Apply to more targets — FUTURE
 
-Compare what TypR's native lowering can handle vs what the
-shared module provides. The gap is TypR's more sophisticated
-multi-result output handling, container patterns, and guarded
-tail sequences. These may be worth adding to the shared module.
+The Python implementation is the template for upgrading Go,
+Rust, C, etc. to use `classify_goal_sequence`.
 
 ## Fallback Chains (Possible Future Work)
 
