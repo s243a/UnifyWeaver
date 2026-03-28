@@ -166,6 +166,10 @@ compile_non_recursive(ruby, Pred/Arity, FinalOptions, GeneratedCode) :-
     ruby_target:compile_predicate_to_ruby(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(typescript, Pred/Arity, FinalOptions, GeneratedCode) :-
     typescript_target:compile_predicate_to_typescript(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(haskell, Pred/Arity, FinalOptions, GeneratedCode) :-
+    haskell_target:compile_predicate_to_haskell(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(fsharp, Pred/Arity, FinalOptions, GeneratedCode) :-
+    fsharp_target:compile_predicate_to_fsharp(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(jython, Pred/Arity, FinalOptions, GeneratedCode) :-

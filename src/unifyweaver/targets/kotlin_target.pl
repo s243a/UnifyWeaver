@@ -1418,6 +1418,45 @@ kotlin_branch_value(is(_, Expr), VarMap, Value) :-
 kotlin_branch_value(Goal, VarMap, Value) :-
     kotlin_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Kotlin renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(kotlin, =(Var, Expr), VarMap0, Line, VarName, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    kotlin_expr(Expr, VarMap0, ExprStr),
+    format(string(Line), '    val ~w = ~w', [VarName, ExprStr]).
+clause_body_analysis:render_output_goal(kotlin, is(Var, Expr), VarMap0, Line, VarName, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    kotlin_expr(Expr, VarMap0, ExprStr),
+    format(string(Line), '    val ~w = ~w', [VarName, ExprStr]).
+
+clause_body_analysis:render_guard_condition(kotlin, Goal, VarMap, CondStr) :-
+    kotlin_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(kotlin, Branch, VarMap, ExprStr) :-
+    kotlin_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(kotlin, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Indent, Cond]),
+    kotlin_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(CloseThen), '~w}', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        kotlin_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(CloseElse), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreClose),
+        append(PreClose, [CloseElse], Lines)
+    ;   append([IfLine|IndentedThen], [CloseThen], Lines)
+    ).
+
+kotlin_indent_lines([], _, []).
+kotlin_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    kotlin_indent_lines(Rest, Indent, RestIndented).
+
 %% kotlin_expr — convert Prolog expression to Kotlin syntax
 kotlin_expr(Var, VarMap, KExpr) :-
     var(Var), !,

@@ -406,6 +406,39 @@ haskell_branch_value(is(_, Expr), VarMap, Value) :-
 haskell_branch_value(Goal, VarMap, Value) :-
     haskell_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Haskell renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(haskell, Goal, VarMap, Line, VarName, VarMapOut) :-
+    haskell_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(haskell, Goal, VarMap, CondStr) :-
+    haskell_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(haskell, Branch, VarMap, ExprStr) :-
+    haskell_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(haskell, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w', [Indent, Cond]),
+    format(string(ThenHead), '~w  then', [Indent]),
+    haskell_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseHead), '~w  else', [Indent]),
+        haskell_indent_lines(ElseLines, Indent, IndentedElse),
+        append([IfLine, ThenHead|IndentedThen], [ElseHead|IndentedElse], Lines)
+    ;   append([IfLine, ThenHead|IndentedThen], [], Lines)
+    ).
+
+haskell_indent_lines([], _, []).
+haskell_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    haskell_indent_lines(Rest, Indent, RestIndented).
+
 %% haskell_expr — convert Prolog expression to Haskell syntax
 haskell_expr(Var, VarMap, HsExpr) :-
     var(Var), !,

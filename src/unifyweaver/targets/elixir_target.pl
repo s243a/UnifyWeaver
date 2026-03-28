@@ -442,6 +442,41 @@ elixir_branch_value(is(_, Expr), VarMap, Value) :-
 elixir_branch_value(Goal, VarMap, Value) :-
     elixir_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Elixir renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(elixir, Goal, VarMap, Line, VarName, VarMapOut) :-
+    elixir_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(elixir, Goal, VarMap, CondStr) :-
+    elixir_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(elixir, Branch, VarMap, ExprStr) :-
+    elixir_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(elixir, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w do', [Indent, Cond]),
+    elixir_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~welse', [Indent]),
+        elixir_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(EndLine), '~wend', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreEnd),
+        append(PreEnd, [EndLine], Lines)
+    ;   format(string(EndLine), '~wend', [Indent]),
+        append([IfLine|IndentedThen], [EndLine], Lines)
+    ).
+
+elixir_indent_lines([], _, []).
+elixir_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w  ~w', [Indent, Line]),
+    elixir_indent_lines(Rest, Indent, RestIndented).
+
 %% elixir_expr — convert Prolog expression to Elixir syntax
 elixir_expr(Var, VarMap, ExExpr) :-
     var(Var), !,
