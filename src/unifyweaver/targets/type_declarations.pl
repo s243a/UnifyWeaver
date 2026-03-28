@@ -238,6 +238,32 @@ resolve_type(pair(_, _), r, "list").
 resolve_type(record(Name, _Fields), r, Concrete) :-
     atom_string(Name, Concrete).
 
+%% Python type hints
+resolve_type(atom, python, "str").
+resolve_type(string, python, "str").
+resolve_type(integer, python, "int").
+resolve_type(float, python, "float").
+resolve_type(number, python, "float").
+resolve_type(boolean, python, "bool").
+resolve_type(any, python, "Any").
+resolve_type(list(Type), python, Concrete) :-
+    resolve_type(Type, python, Inner),
+    format(string(Concrete), "list[~w]", [Inner]).
+resolve_type(maybe(Type), python, Concrete) :-
+    resolve_type(Type, python, Inner),
+    format(string(Concrete), "~w | None", [Inner]).
+resolve_type(map(KeyType, ValueType), python, Concrete) :-
+    resolve_type(KeyType, python, Key),
+    resolve_type(ValueType, python, Value),
+    format(string(Concrete), "dict[~w, ~w]", [Key, Value]).
+resolve_type(set(Type), python, Concrete) :-
+    resolve_type(Type, python, Inner),
+    format(string(Concrete), "set[~w]", [Inner]).
+resolve_type(pair(LeftType, RightType), python, Concrete) :-
+    resolve_type(LeftType, python, Left),
+    resolve_type(RightType, python, Right),
+    format(string(Concrete), "tuple[~w, ~w]", [Left, Right]).
+
 resolve_type(Type, TargetLang, Concrete) :-
     atom(Type),
     resolve_domain_type(Type, Resolved),

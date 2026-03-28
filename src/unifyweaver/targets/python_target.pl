@@ -2985,10 +2985,12 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     !,
     % Determine input/output arg split
     python_arg_split(Arity, ClausePairs, InputArity),
-    build_python_arg_list(InputArity, ArgList),
+    %% Build typed or untyped arg list
+    python_typed_arg_list(Name/Arity, InputArity, ArgList),
+    python_return_annotation(Name/Arity, RetAnnotation),
     format(string(FuncCode),
-'def ~w(~w):
-~w', [Name, ArgList, NativeBody]),
+'def ~w(~w)~w:
+~w', [Name, ArgList, RetAnnotation, NativeBody]),
     header(Header),
     helpers(Helpers),
     generate_python_main(Options, Main),
@@ -3037,6 +3039,44 @@ python_fact_input_count(HeadArgs, InputCount) :-
     (   RawCount < Arity
     ->  InputCount = RawCount  %% has repeated vars — use detected count
     ;   InputCount is max(1, Arity - 1)  %% all unique — last is output
+    ).
+
+%% python_typed_arg_list(+PredSpec, +InputArity, -ArgList)
+%  Build arg list with type hints if uw_type declarations exist.
+%  No type hints if no declarations — follows user's convention.
+python_typed_arg_list(Name/Arity, InputArity, ArgList) :-
+    (   has_python_type_annotations(Name/Arity)
+    ->  python_typed_args(Name/Arity, 1, InputArity, Args),
+        atomic_list_concat(Args, ', ', ArgList)
+    ;   build_python_arg_list(InputArity, ArgList)
+    ).
+
+has_python_type_annotations(Name/Arity) :-
+    functor(Head, Name, Arity),
+    (   clause(type_declarations:uw_type(Name/Arity, _, _), true)
+    ;   clause(user:uw_type(Name/Arity, _, _), true)
+    ), !.
+
+python_typed_args(_PredSpec, I, InputArity, []) :- I > InputArity, !.
+python_typed_args(Name/Arity, I, InputArity, [TypedArg|Rest]) :-
+    format(string(ArgName), 'arg~w', [I]),
+    (   (clause(type_declarations:uw_type(Name/Arity, I, Type), true)
+        ; clause(user:uw_type(Name/Arity, I, Type), true)),
+        type_declarations:resolve_type(Type, python, PyType)
+    ->  format(string(TypedArg), '~w: ~w', [ArgName, PyType])
+    ;   TypedArg = ArgName
+    ),
+    I1 is I + 1,
+    python_typed_args(Name/Arity, I1, InputArity, Rest).
+
+%% python_return_annotation(+PredSpec, -Annotation)
+%  Add -> ReturnType annotation if uw_return_type exists.
+python_return_annotation(Name/Arity, Annotation) :-
+    (   (clause(type_declarations:uw_return_type(Name/Arity, Type), true)
+        ; clause(user:uw_return_type(Name/Arity, Type), true)),
+        type_declarations:resolve_type(Type, python, PyType)
+    ->  format(string(Annotation), ' -> ~w', [PyType])
+    ;   Annotation = ""
     ).
 
 %% python_is_boolean_predicate(+HeadArgs, +Goals, +VarMap)
@@ -3331,11 +3371,41 @@ python_render_classified_goals([], _VarMap, [], []).
 python_render_classified_goals([Classified], VarMap, Conds, Lines) :-
     !,
     python_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s) — assign first, then conditional return
+python_render_classified_goals([output(Goal, Var, _Expr)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    python_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    %% Collect trailing guards
+    collect_trailing_guards(Rest, VarMap1, GuardGoals, Remaining),
+    maplist(python_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' and ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "None"
+    ),
+    (   Remaining == []
+    ->  %% All trailing goals are guards — conditional return
+        format(string(IfLine), '    if ~w:', [GuardExpr]),
+        format(string(RetLine), '        return ~w', [OutName]),
+        Lines = [AssignLine, IfLine, RetLine]
+    ;   %% More goals after guards — emit guard as assertion, continue
+        format(string(IfLine), '    if not (~w):', [GuardExpr]),
+        format(string(RaiseLine), '        raise ValueError("Guard failed")', []),
+        python_render_classified_goals(Remaining, VarMap1, _, RemLines),
+        append([AssignLine, IfLine, RaiseLine], RemLines, Lines)
+    ).
 python_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
     python_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
     python_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
     append(MidConds, RestConds, Conds),
     append(MidLines, RestLines, Lines).
+
+%% collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !,
+    collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+collect_trailing_guards(Remaining, _, [], Remaining).
 
 %% python_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
 %  Render a non-last classified goal.

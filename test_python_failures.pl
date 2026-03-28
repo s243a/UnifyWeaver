@@ -88,6 +88,24 @@ my_member(X, [_|T]) :- my_member(X, T).
 :- dynamic arity_of/2.
 arity_of(Term, A) :- functor(Term, _, A).
 
+%% --- Guarded tail patterns (TypR handles, Python doesn't) ---
+
+%% Guard AFTER output (interleaved)
+:- dynamic validated_double/2.
+validated_double(X, Y) :- Y is X * 2, Y > 0.
+
+%% Multiple outputs with intermediate guard
+:- dynamic safe_ratio/4.
+safe_ratio(A, B, Ratio, Status) :- B =\= 0, Ratio is A / B,
+    (Ratio > 1 -> Status = high ; Status = low).
+
+%% Type-annotated predicate
+:- dynamic typed_add/3.
+:- type_declarations:assert(uw_type(typed_add/3, 1, integer)).
+:- type_declarations:assert(uw_type(typed_add/3, 2, integer)).
+:- type_declarations:assert(uw_return_type(typed_add/3, integer)).
+typed_add(X, Y, Z) :- Z is X + Y.
+
 run_failures :-
     try('sum_pair/3', sum_pair/3),
     try('valid_age/1', valid_age/1),
@@ -98,5 +116,6 @@ run_failures :-
     try('between_check/4', between_check/4),
     try('color_name/2', color_name/2),
     try('is_not_empty/1', is_not_empty/1),
-    try('my_member/2', my_member/2),
+    try('validated_double/2', validated_double/2),
+    try('typed_add/3', typed_add/3),
     nl, writeln('=== FAILURE SCAN DONE ===').
