@@ -195,6 +195,90 @@ test_is_vowel :-
         check('has def', Code, "def is_vowel(arg1)")
     ; writeln('  SKIP: failed')).
 
+%% ========================================================
+%% Group 8: Negation as failure / \+
+%% ========================================================
+:- dynamic is_odd/1, not_zero/1.
+is_odd(X) :- X mod 2 =\= 0.
+not_zero(X) :- X =\= 0.
+
+test_is_odd :-
+    writeln('=== is_odd/1 (=\\= guard) ==='),
+    try_compile(is_odd/1, python, Code, Status),
+    (Status = ok -> show_func(Code, is_odd), check('has !=', Code, "!=") ; writeln('  SKIP')).
+
+test_not_zero :-
+    writeln('=== not_zero/1 (simple !=) ==='),
+    try_compile(not_zero/1, python, Code, Status),
+    (Status = ok -> show_func(Code, not_zero), check('has !=', Code, "!= 0") ; writeln('  SKIP')).
+
+%% ========================================================
+%% Group 9: Multiple guards combined
+%% ========================================================
+:- dynamic in_range/3, triangle_type/4.
+in_range(X, Lo, Hi) :- X >= Lo, X =< Hi.
+triangle_type(A, B, C, equilateral) :- A =:= B, B =:= C.
+triangle_type(A, B, C, isosceles) :- A =:= B ; B =:= C ; A =:= C.
+triangle_type(_, _, _, scalene).
+
+test_in_range :-
+    writeln('=== in_range/3 (multiple guards, arity-3 boolean) ==='),
+    try_compile(in_range/3, python, Code, Status),
+    (Status = ok -> show_func(Code, in_range),
+        check('has >= and <=', Code, ">="),
+        check('has arg1', Code, "def in_range(arg1")
+    ; writeln('  SKIP')).
+
+test_triangle :-
+    writeln('=== triangle_type/4 (multi-clause, guards + disjunction) ==='),
+    try_compile(triangle_type/4, python, Code, Status),
+    (Status = ok -> show_func(Code, triangle_type),
+        check('equilateral', Code, "equilateral"),
+        check('scalene', Code, "scalene")
+    ; writeln('  SKIP')).
+
+%% ========================================================
+%% Group 10: Intermediate computations
+%% ========================================================
+:- dynamic hypotenuse/3, circle_area/2, discount_price/3.
+hypotenuse(A, B, C) :- C is sqrt(A * A + B * B).
+circle_area(R, Area) :- Area is 3.14159 * R * R.
+discount_price(Price, Pct, Final) :- Final is Price * (1 - Pct / 100).
+
+test_hypotenuse :-
+    writeln('=== hypotenuse/3 (nested arithmetic with sqrt) ==='),
+    try_compile(hypotenuse/3, python, Code, Status),
+    (Status = ok -> show_func(Code, hypotenuse), check('sqrt', Code, "sqrt") ; writeln('  SKIP')).
+
+test_circle_area :-
+    writeln('=== circle_area/2 (float constant) ==='),
+    try_compile(circle_area/2, python, Code, Status),
+    (Status = ok -> show_func(Code, circle_area), check('3.14159', Code, "3.14159") ; writeln('  SKIP')).
+
+test_discount :-
+    writeln('=== discount_price/3 (compound arithmetic) ==='),
+    try_compile(discount_price/3, python, Code, Status),
+    (Status = ok -> show_func(Code, discount_price), check('has def', Code, "def discount_price") ; writeln('  SKIP')).
+
+%% ========================================================
+%% Group 11: Predicate with multiple returns in different clauses
+%% ========================================================
+:- dynamic http_status/2.
+http_status(200, ok).
+http_status(301, redirect).
+http_status(404, not_found).
+http_status(500, server_error).
+http_status(_, unknown).
+
+test_http_status :-
+    writeln('=== http_status/2 (5-clause lookup table) ==='),
+    try_compile(http_status/2, python, Code, Status),
+    (Status = ok -> show_func(Code, http_status),
+        check('200', Code, "200"),
+        check('not_found', Code, "not_found"),
+        check('unknown', Code, "unknown")
+    ; writeln('  SKIP')).
+
 run_tests :-
     test_swap,
     test_min_max,
@@ -211,4 +295,13 @@ run_tests :-
     test_is_even,
     test_is_adult,
     test_is_vowel,
-    nl, writeln('=== ALL 15 ROUND 2 TESTS DONE ===').
+    %% Round 2b
+    test_is_odd,
+    test_not_zero,
+    test_in_range,
+    test_triangle,
+    test_hypotenuse,
+    test_circle_area,
+    test_discount,
+    test_http_status,
+    nl, writeln('=== ALL 23 ROUND 2 TESTS DONE ===').

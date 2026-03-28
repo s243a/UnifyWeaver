@@ -3012,7 +3012,11 @@ python_arg_split(Arity, ClausePairs, InputArity) :-
         count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
         (   OutputCount > 0
         ->  InputArity is Arity - OutputCount
-        ;   InputArity is Arity - 1
+        ;   %% No outputs: check if all goals are guards (boolean predicate)
+            (   forall(member(CG, ClassifiedGoals), CG = guard(_, _))
+            ->  InputArity = Arity  %% All guards, all args are inputs
+            ;   InputArity is Arity - 1
+            )
         )
     ;   %% Pure fact: count unique variables to find input count
         python_fact_input_count(HeadArgs, InputArity)
@@ -3202,7 +3206,12 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
     normalize_goals(Body, Goals),
     (   Goals == []
     ->  python_fact_input_count(HeadArgs, InputCount)
-    ;   InputCount is Arity - 1
+    ;   %% Check if all body goals are guards (boolean predicate)
+        classify_goal_sequence(Goals, VarMap, CGs),
+        (   forall(member(CG, CGs), CG = guard(_, _))
+        ->  InputCount = Arity  %% Boolean: all args are inputs
+        ;   InputCount is Arity - 1
+        )
     ),
     length(InputHeadArgs, InputCount),
     append(InputHeadArgs, OutputHeadArgs, HeadArgs),
@@ -3224,13 +3233,16 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
                 format(string(Code), '    return ~w', [OutputLit])
             ;   python_output_goals(OutputGoals, VarMap, Code)
             )
-        ;   % Output is a variable
-            (   var(OutputHeadArg),
+        ;   % Output is a variable (or boolean with no output args)
+            (   OutputHeadArgs == []
+            ->  % Boolean predicate (all args are inputs, no output args)
+                maplist(python_guard_condition(VarMap), Goals, GoalConditions),
+                Code = '    return True'
+            ;   var(OutputHeadArg),
                 lookup_var(OutputHeadArg, VarMap, OutputArgName),
-                %% Check it's also an INPUT arg (appears earlier in head)
+                %% Check it's also an INPUT arg (e.g., max2(X,Y,X) — output = input X)
                 var_member_by_identity(OutputHeadArg, InputHeadArgs)
-            ->  % Output var is an input arg (e.g., max2(X,Y,X) — output = input X)
-                %% All goals are guards, return the input arg
+            ->  % Output var is an input arg
                 clause_guard_output_split(Goals, VarMap, GuardGoals, _OutputGoals),
                 maplist(python_guard_condition(VarMap), GuardGoals, GoalConditions),
                 format(string(Code), '    return ~w', [OutputArgName])
