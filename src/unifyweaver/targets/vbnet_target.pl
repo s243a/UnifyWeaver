@@ -475,6 +475,52 @@ vbnet_output_goals(Outputs, VarMap, Value) :-
     ;   vbnet_resolve_value(LastGoal, VarMap, Value)
     ).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register VB.NET renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(vbnet, Goal, VarMap, Line, VarName, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        vbnet_resolve_value(Expr, VarMap, ExprStr),
+        format(string(Line), '        Dim ~w = ~w', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        vbnet_arith_expr(ArithExpr, VarMap, ExprStr),
+        format(string(Line), '        Dim ~w = ~w', [VarName, ExprStr])
+    ;   VarName = "_", VarMapOut = VarMap,
+        Line = "        ' unsupported output goal"
+    ).
+
+clause_body_analysis:render_guard_condition(vbnet, Goal, VarMap, CondStr) :-
+    vbnet_guard_condition(Goal, VarMap, CondStr).
+
+clause_body_analysis:render_branch_value(vbnet, Branch, VarMap, ExprStr) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    (   goal_output_var(LastGoal, _)
+    ->  vbnet_expr(LastGoal, VarMap, ExprStr)
+    ;   vbnet_resolve_value(LastGoal, VarMap, ExprStr)
+    ).
+
+clause_body_analysis:render_ite_block(vbnet, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wIf ~w Then', [Indent, Cond]),
+    vbnet_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~wElse', [Indent]),
+        vbnet_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(EndLine), '~wEnd If', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], Pre),
+        append(Pre, [EndLine], Lines)
+    ;   format(string(EndLine), '~wEnd If', [Indent]),
+        append([IfLine|IndentedThen], [EndLine], Lines)
+    ).
+
+vbnet_indent_lines([], _, []).
+vbnet_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    vbnet_indent_lines(Rest, Indent, RestIndented).
+
 %% vbnet_expr(+Goal, +VarMap, -Expr)
 vbnet_expr(Goal, VarMap, Expr) :-
     Goal = (_Var = RHS),

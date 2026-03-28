@@ -41,6 +41,7 @@
 :- use_module('../targets/jamaica_target', []).     % registers multifile hooks for Jamaica
 :- use_module('../targets/krakatau_target', []).    % registers multifile hooks for Krakatau
 :- use_module('../targets/llvm_target', []).        % registers multifile hooks for LLVM
+:- use_module('../targets/vbnet_target', []).       % registers multifile hooks for VB.NET
 :- use_module(template_system).
 :- use_module(input_source).
 :- use_module(library(lists)).
