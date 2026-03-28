@@ -440,6 +440,7 @@ jobs:
               "- Compare URL: `"$($env:CACHE_SMOKE_DIFF_COMPARE_URL)`"",
               "- Compare artifact: `"$($env:COMPARE_ARTIFACT_NAME)`"",
               "- Diff JSON artifact: `"$($env:CACHE_SMOKE_DIFF_ARTIFACT_NAME)`"",
+              "- Diff JSON path: `"$($env:CACHE_SMOKE_DIFF_JSON_PATH)`"",
               "- Baseline overall result: `"$($diff.overallResult.baseline)`"",
               "- Compare overall result: `"$($diff.overallResult.compare)`"",
               "- Overall result delta: `"$($diff.overallResult.delta)`"",
