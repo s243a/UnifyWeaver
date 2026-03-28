@@ -1,7 +1,23 @@
 :- module(test_jvm_asm_native_lowering, [test_jvm_asm_native_lowering/0]).
 :- use_module(library(plunit)).
-:- use_module('../../src/unifyweaver/targets/jamaica_target').
-:- use_module('../../src/unifyweaver/targets/krakatau_target').
+:- use_module('../../src/unifyweaver/targets/jamaica_target', [
+    compile_predicate_to_jamaica/3,
+    compile_jamaica_class/4,
+    compile_tail_recursion_jamaica/3,
+    compile_linear_recursion_jamaica/3,
+    compile_tree_recursion_jamaica/3,
+    compile_mutual_recursion_jamaica/2,
+    init_jamaica_target/0
+]).
+:- use_module('../../src/unifyweaver/targets/krakatau_target', [
+    compile_predicate_to_krakatau/3,
+    compile_krakatau_class/4,
+    compile_tail_recursion_krakatau/3,
+    compile_linear_recursion_krakatau/3,
+    compile_tree_recursion_krakatau/3,
+    compile_mutual_recursion_krakatau/2,
+    init_krakatau_target/0
+]).
 :- use_module('../../src/unifyweaver/core/jvm_bytecode').
 :- use_module('../../src/unifyweaver/core/target_registry').
 :- use_module('../../src/unifyweaver/core/recursive_compiler').
@@ -400,24 +416,17 @@ test(awk_tc_template_content) :-
 
 test(jamaica_tc_dispatch) :-
     % Verify the dispatch clause compiles the template
-    catch(
-        recursive_compiler:compile_transitive_closure(
-            jamaica, ancestor, 2, parent, [], Code),
-        _,
-        fail
-    ),
+    recursive_compiler:compile_transitive_closure(
+        jamaica, ancestor, 2, parent, [], Code),
     has(Code, "AncestorQuery"),
-    has(Code, "add_fact").
+    has(Code, "addFact").
 
 test(krakatau_tc_dispatch) :-
-    catch(
-        recursive_compiler:compile_transitive_closure(
-            krakatau, ancestor, 2, parent, [], Code),
-        _,
-        fail
+    recursive_compiler:compile_transitive_closure(
+        krakatau, ancestor, 2, parent, [], Code
     ),
     has(Code, ".class public AncestorQuery"),
-    has(Code, "add_fact").
+    has(Code, "addFact").
 
 test(vbnet_tc_dispatch) :-
     catch(

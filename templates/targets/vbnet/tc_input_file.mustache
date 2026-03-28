@@ -1,0 +1,12 @@
+
+
+    Public Shared Sub Main(args As String())
+        Dim query As New {{pred_cap}}Query()
+
+        ' Read {{base}} facts from file
+        For Each line As String In System.IO.File.ReadLines(args(0))
+            If line.Contains(":") Then
+                Dim parts() As String = line.Split(":"c, 2)
+                query.AddFact(parts(0).Trim(), parts(1).Trim())
+            End If
+        Next

@@ -1,0 +1,14 @@
+
+
+    Public Shared Sub Main(args As String())
+        Dim query As New {{pred_cap}}Query()
+
+        ' Read {{base}} facts from stdin (format: from:to)
+        Dim line As String = Console.ReadLine()
+        While line IsNot Nothing
+            If line.Contains(":") Then
+                Dim parts() As String = line.Split(":"c, 2)
+                query.AddFact(parts(0).Trim(), parts(1).Trim())
+            End If
+            line = Console.ReadLine()
+        End While

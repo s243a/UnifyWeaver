@@ -1,0 +1,31 @@
+
+  public static void main(String[] args) {
+    // Read {{base}} facts from notebook cell: {{vfs_source}}
+    %object java.io.BufferedReader[%object java.io.FileReader[ldc "{{vfs_source}}"]]
+    astore reader
+  READ_LOOP:
+    aload reader
+    invokevirtual java.io.BufferedReader.readLine()String
+    astore line
+    aload line
+    ifnull READ_DONE
+    aload line
+    ldc ":"
+    invokevirtual String.contains(CharSequence)boolean
+    ifeq READ_LOOP
+    aload line
+    ldc ":"
+    iconst_2
+    invokevirtual String.split(String int)String[]
+    astore parts
+    aload parts
+    iconst_0
+    aaload
+    invokevirtual String.trim()String
+    aload parts
+    iconst_1
+    aaload
+    invokevirtual String.trim()String
+    invokestatic {{pred_cap}}Query.addFact(String String)void
+    goto READ_LOOP
+  READ_DONE:

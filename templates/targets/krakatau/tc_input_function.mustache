@@ -1,0 +1,28 @@
+
+; Load facts from String[][] pairs
+.method public static loadFacts : ([[Ljava/lang/String;)V
+    .limit stack 3
+    .limit locals 3
+    iconst_0
+    istore_1
+LOAD_LOOP:
+    iload_1
+    aload_0
+    arraylength
+    if_icmpge LOAD_DONE
+    aload_0
+    iload_1
+    aaload
+    iconst_0
+    aaload
+    aload_0
+    iload_1
+    aaload
+    iconst_1
+    aaload
+    invokestatic {{pred_cap}}Query addFact (Ljava/lang/String;Ljava/lang/String;)V
+    iinc 1 1
+    goto LOAD_LOOP
+LOAD_DONE:
+    return
+.end method

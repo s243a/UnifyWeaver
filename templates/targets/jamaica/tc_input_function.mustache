@@ -1,0 +1,26 @@
+
+  public static void loadFacts(String[][] pairs) {
+    int i;
+    iconst_0
+    istore i
+  LOAD_LOOP:
+    iload i
+    aload pairs
+    arraylength
+    if_icmpge LOAD_DONE
+    aload pairs
+    iload i
+    aaload
+    iconst_0
+    aaload
+    aload pairs
+    iload i
+    aaload
+    iconst_1
+    aaload
+    invokestatic {{pred_cap}}Query.addFact(String String)void
+    iinc i 1
+    goto LOAD_LOOP
+  LOAD_DONE:
+    return
+  }

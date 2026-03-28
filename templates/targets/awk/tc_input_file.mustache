@@ -1,0 +1,15 @@
+
+# Read {{base}} facts from file (first argument)
+BEGIN {
+    if (ARGC < 2) { print "Usage: awk -f {{pred}}.awk datafile [start] [target]" > "/dev/stderr"; exit 1 }
+    while ((getline line < ARGV[1]) > 0) {
+        split(line, parts, ":")
+        gsub(/^[ \t]+|[ \t]+$/, "", parts[1])
+        gsub(/^[ \t]+|[ \t]+$/, "", parts[2])
+        add_fact(parts[1], parts[2])
+    }
+    close(ARGV[1])
+    start = ARGV[2]
+    target = ARGV[3]
+    ARGV[1] = ""; ARGV[2] = ""; ARGV[3] = ""
+}

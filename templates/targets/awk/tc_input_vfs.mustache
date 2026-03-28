@@ -1,0 +1,11 @@
+
+# Read {{base}} facts from notebook cell: {{vfs_source}}
+BEGIN {
+    while ((getline line < "{{vfs_source}}") > 0) {
+        split(line, parts, ":")
+        gsub(/^[ \t]+|[ \t]+$/, "", parts[1])
+        gsub(/^[ \t]+|[ \t]+$/, "", parts[2])
+        add_fact(parts[1], parts[2])
+    }
+    close("{{vfs_source}}")
+}
