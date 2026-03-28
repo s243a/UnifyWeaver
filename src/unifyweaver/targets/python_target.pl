@@ -3012,10 +3012,16 @@ python_arg_split(Arity, ClausePairs, InputArity) :-
         count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
         (   OutputCount > 0
         ->  InputArity is Arity - OutputCount
-        ;   %% No outputs: check if all goals are guards (boolean predicate)
-            (   forall(member(CG, ClassifiedGoals), CG = guard(_, _))
-            ->  InputArity = Arity  %% All guards, all args are inputs
-            ;   InputArity is Arity - 1
+        ;   %% No body outputs: check if this is truly boolean
+            %% Boolean only if: all guards, last arg is a fresh variable
+            %% (not a constant, not a repeated variable from earlier position)
+            last(HeadArgs, LastArg),
+            append(EarlierArgs, [LastArg], HeadArgs),
+            (   forall(member(CG, ClassifiedGoals), CG = guard(_, _)),
+                var(LastArg),
+                \+ var_member_by_identity(LastArg, EarlierArgs)  %% not repeated
+            ->  InputArity = Arity  %% Boolean: all args are inputs
+            ;   InputArity is Arity - 1  %% Last arg is output
             )
         )
     ;   %% Pure fact: count unique variables to find input count
@@ -3208,8 +3214,12 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
     ->  python_fact_input_count(HeadArgs, InputCount)
     ;   %% Check if all body goals are guards (boolean predicate)
         classify_goal_sequence(Goals, VarMap, CGs),
-        (   forall(member(CG, CGs), CG = guard(_, _))
-        ->  InputCount = Arity  %% Boolean: all args are inputs
+        last(HeadArgs, LastHA),
+        append(EarlierHA, [LastHA], HeadArgs),
+        (   forall(member(CG, CGs), CG = guard(_, _)),
+            var(LastHA),
+            \+ var_member_by_identity(LastHA, EarlierHA)
+        ->  InputCount = Arity
         ;   InputCount is Arity - 1
         )
     ),
