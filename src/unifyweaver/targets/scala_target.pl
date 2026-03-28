@@ -1262,6 +1262,45 @@ scala_branch_value(is(_, Expr), VarMap, Value) :-
 scala_branch_value(Goal, VarMap, Value) :-
     scala_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Scala renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(scala, =(Var, Expr), VarMap0, Line, VarName, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    scala_expr(Expr, VarMap0, ExprStr),
+    format(string(Line), '    val ~w = ~w', [VarName, ExprStr]).
+clause_body_analysis:render_output_goal(scala, is(Var, Expr), VarMap0, Line, VarName, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    scala_expr(Expr, VarMap0, ExprStr),
+    format(string(Line), '    val ~w = ~w', [VarName, ExprStr]).
+
+clause_body_analysis:render_guard_condition(scala, Goal, VarMap, CondStr) :-
+    scala_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(scala, Branch, VarMap, ExprStr) :-
+    scala_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(scala, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Indent, Cond]),
+    scala_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(CloseThen), '~w}', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        scala_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(CloseElse), '~w}', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreClose),
+        append(PreClose, [CloseElse], Lines)
+    ;   append([IfLine|IndentedThen], [CloseThen], Lines)
+    ).
+
+scala_indent_lines([], _, []).
+scala_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    scala_indent_lines(Rest, Indent, RestIndented).
+
 %% scala_expr — convert Prolog expression to Scala syntax
 scala_expr(Var, VarMap, SExpr) :-
     var(Var), !,

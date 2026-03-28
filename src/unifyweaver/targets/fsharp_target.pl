@@ -357,6 +357,38 @@ fsharp_branch_value(is(_, Expr), VarMap, Value) :-
 fsharp_branch_value(Goal, VarMap, Value) :-
     fsharp_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register F# renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(fsharp, Goal, VarMap, Line, VarName, VarMapOut) :-
+    fsharp_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(fsharp, Goal, VarMap, CondStr) :-
+    fsharp_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(fsharp, Branch, VarMap, ExprStr) :-
+    fsharp_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(fsharp, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w then', [Indent, Cond]),
+    fsharp_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~welse', [Indent]),
+        fsharp_indent_lines(ElseLines, Indent, IndentedElse),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], Lines)
+    ;   append([IfLine|IndentedThen], [], Lines)
+    ).
+
+fsharp_indent_lines([], _, []).
+fsharp_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    fsharp_indent_lines(Rest, Indent, RestIndented).
+
 %% fsharp_expr — convert Prolog expression to F# syntax
 fsharp_expr(Var, VarMap, FsExpr) :-
     var(Var), !,

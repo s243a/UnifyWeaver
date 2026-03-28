@@ -786,6 +786,40 @@ clojure_branch_value(is(_, Expr), VarMap, Value) :-
 clojure_branch_value(Goal, VarMap, Value) :-
     clojure_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Clojure renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(clojure, Goal, VarMap, Line, VarName, VarMapOut) :-
+    clojure_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(clojure, Goal, VarMap, CondStr) :-
+    clojure_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(clojure, Branch, VarMap, ExprStr) :-
+    clojure_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(clojure, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~w(if ~w', [Indent, Cond]),
+    clojure_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  clojure_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(CloseParen), '~w)', [Indent]),
+        append([IfLine|IndentedThen], IndentedElse, PreClose),
+        append(PreClose, [CloseParen], Lines)
+    ;   format(string(CloseParen), '~w)', [Indent]),
+        append([IfLine|IndentedThen], [CloseParen], Lines)
+    ).
+
+clojure_indent_lines([], _, []).
+clojure_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w  ~w', [Indent, Line]),
+    clojure_indent_lines(Rest, Indent, RestIndented).
+
 %% clojure_expr — convert Prolog expression to Clojure syntax
 clojure_expr(Var, VarMap, CExpr) :-
     var(Var), !,

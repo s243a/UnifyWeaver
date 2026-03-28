@@ -1463,6 +1463,42 @@ jython_branch_value(is(_, Expr), VarMap, Value) :-
 jython_branch_value(Goal, VarMap, Value) :-
     jython_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Jython renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(jython, =(Var, Expr), VarMap0, Line, VarName, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    jython_expr(Expr, VarMap0, ExprStr),
+    format(string(Line), '    ~w = ~w', [VarName, ExprStr]).
+clause_body_analysis:render_output_goal(jython, is(Var, Expr), VarMap0, Line, VarName, VarMapOut) :-
+    var(Var), !,
+    ensure_var(VarMap0, Var, VarName, VarMapOut),
+    jython_expr(Expr, VarMap0, ExprStr),
+    format(string(Line), '    ~w = ~w', [VarName, ExprStr]).
+
+clause_body_analysis:render_guard_condition(jython, Goal, VarMap, CondStr) :-
+    jython_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(jython, Branch, VarMap, ExprStr) :-
+    jython_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(jython, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w:', [Indent, Cond]),
+    jython_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~welse:', [Indent]),
+        jython_indent_lines(ElseLines, Indent, IndentedElse),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], Lines)
+    ;   Lines = [IfLine|IndentedThen]
+    ).
+
+jython_indent_lines([], _, []).
+jython_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    jython_indent_lines(Rest, Indent, RestIndented).
+
 %% jython_expr — convert Prolog expression to Jython syntax
 jython_expr(Var, VarMap, JExpr) :-
     var(Var), !,
