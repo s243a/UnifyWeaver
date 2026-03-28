@@ -122,8 +122,10 @@ This document focuses on architecture and rollout choices specific to TypR.
      predicates recurse through current-value and paired-forest helpers
      while list-shaped predicates recurse through head/tail decomposition
      and numeric predicates recurse through scalar step descent or
-     constructed tree re-entry, including integer-return and threaded-
-     context variants,
+     constructed tree re-entry, including mixed tree/numeric and mixed
+     tree/list/numeric SCCs where the tree-shaped predicate uses the same
+     supported guarded full-body forms after an earlier recursive group-
+     call prefix, plus integer-return and threaded-context variants,
      emitted as TypR
      functions with raw-expression memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
@@ -165,7 +167,8 @@ This document focuses on architecture and rollout choices specific to TypR.
    - native lowering for the dataframe helpers `filter/3`, `sort_by/3`, and
      `group_by/3`
 7. The remaining gap is broader lowering for arbitrary generic rule bodies
-   and broader recursive patterns beyond that current subset.
+   and SCCs that no longer fit the current structural-driver or supported
+   guarded full-body subset.
 
 Implication: TypR design must support both generation styles and should not
 assume a Mustache-only pipeline.

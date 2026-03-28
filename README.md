@@ -289,8 +289,10 @@ includes:
   where tree-shaped predicates recurse through current-value and paired-
   forest helpers while list-shaped predicates recurse through head/tail
   decomposition and numeric predicates recurse through scalar step
-  descent or constructed tree re-entry, including integer-return and
-  threaded-context variants,
+  descent or constructed tree re-entry, including mixed tree/numeric and
+  mixed tree/list/numeric SCCs where the tree-shaped predicate uses the
+  same supported guarded full-body forms after an earlier recursive group-
+  call prefix, plus integer-return and threaded-context variants,
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
