@@ -30,7 +30,22 @@ try(Label, Pred/Arity) :-
     ;   writeln('COMPILE FAIL')
     ).
 
+%% Binding call inside ite branch (tests recursive compile_branch_body)
+:- dynamic safe_transform/2.
+safe_transform(X, Y) :-
+    (X >= 0 -> Y is sqrt(X) ; Y is abs(X)).
+
+%% Multi-step branch (multiple goals in branch, not just one)
+:- dynamic process_value/3.
+process_value(X, Label, Result) :-
+    (X > 0 ->
+        Label = positive, Result is X * 2
+    ;
+        Label = negative, Result is X * -1).
+
 run :-
     try('multi-result ite (2 vars)', classify_and_score/3),
     try('multi-result facts (3 vars)', color_rgb/4),
+    try('binding inside ite', safe_transform/2),
+    try('multi-step branch', process_value/3),
     writeln('=== MULTI-RESULT TESTS DONE ===').

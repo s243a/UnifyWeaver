@@ -3024,8 +3024,11 @@ python_arg_split(Arity, ClausePairs, InputArity) :-
             ;   InputArity is Arity - 1
             )
         )
-    ;   %% Pure fact: count unique variables to find input count
-        python_fact_input_count(HeadArgs, InputArity)
+    ;   %% Pure fact: try multi-clause lookup table detection first
+        (   python_fact_input_count_multi(ClausePairs, Arity, InputArity0)
+        ->  InputArity = InputArity0
+        ;   python_fact_input_count(HeadArgs, InputArity)
+        )
     ),
     InputArity >= 1,
     !.
@@ -3043,6 +3046,38 @@ python_fact_input_count(HeadArgs, InputCount) :-
     (   RawCount < Arity
     ->  InputCount = RawCount  %% has repeated vars — use detected count
     ;   InputCount is max(1, Arity - 1)  %% all unique — last is output
+    ).
+
+%% python_fact_input_count_multi(+ClausePairs, +Arity, -InputCount)
+%  For multi-clause all-constant facts, detect lookup table pattern.
+%  Find how many leading arg positions vary across clauses — those are inputs.
+%  e.g. color_rgb(red,255,0,0). color_rgb(green,0,255,0). → 1 input (first arg varies)
+python_fact_input_count_multi(ClausePairs, Arity, InputCount) :-
+    ClausePairs = [_,_|_],  %% at least 2 clauses
+    %% Collect head arg lists from all clauses
+    findall(Args, (member(Head-_, ClausePairs), Head =.. [_|Args]), AllArgs),
+    %% For each position, check if the value varies across clauses
+    find_key_width(AllArgs, 1, Arity, InputCount).
+
+find_key_width(AllArgs, Pos, Arity, KeyWidth) :-
+    Pos =< Arity,
+    %% Collect values at position Pos across all clauses
+    findall(Val, (member(Args, AllArgs), nth1(Pos, Args, Val)), Vals),
+    sort(Vals, Unique),
+    length(Vals, Total), length(Unique, UniqueCount),
+    (   UniqueCount =:= Total
+    ->  %% All values at this position are unique — this is (part of) the key
+        (   Pos < Arity
+        ->  %% Check if remaining positions are just "return values"
+            %% Key is positions 1..Pos
+            KeyWidth = Pos
+        ;   KeyWidth is max(1, Arity - 1)  %% last position, fall back
+        )
+    ;   %% Values repeat — this position is NOT part of the key
+        (   Pos > 1
+        ->  KeyWidth is Pos - 1  %% key is positions 1..Pos-1
+        ;   KeyWidth is max(1, Arity - 1)  %% no clear key, default
+        )
     ).
 
 %% python_typed_arg_list(+PredSpec, +InputArity, -ArgList)
@@ -3214,11 +3249,15 @@ native_python_clause_body(PredSpec, [Head-Body], Code) :-
 % Multi-clause: emit if/elif/else chain
 native_python_clause_body(PredSpec, Clauses, Code) :-
     Clauses = [Head-_|[_|_]],
-    maplist(native_python_clause_pair(PredSpec), Clauses, Branches),
+    %% Compute input count ONCE for all clauses
+    Head =.. [_|HeadArgs], length(HeadArgs, HArity),
+    (   python_fact_input_count_multi(Clauses, HArity, MultiIC)
+    ->  InputCount = MultiIC
+    ;   InputCount = none  %% let per-clause handler decide
+    ),
+    maplist(native_python_clause_pair_ic(PredSpec, InputCount), Clauses, Branches),
     Branches \= [],
     branches_to_python_if_chain(Branches, IfChain),
-    %% For arity-1 (boolean predicates), else returns False
-    Head =.. [_|HeadArgs], length(HeadArgs, HArity),
     (   HArity =:= 1
     ->  ElseBranch = '        return False'
     ;   format(string(ElseBranch), '        raise ValueError("No matching clause for ~w")', [PredSpec])
@@ -3227,6 +3266,48 @@ native_python_clause_body(PredSpec, Clauses, Code) :-
 '~w
     else:
 ~w', [IfChain, ElseBranch]).
+
+native_python_clause_pair_ic(PredSpec, InputCount, Head-Body, branch(Condition, ClauseCode)) :-
+    native_python_clause_ic(PredSpec, InputCount, Head, Body, Condition, ClauseCode),
+    !.
+
+%% Wrapper that passes input count hint to native_python_clause
+native_python_clause_ic(PredSpec, none, Head, Body, Condition, Code) :-
+    !,
+    native_python_clause(PredSpec, Head, Body, Condition, Code).
+native_python_clause_ic(PredSpec, InputCount, Head, Body, Condition, Code) :-
+    integer(InputCount),
+    native_python_clause_with_ic(PredSpec, InputCount, Head, Body, Condition, Code).
+
+%% native_python_clause_with_ic: uses pre-computed InputCount
+native_python_clause_with_ic(_PredSpec, InputCount, Head, Body, Condition, Code) :-
+    Head =.. [_Pred|HeadArgs],
+    length(HeadArgs, Arity),
+    Arity >= 2,
+    build_head_varmap(HeadArgs, 1, VarMap),
+    length(InputHeadArgs, InputCount),
+    append(InputHeadArgs, OutputHeadArgs, HeadArgs),
+    (OutputHeadArgs = [OutputHeadArg|_] -> true ; OutputHeadArg = _),
+    python_head_conditions(InputHeadArgs, 1, HeadConditions),
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  python_fact_return(HeadArgs, InputHeadArgs, VarMap, Code),
+        GoalConditions = []
+    ;   nonvar(OutputHeadArg)
+    ->  clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+        maplist(python_guard_condition(VarMap), GuardGoals, GoalConditions),
+        (   OutputGoals == []
+        ->  python_literal(OutputHeadArg, OutputLit),
+            format(string(Code), '    return ~w', [OutputLit])
+        ;   python_output_goals(OutputGoals, VarMap, Code)
+        )
+    ;   OutputHeadArgs == []
+    ->  maplist(python_guard_condition(VarMap), Goals, GoalConditions),
+        Code = '    return True'
+    ;   native_python_goal_sequence(Goals, VarMap, GoalConditions, Code)
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_python_conditions(AllConditions, Condition).
 
 native_python_clause_pair(PredSpec, Head-Body, branch(Condition, ClauseCode)) :-
     native_python_clause(PredSpec, Head, Body, Condition, ClauseCode),
@@ -3465,16 +3546,41 @@ collect_output_var_names([output(Goal, _Var, _)|Rest], VarMap, [Name|Names]) :-
     collect_output_var_names(Rest, VarMap1, Names).
 collect_output_var_names([_|Rest], VarMap, Names) :-
     collect_output_var_names(Rest, VarMap, Names).
-python_render_classified_last(output_ite(If, Then, Else, _SharedVars), VarMap, [], Lines) :-
-    %% Try ternary return first (cleaner for simple cases)
-    (   python_guard_condition(VarMap, If, Cond),
+python_render_classified_last(output_ite(If, Then, Else, SharedVars), VarMap, [], Lines) :-
+    python_guard_condition(VarMap, If, Cond),
+    length(SharedVars, SharedCount),
+    (   SharedCount =:= 1,
         python_branch_value(Then, VarMap, ThenExpr),
         python_branch_value(Else, VarMap, ElseExpr)
-    ->  format(string(Line), '    return ~w if ~w else ~w', [ThenExpr, Cond, ElseExpr]),
+    ->  %% Single shared var, simple branches: ternary return
+        format(string(Line), '    return ~w if ~w else ~w', [ThenExpr, Cond, ElseExpr]),
         Lines = [Line]
-    ;   %% Fallback to if/else block
-        python_if_then_else_output(If, Then, Else, VarMap, Lines, _)
+    ;   %% Multi shared var or complex branches: if/else block with returns
+        compile_branch_body(Then, VarMap, ThenLines, ThenVars, _),
+        compile_branch_body(Else, VarMap, ElseLines, ElseVars, _),
+        format(string(IfLine), '    if ~w:', [Cond]),
+        %% Build return for then-branch
+        python_branch_return_lines(ThenLines, ThenVars, SharedCount, IndentedThen),
+        ElseLine = '    else:',
+        python_branch_return_lines(ElseLines, ElseVars, SharedCount, IndentedElse),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], Lines)
     ).
+
+%% python_branch_return_lines(+BranchLines, +VarNames, +OutputCount, -IndentedLines)
+%  Indent branch lines and add return statement.
+python_branch_return_lines(BranchLines, VarNames, OutputCount, IndentedLines) :-
+    %% Branch lines already have indentation from python_output_goal (4 spaces)
+    %% Add 4 more for inside the if/else block
+    maplist(reindent_branch_line, BranchLines, Indented),
+    (   OutputCount > 1, VarNames = [_,_|_]
+    ->  %% Multi-output: return tuple
+        atomic_list_concat(VarNames, ', ', TupleInner),
+        format(string(RetLine), '        return (~w)', [TupleInner])
+    ;   VarNames = [SingleVar|_]
+    ->  format(string(RetLine), '        return ~w', [SingleVar])
+    ;   RetLine = '        return None'
+    ),
+    append(Indented, [RetLine], IndentedLines).
 python_render_classified_last(output_disj(Alternatives, SharedVars), VarMap, [], Lines) :-
     python_classified_disj_return(Alternatives, SharedVars, VarMap, Lines).
 python_render_classified_last(output_if_then(If, Then, OutputVars), VarMap, [], Lines) :-
@@ -3484,13 +3590,26 @@ python_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
 
 %% === If-then-else output (assignment, not return) ===
 python_classified_ite_assign(If, Then, Else, SharedVars, VarMap0, Lines, VarMapOut) :-
-    SharedVars = [SV|_],
-    ensure_var(VarMap0, SV, VarName, VarMapOut),
     python_guard_condition(VarMap0, If, Cond),
-    python_branch_value(Then, VarMap0, ThenExpr),
-    python_branch_value(Else, VarMap0, ElseExpr),
-    format(string(Line), '    ~w = ~w if ~w else ~w', [VarName, ThenExpr, Cond, ElseExpr]),
-    Lines = [Line].
+    length(SharedVars, SharedCount),
+    (   SharedCount =:= 1
+    ->  %% Single shared var: ternary assignment
+        SharedVars = [SV],
+        ensure_var(VarMap0, SV, VarName, VarMapOut),
+        python_branch_value(Then, VarMap0, ThenExpr),
+        python_branch_value(Else, VarMap0, ElseExpr),
+        format(string(Line), '    ~w = ~w if ~w else ~w', [VarName, ThenExpr, Cond, ElseExpr]),
+        Lines = [Line]
+    ;   %% Multi shared var: if/else block, compile branches fully
+        compile_branch_body(Then, VarMap0, ThenLines, _ThenVars, _),
+        compile_branch_body(Else, VarMap0, ElseLines, _ElseVars, _),
+        ensure_vars(SharedVars, VarMap0, _, VarMapOut),
+        format(string(IfLine), '    if ~w:', [Cond]),
+        indent_branch_lines(ThenLines, '        ', IndentedThen),
+        ElseLine = '    else:',
+        indent_branch_lines(ElseLines, '        ', IndentedElse),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], Lines)
+    ).
 
 %% === Disjunction output (assignment) ===
 python_classified_disj_assign(Alternatives, SharedVars, VarMap0, Lines, VarMapOut) :-
@@ -3521,7 +3640,9 @@ python_classified_if_then_return(If, Then, _OutputVars, VarMap, Lines) :-
     Lines = [L1, L2].
 
 %% python_branch_value(+Branch, +VarMap, -PyExpr)
-%  Extract the output value from a branch (Then or Else).
+%  Extract the output value from a branch (Then or Else) as a single expression.
+%  For simple branches (single assignment/is), returns the expression directly.
+%  Falls back to python_expr for atomic values.
 python_branch_value(Branch, VarMap, PyExpr) :-
     normalize_goals(Branch, Goals),
     reverse(Goals, [LastGoal|_]),
@@ -3535,6 +3656,121 @@ python_goal_value(_Module:Goal, VarMap, Expr) :- !, python_goal_value(Goal, VarM
 python_goal_value((_Var = Expr), VarMap, PyExpr) :- !, python_expr(Expr, VarMap, PyExpr).
 python_goal_value((_Var is Expr), VarMap, PyExpr) :- !, python_expr(Expr, VarMap, PyExpr).
 python_goal_value(Goal, VarMap, PyExpr) :- python_expr(Goal, VarMap, PyExpr).
+
+%% ==========================================================================
+%% compile_branch_body — recursive template-then-lower for branch bodies
+%% ==========================================================================
+%%
+%% This is the key architectural piece: branch bodies go through the full
+%% classify_goal_sequence pipeline instead of being extracted as single values.
+%% This enables multi-result branches, binding calls inside branches, and
+%% nested control flow within branches.
+
+%% compile_branch_body(+Branch, +VarMap, -Lines, -ReturnVars, -VarMapOut)
+%  Compile a branch body (Then or Else) through the full pipeline.
+%  Returns code lines and the list of output variable names.
+compile_branch_body(Branch, VarMap, Lines, ReturnVars, VarMapOut) :-
+    normalize_goals(Branch, Goals),
+    Goals \= [],
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    compile_branch_classified(ClassifiedGoals, VarMap, Lines, ReturnVars, VarMapOut),
+    !.
+compile_branch_body(Branch, VarMap, [Line], [VarName], VarMap) :-
+    %% Fallback: single expression
+    python_branch_value(Branch, VarMap, PyExpr),
+    format(string(Line), '~w', [PyExpr]),
+    VarName = PyExpr.
+
+%% compile_branch_classified(+Classified, +VarMap, -Lines, -ReturnVars, -VarMapOut)
+%  Render classified goals from a branch body, collecting output var names.
+compile_branch_classified([], VarMap, [], [], VarMap).
+compile_branch_classified([Classified|Rest], VarMap, Lines, ReturnVars, VarMapOut) :-
+    compile_single_classified(Classified, VarMap, MidLines, MidVars, VarMap1),
+    compile_branch_classified(Rest, VarMap1, RestLines, RestVars, VarMapOut),
+    append(MidLines, RestLines, Lines),
+    append(MidVars, RestVars, ReturnVars).
+
+%% compile_single_classified(+Classified, +VarMap, -Lines, -OutputVarNames, -VarMapOut)
+compile_single_classified(guard(Goal, _), VarMap, [], [], VarMap) :-
+    %% Guards in branches are ignored (they're part of the outer guard)
+    %% unless they produce side effects
+    (is_guard_goal(Goal, VarMap) -> true ; true).
+
+compile_single_classified(output(Goal, _Var, _Expr), VarMap0, [Line], [VarName], VarMapOut) :-
+    python_output_goal(Goal, VarMap0, Line, VarMapOut),
+    %% Find the assigned var name
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   python_varmap_new_var(VarMap0, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+compile_single_classified(output_ite(If, Then, Else, SharedVars), VarMap0, Lines, VarNames, VarMapOut) :-
+    %% Recursive: compile ite within a branch using the full pipeline
+    SharedVars = [SV|RestSVs],
+    ensure_var(VarMap0, SV, VarName, VarMap1),
+    python_guard_condition(VarMap1, If, Cond),
+    (   RestSVs == []
+    ->  %% Single shared var: ternary
+        python_branch_value(Then, VarMap1, ThenExpr),
+        python_branch_value(Else, VarMap1, ElseExpr),
+        format(string(Line), '        ~w = ~w if ~w else ~w', [VarName, ThenExpr, Cond, ElseExpr]),
+        Lines = [Line], VarNames = [VarName], VarMapOut = VarMap1
+    ;   %% Multi shared var: if/else block with tuple
+        compile_branch_body(Then, VarMap1, ThenLines, ThenVars, _),
+        compile_branch_body(Else, VarMap1, ElseLines, ElseVars, _),
+        ensure_vars(RestSVs, VarMap1, _, VarMapOut),
+        maplist(ensure_var_name(VarMapOut), SharedVars, AllVarNames),
+        format_multi_result_ite(Cond, ThenLines, ThenVars, ElseLines, ElseVars, AllVarNames, Lines),
+        VarNames = AllVarNames
+    ).
+
+compile_single_classified(passthrough(Goal), VarMap0, Lines, VarNames, VarMapOut) :-
+    (   python_output_goal(Goal, VarMap0, Line, VarMapOut)
+    ->  (   goal_output_var(Goal, OV), lookup_var(OV, VarMapOut, VN) -> VarNames = [VN]
+        ;   python_varmap_new_var(VarMap0, VarMapOut, VN) -> VarNames = [VN]
+        ;   VarNames = []
+        ),
+        Lines = [Line]
+    ;   Lines = [], VarNames = [], VarMapOut = VarMap0
+    ).
+
+compile_single_classified(_, VarMap, [], [], VarMap).
+
+%% ensure_var_name(+VarMap, +Var, -Name)
+ensure_var_name(VarMap, Var, Name) :-
+    lookup_var(Var, VarMap, Name), !.
+ensure_var_name(_, _, "_").
+
+%% format_multi_result_ite(+Cond, +ThenLines, +ThenVars, +ElseLines, +ElseVars, +AllVarNames, -Lines)
+%  Format a multi-result if-then-else as an if/else block with assignments.
+format_multi_result_ite(Cond, ThenLines, _ThenVars, ElseLines, _ElseVars, AllVarNames, Lines) :-
+    format(string(IfLine), '        if ~w:', [Cond]),
+    indent_branch_lines(ThenLines, '            ', IndentedThen),
+    format(string(ElseLine), '        else:'),
+    indent_branch_lines(ElseLines, '            ', IndentedElse),
+    %% After the if/else, the vars are assigned
+    append([IfLine|IndentedThen], [ElseLine|IndentedElse], Lines),
+    %% Note: AllVarNames are available after this block
+    _ = AllVarNames.
+
+indent_branch_lines([], _, []).
+indent_branch_lines([Line|Rest], Prefix, [Indented|RestIndented]) :-
+    format(string(Indented), '~w~w', [Prefix, Line]),
+    indent_branch_lines(Rest, Prefix, RestIndented).
+
+%% reindent_branch_line(+Line, -Reindented)
+%  Branch lines from python_output_goal have 4-space indent.
+%  Replace with 8-space indent for inside if/else block.
+reindent_branch_line(Line, Reindented) :-
+    atom_string(Line, LineStr),
+    (   sub_string(LineStr, 0, 4, _, "    ")
+    ->  sub_string(LineStr, 4, _, 0, Rest),
+        format(string(Reindented), '        ~w', [Rest])
+    ;   format(string(Reindented), '        ~w', [LineStr])
+    ).
 
 %% python_disj_if_elif_lines(+Alternatives, +VarName, +VarMap, -Lines)
 %  Generate if/elif chain for disjunction assignment.
