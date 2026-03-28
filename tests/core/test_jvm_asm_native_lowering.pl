@@ -22,6 +22,7 @@
 :- use_module('../../src/unifyweaver/core/target_registry').
 :- use_module('../../src/unifyweaver/core/recursive_compiler').
 :- use_module('../../src/unifyweaver/core/input_source').
+:- use_module('../../src/unifyweaver/glue/jvm_glue').
 
 test_jvm_asm_native_lowering :-
     run_tests([jvm_asm_native_lowering]).
@@ -577,6 +578,116 @@ test(vbnet_seed_statement) :-
     input_source:seed_statement(vbnet, _, alice, bob, Stmt),
     has(Stmt, "AddFact"),
     has(Stmt, "\"alice\"").
+
+% ============================================================================
+% Expanded bindings (array, conversion, stack)
+% ============================================================================
+
+test(array_newarray_binding) :-
+    once(binding_registry:binding(jamaica, 'newarray_int'/2, 'newarray int', _, _, _)).
+
+test(array_iaload_binding) :-
+    once(binding_registry:binding(krakatau, 'iaload'/3, 'iaload', _, _, _)).
+
+test(array_iastore_binding) :-
+    once(binding_registry:binding(jamaica, 'iastore'/4, 'iastore', _, _, _)).
+
+test(array_sort_binding) :-
+    once(binding_registry:binding(krakatau, 'array_sort'/2, _, _, _, _)).
+
+test(conversion_i2l_binding) :-
+    once(binding_registry:binding(jamaica, 'i2l'/2, 'i2l', _, _, _)).
+
+test(stack_dup_binding) :-
+    once(binding_registry:binding(krakatau, 'dup'/1, 'dup', _, _, _)).
+
+% ============================================================================
+% Array operations (shared bytecode layer)
+% ============================================================================
+
+test(jvm_newarray_int) :-
+    jvm_bytecode:jvm_newarray_bytecode(int, 10, Instrs),
+    last(Instrs, Last),
+    has(Last, "newarray int").
+
+test(jvm_array_load) :-
+    jvm_bytecode:jvm_array_load_bytecode(arr, 2, [arr-arr], Instrs),
+    once(member(I, Instrs)),
+    has(I, "aload"),
+    last(Instrs, Last),
+    has(Last, "iaload").
+
+test(jvm_array_store) :-
+    jvm_bytecode:jvm_array_store_bytecode(arr, 0, 42, [arr-arr], Instrs),
+    last(Instrs, Last),
+    has(Last, "iastore").
+
+test(jvm_arraylength) :-
+    jvm_bytecode:jvm_arraylength_bytecode(arr, [arr-arr], Instrs),
+    last(Instrs, Last),
+    has(Last, "arraylength").
+
+% ============================================================================
+% Component system hooks
+% ============================================================================
+
+test(jamaica_type_info) :-
+    jamaica_target:jamaica_type_info(info(name(N), _, _)),
+    has(N, "Jamaica").
+
+test(jamaica_validate_config) :-
+    jamaica_target:jamaica_validate_config([code("test body")]).
+
+test(jamaica_compile_component) :-
+    jamaica_target:jamaica_compile_component(test_comp,
+        [code("    iload arg1\n    ireturn")], [], Code),
+    has(Code, "comp_test_comp"),
+    has(Code, "public static int").
+
+test(krakatau_type_info) :-
+    krakatau_target:krakatau_type_info(info(name(N), _, _)),
+    has(N, "Krakatau").
+
+test(krakatau_compile_component) :-
+    krakatau_target:krakatau_compile_component(test_comp,
+        [code("    iload_0\n    ireturn")], [], Code),
+    has(Code, "comp_test_comp"),
+    has(Code, ".method public static").
+
+% ============================================================================
+% Import management
+% ============================================================================
+
+test(jamaica_import_management) :-
+    jamaica_target:clear_jamaica_imports,
+    jamaica_target:collect_jamaica_import('java.util.HashMap'),
+    jamaica_target:collect_jamaica_import('java.util.ArrayList'),
+    jamaica_target:collect_jamaica_import('java.util.HashMap'),  % duplicate
+    jamaica_target:get_jamaica_imports(Imports),
+    length(Imports, 2),  % deduplicated
+    jamaica_target:clear_jamaica_imports.
+
+test(jamaica_format_imports) :-
+    jamaica_target:format_jamaica_imports(
+        ['java.util.HashMap', 'java.util.ArrayList'], Code),
+    has(Code, "import java.util.HashMap;"),
+    has(Code, "import java.util.ArrayList;").
+
+% ============================================================================
+% Glue support
+% ============================================================================
+
+test(jamaica_is_jvm_target) :-
+    jvm_glue:jvm_target(jamaica).
+
+test(krakatau_is_jvm_target) :-
+    jvm_glue:jvm_target(krakatau).
+
+test(jamaica_can_bridge_java) :-
+    jvm_glue:can_use_direct(jamaica, java).
+
+test(krakatau_can_bridge_kotlin) :-
+    jvm_glue:can_use_direct(krakatau, kotlin).
 
 % ============================================================================
 % Transitive closure templates

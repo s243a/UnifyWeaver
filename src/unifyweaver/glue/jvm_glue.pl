@@ -183,6 +183,8 @@ jvm_target(jython).
 jvm_target(scala).
 jvm_target(kotlin).
 jvm_target(clojure).
+jvm_target(jamaica).
+jvm_target(krakatau).
 
 % ============================================================================
 % GENERIC BRIDGE GENERATOR

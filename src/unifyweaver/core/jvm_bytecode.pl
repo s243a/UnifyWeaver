@@ -46,7 +46,13 @@
     jvm_string_concat_bytecode/4,    % +VarA, +VarB, +VarMap, -Instructions
     jvm_tostring_bytecode/3,         % +Var, +VarMap, -Instructions
     jvm_println_bytecode/3,          % +Var, +VarMap, -Instructions
-    jvm_load_string/2                % +StringValue, -Instruction
+    jvm_load_string/2,               % +StringValue, -Instruction
+
+    % Array operations
+    jvm_newarray_bytecode/3,         % +Type, +SizeExpr, -Instructions
+    jvm_array_load_bytecode/4,       % +ArrayVar, +IndexExpr, +VarMap, -Instructions
+    jvm_array_store_bytecode/5,      % +ArrayVar, +IndexExpr, +ValueExpr, +VarMap, -Instructions
+    jvm_arraylength_bytecode/3       % +ArrayVar, +VarMap, -Instructions
 ]).
 
 :- use_module('../core/clause_body_analysis').
@@ -532,6 +538,65 @@ jvm_resolve_string_operand(Expr, _VarMap, [Instr]) :-
     format(string(Instr), '    ldc "~w"', [Expr]).
 jvm_resolve_string_operand(Expr, VarMap, Instructions) :-
     jvm_expr_to_bytecode(Expr, VarMap, symbolic, Instructions).
+
+%% ============================================
+%% ARRAY OPERATIONS
+%% ============================================
+
+%% jvm_newarray_bytecode(+Type, +SizeExpr, -Instructions)
+%%   Create a new array of the given type and size.
+jvm_newarray_bytecode(int, SizeExpr, Instructions) :-
+    (   integer(SizeExpr)
+    ->  jvm_load_const(SizeExpr, LoadSize), Instructions = [LoadSize, "    newarray int"]
+    ;   format(string(Load), '    iload ~w', [SizeExpr]),
+        Instructions = [Load, "    newarray int"]
+    ).
+jvm_newarray_bytecode(object(ClassName), SizeExpr, Instructions) :-
+    (   integer(SizeExpr)
+    ->  jvm_load_const(SizeExpr, LoadSize)
+    ;   format(string(LoadSize), '    iload ~w', [SizeExpr])
+    ),
+    format(string(ANew), '    anewarray ~w', [ClassName]),
+    Instructions = [LoadSize, ANew].
+
+%% jvm_array_load_bytecode(+ArrayVar, +IndexExpr, +VarMap, -Instructions)
+%%   Load an element from an array. Leaves value on stack.
+jvm_array_load_bytecode(ArrayVar, IndexExpr, VarMap, Instructions) :-
+    (   lookup_var(ArrayVar, VarMap, AName)
+    ->  format(string(LoadArr), '    aload ~w', [AName])
+    ;   format(string(LoadArr), '    aload ~w', [ArrayVar])
+    ),
+    (   integer(IndexExpr)
+    ->  jvm_load_const(IndexExpr, LoadIdx)
+    ;   lookup_var(IndexExpr, VarMap, IName),
+        format(string(LoadIdx), '    iload ~w', [IName])
+    ),
+    Instructions = [LoadArr, LoadIdx, "    iaload"].
+
+%% jvm_array_store_bytecode(+ArrayVar, +IndexExpr, +ValueExpr, +VarMap, -Instructions)
+%%   Store a value into an array.
+jvm_array_store_bytecode(ArrayVar, IndexExpr, ValueExpr, VarMap, Instructions) :-
+    (   lookup_var(ArrayVar, VarMap, AName)
+    ->  format(string(LoadArr), '    aload ~w', [AName])
+    ;   format(string(LoadArr), '    aload ~w', [ArrayVar])
+    ),
+    (   integer(IndexExpr)
+    ->  jvm_load_const(IndexExpr, LoadIdx)
+    ;   lookup_var(IndexExpr, VarMap, IName),
+        format(string(LoadIdx), '    iload ~w', [IName])
+    ),
+    jvm_expr_to_bytecode(ValueExpr, VarMap, symbolic, ValueInstrs),
+    append([LoadArr, LoadIdx], ValueInstrs, Pre),
+    append(Pre, ["    iastore"], Instructions).
+
+%% jvm_arraylength_bytecode(+ArrayVar, +VarMap, -Instructions)
+%%   Get the length of an array. Leaves int on stack.
+jvm_arraylength_bytecode(ArrayVar, VarMap, Instructions) :-
+    (   lookup_var(ArrayVar, VarMap, AName)
+    ->  format(string(LoadArr), '    aload ~w', [AName])
+    ;   format(string(LoadArr), '    aload ~w', [ArrayVar])
+    ),
+    Instructions = [LoadArr, "    arraylength"].
 
 %% ============================================
 %% RECURSION PATTERN GENERATORS
