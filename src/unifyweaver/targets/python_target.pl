@@ -3274,7 +3274,7 @@ python_disj_if_elif_lines([Alt], VarName, VarMap, Lines) :-
     clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
     (   Outputs = [LastOutput|_],
         python_goal_value(LastOutput, VarMap, ValExpr)
-    ->  format(string(L1), '    else:'),
+    ->  L1 = '    else:',
         format(string(L2), '        ~w = ~w', [VarName, ValExpr]),
         Lines = [L1, L2]
     ;   Lines = []
@@ -3305,7 +3305,7 @@ python_disj_elif_lines([Alt], VarName, VarMap, [ElseLine, AssignLine]) :-
     normalize_goals(Alt, Goals),
     clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
     (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
-    format(string(ElseLine), '    else:'),
+    ElseLine = '    else:',
     format(string(AssignLine), '        ~w = ~w', [VarName, ValExpr]).
 python_disj_elif_lines([Alt|Rest], VarName, VarMap, [ElifLine, AssignLine|RestLines]) :-
     normalize_goals(Alt, Goals),
@@ -3327,7 +3327,7 @@ python_disj_if_elif_return_lines([Alt], VarMap, [ElseLine, RetLine]) :-
     normalize_goals(Alt, Goals),
     clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
     (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
-    format(string(ElseLine), '    else:'),
+    ElseLine = '    else:',
     format(string(RetLine), '        return ~w', [ValExpr]).
 python_disj_if_elif_return_lines([Alt|Rest], VarMap, [CondLine, RetLine|RestLines]) :-
     normalize_goals(Alt, Goals),
@@ -3348,7 +3348,7 @@ python_disj_elif_return_lines([Alt], VarMap, [ElseLine, RetLine]) :-
     normalize_goals(Alt, Goals),
     clause_guard_output_split(Goals, VarMap, _Guards, Outputs),
     (   Outputs = [LastOutput|_], python_goal_value(LastOutput, VarMap, ValExpr) -> true ; ValExpr = "None"),
-    format(string(ElseLine), '    else:'),
+    ElseLine = '    else:',
     format(string(RetLine), '        return ~w', [ValExpr]).
 python_disj_elif_return_lines([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
     normalize_goals(Alt, Goals),
