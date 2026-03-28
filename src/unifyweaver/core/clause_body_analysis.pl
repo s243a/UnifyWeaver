@@ -144,9 +144,17 @@ classify_goal(_, _, unknown).
 %% is_guard_goal(+Goal, +VarMap)
 %  A goal is a guard if it's a comparison or type check that produces no
 %  new variable bindings (only tests existing values).
+is_guard_goal(true, _) :- !.
+is_guard_goal(fail, _) :- !.
+is_guard_goal(false, _) :- !.
 is_guard_goal(_Module:Goal, VarMap) :-
     !,
     is_guard_goal(Goal, VarMap).
+%% If-then-else used as guard (no output variables)
+is_guard_goal(Goal, VarMap) :-
+    if_then_else_goal(Goal, _, _, _),
+    \+ is_output_goal(Goal, VarMap),
+    !.
 is_guard_goal(Goal, _VarMap) :-
     compound(Goal),
     Goal =.. [Op, _, _],
@@ -503,6 +511,7 @@ expr_op(<, '<').
 expr_op(>=, '>=').
 expr_op(=<, '<=').
 expr_op(=:=, '==').
+expr_op(=\=, '!=').
 expr_op(==, '==').
 expr_op(\=, '!=').
 expr_op(\==, '!=').
@@ -510,6 +519,7 @@ expr_op(+, '+').
 expr_op(-, '-').
 expr_op(*, '*').
 expr_op(/, '/').
+expr_op(//, 'floor_div').
 expr_op(mod, '%').
 expr_op(and, '&&').
 expr_op(or, '||').

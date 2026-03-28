@@ -2979,16 +2979,22 @@ compile_procedural_mode(Name, Arity, Module, Options, PythonCode) :-
 
 %% compile_non_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
 compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
+    % Ensure bindings are loaded
+    (   binding(python, length/2, _, _, _, _) -> true
+    ;   catch(init_python_bindings, _, true)
+    ),
     % Try native clause body lowering first
     pairs_from_clauses(Clauses, ClausePairs),
     native_python_clause_body(Name/Arity, ClausePairs, NativeBody),
     !,
     % Determine input/output arg split
     python_arg_split(Arity, ClausePairs, InputArity),
-    build_python_arg_list(InputArity, ArgList),
+    %% Build typed or untyped arg list
+    python_typed_arg_list(Name/Arity, InputArity, ArgList),
+    python_return_annotation(Name/Arity, RetAnnotation),
     format(string(FuncCode),
-'def ~w(~w):
-~w', [Name, ArgList, NativeBody]),
+'def ~w(~w)~w:
+~w', [Name, ArgList, RetAnnotation, NativeBody]),
     header(Header),
     helpers(Helpers),
     generate_python_main(Options, Main),
@@ -3002,19 +3008,106 @@ compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
 python_arg_split(1, _, 1) :- !.
 python_arg_split(Arity, ClausePairs, InputArity) :-
     Arity >= 2,
-    %% Count output args from the first clause
     ClausePairs = [Head-Body|_],
     Head =.. [_|HeadArgs],
     build_head_varmap(HeadArgs, 1, VarMap),
     normalize_goals(Body, Goals),
-    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
-    count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
-    (   OutputCount > 0
-    ->  InputArity is Arity - OutputCount
-    ;   InputArity is Arity - 1  %% default: last arg is output
+    (   Goals \= []
+    ->  %% Count output args from classified body goals
+        classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+        count_output_vars(ClassifiedGoals, HeadArgs, OutputCount),
+        (   OutputCount > 0
+        ->  InputArity is Arity - OutputCount
+        ;   %% No body outputs: boolean or output-from-head?
+            (   python_is_boolean_predicate(HeadArgs, Goals, VarMap)
+            ->  InputArity = Arity
+            ;   InputArity is Arity - 1
+            )
+        )
+    ;   %% Pure fact: count unique variables to find input count
+        python_fact_input_count(HeadArgs, InputArity)
     ),
     InputArity >= 1,
     !.
+
+%% python_fact_input_count(+HeadArgs, -InputCount)
+%  For pure facts, count the number of distinct first-occurrence variables.
+%  e.g. swap(X, Y, Y, X) → 2 distinct vars (X, Y) → 2 inputs
+%  For all-constant facts like factorial_base(0, 1), default to Arity-1
+%  (last arg is output convention).
+python_fact_input_count(HeadArgs, InputCount) :-
+    python_count_first_occurrences(HeadArgs, [], 0, RawCount),
+    length(HeadArgs, Arity),
+    %% If all args are constants or first-occurrences, use Arity-1
+    %% (the repeated-variable pattern like swap needs fewer inputs)
+    (   RawCount < Arity
+    ->  InputCount = RawCount  %% has repeated vars — use detected count
+    ;   InputCount is max(1, Arity - 1)  %% all unique — last is output
+    ).
+
+%% python_typed_arg_list(+PredSpec, +InputArity, -ArgList)
+%  Build arg list with type hints if uw_type declarations exist.
+%  No type hints if no declarations — follows user's convention.
+python_typed_arg_list(Name/Arity, InputArity, ArgList) :-
+    (   has_python_type_annotations(Name/Arity)
+    ->  python_typed_args(Name/Arity, 1, InputArity, Args),
+        atomic_list_concat(Args, ', ', ArgList)
+    ;   build_python_arg_list(InputArity, ArgList)
+    ).
+
+has_python_type_annotations(Name/Arity) :-
+    functor(Head, Name, Arity),
+    (   clause(type_declarations:uw_type(Name/Arity, _, _), true)
+    ;   clause(user:uw_type(Name/Arity, _, _), true)
+    ), !.
+
+python_typed_args(_PredSpec, I, InputArity, []) :- I > InputArity, !.
+python_typed_args(Name/Arity, I, InputArity, [TypedArg|Rest]) :-
+    format(string(ArgName), 'arg~w', [I]),
+    (   (clause(type_declarations:uw_type(Name/Arity, I, Type), true)
+        ; clause(user:uw_type(Name/Arity, I, Type), true)),
+        type_declarations:resolve_type(Type, python, PyType)
+    ->  format(string(TypedArg), '~w: ~w', [ArgName, PyType])
+    ;   TypedArg = ArgName
+    ),
+    I1 is I + 1,
+    python_typed_args(Name/Arity, I1, InputArity, Rest).
+
+%% python_return_annotation(+PredSpec, -Annotation)
+%  Add -> ReturnType annotation if uw_return_type exists.
+python_return_annotation(Name/Arity, Annotation) :-
+    (   (clause(type_declarations:uw_return_type(Name/Arity, Type), true)
+        ; clause(user:uw_return_type(Name/Arity, Type), true)),
+        type_declarations:resolve_type(Type, python, PyType)
+    ->  format(string(Annotation), ' -> ~w', [PyType])
+    ;   Annotation = ""
+    ).
+
+%% python_is_boolean_predicate(+HeadArgs, +Goals, +VarMap)
+%  True if a predicate is boolean: all body goals are guards AND the last
+%  head arg is a fresh variable (not constant, not repeated from earlier).
+python_is_boolean_predicate(HeadArgs, Goals, VarMap) :-
+    classify_goal_sequence(Goals, VarMap, CGs),
+    CGs \= [],
+    forall(member(CG, CGs), CG = guard(_, _)),
+    last(HeadArgs, LastArg),
+    var(LastArg),
+    append(EarlierArgs, [LastArg], HeadArgs),
+    \+ var_member_by_identity(LastArg, EarlierArgs).
+
+python_count_first_occurrences([], _, Count, Count).
+python_count_first_occurrences([Arg|Rest], Seen, Acc, Count) :-
+    (   var(Arg), \+ var_member_by_identity(Arg, Seen)
+    ->  %% First occurrence of this variable — it's an input
+        Acc1 is Acc + 1,
+        python_count_first_occurrences(Rest, [Arg|Seen], Acc1, Count)
+    ;   var(Arg)
+    ->  %% Repeated variable — it's an output (alias of earlier input)
+        python_count_first_occurrences(Rest, Seen, Acc, Count)
+    ;   %% Constant — it's an input (pattern match)
+        Acc1 is Acc + 1,
+        python_count_first_occurrences(Rest, Seen, Acc1, Count)
+    ).
 python_arg_split(Arity, _, InputArity) :-
     InputArity is max(1, Arity - 1).
 
@@ -3165,17 +3258,25 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
     Arity >= 2,
     % Build VarMap from head arguments
     build_head_varmap(HeadArgs, 1, VarMap),
-    % Extract head conditions — only from input args (not the output arg)
-    % The last argument is treated as the output
-    append(InputHeadArgs, [OutputHeadArg], HeadArgs),
+    % Determine input/output split
+    normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  python_fact_input_count(HeadArgs, InputCount)
+    ;   %% Check if all body goals are guards (boolean predicate)
+        (   python_is_boolean_predicate(HeadArgs, Goals, VarMap)
+        ->  InputCount = Arity
+        ;   InputCount is Arity - 1
+        )
+    ),
+    length(InputHeadArgs, InputCount),
+    append(InputHeadArgs, OutputHeadArgs, HeadArgs),
+    (OutputHeadArgs = [OutputHeadArg|_] -> true ; OutputHeadArg = _),
     % Conditions from input args only
     python_head_conditions(InputHeadArgs, 1, HeadConditions),
     % Process body goals
-    normalize_goals(Body, Goals),
     (   Goals == []
-    ->  % Pure fact clause: return the output arg value
-        python_resolve_value(VarMap, OutputHeadArg, OutputExpr),
-        format(string(Code), '    return ~w', [OutputExpr]),
+    ->  % Pure fact clause: determine outputs and return
+        python_fact_return(HeadArgs, InputHeadArgs, VarMap, Code),
         GoalConditions = []
     ;   % Body goals: check if output arg is bound in head (constant)
         (   Arity > 1, nonvar(OutputHeadArg)
@@ -3187,13 +3288,16 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
                 format(string(Code), '    return ~w', [OutputLit])
             ;   python_output_goals(OutputGoals, VarMap, Code)
             )
-        ;   % Output is a variable
-            (   var(OutputHeadArg),
+        ;   % Output is a variable (or boolean with no output args)
+            (   OutputHeadArgs == []
+            ->  % Boolean predicate (all args are inputs, no output args)
+                maplist(python_guard_condition(VarMap), Goals, GoalConditions),
+                Code = '    return True'
+            ;   var(OutputHeadArg),
                 lookup_var(OutputHeadArg, VarMap, OutputArgName),
-                %% Check it's also an INPUT arg (appears earlier in head)
+                %% Check it's also an INPUT arg (e.g., max2(X,Y,X) — output = input X)
                 var_member_by_identity(OutputHeadArg, InputHeadArgs)
-            ->  % Output var is an input arg (e.g., max2(X,Y,X) — output = input X)
-                %% All goals are guards, return the input arg
+            ->  % Output var is an input arg
                 clause_guard_output_split(Goals, VarMap, GuardGoals, _OutputGoals),
                 maplist(python_guard_condition(VarMap), GuardGoals, GoalConditions),
                 format(string(Code), '    return ~w', [OutputArgName])
@@ -3208,6 +3312,29 @@ native_python_clause(_PredSpec, Head, Body, Condition, Code) :-
 %% python_head_conditions(+HeadArgs, +Index, -Conditions)
 %  Generate conditions from head argument patterns.
 %  Variables produce no condition; constants produce equality checks.
+%% python_fact_return(+HeadArgs, +InputArgs, +VarMap, -Code)
+%  Generate return statement for a pure fact clause.
+%  Single output: return value. Multiple outputs: return tuple.
+python_fact_return(HeadArgs, InputHeadArgs, VarMap, Code) :-
+    length(HeadArgs, Arity),
+    length(InputHeadArgs, InputCount),
+    OutputCount is Arity - InputCount,
+    (   OutputCount =:= 1
+    ->  %% Single output (last arg)
+        last(HeadArgs, OutputArg),
+        python_resolve_value(VarMap, OutputArg, OutputExpr),
+        format(string(Code), '    return ~w', [OutputExpr])
+    ;   OutputCount > 1
+    ->  %% Multi-output: return tuple of output args
+        length(OutputArgs, OutputCount),
+        append(_, OutputArgs, HeadArgs),
+        maplist(python_resolve_value(VarMap), OutputArgs, OutputExprs),
+        atomic_list_concat(OutputExprs, ', ', TupleInner),
+        format(string(Code), '    return (~w)', [TupleInner])
+    ;   %% No outputs (all args are inputs, fact predicate)
+        Code = '    return True'
+    ).
+
 python_head_conditions([], _, []).
 python_head_conditions([HeadArg|Rest], Index, Conditions) :-
     (   var(HeadArg)
@@ -3248,11 +3375,41 @@ python_render_classified_goals([], _VarMap, [], []).
 python_render_classified_goals([Classified], VarMap, Conds, Lines) :-
     !,
     python_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s) — assign first, then conditional return
+python_render_classified_goals([output(Goal, Var, _Expr)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    python_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    %% Collect trailing guards
+    collect_trailing_guards(Rest, VarMap1, GuardGoals, Remaining),
+    maplist(python_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' and ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "None"
+    ),
+    (   Remaining == []
+    ->  %% All trailing goals are guards — conditional return
+        format(string(IfLine), '    if ~w:', [GuardExpr]),
+        format(string(RetLine), '        return ~w', [OutName]),
+        Lines = [AssignLine, IfLine, RetLine]
+    ;   %% More goals after guards — emit guard as assertion, continue
+        format(string(IfLine), '    if not (~w):', [GuardExpr]),
+        format(string(RaiseLine), '        raise ValueError("Guard failed")', []),
+        python_render_classified_goals(Remaining, VarMap1, _, RemLines),
+        append([AssignLine, IfLine, RaiseLine], RemLines, Lines)
+    ).
 python_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
     python_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
     python_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
     append(MidConds, RestConds, Conds),
     append(MidLines, RestLines, Lines).
+
+%% collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !,
+    collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+collect_trailing_guards(Remaining, _, [], Remaining).
 
 %% python_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
 %  Render a non-last classified goal.
@@ -3480,9 +3637,30 @@ python_disj_elif_return_lines([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines])
 
 %% python_guard_condition(+VarMap, +Goal, -Condition)
 %  Convert a guard goal to a Python condition string.
+python_guard_condition(_VarMap, true, 'True') :- !.
+python_guard_condition(_VarMap, fail, 'False') :- !.
+python_guard_condition(_VarMap, false, 'False') :- !.
+%% Binding command guard (zero-output binding used as boolean test)
+python_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(python, Pred/Arity, TargetName, Inputs, [], _Options),
+    !,
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [], Args),
+    maplist(python_resolve_value(VarMap), InArgs, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
+    format(string(Condition), '~w(~w)', [TargetName, ArgsStr]).
 python_guard_condition(VarMap, _Module:Goal, Condition) :-
     !,
     python_guard_condition(VarMap, Goal, Condition).
+%% Simplify (If -> true ; fail) to just If
+python_guard_condition(VarMap, Goal, Condition) :-
+    if_then_else_goal(Goal, IfGoal, true, fail),
+    !,
+    python_guard_condition(VarMap, IfGoal, Condition).
 python_guard_condition(VarMap, Goal, Condition) :-
     if_then_else_goal(Goal, IfGoal, ThenGoal, ElseGoal),
     !,
@@ -3557,15 +3735,37 @@ python_output_goal_last(is(Var, Expr), VarMap, [Line], VarMap) :-
     !,
     python_expr(Expr, VarMap, PyExpr),
     format(string(Line), '    return ~w', [PyExpr]).
+%% Binding output as last goal — return the binding result directly
+python_output_goal_last(Goal, VarMap, [Line], VarMap) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(python, Pred/Arity, TargetName, Inputs, [_], _Options),
+    !,
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [_OutArg], Args),
+    maplist(python_resolve_value(VarMap), InArgs, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
+    format(string(Line), '    return ~w(~w)', [TargetName, ArgsStr]).
 python_output_goal_last(Goal, VarMap0, [AssignLine, ReturnLine], VarMapOut) :-
     % Fallback: assign then return
     python_output_goal(Goal, VarMap0, AssignLine, VarMapOut),
-    % Find what variable was just assigned
+    % Find what variable was just assigned (try goal_output_var, then VarMap diff)
     (   goal_output_var(Goal, OutVar),
         lookup_var(OutVar, VarMapOut, OutName)
     ->  format(string(ReturnLine), '    return ~w', [OutName])
+    ;   %% VarMap diff: find newly added variable
+        python_varmap_new_var(VarMap0, VarMapOut, OutName)
+    ->  format(string(ReturnLine), '    return ~w', [OutName])
     ;   ReturnLine = '    return None'
     ).
+
+%% python_varmap_new_var(+OldVarMap, +NewVarMap, -NewVarName)
+%  Find a variable name in NewVarMap that wasn't in OldVarMap.
+python_varmap_new_var(OldVarMap, NewVarMap, Name) :-
+    member(Var-Name, NewVarMap),
+    \+ member(Var-_, OldVarMap).
 
 %% python_output_goal(+Goal, +VarMap, -Line, -VarMapOut)
 %  Convert an output goal to a Python assignment line.
@@ -3589,6 +3789,41 @@ python_output_goal(=(Var, Expr), VarMap, Line, VarMap) :-
     !,
     python_expr(Expr, VarMap, PyExpr),
     format(string(Line), '    ~w = ~w', [Var, PyExpr]).
+%% Binding output: predicate with registered Python binding and single output
+python_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(python, Pred/Arity, TargetName, Inputs, [_], _Options),
+    !,
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [OutArg], Args),
+    maplist(python_resolve_value(VarMap0), InArgs, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
+    ensure_var(VarMap0, OutArg, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w(~w)', [VarName, TargetName, ArgsStr]).
+%% DataFrame filter (pandas equivalent of TypR's @{ subset(...) }@)
+python_output_goal(filter(DF, Expr, Out), VarMap0, Line, VarMapOut) :-
+    !,
+    python_resolve_value(VarMap0, DF, PyDF),
+    python_expr(Expr, VarMap0, PyExpr),
+    ensure_var(VarMap0, Out, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w[~w]', [VarName, PyDF, PyExpr]).
+%% DataFrame sort_by (pandas equivalent)
+python_output_goal(sort_by(DF, Col, Out), VarMap0, Line, VarMapOut) :-
+    !,
+    python_resolve_value(VarMap0, DF, PyDF),
+    python_resolve_value(VarMap0, Col, PyCol),
+    ensure_var(VarMap0, Out, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w.sort_values(~w)', [VarName, PyDF, PyCol]).
+%% DataFrame group_by (pandas equivalent)
+python_output_goal(group_by(DF, Col, Out), VarMap0, Line, VarMapOut) :-
+    !,
+    python_resolve_value(VarMap0, DF, PyDF),
+    python_resolve_value(VarMap0, Col, PyCol),
+    ensure_var(VarMap0, Out, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w.groupby(~w)', [VarName, PyDF, PyCol]).
 
 %% python_if_then_else_output(+If, +Then, +Else, +VarMap, -Lines, -VarMapOut)
 %  Generate if/else for output assignment within a clause body.
@@ -3688,6 +3923,35 @@ python_expr(max(A, B), VarMap, PyExpr) :-
     python_expr(A, VarMap, PyA),
     python_expr(B, VarMap, PyB),
     format(string(PyExpr), 'max(~w, ~w)', [PyA, PyB]).
+python_expr(sqrt(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.sqrt(~w)', [PyA]).
+python_expr(sin(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.sin(~w)', [PyA]).
+python_expr(cos(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.cos(~w)', [PyA]).
+python_expr(log(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'math.log(~w)', [PyA]).
+python_expr(round(A), VarMap, PyExpr) :-
+    !,
+    python_expr(A, VarMap, PyA),
+    format(string(PyExpr), 'round(~w)', [PyA]).
+%% General unary function call fallback
+python_expr(Expr, VarMap, PyExpr) :-
+    compound(Expr),
+    Expr =.. [Fn, Arg],
+    \+ expr_op(Fn, _),
+    Fn \= (-),
+    !,
+    python_expr(Arg, VarMap, PyArg),
+    format(string(PyExpr), '~w(~w)', [Fn, PyArg]).
 python_expr(Atom, _VarMap, PyExpr) :-
     atom(Atom), !,
     python_literal(Atom, PyExpr).
@@ -3735,7 +3999,8 @@ python_op('!=', '!=').
 python_op('+', '+').
 python_op('-', '-').
 python_op('*', '*').
-python_op('/', '//').
+python_op('/', '/').
+python_op('floor_div', '//').
 python_op('%', '%').
 python_op('&&', 'and').
 python_op('||', 'or').
@@ -3761,7 +4026,11 @@ branches_to_python_if_chain([branch(Condition, ClauseCode)|Rest], Code) :-
 branches_to_python_elif_chain([branch(Condition, ClauseCode)], Code) :-
     !,
     indent_python(ClauseCode, IndentedCode),
-    format(string(Code), '    elif ~w:\n~w', [Condition, IndentedCode]).
+    %% Use 'else' for catch-all conditions (True, no guards)
+    (   (Condition == 'True' ; Condition == "True")
+    ->  format(string(Code), '    else:\n~w', [IndentedCode])
+    ;   format(string(Code), '    elif ~w:\n~w', [Condition, IndentedCode])
+    ).
 branches_to_python_elif_chain([branch(Condition, ClauseCode)|Rest], Code) :-
     indent_python(ClauseCode, IndentedCode),
     branches_to_python_elif_chain(Rest, RestCode),
