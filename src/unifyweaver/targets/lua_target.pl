@@ -1315,6 +1315,41 @@ lua_branch_value(is(_, Expr), VarMap, Value) :-
 lua_branch_value(Goal, VarMap, Value) :-
     lua_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register Lua renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(lua, Goal, VarMap, Line, VarName, VarMapOut) :-
+    lua_output_goal(Goal, VarMap, Line, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, VarName)
+    ->  true
+    ;   VarName = "_"
+    ).
+
+clause_body_analysis:render_guard_condition(lua, Goal, VarMap, CondStr) :-
+    lua_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(lua, Branch, VarMap, ExprStr) :-
+    lua_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(lua, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif ~w then', [Indent, Cond]),
+    lua_indent_lines(ThenLines, Indent, IndentedThen),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~welse', [Indent]),
+        lua_indent_lines(ElseLines, Indent, IndentedElse),
+        format(string(EndLine), '~wend', [Indent]),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], PreEnd),
+        append(PreEnd, [EndLine], Lines)
+    ;   format(string(EndLine), '~wend', [Indent]),
+        append([IfLine|IndentedThen], [EndLine], Lines)
+    ).
+
+lua_indent_lines([], _, []).
+lua_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    lua_indent_lines(Rest, Indent, RestIndented).
+
 %% lua_expr — convert Prolog expression to Lua syntax
 lua_expr(Var, VarMap, LExpr) :-
     var(Var), !,

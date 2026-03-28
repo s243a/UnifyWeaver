@@ -153,6 +153,8 @@ compile_non_recursive(clojure, Pred/Arity, FinalOptions, GeneratedCode) :-
     clojure_target:compile_predicate_to_clojure(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(python, Pred/Arity, FinalOptions, GeneratedCode) :-
     python_target:compile_predicate_to_python(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(lua, Pred/Arity, FinalOptions, GeneratedCode) :-
+    lua_target:compile_predicate_to_lua(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(jython, Pred/Arity, FinalOptions, GeneratedCode) :-
