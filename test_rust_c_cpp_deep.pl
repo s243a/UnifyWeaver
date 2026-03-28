@@ -26,10 +26,13 @@ run_checks(Code, [check(L, S)|R], Ok) :-
     ; format('MISS(~w) ', [L]), Ok = false, run_checks(Code, R, _)).
 
 run :-
-    %% Rust: compile_predicate_to_rust dispatch has pre-existing issue
-    %% for non-recursive predicates (semantic predicate check interferes).
-    %% Hooks work (tested in PR #1030), classify_goal_sequence added,
-    %% but full compilation path needs separate fix.
+    %% Rust
+    try('ite', rust, label/2, [check('if', "if ")]),
+    try('multi', rust, classify_temp/2, [check('freezing', "freezing")]),
+    try('guard+out', rust, safe_double/2, [check('* 2', "* 2")]),
+    try('tail', rust, bounded_sq/2, [check('< 1000', "< 1000")]),
+    nl,
+    %% C
     try('ite', c, label/2, [check('if', "if ")]),
     try('multi', c, classify_temp/2, [check('freezing', "freezing")]),
     try('guard+out', c, safe_double/2, [check('* 2', "* 2")]),
@@ -40,4 +43,4 @@ run :-
     try('guard+out', cpp, safe_double/2, [check('* 2', "* 2")]),
     try('tail', cpp, bounded_sq/2, [check('< 1000', "< 1000")]),
     nl,
-    writeln('=== C + C++ DEEP TESTS DONE (Rust has pre-existing dispatch issue) ===').
+    writeln('=== RUST + C + C++ DEEP TESTS DONE ===').

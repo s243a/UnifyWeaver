@@ -3222,11 +3222,11 @@ compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
         Backend \= none
     ->  format('  Mode: Database Backend (~w)~n', [Backend]),
         compile_db_backend_to_rust(Pred, Arity, Backend, Options, RustCode)
-    ;   functor(Head, Pred, Arity),
-        GoalModule:clause(Head, Body),
-        is_semantic_predicate(Body)
+    ;   functor(SemHead, Pred, Arity),
+        GoalModule:clause(SemHead, SemBody),
+        is_semantic_predicate(SemBody)
     ->  format('  Mode: Semantic Runtime~n'),
-        compile_semantic_mode(Pred, Arity, Head, Body, RustCode)
+        compile_semantic_mode(Pred, Arity, SemHead, SemBody, RustCode)
     ;   option(aggregation(AggOp), Options, none),
         AggOp \= none
     ->  option(field_delimiter(FieldDelim), Options, colon),
@@ -3236,9 +3236,11 @@ compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
     ).
 
 is_semantic_predicate(Body) :-
-    (   sub_term(crawler_run(_, _), Body)
-    ;   sub_term(graph_search(_, _, _, _, _), Body)
-    ;   sub_term(graph_search(_, _, _, _), Body)
+    %% Use copy_term to avoid binding variables in Body
+    copy_term(Body, BodyCopy),
+    (   sub_term(Sub, BodyCopy), nonvar(Sub), functor(Sub, crawler_run, 2)
+    ;   sub_term(Sub, BodyCopy), nonvar(Sub), functor(Sub, graph_search, 5)
+    ;   sub_term(Sub, BodyCopy), nonvar(Sub), functor(Sub, graph_search, 4)
     ).
 
 compile_semantic_mode(Pred, _Arity, Head, Body, RustCode) :-

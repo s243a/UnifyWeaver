@@ -1089,10 +1089,143 @@ ruby_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     ruby_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_ruby_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_ruby_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    ruby_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_ruby_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(ruby_guard_condition(VarMap), GuardGoals, Conditions),
     ruby_output_goals(OutputGoals, VarMap, Code).
+
+%% ruby_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+ruby_render_classified_goals([], _VarMap, [], []).
+ruby_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    ruby_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+ruby_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    ruby_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    ruby_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(ruby_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "nil"
+    ),
+    format(string(IfLine), '  if ~w', [GuardExpr]),
+    format(string(RetLine), '    return ~w', [OutName]),
+    EndLine = '  end',
+    Lines = [AssignLine, IfLine, RetLine, EndLine].
+ruby_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    ruby_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    ruby_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% ruby_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+ruby_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    ruby_guard_condition(VarMap, Goal, Cond).
+ruby_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    ruby_output_goal(Goal, VarMap0, Line, VarMapOut).
+ruby_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    ruby_guard_condition(VarMap0, If, Cond),
+    ruby_branch_value(Then, VarMap0, ThenExpr),
+    ruby_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '  if ~w', [Cond]),
+    format(string(ThenLine), '    return ~w', [ThenExpr]),
+    ElseLine = '  else',
+    format(string(ElseRetLine), '    return ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '  end'].
+ruby_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    ruby_output_goal(Goal, VarMap0, Line, VarMapOut).
+ruby_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% ruby_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+ruby_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    ruby_guard_condition(VarMap, Goal, Cond).
+ruby_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    ruby_output_goal_last_lines(Goal, VarMap, Lines).
+ruby_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    ruby_guard_condition(VarMap, If, Cond),
+    ruby_branch_value(Then, VarMap, ThenExpr),
+    ruby_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '  if ~w', [Cond]),
+    format(string(ThenLine), '    return ~w', [ThenExpr]),
+    ElseLine = '  else',
+    format(string(ElseRetLine), '    return ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '  end'].
+ruby_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    ruby_disj_if_chain(Alternatives, VarMap, Lines).
+ruby_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    ruby_output_goal_last_lines(Goal, VarMap, Lines).
+ruby_render_classified_last(_, _, [], []).
+
+%% ruby_output_goal_last_lines(+Goal, +VarMap, -Lines)
+ruby_output_goal_last_lines(Goal, VarMap, [Line]) :-
+    ruby_output_goal(Goal, VarMap, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(RetPart), '\n  return ~w', [OutName]),
+        atom_concat(AssignLine, RetPart, Line)
+    ;   Line = AssignLine
+    ).
+ruby_output_goal_last_lines(Goal, VarMap, [Line]) :-
+    ruby_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '  return ~w', [Expr]).
+
+%% ruby_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+ruby_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, ruby_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+ruby_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% ruby_disj_if_chain(+Alternatives, +VarMap, -Lines)
+ruby_disj_if_chain([], _, []).
+ruby_disj_if_chain([Alt], VarMap, [ElseLine, RetLine, EndLine]) :-
+    !,
+    ruby_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '  else',
+    format(string(RetLine), '    return ~w', [ValExpr]),
+    EndLine = '  end'.
+ruby_disj_if_chain([Alt|Rest], VarMap, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(ruby_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    ruby_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '  if ~w', [CondExpr]),
+    format(string(RetLine), '    return ~w', [ValExpr]),
+    ruby_disj_elsif_chain(Rest, VarMap, RestLines),
+    append([IfLine, RetLine], RestLines, Lines).
+
+ruby_disj_elsif_chain([], _, []).
+ruby_disj_elsif_chain([Alt], VarMap, [ElseLine, RetLine, EndLine]) :-
+    !,
+    ruby_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '  else',
+    format(string(RetLine), '    return ~w', [ValExpr]),
+    EndLine = '  end'.
+ruby_disj_elsif_chain([Alt|Rest], VarMap, [ElsifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(ruby_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    ruby_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElsifLine), '  elsif ~w', [CondExpr]),
+    format(string(RetLine), '    return ~w', [ValExpr]),
+    ruby_disj_elsif_chain(Rest, VarMap, RestLines).
 
 %% ruby_guard_condition(+VarMap, +Goal, -Condition)
 ruby_guard_condition(VarMap, _Module:Goal, Condition) :-

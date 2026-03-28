@@ -681,10 +681,111 @@ clojure_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     clojure_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_clojure_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_clojure_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    clojure_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_clojure_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(clojure_guard_condition(VarMap), GuardGoals, Conditions),
     clojure_output_goals(OutputGoals, VarMap, Code).
+
+%% clojure_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+clojure_render_classified_goals([], _VarMap, [], []).
+clojure_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    clojure_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+clojure_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    clojure_output_goal(Goal, VarMap, LetBinding, VarMap1),
+    clojure_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(clojure_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = 'nil'
+    ),
+    format(string(IfLine), '  (if (and ~w)', [GuardExpr]),
+    format(string(RetLine), '    ~w', [OutName]),
+    CloseLine = '    nil)',
+    Lines = [LetBinding, IfLine, RetLine, CloseLine].
+clojure_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    clojure_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    clojure_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% clojure_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+clojure_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    clojure_guard_condition(VarMap, Goal, Cond).
+clojure_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    clojure_output_goal(Goal, VarMap0, Line, VarMapOut).
+clojure_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], [Line], VarMap0) :-
+    clojure_guard_condition(VarMap0, If, Cond),
+    clojure_branch_value(Then, VarMap0, ThenExpr),
+    clojure_branch_value(Else, VarMap0, ElseExpr),
+    format(string(Line), '  (if ~w ~w ~w)', [Cond, ThenExpr, ElseExpr]).
+clojure_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    clojure_output_goal(Goal, VarMap0, Line, VarMapOut).
+clojure_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% clojure_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+clojure_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    clojure_guard_condition(VarMap, Goal, Cond).
+clojure_render_classified_last(output(Goal, _, _), VarMap, [], [Line]) :-
+    clojure_output_goal_last(Goal, VarMap, Line).
+clojure_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], [Line]) :-
+    clojure_guard_condition(VarMap, If, Cond),
+    clojure_branch_value(Then, VarMap, ThenExpr),
+    clojure_branch_value(Else, VarMap, ElseExpr),
+    format(string(Line), '  (if ~w ~w ~w)', [Cond, ThenExpr, ElseExpr]).
+clojure_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    clojure_disj_cond_chain(Alternatives, VarMap, Lines).
+clojure_render_classified_last(passthrough(Goal), VarMap, [], [Line]) :-
+    clojure_output_goal_last(Goal, VarMap, Line).
+clojure_render_classified_last(_, _, [], []).
+
+%% clojure_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+clojure_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, clojure_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+clojure_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% clojure_disj_cond_chain(+Alternatives, +VarMap, -Lines)
+%  Renders disjunctions as a (cond ...) expression in Clojure.
+clojure_disj_cond_chain([], _, []).
+clojure_disj_cond_chain(Alternatives, VarMap, Lines) :-
+    CondOpen = '  (cond',
+    clojure_disj_cond_branches(Alternatives, VarMap, BranchLines),
+    CondClose = '  )',
+    append([[CondOpen], BranchLines, [CondClose]], Lines).
+
+%% clojure_disj_cond_branches(+Alternatives, +VarMap, -Lines)
+clojure_disj_cond_branches([], _, []).
+clojure_disj_cond_branches([Alt], VarMap, [KeyLine, ValLine]) :-
+    !,
+    clojure_branch_value(Alt, VarMap, ValExpr),
+    KeyLine = '    :else',
+    format(string(ValLine), '    ~w', [ValExpr]).
+clojure_disj_cond_branches([Alt|Rest], VarMap, [KeyLine, ValLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(clojure_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' ', CondParts),
+        format(string(CondExpr), '(and ~w)', [CondParts])
+    ;   CondExpr = 'true'
+    ),
+    clojure_branch_value(Alt, VarMap, ValExpr),
+    format(string(KeyLine), '    ~w', [CondExpr]),
+    format(string(ValLine), '    ~w', [ValExpr]),
+    clojure_disj_cond_branches(Rest, VarMap, RestLines).
 
 %% clojure_guard_condition(+VarMap, +Goal, -Condition)
 clojure_guard_condition(VarMap, _Module:Goal, Condition) :-

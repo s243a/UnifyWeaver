@@ -227,10 +227,135 @@ fsharp_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     fsharp_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_fsharp_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_fsharp_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    fsharp_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_fsharp_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(fsharp_guard_condition(VarMap), GuardGoals, Conditions),
     fsharp_output_goals(OutputGoals, VarMap, Code).
+
+%% fsharp_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+fsharp_render_classified_goals([], _VarMap, [], []).
+fsharp_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    fsharp_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+fsharp_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    fsharp_output_goal(Goal, VarMap, LetBinding, VarMap1),
+    fsharp_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(fsharp_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = '_'
+    ),
+    format(string(IfLine), '    if ~w then ~w else failwith "guard failed"', [GuardExpr, OutName]),
+    Lines = [LetBinding, IfLine].
+fsharp_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    fsharp_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    fsharp_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% fsharp_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+fsharp_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    fsharp_guard_condition(VarMap, Goal, Cond).
+fsharp_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    fsharp_output_goal(Goal, VarMap0, Line, VarMapOut).
+fsharp_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    fsharp_guard_condition(VarMap0, If, Cond),
+    fsharp_branch_value(Then, VarMap0, ThenExpr),
+    fsharp_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '    if ~w then', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    else',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine].
+fsharp_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    fsharp_output_goal(Goal, VarMap0, Line, VarMapOut).
+fsharp_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% fsharp_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+fsharp_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    fsharp_guard_condition(VarMap, Goal, Cond).
+fsharp_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    fsharp_render_output_goal_last(Goal, VarMap, Lines).
+fsharp_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    fsharp_guard_condition(VarMap, If, Cond),
+    fsharp_branch_value(Then, VarMap, ThenExpr),
+    fsharp_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if ~w then', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    else',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine].
+fsharp_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    fsharp_disj_if_chain(Alternatives, VarMap, Lines).
+fsharp_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    fsharp_render_output_goal_last(Goal, VarMap, Lines).
+fsharp_render_classified_last(_, _, [], []).
+
+%% fsharp_render_output_goal_last(+Goal, +VarMap, -Lines)
+%  3-arg wrapper used by classified goal renderers.
+fsharp_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    fsharp_output_goal_last(Goal, VarMap, Expr, _VarMapOut),
+    !.
+fsharp_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    fsharp_branch_value(Goal, VarMap, Expr).
+
+%% fsharp_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+fsharp_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, fsharp_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+fsharp_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% fsharp_disj_if_chain(+Alternatives, +VarMap, -Lines)
+fsharp_disj_if_chain([], _, []).
+fsharp_disj_if_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    fsharp_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    else',
+    format(string(RetLine), '        ~w', [ValExpr]).
+fsharp_disj_if_chain([Alt|Rest], VarMap, [IfLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(fsharp_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'true'
+    ),
+    fsharp_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '    if ~w then', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    fsharp_disj_elif_chain(Rest, VarMap, RestLines).
+
+%% fsharp_disj_elif_chain(+Alternatives, +VarMap, -Lines)
+fsharp_disj_elif_chain([], _, []).
+fsharp_disj_elif_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    fsharp_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    else',
+    format(string(RetLine), '        ~w', [ValExpr]).
+fsharp_disj_elif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(fsharp_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'true'
+    ),
+    fsharp_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElifLine), '    elif ~w then', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    fsharp_disj_elif_chain(Rest, VarMap, RestLines).
 
 %% fsharp_guard_condition(+VarMap, +Goal, -Condition)
 fsharp_guard_condition(VarMap, _Module:Goal, Condition) :-
