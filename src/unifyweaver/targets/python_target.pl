@@ -12214,3 +12214,358 @@ def health():
 if __name__ == "__main__":
     app.run(host="~w", port=~w)
 ', [Name, SWCode, MICode, Backend, Host, Port]).
+
+% ============================================================================
+% MULTIFILE RECURSION PATTERNS — Python
+% ============================================================================
+%
+% Implements the shared recursion API (multifile dispatch) for Python.
+% These produce idiomatic Python: while loops for tail recursion,
+% iterative loops for linear, @functools.cache for tree memoization.
+
+%% --- Tail Recursion: while loop with accumulator ---
+%% compile_tail_pattern(+Target, +PredStr, +Arity, +BaseClauses, +RecClauses,
+%%                      +AccPos, +StepOp, +ExitAfterResult, -Code)
+
+tail_recursion:compile_tail_pattern(python, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, StepOp, _ExitAfterResult, Code) :-
+    step_op_to_python(StepOp, PyStep),
+    (   Arity =:= 3 ->
+        %% Arity 3: pred(List, Acc, Result) — fold over list
+        format(string(Code),
+'import sys
+
+def ~w(items):
+    acc = 0
+    for item in items:
+        ~w
+    return acc
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2:
+        items = [int(x) for x in sys.argv[1].split(",")]
+        print(~w(items))
+', [PredStr, PyStep, PredStr])
+    ;   Arity =:= 2 ->
+        %% Arity 2: pred(N, Result) — numeric accumulator
+        format(string(Code),
+'import sys
+
+def ~w(n):
+    acc = 1
+    while n > 0:
+        ~w
+        n -= 1
+    return acc
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2:
+        print(~w(int(sys.argv[1])))
+', [PredStr, PyStep, PredStr])
+    ;   format(string(Code), '# Unsupported arity ~d for tail recursion~n', [Arity])
+    ).
+
+%% step_op_to_python(+StepOp, -PythonExpr)
+step_op_to_python(add_element, 'acc += item').
+step_op_to_python(add_1, 'acc += 1').
+step_op_to_python(mult_element, 'acc *= item').
+step_op_to_python(sub_element, 'acc -= item').
+step_op_to_python(mult, 'acc = acc * n').
+step_op_to_python(add, 'acc = acc + n').
+step_op_to_python(Op, PyCode) :-
+    atom(Op),
+    format(string(PyCode), 'acc = acc ~w n', [Op]).
+
+%% --- Linear Recursion: iterative loop or direct recursion with memo ---
+%% compile_linear_pattern(+Target, +PredStr, +Arity, +BaseClauses, +RecClauses,
+%%                        +MemoEnabled, +MemoStrategy, -Code)
+
+linear_recursion:compile_linear_pattern(python, PredStr, Arity, BaseClauses, _RecClauses, MemoEnabled, _MemoStrategy, Code) :-
+    (   Arity =:= 2 ->
+        linear_fold_python(PredStr, BaseClauses, MemoEnabled, Code)
+    ;   format(string(Code), '# Unsupported arity ~d for linear recursion~n', [Arity])
+    ).
+
+linear_fold_python(PredStr, BaseClauses, MemoEnabled, Code) :-
+    %% Extract base case info
+    linear_recursion:extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
+    (   BaseInput == [] -> BaseCheck = "not items" ; format(string(BaseCheck), 'n == ~w', [BaseInput]) ),
+    format(string(BaseReturn), '~w', [BaseOutput]),
+    %% Extract fold operation from recursive clause
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), AllClauses),
+    partition(linear_recursion:is_recursive_clause(Pred), AllClauses, ActualRec, _),
+    (   ActualRec = [clause(RHead, RBody)|_] ->
+        RHead =.. [_, InputVar, _],
+        linear_recursion:find_recursive_call(RBody, RecCall),
+        RecCall =.. [_, _, AccVar],
+        linear_recursion:find_last_is_expression(RBody, _ is FoldExpr),
+        translate_fold_expr_python(FoldExpr, InputVar, AccVar, PyOp)
+    ;   PyOp = "current + result"
+    ),
+    %% Determine if list or numeric
+    linear_recursion:detect_input_type(BaseInput, InputType),
+    (   MemoEnabled = true ->
+        MemoDecorator = "@functools.cache"
+    ;   MemoDecorator = ""
+    ),
+    (   InputType = list ->
+        %% List recursion: iterative with accumulator
+        format(string(Code),
+'import sys
+import functools
+
+def ~w(items):
+    if ~w:
+        return ~w
+    result = ~w
+    for current in reversed(items):
+        result = ~w
+    return result
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2:
+        items = [int(x) for x in sys.argv[1].split(",")]
+        print(~w(items))
+', [PredStr, BaseCheck, BaseReturn, BaseReturn, PyOp, PredStr])
+    ;   %% Numeric recursion: loop down from n
+        format(string(Code),
+'import sys
+import functools
+
+~w
+def ~w(n):
+    if ~w:
+        return ~w
+    result = ~w
+    for i in range(~w + 1, n + 1):
+        result = ~w
+    return result
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2:
+        print(~w(int(sys.argv[1])))
+', [MemoDecorator, PredStr, BaseCheck, BaseReturn, BaseReturn, BaseInput, PyOp, PredStr])
+    ).
+
+%% translate_fold_expr_python(+FoldExpr, +InputVar, +AccVar, -PyExpr)
+translate_fold_expr_python(A + B, InputVar, AccVar, PyExpr) :-
+    A == InputVar, B == AccVar, !, PyExpr = 'current + result'.
+translate_fold_expr_python(A + B, InputVar, AccVar, PyExpr) :-
+    A == AccVar, B == InputVar, !, PyExpr = 'result + current'.
+translate_fold_expr_python(A + B, _InputVar, AccVar, PyExpr) :-
+    A == AccVar, integer(B), !, format(string(PyExpr), 'result + ~w', [B]).
+translate_fold_expr_python(A + B, _InputVar, AccVar, PyExpr) :-
+    B == AccVar, integer(A), !, format(string(PyExpr), '~w + result', [A]).
+translate_fold_expr_python(A * B, InputVar, AccVar, PyExpr) :-
+    A == InputVar, B == AccVar, !, PyExpr = 'current * result'.
+translate_fold_expr_python(A * B, InputVar, AccVar, PyExpr) :-
+    A == AccVar, B == InputVar, !, PyExpr = 'result * current'.
+translate_fold_expr_python(A * B, _InputVar, AccVar, PyExpr) :-
+    A == AccVar, integer(B), !, format(string(PyExpr), 'result * ~w', [B]).
+translate_fold_expr_python(A - B, InputVar, AccVar, PyExpr) :-
+    A == InputVar, B == AccVar, !, PyExpr = 'current - result'.
+translate_fold_expr_python(_, _, _, 'current + result').  %% default
+
+%% --- Tree Recursion: memoized recursive function ---
+%% compile_tree_pattern(+Target, +Pattern, +Pred, +Arity, +UseMemo, -Code)
+
+tree_recursion:compile_tree_pattern(python, _Pattern, Pred, _Arity, UseMemo, Code) :-
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    %% Collect all clauses
+    findall(clause(Head, Body), user:clause(Head, Body), AllClauses),
+    %% Build base cases
+    findall(base_case(Input, Output),
+        (   member(clause(BHead, true), AllClauses),
+            BHead =.. [_, Input, Output],
+            nonvar(Input)
+        ), BaseCases),
+    %% Build base case Python code
+    findall(BaseStr,
+        (   member(base_case(BI, BO), BaseCases),
+            format(string(BaseStr), '    if n == ~w:\n        return ~w', [BI, BO])
+        ), BaseStrings),
+    atomic_list_concat(BaseStrings, '\n', BasePython),
+    %% Extract recursive expression from a single clause copy
+    (   clause(user:Head, RBody),
+        RBody \= true,
+        Head =.. [Pred, _InputVar, ResultVar],
+        %% Find all recursive calls and their arg expressions
+        extract_tree_rec_calls(RBody, Pred, _InputVar, RecCalls),
+        RecCalls = [_|_],
+        %% Find the fold expression (Result is ...)
+        linear_recursion:find_last_is_expression(RBody, ResultVar is FoldExpr),
+        %% Build Python recursive expression by substituting calls
+        build_tree_python_expr(FoldExpr, RecCalls, Pred, PredStr, PyRecExpr)
+    ->  true
+    ;   format(string(PyRecExpr), '~w(n - 1) + ~w(n - 2)', [PredStr, PredStr])
+    ),
+    %% Memoization
+    (   UseMemo = true ->
+        MemoLine = "@functools.cache"
+    ;   MemoLine = ""
+    ),
+    format(string(Code),
+'import sys
+import functools
+
+~w
+def ~w(n):
+~w
+    return ~w
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2:
+        print(~w(int(sys.argv[1])))
+', [MemoLine, PredStr, BasePython, PyRecExpr, PredStr]).
+
+%% extract_tree_rec_calls(+Body, +Pred, +InputVar, -Calls)
+%  Find recursive calls in body, extract their input arg expr and output var.
+%  Returns list of rec_call(ArgExpr, OutputVar).
+%  Does NOT use findall to preserve variable identity.
+extract_tree_rec_calls(Body, Pred, InputVar, Calls) :-
+    extract_goals_list(Body, Goals),
+    extract_rec_calls_from_goals(Goals, Pred, InputVar, Calls).
+
+extract_rec_calls_from_goals(Goals, Pred, InputVar, Calls) :-
+    %% First collect all is-bindings (Var is Expr) to resolve args
+    collect_is_bindings(Goals, IsBindings),
+    extract_rec_calls_with_bindings(Goals, Pred, InputVar, IsBindings, Calls).
+
+collect_is_bindings([], []).
+collect_is_bindings([Goal|Rest], Bindings) :-
+    (   Goal = (Var is Expr), var(Var)
+    ->  Bindings = [Var-Expr|RestBindings]
+    ;   Bindings = RestBindings
+    ),
+    collect_is_bindings(Rest, RestBindings).
+
+extract_rec_calls_with_bindings([], _, _, _, []).
+extract_rec_calls_with_bindings([Goal|Rest], Pred, InputVar, IsBindings, Calls) :-
+    (   compound(Goal),
+        Goal =.. [Pred, ArgInput, OutputVar],
+        var(OutputVar),
+        resolve_arg_via_bindings(ArgInput, InputVar, IsBindings, ArgExpr)
+    ->  Calls = [rec_call(ArgExpr, OutputVar)|RestCalls],
+        extract_rec_calls_with_bindings(Rest, Pred, InputVar, IsBindings, RestCalls)
+    ;   extract_rec_calls_with_bindings(Rest, Pred, InputVar, IsBindings, Calls)
+    ).
+
+%% resolve_arg_via_bindings(+Arg, +InputVar, +IsBindings, -Expr)
+%  If Arg is a variable bound by is-expression, resolve to the expression.
+resolve_arg_via_bindings(Arg, InputVar, IsBindings, Expr) :-
+    var(Arg),
+    member(BoundVar-BoundExpr, IsBindings),
+    Arg == BoundVar,
+    !,
+    resolve_is_expr(BoundExpr, InputVar, Expr).
+resolve_arg_via_bindings(Arg, _, _, Arg) :- number(Arg), !.
+resolve_arg_via_bindings(Arg, _, _, Arg).
+
+%% resolve_is_expr(+Expr, +InputVar, -Simplified)
+%  Simplify is-expression, replacing InputVar with 'n'.
+%% Normalize N + -K to N - K
+resolve_is_expr(A + B, InputVar, Result) :-
+    number(B), B < 0, !,
+    PosB is abs(B),
+    resolve_is_operand(A, InputVar, PA),
+    Result = PA - PosB.
+resolve_is_expr(A + B, InputVar, Result) :-
+    B = -(N), number(N), !,
+    resolve_is_operand(A, InputVar, PA),
+    Result = PA - N.
+resolve_is_expr(A + B, InputVar, Result) :-
+    !,
+    resolve_is_operand(A, InputVar, PA),
+    resolve_is_operand(B, InputVar, PB),
+    Result = PA + PB.
+resolve_is_expr(A - B, InputVar, Result) :-
+    !,
+    resolve_is_operand(A, InputVar, PA),
+    resolve_is_operand(B, InputVar, PB),
+    Result = PA - PB.
+resolve_is_expr(Expr, InputVar, Result) :-
+    resolve_is_operand(Expr, InputVar, Result).
+
+resolve_is_operand(Var, InputVar, n) :- var(Var), Var == InputVar, !.
+resolve_is_operand(N, _, N) :- number(N), !.
+resolve_is_operand(-(N), _, -(N)) :- number(N), !.
+resolve_is_operand(X, _, X).
+
+simplify_arg_expr(Var, _InputVar, Var) :- var(Var), !.
+simplify_arg_expr(Expr, _InputVar, Expr) :- number(Expr), !.
+simplify_arg_expr(Expr, _InputVar, Expr) :- atom(Expr), !.
+simplify_arg_expr(Expr, _, Expr).
+
+%% build_tree_python_expr(+FoldExpr, +RecCalls, +Pred, +PredStr, -PyExpr)
+%  Replace output variables in the fold expression with Python recursive calls.
+build_tree_python_expr(A + B, RecCalls, Pred, PredStr, PyExpr) :-
+    !,
+    build_tree_python_operand(A, RecCalls, Pred, PredStr, PA),
+    build_tree_python_operand(B, RecCalls, Pred, PredStr, PB),
+    format(string(PyExpr), '~w + ~w', [PA, PB]).
+build_tree_python_expr(A * B, RecCalls, Pred, PredStr, PyExpr) :-
+    !,
+    build_tree_python_operand(A, RecCalls, Pred, PredStr, PA),
+    build_tree_python_operand(B, RecCalls, Pred, PredStr, PB),
+    format(string(PyExpr), '~w * ~w', [PA, PB]).
+build_tree_python_expr(A - B, RecCalls, Pred, PredStr, PyExpr) :-
+    !,
+    build_tree_python_operand(A, RecCalls, Pred, PredStr, PA),
+    build_tree_python_operand(B, RecCalls, Pred, PredStr, PB),
+    format(string(PyExpr), '~w - ~w', [PA, PB]).
+build_tree_python_expr(_, _, _, PredStr, PyExpr) :-
+    format(string(PyExpr), '~w(n - 1) + ~w(n - 2)', [PredStr, PredStr]).
+
+%% build_tree_python_operand(+Expr, +RecCalls, +Pred, +PredStr, -PyExpr)
+%  If Expr is a variable that matches a recursive call's output, substitute.
+build_tree_python_operand(Var, RecCalls, _Pred, PredStr, PyExpr) :-
+    var(Var),
+    member(rec_call(ArgExpr, OutputVar), RecCalls),
+    Var == OutputVar,
+    !,
+    python_tree_arg(ArgExpr, PyArg),
+    format(string(PyExpr), '~w(~w)', [PredStr, PyArg]).
+build_tree_python_operand(Expr, _, _, _, PyExpr) :-
+    format(string(PyExpr), '~w', [Expr]).
+
+python_tree_arg(n, 'n') :- !.
+python_tree_arg(Var, 'n') :- var(Var), !.
+python_tree_arg(N, PyArg) :- number(N), !, format(string(PyArg), '~w', [N]).
+python_tree_arg(A + B, PyArg) :- !,
+    python_tree_arg(A, PA), python_tree_arg(B, PB),
+    format(string(PyArg), '~w + ~w', [PA, PB]).
+python_tree_arg(A - B, PyArg) :- !,
+    python_tree_arg(A, PA), python_tree_arg(B, PB),
+    format(string(PyArg), '~w - ~w', [PA, PB]).
+python_tree_arg(-(N), PyArg) :- number(N), !, format(string(PyArg), '-~w', [N]).
+python_tree_arg(Expr, PyArg) :- format(string(PyArg), '~w', [Expr]).
+
+%% tree_fold_python(+FoldExpr, +Pred, +PredStr, -PyExpr)
+tree_fold_python(A + B, Pred, PredStr, PyExpr) :-
+    tree_call_python(A, Pred, PredStr, PA),
+    tree_call_python(B, Pred, PredStr, PB),
+    format(string(PyExpr), '~w + ~w', [PA, PB]), !.
+tree_fold_python(A * B, Pred, PredStr, PyExpr) :-
+    tree_call_python(A, Pred, PredStr, PA),
+    tree_call_python(B, Pred, PredStr, PB),
+    format(string(PyExpr), '~w * ~w', [PA, PB]), !.
+tree_fold_python(_, _Pred, PredStr, PyExpr) :-
+    format(string(PyExpr), '~w(n - 1) + ~w(n - 2)', [PredStr, PredStr]).
+
+%% tree_call_python(+Expr, +Pred, +PredStr, -PyExpr)
+tree_call_python(Call, Pred, PredStr, PyExpr) :-
+    compound(Call),
+    Call =.. [Pred, Arg],
+    !,
+    tree_arg_python(Arg, PyArg),
+    format(string(PyExpr), '~w(~w)', [PredStr, PyArg]).
+tree_call_python(Expr, _, _, PyExpr) :-
+    format(string(PyExpr), '~w', [Expr]).
+
+tree_arg_python(N - K, PyArg) :-
+    integer(K), !,
+    format(string(PyArg), 'n - ~w', [K]).
+tree_arg_python(Expr, PyExpr) :-
+    format(string(PyExpr), '~w', [Expr]).
