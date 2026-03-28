@@ -240,7 +240,8 @@ bring-up.
     tree-shaped predicates recurse through paired-forest helpers,
     including guarded branch-local paired-forest call selection on the
     tree side, while list-shaped predicates recurse through head/tail
-    decomposition, plus mixed list/numeric SCCs where list-shaped
+    decomposition or fixed two-element forest-pair decomposition, plus
+    mixed list/numeric SCCs where list-shaped
     predicates recurse through head/tail decomposition while numeric
     predicates recurse through scalar step descent or singleton-list
     re-entry, plus mixed tree/numeric SCCs where tree-shaped predicates

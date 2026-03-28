@@ -174,6 +174,12 @@ cleanup_typr_test :-
     retractall(user:nested_multi_result_choice_clause(_, _)),
     retractall(user:two_level_nested_multi_result_choice(_, _)),
     retractall(user:two_level_nested_multi_result_choice_clause(_, _)),
+    retractall(user:typr_tree_pair_ok(_)),
+    retractall(user:typr_forest_pair_ok(_)),
+    retractall(user:typr_tree_pair_sum(_, _)),
+    retractall(user:typr_forest_pair_sum(_, _)),
+    retractall(user:typr_tree_pair_weight(_, _, _)),
+    retractall(user:typr_forest_pair_weight(_, _, _)),
     retractall(user:sort_rows(_, _)),
     retractall(user:filter_rows(_, _)),
     retractall(user:group_rows(_, _)),
@@ -4315,6 +4321,94 @@ test(recursive_compiler_supports_typr_mixed_tree_list_numeric_mutual_integer_con
     once(sub_string(Code, _, _, _, "left_result = typr_tree_forest_num_weight_impl(list((current_input + -1), list(), list()), current_ctx);")),
     once(sub_string(Code, _, _, _, "result = ((current_input * current_ctx) + left_result);")),
     \+ sub_string(Code, _, _, _, "left_result = typr_tree_forest_num_weight_impl((current_input + -1), current_ctx);"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_tree_pair_mutual_boolean_group) :-
+    clear_type_declarations,
+    assertz(user:typr_tree_pair_ok([])),
+    assertz(user:(typr_tree_pair_ok([_, L, R]) :-
+        typr_forest_pair_ok([L, R])
+    )),
+    assertz(user:typr_forest_pair_ok([])),
+    assertz(user:(typr_forest_pair_ok([L, R]) :-
+        typr_tree_pair_ok(L),
+        typr_tree_pair_ok(R)
+    )),
+    assertz(type_declarations:uw_type(typr_tree_pair_ok/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_forest_pair_ok/1, 1, list(any))),
+    assertz(type_declarations:uw_return_type(typr_tree_pair_ok/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_forest_pair_ok/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_tree_pair_ok/1, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_forest_pair_ok/1, typr_tree_pair_ok/1")),
+    once(sub_string(Code, _, _, _, "let typr_tree_pair_ok <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "let typr_forest_pair_ok <- fn(arg1: [#N, Any]): bool")),
+    once(sub_string(Code, _, _, _, "left_result = typr_tree_pair_ok_impl(.subset2(current_input, 1));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_tree_pair_ok_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "length(current_input) == 2")),
+    once(sub_string(Code, _, _, _, "result = typr_forest_pair_ok_impl(list(.subset2(current_input, 2), .subset2(current_input, 3)));")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_tree_pair_mutual_integer_group) :-
+    clear_type_declarations,
+    assertz(user:typr_tree_pair_sum([], 0)),
+    assertz(user:(typr_tree_pair_sum([V, L, R], S) :-
+        typr_forest_pair_sum([L, R], Parts),
+        S is V + Parts
+    )),
+    assertz(user:typr_forest_pair_sum([], 0)),
+    assertz(user:(typr_forest_pair_sum([L, R], S) :-
+        typr_tree_pair_sum(L, SL),
+        typr_tree_pair_sum(R, SR),
+        S is SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_tree_pair_sum/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_tree_pair_sum/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_forest_pair_sum/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_forest_pair_sum/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_tree_pair_sum/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_forest_pair_sum/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_tree_pair_sum/2, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_forest_pair_sum/2, typr_tree_pair_sum/2")),
+    once(sub_string(Code, _, _, _, "let typr_tree_pair_sum <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "left_result = typr_tree_pair_sum_impl(.subset2(current_input, 1));")),
+    once(sub_string(Code, _, _, _, "right_result = typr_tree_pair_sum_impl(.subset2(current_input, 2));")),
+    once(sub_string(Code, _, _, _, "length(current_input) == 2")),
+    once(sub_string(Code, _, _, _, "result = (left_result + right_result);")),
+    once(sub_string(Code, _, _, _, "result = (.subset2(current_input, 1) + left_result);")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_tree_pair_mutual_integer_context_group) :-
+    clear_type_declarations,
+    assertz(user:typr_tree_pair_weight([], _W0, 0)),
+    assertz(user:(typr_tree_pair_weight([V, L, R], W, S) :-
+        typr_forest_pair_weight([L, R], W, Parts),
+        S is (V * W) + Parts
+    )),
+    assertz(user:typr_forest_pair_weight([], _W1, 0)),
+    assertz(user:(typr_forest_pair_weight([L, R], W, S) :-
+        typr_tree_pair_weight(L, W, SL),
+        typr_tree_pair_weight(R, W, SR),
+        S is SL + SR
+    )),
+    assertz(type_declarations:uw_type(typr_tree_pair_weight/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_tree_pair_weight/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_tree_pair_weight/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_forest_pair_weight/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_forest_pair_weight/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_forest_pair_weight/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_tree_pair_weight/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_forest_pair_weight/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_tree_pair_weight/3, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_forest_pair_weight/3, typr_tree_pair_weight/3")),
+    once(sub_string(Code, _, _, _, "let typr_tree_pair_weight <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+    once(sub_string(Code, _, _, _, "left_result = typr_tree_pair_weight_impl(.subset2(current_input, 1), current_ctx);")),
+    once(sub_string(Code, _, _, _, "right_result = typr_tree_pair_weight_impl(.subset2(current_input, 2), current_ctx);")),
+    once(sub_string(Code, _, _, _, "length(current_input) == 2")),
+    once(sub_string(Code, _, _, _, "result = (left_result + right_result);")),
+    once(sub_string(Code, _, _, _, "result = ((.subset2(current_input, 1) * current_ctx) + left_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 
