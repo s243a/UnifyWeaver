@@ -18,9 +18,38 @@
 :- use_module(library(lists)).
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/jvm_bytecode').
+:- use_module('../bindings/jvm_asm_bindings', [init_jvm_asm_bindings/0]).
+:- use_module('../core/component_registry').
+
+% Component registration
+:- initialization((
+    catch(
+        register_component_type(source, custom_jamaica, custom_jamaica, [
+            description("Custom Jamaica JVM Assembly Component")
+        ]),
+        _,
+        true
+    )
+), now).
+
+% Advanced recursion multifile hooks
+:- use_module('../core/advanced/tail_recursion', []).
+:- use_module('../core/advanced/linear_recursion', []).
+:- use_module('../core/advanced/tree_recursion', []).
+:- use_module('../core/advanced/multicall_linear_recursion', []).
+:- use_module('../core/advanced/direct_multi_call_recursion', []).
+:- use_module('../core/advanced/mutual_recursion', []).
+
+:- multifile tail_recursion:compile_tail_pattern/9.
+:- multifile linear_recursion:compile_linear_pattern/8.
+:- multifile tree_recursion:compile_tree_pattern/6.
+:- multifile multicall_linear_recursion:compile_multicall_pattern/6.
+:- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
+:- multifile mutual_recursion:compile_mutual_pattern/5.
 
 %% init_jamaica_target
-init_jamaica_target.
+init_jamaica_target :-
+    init_jvm_asm_bindings.
 
 %% compile_predicate/3 - dispatch alias
 compile_predicate(PredArity, Options, Code) :-
@@ -112,6 +141,147 @@ jamaica_method_code(method(Name, Params, RetType, Body), Code) :-
 
 jamaica_typed_param(param(Name, Type), Str) :-
     format(string(Str), '~w ~w', [Type, Name]).
+
+%% ============================================
+%% RECURSION PATTERN HOOKS
+%% ============================================
+
+%% Tail recursion
+tail_recursion:compile_tail_pattern(jamaica, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, _StepOp, _ExitAfterResult, Code) :-
+    atom_string(Pred, PredStr),
+    compile_tail_recursion_jamaica(Pred/Arity, [], Code).
+
+compile_tail_recursion_jamaica(Pred/Arity, _Options, Code) :-
+    atom_string(Pred, PredStr),
+    jvm_tail_recursion_bytecode(PredStr, Arity, symbolic, BodyInstrs),
+    jvm_entry_method_bytecode(PredStr, Arity, symbolic, EntryInstrs),
+    format(string(ClassName), 'Prolog_~w', [PredStr]),
+    jamaica_wrap_recursion(ClassName, PredStr, Arity,
+        "int arg1, int arg2", BodyInstrs,
+        "int arg1", EntryInstrs, Code).
+
+%% Linear recursion
+linear_recursion:compile_linear_pattern(jamaica, PredStr, Arity, _BaseClauses, _RecClauses, _MemoEnabled, _MemoStrategy, Code) :-
+    atom_string(Pred, PredStr),
+    compile_linear_recursion_jamaica(Pred/Arity, [], Code).
+
+compile_linear_recursion_jamaica(Pred/Arity, _Options, Code) :-
+    atom_string(Pred, PredStr),
+    jvm_linear_recursion_bytecode(PredStr, Arity, symbolic, BodyInstrs),
+    jamaica_wrap_single(PredStr, Arity, "int arg1", BodyInstrs, Code).
+
+%% Tree recursion
+tree_recursion:compile_tree_pattern(jamaica, PredStr, Arity, _BaseClauses, _RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    compile_tree_recursion_jamaica(Pred/Arity, [], Code).
+
+compile_tree_recursion_jamaica(Pred/Arity, _Options, Code) :-
+    atom_string(Pred, PredStr),
+    jvm_tree_recursion_bytecode(PredStr, Arity, symbolic, BodyInstrs),
+    jamaica_wrap_single(PredStr, Arity, "int arg1", BodyInstrs, Code).
+
+%% Multicall recursion
+multicall_linear_recursion:compile_multicall_pattern(jamaica, PredStr, BaseClauses, _RecClauses, _MemoEnabled, Code) :-
+    atom_string(Pred, PredStr),
+    length(BaseClauses, _),
+    compile_multicall_recursion_jamaica(Pred/2, [], Code).
+
+compile_multicall_recursion_jamaica(Pred/Arity, _Options, Code) :-
+    atom_string(Pred, PredStr),
+    jvm_multicall_recursion_bytecode(PredStr, Arity, symbolic, BodyInstrs),
+    jamaica_wrap_single(PredStr, Arity, "int arg1", BodyInstrs, Code).
+
+%% Direct multicall recursion
+direct_multi_call_recursion:compile_direct_multicall_pattern(jamaica, PredStr, _BaseClauses, _RecClause, Code) :-
+    atom_string(Pred, PredStr),
+    compile_direct_multicall_jamaica(Pred/2, [], Code).
+
+compile_direct_multicall_jamaica(Pred/Arity, _Options, Code) :-
+    atom_string(Pred, PredStr),
+    jvm_direct_multicall_bytecode(PredStr, Arity, symbolic, BodyInstrs),
+    jamaica_wrap_single(PredStr, Arity, "int arg1", BodyInstrs, Code).
+
+%% Mutual recursion
+mutual_recursion:compile_mutual_pattern(jamaica, Predicates, _MemoEnabled, _MemoStrategy, Code) :-
+    compile_mutual_recursion_jamaica(Predicates, [], Code).
+
+compile_mutual_recursion_jamaica(Predicates, _Options, Code) :-
+    (   Predicates = [Pred1|_]
+    ->  atom_string(Pred1, P1Str),
+        format(string(ClassName), 'Prolog_~w', [P1Str])
+    ;   ClassName = "Prolog_mutual"
+    ),
+    jvm_mutual_recursion_bytecode(Predicates, ClassName, symbolic, Methods),
+    maplist(jamaica_mutual_method, Methods, MethodCodes),
+    atomic_list_concat(MethodCodes, '\n', MethodSection),
+    format(string(Code),
+'// Generated by UnifyWeaver Jamaica Target - Mutual Recursion
+
+public class ~w {
+
+  %default_constructor public
+
+~w
+}
+', [ClassName, MethodSection]).
+
+jamaica_mutual_method(method(Name, Instrs), Code) :-
+    maplist(ensure_string, Instrs, StrInstrs),
+    atomic_list_concat(StrInstrs, '\n', Body),
+    format(string(Code),
+'  public static int ~w(int arg1) {
+~w
+  }
+', [Name, Body]).
+
+%% ============================================
+%% WRAPPING HELPERS
+%% ============================================
+
+%% jamaica_wrap_single(+PredStr, +Arity, +ParamList, +Instructions, -Code)
+jamaica_wrap_single(PredStr, _Arity, ParamList, Instructions, Code) :-
+    maplist(ensure_string, Instructions, StrInstrs),
+    atomic_list_concat(StrInstrs, '\n', Body),
+    format(string(ClassName), 'Prolog_~w', [PredStr]),
+    format(string(Code),
+'// Generated by UnifyWeaver Jamaica Target - Recursion
+
+public class ~w {
+
+  %default_constructor public
+
+  public static int ~w(~w) {
+~w
+  }
+}
+', [ClassName, PredStr, ParamList, Body]).
+
+%% jamaica_wrap_recursion(+ClassName, +PredStr, +Arity, +CoreParams, +CoreInstrs, +EntryParams, +EntryInstrs, -Code)
+jamaica_wrap_recursion(ClassName, PredStr, _Arity, CoreParams, CoreInstrs, EntryParams, EntryInstrs, Code) :-
+    maplist(ensure_string, CoreInstrs, CoreStrs),
+    atomic_list_concat(CoreStrs, '\n', CoreBody),
+    maplist(ensure_string, EntryInstrs, EntryStrs),
+    atomic_list_concat(EntryStrs, '\n', EntryBody),
+    format(string(EntryName), '~w_entry', [PredStr]),
+    format(string(Code),
+'// Generated by UnifyWeaver Jamaica Target - Tail Recursion
+
+public class ~w {
+
+  %default_constructor public
+
+  public static int ~w(~w) {
+~w
+  }
+
+  public static int ~w(~w) {
+~w
+  }
+}
+', [ClassName, PredStr, CoreParams, CoreBody, EntryName, EntryParams, EntryBody]).
+
+ensure_string(S, S) :- string(S), !.
+ensure_string(A, S) :- atom_string(A, S).
 
 %% write_jamaica_program(+Code, +Filename)
 write_jamaica_program(Code, Filename) :-

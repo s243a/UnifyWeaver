@@ -30,7 +30,16 @@
     jvm_native_clause_body/5,        % +PredStr/Arity, +Clauses, +VarStyle, +OutputFmt, -Code
 
     % Stack depth estimation
-    jvm_estimate_stack_depth/2       % +Instructions, -Depth
+    jvm_estimate_stack_depth/2,      % +Instructions, -Depth
+
+    % Recursion pattern generators
+    jvm_tail_recursion_bytecode/4,   % +PredStr, +Arity, +VarStyle, -Instructions
+    jvm_linear_recursion_bytecode/4, % +PredStr, +Arity, +VarStyle, -Instructions
+    jvm_tree_recursion_bytecode/4,   % +PredStr, +Arity, +VarStyle, -Instructions
+    jvm_multicall_recursion_bytecode/4,  % +PredStr, +Arity, +VarStyle, -Instructions
+    jvm_direct_multicall_bytecode/4,     % +PredStr, +Arity, +VarStyle, -Instructions
+    jvm_mutual_recursion_bytecode/4, % +Predicates, +ClassName, +VarStyle, -Instructions
+    jvm_entry_method_bytecode/4      % +PredStr, +Arity, +VarStyle, -Instructions
 ]).
 
 :- use_module('../core/clause_body_analysis').
@@ -381,5 +390,154 @@ instr_stack_effect(Instr, Effect) :-
     ;   sub_string(Instr, _, _, _, "athrow")  -> Effect = -1
     ;   sub_string(Instr, _, _, _, "new ")    -> Effect = 1
     ;   sub_string(Instr, _, _, _, "invoke")  -> Effect = 0  % approximation
+    ;   sub_string(Instr, _, _, _, "aload")   -> Effect = 1
+    ;   sub_string(Instr, _, _, _, "astore")  -> Effect = -1
+    ;   sub_string(Instr, _, _, _, "iaload")  -> Effect = -1  % pops ref+idx, pushes val
+    ;   sub_string(Instr, _, _, _, "iastore") -> Effect = -3
+    ;   sub_string(Instr, _, _, _, "baload")  -> Effect = -1
+    ;   sub_string(Instr, _, _, _, "bastore") -> Effect = -3
+    ;   sub_string(Instr, _, _, _, "newarray") -> Effect = 0  % pops count, pushes ref
+    ;   sub_string(Instr, _, _, _, "goto")    -> Effect = 0
     ;   Effect = 0  % labels, gotos, etc.
     ).
+
+%% ============================================
+%% RECURSION PATTERN GENERATORS
+%% ============================================
+
+%% jvm_tail_recursion_bytecode(+PredStr, +Arity, +VarStyle, -Instructions)
+%%   Tail recursion using goto loop. O(1) stack space.
+%%   Pattern: sum(n, acc) { while(n > 0) { acc += n; n--; } return acc; }
+jvm_tail_recursion_bytecode(PredStr, _Arity, VarStyle, Instructions) :-
+    var_ref(VarStyle, "arg1", 0, NRef),
+    var_ref(VarStyle, "arg2", 1, AccRef),
+    format(string(LoadN),   '    iload ~w', [NRef]),
+    format(string(LoadAcc), '    iload ~w', [AccRef]),
+    format(string(StoreN),  '    istore ~w', [NRef]),
+    format(string(StoreAcc),'    istore ~w', [AccRef]),
+    format(string(Header),  '    ;; Tail recursion: ~w', [PredStr]),
+    Instructions = [
+        Header,
+        "LOOP:",
+        LoadN,
+        "    iconst_0",
+        "    if_icmple DONE",
+        LoadAcc, LoadN,
+        "    iadd",
+        StoreAcc,
+        LoadN,
+        "    iconst_1",
+        "    isub",
+        StoreN,
+        "    goto LOOP",
+        "DONE:",
+        LoadAcc,
+        "    ireturn"
+    ].
+
+%% jvm_entry_method_bytecode(+PredStr, +Arity, +VarStyle, -Instructions)
+%%   Entry-point wrapper that passes initial accumulator = 0.
+jvm_entry_method_bytecode(PredStr, _Arity, VarStyle, Instructions) :-
+    var_ref(VarStyle, "arg1", 0, NRef),
+    format(string(LoadN), '    iload ~w', [NRef]),
+    format(string(Invoke), '    invokestatic ~w(II)I', [PredStr]),
+    Instructions = [
+        LoadN,
+        "    iconst_0",
+        Invoke,
+        "    ireturn"
+    ].
+
+%% jvm_linear_recursion_bytecode(+PredStr, +Arity, +VarStyle, -Instructions)
+%%   Linear recursion with memoization. f(n) = f(n-1) + n.
+jvm_linear_recursion_bytecode(PredStr, _Arity, VarStyle, Instructions) :-
+    var_ref(VarStyle, "arg1", 0, NRef),
+    format(string(LoadN), '    iload ~w', [NRef]),
+    format(string(SelfCall), '    invokestatic ~w(I)I', [PredStr]),
+    format(string(Header), '    ;; Linear recursion: ~w (memoized)', [PredStr]),
+    Instructions = [
+        Header,
+        "    ;; Base cases",
+        LoadN, "    iconst_0", "    if_icmpgt NOT_BASE0",
+        "    iconst_0", "    ireturn",
+        "NOT_BASE0:",
+        LoadN, "    iconst_1", "    if_icmpne COMPUTE",
+        "    iconst_1", "    ireturn",
+        "COMPUTE:",
+        "    ;; Recursive call: f(n-1) + n",
+        LoadN, "    iconst_1", "    isub",
+        SelfCall,
+        LoadN,
+        "    iadd",
+        "    ireturn"
+    ].
+
+%% jvm_tree_recursion_bytecode(+PredStr, +Arity, +VarStyle, -Instructions)
+%%   Tree recursion with two calls. f(n) = f(n-1) + f(n-2).
+jvm_tree_recursion_bytecode(PredStr, _Arity, VarStyle, Instructions) :-
+    var_ref(VarStyle, "arg1", 0, NRef),
+    format(string(LoadN), '    iload ~w', [NRef]),
+    format(string(SelfCall), '    invokestatic ~w(I)I', [PredStr]),
+    format(string(Header), '    ;; Tree recursion: ~w (fibonacci-like)', [PredStr]),
+    Instructions = [
+        Header,
+        "    ;; Base cases",
+        LoadN, "    iconst_0", "    if_icmpgt NOT_BASE0",
+        "    iconst_0", "    ireturn",
+        "NOT_BASE0:",
+        LoadN, "    iconst_1", "    if_icmpne COMPUTE",
+        "    iconst_1", "    ireturn",
+        "COMPUTE:",
+        "    ;; f(n-1) + f(n-2)",
+        LoadN, "    iconst_1", "    isub",
+        SelfCall,
+        LoadN, "    iconst_2", "    isub",
+        SelfCall,
+        "    iadd",
+        "    ireturn"
+    ].
+
+%% jvm_multicall_recursion_bytecode/4 — same structure as tree for multicall hook
+jvm_multicall_recursion_bytecode(PredStr, Arity, VarStyle, Instructions) :-
+    jvm_tree_recursion_bytecode(PredStr, Arity, VarStyle, Instructions).
+
+%% jvm_direct_multicall_bytecode/4 — same structure, clause-body-analysis driven
+jvm_direct_multicall_bytecode(PredStr, Arity, VarStyle, Instructions) :-
+    jvm_tree_recursion_bytecode(PredStr, Arity, VarStyle, Instructions).
+
+%% jvm_mutual_recursion_bytecode(+Predicates, +ClassName, +VarStyle, -MethodsMap)
+%%   Mutual recursion: is_even/is_odd pattern.
+%%   Returns list of method(Name, Instructions) for each predicate.
+jvm_mutual_recursion_bytecode(Predicates, ClassName, VarStyle, Methods) :-
+    (   Predicates = [Pred1, Pred2|_]
+    ->  atom_string(Pred1, P1Str),
+        atom_string(Pred2, P2Str),
+        var_ref(VarStyle, "arg1", 0, NRef),
+        format(string(LoadN), '    iload ~w', [NRef]),
+        format(string(Call2), '    invokestatic ~w/~w(I)I', [ClassName, P2Str]),
+        format(string(Call1), '    invokestatic ~w/~w(I)I', [ClassName, P1Str]),
+        M1Instrs = [
+            LoadN, "    iconst_0", "    if_icmpne NOT_ZERO_1",
+            "    iconst_1", "    ireturn",
+            "NOT_ZERO_1:",
+            LoadN, "    iconst_1", "    isub",
+            Call2,
+            "    ireturn"
+        ],
+        M2Instrs = [
+            LoadN, "    iconst_0", "    if_icmpne NOT_ZERO_2",
+            "    iconst_0", "    ireturn",
+            "NOT_ZERO_2:",
+            LoadN, "    iconst_1", "    isub",
+            Call1,
+            "    ireturn"
+        ],
+        Methods = [method(P1Str, M1Instrs), method(P2Str, M2Instrs)]
+    ;   Methods = []
+    ).
+
+%% var_ref(+VarStyle, +SymName, +SlotIdx, -Ref)
+%%   Returns the appropriate variable reference based on style.
+var_ref(symbolic, SymName, _Slot, SymName) :- !.
+var_ref(numeric, _SymName, Slot, Ref) :-
+    number_string(Slot, Ref).

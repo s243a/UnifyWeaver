@@ -199,8 +199,8 @@ register_builtin_targets :-
     register_target(clojure, jvm, [compiled, streaming, functional, lisp]),
     register_target(jython, jvm, [scripting, jvm_interop]),
     register_target(kotlin, jvm, [compiled, streaming, android, coroutines]),
-    register_target(jamaica, jvm, [assembly, bytecode, macros, native_lowering]),
-    register_target(krakatau, jvm, [assembly, bytecode, roundtrip, native_lowering]),
+    register_target(jamaica, jvm, [assembly, bytecode, macros, native_lowering, recursion, bindings, components]),
+    register_target(krakatau, jvm, [assembly, bytecode, roundtrip, native_lowering, recursion, bindings, components]),
 
     % Native family - compiled binaries
     register_target(go, native, [compiled, streaming, concurrency, cross_platform]),
