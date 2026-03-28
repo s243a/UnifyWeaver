@@ -35,6 +35,7 @@
 :- use_module('../targets/cpp_target', []).      % registers multifile tail/linear patterns for C++
 :- use_module('../targets/ruby_target', []).     % registers multifile tail/linear patterns for Ruby
 :- use_module('../targets/perl_target', []).     % registers multifile tail/linear patterns for Perl
+:- use_module('../targets/typescript_target', [compile_predicate_to_typescript/3]).
 :- use_module('../targets/python_target', [compile_predicate_to_python/3]).
 :- use_module(template_system).
 :- use_module(input_source).
@@ -155,6 +156,16 @@ compile_non_recursive(python, Pred/Arity, FinalOptions, GeneratedCode) :-
     python_target:compile_predicate_to_python(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(lua, Pred/Arity, FinalOptions, GeneratedCode) :-
     lua_target:compile_predicate_to_lua(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(c, Pred/Arity, FinalOptions, GeneratedCode) :-
+    c_target:compile_predicate_to_c(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(cpp, Pred/Arity, FinalOptions, GeneratedCode) :-
+    cpp_target:compile_predicate_to_cpp(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(perl, Pred/Arity, FinalOptions, GeneratedCode) :-
+    perl_target:compile_predicate_to_perl(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(ruby, Pred/Arity, FinalOptions, GeneratedCode) :-
+    ruby_target:compile_predicate_to_ruby(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(typescript, Pred/Arity, FinalOptions, GeneratedCode) :-
+    typescript_target:compile_predicate_to_typescript(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(jython, Pred/Arity, FinalOptions, GeneratedCode) :-
