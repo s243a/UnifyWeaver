@@ -39,7 +39,14 @@
     jvm_multicall_recursion_bytecode/4,  % +PredStr, +Arity, +VarStyle, -Instructions
     jvm_direct_multicall_bytecode/4,     % +PredStr, +Arity, +VarStyle, -Instructions
     jvm_mutual_recursion_bytecode/4, % +Predicates, +ClassName, +VarStyle, -Instructions
-    jvm_entry_method_bytecode/4      % +PredStr, +Arity, +VarStyle, -Instructions
+    jvm_entry_method_bytecode/4,     % +PredStr, +Arity, +VarStyle, -Instructions
+
+    % String operations
+    jvm_string_equals_bytecode/4,    % +VarA, +VarB, +VarMap, -Instructions
+    jvm_string_concat_bytecode/4,    % +VarA, +VarB, +VarMap, -Instructions
+    jvm_tostring_bytecode/3,         % +Var, +VarMap, -Instructions
+    jvm_println_bytecode/3,          % +Var, +VarMap, -Instructions
+    jvm_load_string/2                % +StringValue, -Instruction
 ]).
 
 :- use_module('../core/clause_body_analysis').
@@ -454,6 +461,77 @@ instr_stack_effect(Instr, Effect) :-
     ;   sub_string(Instr, _, _, _, "goto")    -> Effect = 0
     ;   Effect = 0  % labels, gotos, etc.
     ).
+
+%% ============================================
+%% STRING OPERATIONS
+%% ============================================
+
+%% jvm_load_string(+StringValue, -Instruction)
+%%   Load a string constant onto the stack.
+jvm_load_string(Value, Instr) :-
+    format(string(Instr), '    ldc "~w"', [Value]).
+
+%% jvm_string_equals_bytecode(+ExprA, +ExprB, +VarMap, -Instructions)
+%%   Compare two strings for equality. Result: 1 (true) or 0 (false) on stack.
+%%   Uses String.equals(Object) which returns boolean.
+jvm_string_equals_bytecode(ExprA, ExprB, VarMap, Instructions) :-
+    jvm_resolve_string_operand(ExprA, VarMap, LoadA),
+    jvm_resolve_string_operand(ExprB, VarMap, LoadB),
+    append(LoadA, LoadB, Operands),
+    append(Operands,
+        ["    invokevirtual java/lang/String equals (Ljava/lang/Object;)Z"],
+        Instructions).
+
+%% jvm_string_concat_bytecode(+ExprA, +ExprB, +VarMap, -Instructions)
+%%   Concatenate two strings. Result: new String on stack.
+%%   Uses String.concat(String).
+jvm_string_concat_bytecode(ExprA, ExprB, VarMap, Instructions) :-
+    jvm_resolve_string_operand(ExprA, VarMap, LoadA),
+    jvm_resolve_string_operand(ExprB, VarMap, LoadB),
+    append(LoadA, LoadB, Operands),
+    append(Operands,
+        ["    invokevirtual java/lang/String concat (Ljava/lang/String;)Ljava/lang/String;"],
+        Instructions).
+
+%% jvm_tostring_bytecode(+Expr, +VarMap, -Instructions)
+%%   Convert an int on the stack to a String via String.valueOf(int).
+jvm_tostring_bytecode(Expr, VarMap, Instructions) :-
+    jvm_expr_to_bytecode(Expr, VarMap, symbolic, LoadExpr),
+    append(LoadExpr,
+        ["    invokestatic java/lang/String valueOf (I)Ljava/lang/String;"],
+        Instructions).
+
+%% jvm_println_bytecode(+Expr, +VarMap, -Instructions)
+%%   Print a value to stdout followed by newline.
+%%   Works for both int and String (uses Object overload).
+jvm_println_bytecode(Expr, VarMap, Instructions) :-
+    jvm_resolve_string_operand(Expr, VarMap, LoadExpr),
+    Instructions0 = [
+        "    getstatic java/lang/System out Ljava/io/PrintStream;"
+    ],
+    append(Instructions0, LoadExpr, WithValue),
+    append(WithValue,
+        ["    invokevirtual java/io/PrintStream println (Ljava/lang/Object;)V"],
+        Instructions).
+
+%% jvm_resolve_string_operand(+Expr, +VarMap, -Instructions)
+%%   Resolve an expression to bytecode that leaves a String/Object on stack.
+jvm_resolve_string_operand(Expr, _VarMap, [Instr]) :-
+    atom(Expr),
+    \+ lookup_var(Expr, _VarMap, _),
+    !,
+    jvm_load_string(Expr, Instr).
+jvm_resolve_string_operand(Expr, VarMap, [Instr]) :-
+    (var(Expr) ; atom(Expr)),
+    lookup_var(Expr, VarMap, Name),
+    !,
+    format(string(Instr), '    aload ~w', [Name]).
+jvm_resolve_string_operand(Expr, _VarMap, [Instr]) :-
+    string(Expr),
+    !,
+    format(string(Instr), '    ldc "~w"', [Expr]).
+jvm_resolve_string_operand(Expr, VarMap, Instructions) :-
+    jvm_expr_to_bytecode(Expr, VarMap, symbolic, Instructions).
 
 %% ============================================
 %% RECURSION PATTERN GENERATORS

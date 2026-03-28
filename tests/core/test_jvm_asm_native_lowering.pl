@@ -21,6 +21,7 @@
 :- use_module('../../src/unifyweaver/core/jvm_bytecode').
 :- use_module('../../src/unifyweaver/core/target_registry').
 :- use_module('../../src/unifyweaver/core/recursive_compiler').
+:- use_module('../../src/unifyweaver/core/input_source').
 
 test_jvm_asm_native_lowering :-
     run_tests([jvm_asm_native_lowering]).
@@ -505,6 +506,77 @@ test(cross_target_mod_guard) :-
     has(JaCode, "irem"),
     has(KrCode, "irem"),
     retractall(user:mod_test(_, _)).
+
+% ============================================================================
+% String operations (shared bytecode layer)
+% ============================================================================
+
+test(jvm_load_string) :-
+    jvm_bytecode:jvm_load_string(hello, Instr),
+    has(Instr, "ldc \"hello\"").
+
+test(jvm_string_equals) :-
+    jvm_bytecode:jvm_string_equals_bytecode(hello, world, [], Instrs),
+    last(Instrs, Last),
+    has(Last, "equals").
+
+test(jvm_string_concat) :-
+    jvm_bytecode:jvm_string_concat_bytecode(foo, bar, [], Instrs),
+    last(Instrs, Last),
+    has(Last, "concat").
+
+test(jvm_tostring) :-
+    jvm_bytecode:jvm_tostring_bytecode(42, [], Instrs),
+    last(Instrs, Last),
+    has(Last, "valueOf").
+
+test(jvm_println) :-
+    jvm_bytecode:jvm_println_bytecode(hello, [], Instrs),
+    once(member(I, Instrs)),
+    has(I, "System").
+
+% ============================================================================
+% String bindings
+% ============================================================================
+
+test(string_equals_binding) :-
+    jamaica_target:init_jamaica_target,
+    once(binding_registry:binding(jamaica, 'string_equals'/3, _, _, _, _)).
+
+test(string_concat_binding) :-
+    once(binding_registry:binding(krakatau, 'string_concat'/3, _, _, _, _)).
+
+test(string_length_binding) :-
+    once(binding_registry:binding(jamaica, 'string_length'/2, _, _, _, _)).
+
+test(string_toupper_binding) :-
+    once(binding_registry:binding(krakatau, 'string_toupper'/2, _, _, _, _)).
+
+% ============================================================================
+% Input source seed statements
+% ============================================================================
+
+test(jamaica_seed_statement) :-
+    input_source:seed_statement(jamaica, _, alice, bob, Stmt),
+    has(Stmt, "ldc \"alice\""),
+    has(Stmt, "ldc \"bob\""),
+    has(Stmt, "invokestatic addFact").
+
+test(krakatau_seed_statement) :-
+    input_source:seed_statement(krakatau, _, alice, bob, Stmt),
+    has(Stmt, "ldc \"alice\""),
+    has(Stmt, "ldc \"bob\""),
+    has(Stmt, "invokestatic").
+
+test(awk_seed_statement) :-
+    input_source:seed_statement(awk, _, alice, bob, Stmt),
+    has(Stmt, "add_fact"),
+    has(Stmt, "\"alice\"").
+
+test(vbnet_seed_statement) :-
+    input_source:seed_statement(vbnet, _, alice, bob, Stmt),
+    has(Stmt, "AddFact"),
+    has(Stmt, "\"alice\"").
 
 % ============================================================================
 % Transitive closure templates
