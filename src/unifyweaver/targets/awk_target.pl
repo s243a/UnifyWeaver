@@ -2746,6 +2746,46 @@ awk_branch_value(is(_, Expr), VarMap, Value) :-
 awk_branch_value(Goal, VarMap, Value) :-
     awk_expr(Goal, VarMap, Value).
 
+% ============================================================================
+% MULTIFILE HOOKS — Register AWK renderers for shared compile_expression
+% ============================================================================
+
+clause_body_analysis:render_output_goal(awk, Goal, VarMap, Line, VarName, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        awk_expr(Expr, VarMap, ExprStr),
+        format(string(Line), '    ~w = ~w', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap, Var, VarName, VarMapOut),
+        awk_expr(ArithExpr, VarMap, ExprStr),
+        format(string(Line), '    ~w = ~w', [VarName, ExprStr])
+    ;   VarName = "_", VarMapOut = VarMap,
+        Line = "    # unsupported output goal"
+    ).
+
+clause_body_analysis:render_guard_condition(awk, Goal, VarMap, CondStr) :-
+    awk_guard_condition(VarMap, Goal, CondStr).
+
+clause_body_analysis:render_branch_value(awk, Branch, VarMap, ExprStr) :-
+    awk_branch_value(Branch, VarMap, ExprStr).
+
+clause_body_analysis:render_ite_block(awk, Cond, ThenLines, ElseLines, Indent, _ReturnVars, Lines) :-
+    format(string(IfLine), '~wif (~w) {', [Indent, Cond]),
+    awk_indent_lines(ThenLines, Indent, IndentedThen),
+    format(string(CloseBrace), '~w}', [Indent]),
+    (   ElseLines \= []
+    ->  format(string(ElseLine), '~w} else {', [Indent]),
+        awk_indent_lines(ElseLines, Indent, IndentedElse),
+        append([IfLine|IndentedThen], [ElseLine|IndentedElse], Pre),
+        append(Pre, [CloseBrace], Lines)
+    ;   append([IfLine|IndentedThen], [CloseBrace], Lines)
+    ).
+
+awk_indent_lines([], _, []).
+awk_indent_lines([Line|Rest], Indent, [Indented|RestIndented]) :-
+    format(string(Indented), '~w    ~w', [Indent, Line]),
+    awk_indent_lines(Rest, Indent, RestIndented).
+
 %% awk_expr — convert Prolog expression to AWK syntax
 awk_expr(Var, VarMap, AExpr) :-
     var(Var), !,
