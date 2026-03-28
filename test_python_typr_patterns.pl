@@ -83,6 +83,24 @@ day_name(4, thursday). day_name(5, friday). day_name(6, saturday).
 day_name(7, sunday). day_name(_, unknown).
 %% Expected: 8-clause if/elif chain
 
+%% --- Pattern: Binding output (Python binding registry) ---
+:- dynamic str_len/2, str_of/2.
+str_len(S, N) :- length(S, N).
+str_of(X, S) :- to_string(X, S).
+
+%% --- Pattern: Multi-result disjunction (2+ shared vars) ---
+:- dynamic pair_choice/3.
+pair_choice(1, X, Y) :- X = a, Y = alpha.
+pair_choice(2, X, Y) :- X = b, Y = beta.
+pair_choice(_, X, Y) :- X = z, Y = omega.
+
+%% --- Pattern: DataFrame operations (pandas) ---
+%% These use special functors recognized by python_output_goal
+:- dynamic filtered_data/2, sorted_data/3, grouped_data/3.
+filtered_data(DF, Out) :- filter(DF, active, Out).
+sorted_data(DF, Col, Out) :- sort_by(DF, Col, Out).
+grouped_data(DF, Col, Out) :- group_by(DF, Col, Out).
+
 run_tests :-
     try('if-then-else guard', safe_log/2, [check('log', "log")]),
     try('guarded tail + pending', clamped_sqrt/3, [check('sqrt', "sqrt")]),
@@ -91,6 +109,13 @@ run_tests :-
     try('output then guard', bounded_square/2, [check('< 1000', "< 1000")]),
     try('classify_sign', classify_sign/2, [check('zero', "zero"), check('positive', "positive"), check('negative', "negative")]),
     try('day_name 8-clause', day_name/2, [check('monday', "monday"), check('sunday', "sunday"), check('unknown', "unknown")]),
+    %% New: binding + dataframe + multi-result
+    try('binding output (len)', str_len/2, [check('len', "len(")]),
+    try('binding output (str)', str_of/2, [check('str', "str(")]),
+    try('multi-result clauses', pair_choice/3, [check('alpha', "alpha")]),
+    try('pandas filter', filtered_data/2, [check('filter', "[")]),
+    try('pandas sort', sorted_data/3, [check('sort_values', "sort_values")]),
+    try('pandas group', grouped_data/3, [check('groupby', "groupby")]),
     nl,
     writeln('--- Showing generated functions ---'), nl,
     writeln('=== safe_log ==='), show(safe_log/2), nl,
@@ -99,4 +124,10 @@ run_tests :-
     writeln('=== bounded_square ==='), show(bounded_square/2), nl,
     writeln('=== classify_sign ==='), show(classify_sign/2), nl,
     writeln('=== day_name ==='), show(day_name/2), nl,
+    nl,
+    writeln('--- Showing new functions ---'), nl,
+    writeln('=== str_len ==='), show(str_len/2), nl,
+    writeln('=== pair_choice ==='), show(pair_choice/3), nl,
+    writeln('=== filtered_data ==='), show(filtered_data/2), nl,
+    writeln('=== sorted_data ==='), show(sorted_data/3), nl,
     writeln('=== TYPR PATTERN TESTS DONE ===').

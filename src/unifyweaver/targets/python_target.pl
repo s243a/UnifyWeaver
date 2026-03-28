@@ -2979,6 +2979,10 @@ compile_procedural_mode(Name, Arity, Module, Options, PythonCode) :-
 
 %% compile_non_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
 compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
+    % Ensure bindings are loaded
+    (   binding(python, length/2, _, _, _, _) -> true
+    ;   catch(init_python_bindings, _, true)
+    ),
     % Try native clause body lowering first
     pairs_from_clauses(Clauses, ClausePairs),
     native_python_clause_body(Name/Arity, ClausePairs, NativeBody),
@@ -3636,6 +3640,19 @@ python_disj_elif_return_lines([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines])
 python_guard_condition(_VarMap, true, 'True') :- !.
 python_guard_condition(_VarMap, fail, 'False') :- !.
 python_guard_condition(_VarMap, false, 'False') :- !.
+%% Binding command guard (zero-output binding used as boolean test)
+python_guard_condition(VarMap, Goal, Condition) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(python, Pred/Arity, TargetName, Inputs, [], _Options),
+    !,
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [], Args),
+    maplist(python_resolve_value(VarMap), InArgs, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
+    format(string(Condition), '~w(~w)', [TargetName, ArgsStr]).
 python_guard_condition(VarMap, _Module:Goal, Condition) :-
     !,
     python_guard_condition(VarMap, Goal, Condition).
@@ -3718,15 +3735,37 @@ python_output_goal_last(is(Var, Expr), VarMap, [Line], VarMap) :-
     !,
     python_expr(Expr, VarMap, PyExpr),
     format(string(Line), '    return ~w', [PyExpr]).
+%% Binding output as last goal — return the binding result directly
+python_output_goal_last(Goal, VarMap, [Line], VarMap) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(python, Pred/Arity, TargetName, Inputs, [_], _Options),
+    !,
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [_OutArg], Args),
+    maplist(python_resolve_value(VarMap), InArgs, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
+    format(string(Line), '    return ~w(~w)', [TargetName, ArgsStr]).
 python_output_goal_last(Goal, VarMap0, [AssignLine, ReturnLine], VarMapOut) :-
     % Fallback: assign then return
     python_output_goal(Goal, VarMap0, AssignLine, VarMapOut),
-    % Find what variable was just assigned
+    % Find what variable was just assigned (try goal_output_var, then VarMap diff)
     (   goal_output_var(Goal, OutVar),
         lookup_var(OutVar, VarMapOut, OutName)
     ->  format(string(ReturnLine), '    return ~w', [OutName])
+    ;   %% VarMap diff: find newly added variable
+        python_varmap_new_var(VarMap0, VarMapOut, OutName)
+    ->  format(string(ReturnLine), '    return ~w', [OutName])
     ;   ReturnLine = '    return None'
     ).
+
+%% python_varmap_new_var(+OldVarMap, +NewVarMap, -NewVarName)
+%  Find a variable name in NewVarMap that wasn't in OldVarMap.
+python_varmap_new_var(OldVarMap, NewVarMap, Name) :-
+    member(Var-Name, NewVarMap),
+    \+ member(Var-_, OldVarMap).
 
 %% python_output_goal(+Goal, +VarMap, -Line, -VarMapOut)
 %  Convert an output goal to a Python assignment line.
@@ -3750,6 +3789,41 @@ python_output_goal(=(Var, Expr), VarMap, Line, VarMap) :-
     !,
     python_expr(Expr, VarMap, PyExpr),
     format(string(Line), '    ~w = ~w', [Var, PyExpr]).
+%% Binding output: predicate with registered Python binding and single output
+python_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    binding(python, Pred/Arity, TargetName, Inputs, [_], _Options),
+    !,
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [OutArg], Args),
+    maplist(python_resolve_value(VarMap0), InArgs, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
+    ensure_var(VarMap0, OutArg, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w(~w)', [VarName, TargetName, ArgsStr]).
+%% DataFrame filter (pandas equivalent of TypR's @{ subset(...) }@)
+python_output_goal(filter(DF, Expr, Out), VarMap0, Line, VarMapOut) :-
+    !,
+    python_resolve_value(VarMap0, DF, PyDF),
+    python_expr(Expr, VarMap0, PyExpr),
+    ensure_var(VarMap0, Out, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w[~w]', [VarName, PyDF, PyExpr]).
+%% DataFrame sort_by (pandas equivalent)
+python_output_goal(sort_by(DF, Col, Out), VarMap0, Line, VarMapOut) :-
+    !,
+    python_resolve_value(VarMap0, DF, PyDF),
+    python_resolve_value(VarMap0, Col, PyCol),
+    ensure_var(VarMap0, Out, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w.sort_values(~w)', [VarName, PyDF, PyCol]).
+%% DataFrame group_by (pandas equivalent)
+python_output_goal(group_by(DF, Col, Out), VarMap0, Line, VarMapOut) :-
+    !,
+    python_resolve_value(VarMap0, DF, PyDF),
+    python_resolve_value(VarMap0, Col, PyCol),
+    ensure_var(VarMap0, Out, VarName, VarMapOut),
+    format(string(Line), '    ~w = ~w.groupby(~w)', [VarName, PyDF, PyCol]).
 
 %% python_if_then_else_output(+If, +Then, +Else, +VarMap, -Lines, -VarMapOut)
 %  Generate if/else for output assignment within a clause body.
