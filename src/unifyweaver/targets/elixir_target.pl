@@ -318,10 +318,129 @@ elixir_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     elixir_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_elixir_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_elixir_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    elixir_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_elixir_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(elixir_guard_condition(VarMap), GuardGoals, Conditions),
     elixir_output_goals(OutputGoals, VarMap, Code).
+
+%% elixir_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+elixir_render_classified_goals([], _VarMap, [], []).
+elixir_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    elixir_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+elixir_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    elixir_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    elixir_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(elixir_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' and ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = '_'
+    ),
+    format(string(IfLine), '      if ~w do', [GuardExpr]),
+    format(string(RetLine), '        ~w', [OutName]),
+    EndLine = '      end',
+    Lines = [AssignLine, IfLine, RetLine, EndLine].
+elixir_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    elixir_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    elixir_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% elixir_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+elixir_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    elixir_guard_condition(VarMap, Goal, Cond).
+elixir_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    elixir_output_goal(Goal, VarMap0, Line, VarMapOut).
+elixir_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    elixir_guard_condition(VarMap0, If, Cond),
+    elixir_branch_value(Then, VarMap0, ThenExpr),
+    elixir_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '      if ~w do', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '      else',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    EndLine = '      end',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, EndLine].
+elixir_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    elixir_output_goal(Goal, VarMap0, Line, VarMapOut).
+elixir_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% elixir_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+elixir_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    elixir_guard_condition(VarMap, Goal, Cond).
+elixir_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    elixir_render_output_goal_last(Goal, VarMap, Lines).
+elixir_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    elixir_guard_condition(VarMap, If, Cond),
+    elixir_branch_value(Then, VarMap, ThenExpr),
+    elixir_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '      if ~w do', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '      else',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    EndLine = '      end',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, EndLine].
+elixir_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    elixir_disj_case_chain(Alternatives, VarMap, Lines).
+elixir_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    elixir_render_output_goal_last(Goal, VarMap, Lines).
+elixir_render_classified_last(_, _, [], []).
+
+%% elixir_render_output_goal_last(+Goal, +VarMap, -Lines)
+%  3-arg wrapper used by classified goal renderers.
+elixir_render_output_goal_last(Goal, VarMap, Lines) :-
+    elixir_output_goal_last(Goal, VarMap, Lines, _VarMapOut),
+    !.
+elixir_render_output_goal_last(Goal, VarMap, [Line]) :-
+    elixir_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '      ~w', [Expr]).
+
+%% elixir_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+elixir_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, elixir_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+elixir_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% elixir_disj_case_chain(+Alternatives, +VarMap, -Lines)
+%  Renders disjunctions as a cond block in Elixir.
+elixir_disj_case_chain([], _, []).
+elixir_disj_case_chain(Alternatives, VarMap, Lines) :-
+    CondOpen = '      cond do',
+    elixir_disj_cond_branches(Alternatives, VarMap, BranchLines),
+    CondClose = '      end',
+    append([[CondOpen], BranchLines, [CondClose]], Lines).
+
+%% elixir_disj_cond_branches(+Alternatives, +VarMap, -Lines)
+elixir_disj_cond_branches([], _, []).
+elixir_disj_cond_branches([Alt], VarMap, [ArrowLine, RetLine]) :-
+    !,
+    elixir_branch_value(Alt, VarMap, ValExpr),
+    ArrowLine = '        true ->',
+    format(string(RetLine), '          ~w', [ValExpr]).
+elixir_disj_cond_branches([Alt|Rest], VarMap, [ArrowLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(elixir_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = 'true'
+    ),
+    elixir_branch_value(Alt, VarMap, ValExpr),
+    format(string(ArrowLine), '        ~w ->', [CondExpr]),
+    format(string(RetLine), '          ~w', [ValExpr]),
+    elixir_disj_cond_branches(Rest, VarMap, RestLines).
 
 %% elixir_guard_condition(+VarMap, +Goal, -Condition)
 elixir_guard_condition(VarMap, _Module:Goal, Condition) :-

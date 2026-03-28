@@ -743,10 +743,143 @@ ts_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     ts_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_ts_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_ts_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    ts_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_ts_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(ts_guard_condition(VarMap), GuardGoals, Conditions),
     ts_output_goals(OutputGoals, VarMap, Code).
+
+%% ts_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+ts_render_classified_goals([], _VarMap, [], []).
+ts_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    ts_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+ts_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    ts_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    ts_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(ts_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "undefined"
+    ),
+    format(string(IfLine), '  if (~w) {', [GuardExpr]),
+    format(string(RetLine), '    return ~w;', [OutName]),
+    CloseLine = '  }',
+    Lines = [AssignLine, IfLine, RetLine, CloseLine].
+ts_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    ts_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    ts_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% ts_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+ts_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    ts_guard_condition(VarMap, Goal, Cond).
+ts_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    ts_output_goal(Goal, VarMap0, Line, VarMapOut).
+ts_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    ts_guard_condition(VarMap0, If, Cond),
+    ts_branch_value(Then, VarMap0, ThenExpr),
+    ts_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '  if (~w) {', [Cond]),
+    format(string(ThenLine), '    return ~w;', [ThenExpr]),
+    ElseLine = '  } else {',
+    format(string(ElseRetLine), '    return ~w;', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '  }'].
+ts_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    ts_output_goal(Goal, VarMap0, Line, VarMapOut).
+ts_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% ts_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+ts_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    ts_guard_condition(VarMap, Goal, Cond).
+ts_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    ts_output_goal_last_lines(Goal, VarMap, Lines).
+ts_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    ts_guard_condition(VarMap, If, Cond),
+    ts_branch_value(Then, VarMap, ThenExpr),
+    ts_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '  if (~w) {', [Cond]),
+    format(string(ThenLine), '    return ~w;', [ThenExpr]),
+    ElseLine = '  } else {',
+    format(string(ElseRetLine), '    return ~w;', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, '  }'].
+ts_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    ts_disj_if_chain(Alternatives, VarMap, Lines).
+ts_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    ts_output_goal_last_lines(Goal, VarMap, Lines).
+ts_render_classified_last(_, _, [], []).
+
+%% ts_output_goal_last_lines(+Goal, +VarMap, -Lines)
+ts_output_goal_last_lines(Goal, VarMap, [Line]) :-
+    ts_output_goal(Goal, VarMap, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(RetPart), '\n  return ~w;', [OutName]),
+        atom_concat(AssignLine, RetPart, Line)
+    ;   Line = AssignLine
+    ).
+ts_output_goal_last_lines(Goal, VarMap, [Line]) :-
+    ts_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '  return ~w;', [Expr]).
+
+%% ts_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+ts_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, ts_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+ts_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% ts_disj_if_chain(+Alternatives, +VarMap, -Lines)
+ts_disj_if_chain([], _, []).
+ts_disj_if_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    ts_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '  } else {',
+    format(string(RetLine), '    return ~w;', [ValExpr]),
+    CloseLine = '  }'.
+ts_disj_if_chain([Alt|Rest], VarMap, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(ts_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    ts_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '  if (~w) {', [CondExpr]),
+    format(string(RetLine), '    return ~w;', [ValExpr]),
+    ts_disj_else_if_chain(Rest, VarMap, RestLines),
+    append([IfLine, RetLine], RestLines, Lines).
+
+ts_disj_else_if_chain([], _, []).
+ts_disj_else_if_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    ts_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '  } else {',
+    format(string(RetLine), '    return ~w;', [ValExpr]),
+    CloseLine = '  }'.
+ts_disj_else_if_chain([Alt|Rest], VarMap, [ElseIfLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(ts_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    ts_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElseIfLine), '  } else if (~w) {', [CondExpr]),
+    format(string(RetLine), '    return ~w;', [ValExpr]),
+    ts_disj_else_if_chain(Rest, VarMap, RestLines).
 
 %% ts_guard_condition(+VarMap, +Goal, -Condition)
 ts_guard_condition(VarMap, _Module:Goal, Condition) :-

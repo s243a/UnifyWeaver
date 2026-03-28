@@ -283,10 +283,123 @@ haskell_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     haskell_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_haskell_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_haskell_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    haskell_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_haskell_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(haskell_guard_condition(VarMap), GuardGoals, Conditions),
     haskell_output_goals(OutputGoals, VarMap, Code).
+
+%% haskell_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+haskell_render_classified_goals([], _VarMap, [], []).
+haskell_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    haskell_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+haskell_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    haskell_output_goal(Goal, VarMap, LetBinding, VarMap1),
+    haskell_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(haskell_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = '_'
+    ),
+    format(string(IfLine), 'if ~w then ~w else error "guard failed"', [GuardExpr, OutName]),
+    Lines = [LetBinding, IfLine].
+haskell_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    haskell_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    haskell_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% haskell_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+haskell_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    haskell_guard_condition(VarMap, Goal, Cond).
+haskell_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    haskell_output_goal(Goal, VarMap0, Line, VarMapOut).
+haskell_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], [Line], VarMap0) :-
+    haskell_guard_condition(VarMap0, If, Cond),
+    haskell_branch_value(Then, VarMap0, ThenExpr),
+    haskell_branch_value(Else, VarMap0, ElseExpr),
+    format(string(Line), 'if ~w then ~w else ~w', [Cond, ThenExpr, ElseExpr]).
+haskell_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    haskell_output_goal(Goal, VarMap0, Line, VarMapOut).
+haskell_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% haskell_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+haskell_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    haskell_guard_condition(VarMap, Goal, Cond).
+haskell_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    haskell_render_output_goal_last(Goal, VarMap, Lines).
+haskell_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], [Line]) :-
+    haskell_guard_condition(VarMap, If, Cond),
+    haskell_branch_value(Then, VarMap, ThenExpr),
+    haskell_branch_value(Else, VarMap, ElseExpr),
+    format(string(Line), 'if ~w then ~w else ~w', [Cond, ThenExpr, ElseExpr]).
+haskell_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    haskell_disj_if_chain(Alternatives, VarMap, Lines).
+haskell_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    haskell_render_output_goal_last(Goal, VarMap, Lines).
+haskell_render_classified_last(_, _, [], []).
+
+%% haskell_render_output_goal_last(+Goal, +VarMap, -Lines)
+%  3-arg wrapper used by classified goal renderers.
+haskell_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    haskell_output_goal_last(Goal, VarMap, Expr, _VarMapOut),
+    !.
+haskell_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    haskell_branch_value(Goal, VarMap, Expr).
+
+%% haskell_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+haskell_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, haskell_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+haskell_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% haskell_disj_if_chain(+Alternatives, +VarMap, -Lines)
+haskell_disj_if_chain([], _, []).
+haskell_disj_if_chain([Alt], VarMap, [Line]) :-
+    !,
+    haskell_branch_value(Alt, VarMap, ValExpr),
+    format(string(Line), 'else ~w', [ValExpr]).
+haskell_disj_if_chain([Alt|Rest], VarMap, [Line|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(haskell_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'True'
+    ),
+    haskell_branch_value(Alt, VarMap, ValExpr),
+    format(string(Line), 'if ~w then ~w', [CondExpr, ValExpr]),
+    haskell_disj_elif_chain(Rest, VarMap, RestLines).
+
+%% haskell_disj_elif_chain(+Alternatives, +VarMap, -Lines)
+haskell_disj_elif_chain([], _, []).
+haskell_disj_elif_chain([Alt], VarMap, [Line]) :-
+    !,
+    haskell_branch_value(Alt, VarMap, ValExpr),
+    format(string(Line), 'else ~w', [ValExpr]).
+haskell_disj_elif_chain([Alt|Rest], VarMap, [Line|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(haskell_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'True'
+    ),
+    haskell_branch_value(Alt, VarMap, ValExpr),
+    format(string(Line), 'else if ~w then ~w', [CondExpr, ValExpr]),
+    haskell_disj_elif_chain(Rest, VarMap, RestLines).
 
 %% haskell_guard_condition(+VarMap, +Goal, -Condition)
 haskell_guard_condition(VarMap, _Module:Goal, Condition) :-
