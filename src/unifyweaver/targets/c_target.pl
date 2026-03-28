@@ -712,10 +712,145 @@ c_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     c_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_c_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_c_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    c_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_c_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(c_guard_condition(VarMap), GuardGoals, Conditions),
     c_output_goals(OutputGoals, VarMap, Code).
+
+%% c_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+c_render_classified_goals([], _VarMap, [], []).
+c_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    c_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+c_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    c_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    c_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(c_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "_"
+    ),
+    format(string(IfLine), '    if (~w) {', [GuardExpr]),
+    format(string(RetLine), '        return ~w;', [OutName]),
+    CloseLine = '    }',
+    Lines = [AssignLine, IfLine, RetLine, CloseLine].
+c_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    c_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    c_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% c_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+c_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    c_guard_condition(VarMap, Goal, Cond).
+c_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    c_output_goal(Goal, VarMap0, Line, VarMapOut).
+c_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    c_guard_condition(VarMap0, If, Cond),
+    c_branch_value(Then, VarMap0, ThenExpr),
+    c_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        return ~w;', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        return ~w;', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+c_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    c_output_goal(Goal, VarMap0, Line, VarMapOut).
+c_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% c_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+c_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    c_guard_condition(VarMap, Goal, Cond).
+c_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    c_classified_output_last(Goal, VarMap, Lines).
+c_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    c_guard_condition(VarMap, If, Cond),
+    c_branch_value(Then, VarMap, ThenExpr),
+    c_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        return ~w;', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        return ~w;', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+c_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    c_disj_if_chain(Alternatives, VarMap, Lines).
+c_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    c_classified_output_last(Goal, VarMap, Lines).
+c_render_classified_last(_, _, [], []).
+
+%% c_classified_output_last(+Goal, +VarMap, -Lines)
+%%  Wrap a single output goal as lines for classified rendering.
+c_classified_output_last(Goal, VarMap, [Line]) :-
+    c_output_goal(Goal, VarMap, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(Line), '~w\n    return ~w;', [AssignLine, OutName])
+    ;   Line = AssignLine
+    ).
+c_classified_output_last(Goal, VarMap, [Line]) :-
+    c_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '    return ~w;', [Expr]).
+
+%% c_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+c_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, c_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+c_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% c_disj_if_chain(+Alternatives, +VarMap, -Lines)
+c_disj_if_chain([], _, []).
+c_disj_if_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    c_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    } else {',
+    format(string(RetLine), '        return ~w;', [ValExpr]),
+    CloseLine = '    }'.
+c_disj_if_chain([Alt|Rest], VarMap, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(c_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    c_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '    if (~w) {', [CondExpr]),
+    format(string(RetLine), '        return ~w;', [ValExpr]),
+    c_disj_elif_chain(Rest, VarMap, RestLines),
+    append([IfLine, RetLine], RestLines, Lines).
+
+c_disj_elif_chain([], _, []).
+c_disj_elif_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    c_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    } else {',
+    format(string(RetLine), '        return ~w;', [ValExpr]),
+    CloseLine = '    }'.
+c_disj_elif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(c_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "true"
+    ),
+    c_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElifLine), '    } else if (~w) {', [CondExpr]),
+    format(string(RetLine), '        return ~w;', [ValExpr]),
+    c_disj_elif_chain(Rest, VarMap, RestLines).
 
 %% c_guard_condition(+VarMap, +Goal, -Condition)
 c_guard_condition(VarMap, _Module:Goal, Condition) :-
