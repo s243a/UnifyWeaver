@@ -817,6 +817,11 @@ compile_transitive_closure(haskell, Pred, _Arity, BasePred, Options, GeneratedCo
     compile_tc_from_template(haskell, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
+%% ILAsm transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(ilasm, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(ilasm, Pred, BasePred, [], Options, GeneratedCode),
+    !.
+
 %% Lua transitive closure — supports input(Mode) via composable templates
 compile_transitive_closure(lua, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     compile_tc_from_template(lua, Pred, BasePred, [], Options, GeneratedCode),

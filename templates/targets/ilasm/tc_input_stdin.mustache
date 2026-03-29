@@ -1,0 +1,31 @@
+
+// Read {{base}} facts from stdin (format: from:to)
+.method public static void ReadStdin() cil managed {
+    .maxstack 4
+    .locals init (string line, string[] parts)
+STDIN_LOOP:
+    call string [mscorlib]System.Console::ReadLine()
+    stloc line
+    ldloc line
+    brfalse STDIN_DONE
+    ldloc line
+    ldc.i4 0x3A
+    callvirt instance string[] [mscorlib]System.String::Split(char)
+    stloc parts
+    ldloc parts
+    ldlen
+    ldc.i4.2
+    blt STDIN_LOOP
+    ldloc parts
+    ldc.i4.0
+    ldelem.ref
+    callvirt instance string [mscorlib]System.String::Trim()
+    ldloc parts
+    ldc.i4.1
+    ldelem.ref
+    callvirt instance string [mscorlib]System.String::Trim()
+    call void PrologGenerated::AddFact(string, string)
+    br STDIN_LOOP
+STDIN_DONE:
+    ret
+}

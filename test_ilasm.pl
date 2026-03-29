@@ -49,6 +49,11 @@ is_even(N) :- N > 0, N1 is N - 1, is_odd(N1).
 is_odd(1).
 is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
 
+:- dynamic parent/2, ancestor/2.
+parent(alice, bob). parent(bob, charlie). parent(bob, diana).
+ancestor(X, Y) :- parent(X, Y).
+ancestor(X, Y) :- parent(X, Z), ancestor(Z, Y).
+
 run :-
     test_hook,
     test_compile(classify_sign/2),
@@ -57,4 +62,5 @@ run :-
     test_compile(factorial/2),
     test_compile(fibonacci/2),
     test_compile(is_even/1),
+    test_compile(ancestor/2),
     nl, writeln('=== ILASM TESTS DONE ===').

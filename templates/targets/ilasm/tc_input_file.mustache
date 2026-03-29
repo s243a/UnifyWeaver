@@ -1,0 +1,47 @@
+
+// Read {{base}} facts from file (format: from:to)
+.method public static void ReadFile() cil managed {
+    .maxstack 4
+    .locals init (string[] lines, int32 i, string line, string[] parts)
+    ldstr "{{input_path}}"
+    call string[] [mscorlib]System.IO.File::ReadAllLines(string)
+    stloc lines
+    ldc.i4.0
+    stloc i
+FILE_LOOP:
+    ldloc i
+    ldloc lines
+    ldlen
+    conv.i4
+    bge FILE_DONE
+    ldloc lines
+    ldloc i
+    ldelem.ref
+    stloc line
+    ldloc line
+    callvirt instance string [mscorlib]System.String::Trim()
+    ldc.i4 0x3A
+    callvirt instance string[] [mscorlib]System.String::Split(char)
+    stloc parts
+    ldloc parts
+    ldlen
+    ldc.i4.2
+    blt FILE_SKIP
+    ldloc parts
+    ldc.i4.0
+    ldelem.ref
+    callvirt instance string [mscorlib]System.String::Trim()
+    ldloc parts
+    ldc.i4.1
+    ldelem.ref
+    callvirt instance string [mscorlib]System.String::Trim()
+    call void PrologGenerated::AddFact(string, string)
+FILE_SKIP:
+    ldloc i
+    ldc.i4.1
+    add
+    stloc i
+    br FILE_LOOP
+FILE_DONE:
+    ret
+}
