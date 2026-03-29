@@ -326,6 +326,9 @@ Current TypR lowering policy is intentionally mixed:
 - supported binding-shaped rule bodies lower directly to TypR
 - guard-style zero-output command bindings may be folded into TypR clause
   conditions
+- transitive-closure generation may keep both BFS control flow and seeded
+  adjacency storage in native TypR when the base relation is known at compile
+  time
 - multi-step native TypR control-flow chains may keep later guards and outputs
   in native TypR when those guards depend on earlier bound values
 - simple comparison and boolean guard expressions over already-bound

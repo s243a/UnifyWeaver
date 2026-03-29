@@ -6652,7 +6652,7 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code) :
     annotation_suffix(TypedMode, list(NodeTypeTerm), AllReturnAnnotation),
     annotation_suffix(TypedMode, boolean, CheckReturnAnnotation),
     empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
-    base_seed_code(Module, BasePred, SeedCode),
+    base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
     render_template(Template, [
         pred=PredStr,
         base=BaseStr,
@@ -6662,7 +6662,8 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code) :
         all_return_annotation=AllReturnAnnotation,
         check_return_annotation=CheckReturnAnnotation,
         empty_nodes_expr=EmptyNodesExpr,
-        seed_code=SeedCode
+        from_nodes_expr=FromNodesExpr,
+        to_nodes_expr=ToNodesExpr
     ], Code).
 
 compile_generic_typr(Module, Pred/Arity, Options, TypedMode, Code) :-
@@ -6866,6 +6867,30 @@ seed_statement(Index, BasePred, From, To, Statement) :-
     r_literal(From, FromLiteral),
     r_literal(To, ToLiteral),
     format(string(Statement), 'let seed_~w_~w <- add_~w(~w, ~w);', [BasePred, Index, BasePred, FromLiteral, ToLiteral]).
+
+base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr) :-
+    functor(BaseHead, BasePred, 2),
+    findall(From-To, (
+        clause(Module:BaseHead, true),
+        BaseHead =.. [BasePred, From, To],
+        nonvar(From),
+        nonvar(To)
+    ), Pairs),
+    findall(From, member(From-_, Pairs), FromNodes),
+    findall(To, member(_-To, Pairs), ToNodes),
+    typr_vector_literal(NodeTypeTerm, FromNodes, FromNodesExpr),
+    typr_vector_literal(NodeTypeTerm, ToNodes, ToNodesExpr).
+
+typr_vector_literal(NodeTypeTerm, [], Expr) :-
+    !,
+    empty_collection_expr(NodeTypeTerm, Expr).
+typr_vector_literal(_NodeTypeTerm, Items, Expr) :-
+    findall(Literal, (
+        member(Item, Items),
+        r_literal(Item, Literal)
+    ), Literals),
+    atomic_list_concat(Literals, ', ', LiteralText),
+    format(string(Expr), '[~w]', [LiteralText]).
 
 empty_collection_expr(atom, 'character()').
 empty_collection_expr(string, 'character()').
