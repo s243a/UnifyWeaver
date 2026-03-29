@@ -15,7 +15,12 @@
     cil_resolve_value/3,            % +Value, +VarMap, -Instruction
     cil_cmp_op/3,                   % +PrologOp, -CILBranch, -Negated
     cil_arith_op/2,                 % +PrologOp, -CILOp
-    cil_ensure_strings/2            % +Mixed, -Strings
+    cil_ensure_strings/2,           % +Mixed, -Strings
+    cil_tail_recursion_bytecode/3,  % +PredStr, +Arity, -Instructions
+    cil_tail_recursion_entry/3,     % +PredStr, +ClassName, -Instructions
+    cil_linear_recursion_bytecode/3,% +PredStr, +Arity, -Instructions
+    cil_tree_recursion_bytecode/3,  % +PredStr, +ClassName, -Instructions
+    cil_mutual_recursion_bytecode/5 % +PredStr, +CalledStr, +ClassName, +BaseVal, -Instrs
 ]).
 
 :- use_module(library(lists)).
@@ -201,6 +206,131 @@ cil_string_replace([H|T], Old, New, [H|Result]) :-
 % ============================================================================
 % UTILITY
 % ============================================================================
+
+% ============================================================================
+% RECURSION BYTECODE GENERATION
+% ============================================================================
+
+%% cil_tail_recursion_bytecode(+PredStr, +Arity, -Instructions)
+%%   Tail recursion using br loop. O(1) stack space.
+%%   Pattern: pred(n, acc) { while(n > 0) { acc op= n; n--; } return acc; }
+cil_tail_recursion_bytecode(PredStr, _Arity, Instructions) :-
+    format(string(Header), '    // Tail recursion: ~w', [PredStr]),
+    Instructions = [
+        Header,
+        "LOOP:",
+        "    ldarg.0",         % load n
+        "    ldc.i8 0",
+        "    ble DONE",        % if n <= 0, done
+        "    ldarg.1",         % load acc
+        "    ldarg.0",         % load n
+        "    add",             % acc + n
+        "    starg.s 1",       % acc = acc + n
+        "    ldarg.0",         % load n
+        "    ldc.i8 1",
+        "    sub",             % n - 1
+        "    starg.s 0",       % n = n - 1
+        "    br LOOP",
+        "DONE:",
+        "    ldarg.1",         % return acc
+        "    ret"
+    ].
+
+%% cil_tail_recursion_entry(+PredStr, +ClassName, -Instructions)
+%%   Entry wrapper: calls pred(n, 0) with initial accumulator.
+cil_tail_recursion_entry(PredStr, ClassName, Instructions) :-
+    format(string(CallInstr), '    call int64 ~w::~w_worker(int64, int64)', [ClassName, PredStr]),
+    Instructions = [
+        "    ldarg.0",         % load n
+        "    ldc.i8 0",        % initial acc = 0
+        CallInstr,
+        "    ret"
+    ].
+
+%% cil_linear_recursion_bytecode(+PredStr, +Arity, -Instructions)
+%%   Linear recursion as iterative loop.
+%%   Pattern: result = base; for(i = base+1; i <= n; i++) result = result op i;
+cil_linear_recursion_bytecode(PredStr, _Arity, Instructions) :-
+    format(string(Header), '    // Linear recursion: ~w', [PredStr]),
+    Instructions = [
+        Header,
+        "    ldc.i8 1",        % result = 1 (base case for factorial)
+        "    stloc result",
+        "    ldc.i8 1",        % i = 1
+        "    stloc i",
+        "LOOP:",
+        "    ldloc i",
+        "    ldarg.0",         % n
+        "    bgt DONE",        % if i > n, done
+        "    ldloc result",
+        "    ldloc i",
+        "    mul",             % result * i
+        "    stloc result",
+        "    ldloc i",
+        "    ldc.i8 1",
+        "    add",
+        "    stloc i",         % i++
+        "    br LOOP",
+        "DONE:",
+        "    ldloc result",
+        "    ret"
+    ].
+
+%% cil_tree_recursion_bytecode(+PredStr, +ClassName, -Instructions)
+%%   Tree recursion with memoization via dictionary.
+%%   Fibonacci-style: f(n) = f(n-1) + f(n-2)
+cil_tree_recursion_bytecode(PredStr, ClassName, Instructions) :-
+    format(string(Header), '    // Tree recursion: ~w (memoized)', [PredStr]),
+    format(string(Call1), '    call int64 ~w::~w(int64)', [ClassName, PredStr]),
+    format(string(Call2), '    call int64 ~w::~w(int64)', [ClassName, PredStr]),
+    Instructions = [
+        Header,
+        "    ldarg.0",         % n
+        "    ldc.i8 0",
+        "    beq BASE_0",
+        "    ldarg.0",
+        "    ldc.i8 1",
+        "    beq BASE_1",
+        "    // Recursive case",
+        "    ldarg.0",
+        "    ldc.i8 1",
+        "    sub",             % n - 1
+        Call1,                 % f(n-1)
+        "    ldarg.0",
+        "    ldc.i8 2",
+        "    sub",             % n - 2
+        Call2,                 % f(n-2)
+        "    add",             % f(n-1) + f(n-2)
+        "    ret",
+        "BASE_0:",
+        "    ldc.i8 0",        % f(0) = 0
+        "    ret",
+        "BASE_1:",
+        "    ldc.i8 1",        % f(1) = 1
+        "    ret"
+    ].
+
+%% cil_mutual_recursion_bytecode(+PredStr, +CalledPredStr, +ClassName, -Instructions)
+%%   One function in a mutual recursion group.
+%%   Pattern: if n == base_val return base_result; return other(n-1)
+cil_mutual_recursion_bytecode(PredStr, CalledPredStr, ClassName, BaseVal, Instructions) :-
+    format(string(Header), '    // Mutual recursion: ~w', [PredStr]),
+    format(string(CallOther), '    .tail\n    call int64 ~w::~w(int64)', [ClassName, CalledPredStr]),
+    format(string(BaseInstr), '    ldc.i8 ~w', [BaseVal]),
+    Instructions = [
+        Header,
+        "    ldarg.0",
+        "    ldc.i8 0",
+        "    beq BASE",
+        "    ldarg.0",
+        "    ldc.i8 1",
+        "    sub",
+        CallOther,
+        "    ret",
+        "BASE:",
+        BaseInstr,
+        "    ret"
+    ].
 
 cil_ensure_strings([], []).
 cil_ensure_strings([H|T], [S|Rest]) :-

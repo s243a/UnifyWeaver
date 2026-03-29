@@ -36,12 +36,25 @@ show(Pred/Arity) :-
     ;   writeln('(compile failed)')
     ).
 
+:- dynamic factorial/2, fibonacci/2, is_even/1, is_odd/1.
+factorial(0, 1).
+factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1.
+
+fibonacci(0, 0).
+fibonacci(1, 1).
+fibonacci(N, F) :- N > 1, N1 is N-1, N2 is N-2, fibonacci(N1, F1), fibonacci(N2, F2), F is F1 + F2.
+
+is_even(0).
+is_even(N) :- N > 0, N1 is N - 1, is_odd(N1).
+is_odd(1).
+is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
+
 run :-
     test_hook,
     test_compile(classify_sign/2),
     test_compile(safe_double/2),
     test_compile(label/2),
-    nl,
-    writeln('=== classify_sign output ==='),
-    show(classify_sign/2),
+    test_compile(factorial/2),
+    test_compile(fibonacci/2),
+    test_compile(is_even/1),
     nl, writeln('=== ILASM TESTS DONE ===').

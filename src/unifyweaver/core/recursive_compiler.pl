@@ -222,6 +222,8 @@ compile_advanced(go, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(go)|FinalOptions], GeneratedCode).
 compile_advanced(rust, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(rust)|FinalOptions], GeneratedCode).
+compile_advanced(ilasm, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(ilasm)|FinalOptions], GeneratedCode).
 compile_advanced(Target, Pred/Arity, _FinalOptions, _GeneratedCode) :-
     format(user_error, 'Advanced recursive compilation for target ~w not implemented (~w).~n',
            [Target, Pred/Arity]),
