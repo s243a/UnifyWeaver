@@ -227,8 +227,9 @@ includes:
   guard-only control flow for later native steps or binds a later
   intermediate, the final output directly, or the later result set needed by
   subsequent native steps
-- transitive-closure generation where BFS control flow and seeded adjacency
-  storage both stay in native TypR syntax
+- transitive-closure generation where BFS control flow, seeded adjacency
+  storage, and vector-parameter runtime query helpers all stay in native TypR
+  syntax
 - accumulator-style tail-recursive predicates such as `factorial_acc/3`,
   lowered to TypR functions that use raw-expression loop bodies instead of
   relabeled standalone R scripts
