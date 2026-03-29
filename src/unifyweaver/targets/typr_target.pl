@@ -6651,6 +6651,8 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options
     annotation_suffix(TypedMode, list(NodeTypeTerm), AllReturnAnnotation),
     annotation_suffix(TypedMode, boolean, CheckReturnAnnotation),
     empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
+    typr_tc_line_part_expr(NodeTypeTerm, 1, FromLineExpr),
+    typr_tc_line_part_expr(NodeTypeTerm, 2, ToLineExpr),
     base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
     Dict = [
         pred=PredStr,
@@ -6661,6 +6663,8 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options
         all_return_annotation=AllReturnAnnotation,
         check_return_annotation=CheckReturnAnnotation,
         empty_nodes_expr=EmptyNodesExpr,
+        from_line_expr=FromLineExpr,
+        to_line_expr=ToLineExpr,
         from_nodes_expr=FromNodesExpr,
         to_nodes_expr=ToNodesExpr
     ],
@@ -6711,6 +6715,21 @@ typr_tc_string_value(Value, String) :-
     ->  atom_string(Value, String)
     ;   format(string(String), '~w', [Value])
     ).
+
+typr_tc_line_part_expr(NodeTypeTerm, PartIndex, Expr) :-
+    format(string(PartExpr), 'trimws(parts[~w])', [PartIndex]),
+    typr_tc_parse_node_expr(NodeTypeTerm, PartExpr, Expr).
+
+typr_tc_parse_node_expr(atom, Expr, Expr).
+typr_tc_parse_node_expr(string, Expr, Expr).
+typr_tc_parse_node_expr(integer, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'as__integer(~w)', [Expr]).
+typr_tc_parse_node_expr(float, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'as__numeric(~w)', [Expr]).
+typr_tc_parse_node_expr(number, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'as__numeric(~w)', [Expr]).
+typr_tc_parse_node_expr(any, Expr, Expr).
+typr_tc_parse_node_expr(_, Expr, Expr).
 
 load_typr_transitive_closure_template(Template) :-
     (   exists_file('templates/targets/typr/transitive_closure.mustache')
