@@ -59,6 +59,21 @@ test(transitive_closure_output_checks_with_typr, [condition(typr_cli_available)]
     ),
     retractall(user:edge(_, _)).
 
+test(transitive_closure_runtime_vector_api_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ).
+
 test(tail_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:factorial_acc(0, Acc, Acc)),
