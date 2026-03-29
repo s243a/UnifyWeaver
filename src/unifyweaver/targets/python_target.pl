@@ -6012,12 +6012,111 @@ translate_acc_expr(Expr, PyExpr) :-
 
 %% generate_worker_function(+Name, +Arity, +BaseClauses, +RecClauses, -WorkerCode)
 generate_worker_function(Name, Arity, BaseClauses, RecClauses, WorkerCode) :-
-    % For now, only support binary recursion (Input, Output)
     (   Arity =:= 2
     ->  generate_binary_worker(Name, BaseClauses, RecClauses, WorkerCode)
+    ;   Arity =:= 3
+    ->  generate_ternary_worker(Name, BaseClauses, RecClauses, WorkerCode)
     ;   % Fallback: generate error message
-        format(string(WorkerCode), "# ERROR: Recursion only supported for arity 2, got arity ~d\n", [Arity])
+        format(string(WorkerCode), "# ERROR: Recursion only supported for arity 2-3, got arity ~d\n", [Arity])
     ).
+
+%% generate_ternary_worker(+Name, +BaseClauses, +RecClauses, -WorkerCode)
+%%
+%% Handles arity-3 general recursion patterns such as transitive closure
+%% with a counter:
+%%   category_ancestor(Cat, Parent, 1) :- category_parent(Cat, Parent).
+%%   category_ancestor(Cat, Ancestor, Hops) :-
+%%       category_parent(Cat, Mid),
+%%       category_ancestor(Mid, Ancestor, H1),
+%%       Hops is H1 + 1.
+%%
+%% Generates a recursive function that yields (arg2, arg3) tuples.
+generate_ternary_worker(Name, BaseClauses, RecClauses, WorkerCode) :-
+    % Extract base case
+    (   BaseClauses = [(BaseHead, BaseBody)|_]
+    ->  BaseHead =.. [_, BaseArg1, BaseArg2, BaseArg3],
+        translate_ternary_base(BaseArg1, BaseArg2, BaseArg3, BaseBody, Name, BaseCode)
+    ;   BaseCode = "    pass  # No base case"
+    ),
+    % Extract recursive case
+    (   RecClauses = [(RecHead, RecBody)|_]
+    ->  RecHead =.. [_, _RecArg1, _RecArg2, _RecArg3],
+        translate_ternary_recursive(Name, RecBody, RecCode)
+    ;   RecCode = "    pass  # No recursive case"
+    ),
+    format(string(WorkerCode),
+"def _~w_worker(arg1, visited=None):
+    \"\"\"Arity-3 recursive worker. Yields (arg2, arg3) tuples.\"\"\"
+    if visited is None:
+        visited = set()
+    if arg1 in visited:
+        return
+    visited = visited | {arg1}
+    # Base case
+~s
+    # Recursive case
+~s
+", [Name, BaseCode, RecCode]).
+
+%% translate_ternary_base(+Arg1, +Arg2, +Arg3, +Body, +Name, -Code)
+translate_ternary_base(BaseArg1, _BaseArg2, BaseArg3, BaseBody, Name, Code) :-
+    % Extract the relation lookup from the body
+    extract_goals_list(BaseBody, Goals),
+    (   Goals = [RelGoal|_],
+        RelGoal =.. [RelName|RelArgs],
+        RelName \= Name
+    ->  % Relation lookup: e.g., category_parent(Cat, Parent)
+        length(RelArgs, RelArity),
+        (   number(BaseArg3)
+        ->  format(string(ConstStr), "~w", [BaseArg3])
+        ;   atom(BaseArg3)
+        ->  format(string(ConstStr), "\"~w\"", [BaseArg3])
+        ;   ConstStr = "1"
+        ),
+        % Determine which arg of the relation maps to arg1
+        (   RelArity =:= 2
+        ->  format(string(Code),
+"    for row in ~w_data:
+        if row[0] == arg1:
+            yield (row[1], ~s)", [RelName, ConstStr])
+        ;   format(string(Code), "    pass  # Base case relation arity ~w unsupported", [RelArity])
+        )
+    ;   % Simple constant base case
+        (   var(BaseArg1), BaseArg1 == BaseArg3
+        ->  Code = "    yield (arg1, arg1)"
+        ;   Code = "    pass  # Unknown base case pattern"
+        )
+    ).
+
+%% translate_ternary_recursive(+Name, +Body, -Code)
+translate_ternary_recursive(Name, Body, Code) :-
+    extract_goals_list(Body, Goals),
+    % Find the step relation (non-recursive call)
+    findall(G, (member(G, Goals), G =.. [GName|_], GName \= Name, GName \= is, \+ (GName = (>)), \+ (GName = (<))), StepGoals),
+    % Find the arithmetic expression
+    findall(Expr, (member((_ is Expr), Goals)), ArithExprs),
+    (   StepGoals = [StepGoal|_],
+        StepGoal =.. [StepRel|_]
+    ->  true
+    ;   StepRel = unknown
+    ),
+    % Determine the arithmetic operation on the counter
+    (   ArithExprs = [ArithExpr|_],
+        ArithExpr = (_ + Increment),
+        number(Increment)
+    ->  format(string(ArithStr), "h + ~w", [Increment])
+    ;   ArithExprs = [ArithExpr|_],
+        ArithExpr = (_ - Decrement),
+        number(Decrement)
+    ->  format(string(ArithStr), "h - ~w", [Decrement])
+    ;   ArithStr = "h + 1"  % Default: increment by 1
+    ),
+    format(string(Code),
+"    for row in ~w_data:
+        if row[0] == arg1:
+            mid = row[1]
+            for (ancestor, h) in _~w_worker(mid, visited):
+                yield (ancestor, ~s)", [StepRel, Name, ArithStr]).
 
 %% generate_binary_worker(+Name, +BaseClauses, +RecClauses, -WorkerCode)
 generate_binary_worker(Name, BaseClauses, RecClauses, WorkerCode) :-
