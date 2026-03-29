@@ -130,6 +130,41 @@ test(lua_uses_error) :-
     retractall(user:only_pos(_, _)).
 
 % ============================================================================
+% Expanded: three-clause, mod guards, complex arithmetic
+% ============================================================================
+
+test(three_clause_classify) :-
+    assert(user:(tier(X, low) :- X < 50)),
+    assert(user:(tier(X, mid) :- X >= 50, X < 80)),
+    assert(user:(tier(X, high) :- X >= 80)),
+    compile_lua(tier/2, Code),
+    has(Code, "arg1 < 50"),
+    has(Code, "arg1 >= 80"),
+    has(Code, "\"low\""),
+    has(Code, "\"high\""),
+    retractall(user:tier(_, _)).
+
+test(mod_guard) :-
+    assert(user:(parity(X, even) :- 0 =:= X mod 2)),
+    assert(user:(parity(X, odd) :- 0 =\= X mod 2)),
+    compile_lua(parity/2, Code),
+    has(Code, "%"),  % Lua uses % for modulo
+    has(Code, "\"even\""),
+    retractall(user:parity(_, _)).
+
+test(complex_arithmetic) :-
+    assert(user:(formula(X, Y) :- Y is (X * X) + (X * 2) + 1)),
+    compile_lua(formula/2, Code),
+    has(Code, "arg1 * arg1"),
+    retractall(user:formula(_, _)).
+
+test(negation_output) :-
+    assert(user:(negate(X, Y) :- Y is 0 - X)),
+    compile_lua(negate/2, Code),
+    has(Code, "0 - arg1"),
+    retractall(user:negate(_, _)).
+
+% ============================================================================
 % Verify shared module is loaded
 % ============================================================================
 
