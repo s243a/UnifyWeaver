@@ -42,6 +42,7 @@
 :- use_module('../targets/krakatau_target', []).    % registers multifile hooks for Krakatau
 :- use_module('../targets/llvm_target', []).        % registers multifile hooks for LLVM
 :- use_module('../targets/vbnet_target', []).       % registers multifile hooks for VB.NET
+:- use_module('../targets/ilasm_target', [compile_predicate_to_ilasm/3]).
 :- use_module(template_system).
 :- use_module(input_source).
 :- use_module(library(lists)).
@@ -183,6 +184,8 @@ compile_non_recursive(krakatau, Pred/Arity, FinalOptions, GeneratedCode) :-
     krakatau_target:compile_predicate_to_krakatau(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(llvm, Pred/Arity, FinalOptions, GeneratedCode) :-
     llvm_target:compile_predicate_to_llvm(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(ilasm, Pred/Arity, FinalOptions, GeneratedCode) :-
+    ilasm_target:compile_predicate_to_ilasm(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(jython, Pred/Arity, FinalOptions, GeneratedCode) :-
@@ -219,6 +222,8 @@ compile_advanced(go, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(go)|FinalOptions], GeneratedCode).
 compile_advanced(rust, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(rust)|FinalOptions], GeneratedCode).
+compile_advanced(ilasm, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(Pred/Arity, [target(ilasm)|FinalOptions], GeneratedCode).
 compile_advanced(Target, Pred/Arity, _FinalOptions, _GeneratedCode) :-
     format(user_error, 'Advanced recursive compilation for target ~w not implemented (~w).~n',
            [Target, Pred/Arity]),
@@ -810,6 +815,11 @@ compile_transitive_closure(fsharp, Pred, _Arity, BasePred, Options, GeneratedCod
 %% Haskell transitive closure — supports input(Mode) via composable templates
 compile_transitive_closure(haskell, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     compile_tc_from_template(haskell, Pred, BasePred, [], Options, GeneratedCode),
+    !.
+
+%% ILAsm transitive closure — supports input(Mode) via composable templates
+compile_transitive_closure(ilasm, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    compile_tc_from_template(ilasm, Pred, BasePred, [], Options, GeneratedCode),
     !.
 
 %% Lua transitive closure — supports input(Mode) via composable templates

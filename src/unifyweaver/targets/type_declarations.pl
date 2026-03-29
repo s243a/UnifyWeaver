@@ -264,6 +264,18 @@ resolve_type(pair(LeftType, RightType), python, Concrete) :-
     resolve_type(RightType, python, Right),
     format(string(Concrete), "tuple[~w, ~w]", [Left, Right]).
 
+%% ILAsm (.NET CIL) types
+resolve_type(atom, ilasm, "string").
+resolve_type(string, ilasm, "string").
+resolve_type(integer, ilasm, "int64").
+resolve_type(float, ilasm, "float64").
+resolve_type(number, ilasm, "float64").
+resolve_type(boolean, ilasm, "bool").
+resolve_type(any, ilasm, "object").
+resolve_type(list(Type), ilasm, Concrete) :-
+    resolve_type(Type, ilasm, Inner),
+    format(string(Concrete), "class [mscorlib]System.Collections.Generic.List`1<~w>", [Inner]).
+
 resolve_type(Type, TargetLang, Concrete) :-
     atom(Type),
     resolve_domain_type(Type, Resolved),

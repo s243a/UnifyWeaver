@@ -173,6 +173,11 @@ seed_statement(awk, _BasePred, From, To, Statement) :-
 seed_statement(vbnet, _BasePred, From, To, Statement) :-
     format(string(Statement), '        query.AddFact("~w", "~w")', [From, To]).
 
+seed_statement(ilasm, _BasePred, From, To, Statement) :-
+    format(string(Statement),
+        '    ldstr "~w"\n    ldstr "~w"\n    call void PrologGenerated.Program::AddFact(string, string)',
+        [From, To]).
+
 bash_literal(Value, Literal) :-
     (   number(Value)
     ->  format(string(Literal), '~w', [Value])
