@@ -674,6 +674,63 @@ test(jamaica_format_imports) :-
     has(Code, "import java.util.ArrayList;").
 
 % ============================================================================
+% Pipeline mode
+% ============================================================================
+
+test(jamaica_pipeline) :-
+    jamaica_target:compile_jamaica_pipeline(
+        [step(transform, "    iload input\n    iconst_2\n    imul\n    ireturn"),
+         step(filter, "    iload input\n    bipush 10\n    if_icmplt SKIP\n    iload input\n    ireturn\nSKIP:\n    iconst_0\n    ireturn")],
+        [],
+        Code),
+    has(Code, "public class Pipeline"),
+    has(Code, "step_transform"),
+    has(Code, "step_filter"),
+    has(Code, "public static void main").
+
+test(jamaica_pipeline_custom_class) :-
+    jamaica_target:compile_jamaica_pipeline(
+        [step(inc, "    iload input\n    iconst_1\n    iadd\n    ireturn")],
+        [class_name("MyPipe")],
+        Code),
+    has(Code, "public class MyPipe").
+
+test(krakatau_pipeline) :-
+    krakatau_target:compile_krakatau_pipeline(
+        [step(double, "    iload_0\n    iconst_2\n    imul\n    ireturn")],
+        [],
+        Code),
+    has(Code, ".class public Pipeline"),
+    has(Code, "step_double"),
+    has(Code, ".method public static main").
+
+% ============================================================================
+% Build file generation
+% ============================================================================
+
+test(jamaica_jar_manifest) :-
+    jamaica_target:generate_jar_manifest([main_class("AncestorQuery")], Manifest),
+    has(Manifest, "Main-Class: AncestorQuery"),
+    has(Manifest, "Manifest-Version: 1.0"),
+    has(Manifest, "UnifyWeaver").
+
+test(jamaica_build_script) :-
+    jamaica_target:generate_jamaica_build_script(
+        [source_file("Test.ja"), main_class("Test"), output_jar("test.jar")],
+        Script),
+    has(Script, "jamaica.jar"),
+    has(Script, "Test.ja"),
+    has(Script, "jar cfm test.jar").
+
+test(krakatau_build_script) :-
+    krakatau_target:generate_krakatau_build_script(
+        [source_file("Test.j"), main_class("Test"), output_jar("test.jar")],
+        Script),
+    has(Script, "krak2"),
+    has(Script, "Test.j"),
+    has(Script, "jar cfm test.jar").
+
+% ============================================================================
 % Glue support
 % ============================================================================
 
