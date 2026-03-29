@@ -3069,6 +3069,115 @@ test(mixed_list_numeric_mutual_integer_context_output_checks_with_typr, [conditi
     retractall(user:typr_mutual_weight_list_num(_, _, _)),
     retractall(user:typr_mutual_weight_num_list(_, _, _)).
 
+test(mixed_list_numeric_pair_tail_mutual_boolean_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_pair_tail_list_num_ok([])),
+    assertz(user:(typr_pair_tail_list_num_ok([A, B|Ts]) :-
+        typr_pair_tail_num_list_ok(A),
+        typr_pair_tail_num_list_ok(B),
+        typr_pair_tail_list_num_ok(Ts)
+    )),
+    assertz(user:typr_pair_tail_num_list_ok(0)),
+    assertz(user:typr_pair_tail_num_list_ok(1)),
+    assertz(user:(typr_pair_tail_num_list_ok(N) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        typr_pair_tail_list_num_ok([N1, N2])
+    )),
+    assertz(type_declarations:uw_type(typr_pair_tail_list_num_ok/1, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_pair_tail_num_list_ok/1, 1, integer)),
+    assertz(type_declarations:uw_return_type(typr_pair_tail_list_num_ok/1, bool)),
+    assertz(type_declarations:uw_return_type(typr_pair_tail_num_list_ok/1, bool)),
+    once(recursive_compiler:compile_recursive(typr_pair_tail_list_num_ok/1, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_pair_tail_list_num_ok(_)),
+    retractall(user:typr_pair_tail_num_list_ok(_)).
+
+test(mixed_list_numeric_pair_tail_mutual_integer_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_pair_tail_list_num_sum([], 0)),
+    assertz(user:(typr_pair_tail_list_num_sum([A, B|Ts], S) :-
+        typr_pair_tail_num_list_sum(A, SA),
+        typr_pair_tail_num_list_sum(B, SB),
+        typr_pair_tail_list_num_sum(Ts, ST),
+        S is SA + SB + ST
+    )),
+    assertz(user:typr_pair_tail_num_list_sum(0, 0)),
+    assertz(user:typr_pair_tail_num_list_sum(1, 1)),
+    assertz(user:(typr_pair_tail_num_list_sum(N, S) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        typr_pair_tail_list_num_sum([N1, N2], Parts),
+        S is N + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_pair_tail_list_num_sum/2, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_pair_tail_list_num_sum/2, 2, integer)),
+    assertz(type_declarations:uw_type(typr_pair_tail_num_list_sum/2, 1, integer)),
+    assertz(type_declarations:uw_type(typr_pair_tail_num_list_sum/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(typr_pair_tail_list_num_sum/2, integer)),
+    assertz(type_declarations:uw_return_type(typr_pair_tail_num_list_sum/2, integer)),
+    once(recursive_compiler:compile_recursive(typr_pair_tail_list_num_sum/2, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_pair_tail_list_num_sum(_, _)),
+    retractall(user:typr_pair_tail_num_list_sum(_, _)).
+
+test(mixed_list_numeric_pair_tail_mutual_integer_context_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:typr_pair_tail_list_num_weight([], _W0, 0)),
+    assertz(user:(typr_pair_tail_list_num_weight([A, B|Ts], W, S) :-
+        typr_pair_tail_num_list_weight(A, W, SA),
+        typr_pair_tail_num_list_weight(B, W, SB),
+        typr_pair_tail_list_num_weight(Ts, W, ST),
+        S is SA + SB + ST
+    )),
+    assertz(user:typr_pair_tail_num_list_weight(0, _W1, 0)),
+    assertz(user:typr_pair_tail_num_list_weight(1, W, W)),
+    assertz(user:(typr_pair_tail_num_list_weight(N, W, S) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        typr_pair_tail_list_num_weight([N1, N2], W, Parts),
+        S is (N * W) + Parts
+    )),
+    assertz(type_declarations:uw_type(typr_pair_tail_list_num_weight/3, 1, list(any))),
+    assertz(type_declarations:uw_type(typr_pair_tail_list_num_weight/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_pair_tail_list_num_weight/3, 3, integer)),
+    assertz(type_declarations:uw_type(typr_pair_tail_num_list_weight/3, 1, integer)),
+    assertz(type_declarations:uw_type(typr_pair_tail_num_list_weight/3, 2, integer)),
+    assertz(type_declarations:uw_type(typr_pair_tail_num_list_weight/3, 3, integer)),
+    assertz(type_declarations:uw_return_type(typr_pair_tail_list_num_weight/3, integer)),
+    assertz(type_declarations:uw_return_type(typr_pair_tail_num_list_weight/3, integer)),
+    once(recursive_compiler:compile_recursive(typr_pair_tail_list_num_weight/3, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:typr_pair_tail_list_num_weight(_, _, _)),
+    retractall(user:typr_pair_tail_num_list_weight(_, _, _)).
+
 test(mixed_tree_numeric_mutual_boolean_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:typr_tree_num_ok([])),

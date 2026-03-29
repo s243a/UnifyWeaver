@@ -79,8 +79,14 @@ mutual_recursion:compile_mutual_pattern(typr, Predicates, MemoEnabled, _MemoStra
 
 compile_typr_mutual_recursion_group(Predicates0, MemoEnabled, Code) :-
     sort(Predicates0, Predicates),
-    maplist(typr_mutual_supported_spec(Predicates), Predicates, Specs),
+    maplist(typr_mutual_pred_spec(Predicates), Predicates, Specs),
     typr_mutual_group_code(Specs, MemoEnabled, Code).
+
+typr_mutual_pred_spec(GroupPredicates, PredArity, Spec) :-
+    typr_mutual_supported_spec(GroupPredicates, PredArity, Spec),
+    !.
+typr_mutual_pred_spec(GroupPredicates, PredArity, Spec) :-
+    typr_mutual_ir_supported_spec(GroupPredicates, PredArity, Spec).
 
 typr_mutual_supported_spec(GroupPredicates, PredArity, Spec) :-
     (   typr_mutual_numeric_spec(GroupPredicates, PredArity, Spec)
@@ -105,6 +111,59 @@ typr_mutual_supported_spec(GroupPredicates, PredArity, Spec) :-
     ;   typr_mutual_tree_dual_spec(GroupPredicates, PredArity, Spec)
     ;   typr_mutual_tree_spec(GroupPredicates, PredArity, Spec)
     ).
+
+typr_mutual_ir_supported_spec(GroupPredicates, PredArity, Spec) :-
+    typr_mutual_extract_pred_ir(GroupPredicates, PredArity, PredIR),
+    typr_mutual_ir_pred_to_spec(PredIR, Spec).
+
+typr_mutual_extract_pred_ir(GroupPredicates, PredArity, PredIR) :-
+    typr_mutual_list_pair_tail_bool_ir(GroupPredicates, PredArity, PredIR).
+typr_mutual_extract_pred_ir(GroupPredicates, PredArity, PredIR) :-
+    typr_mutual_list_pair_tail_value_ir(GroupPredicates, PredArity, PredIR).
+
+typr_mutual_ir_pred_to_spec(PredIR, Spec) :-
+    ordered_bool_body = PredIR.ir_kind,
+    OrderedCalls = PredIR.ordered_calls,
+    maplist(typr_mutual_ir_call_step, OrderedCalls, Steps),
+    Spec = mutual_spec{
+        kind: tree_dual_body,
+        pred: PredIR.pred,
+        arity: PredIR.arity,
+        pred_str: PredIR.pred_str,
+        typed_arg_list: PredIR.typed_arg_list,
+        return_type: PredIR.return_type,
+        helper_name: PredIR.helper_name,
+        base_conditions: PredIR.base_conditions,
+        guard_expr: PredIR.guard_expr,
+        body: branch_steps(Steps)
+    }.
+typr_mutual_ir_pred_to_spec(PredIR, Spec) :-
+    ordered_value_body = PredIR.ir_kind,
+    OrderedCalls = PredIR.ordered_calls,
+    maplist(typr_mutual_ir_value_call_binding, OrderedCalls, CallBindings),
+    Spec = mutual_spec{
+        kind: tree_dual_value_full_body,
+        pred: PredIR.pred,
+        arity: PredIR.arity,
+        pred_str: PredIR.pred_str,
+        typed_arg_list: PredIR.typed_arg_list,
+        return_type: PredIR.return_type,
+        helper_name: PredIR.helper_name,
+        helper_params: PredIR.helper_params,
+        wrapper_call_args: PredIR.wrapper_call_args,
+        memo_key_expr: PredIR.memo_key_expr,
+        base_cases: PredIR.base_cases,
+        guard_expr: PredIR.guard_expr,
+        body: value_branch_leaf(CallBindings, PredIR.result_expr)
+    }.
+
+typr_mutual_ir_call_step(ir_call(ResultKey, NextPred, CallArgs), step_call(ResultKey, branch_call(HelperName, CallArgs))) :-
+    atom_string(NextPred, NextPredStr),
+    format(string(HelperName), '~w_impl', [NextPredStr]).
+
+typr_mutual_ir_value_call_binding(ir_call(ResultKey, NextPred, CallArgs), value_call_binding(ResultKey, branch_call(HelperName, CallArgs))) :-
+    atom_string(NextPred, NextPredStr),
+    format(string(HelperName), '~w_impl', [NextPredStr]).
 
 typr_mutual_numeric_spec(GroupPredicates, Pred/Arity, Spec) :-
     Arity =:= 1,
@@ -505,6 +564,112 @@ typr_mutual_list_pair_tail_branch_step(call_spec(Slot, NextPred, CallArgs), step
     atom_string(NextPred, NextPredStr),
     format(string(HelperName), '~w_impl', [NextPredStr]),
     typr_mutual_tree_result_name(Slot, ResultName).
+
+typr_mutual_ir_call_from_spec(call_spec(ResultKey, NextPred, CallArgs), ir_call(ResultKey, NextPred, CallArgs)).
+
+typr_mutual_ir_value_call_from_spec(
+    value_call_spec(ResultKey, NextPred, CallArgs, OutputVar),
+    ir_call(ResultKey, NextPred, CallArgs),
+    result_binding(OutputVar, ResultName)
+) :-
+    typr_mutual_tree_result_name(ResultKey, ResultName).
+
+typr_mutual_list_pair_tail_bool_ir(GroupPredicates, Pred/Arity, PredIR) :-
+    Arity =:= 1,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "bool"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    maplist(typr_mutual_list_empty_base_condition, BaseClauses, BaseConds0),
+    sort(BaseConds0, BaseConditions),
+    RecHead =.. [_PredName, RecInputPattern],
+    typr_mutual_list_pair_tail_driver(RecInputPattern, pair_tail, FirstVar, SecondVar, TailVar, GuardExpr),
+    typr_mutual_goal_list(RecBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    split_typr_mutual_multicall_goals_allow_empty_post(GroupPredicates, Goals, PreGoals, RecGoals, PostGoals),
+    PreGoals == [],
+    PostGoals == [],
+    RecGoals = [_, _, _],
+    maplist(
+        typr_mutual_list_pair_tail_recursive_goal(GroupPredicates, FirstVar, SecondVar, TailVar, []),
+        RecGoals,
+        CallSpecs0
+    ),
+    typr_mutual_list_pair_tail_call_specs(CallSpecs0, OrderedSpecs),
+    maplist(typr_mutual_ir_call_from_spec, OrderedSpecs, OrderedCalls),
+    atom_string(Pred, PredStr),
+    format(string(HelperName), '~w_impl', [PredStr]),
+    PredIR = scc_ir_pred{
+        ir_kind: ordered_bool_body,
+        pred: Pred,
+        arity: Arity,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "bool",
+        helper_name: HelperName,
+        base_conditions: BaseConditions,
+        guard_expr: GuardExpr,
+        ordered_calls: OrderedCalls
+    }.
+
+typr_mutual_list_pair_tail_value_ir(GroupPredicates, Pred/Arity, PredIR) :-
+    Arity >= 2,
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses \= [],
+    generic_typr_return_type(Pred/Arity, Clauses, "int"),
+    build_typed_arg_list(Pred/Arity, none, Arity, explicit, TypedArgList),
+    findall(clause(Head, Body), predicate_clause(user, Pred, Arity, Head, Body), ClauseTerms),
+    partition(typr_is_mutual_recursive_clause(GroupPredicates), ClauseTerms, RecClauses, BaseClauses),
+    RecClauses = [clause(RecHead, RecBody)],
+    BaseClauses \= [],
+    RecHead =.. [_PredName, RecInputPattern|ContextAndOutputVars],
+    typr_mutual_list_pair_tail_driver(RecInputPattern, pair_tail, FirstVar, SecondVar, TailVar, GuardExpr),
+    append(ContextVars, [OutputVar], ContextAndOutputVars),
+    var(OutputVar),
+    typr_mutual_tree_context_param_names(ContextVars, ContextParamNames),
+    maplist(typr_mutual_list_empty_value_base_case(ContextParamNames), BaseClauses, BaseCases),
+    typr_mutual_goal_list(RecBody, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    split_typr_mutual_multicall_goals(GroupPredicates, Goals, PreGoals, RecGoals, PostGoals),
+    PreGoals == [],
+    RecGoals = [_, _, _],
+    typr_mutual_tree_context_fields(Pred, ContextVars, HelperName, ExtraArgMap, HelperParams, WrapperCallArgs, MemoKeyExpr),
+    maplist(
+        typr_mutual_list_pair_tail_value_recursive_goal(GroupPredicates, FirstVar, SecondVar, TailVar, ExtraArgMap),
+        RecGoals,
+        CallSpecs0
+    ),
+    typr_mutual_list_pair_tail_value_call_specs(CallSpecs0, OrderedSpecs),
+    maplist(typr_mutual_ir_value_call_from_spec, OrderedSpecs, OrderedCalls, ResultBindings),
+    typr_goals_to_body(PostGoals, PostBody),
+    typr_mutual_result_expr_from_bindings(
+        PostBody,
+        OutputVar,
+        ExtraArgMap,
+        ResultBindings,
+        ResultExpr
+    ),
+    atom_string(Pred, PredStr),
+    PredIR = scc_ir_pred{
+        ir_kind: ordered_value_body,
+        pred: Pred,
+        arity: Arity,
+        pred_str: PredStr,
+        typed_arg_list: TypedArgList,
+        return_type: "int",
+        helper_name: HelperName,
+        helper_params: HelperParams,
+        wrapper_call_args: WrapperCallArgs,
+        memo_key_expr: MemoKeyExpr,
+        base_cases: BaseCases,
+        guard_expr: GuardExpr,
+        ordered_calls: OrderedCalls,
+        result_expr: ResultExpr
+    }.
 
 typr_mutual_tree_value_subtree_driver_expr(ValueVar, _AliasMap, RecArg, left, '.subset2(current_input, 1)') :-
     var(RecArg),
@@ -2160,6 +2325,18 @@ typr_mutual_recursive_arg_expr(HeadVar, Computations, RecArg0, StepExpr) :-
     !,
     typr_mutual_recursive_arg_expr(HeadVar, Computations, RecArg, InnerExpr),
     format(string(StepExpr), 'list(~w, list(), list())', [InnerExpr]).
+typr_mutual_recursive_arg_expr(HeadVar, Computations, RecArg0, StepExpr) :-
+    nonvar(RecArg0),
+    is_list(RecArg0),
+    RecArg0 = [_, _|_],
+    !,
+    maplist(
+        typr_mutual_recursive_arg_list_item_expr(HeadVar, Computations),
+        RecArg0,
+        ItemExprs
+    ),
+    atomic_list_concat(ItemExprs, ', ', ArgsText),
+    format(string(StepExpr), 'list(~w)', [ArgsText]).
 typr_mutual_recursive_arg_expr(HeadVar, Computations, RecArg, StepExpr) :-
     var(RecArg),
     member(StepVar is StepTerm, Computations),
@@ -2170,6 +2347,13 @@ typr_mutual_recursive_arg_expr(_HeadVar, _Computations, RecArg, StepExpr) :-
     atomic(RecArg),
     !,
     typr_translate_r_expr(RecArg, [], StepExpr).
+
+typr_mutual_recursive_arg_list_item_expr(_HeadVar, _Computations, Item, 'list()') :-
+    nonvar(Item),
+    Item == [],
+    !.
+typr_mutual_recursive_arg_list_item_expr(HeadVar, Computations, Item, Expr) :-
+    typr_mutual_recursive_arg_expr(HeadVar, Computations, Item, Expr).
 
 typr_mutual_goal_list((A, B), Goals) :-
     !,

@@ -281,9 +281,10 @@ includes:
   list-shaped predicates recurse through head/tail decomposition or fixed
   two-element forest-pair decomposition or fixed pair-tail forest
   decomposition like `[A, B|Ts]`, plus mixed list/numeric SCCs
-  where list-shaped predicates recurse through head/tail decomposition
-  while numeric predicates recurse through scalar step descent or
-  singleton-list re-entry, plus mixed tree/numeric SCCs
+  where list-shaped predicates recurse through head/tail or pair-tail
+  decomposition like `[A, B|Ts]` while numeric predicates recurse through
+  scalar step descent, singleton-list re-entry, or fixed pair-list
+  re-entry, plus mixed tree/numeric SCCs
   where tree-shaped predicates recurse through current-value and one-
   subtree descent while numeric predicates recurse through scalar step
   descent or constructed tree re-entry, plus mixed tree/list/numeric SCCs
@@ -298,8 +299,8 @@ includes:
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
 - the next confirmed SCC gap is broader than another structural micro-slice:
-  mixed list/numeric pair-tail SCCs and mixed tree/numeric SCCs with local
-  helper goals between recursive group calls still fail with
+  mixed tree/numeric SCCs with local helper goals between recursive group
+  calls still fail with
   `No mutual recursion support for target typr`, which points to a shared
   SCC IR as the next compiler step rather than more matcher families
 - conservative `N`-ary structural tree-recursive predicates with one

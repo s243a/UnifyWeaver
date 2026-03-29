@@ -258,14 +258,15 @@ bring-up.
     call prefix, plus integer-return and threaded-context variants
   - stop extending `typr_mutual_supported_spec/3` with more bespoke
     structural slices once the next failure is outside that subset
-  - the first confirmed post-audit unsupported SCCs are:
-    - mixed list/numeric pair-tail decompositions
+  - the first SCC IR-backed slice should cover per-predicate ordered goal
+    bodies, and it now does so for mixed list/numeric pair-tail
+    decompositions
+  - the next confirmed unsupported SCCs are:
     - mixed tree/numeric bodies with local helper goals between recursive
       group calls
-  - the next implementation step should be a shared SCC IR that can encode
-    per-predicate ordered goal bodies, branch nodes, recursive call sites,
-    helper goals, and symbolic result bindings before another backend
-    expansion
+  - the next implementation step should expand that shared SCC IR to
+    encode helper goals, richer branch nodes, and symbolic result bindings
+    before another backend expansion
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
