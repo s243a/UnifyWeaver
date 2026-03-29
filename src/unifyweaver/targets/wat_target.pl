@@ -718,6 +718,8 @@ native_wat_clause_body(PredStr/Arity, Clauses, FuncBody) :-
     branches_to_wat_if_chain(Branches, PredStr, Arity, FuncBody).
 
 %% native_wat_clause(+Head, +Body, -Cond, -Value)
+%  Uses classify_goal_sequence for advanced pattern detection,
+%  with fallback to clause_guard_output_split.
 native_wat_clause(Head, Body, Cond, Value) :-
     Head =.. [_|HeadArgs],
     length(HeadArgs, Arity),
@@ -731,7 +733,13 @@ native_wat_clause(Head, Body, Cond, Value) :-
         if_then_else_goal(SingleGoal, If, Then, Else)
     ->  wat_if_then_else_output(If, Then, Else, VarMap, Value),
         Cond = none
-    ;   (   Arity > 1, nonvar(OutputHeadArg)
+    ;   %% Try classify_goal_sequence for advanced patterns
+        classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+        ClassifiedGoals \= [],
+        wat_render_classified(ClassifiedGoals, VarMap, OutputHeadArg, Arity, Cond, Value)
+    ->  true
+    ;   %% Fallback to basic split
+        (   Arity > 1, nonvar(OutputHeadArg)
         ->  once(clause_guard_output_split(Goals, VarMap, Guards, _Outputs)),
             wat_head_conditions(Guards, VarMap, Cond),
             wat_literal(OutputHeadArg, Value)
@@ -740,6 +748,40 @@ native_wat_clause(Head, Body, Cond, Value) :-
             wat_output_goals(Outputs, VarMap, Value)
         )
     ).
+
+%% wat_render_classified(+ClassifiedGoals, +VarMap, +OutputHeadArg, +Arity, -Cond, -Value)
+%  Render classified goals for WAT output.
+wat_render_classified(ClassifiedGoals, VarMap, OutputHeadArg, Arity, Cond, Value) :-
+    %% Collect guard conditions
+    findall(C, (
+        member(guard(G, _), ClassifiedGoals),
+        wat_guard_condition(G, VarMap, C)
+    ), GuardConds),
+    (GuardConds = [] -> Cond = none ; combine_wat_conditions(GuardConds, Cond)),
+    %% Find the output value
+    (   member(output_ite(If, Then, Else, _), ClassifiedGoals)
+    ->  wat_if_then_else_output(If, Then, Else, VarMap, Value)
+    ;   member(output(Goal, _, _), ClassifiedGoals)
+    ->  (   Goal = (_ is ArithExpr)
+        ->  wat_arith_expr(ArithExpr, VarMap, Value)
+        ;   Goal = (_ = Expr)
+        ->  wat_resolve_value(Expr, VarMap, Value)
+        ;   wat_resolve_value(Goal, VarMap, Value)
+        )
+    ;   Arity > 1, nonvar(OutputHeadArg)
+    ->  wat_literal(OutputHeadArg, Value)
+    ;   Value = "(i64.const 0)"
+    ).
+
+%% Handle guarded tail: output followed by guard
+wat_render_classified(ClassifiedGoals, VarMap, _OutputHeadArg, _Arity, Cond, Value) :-
+    ClassifiedGoals = [output(Goal, _, _), guard(GuardGoal, _)|_],
+    !,
+    (   Goal = (_ is ArithExpr) -> wat_arith_expr(ArithExpr, VarMap, Value)
+    ;   Goal = (_ = Expr) -> wat_resolve_value(Expr, VarMap, Value)
+    ;   wat_resolve_value(Goal, VarMap, Value)
+    ),
+    wat_guard_condition(GuardGoal, VarMap, Cond).
 
 %% wat_head_conditions(+Guards, +VarMap, -Cond)
 wat_head_conditions([], _VarMap, none) :- !.

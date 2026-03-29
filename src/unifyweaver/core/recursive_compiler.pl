@@ -175,6 +175,12 @@ compile_non_recursive(haskell, Pred/Arity, FinalOptions, GeneratedCode) :-
     haskell_target:compile_predicate_to_haskell(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(fsharp, Pred/Arity, FinalOptions, GeneratedCode) :-
     fsharp_target:compile_predicate_to_fsharp(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(wat, Pred/Arity, FinalOptions, GeneratedCode) :-
+    wat_target:compile_predicate_to_wat(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(jamaica, Pred/Arity, FinalOptions, GeneratedCode) :-
+    jamaica_target:compile_predicate_to_jamaica(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(krakatau, Pred/Arity, FinalOptions, GeneratedCode) :-
+    krakatau_target:compile_predicate_to_krakatau(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(jython, Pred/Arity, FinalOptions, GeneratedCode) :-

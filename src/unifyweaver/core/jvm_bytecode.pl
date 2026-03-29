@@ -364,12 +364,64 @@ jvm_clauses_to_branches([Head-Body|Rest], Arity1, VarStyle, Result) :-
         append(InputArgs, [OutputArg], AllArgs),
         build_head_varmap(InputArgs, 1, VarMap),
         normalize_goals(Body, Goals),
-        once(clause_guard_output_split(Goals, VarMap, Guards, Outputs)),
-        jvm_compile_guards(Guards, VarMap, VarStyle, GuardInstrs),
-        jvm_output_to_bytecode(OutputArg, Outputs, VarMap, VarStyle, ValueInstrs)
+        %% Try classify_goal_sequence first for advanced patterns
+        (   classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+            ClassifiedGoals \= [],
+            jvm_compile_classified(ClassifiedGoals, OutputArg, VarMap, VarStyle, GuardInstrs, ValueInstrs)
+        ->  true
+        ;   %% Fallback to basic split
+            once(clause_guard_output_split(Goals, VarMap, Guards, Outputs)),
+            jvm_compile_guards(Guards, VarMap, VarStyle, GuardInstrs),
+            jvm_output_to_bytecode(OutputArg, Outputs, VarMap, VarStyle, ValueInstrs)
+        )
     ->  Result = [branch(GuardInstrs, ValueInstrs)|RestBranches]
     ;   Result = RestBranches
     ).
+
+%% jvm_compile_classified(+ClassifiedGoals, +OutputArg, +VarMap, +VarStyle, -GuardInstrs, -ValueInstrs)
+%  Compile classified goals to JVM bytecode instruction lists.
+jvm_compile_classified(ClassifiedGoals, OutputArg, VarMap, VarStyle, GuardInstrs, ValueInstrs) :-
+    %% Collect guard instructions
+    findall(GInstrs, (
+        member(guard(G, _), ClassifiedGoals),
+        jvm_guard_to_bytecode(G, VarMap, VarStyle, "NEXT", GInstrs)
+    ), GuardInstrLists),
+    append(GuardInstrLists, GuardInstrs),
+    %% Find output value
+    (   member(output(Goal, _, _), ClassifiedGoals)
+    ->  jvm_classified_output(Goal, OutputArg, VarMap, VarStyle, ValueInstrs)
+    ;   member(output_ite(If, Then, Else, _), ClassifiedGoals)
+    ->  jvm_classified_ite(If, Then, Else, VarMap, VarStyle, ValueInstrs)
+    ;   %% Fallback: use OutputArg directly
+        jvm_output_to_bytecode(OutputArg, [], VarMap, VarStyle, ValueInstrs)
+    ).
+
+%% jvm_classified_output(+Goal, +OutputArg, +VarMap, +VarStyle, -Instrs)
+jvm_classified_output(Goal, _OutputArg, VarMap, VarStyle, Instrs) :-
+    (   Goal = (_ is ArithExpr)
+    ->  jvm_expr_to_bytecode(ArithExpr, VarMap, VarStyle, Instrs)
+    ;   Goal = (_ = Expr)
+    ->  jvm_expr_to_bytecode(Expr, VarMap, VarStyle, Instrs)
+    ;   jvm_expr_to_bytecode(Goal, VarMap, VarStyle, Instrs)
+    ).
+
+%% jvm_classified_ite(+If, +Then, +Else, +VarMap, +VarStyle, -Instrs)
+jvm_classified_ite(If, Then, Else, VarMap, VarStyle, Instrs) :-
+    %% Compile condition
+    jvm_guard_to_bytecode(If, VarMap, VarStyle, "ITE_else", CondInstrs),
+    %% Compile then branch value
+    normalize_goals(Then, ThenGoals),
+    last(ThenGoals, ThenLast),
+    jvm_classified_output(ThenLast, _, VarMap, VarStyle, ThenInstrs),
+    %% Compile else branch value
+    normalize_goals(Else, ElseGoals),
+    last(ElseGoals, ElseLast),
+    jvm_classified_output(ElseLast, _, VarMap, VarStyle, ElseInstrs),
+    %% Assemble: cond -> then_value, goto end; else: else_value; end:
+    append(CondInstrs, ThenInstrs, PreGoto),
+    append(PreGoto, ["goto ITE_end", "ITE_else:"], PreElse),
+    append(PreElse, ElseInstrs, PreEnd),
+    append(PreEnd, ["ITE_end:"], Instrs).
 
 jvm_compile_guards([], _, _, []).
 jvm_compile_guards([G|Gs], VarMap, VarStyle, AllInstrs) :-
