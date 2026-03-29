@@ -1341,10 +1341,151 @@ kotlin_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     kotlin_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_kotlin_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_kotlin_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    kotlin_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_kotlin_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(kotlin_guard_condition(VarMap), GuardGoals, Conditions),
     kotlin_output_goals(OutputGoals, VarMap, Code).
+
+%% kotlin_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+kotlin_render_classified_goals([], _VarMap, [], []).
+kotlin_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    kotlin_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+kotlin_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    kotlin_classified_output_goal(Goal, VarMap, LetBinding, VarMap1),
+    kotlin_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(kotlin_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = '_'
+    ),
+    format(string(IfLine), '    if (~w) ~w else throw RuntimeException("guard failed")', [GuardExpr, OutName]),
+    Lines = [LetBinding, IfLine].
+kotlin_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    kotlin_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    kotlin_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% kotlin_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+kotlin_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    kotlin_guard_condition(VarMap, Goal, Cond).
+kotlin_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    kotlin_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+kotlin_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    kotlin_guard_condition(VarMap0, If, Cond),
+    kotlin_branch_value(Then, VarMap0, ThenExpr),
+    kotlin_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+kotlin_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    kotlin_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+kotlin_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% kotlin_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+kotlin_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    kotlin_guard_condition(VarMap, Goal, Cond).
+kotlin_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    kotlin_render_output_goal_last(Goal, VarMap, Lines).
+kotlin_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    kotlin_guard_condition(VarMap, If, Cond),
+    kotlin_branch_value(Then, VarMap, ThenExpr),
+    kotlin_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+kotlin_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    kotlin_disj_if_chain(Alternatives, VarMap, Lines).
+kotlin_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    kotlin_render_output_goal_last(Goal, VarMap, Lines).
+
+%% kotlin_classified_output_goal(+Goal, +VarMap0, -Line, -VarMapOut)
+kotlin_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        kotlin_expr(Expr, VarMap0, ExprStr),
+        format(string(Line), '    val ~w = ~w', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        kotlin_expr(ArithExpr, VarMap0, ExprStr),
+        format(string(Line), '    val ~w = ~w', [VarName, ExprStr])
+    ;   VarMapOut = VarMap0,
+        Line = '    // unsupported'
+    ).
+
+%% kotlin_render_output_goal_last(+Goal, +VarMap, -Lines)
+%  3-arg wrapper used by classified goal renderers.
+kotlin_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    kotlin_output_goal_last(Goal, VarMap, Expr),
+    !.
+kotlin_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    kotlin_branch_value(Goal, VarMap, Expr).
+
+%% kotlin_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+kotlin_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, kotlin_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+kotlin_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% kotlin_disj_if_chain(+Alternatives, +VarMap, -Lines)
+kotlin_disj_if_chain([], _, []).
+kotlin_disj_if_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    kotlin_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    } else {',
+    format(string(RetLine), '        ~w', [ValExpr]).
+kotlin_disj_if_chain([Alt|Rest], VarMap, [IfLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(kotlin_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'true'
+    ),
+    kotlin_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '    if (~w) {', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    kotlin_disj_elif_chain(Rest, VarMap, RestLines).
+
+%% kotlin_disj_elif_chain(+Alternatives, +VarMap, -Lines)
+kotlin_disj_elif_chain([], _, []).
+kotlin_disj_elif_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    kotlin_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    } else {',
+    format(string(RetLine), '        ~w', [ValExpr]),
+    CloseLine = '    }'.
+kotlin_disj_elif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(kotlin_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'true'
+    ),
+    kotlin_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElifLine), '    } else if (~w) {', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    kotlin_disj_elif_chain(Rest, VarMap, RestLines).
 
 %% kotlin_guard_condition(+VarMap, +Goal, -Condition)
 kotlin_guard_condition(VarMap, _Module:Goal, Condition) :-

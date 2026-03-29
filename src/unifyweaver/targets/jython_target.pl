@@ -1386,10 +1386,149 @@ jython_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     jython_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_jython_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_jython_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    jython_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_jython_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(jython_guard_condition(VarMap), GuardGoals, Conditions),
     jython_output_goals(OutputGoals, VarMap, Code).
+
+%% jython_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+jython_render_classified_goals([], _VarMap, [], []).
+jython_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    jython_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+jython_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    jython_classified_output_goal(Goal, VarMap, LetBinding, VarMap1),
+    jython_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(jython_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' and ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = '_'
+    ),
+    format(string(IfLine), '    if ~w:', [GuardExpr]),
+    format(string(RetLine), '        return ~w', [OutName]),
+    Lines = [LetBinding, IfLine, RetLine].
+jython_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    jython_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    jython_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% jython_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+jython_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    jython_guard_condition(VarMap, Goal, Cond).
+jython_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    jython_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+jython_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    jython_guard_condition(VarMap0, If, Cond),
+    jython_branch_value(Then, VarMap0, ThenExpr),
+    jython_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '    if ~w:', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    else:',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine].
+jython_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    jython_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+jython_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% jython_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+jython_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    jython_guard_condition(VarMap, Goal, Cond).
+jython_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    jython_render_output_goal_last(Goal, VarMap, Lines).
+jython_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    jython_guard_condition(VarMap, If, Cond),
+    jython_branch_value(Then, VarMap, ThenExpr),
+    jython_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if ~w:', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    else:',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine].
+jython_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    jython_disj_if_chain(Alternatives, VarMap, Lines).
+jython_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    jython_render_output_goal_last(Goal, VarMap, Lines).
+
+%% jython_classified_output_goal(+Goal, +VarMap0, -Line, -VarMapOut)
+jython_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        jython_expr(Expr, VarMap0, ExprStr),
+        format(string(Line), '    ~w = ~w', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        jython_expr(ArithExpr, VarMap0, ExprStr),
+        format(string(Line), '    ~w = ~w', [VarName, ExprStr])
+    ;   VarMapOut = VarMap0,
+        Line = '    # unsupported'
+    ).
+
+%% jython_render_output_goal_last(+Goal, +VarMap, -Lines)
+%  3-arg wrapper used by classified goal renderers.
+jython_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    jython_output_goal_last(Goal, VarMap, Expr),
+    !.
+jython_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    jython_branch_value(Goal, VarMap, Expr).
+
+%% jython_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+jython_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, jython_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+jython_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% jython_disj_if_chain(+Alternatives, +VarMap, -Lines)
+jython_disj_if_chain([], _, []).
+jython_disj_if_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    jython_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    else:',
+    format(string(RetLine), '        ~w', [ValExpr]).
+jython_disj_if_chain([Alt|Rest], VarMap, [IfLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(jython_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = 'True'
+    ),
+    jython_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '    if ~w:', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    jython_disj_elif_chain(Rest, VarMap, RestLines).
+
+%% jython_disj_elif_chain(+Alternatives, +VarMap, -Lines)
+jython_disj_elif_chain([], _, []).
+jython_disj_elif_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    jython_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    else:',
+    format(string(RetLine), '        ~w', [ValExpr]).
+jython_disj_elif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(jython_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' and ', CondExpr)
+    ;   CondExpr = 'True'
+    ),
+    jython_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElifLine), '    elif ~w:', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    jython_disj_elif_chain(Rest, VarMap, RestLines).
 
 %% jython_guard_condition(+VarMap, +Goal, -Condition)
 jython_guard_condition(VarMap, _Module:Goal, Condition) :-

@@ -431,9 +431,7 @@ native_vbnet_clause(Head, Body, _InputArity, Cond, Value) :-
             clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
             vbnet_head_conditions(Guards, VarMap, Cond),
             vbnet_literal(OutputHeadArg, Value)
-        ;   clause_guard_output_split(Goals, VarMap, Guards, Outputs),
-            vbnet_head_conditions(Guards, VarMap, Cond),
-            vbnet_output_goals(Outputs, VarMap, Value)
+        ;   native_vbnet_goal_sequence(Goals, VarMap, Cond, Value)
         )
     ).
 
@@ -473,6 +471,172 @@ vbnet_output_goals(Outputs, VarMap, Value) :-
     (   goal_output_var(LastGoal, _)
     ->  vbnet_expr(LastGoal, VarMap, Value)
     ;   vbnet_resolve_value(LastGoal, VarMap, Value)
+    ).
+
+%% native_vbnet_goal_sequence(+Goals, +VarMap, -Cond, -Value)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_vbnet_goal_sequence(Goals, VarMap, Cond, Value) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    vbnet_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    (   Conditions = []
+    ->  Cond = "True"
+    ;   combine_vbnet_conditions(Conditions, Cond)
+    ),
+    atomic_list_concat(Lines, '\n', Value),
+    !.
+native_vbnet_goal_sequence(Goals, VarMap, Cond, Value) :-
+    clause_guard_output_split(Goals, VarMap, Guards, Outputs),
+    vbnet_head_conditions(Guards, VarMap, Cond),
+    vbnet_output_goals(Outputs, VarMap, Value).
+
+%% vbnet_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+vbnet_render_classified_goals([], _VarMap, [], []).
+vbnet_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    vbnet_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+vbnet_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    vbnet_classified_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    vbnet_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(vbnet_guard_condition_flip(VarMap1), GuardGoals, GuardConds),
+    combine_vbnet_conditions(GuardConds, GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "_"
+    ),
+    format(string(IfLine), '        If ~w Then', [GuardExpr]),
+    format(string(RetLine), '            Return ~w', [OutName]),
+    EndLine = '        End If',
+    Lines = [AssignLine, IfLine, RetLine, EndLine].
+vbnet_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    vbnet_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    vbnet_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% vbnet_guard_condition_flip(+VarMap, +Goal, -Cond)
+%%  Wrapper with swapped arg order for maplist compatibility.
+vbnet_guard_condition_flip(VarMap, Goal, Cond) :-
+    vbnet_guard_condition(Goal, VarMap, Cond).
+
+%% vbnet_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+vbnet_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    vbnet_guard_condition(Goal, VarMap, Cond).
+vbnet_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    vbnet_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+vbnet_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    vbnet_guard_condition(If, VarMap0, Cond),
+    vbnet_classified_branch_value(Then, VarMap0, ThenExpr),
+    vbnet_classified_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '        If ~w Then', [Cond]),
+    format(string(ThenLine), '            Return ~w', [ThenExpr]),
+    ElseLine = '        Else',
+    format(string(ElseRetLine), '            Return ~w', [ElseExpr]),
+    EndLine = '        End If',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, EndLine].
+vbnet_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    vbnet_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+vbnet_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% vbnet_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+vbnet_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    vbnet_guard_condition(Goal, VarMap, Cond).
+vbnet_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    vbnet_classified_output_last(Goal, VarMap, Lines).
+vbnet_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    vbnet_guard_condition(If, VarMap, Cond),
+    vbnet_classified_branch_value(Then, VarMap, ThenExpr),
+    vbnet_classified_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '        If ~w Then', [Cond]),
+    format(string(ThenLine), '            Return ~w', [ThenExpr]),
+    ElseLine = '        Else',
+    format(string(ElseRetLine), '            Return ~w', [ElseExpr]),
+    EndLine = '        End If',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, EndLine].
+vbnet_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    vbnet_disj_if_chain(Alternatives, VarMap, Lines).
+vbnet_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    vbnet_classified_output_last(Goal, VarMap, Lines).
+vbnet_render_classified_last(_, _, [], []).
+
+%% vbnet_classified_output_goal(+Goal, +VarMap0, -Line, -VarMapOut)
+%%  Inline singular output goal handler for VB.NET (no standalone vbnet_output_goal).
+vbnet_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        vbnet_resolve_value(Expr, VarMap0, ExprStr),
+        format(string(Line), '        Dim ~w = ~w', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        vbnet_arith_expr(ArithExpr, VarMap0, ExprStr),
+        format(string(Line), '        Dim ~w = ~w', [VarName, ExprStr])
+    ;   VarName = "_", VarMapOut = VarMap0,
+        Line = "        ' unsupported output goal"
+    ).
+
+%% vbnet_classified_branch_value(+Branch, +VarMap, -ExprStr)
+%%  Inline branch value extractor for VB.NET.
+vbnet_classified_branch_value(Branch, VarMap, ExprStr) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    (   goal_output_var(LastGoal, _)
+    ->  vbnet_expr(LastGoal, VarMap, ExprStr)
+    ;   vbnet_resolve_value(LastGoal, VarMap, ExprStr)
+    ).
+
+%% vbnet_classified_output_last(+Goal, +VarMap, -Lines)
+%%  Wrap a single output goal as lines for classified rendering (last position).
+vbnet_classified_output_last(Goal, VarMap, [Line]) :-
+    vbnet_classified_output_goal(Goal, VarMap, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(Line), '~w\n        Return ~w', [AssignLine, OutName])
+    ;   Line = AssignLine
+    ).
+vbnet_classified_output_last(Goal, VarMap, [Line]) :-
+    vbnet_classified_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '        Return ~w', [Expr]).
+
+%% vbnet_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+vbnet_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, vbnet_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+vbnet_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% vbnet_disj_if_chain(+Alternatives, +VarMap, -Lines)
+vbnet_disj_if_chain([], _, []).
+vbnet_disj_if_chain([Alt], VarMap, [ElseLine, RetLine, EndLine]) :-
+    !,
+    vbnet_classified_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '        Else',
+    format(string(RetLine), '            Return ~w', [ValExpr]),
+    EndLine = '        End If'.
+vbnet_disj_if_chain([Alt|Rest], VarMap, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  findall(C, (member(G, Guards), vbnet_guard_condition(G, VarMap, C)), CondStrs),
+        combine_vbnet_conditions(CondStrs, CondExpr)
+    ;   CondExpr = "True"
+    ),
+    vbnet_classified_branch_value(Alt, VarMap, ValExpr),
+    (   Rest = []
+    ->  format(string(ThisLine), '        If ~w Then\n            Return ~w\n        End If', [CondExpr, ValExpr]),
+        Lines = [ThisLine]
+    ;   format(string(IfLine), '        If ~w Then', [CondExpr]),
+        format(string(RetLine), '            Return ~w', [ValExpr]),
+        vbnet_disj_if_chain(Rest, VarMap, ChainLines),
+        (   ChainLines = ['        Else'|_]
+        ->  Lines = [IfLine, RetLine|ChainLines]
+        ;   (   ChainLines = ['        ElseIf'|_]
+            ->  Lines = [IfLine, RetLine|ChainLines]
+            ;   EndLine = '        End If',
+                append([IfLine, RetLine, EndLine], ChainLines, Lines)
+            )
+        )
     ).
 
 % ============================================================================

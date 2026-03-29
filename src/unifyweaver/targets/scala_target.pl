@@ -1185,10 +1185,151 @@ scala_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     scala_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_scala_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_scala_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    scala_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_scala_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(scala_guard_condition(VarMap), GuardGoals, Conditions),
     scala_output_goals(OutputGoals, VarMap, Code).
+
+%% scala_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+scala_render_classified_goals([], _VarMap, [], []).
+scala_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    scala_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+scala_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    scala_classified_output_goal(Goal, VarMap, LetBinding, VarMap1),
+    scala_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(scala_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = '_'
+    ),
+    format(string(IfLine), '    if (~w) ~w else throw new RuntimeException("guard failed")', [GuardExpr, OutName]),
+    Lines = [LetBinding, IfLine].
+scala_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    scala_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    scala_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% scala_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+scala_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    scala_guard_condition(VarMap, Goal, Cond).
+scala_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    scala_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+scala_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    scala_guard_condition(VarMap0, If, Cond),
+    scala_branch_value(Then, VarMap0, ThenExpr),
+    scala_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+scala_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    scala_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+scala_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% scala_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+scala_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    scala_guard_condition(VarMap, Goal, Cond).
+scala_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    scala_render_output_goal_last(Goal, VarMap, Lines).
+scala_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    scala_guard_condition(VarMap, If, Cond),
+    scala_branch_value(Then, VarMap, ThenExpr),
+    scala_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        ~w', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        ~w', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+scala_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    scala_disj_if_chain(Alternatives, VarMap, Lines).
+scala_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    scala_render_output_goal_last(Goal, VarMap, Lines).
+
+%% scala_classified_output_goal(+Goal, +VarMap0, -Line, -VarMapOut)
+scala_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        scala_expr(Expr, VarMap0, ExprStr),
+        format(string(Line), '    val ~w = ~w', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        scala_expr(ArithExpr, VarMap0, ExprStr),
+        format(string(Line), '    val ~w = ~w', [VarName, ExprStr])
+    ;   VarMapOut = VarMap0,
+        Line = '    // unsupported'
+    ).
+
+%% scala_render_output_goal_last(+Goal, +VarMap, -Lines)
+%  3-arg wrapper used by classified goal renderers.
+scala_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    scala_output_goal_last(Goal, VarMap, Expr),
+    !.
+scala_render_output_goal_last(Goal, VarMap, [Expr]) :-
+    scala_branch_value(Goal, VarMap, Expr).
+
+%% scala_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+scala_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, scala_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+scala_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% scala_disj_if_chain(+Alternatives, +VarMap, -Lines)
+scala_disj_if_chain([], _, []).
+scala_disj_if_chain([Alt], VarMap, [ElseLine, RetLine]) :-
+    !,
+    scala_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    } else {',
+    format(string(RetLine), '        ~w', [ValExpr]).
+scala_disj_if_chain([Alt|Rest], VarMap, [IfLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(scala_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'true'
+    ),
+    scala_branch_value(Alt, VarMap, ValExpr),
+    format(string(IfLine), '    if (~w) {', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    scala_disj_elif_chain(Rest, VarMap, RestLines).
+
+%% scala_disj_elif_chain(+Alternatives, +VarMap, -Lines)
+scala_disj_elif_chain([], _, []).
+scala_disj_elif_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    scala_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    } else {',
+    format(string(RetLine), '        ~w', [ValExpr]),
+    CloseLine = '    }'.
+scala_disj_elif_chain([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines]) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(scala_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = 'true'
+    ),
+    scala_branch_value(Alt, VarMap, ValExpr),
+    format(string(ElifLine), '    } else if (~w) {', [CondExpr]),
+    format(string(RetLine), '        ~w', [ValExpr]),
+    scala_disj_elif_chain(Rest, VarMap, RestLines).
 
 %% scala_guard_condition(+VarMap, +Goal, -Condition)
 scala_guard_condition(VarMap, _Module:Goal, Condition) :-
