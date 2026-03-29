@@ -178,72 +178,57 @@ compile_general_recursive_to_awk(Pred, Arity, Clauses, Options, AwkCode) :-
     atomic_list_concat(EdgeLines, '\n', EdgeBlock),
     length(StepFacts, NEdges),
     (   Arity =:= 3
-    ->  % Ternary: with counter
+    ->  % Ternary: with counter — DFS with per-path visited
         format(string(AwkCode),
-'# Fixpoint evaluation: ~w/~w (transitive closure with counter)
+'# DFS all-simple-paths: ~w/~w (transitive closure with counter)
 # Step relation: ~w/2 (~w edges)
+# Uses per-path visited set to find ALL simple paths (no repeated nodes).
+# This matches Prolog Visited-list semantics for the effective distance formula.
 BEGIN {
     FS = "~w"
     # Load step relation edges
 ~w
 
-    # Initialize base case: direct edges have distance 1
+    # Build adjacency list
     for (i = 1; i <= ~w; i++) {
         split(edges[i], e, FS)
-        key = e[1] FS e[2] FS 1
-        if (!(key in result)) {
-            result[key] = 1
-            delta[key] = 1
-            ndelta++
-        }
+        adj_n[e[1]]++
+        adj[e[1], adj_n[e[1]]] = e[2]
     }
 
-    # Cycle-aware fixpoint: track (source, ancestor) pairs.
-    # Only store shortest hops per pair — this matches the Prolog Visited
-    # semantics where each node is visited at most once per path.
-    # The effective distance formula uses ALL distinct paths, but in a
-    # cycle-free traversal each (source, ancestor) pair has one shortest path.
-    MAX_DEPTH = 50
+    # DFS from every source node to find all simple paths
+    for (src in adj_n) {
+        # Stack: node, hops, visited-path (comma-delimited)
+        sp = 1
+        stk_node[1] = src
+        stk_hops[1] = 0
+        stk_path[1] = "," src ","
 
-    # Fixpoint: expand delta set, deduplicate on (source, ancestor) pairs
-    while (ndelta > 0) {
-        ndelta = 0
-        for (d in delta) {
-            split(d, parts, FS)
-            cat = parts[1]
-            ancestor = parts[2]
-            hops = parts[3] + 0
-            if (hops + 1 > MAX_DEPTH) continue
-            # Join: step(X, cat) => ancestor(X, ancestor, hops+1)
-            for (i = 1; i <= ~w; i++) {
-                split(edges[i], e, FS)
-                if (e[2] == cat) {
-                    pair = e[1] SUBSEP ancestor
-                    newhops = hops + 1
-                    # Only add if this (source, ancestor) pair is new
-                    # or we found a shorter path
-                    if (!(pair in best_hops) || newhops < best_hops[pair]) {
-                        best_hops[pair] = newhops
-                        newkey = e[1] FS ancestor FS newhops
-                        result[newkey] = 1
-                        new_delta[newkey] = 1
-                        ndelta++
-                    }
-                }
+        while (sp > 0) {
+            cur = stk_node[sp]
+            hops = stk_hops[sp]
+            path = stk_path[sp]
+            sp--
+
+            nc = adj_n[cur]
+            for (j = 1; j <= nc; j++) {
+                nb = adj[cur, j]
+                # Per-path cycle check
+                if (index(path, "," nb ",") > 0) continue
+
+                nh = hops + 1
+                print src FS nb FS nh
+                # Push for further DFS
+                sp++
+                stk_node[sp] = nb
+                stk_hops[sp] = nh
+                stk_path[sp] = path nb ","
             }
         }
-        delete delta
-        for (k in new_delta) delta[k] = 1
-        delete new_delta
-    }
-
-    # Output all results
-    for (key in result) {
-        print key
     }
 }
 ', [PredStr, Arity, StepRelStr, NEdges, FieldSep,
-    EdgeBlock, NEdges, NEdges])
+    EdgeBlock, NEdges])
     ;   % Binary: no counter
         format(string(AwkCode),
 '# Fixpoint evaluation: ~w/~w (transitive closure)
