@@ -173,17 +173,19 @@ This document focuses on architecture and rollout choices specific to TypR.
    guarded full-body subset.
 
 8. The next confirmed unsupported SCC shapes are:
-   - mixed list/numeric SCCs where the list side uses pair-tail
-     decomposition like `[A, B|Ts]`
    - mixed tree/numeric SCCs where a local helper goal sits between
      recursive group calls, for example selecting a subtree through a helper
      predicate instead of a currently supported guarded body form
+   - broader SCCs where a predicate body needs helper-goal nodes outside
+     the current structural-driver and guarded full-body subset
 
 9. Those failures are the point to stop adding bespoke matcher families.
-   They all still fail with `No mutual recursion support for target typr`,
-   but they no longer share a small structural extension point.
+   The first SCC IR-backed slice is now in place for per-predicate ordered
+   call bodies, which is enough to keep mixed list/numeric pair-tail
+   decompositions native, but the remaining failures no longer share a
+   small structural extension point.
 
-10. The next TypR mutual-recursion step should therefore introduce a shared
+10. The next TypR mutual-recursion step should therefore expand that shared
     SCC IR with:
     - per-predicate ordered goal bodies
     - explicit SCC call-site nodes with symbolic call arguments and result

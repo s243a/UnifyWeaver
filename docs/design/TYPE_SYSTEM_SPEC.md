@@ -440,12 +440,14 @@ Current TypR lowering policy is intentionally mixed:
   using raw-expression memoized helper bodies inside TypR rather than
   wrapped-R fallback
 - the next confirmed unsupported SCC shapes are now beyond that structural
-  subset, including mixed list/numeric pair-tail decompositions and mixed
-  tree/numeric bodies with local helper goals between recursive group calls
-- those shapes point to a shared SCC IR requirement: per-predicate body
-  lowering for ordered goals, recursive call sites, helper goals, branch
-  nodes, and symbolic result bindings that is independent of the current
-  structural-driver matcher family
+  subset, including mixed tree/numeric bodies with local helper goals
+  between recursive group calls
+- the first SCC IR-backed slice is now in place for per-predicate ordered
+  call bodies, which is enough to keep mixed list/numeric pair-tail
+  decompositions native
+- the next expansion point is still shared SCC IR lowering for helper
+  goals, branch nodes, and symbolic result bindings that is independent of
+  the current structural-driver matcher family
 - conservative `N`-ary structural tree-recursive predicates may also lower
   to TypR-valid functions when they match the currently supported `[]` /
   `[V, L, R]` shape with one tree-driving argument, invariant context args,
