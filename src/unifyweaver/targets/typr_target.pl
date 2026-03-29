@@ -2560,6 +2560,21 @@ typr_mutual_tree_value_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, 
         Body
     ).
 
+typr_mutual_tree_value_branch_body_with(Matcher, GroupPredicates, Goals0, ValueVar, AliasMap0, ExtraArgMap0, PostBody, OutputVar, Body) :-
+    typr_mutual_expand_helper_goals(GroupPredicates, Goals0, Goals),
+    Goals0 \= Goals,
+    !,
+    typr_mutual_tree_value_branch_body_with(
+        Matcher,
+        GroupPredicates,
+        Goals,
+        ValueVar,
+        AliasMap0,
+        ExtraArgMap0,
+        PostBody,
+        OutputVar,
+        Body
+    ).
 typr_mutual_tree_value_branch_body_with(Matcher, GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap0, PostBody, OutputVar, Body) :-
     append(PrefixGoals, [NestedIfGoal|TailPostGoals], Goals),
     PrefixGoals \= [],
@@ -2920,6 +2935,140 @@ typr_mutual_tree_branch_call(call_spec(_Side, NextPred, CallArgs), branch_call(H
     atom_string(NextPred, NextPredStr),
     format(string(HelperName), '~w_impl', [NextPredStr]).
 
+typr_mutual_expand_helper_goals(GroupPredicates, Goals0, Goals) :-
+    typr_mutual_expand_helper_goals(GroupPredicates, [], Goals0, Goals).
+
+typr_mutual_expand_helper_goals(_GroupPredicates, _Seen, [], []).
+typr_mutual_expand_helper_goals(GroupPredicates, Seen, [Goal0|Rest0], Goals) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Rest0 \= [],
+    typr_mutual_inline_local_helper_goal(GroupPredicates, Seen, Goal, Seen1, HelperGoals0),
+    append(HelperPreGoals0, [HelperBranchGoal], HelperGoals0),
+    typr_if_then_else_goal(HelperBranchGoal, IfGoal, ThenGoal0, ElseGoal0),
+    typr_mutual_expand_helper_goals(GroupPredicates, Seen1, HelperPreGoals0, HelperPreGoals),
+    typr_mutual_goal_list(ThenGoal0, ThenGoals0),
+    append(ThenGoals0, Rest0, ThenGoalsWithTail0),
+    typr_mutual_resolve_alias_prefix(ThenGoalsWithTail0, ThenGoalsWithTail1),
+    typr_mutual_expand_helper_goals(GroupPredicates, Seen1, ThenGoalsWithTail1, ThenGoals),
+    typr_mutual_goal_list(ElseGoal0, ElseGoals0),
+    append(ElseGoals0, Rest0, ElseGoalsWithTail0),
+    typr_mutual_resolve_alias_prefix(ElseGoalsWithTail0, ElseGoalsWithTail1),
+    typr_mutual_expand_helper_goals(GroupPredicates, Seen1, ElseGoalsWithTail1, ElseGoals),
+    typr_goals_to_body(ThenGoals, ThenBody),
+    typr_goals_to_body(ElseGoals, ElseBody),
+    append(HelperPreGoals, [(IfGoal -> ThenBody ; ElseBody)], Goals),
+    !.
+typr_mutual_expand_helper_goals(GroupPredicates, Seen, [Goal0|Rest0], Goals) :-
+    typr_strip_module_goal(Goal0, Goal),
+    Rest0 \= [],
+    typr_mutual_inline_local_helper_goal(GroupPredicates, Seen, Goal, Seen1, HelperGoals0),
+    append(HelperPreGoals0, [HelperBranchGoal], HelperGoals0),
+    typr_if_then_goal(HelperBranchGoal, IfGoal, ThenGoal0),
+    typr_mutual_expand_helper_goals(GroupPredicates, Seen1, HelperPreGoals0, HelperPreGoals),
+    typr_mutual_goal_list(ThenGoal0, ThenGoals0),
+    append(ThenGoals0, Rest0, ThenGoalsWithTail0),
+    typr_mutual_resolve_alias_prefix(ThenGoalsWithTail0, ThenGoalsWithTail1),
+    typr_mutual_expand_helper_goals(GroupPredicates, Seen1, ThenGoalsWithTail1, ThenGoals),
+    typr_goals_to_body(ThenGoals, ThenBody),
+    append(HelperPreGoals, [(IfGoal -> ThenBody)], Goals),
+    !.
+typr_mutual_expand_helper_goals(GroupPredicates, Seen, [Goal0|Rest0], Goals) :-
+    typr_mutual_expand_helper_goal(GroupPredicates, Seen, Goal0, ExpandedGoalList),
+    typr_mutual_expand_helper_goals(GroupPredicates, Seen, Rest0, RestGoals),
+    append(ExpandedGoalList, RestGoals, Goals).
+
+typr_mutual_expand_helper_goal(GroupPredicates, Seen, Goal0, ExpandedGoals) :-
+    typr_strip_module_goal(Goal0, Goal),
+    (   typr_if_then_else_goal(Goal, IfGoal, ThenGoal0, ElseGoal0)
+    ->  typr_mutual_goal_list(ThenGoal0, ThenGoals0),
+        typr_mutual_expand_helper_goals(GroupPredicates, Seen, ThenGoals0, ThenGoals),
+        typr_mutual_goal_list(ElseGoal0, ElseGoals0),
+        typr_mutual_expand_helper_goals(GroupPredicates, Seen, ElseGoals0, ElseGoals),
+        typr_goals_to_body(ThenGoals, ThenBody),
+        typr_goals_to_body(ElseGoals, ElseBody),
+        ExpandedGoals = [(IfGoal -> ThenBody ; ElseBody)]
+    ;   typr_if_then_goal(Goal, IfGoal, ThenGoal0)
+    ->  typr_mutual_goal_list(ThenGoal0, ThenGoals0),
+        typr_mutual_expand_helper_goals(GroupPredicates, Seen, ThenGoals0, ThenGoals),
+        typr_goals_to_body(ThenGoals, ThenBody),
+        ExpandedGoals = [(IfGoal -> ThenBody)]
+    ;   typr_mutual_inline_local_helper_goal(GroupPredicates, Seen, Goal, Seen1, HelperGoals0)
+    ->  typr_mutual_expand_helper_goals(GroupPredicates, Seen1, HelperGoals0, ExpandedGoals)
+    ;   ExpandedGoals = [Goal]
+    ).
+
+typr_mutual_inline_local_helper_goal(GroupPredicates, Seen, Goal, [Pred/Arity|Seen], HelperGoals) :-
+    compound(Goal),
+    functor(Goal, Pred, Arity),
+    \+ memberchk(Pred/Arity, GroupPredicates),
+    \+ memberchk(Pred/Arity, Seen),
+    predicate_property(user:Goal, number_of_clauses(_)),
+    \+ predicate_property(user:Goal, built_in),
+    \+ predicate_property(user:Goal, imported_from(_)),
+    findall(Head-Body, predicate_clause(user, Pred, Arity, Head, Body), Clauses),
+    Clauses = [Head-Body],
+    copy_term(Head-Body, HeadCopy-BodyCopy),
+    Goal = HeadCopy,
+    \+ typr_mutual_helper_body_calls_mutual_group(GroupPredicates, BodyCopy),
+    typr_mutual_inline_helper_body_goals(BodyCopy, HelperGoals).
+
+typr_mutual_helper_body_calls_mutual_group(GroupPredicates, Body) :-
+    sub_term(SubGoal0, Body),
+    nonvar(SubGoal0),
+    typr_goal_calls_mutual_group(GroupPredicates, SubGoal0),
+    !.
+
+typr_mutual_inline_helper_body_goals(true, []) :-
+    !.
+typr_mutual_inline_helper_body_goals(Body, Goals) :-
+    typr_mutual_goal_list(Body, Goals0),
+    exclude(==(true), Goals0, Goals1),
+    maplist(typr_strip_module_goal, Goals1, Goals).
+
+typr_mutual_resolve_alias_prefix([Goal|Rest], Goals) :-
+    Goal = (Left = Right),
+    var(Left),
+    var(Right),
+    !,
+    (   term_contains_var_by_identity(Left, Rest)
+    ->  AliasVar = Left,
+        Replacement = Right
+    ;   AliasVar = Right,
+        Replacement = Left
+    ),
+    typr_mutual_goals_replace_var(Rest, AliasVar, Replacement, Rest1),
+    typr_mutual_resolve_alias_prefix(Rest1, Goals).
+typr_mutual_resolve_alias_prefix(Goals, Goals).
+
+typr_mutual_goals_replace_var([], _Var, _Replacement, []).
+typr_mutual_goals_replace_var([Goal0|Rest0], Var, Replacement, [Goal|Rest]) :-
+    typr_mutual_term_replace_var(Goal0, Var, Replacement, Goal),
+    typr_mutual_goals_replace_var(Rest0, Var, Replacement, Rest).
+
+typr_mutual_term_replace_var(Term0, Var, Replacement, Term) :-
+    var(Term0),
+    !,
+    (   Term0 == Var
+    ->  Term = Replacement
+    ;   Term = Term0
+    ).
+typr_mutual_term_replace_var(Term, _Var, _Replacement, Term) :-
+    atomic(Term),
+    !.
+typr_mutual_term_replace_var(Term0, Var, Replacement, Term) :-
+    Term0 =.. [Functor|Args0],
+    maplist(typr_mutual_term_replace_var_var(Var, Replacement), Args0, Args),
+    Term =.. [Functor|Args].
+
+typr_mutual_term_replace_var_var(Var, Replacement, Term0, Term) :-
+    typr_mutual_term_replace_var(Term0, Var, Replacement, Term).
+
+term_contains_var_by_identity(Var, Term) :-
+    sub_term(SubTerm, Term),
+    var(SubTerm),
+    SubTerm == Var,
+    !.
+
 typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, Body) :-
     typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, [], Body).
 
@@ -2934,6 +3083,11 @@ typr_mutual_tree_branch_body(GroupPredicates, Goals, ValueVar, AliasMap0, ExtraA
         Body
     ).
 
+typr_mutual_tree_branch_body_with(Matcher, GroupPredicates, Goals0, ValueVar, AliasMap0, ExtraArgMap, Body) :-
+    typr_mutual_expand_helper_goals(GroupPredicates, Goals0, Goals),
+    Goals0 \= Goals,
+    !,
+    typr_mutual_tree_branch_body_with(Matcher, GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body).
 typr_mutual_tree_branch_body_with(Matcher, GroupPredicates, Goals, ValueVar, AliasMap0, ExtraArgMap, Body) :-
     append(PreGoals, [NestedIfGoal], Goals),
     typr_mutual_tree_branch_prework(PreGoals, ValueVar, AliasMap0, ExtraArgMap, AliasMap, ExtraArgMap1, GuardExpr),

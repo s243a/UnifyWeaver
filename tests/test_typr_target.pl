@@ -184,6 +184,13 @@ cleanup_typr_test :-
     retractall(user:typr_num_tree_ok_branch(_)),
     retractall(user:typr_tree_num_sum_branch(_, _)),
     retractall(user:typr_num_tree_sum_branch(_, _)),
+    retractall(user:typr_tree_num_ok_helper(_)),
+    retractall(user:typr_num_tree_ok_helper(_)),
+    retractall(user:typr_tree_num_sum_helper(_, _)),
+    retractall(user:typr_num_tree_sum_helper(_, _)),
+    retractall(user:typr_tree_num_weight_helper(_, _, _)),
+    retractall(user:typr_num_tree_weight_helper(_, _, _)),
+    retractall(user:typr_pick_tree_helper(_, _, _, _)),
     retractall(user:typr_tree_forest_num_weight_branch(_, _, _)),
     retractall(user:typr_forest_tree_num_weight_branch(_, _, _)),
     retractall(user:typr_num_forest_tree_weight_branch(_, _, _)),
@@ -191,6 +198,19 @@ cleanup_typr_test :-
     retractall(user:filter_rows(_, _)),
     retractall(user:group_rows(_, _)),
     retractall(user:numeric_input(_)).
+
+setup_typr_mixed_tree_numeric_helper_test_state :-
+    cleanup_typr_mixed_tree_numeric_helper_test_state.
+
+cleanup_typr_mixed_tree_numeric_helper_test_state :-
+    clear_type_declarations,
+    retractall(user:typr_tree_num_ok_helper(_)),
+    retractall(user:typr_num_tree_ok_helper(_)),
+    retractall(user:typr_tree_num_sum_helper(_, _)),
+    retractall(user:typr_num_tree_sum_helper(_, _)),
+    retractall(user:typr_tree_num_weight_helper(_, _, _)),
+    retractall(user:typr_num_tree_weight_helper(_, _, _)),
+    retractall(user:typr_pick_tree_helper(_, _, _, _)).
 
 :- begin_tests(typr_target, [
     setup(setup_typr_test),
@@ -4317,6 +4337,134 @@ test(recursive_compiler_supports_typr_mixed_tree_numeric_mutual_integer_context_
     \+ sub_string(Code, _, _, _, "left_result = typr_tree_num_weight_impl((current_input + -1), current_ctx);"),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_mixed_tree_numeric_mutual_boolean_helper_group) :-
+    setup_call_cleanup(
+        setup_typr_mixed_tree_numeric_helper_test_state,
+        (
+            assertz(user:typr_tree_num_ok_helper([])),
+            assertz(user:(typr_tree_num_ok_helper([V, L, R]) :-
+                typr_num_tree_ok_helper(V),
+                typr_pick_tree_helper(V, L, R, T),
+                typr_tree_num_ok_helper(T)
+            )),
+            assertz(user:typr_num_tree_ok_helper(0)),
+            assertz(user:(typr_num_tree_ok_helper(N) :-
+                N > 0,
+                N1 is N - 1,
+                typr_tree_num_ok_helper([N1, [], []])
+            )),
+            assertz(user:(typr_pick_tree_helper(V, L, R, T) :-
+                ( V > 0 -> T = L ; T = R )
+            )),
+            assertz(type_declarations:uw_type(typr_tree_num_ok_helper/1, 1, list(any))),
+            assertz(type_declarations:uw_type(typr_num_tree_ok_helper/1, 1, integer)),
+            assertz(type_declarations:uw_return_type(typr_tree_num_ok_helper/1, bool)),
+            assertz(type_declarations:uw_return_type(typr_num_tree_ok_helper/1, bool)),
+            once(recursive_compiler:compile_recursive(typr_tree_num_ok_helper/1, [target(typr), typed_mode(explicit)], Code)),
+            once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_num_tree_ok_helper/1, typr_tree_num_ok_helper/1")),
+            once(sub_string(Code, _, _, _, "let typr_tree_num_ok_helper <- fn(arg1: [#N, Any]): bool")),
+            once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 0) {")),
+            once(sub_string(Code, _, _, _, "left_result = typr_num_tree_ok_helper_impl(.subset2(current_input, 1));")),
+            once(sub_string(Code, _, _, _, "right_result = typr_tree_num_ok_helper_impl(.subset2(current_input, 2));")),
+            once(sub_string(Code, _, _, _, "right_result = typr_tree_num_ok_helper_impl(.subset2(current_input, 3));")),
+            once(sub_string(Code, _, _, _, "result = typr_tree_num_ok_helper_impl(list((current_input + -1), list(), list()));")),
+            \+ sub_string(Code, _, _, _, "result = typr_tree_num_ok_helper_impl((current_input + -1));"),
+            \+ sub_string(Code, _, _, _, "(function("),
+            generated_typr_is_valid(Code, exit(0))
+        ),
+        cleanup_typr_mixed_tree_numeric_helper_test_state
+    ).
+
+test(recursive_compiler_supports_typr_mixed_tree_numeric_mutual_integer_helper_group) :-
+    setup_call_cleanup(
+        setup_typr_mixed_tree_numeric_helper_test_state,
+        (
+            assertz(user:typr_tree_num_sum_helper([], 0)),
+            assertz(user:(typr_tree_num_sum_helper([V, L, R], S) :-
+                typr_num_tree_sum_helper(V, SV),
+                typr_pick_tree_helper(V, L, R, T),
+                typr_tree_num_sum_helper(T, ST),
+                S is SV + ST
+            )),
+            assertz(user:typr_num_tree_sum_helper(0, 0)),
+            assertz(user:(typr_num_tree_sum_helper(N, S) :-
+                N > 0,
+                N1 is N - 1,
+                typr_tree_num_sum_helper([N1, [], []], Parts),
+                S is N + Parts
+            )),
+            assertz(user:(typr_pick_tree_helper(V, L, R, T) :-
+                ( V > 0 -> T = L ; T = R )
+            )),
+            assertz(type_declarations:uw_type(typr_tree_num_sum_helper/2, 1, list(any))),
+            assertz(type_declarations:uw_type(typr_tree_num_sum_helper/2, 2, integer)),
+            assertz(type_declarations:uw_type(typr_num_tree_sum_helper/2, 1, integer)),
+            assertz(type_declarations:uw_type(typr_num_tree_sum_helper/2, 2, integer)),
+            assertz(type_declarations:uw_return_type(typr_tree_num_sum_helper/2, integer)),
+            assertz(type_declarations:uw_return_type(typr_num_tree_sum_helper/2, integer)),
+            once(recursive_compiler:compile_recursive(typr_tree_num_sum_helper/2, [target(typr), typed_mode(explicit)], Code)),
+            once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_num_tree_sum_helper/2, typr_tree_num_sum_helper/2")),
+            once(sub_string(Code, _, _, _, "let typr_tree_num_sum_helper <- fn(arg1: [#N, Any], arg2: int): int")),
+            once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 0) {")),
+            once(sub_string(Code, _, _, _, "left_result = typr_num_tree_sum_helper_impl(.subset2(current_input, 1));")),
+            once(sub_string(Code, _, _, _, "right_result = typr_tree_num_sum_helper_impl(.subset2(current_input, 2));")),
+            once(sub_string(Code, _, _, _, "right_result = typr_tree_num_sum_helper_impl(.subset2(current_input, 3));")),
+            once(sub_string(Code, _, _, _, "result = (left_result + right_result);")),
+            once(sub_string(Code, _, _, _, "left_result = typr_tree_num_sum_helper_impl(list((current_input + -1), list(), list()));")),
+            once(sub_string(Code, _, _, _, "result = (current_input + left_result);")),
+            \+ sub_string(Code, _, _, _, "left_result = typr_tree_num_sum_helper_impl((current_input + -1));"),
+            \+ sub_string(Code, _, _, _, "(function("),
+            generated_typr_is_valid(Code, exit(0))
+        ),
+        cleanup_typr_mixed_tree_numeric_helper_test_state
+    ).
+
+test(recursive_compiler_supports_typr_mixed_tree_numeric_mutual_integer_context_helper_group) :-
+    setup_call_cleanup(
+        setup_typr_mixed_tree_numeric_helper_test_state,
+        (
+            assertz(user:typr_tree_num_weight_helper([], _W0, 0)),
+            assertz(user:(typr_tree_num_weight_helper([V, L, R], W, S) :-
+                typr_num_tree_weight_helper(V, W, SV),
+                typr_pick_tree_helper(V, L, R, T),
+                typr_tree_num_weight_helper(T, W, ST),
+                S is SV + ST
+            )),
+            assertz(user:typr_num_tree_weight_helper(0, _W1, 0)),
+            assertz(user:(typr_num_tree_weight_helper(N, W, S) :-
+                N > 0,
+                N1 is N - 1,
+                typr_tree_num_weight_helper([N1, [], []], W, Parts),
+                S is (N * W) + Parts
+            )),
+            assertz(user:(typr_pick_tree_helper(V, L, R, T) :-
+                ( V > 0 -> T = L ; T = R )
+            )),
+            assertz(type_declarations:uw_type(typr_tree_num_weight_helper/3, 1, list(any))),
+            assertz(type_declarations:uw_type(typr_tree_num_weight_helper/3, 2, integer)),
+            assertz(type_declarations:uw_type(typr_tree_num_weight_helper/3, 3, integer)),
+            assertz(type_declarations:uw_type(typr_num_tree_weight_helper/3, 1, integer)),
+            assertz(type_declarations:uw_type(typr_num_tree_weight_helper/3, 2, integer)),
+            assertz(type_declarations:uw_type(typr_num_tree_weight_helper/3, 3, integer)),
+            assertz(type_declarations:uw_return_type(typr_tree_num_weight_helper/3, integer)),
+            assertz(type_declarations:uw_return_type(typr_num_tree_weight_helper/3, integer)),
+            once(recursive_compiler:compile_recursive(typr_tree_num_weight_helper/3, [target(typr), typed_mode(explicit)], Code)),
+            once(sub_string(Code, _, _, _, "# Mutual recursion group: typr_num_tree_weight_helper/3, typr_tree_num_weight_helper/3")),
+            once(sub_string(Code, _, _, _, "let typr_tree_num_weight_helper <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
+            once(sub_string(Code, _, _, _, "if (.subset2(current_input, 1) > 0) {")),
+            once(sub_string(Code, _, _, _, "left_result = typr_num_tree_weight_helper_impl(.subset2(current_input, 1), current_ctx);")),
+            once(sub_string(Code, _, _, _, "right_result = typr_tree_num_weight_helper_impl(.subset2(current_input, 2), current_ctx);")),
+            once(sub_string(Code, _, _, _, "right_result = typr_tree_num_weight_helper_impl(.subset2(current_input, 3), current_ctx);")),
+            once(sub_string(Code, _, _, _, "result = (left_result + right_result);")),
+            once(sub_string(Code, _, _, _, "left_result = typr_tree_num_weight_helper_impl(list((current_input + -1), list(), list()), current_ctx);")),
+            once(sub_string(Code, _, _, _, "result = ((current_input * current_ctx) + left_result);")),
+            \+ sub_string(Code, _, _, _, "left_result = typr_tree_num_weight_helper_impl((current_input + -1), current_ctx);"),
+            \+ sub_string(Code, _, _, _, "(function("),
+            generated_typr_is_valid(Code, exit(0))
+        ),
+        cleanup_typr_mixed_tree_numeric_helper_test_state
+    ).
 
 test(recursive_compiler_supports_typr_mixed_tree_list_numeric_mutual_boolean_group) :-
     clear_type_declarations,
