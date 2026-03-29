@@ -78,6 +78,50 @@ swipl -l examples/benchmark/effective_distance.pl \
       -g run_benchmark -t halt
 ```
 
+## Self-Contained Pipelines
+
+`generate_pipeline.py` produces a self-contained program per target that
+does the full pipeline: load facts → DFS all-simple-paths → aggregate
+d_eff → output sorted TSV. No post-processing needed.
+
+```bash
+# Generate
+python examples/benchmark/generate_pipeline.py \
+    --facts data/benchmark/dev/facts.pl --root Physics \
+    --target awk --output pipelines/effective_distance.awk
+
+# Execute
+awk -f pipelines/effective_distance.awk /dev/null    # AWK
+python3 pipelines/effective_distance.py               # Python
+go run pipelines/effective_distance.go                # Go
+```
+
+All three targets produce **exact match** with SWI-Prolog reference.
+
+### Current Limitation: Generator Script vs. Full Compilation
+
+The self-contained pipelines are currently produced by `generate_pipeline.py`,
+which embeds facts as data literals and wraps the transitive closure with
+aggregation logic hand-written per target. This is a **validation tool**,
+not the final architecture.
+
+The correct long-term approach is for UnifyWeaver to compile the **full**
+`effective_distance.pl` (including `aggregate_all`, `path_to_root`, and
+the d_eff formula) directly to each target language. This requires:
+
+- **aggregate_all/3 compilation** — currently supported in C# Query Engine
+  and Go, but needs work in AWK and Python transpilation targets
+- **Full predicate composition** — compiling multiple predicates that call
+  each other (path_to_root calling category_ancestor, effective_distance
+  calling path_to_root)
+- **Per-path visited pattern** — the Visited-list idiom needs to compile
+  to target-specific cycle detection (design docs in
+  `docs/design/PER_PATH_VISITED_*.md`)
+
+Until the transpiler supports the full pipeline natively, the generator
+script serves as the reference implementation for correctness validation
+and performance benchmarking.
+
 ## Dev Dataset Stats
 
 - Root: Physics
