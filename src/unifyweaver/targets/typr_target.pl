@@ -6651,8 +6651,9 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options
     annotation_suffix(TypedMode, list(NodeTypeTerm), AllReturnAnnotation),
     annotation_suffix(TypedMode, boolean, CheckReturnAnnotation),
     empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
-    typr_tc_line_part_expr(NodeTypeTerm, 1, FromLineExpr),
-    typr_tc_line_part_expr(NodeTypeTerm, 2, ToLineExpr),
+    typr_tc_node_parse_helper(BaseStr, NodeTypeTerm, NodeParseHelperCode),
+    typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 1, FromLineExpr),
+    typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 2, ToLineExpr),
     base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
     Dict = [
         pred=PredStr,
@@ -6663,6 +6664,7 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options
         all_return_annotation=AllReturnAnnotation,
         check_return_annotation=CheckReturnAnnotation,
         empty_nodes_expr=EmptyNodesExpr,
+        node_parse_helper_code=NodeParseHelperCode,
         from_line_expr=FromLineExpr,
         to_line_expr=ToLineExpr,
         from_nodes_expr=FromNodesExpr,
@@ -6716,20 +6718,51 @@ typr_tc_string_value(Value, String) :-
     ;   format(string(String), '~w', [Value])
     ).
 
-typr_tc_line_part_expr(NodeTypeTerm, PartIndex, Expr) :-
-    format(string(PartExpr), 'trimws(parts[~w])', [PartIndex]),
-    typr_tc_parse_node_expr(NodeTypeTerm, PartExpr, Expr).
+typr_tc_line_part_expr(BaseName, NodeTypeTerm, PartIndex, Expr) :-
+    format(string(PartExpr), 'parts[~w]', [PartIndex]),
+    typr_tc_parse_node_expr(BaseName, NodeTypeTerm, PartExpr, Expr).
 
-typr_tc_parse_node_expr(atom, Expr, Expr).
-typr_tc_parse_node_expr(string, Expr, Expr).
-typr_tc_parse_node_expr(integer, Expr, ParsedExpr) :-
-    format(string(ParsedExpr), 'as__integer(~w)', [Expr]).
-typr_tc_parse_node_expr(float, Expr, ParsedExpr) :-
-    format(string(ParsedExpr), 'as__numeric(~w)', [Expr]).
-typr_tc_parse_node_expr(number, Expr, ParsedExpr) :-
-    format(string(ParsedExpr), 'as__numeric(~w)', [Expr]).
-typr_tc_parse_node_expr(any, Expr, Expr).
-typr_tc_parse_node_expr(_, Expr, Expr).
+typr_tc_node_parse_helper(_BaseName, NodeTypeTerm, "") :-
+    \+ typr_tc_requires_parse_helper(NodeTypeTerm),
+    !.
+typr_tc_node_parse_helper(BaseName, pair(LeftType, RightType), Code) :-
+    !,
+    typr_tc_pair_component_expr(LeftType, "pair_parts[1]", LeftExpr),
+    typr_tc_pair_component_expr(RightType, "pair_parts[2]", RightExpr),
+    format(string(Code),
+'let ~w_parse_node <- function(text) {
+\tpair_parts <- strsplit(trimws(text), ",");
+\tpair(~w, ~w)
+};
+
+', [BaseName, LeftExpr, RightExpr]).
+
+typr_tc_requires_parse_helper(pair(_, _)).
+
+typr_tc_pair_component_expr(TypeTerm, Expr, ParsedExpr) :-
+    typr_tc_scalar_parse_node_expr(TypeTerm, Expr, ParsedExpr).
+
+typr_tc_parse_node_expr(BaseName, NodeTypeTerm, Expr, ParsedExpr) :-
+    typr_tc_requires_parse_helper(NodeTypeTerm),
+    !,
+    format(string(ParsedExpr), '~w_parse_node(~w)', [BaseName, Expr]).
+typr_tc_parse_node_expr(_BaseName, NodeTypeTerm, Expr, ParsedExpr) :-
+    typr_tc_scalar_parse_node_expr(NodeTypeTerm, Expr, ParsedExpr).
+
+typr_tc_scalar_parse_node_expr(atom, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'trimws(~w)', [Expr]).
+typr_tc_scalar_parse_node_expr(string, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'trimws(~w)', [Expr]).
+typr_tc_scalar_parse_node_expr(integer, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'as__integer(trimws(~w))', [Expr]).
+typr_tc_scalar_parse_node_expr(float, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'as__numeric(trimws(~w))', [Expr]).
+typr_tc_scalar_parse_node_expr(number, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'as__numeric(trimws(~w))', [Expr]).
+typr_tc_scalar_parse_node_expr(any, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'trimws(~w)', [Expr]).
+typr_tc_scalar_parse_node_expr(_, Expr, ParsedExpr) :-
+    format(string(ParsedExpr), 'trimws(~w)', [Expr]).
 
 load_typr_transitive_closure_template(Template) :-
     (   exists_file('templates/targets/typr/transitive_closure.mustache')

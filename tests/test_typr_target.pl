@@ -331,6 +331,34 @@ test(transitive_closure_numeric_runtime_loader_parses_declared_node_type) :-
     \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[2]));"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(transitive_closure_pair_integer_runtime_loader_parses_declared_node_shape) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, pair(integer, integer))),
+    assertz(type_declarations:uw_type(edge/2, 2, pair(integer, integer))),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(stdin)], Code)),
+    once(sub_string(Code, _, _, _, "let edge_parse_node <- function(text)")),
+    once(sub_string(Code, _, _, _, "pair_parts <- strsplit(trimws(text), \",\");")),
+    once(sub_string(Code, _, _, _, "pair(as__integer(trimws(pair_parts[1])), as__integer(trimws(pair_parts[2])))")),
+    once(sub_string(Code, _, _, _, "results <- c(results, edge_parse_node(parts[1]));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, edge_parse_node(parts[2]));")),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[1]));"),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[2]));"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(transitive_closure_pair_numeric_runtime_loader_parses_declared_node_shape) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, pair(number, number))),
+    assertz(type_declarations:uw_type(edge/2, 2, pair(number, number))),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(vfs("family_tree"))], Code)),
+    once(sub_string(Code, _, _, _, "let edge_parse_node <- function(text)")),
+    once(sub_string(Code, _, _, _, "pair_parts <- strsplit(trimws(text), \",\");")),
+    once(sub_string(Code, _, _, _, "pair(as__numeric(trimws(pair_parts[1])), as__numeric(trimws(pair_parts[2])))")),
+    once(sub_string(Code, _, _, _, "results <- c(results, edge_parse_node(parts[1]));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, edge_parse_node(parts[2]));")),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[1]));"),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[2]));"),
+    generated_typr_is_valid(Code, exit(0)).
+
 test(per_predicate_typed_mode_overrides_call_option) :-
     clear_type_declarations,
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
