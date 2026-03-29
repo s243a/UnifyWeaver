@@ -1,7 +1,17 @@
+
 int main(int argc, char** argv) {
     char line[MAX_LINE];
 
-    {{> tc_input_stdin}}
+    /* Read {{base}} facts from stdin */
+    while (fgets(line, sizeof(line), stdin)) {
+        char* colon = strchr(line, ':');
+        if (!colon) continue;
+        *colon = '\0';
+        char* to = colon + 1;
+        size_t len = strlen(to);
+        if (len > 0 && to[len-1] == '\n') to[len-1] = '\0';
+        add_edge(line, to);
+    }
 
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <start> [target]\n", argv[0]);

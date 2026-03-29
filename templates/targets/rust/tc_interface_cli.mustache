@@ -1,8 +1,16 @@
+
 fn main() {
     let mut query = {{pred_cap}}Query::new();
     let stdin = io::stdin();
 
-    {{> tc_input_stdin}}
+    // Read {{base}} facts from stdin (format: from:to)
+    for line in stdin.lock().lines() {
+        if let Ok(line) = line {
+            if let Some((from, to)) = line.split_once(':') {
+                query.add_fact(from.trim(), to.trim());
+            }
+        }
+    }
 
     let args: Vec<String> = std::env::args().collect();
     match args.len() {
