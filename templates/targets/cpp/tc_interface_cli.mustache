@@ -1,8 +1,18 @@
+
 int main(int argc, char** argv) {
     {{pred_cap}}Query query;
     std::string line;
 
-    {{> tc_input_stdin}}
+    // Read {{base}} facts from stdin
+    while (std::getline(std::cin, line)) {
+        if (line.empty()) continue;
+        size_t pos = line.find(':');
+        if (pos != std::string::npos) {
+            std::string from = line.substr(0, pos);
+            std::string to = line.substr(pos + 1);
+            query.addFact(from, to);
+        }
+    }
 
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <start> [target]" << std::endl;
