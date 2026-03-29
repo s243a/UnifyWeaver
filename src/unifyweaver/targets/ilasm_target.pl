@@ -47,27 +47,15 @@ compile_predicate_to_ilasm(PredIndicator, Options, ILCode) :-
     ->  true
     ;   MethodBody = "    ldstr \"Compilation failed\"\n    throw"
     ),
-    %% Build method signature
-    ilasm_arg_list(Arity1, ArgDecls),
+    %% Build typed method signature
+    ilasm_typed_arg_list(Name/Arity, Arity1, ArgDecls),
+    ilasm_return_type(Name/Arity, ReturnType),
     ilasm_locals_from_body(MethodBody, LocalDecls),
     %% Wrap in class
     option(class_name(ClassName), Options, 'PrologGenerated'),
     option(include_main(IncludeMain), Options, true),
     (   IncludeMain
-    ->  format(string(MainMethod),
-'.method public static void Main(string[] args) cil managed {
-    .entrypoint
-    .maxstack 8
-    // Example: call with first arg
-    ldarg.0
-    ldc.i4.0
-    ldelem.ref
-    call string [mscorlib]System.String::Trim(string)
-    call int64 [mscorlib]System.Int64::Parse(string)
-    call int64 ~w.~w::~w(~w)
-    call void [mscorlib]System.Console::WriteLine(int64)
-    ret
-}', [ClassName, ClassName, PredStr, ArgDecls])
+    ->  ilasm_main_method(ClassName, PredStr, ArgDecls, ReturnType, MainMethod)
     ;   MainMethod = ""
     ),
     format(string(ILCode),
@@ -79,7 +67,7 @@ compile_predicate_to_ilasm(PredIndicator, Options, ILCode) :-
 
 .class public auto ansi ~w extends [mscorlib]System.Object {
 
-.method public static int64 ~w(~w) cil managed {
+.method public static ~w ~w(~w) cil managed {
     .maxstack 8
 ~w
 ~w
@@ -88,7 +76,7 @@ compile_predicate_to_ilasm(PredIndicator, Options, ILCode) :-
 ~w
 
 }
-', [PredStr, Arity, ClassName, ClassName, PredStr, ArgDecls, LocalDecls, MethodBody, MainMethod]).
+', [PredStr, Arity, ClassName, ClassName, ReturnType, PredStr, ArgDecls, LocalDecls, MethodBody, MainMethod]).
 
 %% ilasm_arg_list(+N, -ArgDecls)
 ilasm_arg_list(0, "") :- !.
@@ -98,6 +86,70 @@ ilasm_arg_list(N, ArgDecls) :-
         format(string(Decl), 'int64 arg~w', [I])
     ), Decls),
     atomic_list_concat(Decls, ', ', ArgDecls).
+
+%% ilasm_typed_arg_list(+PredSpec, +InputArity, -ArgDecls)
+%  Build typed arg list using uw_type declarations if available.
+ilasm_typed_arg_list(Name/Arity, InputArity, ArgDecls) :-
+    (   ilasm_has_type_annotations(Name/Arity)
+    ->  ilasm_typed_args(Name/Arity, 1, InputArity, Args),
+        atomic_list_concat(Args, ', ', ArgDecls)
+    ;   ilasm_arg_list(InputArity, ArgDecls)
+    ).
+
+ilasm_has_type_annotations(Name/Arity) :-
+    (   clause(type_declarations:uw_type(Name/Arity, _, _), true)
+    ;   clause(user:uw_type(Name/Arity, _, _), true)
+    ), !.
+
+ilasm_typed_args(_PredSpec, I, InputArity, []) :- I > InputArity, !.
+ilasm_typed_args(Name/Arity, I, InputArity, [TypedArg|Rest]) :-
+    (   (clause(type_declarations:uw_type(Name/Arity, I, Type), true)
+        ; clause(user:uw_type(Name/Arity, I, Type), true)),
+        type_declarations:resolve_type(Type, ilasm, CILType)
+    ->  format(string(TypedArg), '~w arg~w', [CILType, I])
+    ;   format(string(TypedArg), 'int64 arg~w', [I])
+    ),
+    I1 is I + 1,
+    ilasm_typed_args(Name/Arity, I1, InputArity, Rest).
+
+%% ilasm_return_type(+PredSpec, -ReturnType)
+%  Get CIL return type from uw_return_type or default to int64.
+ilasm_return_type(Name/Arity, ReturnType) :-
+    (   (clause(type_declarations:uw_return_type(Name/Arity, Type), true)
+        ; clause(user:uw_return_type(Name/Arity, Type), true)),
+        type_declarations:resolve_type(Type, ilasm, CILType)
+    ->  ReturnType = CILType
+    ;   ReturnType = "int64"
+    ).
+
+%% ilasm_main_method(+ClassName, +PredStr, +ArgDecls, +ReturnType, -MainMethod)
+%  Generate Main method with type-appropriate parse and print.
+ilasm_main_method(ClassName, PredStr, ArgDecls, ReturnType, MainMethod) :-
+    (   ReturnType = "string"
+    ->  ParseInstr = "",
+        PrintInstr = "    call void [mscorlib]System.Console::WriteLine(string)"
+    ;   ReturnType = "float64"
+    ->  ParseInstr = "    call float64 [mscorlib]System.Double::Parse(string)",
+        PrintInstr = "    call void [mscorlib]System.Console::WriteLine(float64)"
+    ;   ReturnType = "bool"
+    ->  ParseInstr = "    call int64 [mscorlib]System.Int64::Parse(string)",
+        PrintInstr = "    call void [mscorlib]System.Console::WriteLine(bool)"
+    ;   ParseInstr = "    call int64 [mscorlib]System.Int64::Parse(string)",
+        PrintInstr = "    call void [mscorlib]System.Console::WriteLine(int64)"
+    ),
+    format(string(MainMethod),
+'.method public static void Main(string[] args) cil managed {
+    .entrypoint
+    .maxstack 8
+    ldarg.0
+    ldc.i4.0
+    ldelem.ref
+    call string [mscorlib]System.String::Trim(string)
+~w
+    call ~w ~w::~w(~w)
+~w
+    ret
+}', [ParseInstr, ReturnType, ClassName, PredStr, ArgDecls, PrintInstr]).
 
 %% ilasm_locals_from_body(+Body, -LocalDecls)
 %  Extract local variable declarations from method body.

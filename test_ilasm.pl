@@ -49,6 +49,12 @@ is_even(N) :- N > 0, N1 is N - 1, is_odd(N1).
 is_odd(1).
 is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
 
+:- dynamic typed_add/3.
+:- type_declarations:assert(uw_type(typed_add/3, 1, integer)).
+:- type_declarations:assert(uw_type(typed_add/3, 2, integer)).
+:- type_declarations:assert(uw_return_type(typed_add/3, integer)).
+typed_add(X, Y, Z) :- Z is X + Y.
+
 :- dynamic parent/2, ancestor/2.
 parent(alice, bob). parent(bob, charlie). parent(bob, diana).
 ancestor(X, Y) :- parent(X, Y).
@@ -63,4 +69,12 @@ run :-
     test_compile(fibonacci/2),
     test_compile(is_even/1),
     test_compile(ancestor/2),
+    %% Type test
+    format('ilasm typed_add/3: ', []),
+    (   catch(recursive_compiler:compile_recursive(typed_add/3, [target(ilasm)], Code), _, fail),
+        Code \= "",
+        sub_string(Code, _, _, _, "int64 arg1, int64 arg2")
+    ->  writeln(ok)
+    ;   writeln('FAIL')
+    ),
     nl, writeln('=== ILASM TESTS DONE ===').
