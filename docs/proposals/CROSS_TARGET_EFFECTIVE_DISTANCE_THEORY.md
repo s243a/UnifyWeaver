@@ -187,6 +187,23 @@ effective_distance(Article, Folder, Deff) :-
 No single step requires a new primitive. The challenge is composing them
 correctly in each target language.
 
+### Note on Arity Generalization
+
+The current deepening work (Go, AWK, Python) adds arity-3 support for
+recursive predicates with arithmetic counters. This is sufficient for the
+benchmark but is **not a general solution** — the implementations are
+arity-specific (arity-2 and arity-3 handlers). A future improvement should
+generalize to **arity-N** recursive predicates by:
+
+- Extracting input/output/accumulator roles from mode declarations
+- Generating variable-arity worker functions with positional argument mapping
+- Handling arbitrary arithmetic expressions in any argument position
+
+The C# parameterized query engine already handles this generically via its
+IR-based `FixpointNode` — the plan compiler resolves variable bindings
+positionally without arity-specific code. The other targets' native deepening
+should converge toward a similar arity-agnostic approach.
+
 ## Future Work: Tree Construction from Effective Distance
 
 The effective distance computation has a natural extension to **tree/mindmap
