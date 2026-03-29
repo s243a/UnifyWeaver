@@ -76,6 +76,9 @@ echo "=== Step 2: Compile category_ancestor/3 ==="
 # Note: C# parameterized query engine requires:
 #   1. mode/1 declaration for input/output args
 #   2. Constants in body (Hops is 1) not head (category_ancestor(_, _, 1))
+# Helper: strip debug lines from swipl compilation output
+strip_debug() { grep -v '^===\|^Checking\|^Type:\|^Defined\|^Registered\|^  All\|^  Combined'; }
+
 echo -n "  Compiling C# ... "
 CSHARP_CODE=$(swipl -q -g "
     ['$FACTS_FILE'],
@@ -85,7 +88,7 @@ CSHARP_CODE=$(swipl -q -g "
     use_module('src/unifyweaver/targets/csharp_target'),
     compile_predicate_to_csharp(category_ancestor/3, [target(csharp_query)], Code),
     write(Code)
-" -t halt 2>/dev/null) && echo "OK" || echo "FAILED"
+" -t halt 2>/dev/null | strip_debug) && echo "OK" || echo "FAILED"
 
 if [ -n "$CSHARP_CODE" ]; then
     echo "$CSHARP_CODE" > "$OUTPUT_DIR/category_ancestor.cs"
@@ -103,7 +106,7 @@ GO_CODE=$(swipl -q -g "
     use_module('src/unifyweaver/targets/go_target'),
     compile_predicate_to_go(category_ancestor/3, [], Code),
     write(Code)
-" -t halt 2>/dev/null) && echo "OK" || echo "FAILED"
+" -t halt 2>/dev/null | strip_debug) && echo "OK" || echo "FAILED"
 
 if [ -n "$GO_CODE" ]; then
     echo "$GO_CODE" > "$OUTPUT_DIR/category_ancestor.go"
@@ -121,7 +124,7 @@ AWK_CODE=$(swipl -q -g "
     use_module('src/unifyweaver/targets/awk_target'),
     compile_predicate_to_awk(category_ancestor/3, [], Code),
     write(Code)
-" -t halt 2>/dev/null) && echo "OK" || echo "FAILED"
+" -t halt 2>/dev/null | strip_debug) && echo "OK" || echo "FAILED"
 
 if [ -n "$AWK_CODE" ]; then
     echo "$AWK_CODE" > "$OUTPUT_DIR/category_ancestor.awk"
@@ -139,7 +142,7 @@ PY_CODE=$(swipl -q -g "
     use_module('src/unifyweaver/targets/python_target'),
     compile_predicate_to_python(category_ancestor/3, [], Code),
     write(Code)
-" -t halt 2>/dev/null) && echo "OK" || echo "FAILED"
+" -t halt 2>/dev/null | strip_debug) && echo "OK" || echo "FAILED"
 
 if [ -n "$PY_CODE" ]; then
     echo "$PY_CODE" > "$OUTPUT_DIR/category_ancestor.py"
