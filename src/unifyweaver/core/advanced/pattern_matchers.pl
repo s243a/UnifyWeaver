@@ -26,6 +26,8 @@
     % Linear-to-tail recursion transformation
     can_transform_linear_to_tail/2,       % +Pred/Arity, -TransformInfo
     split_body_at_recursive_call/5,       % +Body, +Pred, -PreGoals, -RecCall, -PostGoals
+    % Per-path visited recursion pattern
+    is_per_path_visited_pattern/4,        % +Name, +Arity, +Clauses, -VisitedPos
     test_pattern_matchers/0         % Test predicate
 ]).
 
@@ -599,6 +601,74 @@ extract_base_result_value(BaseClauses, _ResultVar, Init) :-
         number(Init)
     ),
     !.
+
+%% ============================================
+%% PER-PATH VISITED RECURSION PATTERN
+%% ============================================
+%%
+%% Detects the Prolog idiom for cycle-safe graph traversal:
+%%   pred(X, Y, N, Visited) :-
+%%       step(X, Mid),
+%%       \+ member(Mid, Visited),
+%%       pred(Mid, Y, N1, [Mid|Visited]),
+%%       N is N1 + 1.
+%%
+%% Returns the position (1-indexed) of the Visited list parameter.
+%% Targets use this to generate per-path cycle detection:
+%%   - Go/Python/Rust: recursive function with set/frozenset parameter
+%%   - AWK/C: explicit DFS with stack-encoded path
+
+%% is_per_path_visited_pattern(+Name, +Arity, +Clauses, -VisitedPos)
+%%   Clauses are (Head, Body) pairs.
+is_per_path_visited_pattern(Name, Arity, Clauses, VisitedPos) :-
+    Arity >= 3,
+    % Separate base and recursive clauses
+    partition(is_recursive_clause_for_ppv(Name), Clauses, RecClauses, _BaseClauses),
+    RecClauses \= [],
+    % Examine the recursive clause
+    member((RecHead, RecBody), RecClauses),
+    RecHead =.. [Name|RecArgs],
+    % Find the Visited position: the arg that appears in [_|Arg] cons
+    % AND in \+ member(_, Arg) in the body
+    between(1, Arity, VisitedPos),
+    nth1(VisitedPos, RecArgs, VisitedVar),
+    var(VisitedVar),
+    % Check: body has \+ member(_, VisitedVar)
+    body_has_negated_member(RecBody, VisitedVar),
+    % Check: body has [_|VisitedVar] passed to recursive call
+    body_has_cons_in_recursive_call(RecBody, Name, VisitedPos, VisitedVar),
+    !.
+
+%% is_recursive_clause_for_ppv(+Name, +Clause)
+is_recursive_clause_for_ppv(Name, (_Head, Body)) :-
+    contains_call_to(Body, Name).
+
+%% body_has_negated_member(+Body, +ListVar)
+%%   True if Body contains \+ member(_, ListVar).
+body_has_negated_member((\+ member(_, Var), _), ListVar) :-
+    Var == ListVar, !.
+body_has_negated_member((_, Rest), ListVar) :- !,
+    body_has_negated_member(Rest, ListVar).
+body_has_negated_member(\+ member(_, Var), ListVar) :-
+    Var == ListVar.
+
+%% body_has_cons_in_recursive_call(+Body, +Name, +Pos, +VisitedVar)
+%%   True if the recursive call to Name has [_|VisitedVar] at position Pos.
+body_has_cons_in_recursive_call(Body, Name, Pos, VisitedVar) :-
+    extract_goals_ppv(Body, Goals),
+    member(RecCall, Goals),
+    RecCall =.. [Name|CallArgs],
+    nth1(Pos, CallArgs, CallArg),
+    nonvar(CallArg),
+    CallArg = [_|Tail],
+    Tail == VisitedVar.
+
+%% extract_goals_ppv(+Body, -Goals)
+extract_goals_ppv((A, B), Goals) :- !,
+    extract_goals_ppv(A, GA),
+    extract_goals_ppv(B, GB),
+    append(GA, GB, Goals).
+extract_goals_ppv(Goal, [Goal]).
 
 %% ============================================
 %% TESTS
