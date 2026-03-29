@@ -224,7 +224,10 @@ test(explicit_mode_emits_declared_scalar_annotations) :-
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let tc_all <- function(start)")),
     once(sub_string(Code, _, _, _, "let tc_check <- function(start, target)")),
-    once(sub_string(Code, _, _, _, "results <- character()")).
+    once(sub_string(Code, _, _, _, "results <- character()")),
+    once(sub_string(Code, _, _, _, "current <- queue[1];")),
+    once(sub_string(Code, _, _, _, "queue <- queue[-1];")),
+    \+ sub_string(Code, _, _, _, "result <- @{ (function() {").
 
 test(infer_mode_omits_scalar_parameter_annotations) :-
     clear_type_declarations,
@@ -241,7 +244,7 @@ test(explicit_any_is_preserved_in_infer_mode) :-
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(infer)], Code)),
     once(sub_string(Code, _, _, _, "let tc_all <- function(start)")),
     once(sub_string(Code, _, _, _, "results <- c()")),
-    once(sub_string(Code, _, _, _, "neighbors <- if (exists(current, envir = edge_graph, inherits = FALSE))")).
+    once(sub_string(Code, _, _, _, "neighbors <- @{ if (exists(current, envir = edge_graph, inherits = FALSE))")).
 
 test(per_predicate_typed_mode_overrides_call_option) :-
     clear_type_declarations,
@@ -2685,6 +2688,9 @@ test(transitive_closure_template_is_valid_typr) :-
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "while (length(queue) > 0)")),
+    once(sub_string(Code, _, _, _, "for (next_node in neighbors) {")),
+    once(sub_string(Code, _, _, _, "if (found) {")),
+    \+ sub_string(Code, _, _, _, "result <- @{ (function() {"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(transitive_closure_seeds_known_base_facts) :-

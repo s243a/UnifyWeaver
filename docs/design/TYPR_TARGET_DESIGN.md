@@ -430,9 +430,9 @@ Inference note:
 
 Current implementation note:
 
-- transitive closure uses valid TypR syntax plus inline raw-R IIFEs where the
-  current TypR surface language is too restrictive for the required BFS logic
-  inside nested scopes
+- transitive closure now keeps BFS control flow in valid TypR syntax and limits
+  raw R to the graph-environment primitives that still depend on mutable
+  `new.env` / `get` / `assign` operations
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
   predicates, sequential guard/output control-flow chains, simple comparison
