@@ -172,20 +172,23 @@ This document focuses on architecture and rollout choices specific to TypR.
    and SCCs that no longer fit the current structural-driver or supported
    guarded full-body subset.
 
-8. The next confirmed unsupported SCC shapes are:
-   - mixed tree/numeric SCCs where a local helper goal sits between
-     recursive group calls, for example selecting a subtree through a helper
-     predicate instead of a currently supported guarded body form
-   - broader SCCs where a predicate body needs helper-goal nodes outside
-     the current structural-driver and guarded full-body subset
+8. The first SCC IR-backed slices are now in place for:
+   - per-predicate ordered call bodies, which keep mixed list/numeric
+     pair-tail decompositions native
+   - local nonrecursive helper goals between recursive group calls, which
+     now keep conservative mixed tree/numeric SCCs native
 
-9. Those failures are the point to stop adding bespoke matcher families.
-   The first SCC IR-backed slice is now in place for per-predicate ordered
-   call bodies, which is enough to keep mixed list/numeric pair-tail
-   decompositions native, but the remaining failures no longer share a
-   small structural extension point.
+9. The next confirmed unsupported SCC shapes are broader than that
+   conservative helper-goal step:
+   - helper-goal nodes outside the current local inline expansion model
+   - broader SCCs where a predicate body needs richer branch or result
+     structure outside the current structural-driver and guarded full-body
+     subset
 
-10. The next TypR mutual-recursion step should therefore expand that shared
+10. Those failures are the point to stop adding bespoke matcher families.
+    The remaining gaps no longer share a small structural extension point.
+
+11. The next TypR mutual-recursion step should therefore expand that shared
     SCC IR with:
     - per-predicate ordered goal bodies
     - explicit SCC call-site nodes with symbolic call arguments and result
@@ -196,7 +199,7 @@ This document focuses on architecture and rollout choices specific to TypR.
     - wrapper and memo generation derived from that IR rather than from the
       current `typr_mutual_supported_spec/3` family
 
-11. Until that IR exists, the correct fallback boundary is:
+12. Until that IR exists, the correct fallback boundary is:
     - keep native TypR lowering for the current structural-driver and
       supported guarded full-body subset
     - reject broader SCCs cleanly instead of stacking more structural
