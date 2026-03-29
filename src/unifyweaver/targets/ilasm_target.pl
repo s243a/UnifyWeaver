@@ -11,7 +11,18 @@
 
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/cil_bytecode').
+:- use_module('../core/component_registry').
 :- use_module(library(lists)).
+
+%% Register ILAsm component type for custom IL injection
+:- initialization((
+    catch(
+        register_component_type(source, custom_ilasm, custom_ilasm, [
+            description('Injects custom CIL assembly as a component')
+        ]),
+        _, true
+    )
+)).
 
 % ============================================================================
 % ENTRY POINT
