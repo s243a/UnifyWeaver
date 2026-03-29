@@ -927,6 +927,13 @@ c_branches_to_ternary([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :-
 %% c_branch_value — extract result value from a branch
 c_branch_value(_Module:Goal, VarMap, Value) :-
     !, c_branch_value(Goal, VarMap, Value).
+c_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    c_guard_condition(VarMap, If, Cond),
+    c_branch_value(Then, VarMap, ThenVal),
+    c_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '(~w) ? ~w : ~w', [Cond, ThenVal, ElseVal]).
 c_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),
