@@ -228,7 +228,8 @@ includes:
   intermediate, the final output directly, or the later result set needed by
   subsequent native steps
 - transitive-closure generation where BFS control flow, seeded adjacency
-  storage, and vector-parameter runtime query helpers all stay in native TypR
+  storage, vector-parameter runtime query helpers, and explicit
+  `input(stdin|file|vfs|function)` loader wrappers all stay in native TypR
   syntax
 - accumulator-style tail-recursive predicates such as `factorial_acc/3`,
   lowered to TypR functions that use raw-expression loop bodies instead of

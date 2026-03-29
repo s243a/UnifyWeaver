@@ -254,6 +254,59 @@ test(explicit_any_is_preserved_in_infer_mode) :-
     once(sub_string(Code, _, _, _, "neighbors <- edge_neighbors(current, from_nodes, to_nodes);")),
     \+ sub_string(Code, _, _, _, "@{").
 
+test(transitive_closure_stdin_input_mode_emits_native_loader) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(stdin)], Code)),
+    once(sub_string(Code, _, _, _, "let edge_lines_from_stdin <- function()")),
+    once(sub_string(Code, _, _, _, "readLines(file(\"stdin\"))")),
+    once(sub_string(Code, _, _, _, "let edge_from_lines <- function(lines)")),
+    once(sub_string(Code, _, _, _, "parts <- strsplit(trimws(line), \":\");")),
+    once(sub_string(Code, _, _, _, "let tc_all <- function(start)")),
+    once(sub_string(Code, _, _, _, "lines <- edge_lines_from_stdin();")),
+    once(sub_string(Code, _, _, _, "tc_all_from_vectors(start, edge_from_lines(lines), edge_to_lines(lines))")),
+    \+ sub_string(Code, _, _, _, "edge_from <-"),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(transitive_closure_file_input_mode_emits_native_loader) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(file("data.txt"))], Code)),
+    once(sub_string(Code, _, _, _, "let edge_lines_from_file <- function()")),
+    once(sub_string(Code, _, _, _, "readLines(\"data.txt\")")),
+    once(sub_string(Code, _, _, _, "let tc_check <- function(start, target)")),
+    once(sub_string(Code, _, _, _, "lines <- edge_lines_from_file();")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(transitive_closure_vfs_input_mode_emits_native_loader) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(vfs("family_tree"))], Code)),
+    once(sub_string(Code, _, _, _, "let edge_lines_from_vfs <- function()")),
+    once(sub_string(Code, _, _, _, "cell_data <- nb_read(\"family_tree\", \".output\");")),
+    once(sub_string(Code, _, _, _, "strsplit(cell_data, \"\\n\")")),
+    once(sub_string(Code, _, _, _, "tc_check_from_vectors(start, target, edge_from_lines(lines), edge_to_lines(lines))")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(transitive_closure_function_input_mode_emits_vector_wrappers) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(function)], Code)),
+    once(sub_string(Code, _, _, _, "let tc_all <- function(start, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "let tc_check <- function(start, target, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "tc_all_from_vectors(start, from_nodes, to_nodes)")),
+    \+ sub_string(Code, _, _, _, "readLines("),
+    \+ sub_string(Code, _, _, _, "nb_read("),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
 test(per_predicate_typed_mode_overrides_call_option) :-
     clear_type_declarations,
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
