@@ -430,9 +430,8 @@ Inference note:
 
 Current implementation note:
 
-- transitive closure now keeps BFS control flow in valid TypR syntax and limits
-  raw R to the graph-environment primitives that still depend on mutable
-  `new.env` / `get` / `assign` operations
+- transitive closure now keeps both BFS control flow and seeded adjacency
+  storage in valid TypR syntax when the base relation is known at compile time
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
   predicates, sequential guard/output control-flow chains, simple comparison

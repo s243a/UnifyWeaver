@@ -140,7 +140,7 @@ bring-up.
 - typed-mode precedence support
 - simple fact predicate lowering
 - transitive-closure generation with compile-time fact seeding, native TypR BFS
-  control flow, and raw R limited to graph-environment primitives
+  control flow, and native TypR adjacency-vector storage
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,
