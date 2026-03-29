@@ -181,6 +181,8 @@ compile_non_recursive(jamaica, Pred/Arity, FinalOptions, GeneratedCode) :-
     jamaica_target:compile_predicate_to_jamaica(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(krakatau, Pred/Arity, FinalOptions, GeneratedCode) :-
     krakatau_target:compile_predicate_to_krakatau(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(llvm, Pred/Arity, FinalOptions, GeneratedCode) :-
+    llvm_target:compile_predicate_to_llvm(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(typr, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_predicate_to_typr(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(jython, Pred/Arity, FinalOptions, GeneratedCode) :-

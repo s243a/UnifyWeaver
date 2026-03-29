@@ -1352,22 +1352,78 @@ native_llvm_clause(_PredSpec, Head, Body, Conditions, ResultExpr) :-
     ->  llvm_resolve_value(VarMap, OutputHeadArg, Value),
         ResultExpr = result{value: Value, setup: "", setup2: ""},
         GoalConditions = []
-    ;   (   Arity > 1, nonvar(OutputHeadArg)
-        ->  clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
-            maplist(llvm_goal_to_condition(VarMap), GuardGoals, GoalConditions),
-            (   OutputGoals == []
-            ->  llvm_resolve_value(VarMap, OutputHeadArg, Value),
-                ResultExpr = result{value: Value, setup: "", setup2: ""}
-            ;   llvm_output_expr(OutputGoals, VarMap, Value, SetupCode),
+    ;   %% Try classify_goal_sequence for advanced patterns
+        (   classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+            ClassifiedGoals \= [],
+            llvm_render_classified(ClassifiedGoals, VarMap, OutputHeadArg, Arity, GoalConditions, ResultExpr)
+        ->  true
+        ;   %% Fallback to basic split
+            (   Arity > 1, nonvar(OutputHeadArg)
+            ->  clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+                maplist(llvm_goal_to_condition(VarMap), GuardGoals, GoalConditions),
+                (   OutputGoals == []
+                ->  llvm_resolve_value(VarMap, OutputHeadArg, Value),
+                    ResultExpr = result{value: Value, setup: "", setup2: ""}
+                ;   llvm_output_expr(OutputGoals, VarMap, Value, SetupCode),
+                    ResultExpr = result{value: Value, setup: SetupCode, setup2: SetupCode}
+                )
+            ;   clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+                maplist(llvm_goal_to_condition(VarMap), GuardGoals, GoalConditions),
+                llvm_output_expr(OutputGoals, VarMap, Value, SetupCode),
                 ResultExpr = result{value: Value, setup: SetupCode, setup2: SetupCode}
             )
-        ;   clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
-            maplist(llvm_goal_to_condition(VarMap), GuardGoals, GoalConditions),
-            llvm_output_expr(OutputGoals, VarMap, Value, SetupCode),
-            ResultExpr = result{value: Value, setup: SetupCode, setup2: SetupCode}
         )
     ),
     append(HeadConditions, GoalConditions, Conditions).
+
+%% llvm_render_classified(+ClassifiedGoals, +VarMap, +OutputHeadArg, +Arity, -Conditions, -ResultExpr)
+%  Render classified goals for LLVM IR output.
+llvm_render_classified(ClassifiedGoals, VarMap, OutputHeadArg, Arity, Conditions, ResultExpr) :-
+    %% Collect guard conditions
+    findall(C, (
+        member(guard(G, _), ClassifiedGoals),
+        llvm_goal_to_condition(VarMap, G, C)
+    ), Conditions),
+    %% Find the output value
+    (   member(output(Goal, _, _), ClassifiedGoals)
+    ->  (   Goal = (_ is ArithExpr)
+        ->  llvm_arith_expr(ArithExpr, VarMap, Value, SetupCode),
+            ResultExpr = result{value: Value, setup: SetupCode, setup2: SetupCode}
+        ;   Goal = (_ = Expr)
+        ->  llvm_resolve_value(VarMap, Expr, Value),
+            ResultExpr = result{value: Value, setup: "", setup2: ""}
+        ;   llvm_resolve_value(VarMap, Goal, Value),
+            ResultExpr = result{value: Value, setup: "", setup2: ""}
+        )
+    ;   member(output_ite(If, Then, Else, _), ClassifiedGoals)
+    ->  %% If-then-else: compile both branches
+        llvm_goal_to_condition(VarMap, If, IfCond),
+        llvm_branch_value_from_goals(Then, VarMap, ThenVal),
+        llvm_branch_value_from_goals(Else, VarMap, ElseVal),
+        format(string(SetupCode),
+'  %%ite_cond = ~w
+  br i1 %%ite_cond, label %%ite_then, label %%ite_else
+ite_then:
+  br label %%ite_end
+ite_else:
+  br label %%ite_end
+ite_end:
+  %%ite_result = phi i64 [~w, %%ite_then], [~w, %%ite_else]', [IfCond, ThenVal, ElseVal]),
+        ResultExpr = result{value: "%ite_result", setup: SetupCode, setup2: SetupCode}
+    ;   Arity > 1, nonvar(OutputHeadArg)
+    ->  llvm_resolve_value(VarMap, OutputHeadArg, Value),
+        ResultExpr = result{value: Value, setup: "", setup2: ""}
+    ;   ResultExpr = result{value: "0", setup: "", setup2: ""}
+    ).
+
+%% llvm_branch_value_from_goals(+Branch, +VarMap, -Value)
+llvm_branch_value_from_goals(Branch, VarMap, Value) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    (   LastGoal = (_ = Expr) -> llvm_resolve_value(VarMap, Expr, Value)
+    ;   LastGoal = (_ is Expr) -> llvm_arith_expr(Expr, VarMap, Value, _)
+    ;   llvm_resolve_value(VarMap, LastGoal, Value)
+    ).
 
 %% llvm_head_conditions(+HeadArgs, +Index, +Arity, -Conditions)
 llvm_head_conditions([], _, _, []).
