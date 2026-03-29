@@ -2669,10 +2669,157 @@ awk_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     awk_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_awk_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%  Uses classify_goal_sequence for advanced pattern detection.
+%  Falls back to clause_guard_output_split if classification fails.
+native_awk_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    awk_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_awk_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(awk_guard_condition(VarMap), GuardGoals, Conditions),
     awk_output_goals(OutputGoals, VarMap, Code).
+
+%% awk_render_classified_goals(+ClassifiedGoals, +VarMap, -Conditions, -Lines)
+awk_render_classified_goals([], _VarMap, [], []).
+awk_render_classified_goals([Classified], VarMap, Conds, Lines) :-
+    !,
+    awk_render_classified_last(Classified, VarMap, Conds, Lines).
+%% Guarded tail: output followed by guard(s)
+awk_render_classified_goals([output(Goal, _, _)|Rest], VarMap, [], Lines) :-
+    Rest = [guard(_, _)|_],
+    !,
+    awk_classified_output_goal(Goal, VarMap, AssignLine, VarMap1),
+    awk_collect_trailing_guards(Rest, VarMap1, GuardGoals, _Remaining),
+    maplist(awk_guard_condition(VarMap1), GuardGoals, GuardConds),
+    atomic_list_concat(GuardConds, ' && ', GuardExpr),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMap1, OutName)
+    ->  true
+    ;   OutName = "_"
+    ),
+    format(string(IfLine), '    if (~w) {', [GuardExpr]),
+    format(string(RetLine), '        return ~w', [OutName]),
+    CloseLine = '    }',
+    Lines = [AssignLine, IfLine, RetLine, CloseLine].
+awk_render_classified_goals([Classified|Rest], VarMap, Conds, Lines) :-
+    awk_render_classified_mid(Classified, VarMap, MidConds, MidLines, VarMap1),
+    awk_render_classified_goals(Rest, VarMap1, RestConds, RestLines),
+    append(MidConds, RestConds, Conds),
+    append(MidLines, RestLines, Lines).
+
+%% awk_render_classified_mid(+Classified, +VarMap, -Conds, -Lines, -VarMapOut)
+awk_render_classified_mid(guard(Goal, _), VarMap, [Cond], [], VarMap) :-
+    awk_guard_condition(VarMap, Goal, Cond).
+awk_render_classified_mid(output(Goal, _, _), VarMap0, [], [Line], VarMapOut) :-
+    awk_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+awk_render_classified_mid(output_ite(If, Then, Else, _SharedVars), VarMap0, [], Lines, VarMap0) :-
+    awk_guard_condition(VarMap0, If, Cond),
+    awk_classified_branch_value(Then, VarMap0, ThenExpr),
+    awk_classified_branch_value(Else, VarMap0, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        return ~w', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        return ~w', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+awk_render_classified_mid(passthrough(Goal), VarMap0, [], [Line], VarMapOut) :-
+    awk_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+awk_render_classified_mid(_, VarMap, [], [], VarMap).
+
+%% awk_render_classified_last(+Classified, +VarMap, -Conds, -Lines)
+awk_render_classified_last(guard(Goal, _), VarMap, [Cond], []) :-
+    awk_guard_condition(VarMap, Goal, Cond).
+awk_render_classified_last(output(Goal, _, _), VarMap, [], Lines) :-
+    awk_classified_output_last(Goal, VarMap, Lines).
+awk_render_classified_last(output_ite(If, Then, Else, _), VarMap, [], Lines) :-
+    awk_guard_condition(VarMap, If, Cond),
+    awk_classified_branch_value(Then, VarMap, ThenExpr),
+    awk_classified_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        return ~w', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        return ~w', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+awk_render_classified_last(output_disj(Alternatives, _SharedVars), VarMap, [], Lines) :-
+    awk_disj_if_chain(Alternatives, VarMap, Lines).
+awk_render_classified_last(passthrough(Goal), VarMap, [], Lines) :-
+    awk_classified_output_last(Goal, VarMap, Lines).
+awk_render_classified_last(_, _, [], []).
+
+%% awk_classified_output_goal(+Goal, +VarMap0, -Line, -VarMapOut)
+%%  Inline singular output goal handler for AWK (no standalone awk_output_goal).
+awk_classified_output_goal(_Module:Goal, VarMap0, Line, VarMapOut) :-
+    !, awk_classified_output_goal(Goal, VarMap0, Line, VarMapOut).
+awk_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
+    (   Goal = (Var = Expr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        awk_expr(Expr, VarMap0, ExprStr),
+        format(string(Line), '    ~w = ~w', [VarName, ExprStr])
+    ;   Goal = (Var is ArithExpr), var(Var)
+    ->  ensure_var(VarMap0, Var, VarName, VarMapOut),
+        awk_expr(ArithExpr, VarMap0, ExprStr),
+        format(string(Line), '    ~w = ~w', [VarName, ExprStr])
+    ;   VarName = "_", VarMapOut = VarMap0,
+        Line = "    # unsupported output goal"
+    ).
+
+%% awk_classified_branch_value(+Branch, +VarMap, -ExprStr)
+%%  Inline branch value extractor for AWK (mirrors awk_branch_value).
+awk_classified_branch_value(Branch, VarMap, ExprStr) :-
+    normalize_goals(Branch, Goals),
+    last(Goals, LastGoal),
+    awk_branch_value(LastGoal, VarMap, ExprStr).
+
+%% awk_classified_output_last(+Goal, +VarMap, -Lines)
+%%  Wrap a single output goal as lines for classified rendering (last position).
+awk_classified_output_last(Goal, VarMap, [Line]) :-
+    awk_classified_output_goal(Goal, VarMap, AssignLine, VarMapOut),
+    (   goal_output_var(Goal, OutVar), lookup_var(OutVar, VarMapOut, OutName)
+    ->  format(string(Line), '~w\n    return ~w', [AssignLine, OutName])
+    ;   Line = AssignLine
+    ).
+awk_classified_output_last(Goal, VarMap, [Line]) :-
+    awk_branch_value(Goal, VarMap, Expr),
+    format(string(Line), '    return ~w', [Expr]).
+
+%% awk_collect_trailing_guards(+ClassifiedGoals, +VarMap, -GuardGoals, -Remaining)
+awk_collect_trailing_guards([guard(Goal, _)|Rest], VarMap, [Goal|Guards], Remaining) :-
+    !, awk_collect_trailing_guards(Rest, VarMap, Guards, Remaining).
+awk_collect_trailing_guards(Remaining, _, [], Remaining).
+
+%% awk_disj_if_chain(+Alternatives, +VarMap, -Lines)
+awk_disj_if_chain([], _, []).
+awk_disj_if_chain([Alt], VarMap, [ElseLine, RetLine, CloseLine]) :-
+    !,
+    awk_branch_value(Alt, VarMap, ValExpr),
+    ElseLine = '    } else {',
+    format(string(RetLine), '        return ~w', [ValExpr]),
+    CloseLine = '    }'.
+awk_disj_if_chain([Alt|Rest], VarMap, Lines) :-
+    normalize_goals(Alt, Goals),
+    clause_guard_output_split(Goals, VarMap, Guards, _Outputs),
+    (   Guards \= []
+    ->  maplist(awk_guard_condition(VarMap), Guards, CondStrs),
+        atomic_list_concat(CondStrs, ' && ', CondExpr)
+    ;   CondExpr = "1"
+    ),
+    awk_branch_value(Alt, VarMap, ValExpr),
+    (   Rest = []
+    ->  format(string(ThisLine), '    if (~w) {\n        return ~w\n    }', [CondExpr, ValExpr]),
+        Lines = [ThisLine]
+    ;   format(string(IfLine), '    if (~w) {', [CondExpr]),
+        format(string(RetLine), '        return ~w', [ValExpr]),
+        awk_disj_if_chain(Rest, VarMap, ChainLines),
+        (   ChainLines = ['    } else {'|_]
+        ->  Lines = [IfLine, RetLine|ChainLines]
+        ;   CloseLine = '    }',
+            append([IfLine, RetLine, CloseLine], ChainLines, Lines)
+        )
+    ).
 
 %% awk_guard_condition(+VarMap, +Goal, -Condition)
 awk_guard_condition(VarMap, _Module:Goal, Condition) :-
