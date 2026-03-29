@@ -137,24 +137,86 @@ The compiler should recognize this pattern from Prolog source:
 4. Base case checks the same negation pattern
 ```
 
-Detection predicate:
+## Existing Infrastructure
+
+Key findings from codebase analysis:
+
+1. **`classify_goal_sequence/3`** (`clause_body_analysis.pl`) does NOT handle
+   `\+` negation — negated goals fall through to `passthrough`. Negation-as-
+   guard classification needs to be added.
+
+2. **`split_body_at_recursive_call/5`** (`pattern_matchers.pl`) can identify
+   where the recursive call sits in the body — useful for finding the Visited
+   parameter position.
+
+3. **`is_tail_recursive_accumulator/2`** (`pattern_matchers.pl`) detects
+   accumulator patterns but uses a simple heuristic (arity-3, position 2).
+   The Visited list pattern is structurally different (list cons + negated
+   membership).
+
+4. **Go target** is the only target with explicit visited-set code generation.
+   The pattern needs to be generalized across targets.
+
+5. **TypR target** has "threaded context arguments" (positions 3+) for
+   invariant state in mutual recursion — conceptually similar but not
+   per-path mutable state.
+
+## Pattern Recognition
+
+The compiler should recognize the Visited-list pattern from these indicators
+in the Prolog source:
 
 ```prolog
-is_per_path_visited_recursion(Name, Arity, Clauses) :-
-    % Has a list parameter that grows in recursive clause
-    member((_RecHead, RecBody), RecClauses),
-    contains_pattern(RecBody, [_|_]),       % list cons
-    contains_pattern(RecBody, \+ member(_, _)),  % negated membership
-    % The list parameter is threaded through recursive call
-    ...
+%% Indicators:
+%% 1. A list parameter that grows via cons: [X|Visited]
+%% 2. Negated membership check: \+ member(X, Visited)
+%% 3. The list parameter is threaded through the recursive call
+%% 4. Base case also has a negated membership check
+
+is_per_path_visited_pattern(Name, Arity, Clauses, VisitedPos) :-
+    % Separate base and recursive clauses
+    partition(is_recursive_clause_for(Name), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [], BaseClauses \= [],
+
+    % Find the Visited parameter position:
+    % In the recursive clause, find which head arg appears in [X|Arg]
+    member((RecHead, RecBody), RecClauses),
+    RecHead =.. [Name|RecArgs],
+
+    % Find the arg position that has list-cons in body
+    nth1(VisitedPos, RecArgs, VisitedVar),
+    body_contains_cons(RecBody, _, VisitedVar),  % [_|VisitedVar]
+
+    % Verify negated membership check exists
+    body_contains_negated_member(RecBody, _, VisitedVar),
+
+    % Verify the extended list is passed to recursive call
+    body_recursive_call_arg(RecBody, Name, VisitedPos, ExtendedList),
+    ExtendedList = [_|VisitedVar].
+
+%% Helper: check body contains \+ member(X, List)
+body_contains_negated_member((\+ member(X, List), _), X, List) :- !.
+body_contains_negated_member((_, Rest), X, List) :-
+    body_contains_negated_member(Rest, X, List).
+body_contains_negated_member(\+ member(X, List), X, List).
+
+%% Helper: check body contains [H|T] pattern
+body_contains_cons(Body, H, T) :-
+    sub_term([H|T], Body).
 ```
 
 ## Compilation Pipeline
 
-1. **Detect** the `\+ member(X, Visited)` + `[X|Visited]` pattern
-2. **Extract** which argument position holds the visited list
-3. **Generate** target-specific code using Strategy A, B, or C
-4. **Omit** the visited parameter from the external API (it's internal state)
+1. **Detect** the `\+ member(X, Visited)` + `[X|Visited]` pattern via
+   `is_per_path_visited_pattern/4`
+2. **Extract** which argument position holds the visited list (`VisitedPos`)
+3. **Generate** target-specific code using Strategy A, B, or C:
+   - Strategy A targets receive the Visited position and generate a set
+     parameter with copy-on-branch semantics
+   - Strategy B targets receive the adjacency structure and generate DFS
+     with stack-encoded path strings
+4. **External API omits** the visited parameter — it's internal state
+   managed by the generated code
 
 The external signature is `category_ancestor(Cat, Ancestor, Hops)` — the
 Visited parameter is an implementation detail that the compiler manages.
