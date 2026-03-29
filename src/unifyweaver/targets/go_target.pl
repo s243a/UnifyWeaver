@@ -5344,6 +5344,11 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
         format('Type: tail_recursion~n'),
         compile_tail_recursive_to_go(Pred, Arity, Clauses, ScriptBody),
         GenerateProgram = true
+    ;   is_general_recursive_pattern_go(Pred, Arity, Clauses) ->
+        % General (non-tail) recursive pattern with arithmetic counter
+        format('Type: general_recursion_arity_~w~n', [Arity]),
+        compile_general_recursive_to_go(Pred, Arity, Clauses, ScriptBody),
+        GenerateProgram = true
     ;   Clauses = [SingleHead-SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule~n'),
@@ -6509,6 +6514,182 @@ count_recursive_calls_go_((A, B), Pred, Acc, Count) :- !,
     count_recursive_calls_go_(A, Pred, Acc, Acc1),
     count_recursive_calls_go_(B, Pred, Acc1, Count).
 count_recursive_calls_go_(_, _, Acc, Acc).
+
+%% ============================================
+%% GENERAL (NON-TAIL) RECURSION — Arity 3
+%% ============================================
+%%
+%% Handles transitive closure with counter patterns:
+%%   category_ancestor(Cat, Parent, 1) :- category_parent(Cat, Parent).
+%%   category_ancestor(Cat, Ancestor, Hops) :-
+%%       category_parent(Cat, Mid),
+%%       category_ancestor(Mid, Ancestor, H1),
+%%       Hops is H1 + 1.
+%%
+%% Generates a recursive Go function with visited-set cycle detection.
+
+%% is_general_recursive_pattern_go(+Pred, +Arity, +Clauses)
+%  Detect non-tail general recursion (has base + recursive clauses,
+%  recursive call is NOT in tail position).
+is_general_recursive_pattern_go(Pred, Arity, Clauses) :-
+    Arity >= 2,
+    partition(is_recursive_clause_go(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    % Not tail-recursive (recursive call is not last goal)
+    \+ is_tail_recursive_pattern(Pred, Clauses).
+
+%% is_recursive_clause_go(+Pred, +Clause)
+is_recursive_clause_go(Pred, _Head-Body) :-
+    contains_call_to(Body, Pred).
+
+contains_call_to(Goal, Pred) :-
+    Goal =.. [Pred|_], !.
+contains_call_to((A, _), Pred) :-
+    contains_call_to(A, Pred), !.
+contains_call_to((_, B), Pred) :-
+    contains_call_to(B, Pred).
+
+%% compile_general_recursive_to_go(+Pred, +Arity, +Clauses, -GoCode)
+compile_general_recursive_to_go(Pred, Arity, Clauses, GoCode) :-
+    atom_string(Pred, PredStr),
+    partition(is_recursive_clause_go(Pred), Clauses, RecClauses, BaseClauses),
+    (   Arity =:= 3
+    ->  compile_ternary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode)
+    ;   Arity =:= 2
+    ->  compile_binary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode)
+    ;   format(string(GoCode), '// General recursion for arity ~w not yet supported\n', [Arity])
+    ).
+
+%% compile_ternary_recursive_go(+PredStr, +BaseClauses, +RecClauses, -GoCode)
+%%
+%% For category_ancestor(Cat, Ancestor, Hops) pattern:
+%% - Base case: lookup step relation, yield (result, constant)
+%% - Recursive: step through intermediate, recurse, compute counter
+compile_ternary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode) :-
+    % Extract base case info
+    (   BaseClauses = [BaseHead-BaseBody|_]
+    ->  BaseHead =.. [_|BaseArgs],
+        extract_goals_list_go(BaseBody, BaseGoals),
+        % Find the step relation in base case
+        (   BaseGoals = [StepGoal|_],
+            StepGoal =.. [StepRel|_],
+            atom_string(StepRel, StepRelStr)
+        ->  true
+        ;   StepRelStr = "unknown"
+        ),
+        % Find the constant in position 3
+        (   length(BaseArgs, 3),
+            nth1(3, BaseArgs, BaseConst),
+            number(BaseConst)
+        ->  format(string(BaseConstStr), "~w", [BaseConst])
+        ;   BaseConstStr = "1"
+        )
+    ;   StepRelStr = "unknown",
+        BaseConstStr = "1"
+    ),
+    % Extract recursive case arithmetic
+    (   RecClauses = [_RecHead-RecBody|_]
+    ->  extract_goals_list_go(RecBody, RecGoals),
+        % Find arithmetic: Hops is H1 + Increment
+        (   member((_ is ArithExpr), RecGoals),
+            ArithExpr = (_ + Incr),
+            number(Incr)
+        ->  format(string(IncrStr), "~w", [Incr])
+        ;   IncrStr = "1"
+        )
+    ;   IncrStr = "1"
+    ),
+    % Generate Go code
+    format(string(GoCode),
+'// Transitive closure with counter: ~w/3
+// Step relation: ~w/2
+type ~wResult struct {
+\tValue  string
+\tCounter int
+}
+
+var ~wData [][]string // populated from facts
+
+func ~w(arg1 string, visited map[string]bool) []~wResult {
+\tif visited[arg1] {
+\t\treturn nil
+\t}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {
+\t\tnewVisited[k] = v
+\t}
+\tnewVisited[arg1] = true
+
+\tvar results []~wResult
+
+\t// Scan step relation
+\tfor _, row := range ~wData {
+\t\tif len(row) >= 2 && row[0] == arg1 {
+\t\t\tmid := row[1]
+\t\t\t// Base case: direct step
+\t\t\tresults = append(results, ~wResult{mid, ~s})
+\t\t\t// Recursive case
+\t\t\tfor _, sub := range ~w(mid, newVisited) {
+\t\t\t\tresults = append(results, ~wResult{sub.Value, sub.Counter + ~s})
+\t\t\t}
+\t\t}
+\t}
+\treturn results
+}
+', [PredStr, StepRelStr,
+    PredStr, StepRelStr,
+    PredStr, PredStr,
+    PredStr,
+    StepRelStr,
+    PredStr, BaseConstStr,
+    PredStr,
+    PredStr, IncrStr]).
+
+%% compile_binary_recursive_go(+PredStr, +BaseClauses, +RecClauses, -GoCode)
+compile_binary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode) :-
+    % Extract step relation from base case
+    (   BaseClauses = [_BaseHead-BaseBody|_]
+    ->  extract_goals_list_go(BaseBody, BaseGoals),
+        (   BaseGoals = [StepGoal|_],
+            StepGoal =.. [StepRel|_],
+            atom_string(StepRel, StepRelStr)
+        ->  true
+        ;   StepRelStr = "unknown"
+        )
+    ;   StepRelStr = "unknown"
+    ),
+    format(string(GoCode),
+'// Transitive closure: ~w/2
+// Step relation: ~w/2
+var ~wData [][]string
+
+func ~w(arg1 string, visited map[string]bool) []string {
+\tif visited[arg1] {
+\t\treturn nil
+\t}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {
+\t\tnewVisited[k] = v
+\t}
+\tnewVisited[arg1] = true
+
+\tvar results []string
+\tfor _, row := range ~wData {
+\t\tif len(row) >= 2 && row[0] == arg1 {
+\t\t\tmid := row[1]
+\t\t\tresults = append(results, mid)
+\t\t\tresults = append(results, ~w(mid, newVisited)...)
+\t\t}
+\t}
+\treturn results
+}
+', [PredStr, StepRelStr, StepRelStr, PredStr, StepRelStr, PredStr]).
+
+%% extract_goals_list_go(+Body, -Goals)
+extract_goals_list_go((A, B), [A|Rest]) :- !,
+    extract_goals_list_go(B, Rest).
+extract_goals_list_go(Goal, [Goal]).
 
 %% ============================================
 %% MUTUAL RECURSION
