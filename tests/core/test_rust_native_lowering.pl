@@ -129,6 +129,42 @@ test(rust_uses_i64_type) :-
     retractall(user:id2(_, _)).
 
 % ============================================================================
+% Expanded: three-clause classify
+% ============================================================================
+
+test(three_clause_classify) :-
+    assert(user:(grade(X, low) :- X < 50)),
+    assert(user:(grade(X, mid) :- X >= 50, X < 80)),
+    assert(user:(grade(X, high) :- X >= 80)),
+    compile_rs(grade/2, Code),
+    has(Code, "arg1 < 50"),
+    has(Code, "arg1 >= 80"),
+    has(Code, "\"low\""),
+    has(Code, "\"high\""),
+    retractall(user:grade(_, _)).
+
+test(mod_guard) :-
+    assert(user:(parity(X, even) :- 0 =:= X mod 2)),
+    assert(user:(parity(X, odd) :- 0 =\= X mod 2)),
+    compile_rs(parity/2, Code),
+    has(Code, "%"),
+    has(Code, "\"even\""),
+    retractall(user:parity(_, _)).
+
+test(complex_arithmetic) :-
+    assert(user:(formula(X, Y) :- Y is (X * X) + (X * 2) + 1)),
+    compile_rs(formula/2, Code),
+    has(Code, "arg1 * arg1"),
+    has(Code, "arg1 * 2"),
+    retractall(user:formula(_, _)).
+
+test(negation_output) :-
+    assert(user:(negate(X, Y) :- Y is 0 - X)),
+    compile_rs(negate/2, Code),
+    has(Code, "0 - arg1"),
+    retractall(user:negate(_, _)).
+
+% ============================================================================
 % Verify shared module is loaded
 % ============================================================================
 
