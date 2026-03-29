@@ -9,11 +9,18 @@
 %%    automatically via delta-set convergence with HashSet deduplication.
 %%
 %% 2. Base case constant moved from head to body — the query plan
-%%    compiler requires variables in head positions, with binding
-%%    done via is/2 in the body. So instead of:
+%%    compiler currently requires variables in head positions, with
+%%    binding done via is/2 in the body. So instead of:
 %%      category_ancestor(Cat, Parent, 1) :- category_parent(Cat, Parent).
 %%    we write:
 %%      category_ancestor(Cat, Parent, Hops) :- category_parent(Cat, Parent), Hops is 1.
+%%
+%%    POTENTIAL BUG / FUTURE WORK: The plan compiler should ideally handle
+%%    constants in head positions of recursive predicates by implicitly
+%%    generating a SelectionNode (filtering on the constant column) or
+%%    inlining the value into the projection. This would allow the natural
+%%    Prolog idiom without the workaround. Filed as future enhancement for
+%%    the parameterized query engine's head-pattern compilation.
 %%
 %% 3. Mode declarations required — the parameterized query engine needs
 %%    user:mode/1 declarations to identify input (+) vs output (-) args.
