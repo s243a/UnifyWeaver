@@ -431,9 +431,10 @@ Inference note:
 Current implementation note:
 
 - transitive closure now keeps BFS control flow, seeded adjacency storage,
-  vector-parameter runtime query helpers, and explicit
-  `input(stdin|file|vfs|function)` loader wrappers in valid TypR syntax when
-  the base relation is known at compile time
+  vector-parameter runtime query helpers, explicit
+  `input(stdin|file|vfs|function)` loader wrappers, and declared integer or
+  numeric runtime node parsing in valid TypR syntax when the base relation is
+  known at compile time
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
   predicates, sequential guard/output control-flow chains, simple comparison

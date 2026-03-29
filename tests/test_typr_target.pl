@@ -307,6 +307,30 @@ test(transitive_closure_function_input_mode_emits_vector_wrappers) :-
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(transitive_closure_integer_runtime_loader_parses_declared_node_type) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, integer)),
+    assertz(type_declarations:uw_type(edge/2, 2, integer)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(stdin)], Code)),
+    once(sub_string(Code, _, _, _, "results <- integer()")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__integer(trimws(parts[1])));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__integer(trimws(parts[2])));")),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[1]));"),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[2]));"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(transitive_closure_numeric_runtime_loader_parses_declared_node_type) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, number)),
+    assertz(type_declarations:uw_type(edge/2, 2, number)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(vfs("family_tree"))], Code)),
+    once(sub_string(Code, _, _, _, "results <- numeric()")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__numeric(trimws(parts[1])));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__numeric(trimws(parts[2])));")),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[1]));"),
+    \+ sub_string(Code, _, _, _, "results <- c(results, trimws(parts[2]));"),
+    generated_typr_is_valid(Code, exit(0)).
+
 test(per_predicate_typed_mode_overrides_call_option) :-
     clear_type_declarations,
     assertz(type_declarations:uw_type(edge/2, 1, atom)),

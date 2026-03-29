@@ -22,7 +22,7 @@ let {{base}}_from_lines <- function(lines) {
 	for (line in lines) {
 		parts <- strsplit(trimws(line), ":");
 		if (length(parts) >= 2) {
-			results <- c(results, trimws(parts[1]));
+			results <- c(results, {{from_line_expr}});
 		}
 	}
 
@@ -35,7 +35,7 @@ let {{base}}_to_lines <- function(lines) {
 	for (line in lines) {
 		parts <- strsplit(trimws(line), ":");
 		if (length(parts) >= 2) {
-			results <- c(results, trimws(parts[2]));
+			results <- c(results, {{to_line_expr}});
 		}
 	}
 
