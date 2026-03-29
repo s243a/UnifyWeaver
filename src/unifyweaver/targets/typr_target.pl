@@ -18,6 +18,7 @@
 :- use_module(library(filesex)).
 :- use_module(library(process)).
 :- use_module('../core/template_system').
+:- use_module('../core/input_source', [resolve_input_mode/2]).
 :- use_module('../core/binding_registry', [binding/6]).
 :- use_module('../core/advanced/pattern_matchers', [
     is_tail_recursive_accumulator/2,
@@ -54,9 +55,9 @@ compile_predicate_to_typr(PredIndicator, Options, Code) :-
     resolve_typed_mode(Pred/Arity, Options, GlobalMode, TypedMode),
     (   option(base_pred(BasePredOption), Options)
     ->  normalize_base_pred(BasePredOption, BasePred),
-        compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code)
+        compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options, Code)
     ;   detect_transitive_closure(Module, Pred, Arity, BasePred)
-    ->  compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code)
+    ->  compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options, Code)
     ;   compile_generic_typr(Module, Pred/Arity, Options, TypedMode, Code)
     ),
     finalize_type_diagnostics_report(Options).
@@ -6638,12 +6639,10 @@ format_string(Format, Args, String) :-
     format(string(String), Format, Args).
 
 compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code) :-
+    compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, [], Code).
+
+compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options, Code) :-
     resolve_node_type(Pred/Arity, BasePred/2, NodeTypeTerm),
-    % Try relative path first (native), then VFS path (swipl-wasm package)
-    (   exists_file('templates/targets/typr/transitive_closure.mustache')
-    ->  read_file_to_string('templates/targets/typr/transitive_closure.mustache', Template, [])
-    ;   read_file_to_string('/user/templates/targets/typr/transitive_closure.mustache', Template, [])
-    ),
     atom_string(Pred, PredStr),
     atom_string(BasePred, BaseStr),
     annotation_suffix(TypedMode, NodeTypeTerm, NodeAnnotation),
@@ -6653,7 +6652,7 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code) :
     annotation_suffix(TypedMode, boolean, CheckReturnAnnotation),
     empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
     base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
-    render_template(Template, [
+    Dict = [
         pred=PredStr,
         base=BaseStr,
         add_from_annotation=AddFromAnnotation,
@@ -6664,7 +6663,68 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Code) :
         empty_nodes_expr=EmptyNodesExpr,
         from_nodes_expr=FromNodesExpr,
         to_nodes_expr=ToNodesExpr
-    ], Code).
+    ],
+    (   typr_transitive_closure_explicit_input_mode(Options, InputMode)
+    ->  compile_typr_transitive_closure_composable(InputMode, Dict, Code)
+    ;   load_typr_transitive_closure_template(Template),
+        render_template(Template, Dict, Code)
+    ).
+
+typr_transitive_closure_explicit_input_mode(Options, InputMode) :-
+    member(input(_), Options),
+    resolve_input_mode(Options, InputMode).
+
+compile_typr_transitive_closure_composable(InputMode, BaseDict, Code) :-
+    load_typr_tc_part("tc_definitions", DefinitionsTemplate),
+    render_template(DefinitionsTemplate, BaseDict, DefinitionsCode),
+    typr_transitive_closure_input_dict(InputMode, BaseDict, InputDict),
+    typr_transitive_closure_input_part_name(InputMode, PartName),
+    load_typr_tc_part(PartName, InputTemplate),
+    render_template(InputTemplate, InputDict, InputCode),
+    atomic_list_concat([DefinitionsCode, InputCode], Code).
+
+typr_transitive_closure_input_part_name(stdin, "tc_input_stdin").
+typr_transitive_closure_input_part_name(embedded, "tc_input_embedded").
+typr_transitive_closure_input_part_name(file(_), "tc_input_file").
+typr_transitive_closure_input_part_name(vfs(_), "tc_input_vfs").
+typr_transitive_closure_input_part_name(vfs(_, _), "tc_input_vfs").
+typr_transitive_closure_input_part_name(function, "tc_input_function").
+
+typr_transitive_closure_input_dict(embedded, BaseDict, BaseDict).
+typr_transitive_closure_input_dict(stdin, BaseDict, BaseDict).
+typr_transitive_closure_input_dict(function, BaseDict, BaseDict).
+typr_transitive_closure_input_dict(file(Path0), BaseDict, InputDict) :-
+    typr_tc_string_value(Path0, Path),
+    append(BaseDict, [input_path=Path], InputDict).
+typr_transitive_closure_input_dict(vfs(Cell0), BaseDict, InputDict) :-
+    typr_tc_string_value(Cell0, Cell),
+    append(BaseDict, [vfs_source=Cell, vfs_prop=".output"], InputDict).
+typr_transitive_closure_input_dict(vfs(Cell0, Prop0), BaseDict, InputDict) :-
+    typr_tc_string_value(Cell0, Cell),
+    typr_tc_string_value(Prop0, Prop),
+    append(BaseDict, [vfs_source=Cell, vfs_prop=Prop], InputDict).
+
+typr_tc_string_value(Value, String) :-
+    (   string(Value)
+    ->  String = Value
+    ;   atom(Value)
+    ->  atom_string(Value, String)
+    ;   format(string(String), '~w', [Value])
+    ).
+
+load_typr_transitive_closure_template(Template) :-
+    (   exists_file('templates/targets/typr/transitive_closure.mustache')
+    ->  read_file_to_string('templates/targets/typr/transitive_closure.mustache', Template, [])
+    ;   read_file_to_string('/user/templates/targets/typr/transitive_closure.mustache', Template, [])
+    ).
+
+load_typr_tc_part(PartName, Template) :-
+    format(string(RelPath), 'templates/targets/typr/~w.mustache', [PartName]),
+    format(string(VfsPath), '/user/templates/targets/typr/~w.mustache', [PartName]),
+    (   exists_file(RelPath)
+    ->  read_file_to_string(RelPath, Template, [])
+    ;   read_file_to_string(VfsPath, Template, [])
+    ).
 
 compile_generic_typr(Module, Pred/Arity, Options, TypedMode, Code) :-
     init_r_target,

@@ -74,6 +74,65 @@ test(transitive_closure_runtime_vector_api_checks_with_typr, [condition(typr_cli
         delete_directory_and_contents(ProjectDir)
     ).
 
+test(transitive_closure_stdin_input_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(stdin)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ).
+
+test(transitive_closure_file_input_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(file("data.txt"))], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ).
+
+test(transitive_closure_vfs_input_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(vfs("family_tree"))], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check'])
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ).
+
+test(transitive_closure_function_input_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, atom)),
+    assertz(type_declarations:uw_type(edge/2, 2, atom)),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(function)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ).
+
 test(tail_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:factorial_acc(0, Acc, Acc)),

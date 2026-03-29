@@ -327,7 +327,8 @@ Current TypR lowering policy is intentionally mixed:
 - guard-style zero-output command bindings may be folded into TypR clause
   conditions
 - transitive-closure generation may keep BFS control flow, seeded adjacency
-  storage, and vector-parameter runtime query helpers in native TypR when the
+  storage, vector-parameter runtime query helpers, and explicit
+  `input(stdin|file|vfs|function)` loader wrappers in native TypR when the
   base relation shape is known at compile time
 - multi-step native TypR control-flow chains may keep later guards and outputs
   in native TypR when those guards depend on earlier bound values
