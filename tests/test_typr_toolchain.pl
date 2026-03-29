@@ -162,6 +162,34 @@ test(transitive_closure_numeric_runtime_loader_checks_with_typr, [condition(typr
         delete_directory_and_contents(ProjectDir)
     ).
 
+test(transitive_closure_pair_integer_runtime_loader_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, pair(integer, integer))),
+    assertz(type_declarations:uw_type(edge/2, 2, pair(integer, integer))),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(stdin)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check'])
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ).
+
+test(transitive_closure_pair_numeric_runtime_loader_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(type_declarations:uw_type(edge/2, 1, pair(number, number))),
+    assertz(type_declarations:uw_type(edge/2, 2, pair(number, number))),
+    once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit), input(vfs("family_tree"))], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check'])
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ).
+
 test(tail_recursive_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:factorial_acc(0, Acc, Acc)),

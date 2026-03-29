@@ -16,7 +16,7 @@ let {{base}}_neighbors <- function(current, from_nodes, to_nodes) {
 	results
 };
 
-let {{base}}_from_lines <- function(lines) {
+{{node_parse_helper_code}}let {{base}}_from_lines <- function(lines) {
 	results <- {{empty_nodes_expr}};
 
 	for (line in lines) {

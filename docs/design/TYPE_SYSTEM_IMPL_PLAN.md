@@ -142,7 +142,8 @@ bring-up.
 - transitive-closure generation with compile-time fact seeding, native TypR BFS
   control flow, native TypR adjacency-vector storage, native vector-based
   runtime query helpers, native explicit `input(stdin|file|vfs|function)`
-  loader wrappers, and native declared integer or numeric runtime node parsing
+  loader wrappers, and native declared scalar or conservative pair-shaped
+  runtime node parsing
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,
