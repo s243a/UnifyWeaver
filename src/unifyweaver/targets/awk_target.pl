@@ -97,9 +97,195 @@ compile_predicate_to_awk(PredIndicator, Options, AwkCode) :-
         is_tail_recursive_pattern(Pred, Clauses)
     ->  % Compile as tail recursion (while loop)
         compile_tail_recursion_to_awk(Pred, Arity, Clauses, Options, AwkCode)
+    ;   % Check if this is a general recursive pattern (non-tail)
+        functor(Head, Pred, Arity),
+        findall(Head-Body, user:clause(Head, Body), Clauses),
+        is_general_recursive_pattern_awk(Pred, Clauses)
+    ->  % Compile as fixpoint iteration
+        compile_general_recursive_to_awk(Pred, Arity, Clauses, Options, AwkCode)
     ;   % Continue with normal compilation
         compile_predicate_to_awk_normal(Pred, Arity, Options, AwkCode)
     ).
+
+%% ============================================
+%% GENERAL (NON-TAIL) RECURSION — Fixpoint
+%% ============================================
+%%
+%% AWK doesn't have native recursion, so we implement non-tail recursive
+%% predicates as fixpoint iteration: keep expanding the result relation
+%% until no new tuples are added (semi-naive evaluation in AWK).
+%%
+%% Pattern: category_ancestor(Cat, Parent, 1) :- category_parent(Cat, Parent).
+%%          category_ancestor(Cat, Ancestor, Hops) :- category_parent(Cat, Mid),
+%%              category_ancestor(Mid, Ancestor, H1), Hops is H1 + 1.
+%%
+%% Generated AWK:
+%%   BEGIN { load step relation into array }
+%%   END   { fixpoint loop expanding ancestor relation }
+
+%% is_general_recursive_pattern_awk(+Pred, +Clauses)
+is_general_recursive_pattern_awk(Pred, Clauses) :-
+    length(Clauses, Len), Len >= 2,
+    member(_-Body, Clauses),
+    contains_call_to_awk(Body, Pred),
+    \+ is_tail_recursive_pattern(Pred, Clauses).
+
+contains_call_to_awk(Goal, Pred) :-
+    Goal =.. [Pred|_], !.
+contains_call_to_awk((A, _), Pred) :-
+    contains_call_to_awk(A, Pred), !.
+contains_call_to_awk((_, B), Pred) :-
+    contains_call_to_awk(B, Pred).
+
+%% compile_general_recursive_to_awk(+Pred, +Arity, +Clauses, +Options, -AwkCode)
+compile_general_recursive_to_awk(Pred, Arity, Clauses, Options, AwkCode) :-
+    atom_string(Pred, PredStr),
+    option(field_separator(FieldSep), Options, '\t'),
+    % Partition clauses
+    partition(is_recursive_clause_awk(Pred), Clauses, _RecClauses, BaseClauses),
+    % Extract step relation from base case
+    (   BaseClauses = [_BaseHead-BaseBody|_]
+    ->  extract_goals_list_awk(BaseBody, BaseGoals),
+        (   BaseGoals = [StepGoal|_],
+            StepGoal =.. [StepRel|_],
+            atom_string(StepRel, StepRelStr)
+        ->  true
+        ;   StepRelStr = "step"
+        ),
+        % Collect step relation facts
+        functor(StepHead, StepRel, 2),
+        findall(A-B, (user:clause(StepHead, true), StepHead =.. [_,A,B]), StepFacts)
+    ;   StepRelStr = "step",
+        StepFacts = []
+    ),
+    % Build BEGIN block with step data
+    findall(InitLine,
+        (   member(K-V, StepFacts),
+            format(string(InitLine),
+                '    ~w["~w"] = ~w["~w"] " ~w"',
+                [StepRelStr, K, StepRelStr, K, V])
+        ),
+        InitLines),
+    % Also build individual edge lines for the fixpoint
+    findall(EdgeLine,
+        (   member(K-V, StepFacts),
+            format(string(EdgeLine),
+                '    edges[++ne] = "~w~w~w"',
+                [K, FieldSep, V])
+        ),
+        EdgeLines),
+    atomic_list_concat(InitLines, '\n', InitBlock),
+    atomic_list_concat(EdgeLines, '\n', EdgeBlock),
+    length(StepFacts, NEdges),
+    (   Arity =:= 3
+    ->  % Ternary: with counter
+        format(string(AwkCode),
+'# Fixpoint evaluation: ~w/~w (transitive closure with counter)
+# Step relation: ~w/2 (~w edges)
+BEGIN {
+    FS = "~w"
+    # Load step relation edges
+~w
+
+    # Initialize base case: direct edges have distance 1
+    for (i = 1; i <= ~w; i++) {
+        split(edges[i], e, FS)
+        key = e[1] FS e[2] FS 1
+        if (!(key in result)) {
+            result[key] = 1
+            delta[key] = 1
+            ndelta++
+        }
+    }
+
+    # Fixpoint: expand until no new tuples
+    while (ndelta > 0) {
+        ndelta = 0
+        for (d in delta) {
+            split(d, parts, FS)
+            cat = parts[1]
+            ancestor = parts[2]
+            hops = parts[3] + 0
+            # Join: step(X, cat) => ancestor(X, ancestor, hops+1)
+            for (i = 1; i <= ~w; i++) {
+                split(edges[i], e, FS)
+                if (e[2] == cat) {
+                    newkey = e[1] FS ancestor FS (hops + 1)
+                    if (!(newkey in result)) {
+                        result[newkey] = 1
+                        new_delta[newkey] = 1
+                        ndelta++
+                    }
+                }
+            }
+        }
+        delete delta
+        for (k in new_delta) delta[k] = 1
+        delete new_delta
+    }
+
+    # Output all results
+    for (key in result) {
+        print key
+    }
+}
+', [PredStr, Arity, StepRelStr, NEdges, FieldSep,
+    EdgeBlock, NEdges, NEdges])
+    ;   % Binary: no counter
+        format(string(AwkCode),
+'# Fixpoint evaluation: ~w/~w (transitive closure)
+# Step relation: ~w/2 (~w edges)
+BEGIN {
+    FS = "~w"
+~w
+
+    # Initialize base case
+    for (i = 1; i <= ~w; i++) {
+        split(edges[i], e, FS)
+        key = e[1] FS e[2]
+        if (!(key in result)) {
+            result[key] = 1
+            delta[key] = 1
+            ndelta++
+        }
+    }
+
+    # Fixpoint
+    while (ndelta > 0) {
+        ndelta = 0
+        for (d in delta) {
+            split(d, parts, FS)
+            cat = parts[1]
+            ancestor = parts[2]
+            for (i = 1; i <= ~w; i++) {
+                split(edges[i], e, FS)
+                if (e[2] == cat) {
+                    newkey = e[1] FS ancestor
+                    if (!(newkey in result)) {
+                        result[newkey] = 1
+                        new_delta[newkey] = 1
+                        ndelta++
+                    }
+                }
+            }
+        }
+        delete delta
+        for (k in new_delta) delta[k] = 1
+        delete new_delta
+    }
+
+    for (key in result) print key
+}
+', [PredStr, Arity, StepRelStr, NEdges, FieldSep,
+    EdgeBlock, NEdges, NEdges])
+    ).
+
+is_recursive_clause_awk(Pred, _Head-Body) :-
+    contains_call_to_awk(Body, Pred).
+
+extract_goals_list_awk((A, B), [A|Rest]) :- !,
+    extract_goals_list_awk(B, Rest).
+extract_goals_list_awk(Goal, [Goal]).
 
 %% compile_predicate_to_awk_normal(+Pred, +Arity, +Options, -AwkCode)
 %  Normal (non-aggregation) compilation path
