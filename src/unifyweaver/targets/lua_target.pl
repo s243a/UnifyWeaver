@@ -1433,6 +1433,13 @@ lua_nested_if_expr([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :-
 %% lua_branch_value — extract result value from a branch
 lua_branch_value(_Module:Goal, VarMap, Value) :-
     !, lua_branch_value(Goal, VarMap, Value).
+lua_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    lua_guard_condition(VarMap, If, Cond),
+    lua_branch_value(Then, VarMap, ThenVal),
+    lua_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '(~w) and ~w or ~w', [Cond, ThenVal, ElseVal]).
 lua_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),

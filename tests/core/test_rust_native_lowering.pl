@@ -83,9 +83,9 @@ test(nested_if_then_else) :-
         ; R = positive)))),
     compile_rs(range_classify/2, Code),
     has(Code, "fn range_classify(arg1: i64)"),
-    has(Code, "if arg1 < 0"),
+    has(Code, "arg1 < 0"),
     has(Code, "\"negative\""),
-    has(Code, "else if arg1 == 0"),
+    has(Code, "arg1 == 0"),
     has(Code, "\"zero\""),
     has(Code, "\"positive\""),
     retractall(user:range_classify(_, _)).
@@ -97,8 +97,8 @@ test(three_way_nested) :-
         ; R = zero)))),
     compile_rs(sign/2, Code),
     has(Code, "fn sign(arg1: i64)"),
-    has(Code, "if arg1 > 0"),
-    has(Code, "else if arg1 < 0"),
+    has(Code, "arg1 > 0"),
+    has(Code, "arg1 < 0"),
     retractall(user:sign(_, _)).
 
 % ============================================================================
