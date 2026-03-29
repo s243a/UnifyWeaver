@@ -1,8 +1,16 @@
+
 func main() {
 	query := New{{pred_cap}}Query()
 	scanner := bufio.NewScanner(os.Stdin)
 
-	{{> tc_input_stdin}}
+	// Read {{base}} facts from stdin (format: from:to)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			query.AddFact(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+		}
+	}
 
 	args := os.Args[1:]
 	switch len(args) {
