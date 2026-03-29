@@ -421,8 +421,9 @@ Current TypR lowering policy is intentionally mixed:
   mixed tree/list structural SCCs where tree-shaped predicates recurse
   through paired-forest helpers, including guarded branch-local paired-
   forest call selection on the tree side, while list-shaped predicates
-  recurse through head/tail decomposition or fixed two-element forest-
-  pair decomposition, plus mixed list/numeric SCCs
+  recurse through head/tail decomposition, fixed two-element forest-pair
+  decomposition, or fixed pair-tail forest decomposition like
+  `[A, B|Ts]`, plus mixed list/numeric SCCs
   where list-shaped predicates recurse through head/tail decomposition
   while numeric predicates recurse through scalar step descent or
   singleton-list re-entry, plus mixed tree/numeric SCCs where tree-shaped
@@ -439,8 +440,7 @@ Current TypR lowering policy is intentionally mixed:
   using raw-expression memoized helper bodies inside TypR rather than
   wrapped-R fallback
 - the next confirmed unsupported SCC shapes are now beyond that structural
-  subset, including mixed tree/forest pair-tail decompositions like
-  `[A, B|Ts]`, mixed list/numeric pair-tail decompositions, and mixed
+  subset, including mixed list/numeric pair-tail decompositions and mixed
   tree/numeric bodies with local helper goals between recursive group calls
 - those shapes point to a shared SCC IR requirement: per-predicate body
   lowering for ordered goals, recursive call sites, helper goals, branch
