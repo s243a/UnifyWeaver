@@ -198,7 +198,14 @@ BEGIN {
         }
     }
 
-    # Fixpoint: expand until no new tuples
+    # Cycle-aware fixpoint: track (source, ancestor) pairs.
+    # Only store shortest hops per pair — this matches the Prolog Visited
+    # semantics where each node is visited at most once per path.
+    # The effective distance formula uses ALL distinct paths, but in a
+    # cycle-free traversal each (source, ancestor) pair has one shortest path.
+    MAX_DEPTH = 50
+
+    # Fixpoint: expand delta set, deduplicate on (source, ancestor) pairs
     while (ndelta > 0) {
         ndelta = 0
         for (d in delta) {
@@ -206,12 +213,18 @@ BEGIN {
             cat = parts[1]
             ancestor = parts[2]
             hops = parts[3] + 0
+            if (hops + 1 > MAX_DEPTH) continue
             # Join: step(X, cat) => ancestor(X, ancestor, hops+1)
             for (i = 1; i <= ~w; i++) {
                 split(edges[i], e, FS)
                 if (e[2] == cat) {
-                    newkey = e[1] FS ancestor FS (hops + 1)
-                    if (!(newkey in result)) {
+                    pair = e[1] SUBSEP ancestor
+                    newhops = hops + 1
+                    # Only add if this (source, ancestor) pair is new
+                    # or we found a shorter path
+                    if (!(pair in best_hops) || newhops < best_hops[pair]) {
+                        best_hops[pair] = newhops
+                        newkey = e[1] FS ancestor FS newhops
                         result[newkey] = 1
                         new_delta[newkey] = 1
                         ndelta++
