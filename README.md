@@ -296,6 +296,11 @@ includes:
   lowered to TypR
   functions that use raw-expression
   memoized helper bodies inside TypR instead of wrapped-R fallback
+- the next confirmed SCC gap is broader than another structural micro-slice:
+  mixed tree/forest pair-tail SCCs and mixed tree/numeric SCCs with local
+  helper goals between recursive group calls still fail with
+  `No mutual recursion support for target typr`, which points to a shared
+  SCC IR as the next compiler step rather than more matcher families
 - conservative `N`-ary structural tree-recursive predicates with one
   tree-driving argument and invariant context args, such as `tree_sum/2`,
   `tree_height/2`, `weighted_tree_sum/3`, `weighted_tree_affine_sum/4`,

@@ -255,6 +255,17 @@ bring-up.
     tree/list/numeric SCCs where the tree-shaped predicate uses the same
     supported guarded full-body forms after an earlier recursive group-
     call prefix, plus integer-return and threaded-context variants
+  - stop extending `typr_mutual_supported_spec/3` with more bespoke
+    structural slices once the next failure is outside that subset
+  - the first confirmed post-audit unsupported SCCs are:
+    - mixed tree/forest pair-tail decompositions like `[A, B|Ts]`
+    - mixed list/numeric pair-tail decompositions
+    - mixed tree/numeric bodies with local helper goals between recursive
+      group calls
+  - the next implementation step should be a shared SCC IR that can encode
+    per-predicate ordered goal bodies, branch nodes, recursive call sites,
+    helper goals, and symbolic result bindings before another backend
+    expansion
   - conservative `N`-ary structural tree-recursive predicates lowered to
     TypR-valid functions with raw-expression structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context

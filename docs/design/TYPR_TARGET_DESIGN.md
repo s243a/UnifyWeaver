@@ -170,6 +170,36 @@ This document focuses on architecture and rollout choices specific to TypR.
    and SCCs that no longer fit the current structural-driver or supported
    guarded full-body subset.
 
+8. The next confirmed unsupported SCC shapes are:
+   - mixed tree/forest SCCs where the forest side uses pair-tail
+     decomposition like `[A, B|Ts]`
+   - mixed list/numeric SCCs where the list side uses that same pair-tail
+     decomposition
+   - mixed tree/numeric SCCs where a local helper goal sits between
+     recursive group calls, for example selecting a subtree through a helper
+     predicate instead of a currently supported guarded body form
+
+9. Those failures are the point to stop adding bespoke matcher families.
+   They all still fail with `No mutual recursion support for target typr`,
+   but they no longer share a small structural extension point.
+
+10. The next TypR mutual-recursion step should therefore introduce a shared
+    SCC IR with:
+    - per-predicate ordered goal bodies
+    - explicit SCC call-site nodes with symbolic call arguments and result
+      bindings
+    - branch nodes and post-branch joins
+    - helper-goal nodes for nonrecursive local work that is not just a
+      current matcher-side guard or arithmetic step
+    - wrapper and memo generation derived from that IR rather than from the
+      current `typr_mutual_supported_spec/3` family
+
+11. Until that IR exists, the correct fallback boundary is:
+    - keep native TypR lowering for the current structural-driver and
+      supported guarded full-body subset
+    - reject broader SCCs cleanly instead of stacking more structural
+      one-offs
+
 Implication: TypR design must support both generation styles and should not
 assume a Mustache-only pipeline.
 
