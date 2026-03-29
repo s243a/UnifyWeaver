@@ -120,9 +120,11 @@ This document focuses on architecture and rollout choices specific to TypR.
      predicates recurse through scalar step descent or constructed tree
      re-entry, plus mixed tree/list/numeric SCCs where tree-shaped
      predicates recurse through current-value and paired-forest helpers
-     while list-shaped predicates recurse through head/tail decomposition
-     and numeric predicates recurse through scalar step descent or
-     constructed tree re-entry, including mixed tree/numeric and mixed
+     while list-shaped predicates recurse through head/tail decomposition,
+     fixed two-element forest-pair decomposition, or fixed pair-tail
+     forest decomposition like `[A, B|Ts]`, and numeric predicates recurse
+     through scalar step descent or constructed tree re-entry, including
+     mixed tree/numeric and mixed
      tree/list/numeric SCCs where the tree-shaped predicate uses the same
      supported guarded full-body forms after an earlier recursive group-
      call prefix, plus integer-return and threaded-context variants,
@@ -171,10 +173,8 @@ This document focuses on architecture and rollout choices specific to TypR.
    guarded full-body subset.
 
 8. The next confirmed unsupported SCC shapes are:
-   - mixed tree/forest SCCs where the forest side uses pair-tail
+   - mixed list/numeric SCCs where the list side uses pair-tail
      decomposition like `[A, B|Ts]`
-   - mixed list/numeric SCCs where the list side uses that same pair-tail
-     decomposition
    - mixed tree/numeric SCCs where a local helper goal sits between
      recursive group calls, for example selecting a subtree through a helper
      predicate instead of a currently supported guarded body form

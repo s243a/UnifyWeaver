@@ -240,8 +240,9 @@ bring-up.
     tree-shaped predicates recurse through paired-forest helpers,
     including guarded branch-local paired-forest call selection on the
     tree side, while list-shaped predicates recurse through head/tail
-    decomposition or fixed two-element forest-pair decomposition, plus
-    mixed list/numeric SCCs where list-shaped
+    decomposition, fixed two-element forest-pair decomposition, or fixed
+    pair-tail forest decomposition like `[A, B|Ts]`, plus mixed
+    list/numeric SCCs where list-shaped
     predicates recurse through head/tail decomposition while numeric
     predicates recurse through scalar step descent or singleton-list
     re-entry, plus mixed tree/numeric SCCs where tree-shaped predicates
@@ -258,7 +259,6 @@ bring-up.
   - stop extending `typr_mutual_supported_spec/3` with more bespoke
     structural slices once the next failure is outside that subset
   - the first confirmed post-audit unsupported SCCs are:
-    - mixed tree/forest pair-tail decompositions like `[A, B|Ts]`
     - mixed list/numeric pair-tail decompositions
     - mixed tree/numeric bodies with local helper goals between recursive
       group calls
