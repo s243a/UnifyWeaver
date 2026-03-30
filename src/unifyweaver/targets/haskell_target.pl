@@ -1534,3 +1534,46 @@ main = do
 ~w
             _         -> putStrLn "Unknown function"
         _ -> return ()', [MatchCode]).
+
+%% ============================================
+%% GENERAL RECURSIVE PATTERN (visited-set cycle safety)
+%% ============================================
+
+:- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+advanced_recursive_compiler:compile_general_recursive_pattern(haskell, PredStr, _Arity, BaseClauses, _RecClauses, Code) :-
+    %% Extract base value from first base clause
+    (   BaseClauses = [(BaseHead, _BaseBody)|_],
+        BaseHead =.. [_|BaseArgs],
+        last(BaseArgs, BaseResult)
+    ->  term_to_atom(BaseResult, BaseValAtom),
+        atom_string(BaseValAtom, BaseValStr)
+    ;   BaseValStr = "[]"
+    ),
+    %% Extract base input from first base clause
+    (   BaseClauses = [(BaseHead2, _)|_],
+        BaseHead2 =.. [_|BaseArgs2],
+        BaseArgs2 = [BaseInput|_]
+    ->  term_to_atom(BaseInput, BaseInAtom),
+        atom_string(BaseInAtom, BaseInStr)
+    ;   BaseInStr = "0"
+    ),
+    atom_string(WorkerAtom, PredStr),
+    atom_string(WorkerAtom, PredName),
+    string_concat(PredName, "Worker", WorkerStr),
+    format(string(Code),
+'import qualified Data.Set
+
+~w :: String -> [String]
+~w arg1 = ~w arg1 (Data.Set.empty)
+
+~wWorker :: String -> Data.Set.Set String -> [String]
+~wWorker arg1 visited
+  | Data.Set.member arg1 visited = []
+  | arg1 == ~w = [~w]
+  | otherwise = let visited'' = Data.Set.insert arg1 visited
+                in ~wWorker (show arg1) visited''',
+        [PredStr, PredStr, WorkerStr,
+         PredStr, PredStr,
+         BaseInStr, BaseValStr,
+         PredStr]).
