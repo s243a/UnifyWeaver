@@ -3976,6 +3976,37 @@ test(tree_pair_tail_mutual_integer_context_output_checks_with_typr, [condition(t
     retractall(user:typr_tree_pair_tail_weight(_, _, _)),
     retractall(user:typr_forest_pair_tail_weight(_, _, _)).
 
+test(per_path_visited_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:category_parent(c, a)),
+    assertz(user:category_parent(b, d)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-
