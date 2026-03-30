@@ -332,9 +332,10 @@ Current TypR lowering policy is intentionally mixed:
   conservative pair-shaped runtime node parsing in native TypR when the base
   relation shape is known at compile time
 - conservative per-path visited recursion may also stay native in TypR when it
-  matches the currently supported `category_ancestor/4`-style shape: a
-  compile-time-seeded scalar step relation, a last-position `Visited` list,
-  and an integer hop counter returned as native `(node, hops)` pairs
+  matches the currently supported `category_ancestor/4`- and
+  `category_ancestor_weight/5`-style shape: a compile-time-seeded scalar step
+  relation, a detected `Visited` position, one direct node output, and one or
+  more additive numeric outputs returned as native nested pair results
 - multi-step native TypR control-flow chains may keep later guards and outputs
   in native TypR when those guards depend on earlier bound values
 - simple comparison and boolean guard expressions over already-bound

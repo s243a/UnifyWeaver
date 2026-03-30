@@ -5005,10 +5005,9 @@ let ~w <- fn(~w): ~w {
 ', [PredStr, Arity, PredStr, TypedArgList, ReturnType, IndentedBody]).
 
 compile_typr_per_path_visited(Module:Pred/Arity, _TypedMode, Clauses, Code) :-
-    Arity =:= 4,
     findall((Head, Body), member(Head-Body, Clauses), ClausePairs),
-    is_per_path_visited_pattern(Pred, Arity, ClausePairs, 4),
-    typr_per_path_visited_spec(Module, Pred/Arity, Clauses, Spec),
+    is_per_path_visited_pattern(Pred, Arity, ClausePairs, VisitedPos),
+    typr_per_path_visited_spec(Module, Pred/Arity, Clauses, VisitedPos, Spec),
     load_typr_per_path_visited_template(Template),
     render_template(Template, Spec, Code).
 
@@ -5016,6 +5015,7 @@ typr_per_path_visited_spec(
     Module,
     Pred/Arity,
     Clauses,
+    VisitedPos,
     [
         pred=PredStr,
         arity=Arity,
@@ -5023,21 +5023,44 @@ typr_per_path_visited_spec(
         empty_nodes_expr=EmptyNodesExpr,
         from_nodes_expr=FromNodesExpr,
         to_nodes_expr=ToNodesExpr,
-        base_hops_expr=BaseHopsExpr,
-        hop_increment_expr=HopIncrementExpr
+        base_result_expr=BaseResultExpr,
+        recursive_result_expr=RecursiveResultExpr
     ]
 ) :-
     single_linear_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause),
-    typr_per_path_visited_base_clause(BaseClause, Pred, BasePred, BaseHops),
-    typr_per_path_visited_recursive_clause(RecClause, Pred, BasePred, HopIncrement),
+    typr_per_path_visited_output_positions(Arity, VisitedPos, OutputPositions),
+    typr_per_path_visited_base_clause(
+        BaseClause,
+        Pred,
+        VisitedPos,
+        OutputPositions,
+        BasePred,
+        NodeOutputPos,
+        BaseAccumulatorPairs
+    ),
+    typr_per_path_visited_recursive_clause(
+        RecClause,
+        Pred,
+        BasePred,
+        VisitedPos,
+        OutputPositions,
+        NodeOutputPos,
+        RecursiveAccumulatorPairs
+    ),
     resolve_node_type(Pred/Arity, BasePred/2, NodeTypeTerm),
     typr_per_path_visited_scalar_node_type(NodeTypeTerm),
     atom_string(Pred, PredStr),
     atom_string(BasePred, BaseStr),
     empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
     base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
-    format(string(BaseHopsExpr), '~w', [BaseHops]),
-    format(string(HopIncrementExpr), '~w', [HopIncrement]).
+    typr_per_path_visited_base_output_exprs(OutputPositions, NodeOutputPos, BaseAccumulatorPairs, BaseOutputExprs),
+    typr_per_path_visited_recursive_output_exprs(OutputPositions, NodeOutputPos, RecursiveAccumulatorPairs, RecursiveOutputExprs),
+    typr_per_path_visited_result_expr(BaseOutputExprs, BaseResultExpr),
+    typr_per_path_visited_result_expr(RecursiveOutputExprs, RecursiveResultExpr).
+
+typr_per_path_visited_output_positions(Arity, VisitedPos, OutputPositions) :-
+    findall(Pos, (between(2, Arity, Pos), Pos =\= VisitedPos), OutputPositions),
+    OutputPositions \= [].
 
 typr_per_path_visited_scalar_node_type(atom).
 typr_per_path_visited_scalar_node_type(string).
@@ -5045,41 +5068,119 @@ typr_per_path_visited_scalar_node_type(integer).
 typr_per_path_visited_scalar_node_type(float).
 typr_per_path_visited_scalar_node_type(number).
 
-typr_per_path_visited_base_clause(Head-Body0, Pred, BasePred, BaseHops) :-
-    Head =.. [Pred, InputVar, OutputVar, BaseHops, VisitedVar],
-    number(BaseHops),
+typr_per_path_visited_base_clause(Head-Body0, Pred, VisitedPos, OutputPositions, BasePred, NodeOutputPos, BaseAccumulatorPairs) :-
+    Head =.. [Pred|HeadArgs],
+    nth1(1, HeadArgs, InputVar),
+    nth1(VisitedPos, HeadArgs, VisitedVar),
     var(InputVar),
-    var(OutputVar),
     var(VisitedVar),
     typr_mutual_goal_list(Body0, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
-    typr_per_path_visited_base_goals(Goals, InputVar, OutputVar, VisitedVar, BasePred).
+    typr_per_path_visited_base_goals(Goals, InputVar, VisitedVar, BasePred, StepOutputVar),
+    typr_per_path_visited_node_output_position(HeadArgs, OutputPositions, StepOutputVar, NodeOutputPos),
+    typr_per_path_visited_base_accumulator_pairs(HeadArgs, OutputPositions, NodeOutputPos, BaseAccumulatorPairs).
 
-typr_per_path_visited_base_goals([StepGoal], InputVar, OutputVar, _VisitedVar, BasePred) :-
+typr_per_path_visited_base_goals([StepGoal], InputVar, _VisitedVar, BasePred, OutputVar) :-
     typr_per_path_visited_step_goal(StepGoal, InputVar, OutputVar, BasePred).
-typr_per_path_visited_base_goals([StepGoal, NegGoal], InputVar, OutputVar, VisitedVar, BasePred) :-
+typr_per_path_visited_base_goals([StepGoal, NegGoal], InputVar, VisitedVar, BasePred, OutputVar) :-
     typr_per_path_visited_step_goal(StepGoal, InputVar, OutputVar, BasePred),
     typr_per_path_visited_negated_member_goal(NegGoal, OutputVar, VisitedVar).
 
-typr_per_path_visited_recursive_clause(Head-Body0, Pred, BasePred, HopIncrement) :-
-    Head =.. [Pred, InputVar, OutputVar, HopsVar, VisitedVar],
+typr_per_path_visited_recursive_clause(
+    Head-Body0,
+    Pred,
+    BasePred,
+    VisitedPos,
+    OutputPositions,
+    NodeOutputPos,
+    RecursiveAccumulatorPairs
+) :-
+    Head =.. [Pred|HeadArgs],
+    nth1(1, HeadArgs, InputVar),
+    nth1(VisitedPos, HeadArgs, VisitedVar),
     var(InputVar),
-    var(OutputVar),
-    var(HopsVar),
     var(VisitedVar),
     typr_mutual_goal_list(Body0, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
-    Goals = [StepGoal, NegGoal, RecCallGoal, HopsGoal],
+    append([StepGoal, NegGoal, RecCallGoal], AccumulatorGoals, Goals),
+    AccumulatorGoals \= [],
     typr_per_path_visited_mid_step_goal(StepGoal, InputVar, MidVar, BasePred),
     typr_per_path_visited_negated_member_goal(NegGoal, MidVar, VisitedVar),
-    typr_per_path_visited_recursive_call(RecCallGoal, Pred, MidVar, OutputVar, PrevHopsVar, VisitedVar),
-    typr_per_path_visited_hops_goal(HopsGoal, HopsVar, PrevHopsVar, HopIncrement).
+    typr_per_path_visited_recursive_call(
+        RecCallGoal,
+        Pred,
+        VisitedPos,
+        MidVar,
+        HeadArgs,
+        RecArgs,
+        VisitedVar
+    ),
+    nth1(NodeOutputPos, HeadArgs, OutputVar),
+    nth1(NodeOutputPos, RecArgs, RecOutputVar),
+    OutputVar == RecOutputVar,
+    typr_per_path_visited_recursive_accumulator_pairs(
+        OutputPositions,
+        NodeOutputPos,
+        HeadArgs,
+        RecArgs,
+        AccumulatorGoals,
+        RecursiveAccumulatorPairs
+    ).
+
+typr_per_path_visited_node_output_position(HeadArgs, OutputPositions, StepOutputVar, NodeOutputPos) :-
+    member(NodeOutputPos, OutputPositions),
+    nth1(NodeOutputPos, HeadArgs, HeadOutputVar),
+    HeadOutputVar == StepOutputVar,
+    !.
+
+typr_per_path_visited_base_accumulator_pairs(HeadArgs, OutputPositions, NodeOutputPos, BaseAccumulatorPairs) :-
+    findall(
+        Pos-BaseValue,
+        (
+            member(Pos, OutputPositions),
+            Pos =\= NodeOutputPos,
+            nth1(Pos, HeadArgs, BaseValue),
+            number(BaseValue)
+        ),
+        BaseAccumulatorPairs
+    ),
+    length(OutputPositions, OutputCount),
+    length(BaseAccumulatorPairs, AccCount),
+    AccCount =:= OutputCount - 1.
+
+typr_per_path_visited_recursive_accumulator_pairs(OutputPositions, NodeOutputPos, HeadArgs, RecArgs, Goals, RecursiveAccumulatorPairs) :-
+    exclude(=(NodeOutputPos), OutputPositions, AccumulatorPositions),
+    typr_per_path_visited_recursive_accumulator_pairs_1(
+        AccumulatorPositions,
+        HeadArgs,
+        RecArgs,
+        Goals,
+        RecursiveAccumulatorPairs,
+        RemainingGoals
+    ),
+    RemainingGoals == [].
+
+typr_per_path_visited_recursive_accumulator_pairs_1([], _HeadArgs, _RecArgs, Goals, Pairs, Goals) :-
+    Pairs = [].
+typr_per_path_visited_recursive_accumulator_pairs_1(
+    [Pos|Rest],
+    HeadArgs,
+    RecArgs,
+    Goals0,
+    [Pos-Increment|Pairs],
+    GoalsOut
+) :-
+    nth1(Pos, HeadArgs, OutputVar),
+    nth1(Pos, RecArgs, PrevVar),
+    select(AccumulatorGoal, Goals0, Goals1),
+    typr_per_path_visited_hops_goal(AccumulatorGoal, OutputVar, PrevVar, Increment),
+    typr_per_path_visited_recursive_accumulator_pairs_1(Rest, HeadArgs, RecArgs, Goals1, Pairs, GoalsOut).
 
 typr_per_path_visited_step_goal(Goal, InputVar, OutputVar, BasePred) :-
     Goal =.. [BasePred, StepInputVar, StepOutputVar],
     BasePred \= member,
     StepInputVar == InputVar,
-    StepOutputVar == OutputVar.
+    OutputVar = StepOutputVar.
 
 typr_per_path_visited_mid_step_goal(Goal, InputVar, MidVar, BasePred) :-
     Goal =.. [BasePred, StepInputVar, StepMidVar],
@@ -5089,10 +5190,12 @@ typr_per_path_visited_mid_step_goal(Goal, InputVar, MidVar, BasePred) :-
 typr_per_path_visited_negated_member_goal(\+ member(MemberVar, VisitedVar0), MemberVar, VisitedVar) :-
     VisitedVar0 == VisitedVar.
 
-typr_per_path_visited_recursive_call(Goal, Pred, MidVar, OutputVar, PrevHopsVar, VisitedVar) :-
-    Goal =.. [Pred, RecInputVar, RecOutputVar, PrevHopsVar, ConsVisited],
+typr_per_path_visited_recursive_call(Goal, Pred, VisitedPos, MidVar, HeadArgs, RecArgs, VisitedVar) :-
+    Goal =.. [Pred|RecArgs],
+    same_length(HeadArgs, RecArgs),
+    nth1(1, RecArgs, RecInputVar),
+    nth1(VisitedPos, RecArgs, ConsVisited),
     RecInputVar == MidVar,
-    RecOutputVar == OutputVar,
     nonvar(ConsVisited),
     ConsVisited = [VisitedHead|VisitedTail],
     VisitedHead == MidVar,
@@ -5106,6 +5209,54 @@ typr_per_path_visited_hops_expr(PrevHopsVar + HopIncrement, PrevHopsVar, HopIncr
     !.
 typr_per_path_visited_hops_expr(HopIncrement + PrevHopsVar, PrevHopsVar, HopIncrement) :-
     number(HopIncrement).
+
+typr_per_path_visited_base_output_exprs(OutputPositions, NodeOutputPos, BaseAccumulatorPairs, OutputExprs) :-
+    maplist(
+        typr_per_path_visited_base_output_expr(NodeOutputPos, BaseAccumulatorPairs),
+        OutputPositions,
+        OutputExprs
+    ).
+
+typr_per_path_visited_base_output_expr(NodeOutputPos, _BaseAccumulatorPairs, Pos, 'next_node') :-
+    Pos =:= NodeOutputPos,
+    !.
+typr_per_path_visited_base_output_expr(_NodeOutputPos, BaseAccumulatorPairs, Pos, Expr) :-
+    memberchk(Pos-BaseValue, BaseAccumulatorPairs),
+    format(string(Expr), '~w', [BaseValue]).
+
+typr_per_path_visited_recursive_output_exprs(OutputPositions, NodeOutputPos, RecursiveAccumulatorPairs, OutputExprs) :-
+    length(OutputPositions, OutputCount),
+    maplist(
+        typr_per_path_visited_recursive_output_expr(OutputPositions, OutputCount, NodeOutputPos, RecursiveAccumulatorPairs),
+        OutputPositions,
+        OutputExprs
+    ).
+
+typr_per_path_visited_recursive_output_expr(OutputPositions, OutputCount, NodeOutputPos, RecursiveAccumulatorPairs, Pos, Expr) :-
+    nth1(OutputIndex, OutputPositions, Pos),
+    typr_per_path_visited_result_extract_expr('sub_result', OutputIndex, OutputCount, PrevExpr),
+    (   Pos =:= NodeOutputPos
+    ->  Expr = PrevExpr
+    ;   memberchk(Pos-Increment, RecursiveAccumulatorPairs),
+        format(string(Expr), '~w + ~w', [PrevExpr, Increment])
+    ).
+
+typr_per_path_visited_result_expr([Expr], Expr) :- !.
+typr_per_path_visited_result_expr([Expr|Rest], ResultExpr) :-
+    typr_per_path_visited_result_expr(Rest, RestExpr),
+    format(string(ResultExpr), 'pair(~w, ~w)', [Expr, RestExpr]).
+
+typr_per_path_visited_result_extract_expr(ResultExpr, 1, 1, ResultExpr) :- !.
+typr_per_path_visited_result_extract_expr(ResultExpr, 1, _OutputCount, ExtractExpr) :-
+    format(string(ExtractExpr), '.subset2(~w, 1)', [ResultExpr]),
+    !.
+typr_per_path_visited_result_extract_expr(ResultExpr, OutputIndex, OutputCount, ExtractExpr) :-
+    OutputIndex > 1,
+    OutputCount > 1,
+    format(string(TailExpr), '.subset2(~w, 2)', [ResultExpr]),
+    NextIndex is OutputIndex - 1,
+    NextCount is OutputCount - 1,
+    typr_per_path_visited_result_extract_expr(TailExpr, NextIndex, NextCount, ExtractExpr).
 
 single_tail_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause) :-
     partition(clause_calls_predicate(Pred, Arity), Clauses, RecClauses, BaseClauses),

@@ -435,10 +435,12 @@ Current implementation note:
   `input(stdin|file|vfs|function)` loader wrappers, and declared scalar or
   conservative pair-shaped runtime node parsing in valid TypR syntax when the
   base relation is known at compile time
-- conservative per-path visited recursion now stays native in TypR for the
-  first supported slice: `category_ancestor/4`-style predicates with a
-  compile-time-seeded scalar step relation, a last-position `Visited` list,
-  and a native recursive worker that returns `(node, hops)` pairs
+- conservative per-path visited recursion now stays native in TypR for a
+  `VisitedPos`-driven scalar seeded slice: `category_ancestor/4`-style
+  predicates and weighted variants such as `category_ancestor_weight/5`, with
+  a compile-time-seeded scalar step relation, one direct node output, one or
+  more additive numeric outputs, and a native recursive worker that returns
+  nested pair results without raw R
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
   predicates, sequential guard/output control-flow chains, simple comparison
