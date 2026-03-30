@@ -1167,10 +1167,60 @@ java_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
     java_head_conditions(Rest, NextIndex, Arity, RestConditions).
 
 %% native_java_goal_sequence(+Goals, +VarMap, -Conditions, -Code)
+%%   Try classify_goal_sequence first (handles ITE, disjunctions),
+%%   fall back to clause_guard_output_split.
+native_java_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    java_render_classified_goals(ClassifiedGoals, VarMap, Conditions, Lines),
+    Lines \= [],
+    atomic_list_concat(Lines, '\n', Code),
+    !.
 native_java_goal_sequence(Goals, VarMap, Conditions, Code) :-
     clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
     maplist(java_guard_condition(VarMap), GuardGoals, Conditions),
     java_output_goals(OutputGoals, VarMap, Code).
+
+%% java_render_classified_goals — handle classified goal lists
+java_render_classified_goals([], _, [], []).
+java_render_classified_goals([Classified], VarMap, [], Lines) :-
+    !,
+    java_render_classified_last(Classified, VarMap, Lines).
+java_render_classified_goals([guard(Goal, _)|Rest], VarMap, [Cond|RestConds], Lines) :-
+    !,
+    java_guard_condition(VarMap, Goal, Cond),
+    java_render_classified_goals(Rest, VarMap, RestConds, Lines).
+java_render_classified_goals([output_ite(If, Then, Else, _)|Rest], VarMap, Conds, Lines) :-
+    !,
+    java_guard_condition(VarMap, If, Cond),
+    java_branch_value(Then, VarMap, ThenExpr),
+    java_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        return ~w;', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        return ~w;', [ElseExpr]),
+    CloseLine = '    }',
+    java_render_classified_goals(Rest, VarMap, Conds, RestLines),
+    append([IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine], RestLines, Lines).
+java_render_classified_goals([_|Rest], VarMap, Conds, Lines) :-
+    java_render_classified_goals(Rest, VarMap, Conds, Lines).
+
+java_render_classified_last(output_ite(If, Then, Else, _), VarMap, Lines) :-
+    !,
+    java_guard_condition(VarMap, If, Cond),
+    java_branch_value(Then, VarMap, ThenExpr),
+    java_branch_value(Else, VarMap, ElseExpr),
+    format(string(IfLine), '    if (~w) {', [Cond]),
+    format(string(ThenLine), '        return ~w;', [ThenExpr]),
+    ElseLine = '    } else {',
+    format(string(ElseRetLine), '        return ~w;', [ElseExpr]),
+    CloseLine = '    }',
+    Lines = [IfLine, ThenLine, ElseLine, ElseRetLine, CloseLine].
+java_render_classified_last(output(Goal, _, _), VarMap, [Line]) :-
+    java_output_goals([Goal], VarMap, Line).
+java_render_classified_last(guard(Goal, _), VarMap, []) :-
+    java_guard_condition(VarMap, Goal, _).
+java_render_classified_last(_, _, []).
 
 %% java_guard_condition(+VarMap, +Goal, -Condition)
 java_guard_condition(VarMap, _Module:Goal, Condition) :-

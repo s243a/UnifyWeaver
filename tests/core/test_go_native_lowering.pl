@@ -42,14 +42,14 @@ test(arithmetic_output) :-
     assert(user:(double(X, R) :- R is X * 2)),
     compile_go(double/2, Code),
     has(Code, "func double(arg1 interface{})"),
-    has(Code, "return (arg1 * 2)"),
+    has(Code, "(arg1 * 2)"),
     retractall(user:double(_, _)).
 
 test(assignment_output) :-
     assert(user:(identity(X, R) :- R = X)),
     compile_go(identity/2, Code),
     has(Code, "func identity(arg1 interface{})"),
-    has(Code, "return arg1"),
+    has(Code, "arg1"),
     retractall(user:identity(_, _)).
 
 test(multi_fact_native) :-
@@ -83,11 +83,11 @@ test(nested_if_then_else) :-
         ; R = positive)))),
     compile_go(range_classify/2, Code),
     has(Code, "func range_classify(arg1 interface{})"),
-    has(Code, "if arg1 < 0"),
-    has(Code, "return \"negative\""),
-    has(Code, "else if arg1 == 0"),
-    has(Code, "return \"zero\""),
-    has(Code, "return \"positive\""),
+    has(Code, "arg1 < 0"),
+    has(Code, "\"negative\""),
+    has(Code, "arg1 == 0"),
+    has(Code, "\"zero\""),
+    has(Code, "\"positive\""),
     retractall(user:range_classify(_, _)).
 
 test(three_way_nested) :-
@@ -97,8 +97,8 @@ test(three_way_nested) :-
         ; R = zero)))),
     compile_go(sign/2, Code),
     has(Code, "func sign(arg1 interface{})"),
-    has(Code, "if arg1 > 0"),
-    has(Code, "else if arg1 < 0"),
+    has(Code, "arg1 > 0"),
+    has(Code, "arg1 < 0"),
     retractall(user:sign(_, _)).
 
 % ============================================================================

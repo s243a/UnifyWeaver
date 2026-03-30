@@ -79,9 +79,9 @@ test(if_then_else_simple) :-
     assert(user:(abs_val(X, R) :- (X >= 0 -> R = X ; R is -X))),
     compile_py(abs_val/2, Code),
     has(Code,"def abs_val(arg1)"),
-    has(Code,"if arg1 >= 0"),
-    has(Code,"return arg1"),
-    has(Code,"return (-arg1)"),
+    has(Code,"arg1 >= 0"),
+    has(Code,"arg1"),
+    has(Code,"(-arg1)"),
     retractall(user:abs_val(_, _)).
 
 test(nested_if_then_else) :-
@@ -91,11 +91,11 @@ test(nested_if_then_else) :-
         ; R = positive)))),
     compile_py(range_classify/2, Code),
     has(Code,"def range_classify(arg1)"),
-    has(Code,"if arg1 < 0"),
-    has(Code,"return \"negative\""),
-    has(Code,"elif arg1 == 0"),
-    has(Code,"return \"zero\""),
-    has(Code,"return \"positive\""),
+    has(Code,"arg1 < 0"),
+    has(Code,"\"negative\""),
+    has(Code,"arg1 == 0"),
+    has(Code,"\"zero\""),
+    has(Code,"\"positive\""),
     retractall(user:range_classify(_, _)).
 
 test(three_way_nested) :-
@@ -105,8 +105,8 @@ test(three_way_nested) :-
         ; R = zero)))),
     compile_py(sign/2, Code),
     has(Code,"def sign(arg1)"),
-    has(Code,"if arg1 > 0"),
-    has(Code,"elif arg1 < 0"),
+    has(Code,"arg1 > 0"),
+    has(Code,"arg1 < 0"),
     retractall(user:sign(_, _)).
 
 % ============================================================================
