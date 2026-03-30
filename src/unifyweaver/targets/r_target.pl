@@ -1367,7 +1367,8 @@ linear_list_fold_r(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoS
     find_last_is_expression(RBody, _ is ActualFoldExpr),
 
     % For list patterns, InputVar is [H|T] — extract the head element variable
-    (   InputVar = [HeadVar|_] -> true ; HeadVar = InputVar ),
+    % Must use nonvar check to avoid unifying a free variable with [H|T]
+    (   nonvar(InputVar), InputVar = [HeadVar|_] -> true ; HeadVar = InputVar ),
     translate_fold_expr(ActualFoldExpr, HeadVar, AccVar, RFoldOp),
 
     (   MemoEnabled = true ->

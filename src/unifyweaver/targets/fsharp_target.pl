@@ -23,6 +23,69 @@
 init_fsharp_target :-
     init_fsharp_bindings.
 
+%% fsharp_ensure_fsi_compatible(+Code, -CompatCode)
+%  Post-process generated F# code to work with both dotnet fsi and compiled F#.
+%  1. Adds `module Program` declaration if missing (fixes FS0222)
+%  2. Wraps [<EntryPoint>] in #if !INTERACTIVE (fixes FS0433)
+%  3. Adds #if INTERACTIVE block before entry point for fsi execution
+fsharp_ensure_fsi_compatible(Code, CompatCode) :-
+    atom_string(Code, CodeStr),
+    % Add module declaration if missing
+    (   sub_string(CodeStr, _, _, _, "module ")
+    ->  Code1 = CodeStr
+    ;   (   sub_string(CodeStr, Pos, 4, _, "open")
+        ->  sub_string(CodeStr, 0, Pos, _, Before),
+            sub_string(CodeStr, Pos, _, 0, After),
+            format(string(Code1), "~wmodule Program\n\n~w", [Before, After])
+        ;   Code1 = CodeStr
+        )
+    ),
+    % Wrap [<EntryPoint>] block in #if !INTERACTIVE, add #if INTERACTIVE before it
+    (   sub_string(Code1, EntryPos, 14, _, "[<EntryPoint>]")
+    ->  sub_string(Code1, 0, EntryPos, _, BeforeEntry),
+        sub_string(Code1, EntryPos, _, 0, EntryAndAfter),
+        % Extract the body of main (lines between "let main argv =" and final "    0")
+        fsharp_extract_main_body(EntryAndAfter, MainBody),
+        format(string(CompatCode),
+            "~w#if INTERACTIVE\nlet argv = fsi.CommandLineArgs |> Array.tail\n~w#endif\n\n#if !INTERACTIVE\n~w#endif\n",
+            [BeforeEntry, MainBody, EntryAndAfter])
+    ;   CompatCode = Code1
+    ).
+
+%% fsharp_extract_main_body(+EntryBlock, -Body)
+%  Extract the body lines between "let main argv =" and the final "    0",
+%  then de-indent by 4 spaces for use at top level in INTERACTIVE mode.
+fsharp_extract_main_body(EntryBlock, Body) :-
+    % Find end of "let main argv =\n"
+    sub_string(EntryBlock, MainPos, _, _, "let main argv ="),
+    AfterMainStart is MainPos + 16,  % length of "let main argv =\n"
+    sub_string(EntryBlock, AfterMainStart, _, 0, AfterMain),
+    % Find the final "    0" and extract body before it
+    (   sub_string(AfterMain, ZeroPos, _, _, "    0")
+    ->  sub_string(AfterMain, 0, ZeroPos, _, RawBody)
+    ;   RawBody = AfterMain
+    ),
+    % De-indent: remove leading 4-space indent from each line
+    fsharp_deindent(RawBody, Body).
+
+fsharp_deindent(Text, Result) :-
+    split_string(Text, "\n", "", Lines),
+    maplist(fsharp_deindent_line, Lines, DeLines),
+    atomics_to_text(DeLines, "\n", Result).
+
+fsharp_deindent_line(Line, DeLine) :-
+    (   sub_string(Line, 0, 4, _, "    ")
+    ->  sub_string(Line, 4, _, 0, DeLine)
+    ;   DeLine = Line
+    ).
+
+atomics_to_text([], _, "").
+atomics_to_text([X], _, X).
+atomics_to_text([X|Xs], Sep, Result) :-
+    Xs \= [],
+    atomics_to_text(Xs, Sep, Rest),
+    format(string(Result), "~w~w~w", [X, Sep, Rest]).
+
 %% compile_predicate_to_fsharp(+PredIndicator, +Options, -Code)
 compile_predicate_to_fsharp(Pred/Arity, Options, Code) :-
     functor(Head, Pred, Arity),
@@ -30,7 +93,8 @@ compile_predicate_to_fsharp(Pred/Arity, Options, Code) :-
     (   Clauses = []
     ->  format(user_error, 'F# target: no clauses for ~w/~w~n', [Pred, Arity]),
         fail
-    ;   compile_clauses_to_fsharp(Pred, Arity, Clauses, Options, Code)
+    ;   compile_clauses_to_fsharp(Pred, Arity, Clauses, Options, RawCode),
+        fsharp_ensure_fsi_compatible(RawCode, Code)
     ).
 
 %% compile_clauses_to_fsharp(+Pred, +Arity, +Clauses, +Options, -Code)
@@ -641,7 +705,10 @@ branches_to_fsharp_elif_lines([branch(Condition, ClauseCode)|Rest], PredSpec, [E
 %% TAIL RECURSION (let rec with accumulator)
 %% ============================================
 
-compile_tail_recursion_fsharp(Pred/Arity, _Options, Code) :-
+compile_tail_recursion_fsharp(Pred/Arity, Options, Code) :-
+    compile_tail_recursion_fsharp_(Pred/Arity, Options, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, Code).
+compile_tail_recursion_fsharp_(Pred/Arity, _Options, Code) :-
     atom_string(Pred, PredStr),
     
     format(string(Code),
@@ -670,7 +737,10 @@ let main argv =
 %% LINEAR RECURSION (Map-based memoization)
 %% ============================================
 
-compile_linear_recursion_fsharp(Pred/Arity, _Options, Code) :-
+compile_linear_recursion_fsharp(Pred/Arity, Options, Code) :-
+    compile_linear_recursion_fsharp_(Pred/Arity, Options, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, Code).
+compile_linear_recursion_fsharp_(Pred/Arity, _Options, Code) :-
     atom_string(Pred, PredStr),
     
     format(string(Code),
@@ -709,7 +779,10 @@ let main argv =
 %% MUTUAL RECURSION (and keyword)
 %% ============================================
 
-compile_mutual_recursion_fsharp(Predicates, _Options, Code) :-
+compile_mutual_recursion_fsharp(Predicates, Options, Code) :-
+    compile_mutual_recursion_fsharp_(Predicates, Options, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, Code).
+compile_mutual_recursion_fsharp_(Predicates, _Options, Code) :-
     findall(PredStr, (
         member(Pred/_Arity, Predicates),
         atom_string(Pred, PredStr)
@@ -813,7 +886,10 @@ generate_fsharp_print_args(Arity, Result) :-
 :- use_module('../core/advanced/tail_recursion').
 :- multifile tail_recursion:compile_tail_pattern/9.
 
-tail_recursion:compile_tail_pattern(fsharp, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, StepOp, _ExitAfterResult, Code) :-
+tail_recursion:compile_tail_pattern(fsharp, PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, Code) :-
+    tail_recursion:compile_tail_pattern_(fsharp, PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, Code).
+tail_recursion:compile_tail_pattern_(fsharp, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, StepOp, _ExitAfterResult, Code) :-
     (   Arity =:= 3 ->
         step_op_to_fsharp(StepOp, FSharpStepExpr),
         format(string(Code),
@@ -881,7 +957,10 @@ expr_to_fsharp(_, 'acc + 1').
 :- use_module('../core/advanced/linear_recursion').
 :- multifile linear_recursion:compile_linear_pattern/8.
 
-linear_recursion:compile_linear_pattern(fsharp, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, _MemoStrategy, Code) :-
+linear_recursion:compile_linear_pattern(fsharp, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, Code) :-
+    linear_recursion:compile_linear_pattern_(fsharp, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, Code).
+linear_recursion:compile_linear_pattern_(fsharp, PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, _MemoStrategy, Code) :-
     (   Arity =:= 2 ->
         linear_fold_based_fsharp(PredStr, BaseClauses, RecClauses, MemoEnabled, Code)
     ;   linear_generic_fsharp(PredStr, Arity, MemoEnabled, Code)
@@ -1075,6 +1154,9 @@ translate_fsharp_term(Atom, _, _, FSharpTerm) :-
 :- multifile mutual_recursion:compile_mutual_pattern/5.
 
 mutual_recursion:compile_mutual_pattern(fsharp, Predicates, MemoEnabled, MemoStrategy, Code) :-
+    mutual_recursion:compile_mutual_pattern_(fsharp, Predicates, MemoEnabled, MemoStrategy, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, Code).
+mutual_recursion:compile_mutual_pattern_(fsharp, Predicates, MemoEnabled, MemoStrategy, Code) :-
     findall(PredStr, (
         member(Pred/_Arity, Predicates),
         atom_string(Pred, PredStr)
@@ -1247,7 +1329,10 @@ let main argv =
 :- use_module('../core/advanced/tree_recursion').
 :- multifile tree_recursion:compile_tree_pattern/6.
 
-tree_recursion:compile_tree_pattern(fsharp, _Pattern, Pred, _Arity, _UseMemo, FsCode) :-
+tree_recursion:compile_tree_pattern(fsharp, Pattern, Pred, Arity, UseMemo, FsCode) :-
+    tree_recursion:compile_tree_pattern_(fsharp, Pattern, Pred, Arity, UseMemo, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, FsCode).
+tree_recursion:compile_tree_pattern_(fsharp, _Pattern, Pred, _Arity, _UseMemo, FsCode) :-
     atom_string(Pred, PredStr),
     format(string(FsCode),
 '// Generated by UnifyWeaver F# Target - Tree Recursion (fibonacci, multifile dispatch)
@@ -1279,7 +1364,10 @@ let main argv =
 :- use_module('../core/advanced/multicall_linear_recursion').
 :- multifile multicall_linear_recursion:compile_multicall_pattern/6.
 
-multicall_linear_recursion:compile_multicall_pattern(fsharp, PredStr, BaseClauses, _RecClauses, _MemoEnabled, FsCode) :-
+multicall_linear_recursion:compile_multicall_pattern(fsharp, PredStr, BaseClauses, RecClauses, MemoEnabled, FsCode) :-
+    multicall_linear_recursion:compile_multicall_pattern_(fsharp, PredStr, BaseClauses, RecClauses, MemoEnabled, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, FsCode).
+multicall_linear_recursion:compile_multicall_pattern_(fsharp, PredStr, BaseClauses, _RecClauses, _MemoEnabled, FsCode) :-
     findall(BaseCaseCode, (
         member(clause(BHead, _), BaseClauses),
         BHead =.. [_P, BInput, BOutput],
@@ -1317,7 +1405,10 @@ let main argv =
 :- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 :- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
 
-direct_multi_call_recursion:compile_direct_multicall_pattern(fsharp, PredStr, BaseClauses, _RecClause, FsCode) :-
+direct_multi_call_recursion:compile_direct_multicall_pattern(fsharp, PredStr, BaseClauses, RecClause, FsCode) :-
+    direct_multi_call_recursion:compile_direct_multicall_pattern_(fsharp, PredStr, BaseClauses, RecClause, RawCode),
+    fsharp_ensure_fsi_compatible(RawCode, FsCode).
+direct_multi_call_recursion:compile_direct_multicall_pattern_(fsharp, PredStr, BaseClauses, _RecClause, FsCode) :-
     findall(BaseCaseCode, (
         member(clause(BHead, _), BaseClauses),
         BHead =.. [_P, BInput, BOutput],
