@@ -441,8 +441,9 @@ Current implementation note:
   `category_ancestor_weight/5`, with a compile-time-seeded scalar step
   relation, one recursion-driving scalar input, one direct node output, one
   or more additive numeric outputs, a native recursive worker that returns
-  nested pair results without raw R, and a native `*_from_vectors` runtime
-  helper over the same scalar step-relation shape
+  nested pair results without raw R, a native `*_from_vectors` runtime
+  helper, and native `input(stdin|file|vfs|function)` wrappers over the same
+  scalar step-relation shape
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
   predicates, sequential guard/output control-flow chains, simple comparison

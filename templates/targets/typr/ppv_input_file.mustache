@@ -1,0 +1,9 @@
+
+let {{base}}_lines_from_file <- function() {
+	readLines("{{input_path}}")
+};
+
+let {{pred}} <- function(start) {
+	lines <- {{base}}_lines_from_file();
+	{{pred}}_from_vectors(start, {{base}}_from_lines(lines), {{base}}_to_lines(lines))
+};

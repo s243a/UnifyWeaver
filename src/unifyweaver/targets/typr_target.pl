@@ -74,7 +74,7 @@ compile_recursive_predicate_to_typr(PredIndicator, Options, Code) :-
     option(global_typed_mode(GlobalMode), Options, infer),
     resolve_typed_mode(Pred/Arity, Options, GlobalMode, TypedMode),
     findall(Head-Body, predicate_clause(Module, Pred, Arity, Head, Body), Clauses),
-    (   compile_typr_per_path_visited(Module:Pred/Arity, TypedMode, Clauses, Code)
+    (   compile_typr_per_path_visited(Module:Pred/Arity, TypedMode, Clauses, Options, Code)
     ;   compile_typr_tail_recursive_accumulator(Module:Pred/Arity, TypedMode, Clauses, Code)
     ;   compile_typr_linear_recursive_numeric(Module:Pred/Arity, TypedMode, Clauses, Code)
     ;   compile_typr_linear_recursive_list(Module:Pred/Arity, TypedMode, Clauses, Code)
@@ -5010,12 +5010,15 @@ let ~w <- fn(~w): ~w {
 };
 ', [PredStr, Arity, PredStr, TypedArgList, ReturnType, IndentedBody]).
 
-compile_typr_per_path_visited(Module:Pred/Arity, _TypedMode, Clauses, Code) :-
+compile_typr_per_path_visited(Module:Pred/Arity, _TypedMode, Clauses, Options, Code) :-
     findall((Head, Body), member(Head-Body, Clauses), ClausePairs),
     is_per_path_visited_pattern(Pred, Arity, ClausePairs, VisitedPos),
     typr_per_path_visited_spec(Module, Pred/Arity, Clauses, VisitedPos, Spec),
-    load_typr_per_path_visited_template(Template),
-    render_template(Template, Spec, Code).
+    (   typr_per_path_visited_explicit_input_mode(Options, InputMode)
+    ->  compile_typr_per_path_visited_composable(InputMode, Spec, Code)
+    ;   load_typr_per_path_visited_template(Template),
+        render_template(Template, Spec, Code)
+    ).
 
 typr_per_path_visited_spec(
     Module,
@@ -5027,6 +5030,9 @@ typr_per_path_visited_spec(
         arity=Arity,
         base=BaseStr,
         empty_nodes_expr=EmptyNodesExpr,
+        node_parse_helper_code=NodeParseHelperCode,
+        from_line_expr=FromLineExpr,
+        to_line_expr=ToLineExpr,
         from_nodes_expr=FromNodesExpr,
         to_nodes_expr=ToNodesExpr,
         base_result_expr=BaseResultExpr,
@@ -5060,6 +5066,9 @@ typr_per_path_visited_spec(
     atom_string(Pred, PredStr),
     atom_string(BasePred, BaseStr),
     empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
+    typr_tc_node_parse_helper(BaseStr, NodeTypeTerm, NodeParseHelperCode),
+    typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 1, FromLineExpr),
+    typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 2, ToLineExpr),
     base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
     typr_per_path_visited_base_output_exprs(OutputPositions, NodeOutputPos, BaseAccumulatorPairs, BaseOutputExprs),
     typr_per_path_visited_recursive_output_exprs(OutputPositions, NodeOutputPos, RecursiveAccumulatorPairs, RecursiveOutputExprs),
@@ -5308,6 +5317,38 @@ typr_per_path_visited_result_extract_expr(ResultExpr, OutputIndex, OutputCount, 
     NextIndex is OutputIndex - 1,
     NextCount is OutputCount - 1,
     typr_per_path_visited_result_extract_expr(TailExpr, NextIndex, NextCount, ExtractExpr).
+
+typr_per_path_visited_explicit_input_mode(Options, InputMode) :-
+    member(input(_), Options),
+    resolve_input_mode(Options, InputMode).
+
+compile_typr_per_path_visited_composable(InputMode, BaseDict, Code) :-
+    load_typr_ppv_part("ppv_definitions", DefinitionsTemplate),
+    render_template(DefinitionsTemplate, BaseDict, DefinitionsCode),
+    typr_per_path_visited_input_dict(InputMode, BaseDict, InputDict),
+    typr_per_path_visited_input_part_name(InputMode, PartName),
+    load_typr_ppv_part(PartName, InputTemplate),
+    render_template(InputTemplate, InputDict, InputCode),
+    atomic_list_concat([DefinitionsCode, InputCode], Code).
+
+typr_per_path_visited_input_part_name(stdin, "ppv_input_stdin").
+typr_per_path_visited_input_part_name(file(_), "ppv_input_file").
+typr_per_path_visited_input_part_name(vfs(_), "ppv_input_vfs").
+typr_per_path_visited_input_part_name(vfs(_, _), "ppv_input_vfs").
+typr_per_path_visited_input_part_name(function, "ppv_input_function").
+
+typr_per_path_visited_input_dict(stdin, BaseDict, BaseDict).
+typr_per_path_visited_input_dict(function, BaseDict, BaseDict).
+typr_per_path_visited_input_dict(file(Path0), BaseDict, InputDict) :-
+    typr_tc_string_value(Path0, Path),
+    append(BaseDict, [input_path=Path], InputDict).
+typr_per_path_visited_input_dict(vfs(Cell0), BaseDict, InputDict) :-
+    typr_tc_string_value(Cell0, Cell),
+    append(BaseDict, [vfs_source=Cell, vfs_prop=".output"], InputDict).
+typr_per_path_visited_input_dict(vfs(Cell0, Prop0), BaseDict, InputDict) :-
+    typr_tc_string_value(Cell0, Cell),
+    typr_tc_string_value(Prop0, Prop),
+    append(BaseDict, [vfs_source=Cell, vfs_prop=Prop], InputDict).
 
 single_tail_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause) :-
     partition(clause_calls_predicate(Pred, Arity), Clauses, RecClauses, BaseClauses),
@@ -7078,6 +7119,14 @@ load_typr_transitive_closure_template(Template) :-
     ).
 
 load_typr_tc_part(PartName, Template) :-
+    format(string(RelPath), 'templates/targets/typr/~w.mustache', [PartName]),
+    format(string(VfsPath), '/user/templates/targets/typr/~w.mustache', [PartName]),
+    (   exists_file(RelPath)
+    ->  read_file_to_string(RelPath, Template, [])
+    ;   read_file_to_string(VfsPath, Template, [])
+    ).
+
+load_typr_ppv_part(PartName, Template) :-
     format(string(RelPath), 'templates/targets/typr/~w.mustache', [PartName]),
     format(string(VfsPath), '/user/templates/targets/typr/~w.mustache', [PartName]),
     (   exists_file(RelPath)

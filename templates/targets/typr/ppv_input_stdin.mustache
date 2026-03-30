@@ -1,0 +1,9 @@
+
+let {{base}}_lines_from_stdin <- function() {
+	readLines(file("stdin"))
+};
+
+let {{pred}} <- function(start) {
+	lines <- {{base}}_lines_from_stdin();
+	{{pred}}_from_vectors(start, {{base}}_from_lines(lines), {{base}}_to_lines(lines))
+};

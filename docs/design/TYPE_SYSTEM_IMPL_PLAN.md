@@ -150,7 +150,8 @@ bring-up.
   IDs, a detected `Visited` position, one recursion-driving scalar input, and
   native TypR nested pair results for the direct node output plus one or more
   additive numeric outputs; the same slice now also emits a native
-  `*_from_vectors` runtime helper
+  `*_from_vectors` runtime helper and native
+  `input(stdin|file|vfs|function)` wrappers
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,
