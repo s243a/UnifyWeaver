@@ -57,7 +57,7 @@ def load_facts(facts_path):
     return dict(article_cats), dict(category_parents), root_cats
 
 
-def generate_awk(article_cats, category_parents, root_cats, n=5):
+def generate_awk(article_cats, category_parents, root_cats, n=5, max_depth=10):
     """Generate self-contained AWK program for effective distance."""
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -84,6 +84,7 @@ BEGIN {{
     FS = "\\t"
     ROOT = "{root}"
     N = {n}
+    MAX_DEPTH = {max_depth}
 
     # Load category hierarchy edges
 {edges_block}
@@ -117,6 +118,7 @@ BEGIN {{
                 nb = adj[cur, j]
                 if (index(path, "," nb ",") > 0) continue
                 nh = hops + 1
+                if (nh > MAX_DEPTH) continue
 
                 # Record path to root if ancestor is root
                 if (nb == ROOT) {{
@@ -203,7 +205,7 @@ BEGIN {{
 '''
 
 
-def generate_python(article_cats, category_parents, root_cats, n=5):
+def generate_python(article_cats, category_parents, root_cats, n=5, max_depth=10):
     """Generate self-contained Python program for effective distance."""
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -231,6 +233,7 @@ from collections import defaultdict
 
 ROOT = "{root}"
 N = {n}
+MAX_DEPTH = {max_depth}
 
 # Category hierarchy (child → [parents])
 adj = {{
@@ -243,17 +246,17 @@ article_cats = {{
 }}
 
 
-def category_ancestor_worker(cat, visited=None):
+def category_ancestor_worker(cat, visited=None, depth=0):
     """DFS all-simple-paths. Yields (ancestor, hops) tuples."""
     if visited is None:
         visited = frozenset()
-    if cat in visited:
+    if cat in visited or depth >= MAX_DEPTH:
         return
     new_visited = visited | {{cat}}
     for parent in adj.get(cat, []):
         if parent not in new_visited:
             yield (parent, 1)
-            for (ancestor, h) in category_ancestor_worker(parent, new_visited):
+            for (ancestor, h) in category_ancestor_worker(parent, new_visited, depth + 1):
                 yield (ancestor, h + 1)
 
 
@@ -290,7 +293,7 @@ if __name__ == "__main__":
 '''
 
 
-def generate_go(article_cats, category_parents, root_cats, n=5):
+def generate_go(article_cats, category_parents, root_cats, n=5, max_depth=10):
     """Generate self-contained Go program for effective distance."""
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -323,6 +326,7 @@ import (
 
 const ROOT = "{root}"
 const N = {n}.0
+const MAX_DEPTH = {max_depth}
 
 var adj = make(map[string][]string)
 var artCats = make(map[string][]string)
@@ -337,8 +341,8 @@ type pathResult struct {{
 \thops     int
 }}
 
-func categoryAncestorDFS(cat string, visited map[string]bool) []pathResult {{
-\tif visited[cat] {{
+func categoryAncestorDFS(cat string, visited map[string]bool, depth int) []pathResult {{
+\tif visited[cat] || depth >= MAX_DEPTH {{
 \t\treturn nil
 \t}}
 \tnewVisited := make(map[string]bool, len(visited)+1)
@@ -351,7 +355,7 @@ func categoryAncestorDFS(cat string, visited map[string]bool) []pathResult {{
 \tfor _, parent := range adj[cat] {{
 \t\tif !newVisited[parent] {{
 \t\t\tresults = append(results, pathResult{{parent, 1}})
-\t\t\tfor _, sub := range categoryAncestorDFS(parent, newVisited) {{
+\t\t\tfor _, sub := range categoryAncestorDFS(parent, newVisited, depth+1) {{
 \t\t\t\tresults = append(results, pathResult{{sub.ancestor, sub.hops + 1}})
 \t\t\t}}
 \t\t}}
@@ -394,7 +398,7 @@ func main() {{
 \t\t\tif cat == ROOT {{
 \t\t\t\tallHops = append(allHops, 1)
 \t\t\t}}
-\t\t\tfor _, pr := range categoryAncestorDFS(cat, map[string]bool{{}}) {{
+\t\t\tfor _, pr := range categoryAncestorDFS(cat, map[string]bool{{}}, 0) {{
 \t\t\t\tif pr.ancestor == ROOT {{
 \t\t\t\t\tallHops = append(allHops, pr.hops+1)
 \t\t\t\t}}
@@ -437,6 +441,9 @@ def main():
     parser.add_argument("--target", required=True, choices=list(GENERATORS.keys()))
     parser.add_argument("--output", required=True, help="Output file path")
     parser.add_argument("--n", type=float, default=5, help="Dimensionality parameter")
+    parser.add_argument("--max-depth", type=int, default=10,
+                        help="Max DFS depth (paths beyond this are trimmed; "
+                             "d^(-5) at depth 10 is negligible)")
 
     args = parser.parse_args()
 
@@ -445,7 +452,8 @@ def main():
         root_cats = {args.root}
 
     generator = GENERATORS[args.target]
-    code = generator(article_cats, category_parents, root_cats, n=int(args.n))
+    code = generator(article_cats, category_parents, root_cats,
+                     n=int(args.n), max_depth=args.max_depth)
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, 'w') as f:
