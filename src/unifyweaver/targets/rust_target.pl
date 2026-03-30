@@ -78,6 +78,9 @@
 % Native clause body lowering (shared analysis infrastructure)
 :- use_module('../core/clause_body_analysis', except([translate_expr/3])).
 
+% Per-path visited pattern detection
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
+
 % Track collected components for code generation
 :- dynamic collected_component/2.
 
@@ -3366,6 +3369,12 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
         compile_facts_to_rust(Pred, Arity, Clauses, FieldDelim, RustCode)
     ;   is_general_recursive_pattern_rust(Pred, Arity, Clauses) ->
         format('Type: general_recursion_arity_~w~n', [Arity]),
+        %% Check for per-path visited pattern (diagnostic only)
+        (   rust_clauses_to_ppv_pairs(Clauses, PPVPairs),
+            is_per_path_visited_pattern(Pred, Arity, PPVPairs, VisitedPos)
+        ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
+        ;   true
+        ),
         compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode)
     ;   Clauses = [SingleHead-SingleBody], SingleBody \= true ->
         compile_single_rule_to_rust(Pred, Arity, SingleHead, SingleBody, FieldDelim, Unique, IncludeMain, RustCode)
@@ -3393,6 +3402,12 @@ contains_call_to_rust((A, _), Pred) :-
     contains_call_to_rust(A, Pred), !.
 contains_call_to_rust((_, B), Pred) :-
     contains_call_to_rust(B, Pred).
+
+%% rust_clauses_to_ppv_pairs(+Clauses, -Pairs)
+%  Convert Head-Body pairs to (Head, Body) pairs for is_per_path_visited_pattern.
+rust_clauses_to_ppv_pairs([], []).
+rust_clauses_to_ppv_pairs([Head-Body|Rest], [(Head, Body)|RestPairs]) :-
+    rust_clauses_to_ppv_pairs(Rest, RestPairs).
 
 compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode) :-
     atom_string(Pred, PredStr),

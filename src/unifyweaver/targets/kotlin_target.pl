@@ -25,6 +25,9 @@
 % Shared clause body analysis for native lowering
 :- use_module('../core/clause_body_analysis').
 
+% Per-path visited pattern detection
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
+
 % Track required imports
 :- dynamic required_kotlin_import/1.
 
@@ -494,13 +497,19 @@ generate_pipeline_process_kotlin(Clauses, Code) :-
     Clauses \= [],
     % Check for recursion
     Clauses = [(Head, _)|_],
-    functor(Head, Name, _),
+    functor(Head, Name, Arity),
     (   is_recursive_predicate_kotlin(Name, Clauses)
     ->  % Separate base and recursive clauses
         partition(is_recursive_clause_kotlin(Name), Clauses, RecClauses, BaseClauses),
         (   is_tail_recursive_kotlin(Name, RecClauses)
         ->  compile_tail_recursive_kotlin(Name, BaseClauses, RecClauses, Code)
-        ;   compile_general_recursive_kotlin(Name, BaseClauses, RecClauses, Code)
+        ;   %% Check for per-path visited pattern (diagnostic only)
+            (   kotlin_clauses_to_ppv_pairs(Clauses, PPVPairs),
+                is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
+            ;   true
+            ),
+            compile_general_recursive_kotlin(Name, BaseClauses, RecClauses, Code)
         )
     ;   % Generate functional-style processing
         findall(ClauseCode, 
@@ -597,6 +606,13 @@ generate_recursive_transform_kotlin(Body, Name, Transform) :-
         format(string(Transform), "mutableMapOf(\"arg0\" to ~w)", [KotlinExpr])
     ;   Transform = "current"
     ).
+
+%% kotlin_clauses_to_ppv_pairs(+Clauses, -Pairs)
+%  Convert (Head, Body) tuples to pairs for is_per_path_visited_pattern.
+%  Identity conversion since Kotlin clauses are already (Head, Body) tuples.
+kotlin_clauses_to_ppv_pairs([], []).
+kotlin_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+    kotlin_clauses_to_ppv_pairs(Rest, RestPairs).
 
 %% ============================================
 %% GENERAL RECURSION (→ memoization)

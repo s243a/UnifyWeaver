@@ -25,6 +25,9 @@
 % Shared clause body analysis for native lowering
 :- use_module('../core/clause_body_analysis').
 
+% Per-path visited pattern detection
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
+
 % Track required imports
 :- dynamic required_jython_import/1.
 
@@ -447,14 +450,20 @@ generate_pipeline_process_jython(Clauses, Code) :-
     Clauses \= [],
     % Check for recursion
     Clauses = [(Head, _)|_],
-    functor(Head, Name, _),
+    functor(Head, Name, Arity),
     (   is_recursive_predicate_jython(Name, Clauses)
     ->  % Separate base and recursive clauses
         partition(is_recursive_clause_jython(Name), Clauses, RecClauses, BaseClauses),
         % Check if tail recursive
         (   is_tail_recursive_jython(Name, RecClauses)
         ->  compile_tail_recursive_jython(Name, BaseClauses, RecClauses, Code)
-        ;   compile_general_recursive_jython(Name, BaseClauses, RecClauses, Code)
+        ;   %% Check for per-path visited pattern (diagnostic only)
+            (   jython_clauses_to_ppv_pairs(Clauses, PPVPairs),
+                is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
+            ;   true
+            ),
+            compile_general_recursive_jython(Name, BaseClauses, RecClauses, Code)
         )
     ;   % Generate clause-based processing
         findall(ClauseCode, 
@@ -560,6 +569,13 @@ generate_recursive_transform_jython(Body, Name, Transform) :-
         format(string(Transform), "{'arg0': ~w}", [JythonExpr])
     ;   Transform = "current"
     ).
+
+%% jython_clauses_to_ppv_pairs(+Clauses, -Pairs)
+%  Convert (Head, Body) tuples to pairs for is_per_path_visited_pattern.
+%  Identity conversion since Jython clauses are already (Head, Body) tuples.
+jython_clauses_to_ppv_pairs([], []).
+jython_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+    jython_clauses_to_ppv_pairs(Rest, RestPairs).
 
 %% ============================================
 %% GENERAL RECURSION PATTERN (→ memoization)
