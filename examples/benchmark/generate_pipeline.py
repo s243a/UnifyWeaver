@@ -675,9 +675,112 @@ class EffectiveDistanceBenchmark
 '''
 
 
+def generate_codon(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    """Generate Codon-compatible Python that loads data from TSV files.
+    Codon differences from CPython:
+    - No frozenset (use Set[str] with copy)
+    - No generators/yield (use List return)
+    - No defaultdict (use dict with setdefault)
+    - No f-strings with expressions (use format or concat)
+    - Explicit type annotations preferred
+    """
+    root = list(root_cats)[0] if root_cats else "Physics"
+
+    return f'''# Effective distance benchmark (Codon) — loads data from TSV files
+# d_eff = (Σ hops^(-{n}))^(-1/{n})
+# Root: {root}
+# Usage: codon run effective_distance_codon.py <category_parent.tsv> <article_category.tsv>
+# Build: codon build -release -o bench_codon effective_distance_codon.py
+import sys
+from math import pow as fpow
+
+ROOT = "{root}"
+N = {n}.0
+MAX_DEPTH = {max_depth}
+
+
+def load_tsv_pairs(path: str) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {{}}
+    first = True
+    with open(path) as f:
+        for line in f:
+            if first:
+                first = False
+                if line.startswith("article") or line.startswith("child"):
+                    continue
+            parts = line.strip().split("\\t", 1)
+            if len(parts) == 2:
+                if parts[0] not in result:
+                    result[parts[0]] = []
+                result[parts[0]].append(parts[1])
+    return result
+
+
+def category_ancestor_dfs(
+    cat: str, visited: set[str], adj: dict[str, list[str]], depth: int
+) -> list[tuple[str, int]]:
+    results: list[tuple[str, int]] = []
+    if cat in visited or depth >= MAX_DEPTH:
+        return results
+    new_visited = set(visited)
+    new_visited.add(cat)
+    if cat in adj:
+        for nb in adj[cat]:
+            if nb not in new_visited:
+                results.append((nb, 1))
+                for sub in category_ancestor_dfs(nb, new_visited, adj, depth + 1):
+                    results.append((sub[0], sub[1] + 1))
+    return results
+
+
+def compute_deff(hops: list[int]) -> float:
+    if len(hops) == 0:
+        return 1e30
+    w = 0.0
+    for h in hops:
+        w += fpow(float(h), -N)
+    if w <= 0.0:
+        return 1e30
+    return fpow(w, -1.0 / N)
+
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: codon run effective_distance_codon.py <category_parent.tsv> <article_category.tsv>")
+        sys.exit(1)
+
+    adj = load_tsv_pairs(sys.argv[1])
+    art_cats = load_tsv_pairs(sys.argv[2])
+
+    arts = sorted(art_cats.keys())
+    results: list[tuple[float, str]] = []
+
+    for art in arts:
+        all_hops: list[int] = []
+        for cat in art_cats[art]:
+            if cat == ROOT:
+                all_hops.append(1)
+            for pair in category_ancestor_dfs(cat, set[str](), adj, 0):
+                if pair[0] == ROOT:
+                    all_hops.append(pair[1] + 1)
+        if len(all_hops) > 0:
+            deff = compute_deff(all_hops)
+            results.append((deff, art))
+
+    results.sort()
+    print("article\\troot_category\\teffective_distance")
+    for r in results:
+        print(r[1] + "\\t" + ROOT + "\\t" + str(round(r[0] * 1000000) / 1000000))
+
+
+main()
+'''
+
+
 GENERATORS = {
     'awk': generate_awk,
     'python': generate_python,
+    'codon': generate_codon,
     'go': generate_go,
     'rust': generate_rust,
     'csharp': generate_csharp,
