@@ -35,12 +35,20 @@
 
 dimension_n(5).
 
+%% Max DFS depth — paths beyond this are cut. With n=5, d^(-5) at
+%% depth 10 is 0.00001, contributing negligibly to d_eff. This prevents
+%% combinatorial explosion on large graphs while preserving accuracy.
+%% Can be overridden by asserting max_depth/1 before loading this file.
+:- dynamic max_depth/1.
+max_depth(10).
+
 %% --------------------------------------------------------------------------
 %% category_ancestor(+Cat, -Ancestor, -Hops, +Visited)
 %%
 %% Transitive closure over category_parent/2 with cycle detection.
 %% Visited is a list of already-seen categories to prevent infinite loops
-%% in Wikipedia's cyclic category graph.
+%% in Wikipedia's cyclic category graph. Depth is bounded by max_depth/1
+%% to prevent combinatorial explosion on large graphs.
 %% --------------------------------------------------------------------------
 
 category_ancestor(Cat, Parent, 1, Visited) :-
@@ -48,6 +56,9 @@ category_ancestor(Cat, Parent, 1, Visited) :-
     \+ member(Parent, Visited).
 
 category_ancestor(Cat, Ancestor, Hops, Visited) :-
+    max_depth(MaxD),
+    length(Visited, Depth),
+    Depth < MaxD, !,
     category_parent(Cat, Mid),
     \+ member(Mid, Visited),
     category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
