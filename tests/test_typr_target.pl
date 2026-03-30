@@ -5145,4 +5145,111 @@ test(recursive_compiler_supports_typr_mode_driven_weighted_per_path_visited_recu
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(recursive_compiler_supports_typr_per_path_visited_stdin_input_mode) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(stdin)], Code)),
+    once(sub_string(Code, _, _, _, "let category_parent_lines_from_stdin <- function()")),
+    once(sub_string(Code, _, _, _, "readLines(file(\"stdin\"))")),
+    once(sub_string(Code, _, _, _, "let category_parent_from_lines <- function(lines)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_from_vectors(start, category_parent_from_lines(lines), category_parent_to_lines(lines))")),
+    \+ sub_string(Code, _, _, _, "let category_parent_from <- ["),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_per_path_visited_file_input_mode) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(file("data.txt"))], Code)),
+    once(sub_string(Code, _, _, _, "let category_parent_lines_from_file <- function()")),
+    once(sub_string(Code, _, _, _, "readLines(\"data.txt\")")),
+    once(sub_string(Code, _, _, _, "category_ancestor_from_vectors(start, category_parent_from_lines(lines), category_parent_to_lines(lines))")),
+    \+ sub_string(Code, _, _, _, "let category_parent_from <- ["),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_per_path_visited_vfs_input_mode) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(vfs("family_tree"))], Code)),
+    once(sub_string(Code, _, _, _, "let category_parent_lines_from_vfs <- function()")),
+    once(sub_string(Code, _, _, _, "cell_data <- nb_read(\"family_tree\", \".output\");")),
+    once(sub_string(Code, _, _, _, "category_ancestor_from_vectors(start, category_parent_from_lines(lines), category_parent_to_lines(lines))")),
+    \+ sub_string(Code, _, _, _, "let category_parent_from <- ["),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_per_path_visited_function_input_mode) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(function)], Code)),
+    once(sub_string(Code, _, _, _, "let category_ancestor_from_vectors <- function(start, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "let category_ancestor <- function(start, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_from_vectors(start, from_nodes, to_nodes)")),
+    \+ sub_string(Code, _, _, _, "readLines("),
+    \+ sub_string(Code, _, _, _, "nb_read("),
+    \+ sub_string(Code, _, _, _, "let category_parent_from <- ["),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
 :- end_tests(typr_target).

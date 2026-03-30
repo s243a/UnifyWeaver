@@ -1,0 +1,14 @@
+
+let {{base}}_lines_from_vfs <- function() {
+	cell_data <- nb_read("{{vfs_source}}", "{{vfs_prop}}");
+	if (nchar(cell_data) > 0) {
+		strsplit(cell_data, "\n")
+	} else {
+		c()
+	}
+};
+
+let {{pred}} <- function(start) {
+	lines <- {{base}}_lines_from_vfs();
+	{{pred}}_from_vectors(start, {{base}}_from_lines(lines), {{base}}_to_lines(lines))
+};
