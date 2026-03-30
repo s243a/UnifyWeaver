@@ -23,6 +23,9 @@
 :- use_module('../core/binding_registry').
 :- use_module('../core/clause_body_analysis').
 
+% Per-path visited pattern detection
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
+
 % Track required includes
 :- dynamic required_cpp_include/1.
 
@@ -260,12 +263,18 @@ generate_pipeline_process_cpp([], "    return record;").
 generate_pipeline_process_cpp(Clauses, Code) :-
     Clauses \= [],
     Clauses = [(Head, _)|_],
-    functor(Head, Name, _),
+    functor(Head, Name, Arity),
     (   is_recursive_predicate_cpp(Name, Clauses)
     ->  partition(is_recursive_clause_cpp(Name), Clauses, RecClauses, BaseClauses),
         (   is_tail_recursive_cpp(Name, RecClauses)
         ->  compile_tail_recursive_cpp(Name, BaseClauses, RecClauses, Code)
-        ;   compile_general_recursive_cpp(Name, BaseClauses, RecClauses, Code)
+        ;   %% Check for per-path visited pattern (diagnostic only)
+            (   cpp_clauses_to_ppv_pairs(Clauses, PPVPairs),
+                is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
+            ;   true
+            ),
+            compile_general_recursive_cpp(Name, BaseClauses, RecClauses, Code)
         )
     ;   findall(ClauseCode, 
             (member((H, B), Clauses), translate_clause_cpp(H, B, ClauseCode)),
@@ -331,6 +340,13 @@ compile_tail_recursive_cpp(Name, BaseClauses, _RecClauses, Code) :-
     
     std::cerr << \"Warning: Max iterations exceeded for ~w\" << std::endl;
     return current;", [Name, BaseCondition, Name]).
+
+%% cpp_clauses_to_ppv_pairs(+Clauses, -Pairs)
+%  Convert (Head, Body) tuples to pairs for is_per_path_visited_pattern.
+%  Identity conversion since C++ clauses are already (Head, Body) tuples.
+cpp_clauses_to_ppv_pairs([], []).
+cpp_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+    cpp_clauses_to_ppv_pairs(Rest, RestPairs).
 
 %% ============================================
 %% GENERAL RECURSION (→ stack)

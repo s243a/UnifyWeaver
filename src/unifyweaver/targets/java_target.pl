@@ -23,6 +23,9 @@
 :- use_module('../bindings/java_bindings').
 :- use_module('../core/clause_body_analysis').
 
+% Per-path visited pattern detection
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
+
 % Track required imports
 :- dynamic required_java_import/1.
 
@@ -535,14 +538,20 @@ generate_pipeline_process(Clauses, Code) :-
     Clauses \= [],
     % Check for recursion
     Clauses = [(Head, _)|_],
-    functor(Head, Name, _),
+    functor(Head, Name, Arity),
     (   is_recursive_predicate_java(Name, Clauses)
     ->  % Separate base and recursive clauses
         partition(is_recursive_clause_java(Name), Clauses, RecClauses, BaseClauses),
         % Check if tail recursive
         (   is_tail_recursive_java(Name, RecClauses)
         ->  compile_tail_recursive_java(Name, BaseClauses, RecClauses, Code)
-        ;   compile_general_recursive_java(Name, BaseClauses, RecClauses, Code)
+        ;   %% Check for per-path visited pattern (diagnostic only)
+            (   java_clauses_to_ppv_pairs(Clauses, PPVPairs),
+                is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
+            ;   true
+            ),
+            compile_general_recursive_java(Name, BaseClauses, RecClauses, Code)
         )
     ;   % Generate clause-based processing
         findall(ClauseCode, 
@@ -662,6 +671,13 @@ generate_recursive_transform_java(Body, Name, Transform) :-
 %% ============================================
 %% GENERAL RECURSION PATTERN (→ memoization)
 %% ============================================
+
+%% java_clauses_to_ppv_pairs(+Clauses, -Pairs)
+%  Convert (Head, Body) tuples to pairs for is_per_path_visited_pattern.
+%  Identity conversion since Java clauses are already (Head, Body) tuples.
+java_clauses_to_ppv_pairs([], []).
+java_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+    java_clauses_to_ppv_pairs(Rest, RestPairs).
 
 %% compile_general_recursive_java(+Name, +BaseClauses, +RecClauses, -Code)
 %  Compile general recursive predicate with memoization

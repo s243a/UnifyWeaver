@@ -3905,6 +3905,18 @@ python_disj_elif_return_lines([Alt|Rest], VarMap, [ElifLine, RetLine|RestLines])
 python_guard_condition(_VarMap, true, 'True') :- !.
 python_guard_condition(_VarMap, fail, 'False') :- !.
 python_guard_condition(_VarMap, false, 'False') :- !.
+%% Negation-as-failure: \+ Goal → not condition
+python_guard_condition(VarMap, \+(Goal), Condition) :- !,
+    python_guard_condition(VarMap, Goal, InnerCond),
+    format(string(Condition), 'not (~w)', [InnerCond]).
+python_guard_condition(VarMap, not(Goal), Condition) :- !,
+    python_guard_condition(VarMap, Goal, InnerCond),
+    format(string(Condition), 'not (~w)', [InnerCond]).
+%% member(X, List) → X in List
+python_guard_condition(VarMap, member(X, List), Condition) :- !,
+    python_expr(X, VarMap, PyX),
+    python_expr(List, VarMap, PyList),
+    format(string(Condition), '~w in ~w', [PyX, PyList]).
 %% Binding command guard (zero-output binding used as boolean test)
 python_guard_condition(VarMap, Goal, Condition) :-
     compound(Goal),
@@ -5042,7 +5054,7 @@ compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
             python_clauses_to_ppv_pairs(Clauses, ClausePairs),
             is_per_path_visited_pattern(Name, Arity, ClausePairs, VisitedPos)
         ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
-            compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+            compile_visited_recursive(Name, Arity, VisitedPos, BaseClauses, RecClauses, Options, PythonCode)
         ;   %% General recursion — no visited pattern, skip visited-set
             compile_general_recursive_no_visited(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
         )
@@ -5053,6 +5065,125 @@ compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
 python_clauses_to_ppv_pairs([], []).
 python_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
     python_clauses_to_ppv_pairs(Rest, RestPairs).
+
+%% compile_visited_recursive(+Name, +Arity, +VisitedPos, +Base, +Rec, +Opts, -Code)
+%  Arity-aware visited-set recursion. VisitedPos indicates which
+%  argument is the visited list. External API has arity N-1 (strips visited).
+%  Works for arity 3, 4, 5, etc.
+compile_visited_recursive(Name, Arity, VisitedPos, BaseClauses, RecClauses, Options, PythonCode) :-
+    %% For arity-3 with visited at position 3 or 4, use existing handler
+    (   Arity =:= 3
+    ->  compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+    ;   Arity >= 4
+    ->  compile_visited_recursive_generic(Name, Arity, VisitedPos, BaseClauses, RecClauses, Options, PythonCode)
+    ;   compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+    ).
+
+%% compile_visited_recursive_generic(+Name, +Arity, +VisitedPos, +Base, +Rec, +Opts, -Code)
+%  Generic arity-N visited recursion. Generates:
+%    def name(arg1, ...argN-1):  # external API, no visited param
+%        return list(name_worker(arg1, ..., visited=set()))
+%    def name_worker(arg1, ..., visited):
+%        if arg1 in visited: return
+%        visited = visited | {arg1}
+%        # base case + recursive case yielding tuples
+compile_visited_recursive_generic(Name, Arity, VisitedPos, BaseClauses, RecClauses, Options, PythonCode) :-
+    %% External arity (strips visited parameter)
+    ExternalArity is Arity - 1,
+    %% Build external arg list (all args except visited)
+    findall(ArgName, (
+        between(1, Arity, I),
+        I \= VisitedPos,
+        format(string(ArgName), 'arg~w', [I])
+    ), ExternalArgs),
+    atomic_list_concat(ExternalArgs, ', ', ExternalArgStr),
+    %% Build worker arg list (all args + visited)
+    format(string(WorkerArgStr), '~w, visited=None', [ExternalArgStr]),
+    %% Build output tuple args (non-input, non-visited)
+    findall(ArgName, (
+        between(2, Arity, I),
+        I \= VisitedPos,
+        format(string(ArgName), 'arg~w', [I])
+    ), OutputArgs),
+    %% Base case
+    (   BaseClauses = [(BaseHead, BaseBody)|_]
+    ->  BaseHead =.. [_|BaseHeadArgs],
+        python_visited_base_code(BaseHeadArgs, VisitedPos, BaseBody, Name, BaseCode)
+    ;   BaseCode = "    pass  # No base case"
+    ),
+    %% Recursive case
+    (   RecClauses = [(RecHead, RecBody)|_]
+    ->  RecHead =.. [_|_RecArgs],
+        python_visited_rec_code(RecBody, Name, Arity, VisitedPos, RecCode)
+    ;   RecCode = "    pass  # No recursive case"
+    ),
+    format(string(WorkerCode),
+"def _~w_worker(~w):
+    \"\"\"Arity-~w recursive worker with visited-set. Yields result tuples.\"\"\"
+    if visited is None:
+        visited = set()
+    if arg1 in visited:
+        return
+    visited = visited | {arg1}
+    # Base case
+~s
+    # Recursive case
+~s
+", [Name, WorkerArgStr, Arity, BaseCode, RecCode]),
+    %% Wrapper
+    format(string(WrapperCode),
+"def ~w(~w):
+    \"\"\"Public API for ~w/~w (visited parameter hidden).\"\"\"
+    return list(_~w_worker(~w))
+", [Name, ExternalArgStr, Name, ExternalArity, Name, ExternalArgStr]),
+    header_with_functools(Header),
+    helpers(Helpers),
+    generate_python_main(Options, Main),
+    format(string(PythonCode), "~s~s\n~s\n~s\n~s", [Header, Helpers, WorkerCode, WrapperCode, Main]).
+
+%% python_visited_base_code(+HeadArgs, +VisitedPos, +Body, +Name, -Code)
+python_visited_base_code(HeadArgs, VisitedPos, BaseBody, Name, Code) :-
+    extract_goals_list(BaseBody, Goals),
+    (   Goals = [RelGoal|_], compound(RelGoal), RelGoal =.. [RelName|_], RelName \= Name
+    ->  %% Relation lookup base case
+        length(HeadArgs, Arity),
+        %% Find constant output args
+        findall(ValStr, (
+            between(2, Arity, I), I \= VisitedPos,
+            nth1(I, HeadArgs, Arg),
+            (number(Arg) -> format(string(ValStr), '~w', [Arg])
+            ; atom(Arg) -> format(string(ValStr), '"~w"', [Arg])
+            ; ValStr = "None")
+        ), ValStrs),
+        atomic_list_concat(ValStrs, ', ', TupleStr),
+        atom_string(RelName, RelStr),
+        format(string(Code),
+"    for row in ~w_data:
+        if row[0] == arg1:
+            yield (~w)", [RelStr, TupleStr])
+    ;   Code = "    pass  # Base case (simple)"
+    ).
+
+%% python_visited_rec_code(+Body, +Name, +Arity, +VisitedPos, -Code)
+python_visited_rec_code(Body, Name, Arity, VisitedPos, Code) :-
+    extract_goals_list(Body, Goals),
+    %% Find the relation lookup (non-recursive call)
+    (   member(RelGoal, Goals), compound(RelGoal), RelGoal =.. [RelName|_],
+        atom_string(RelName, RelStr), RelStr \= Name
+    ->  true
+    ;   RelStr = "rel"
+    ),
+    atom_string(Name, NameStr),
+    %% Build worker call args
+    findall(ArgName, (
+        between(1, Arity, I), I \= VisitedPos,
+        (I =:= 1 -> ArgName = "mid" ; format(string(ArgName), 'sub_arg~w', [I]))
+    ), _WorkerCallArgs),
+    format(string(Code),
+"    for row in ~w_data:
+        if row[0] == arg1:
+            for sub in _~w_worker(row[1], visited=visited):
+                yield sub", [RelStr, NameStr]).
 
 %% compile_general_recursive_no_visited(+Name, +Arity, +Base, +Rec, +Opts, -Code)
 %  General recursion WITHOUT visited-set (for predicates without the

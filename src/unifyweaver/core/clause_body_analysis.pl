@@ -160,6 +160,11 @@ classify_goal(_, _, unknown).
 is_guard_goal(true, _) :- !.
 is_guard_goal(fail, _) :- !.
 is_guard_goal(false, _) :- !.
+%% Negation-as-failure: \+ Goal is a guard (boolean test, no bindings)
+is_guard_goal(\+(Goal), VarMap) :- !,
+    (is_guard_goal(Goal, VarMap) -> true ; true).
+is_guard_goal(not(Goal), VarMap) :- !,
+    (is_guard_goal(Goal, VarMap) -> true ; true).
 is_guard_goal(_Module:Goal, VarMap) :-
     !,
     is_guard_goal(Goal, VarMap).

@@ -24,6 +24,9 @@
 :- use_module('../core/binding_registry').
 :- use_module('../core/clause_body_analysis').
 
+% Per-path visited pattern detection
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
+
 % Track required includes
 :- dynamic required_c_include/1.
 
@@ -363,12 +366,18 @@ generate_pipeline_process_c([], "    return record;").
 generate_pipeline_process_c(Clauses, Code) :-
     Clauses \= [],
     Clauses = [(Head, _)|_],
-    functor(Head, Name, _),
+    functor(Head, Name, Arity),
     (   is_recursive_predicate_c(Name, Clauses)
     ->  partition(is_recursive_clause_c(Name), Clauses, RecClauses, BaseClauses),
         (   is_tail_recursive_c(Name, RecClauses)
         ->  compile_tail_recursive_c(Name, BaseClauses, RecClauses, Code)
-        ;   compile_general_recursive_c(Name, BaseClauses, RecClauses, Code)
+        ;   %% Check for per-path visited pattern (diagnostic only)
+            (   c_clauses_to_ppv_pairs(Clauses, PPVPairs),
+                is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
+            ;   true
+            ),
+            compile_general_recursive_c(Name, BaseClauses, RecClauses, Code)
         )
     ;   findall(ClauseCode, 
             (member((H, B), Clauses), translate_clause_c(H, B, ClauseCode)),
@@ -434,6 +443,13 @@ compile_tail_recursive_c(Name, BaseClauses, _RecClauses, Code) :-
     
     fprintf(stderr, \"Warning: Max iterations exceeded for ~w\\n\");
     return current;", [Name, BaseCondition, Name]).
+
+%% c_clauses_to_ppv_pairs(+Clauses, -Pairs)
+%  Convert (Head, Body) tuples to pairs for is_per_path_visited_pattern.
+%  Identity conversion since C clauses are already (Head, Body) tuples.
+c_clauses_to_ppv_pairs([], []).
+c_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+    c_clauses_to_ppv_pairs(Rest, RestPairs).
 
 %% ============================================
 %% GENERAL RECURSION (→ explicit stack)
