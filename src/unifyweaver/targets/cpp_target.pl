@@ -268,13 +268,13 @@ generate_pipeline_process_cpp(Clauses, Code) :-
     ->  partition(is_recursive_clause_cpp(Name), Clauses, RecClauses, BaseClauses),
         (   is_tail_recursive_cpp(Name, RecClauses)
         ->  compile_tail_recursive_cpp(Name, BaseClauses, RecClauses, Code)
-        ;   %% Check for per-path visited pattern (diagnostic only)
+        ;   %% Check for per-path visited pattern and branch code generation
             (   cpp_clauses_to_ppv_pairs(Clauses, PPVPairs),
                 is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
-            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
-            ;   true
-            ),
-            compile_general_recursive_cpp(Name, BaseClauses, RecClauses, Code)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
+                compile_general_recursive_cpp(Name, BaseClauses, RecClauses, Code)
+            ;   compile_general_recursive_cpp_no_visited(Name, BaseClauses, RecClauses, Code)
+            )
         )
     ;   findall(ClauseCode, 
             (member((H, B), Clauses), translate_clause_cpp(H, B, ClauseCode)),
@@ -351,6 +351,24 @@ cpp_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
 %% ============================================
 %% GENERAL RECURSION (→ stack)
 %% ============================================
+
+%% compile_general_recursive_cpp_no_visited(+Name, +BaseClauses, +RecClauses, -Code)
+%  Plain recursive function without visited-set cycle detection.
+compile_general_recursive_cpp_no_visited(Name, BaseClauses, _RecClauses, Code) :-
+    (   BaseClauses = [(BaseHead, _)|_]
+    ->  generate_base_condition_cpp(BaseHead, BaseCondition)
+    ;   BaseCondition = "false"
+    ),
+    format(string(Code),
+"    // General recursive predicate: ~w - plain recursive (no visited pattern)
+    // Base case
+    if (~w) {
+        return record;
+    }
+
+    // Recursive case - no cycle detection needed
+    // TODO: Compute next value and recurse
+    return record;", [Name, BaseCondition]).
 
 compile_general_recursive_cpp(Name, BaseClauses, _RecClauses, Code) :-
     collect_cpp_include('<unordered_set>'),

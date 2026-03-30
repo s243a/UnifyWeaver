@@ -545,13 +545,13 @@ generate_pipeline_process(Clauses, Code) :-
         % Check if tail recursive
         (   is_tail_recursive_java(Name, RecClauses)
         ->  compile_tail_recursive_java(Name, BaseClauses, RecClauses, Code)
-        ;   %% Check for per-path visited pattern (diagnostic only)
+        ;   %% Check for per-path visited pattern and branch code generation
             (   java_clauses_to_ppv_pairs(Clauses, PPVPairs),
                 is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
-            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
-            ;   true
-            ),
-            compile_general_recursive_java(Name, BaseClauses, RecClauses, Code)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
+                compile_general_recursive_java(Name, BaseClauses, RecClauses, Code)
+            ;   compile_general_recursive_java_no_visited(Name, BaseClauses, RecClauses, Code)
+            )
         )
     ;   % Generate clause-based processing
         findall(ClauseCode, 
@@ -678,6 +678,56 @@ generate_recursive_transform_java(Body, Name, Transform) :-
 java_clauses_to_ppv_pairs([], []).
 java_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
     java_clauses_to_ppv_pairs(Rest, RestPairs).
+
+%% compile_general_recursive_java_no_visited(+Name, +BaseClauses, +RecClauses, -Code)
+%  Plain recursive function without visited-set cycle detection.
+%  Uses simple HashMap memoization but no per-path visited tracking.
+compile_general_recursive_java_no_visited(Name, BaseClauses, RecClauses, Code) :-
+    % Generate base case
+    (   BaseClauses = [(BaseHead, BaseBody)|_]
+    ->  generate_base_condition_java(BaseHead, BaseBody, BaseCondition, _)
+    ;   BaseCondition = "false"
+    ),
+    % Generate recursive case
+    (   RecClauses = [(_, RecBody)|_]
+    ->  generate_plain_recursive_java(RecBody, Name, RecursiveComputation)
+    ;   RecursiveComputation = "current"
+    ),
+    format(string(Code),
+"        // General recursive predicate: ~w - plain recursive (no visited pattern)
+        @SuppressWarnings(\"unchecked\")
+        Map<String, Object> memo = (Map<String, Object>) record.getOrDefault(\"__memo__\", new HashMap<>());
+
+        String key = record.get(\"arg0\").toString();
+
+        if (memo.containsKey(key)) {
+            return Optional.of((Map<String, Object>) memo.get(key));
+        }
+
+        Map<String, Object> current = new HashMap<>(record);
+
+        // Base case check
+        if (~w) {
+            memo.put(key, current);
+            return Optional.of(current);
+        }
+
+        // Recursive computation with memoization (no cycle detection)
+        Map<String, Object> result = ~w;
+        memo.put(key, result);
+        return Optional.of(result);", [Name, BaseCondition, RecursiveComputation]).
+
+%% generate_plain_recursive_java(+Body, +Name, -Code)
+generate_plain_recursive_java(Body, Name, Code) :-
+    extract_goal_java(Body, Goal),
+    functor(Goal, Name, _),
+    Goal =.. [_|Args],
+    (   Args = [Expr|_]
+    ->  expr_to_java(Expr, JavaExpr),
+        format(string(Code),
+"processWithMemo(new HashMap<String, Object>() {{ put(\"arg0\", ~w); put(\"__memo__\", memo); }}).orElse(current)", [JavaExpr])
+    ;   Code = "current"
+    ).
 
 %% compile_general_recursive_java(+Name, +BaseClauses, +RecClauses, -Code)
 %  Compile general recursive predicate with memoization

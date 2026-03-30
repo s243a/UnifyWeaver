@@ -503,13 +503,13 @@ generate_pipeline_process_kotlin(Clauses, Code) :-
         partition(is_recursive_clause_kotlin(Name), Clauses, RecClauses, BaseClauses),
         (   is_tail_recursive_kotlin(Name, RecClauses)
         ->  compile_tail_recursive_kotlin(Name, BaseClauses, RecClauses, Code)
-        ;   %% Check for per-path visited pattern (diagnostic only)
+        ;   %% Check for per-path visited pattern and branch code generation
             (   kotlin_clauses_to_ppv_pairs(Clauses, PPVPairs),
                 is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
-            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
-            ;   true
-            ),
-            compile_general_recursive_kotlin(Name, BaseClauses, RecClauses, Code)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
+                compile_general_recursive_kotlin(Name, BaseClauses, RecClauses, Code)
+            ;   compile_general_recursive_kotlin_no_visited(Name, BaseClauses, RecClauses, Code)
+            )
         )
     ;   % Generate functional-style processing
         findall(ClauseCode, 
@@ -617,6 +617,53 @@ kotlin_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
 %% ============================================
 %% GENERAL RECURSION (→ memoization)
 %% ============================================
+
+%% compile_general_recursive_kotlin_no_visited(+Name, +BaseClauses, +RecClauses, -Code)
+%  Plain recursive function without visited-set cycle detection.
+%  Uses simple mutableMapOf memoization but no per-path visited tracking.
+compile_general_recursive_kotlin_no_visited(Name, BaseClauses, RecClauses, Code) :-
+    (   BaseClauses = [(BaseHead, _)|_]
+    ->  generate_base_condition_kotlin(BaseHead, BaseCondition)
+    ;   BaseCondition = "false"
+    ),
+    (   RecClauses = [(_, RecBody)|_]
+    ->  generate_plain_recursive_kotlin(RecBody, Name, RecursiveComputation)
+    ;   RecursiveComputation = "current"
+    ),
+    format(string(Code),
+"        // General recursive predicate: ~w - plain recursive (no visited pattern)
+        @Suppress(\"UNCHECKED_CAST\")
+        val memo = record.getOrPut(\"__memo__\") { mutableMapOf<String, Any?>() }
+            as MutableMap<String, Any?>
+
+        val key = record[\"arg0\"].toString()
+
+        memo[key]?.let { return it as MutableMap<String, Any?> }
+
+        val current = record.toMutableMap()
+
+        // Base case check
+        if (~w) {
+            memo[key] = current
+            return current
+        }
+
+        // Recursive computation with memoization (no cycle detection)
+        val result = ~w
+        memo[key] = result
+        return result", [Name, BaseCondition, RecursiveComputation]).
+
+%% generate_plain_recursive_kotlin(+Body, +Name, -Code)
+generate_plain_recursive_kotlin(Body, Name, Code) :-
+    extract_goal_kotlin(Body, Goal),
+    functor(Goal, Name, _),
+    Goal =.. [_|Args],
+    (   Args = [Expr|_]
+    ->  expr_to_kotlin(Expr, KotlinExpr),
+        format(string(Code),
+"process(mutableMapOf(\"arg0\" to ~w, \"__memo__\" to memo))!!", [KotlinExpr])
+    ;   Code = "current"
+    ).
 
 compile_general_recursive_kotlin(Name, BaseClauses, RecClauses, Code) :-
     (   BaseClauses = [(BaseHead, _)|_]
