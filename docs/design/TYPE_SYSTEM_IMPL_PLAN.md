@@ -144,6 +144,9 @@ bring-up.
   runtime query helpers, native explicit `input(stdin|file|vfs|function)`
   loader wrappers, and native declared scalar or conservative pair-shaped
   runtime node parsing
+- conservative per-path visited recursion for `category_ancestor/4`-style
+  predicates with compile-time fact seeding, scalar node IDs, a last-position
+  `Visited` list, and native TypR `(node, hops)` pair results
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,

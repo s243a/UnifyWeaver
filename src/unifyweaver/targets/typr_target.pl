@@ -22,6 +22,7 @@
 :- use_module('../core/binding_registry', [binding/6]).
 :- use_module('../core/advanced/pattern_matchers', [
     is_tail_recursive_accumulator/2,
+    is_per_path_visited_pattern/4,
     split_body_at_recursive_call/5
 ]).
 :- use_module('../core/advanced/mutual_recursion', [
@@ -42,7 +43,7 @@ target_info(info{
     file_extension: ".typr",
     runtime: typr,
     features: [types, gradual_typing, s3, transpiles_to_r],
-    recursion_patterns: [transitive_closure, tail_recursion, linear_recursion, tree_recursion, mutual_recursion],
+    recursion_patterns: [transitive_closure, per_path_visited_recursion, tail_recursion, linear_recursion, tree_recursion, mutual_recursion],
     compile_command: "typr"
 }).
 
@@ -67,7 +68,8 @@ compile_recursive_predicate_to_typr(PredIndicator, Options, Code) :-
     option(global_typed_mode(GlobalMode), Options, infer),
     resolve_typed_mode(Pred/Arity, Options, GlobalMode, TypedMode),
     findall(Head-Body, predicate_clause(Module, Pred, Arity, Head, Body), Clauses),
-    (   compile_typr_tail_recursive_accumulator(Module:Pred/Arity, TypedMode, Clauses, Code)
+    (   compile_typr_per_path_visited(Module:Pred/Arity, TypedMode, Clauses, Code)
+    ;   compile_typr_tail_recursive_accumulator(Module:Pred/Arity, TypedMode, Clauses, Code)
     ;   compile_typr_linear_recursive_numeric(Module:Pred/Arity, TypedMode, Clauses, Code)
     ;   compile_typr_linear_recursive_list(Module:Pred/Arity, TypedMode, Clauses, Code)
     ;   compile_typr_tree_recursive_structural(Module:Pred/Arity, TypedMode, Clauses, Code)
@@ -5002,6 +5004,109 @@ let ~w <- fn(~w): ~w {
 };
 ', [PredStr, Arity, PredStr, TypedArgList, ReturnType, IndentedBody]).
 
+compile_typr_per_path_visited(Module:Pred/Arity, _TypedMode, Clauses, Code) :-
+    Arity =:= 4,
+    findall((Head, Body), member(Head-Body, Clauses), ClausePairs),
+    is_per_path_visited_pattern(Pred, Arity, ClausePairs, 4),
+    typr_per_path_visited_spec(Module, Pred/Arity, Clauses, Spec),
+    load_typr_per_path_visited_template(Template),
+    render_template(Template, Spec, Code).
+
+typr_per_path_visited_spec(
+    Module,
+    Pred/Arity,
+    Clauses,
+    [
+        pred=PredStr,
+        arity=Arity,
+        base=BaseStr,
+        empty_nodes_expr=EmptyNodesExpr,
+        from_nodes_expr=FromNodesExpr,
+        to_nodes_expr=ToNodesExpr,
+        base_hops_expr=BaseHopsExpr,
+        hop_increment_expr=HopIncrementExpr
+    ]
+) :-
+    single_linear_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause),
+    typr_per_path_visited_base_clause(BaseClause, Pred, BasePred, BaseHops),
+    typr_per_path_visited_recursive_clause(RecClause, Pred, BasePred, HopIncrement),
+    resolve_node_type(Pred/Arity, BasePred/2, NodeTypeTerm),
+    typr_per_path_visited_scalar_node_type(NodeTypeTerm),
+    atom_string(Pred, PredStr),
+    atom_string(BasePred, BaseStr),
+    empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
+    base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
+    format(string(BaseHopsExpr), '~w', [BaseHops]),
+    format(string(HopIncrementExpr), '~w', [HopIncrement]).
+
+typr_per_path_visited_scalar_node_type(atom).
+typr_per_path_visited_scalar_node_type(string).
+typr_per_path_visited_scalar_node_type(integer).
+typr_per_path_visited_scalar_node_type(float).
+typr_per_path_visited_scalar_node_type(number).
+
+typr_per_path_visited_base_clause(Head-Body0, Pred, BasePred, BaseHops) :-
+    Head =.. [Pred, InputVar, OutputVar, BaseHops, VisitedVar],
+    number(BaseHops),
+    var(InputVar),
+    var(OutputVar),
+    var(VisitedVar),
+    typr_mutual_goal_list(Body0, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    typr_per_path_visited_base_goals(Goals, InputVar, OutputVar, VisitedVar, BasePred).
+
+typr_per_path_visited_base_goals([StepGoal], InputVar, OutputVar, _VisitedVar, BasePred) :-
+    typr_per_path_visited_step_goal(StepGoal, InputVar, OutputVar, BasePred).
+typr_per_path_visited_base_goals([StepGoal, NegGoal], InputVar, OutputVar, VisitedVar, BasePred) :-
+    typr_per_path_visited_step_goal(StepGoal, InputVar, OutputVar, BasePred),
+    typr_per_path_visited_negated_member_goal(NegGoal, OutputVar, VisitedVar).
+
+typr_per_path_visited_recursive_clause(Head-Body0, Pred, BasePred, HopIncrement) :-
+    Head =.. [Pred, InputVar, OutputVar, HopsVar, VisitedVar],
+    var(InputVar),
+    var(OutputVar),
+    var(HopsVar),
+    var(VisitedVar),
+    typr_mutual_goal_list(Body0, Goals0),
+    maplist(typr_strip_module_goal, Goals0, Goals),
+    Goals = [StepGoal, NegGoal, RecCallGoal, HopsGoal],
+    typr_per_path_visited_mid_step_goal(StepGoal, InputVar, MidVar, BasePred),
+    typr_per_path_visited_negated_member_goal(NegGoal, MidVar, VisitedVar),
+    typr_per_path_visited_recursive_call(RecCallGoal, Pred, MidVar, OutputVar, PrevHopsVar, VisitedVar),
+    typr_per_path_visited_hops_goal(HopsGoal, HopsVar, PrevHopsVar, HopIncrement).
+
+typr_per_path_visited_step_goal(Goal, InputVar, OutputVar, BasePred) :-
+    Goal =.. [BasePred, StepInputVar, StepOutputVar],
+    BasePred \= member,
+    StepInputVar == InputVar,
+    StepOutputVar == OutputVar.
+
+typr_per_path_visited_mid_step_goal(Goal, InputVar, MidVar, BasePred) :-
+    Goal =.. [BasePred, StepInputVar, StepMidVar],
+    StepInputVar == InputVar,
+    MidVar = StepMidVar.
+
+typr_per_path_visited_negated_member_goal(\+ member(MemberVar, VisitedVar0), MemberVar, VisitedVar) :-
+    VisitedVar0 == VisitedVar.
+
+typr_per_path_visited_recursive_call(Goal, Pred, MidVar, OutputVar, PrevHopsVar, VisitedVar) :-
+    Goal =.. [Pred, RecInputVar, RecOutputVar, PrevHopsVar, ConsVisited],
+    RecInputVar == MidVar,
+    RecOutputVar == OutputVar,
+    nonvar(ConsVisited),
+    ConsVisited = [VisitedHead|VisitedTail],
+    VisitedHead == MidVar,
+    VisitedTail == VisitedVar.
+
+typr_per_path_visited_hops_goal(HopsVar is Expr, HopsVar, PrevHopsVar, HopIncrement) :-
+    typr_per_path_visited_hops_expr(Expr, PrevHopsVar, HopIncrement).
+
+typr_per_path_visited_hops_expr(PrevHopsVar + HopIncrement, PrevHopsVar, HopIncrement) :-
+    number(HopIncrement),
+    !.
+typr_per_path_visited_hops_expr(HopIncrement + PrevHopsVar, PrevHopsVar, HopIncrement) :-
+    number(HopIncrement).
+
 single_tail_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause) :-
     partition(clause_calls_predicate(Pred, Arity), Clauses, RecClauses, BaseClauses),
     BaseClauses = [BaseClause],
@@ -6776,6 +6881,12 @@ load_typr_tc_part(PartName, Template) :-
     (   exists_file(RelPath)
     ->  read_file_to_string(RelPath, Template, [])
     ;   read_file_to_string(VfsPath, Template, [])
+    ).
+
+load_typr_per_path_visited_template(Template) :-
+    (   exists_file('templates/targets/typr/per_path_visited.mustache')
+    ->  read_file_to_string('templates/targets/typr/per_path_visited.mustache', Template, [])
+    ;   read_file_to_string('/user/templates/targets/typr/per_path_visited.mustache', Template, [])
     ).
 
 compile_generic_typr(Module, Pred/Arity, Options, TypedMode, Code) :-
