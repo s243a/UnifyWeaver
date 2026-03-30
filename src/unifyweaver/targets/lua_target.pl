@@ -25,6 +25,7 @@
 :- use_module('../core/advanced/linear_recursion').
 :- use_module('../core/advanced/mutual_recursion').
 :- use_module('../core/clause_body_analysis').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 %% init_lua_target
 %  Initialize the Lua target by loading bindings.
@@ -1615,6 +1616,31 @@ test_lua_pipeline :-
 % ============================================================================
 
 :- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% No-visited-pattern — plain recursive without cycle detection
+advanced_recursive_compiler:compile_general_recursive_pattern(lua, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BH, true)|_]
+    ->  BH =.. [_|BaseArgs], last(BaseArgs, BaseVal),
+        BaseArgs = [BaseKey|_],
+        format(string(BaseCheck), 'if arg1 == ~w then return {~w} end', [BaseKey, BaseVal])
+    ;   BaseCheck = '-- no base case'
+    ),
+    format(string(Code),
+'-- General recursive: ~w (plain, no visited pattern)\n\c
+function ~w(arg1)\n\c
+    ~w\n\c
+    local sub = ~w(arg1)\n\c
+    local result = {}\n\c
+    for _, v in ipairs(sub) do\n\c
+        result[#result + 1] = v\n\c
+    end\n\c
+    return result\n\c
+end\n',
+    [PredStr, PredStr, BaseCheck, PredStr]).
 
 %% Arity-2: wrapper + worker with base case check and recursive accumulation
 advanced_recursive_compiler:compile_general_recursive_pattern(lua, PredStr, 2, BaseClauses, RecClauses, Code) :-

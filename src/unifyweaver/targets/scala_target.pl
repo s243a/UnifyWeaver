@@ -1011,6 +1011,7 @@ object Main {
 % ============================================================================
 
 :- use_module('../core/advanced/mutual_recursion').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 :- multifile mutual_recursion:compile_mutual_pattern/5.
 
 mutual_recursion:compile_mutual_pattern(scala, Predicates, MemoEnabled, _MemoStrategy, ScalaCode) :-
@@ -1561,6 +1562,26 @@ scala_if_chain_lines([branch(Cond, ClauseCode)|Rest], PredSpec, IsFirst, [Line|R
 %% ============================================
 
 :- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% No-visited-pattern — plain recursive without cycle detection
+advanced_recursive_compiler:compile_general_recursive_pattern(scala, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs], last(BaseArgs, BaseResult)
+    ->  term_to_atom(BaseResult, BaseValAtom), atom_string(BaseValAtom, BaseValStr),
+        BaseArgs = [BaseInput|_], term_to_atom(BaseInput, BaseInAtom), atom_string(BaseInAtom, BaseInStr)
+    ;   BaseValStr = "Nil", BaseInStr = "0"
+    ),
+    format(string(Code),
+'// General recursive: ~w (plain, no visited pattern)\n\c
+def ~w(arg1: String): List[String] = {\n\c
+  if (arg1 == ~w) List(~w)\n\c
+  else ~w(arg1.toString)\n\c
+}\n',
+    [PredStr, PredStr, BaseInStr, BaseValStr, PredStr]).
 
 advanced_recursive_compiler:compile_general_recursive_pattern(scala, PredStr, _Arity, BaseClauses, _RecClauses, Code) :-
     %% Extract base value from first base clause

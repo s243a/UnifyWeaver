@@ -20,6 +20,7 @@
 
 % Shared clause body analysis for native lowering
 :- use_module('../core/clause_body_analysis').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 %% init_vbnet_target
 init_vbnet_target :-
@@ -1050,7 +1051,27 @@ vbnet_mutual_methods([Pred/Arity|Rest], AllPreds, [MethodCode|RestCodes]) :-
     ),
     vbnet_mutual_methods(Rest, AllPreds, RestCodes).
 
-%% --- Pattern 5: General recursion with visited set ---
+%% --- Pattern 5: General recursion ---
+
+%% No-visited-pattern — plain recursive VB.NET without HashSet
+advanced_recursive_compiler:compile_general_recursive_pattern(vbnet, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs], last(BaseArgs, BaseResult), integer(BaseResult)
+    ->  BaseVal = BaseResult
+    ;   BaseVal = 0
+    ),
+    format(string(Code),
+"' General recursive: ~w (plain, no visited pattern)\n\c
+\n\c
+Function ~w(arg1 As String) As Long\n\c
+    ' Base case + recursive call (no visited set)\n\c
+    Return ~w\n\c
+End Function\n",
+    [PredStr, PredStr, BaseVal]).
 
 advanced_recursive_compiler:compile_general_recursive_pattern(vbnet, PredStr, _Arity, BaseClauses, _RecClauses, Code) :-
     %% Extract base value

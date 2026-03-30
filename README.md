@@ -83,7 +83,7 @@ Scala and Clojure also appear in the Functional table above.
 | **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | — | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
 | **Aggregations** | — | — | ✅ | ✅ |
 

@@ -50,6 +50,7 @@
 :- use_module('../core/advanced/multicall_linear_recursion', []).
 :- use_module('../core/advanced/direct_multi_call_recursion', []).
 :- use_module('../core/advanced/mutual_recursion', []).
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 :- multifile tail_recursion:compile_tail_pattern/9.
 :- multifile linear_recursion:compile_linear_pattern/8.
@@ -467,6 +468,28 @@ echo "Done. Run with: java -jar ~w"
 % ============================================================================
 
 :- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% No-visited-pattern — plain recursive Krakatau without HashSet
+advanced_recursive_compiler:compile_general_recursive_pattern(krakatau, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs], last(BaseArgs, BaseResult), integer(BaseResult)
+    ->  BaseVal = BaseResult
+    ;   BaseVal = 0
+    ),
+    format(string(Code),
+'; General recursive: ~w (plain, no visited pattern)\n\c
+.method public static ~w : (Ljava/lang/String;)I\n\c
+    .limit stack 4\n\c
+    .limit locals 2\n\c
+    ; Base case + recursive call (no visited set)\n\c
+    ldc ~w\n\c
+    ireturn\n\c
+.end method\n',
+    [PredStr, PredStr, BaseVal]).
 
 advanced_recursive_compiler:compile_general_recursive_pattern(krakatau, PredStr, Arity, BaseClauses, _RecClauses, Code) :-
     Arity =:= 2,

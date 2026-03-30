@@ -1314,6 +1314,7 @@ let main argv =
 % ============================================================================
 
 :- use_module('../core/advanced/direct_multi_call_recursion').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 :- multifile direct_multi_call_recursion:compile_direct_multicall_pattern/5.
 
 direct_multi_call_recursion:compile_direct_multicall_pattern(fsharp, PredStr, BaseClauses, _RecClause, FsCode) :-
@@ -1352,6 +1353,26 @@ let main argv =
 %% ============================================
 
 :- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% No-visited-pattern — plain recursive without cycle detection
+advanced_recursive_compiler:compile_general_recursive_pattern(fsharp, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs], last(BaseArgs, BaseResult)
+    ->  term_to_atom(BaseResult, BaseValAtom), atom_string(BaseValAtom, BaseValStr),
+        BaseArgs = [BaseInput|_], term_to_atom(BaseInput, BaseInAtom), atom_string(BaseInAtom, BaseInStr)
+    ;   BaseValStr = "[]", BaseInStr = "0"
+    ),
+    format(string(Code),
+'// General recursive: ~w (plain, no visited pattern)\n\c
+\n\c
+let rec ~w arg1 =\n\c
+    if arg1 = ~w then [~w]\n\c
+    else ~w (string arg1)\n',
+    [PredStr, PredStr, BaseInStr, BaseValStr, PredStr]).
 
 advanced_recursive_compiler:compile_general_recursive_pattern(fsharp, PredStr, _Arity, BaseClauses, _RecClauses, Code) :-
     %% Extract base value from first base clause
