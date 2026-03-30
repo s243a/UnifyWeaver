@@ -956,6 +956,13 @@ ts_branches_to_ternary([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :-
 %% ts_branch_value — extract result value from a branch
 ts_branch_value(_Module:Goal, VarMap, Value) :-
     !, ts_branch_value(Goal, VarMap, Value).
+ts_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    ts_guard_condition(VarMap, If, Cond),
+    ts_branch_value(Then, VarMap, ThenVal),
+    ts_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '(~w) ? ~w : ~w', [Cond, ThenVal, ElseVal]).
 ts_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),

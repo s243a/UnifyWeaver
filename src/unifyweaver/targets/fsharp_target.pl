@@ -470,6 +470,13 @@ fsharp_nested_if_expr([branch(If, Then)|Rest], DefaultGoal, VarMap, Expr) :-
 %% fsharp_branch_value — extract result value from a branch
 fsharp_branch_value(_Module:Goal, VarMap, Value) :-
     !, fsharp_branch_value(Goal, VarMap, Value).
+fsharp_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    fsharp_guard_condition(VarMap, If, Cond),
+    fsharp_branch_value(Then, VarMap, ThenVal),
+    fsharp_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), 'if ~w then ~w else ~w', [Cond, ThenVal, ElseVal]).
 fsharp_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),

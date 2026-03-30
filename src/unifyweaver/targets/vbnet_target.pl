@@ -581,6 +581,13 @@ vbnet_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
 
 %% vbnet_classified_branch_value(+Branch, +VarMap, -ExprStr)
 %%  Inline branch value extractor for VB.NET.
+vbnet_classified_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    vbnet_guard_condition(VarMap, If, Cond),
+    vbnet_classified_branch_value(Then, VarMap, ThenVal),
+    vbnet_classified_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), 'If(~w, ~w, ~w)', [Cond, ThenVal, ElseVal]).
 vbnet_classified_branch_value(Branch, VarMap, ExprStr) :-
     normalize_goals(Branch, Goals),
     last(Goals, LastGoal),

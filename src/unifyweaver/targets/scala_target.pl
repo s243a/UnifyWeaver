@@ -1391,6 +1391,13 @@ scala_branches_to_if_expr([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :-
 %% scala_branch_value — extract result value from a branch
 scala_branch_value(_Module:Goal, VarMap, Value) :-
     !, scala_branch_value(Goal, VarMap, Value).
+scala_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    scala_guard_condition(VarMap, If, Cond),
+    scala_branch_value(Then, VarMap, ThenVal),
+    scala_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), 'if (~w) ~w else ~w', [Cond, ThenVal, ElseVal]).
 scala_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),

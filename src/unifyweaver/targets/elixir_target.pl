@@ -549,6 +549,13 @@ elixir_cond_branch_lines([branch(If, Then)|Rest], DefaultGoal, VarMap, [CondLine
 %% elixir_branch_value — extract result value from a branch
 elixir_branch_value(_Module:Goal, VarMap, Value) :-
     !, elixir_branch_value(Goal, VarMap, Value).
+elixir_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    elixir_guard_condition(VarMap, If, Cond),
+    elixir_branch_value(Then, VarMap, ThenVal),
+    elixir_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), 'if(~w, do: ~w, else: ~w)', [Cond, ThenVal, ElseVal]).
 elixir_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),
