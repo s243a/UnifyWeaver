@@ -338,8 +338,9 @@ Current TypR lowering policy is intentionally mixed:
   additive numeric outputs returned as native nested pair results, including
   `category_ancestor/4`, moved-input variants, and
   `category_ancestor_weight/5`; the same slice now also emits a native
-  `*_from_vectors` runtime helper and native
-  `input(stdin|file|vfs|function)` wrappers without raw R
+  `*_from_vectors` runtime helper, native
+  `input(stdin|file|vfs|function)` wrappers, and declared scalar runtime node
+  parsing such as `integer` and `number`, without raw R
 - multi-step native TypR control-flow chains may keep later guards and outputs
   in native TypR when those guards depend on earlier bound values
 - simple comparison and boolean guard expressions over already-bound
