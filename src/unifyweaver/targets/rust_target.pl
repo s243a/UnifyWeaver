@@ -3364,10 +3364,168 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     (   Clauses = [] -> fail
     ;   maplist(is_fact_clause, Clauses) ->
         compile_facts_to_rust(Pred, Arity, Clauses, FieldDelim, RustCode)
+    ;   is_general_recursive_pattern_rust(Pred, Arity, Clauses) ->
+        format('Type: general_recursion_arity_~w~n', [Arity]),
+        compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode)
     ;   Clauses = [SingleHead-SingleBody], SingleBody \= true ->
         compile_single_rule_to_rust(Pred, Arity, SingleHead, SingleBody, FieldDelim, Unique, IncludeMain, RustCode)
     ;   fail
     ).
+
+% ============================================================================
+% GENERAL (NON-TAIL) RECURSION — Arity 2-3
+% ============================================================================
+%%
+%% Handles transitive closure with counter patterns.
+%% Generates recursive Rust function with HashSet<String> visited parameter.
+
+is_general_recursive_pattern_rust(Pred, Arity, Clauses) :-
+    Arity >= 2,
+    member(_-Body, Clauses),
+    contains_call_to_rust(Body, Pred),
+    % Not all clauses are recursive (must have base case)
+    member(_-BaseBody, Clauses),
+    \+ contains_call_to_rust(BaseBody, Pred).
+
+contains_call_to_rust(Goal, Pred) :-
+    Goal =.. [Pred|_], !.
+contains_call_to_rust((A, _), Pred) :-
+    contains_call_to_rust(A, Pred), !.
+contains_call_to_rust((_, B), Pred) :-
+    contains_call_to_rust(B, Pred).
+
+compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode) :-
+    atom_string(Pred, PredStr),
+    % Partition clauses
+    partition(is_rec_clause_rust(Pred), Clauses, _RecClauses, BaseClauses),
+    % Extract step relation from base case
+    (   BaseClauses = [_BaseHead-BaseBody|_]
+    ->  extract_goals_list_rust(BaseBody, BaseGoals),
+        (   BaseGoals = [StepGoal|_],
+            StepGoal =.. [StepRel|_],
+            atom_string(StepRel, StepRelStr)
+        ->  true
+        ;   StepRelStr = "step"
+        ),
+        % Get base case constant (3rd arg)
+        (   BaseClauses = [BH-_|_],
+            BH =.. [_|BArgs],
+            length(BArgs, 3),
+            nth1(3, BArgs, BaseConst),
+            number(BaseConst)
+        ->  format(string(BaseConstStr), "~w", [BaseConst])
+        ;   BaseConstStr = "1"
+        )
+    ;   StepRelStr = "step",
+        BaseConstStr = "1"
+    ),
+    % Extract arithmetic increment from recursive case
+    (   _RecClauses = [_RH-RecBody|_]
+    ->  extract_goals_list_rust(RecBody, RecGoals),
+        (   member((_ is ArithExpr), RecGoals),
+            ArithExpr = (_ + Incr),
+            number(Incr)
+        ->  format(string(IncrStr), "~w", [Incr])
+        ;   IncrStr = "1"
+        )
+    ;   IncrStr = "1"
+    ),
+    % Collect step relation facts for embedding
+    atom_string(StepRelAtom, StepRelStr),
+    functor(StepHead, StepRelAtom, 2),
+    findall(A-B, (user:clause(StepHead, true), StepHead =.. [_,A,B]), StepFacts),
+    % Build fact initializer lines
+    findall(FactLine,
+        (   member(K-V, StepFacts),
+            format(string(FactLine),
+                '    adj.entry("~w".to_string()).or_insert_with(Vec::new).push("~w".to_string());',
+                [K, V])
+        ),
+        FactLines),
+    atomic_list_concat(FactLines, '\n', FactBlock),
+    (   Arity =:= 3
+    ->  format(string(RustCode),
+'// Transitive closure with counter: ~w/3
+// Step relation: ~w/2
+use std::collections::{{HashMap, HashSet}};
+
+fn ~w_worker(arg1: &str, visited: &HashSet<String>, adj: &HashMap<String, Vec<String>>) -> Vec<(String, i32)> {{
+    if visited.contains(arg1) {{
+        return Vec::new();
+    }}
+    let mut new_visited = visited.clone();
+    new_visited.insert(arg1.to_string());
+
+    let mut results = Vec::new();
+    if let Some(neighbors) = adj.get(arg1) {{
+        for nb in neighbors {{
+            if !new_visited.contains(nb.as_str()) {{
+                results.push((nb.clone(), ~s));
+                for (ancestor, h) in ~w_worker(nb, &new_visited, adj) {{
+                    results.push((ancestor, h + ~s));
+                }}
+            }}
+        }}
+    }}
+    results
+}}
+
+fn main() {{
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+~w
+
+    let visited = HashSet::new();
+    let results = ~w_worker("test", &visited, &adj);
+    for (ancestor, hops) in &results {{
+        println!("{{}}\\t{{}}", ancestor, hops);
+    }}
+}}
+', [PredStr, StepRelStr,
+    PredStr, BaseConstStr, PredStr, IncrStr,
+    FactBlock, PredStr])
+    ;   % Arity 2 — simpler, no counter
+        format(string(RustCode),
+'// Transitive closure: ~w/2
+use std::collections::{{HashMap, HashSet}};
+
+fn ~w_worker(arg1: &str, visited: &HashSet<String>, adj: &HashMap<String, Vec<String>>) -> Vec<String> {{
+    if visited.contains(arg1) {{
+        return Vec::new();
+    }}
+    let mut new_visited = visited.clone();
+    new_visited.insert(arg1.to_string());
+
+    let mut results = Vec::new();
+    if let Some(neighbors) = adj.get(arg1) {{
+        for nb in neighbors {{
+            if !new_visited.contains(nb.as_str()) {{
+                results.push(nb.clone());
+                results.extend(~w_worker(nb, &new_visited, adj));
+            }}
+        }}
+    }}
+    results
+}}
+
+fn main() {{
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+~w
+
+    let visited = HashSet::new();
+    let results = ~w_worker("test", &visited, &adj);
+    for r in &results {{
+        println!("{{}}", r);
+    }}
+}}
+', [PredStr, PredStr, PredStr, FactBlock, PredStr])
+    ).
+
+is_rec_clause_rust(Pred, _Head-Body) :-
+    contains_call_to_rust(Body, Pred).
+
+extract_goals_list_rust((A, B), [A|Rest]) :- !,
+    extract_goals_list_rust(B, Rest).
+extract_goals_list_rust(Goal, [Goal]).
 
 % ============================================================================
 % NATIVE CLAUSE BODY LOWERING
