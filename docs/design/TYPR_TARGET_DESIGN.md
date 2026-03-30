@@ -442,7 +442,8 @@ Current implementation note:
   relation, one recursion-driving scalar input, one direct node output, one
   or more additive numeric outputs, a native recursive worker that returns
   nested pair results without raw R, a native `*_from_vectors` runtime
-  helper, and native `input(stdin|file|vfs|function)` wrappers over the same
+  helper, native `input(stdin|file|vfs|function)` wrappers, and declared
+  scalar runtime node parsing such as `integer` and `number` over the same
   scalar step-relation shape
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command

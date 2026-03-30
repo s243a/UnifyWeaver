@@ -5252,4 +5252,54 @@ test(recursive_compiler_supports_typr_per_path_visited_function_input_mode) :-
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(recursive_compiler_supports_typr_per_path_visited_integer_stdin_loader) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(1, 2)),
+    assertz(user:category_parent(2, 3)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, integer)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, integer)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(stdin)], Code)),
+    once(sub_string(Code, _, _, _, "results <- integer();")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__integer(trimws(parts[1])));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__integer(trimws(parts[2])));")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_per_path_visited_number_stdin_loader) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(1.5, 2.5)),
+    assertz(user:category_parent(2.5, 3.5)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, number)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, number)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(stdin)], Code)),
+    once(sub_string(Code, _, _, _, "results <- numeric();")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__numeric(trimws(parts[1])));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, as__numeric(trimws(parts[2])));")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
 :- end_tests(typr_target).

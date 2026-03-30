@@ -4209,6 +4209,62 @@ test(per_path_visited_function_input_checks_with_typr, [condition(typr_cli_avail
     ),
     retractall(user:category_ancestor(_, _, _, _)).
 
+test(per_path_visited_integer_stdin_loader_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, integer)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, integer)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(stdin)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:category_ancestor(_, _, _, _)),
+    retractall(user:category_parent(_, _)).
+
+test(per_path_visited_number_stdin_loader_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, number)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, number)),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(stdin)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:category_ancestor(_, _, _, _)),
+    retractall(user:category_parent(_, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-
