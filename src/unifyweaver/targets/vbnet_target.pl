@@ -835,3 +835,267 @@ vbnet_ite_else(Else, VarMap, Code) :-
                '        Else\n            Return ~w\n        End If',
                [ElseVal])
     ).
+
+%% ============================================================
+%% Multifile recursion pattern hooks for VB.NET
+%% ============================================================
+
+:- multifile tail_recursion:compile_tail_pattern/9.
+:- multifile linear_recursion:compile_linear_pattern/8.
+:- multifile tree_recursion:compile_tree_pattern/6.
+:- multifile mutual_recursion:compile_mutual_pattern/5.
+:- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% --- Pattern 1: Tail recursion ---
+
+tail_recursion:compile_tail_pattern(vbnet, PredStr, Arity, _BaseClauses, _RecClauses, _AccPos, StepOp, _ExitAfterResult, Code) :-
+    step_op_to_vbnet(StepOp, VBStep),
+    (   Arity =:= 3 ->
+        % Arity 3: fold over list items
+        format(string(Code),
+'Imports System
+
+Module PrologGenerated
+    Function ~w(items() As Long) As Long
+        Dim acc As Long = 0
+        For Each item As Long In items
+            ~w
+        Next
+        Return acc
+    End Function
+
+    Sub Main(args() As String)
+        If args.Length >= 1 Then
+            Dim parts() As String = args(0).Split(","c)
+            Dim items(parts.Length - 1) As Long
+            For i As Integer = 0 To parts.Length - 1
+                items(i) = CLng(parts(i))
+            Next
+            Console.WriteLine(~w(items))
+        End If
+    End Sub
+End Module
+', [PredStr, VBStep, PredStr])
+    ;   Arity =:= 2 ->
+        % Arity 2: numeric accumulator
+        format(string(Code),
+'Imports System
+
+Module PrologGenerated
+    Function ~w(n As Long) As Long
+        Dim acc As Long = 1
+        While n > 0
+            ~w
+            n -= 1
+        End While
+        Return acc
+    End Function
+
+    Sub Main(args() As String)
+        If args.Length >= 1 Then
+            Console.WriteLine(~w(CLng(args(0))))
+        End If
+    End Sub
+End Module
+', [PredStr, VBStep, PredStr])
+    ;   format(string(Code), ''' Unsupported arity ~d for tail recursion~n', [Arity])
+    ).
+
+step_op_to_vbnet(add_element, 'acc += item').
+step_op_to_vbnet(add_1, 'acc += 1').
+step_op_to_vbnet(mult_element, 'acc *= item').
+step_op_to_vbnet(sub_element, 'acc -= item').
+step_op_to_vbnet(mult, 'acc = acc * n').
+step_op_to_vbnet(add, 'acc = acc + n').
+step_op_to_vbnet(Op, VBCode) :-
+    atom(Op),
+    format(string(VBCode), 'acc = acc ~w n', [Op]).
+
+%% --- Pattern 2: Linear recursion ---
+
+linear_recursion:compile_linear_pattern(vbnet, PredStr, Arity, BaseClauses, _RecClauses, _MemoEnabled, _MemoStrategy, Code) :-
+    (   Arity =:= 2 ->
+        linear_fold_vbnet(PredStr, BaseClauses, Code)
+    ;   format(string(Code), ''' Unsupported arity ~d for linear recursion~n', [Arity])
+    ).
+
+linear_fold_vbnet(PredStr, BaseClauses, Code) :-
+    %% Extract base case info
+    linear_recursion:extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
+    (   integer(BaseInput) -> format(string(BaseCheck), 'n = ~w', [BaseInput])
+    ;   BaseCheck = "n <= 0"
+    ),
+    (   integer(BaseOutput) -> format(string(BaseValStr), '~w', [BaseOutput])
+    ;   BaseValStr = "0"
+    ),
+    format(string(Code),
+'Imports System
+
+Module PrologGenerated
+    Function ~w(n As Long) As Long
+        If ~w Then
+            Return ~w
+        End If
+        Return n + ~w(n - 1)
+    End Function
+
+    Sub Main(args() As String)
+        If args.Length >= 1 Then
+            Console.WriteLine(~w(CLng(args(0))))
+        End If
+    End Sub
+End Module
+', [PredStr, BaseCheck, BaseValStr, PredStr, PredStr]).
+
+%% --- Pattern 3: Tree recursion ---
+
+tree_recursion:compile_tree_pattern(vbnet, PredStr, _Arity, _BaseClauses, _RecClauses, Code) :-
+    format(string(Code),
+'Imports System
+Imports System.Collections.Generic
+
+Module PrologGenerated
+    Private memo As New Dictionary(Of Long, Long)
+
+    Function ~w(n As Long) As Long
+        If n <= 1 Then
+            Return n
+        End If
+        If memo.ContainsKey(n) Then
+            Return memo(n)
+        End If
+        Dim result As Long = ~w(n - 1) + ~w(n - 2)
+        memo(n) = result
+        Return result
+    End Function
+
+    Sub Main(args() As String)
+        If args.Length >= 1 Then
+            Console.WriteLine(~w(CLng(args(0))))
+        End If
+    End Sub
+End Module
+', [PredStr, PredStr, PredStr, PredStr]).
+
+%% --- Pattern 4: Mutual recursion ---
+
+mutual_recursion:compile_mutual_pattern(vbnet, Predicates, _MemoEnabled, _MemoStrategy, Code) :-
+    vbnet_mutual_methods(Predicates, Predicates, MethodCodes),
+    atomic_list_concat(MethodCodes, '\n\n', MethodSection),
+    Predicates = [FirstPred/_|_],
+    atom_string(FirstPred, FirstStr),
+    format(string(Code),
+'Imports System
+
+Module PrologGenerated
+~w
+
+    Sub Main(args() As String)
+        If args.Length >= 1 Then
+            Console.WriteLine(~w(CLng(args(0))))
+        End If
+    End Sub
+End Module
+', [MethodSection, FirstStr]).
+
+vbnet_mutual_methods([], _, []).
+vbnet_mutual_methods([Pred/Arity|Rest], AllPreds, [MethodCode|RestCodes]) :-
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, Arity),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(mutual_recursion:is_mutual_recursive_clause(AllPreds), Clauses, RecClauses, BaseClauses),
+    %% Extract base value
+    (   BaseClauses = [clause(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs],
+        last(BaseArgs, BaseResult),
+        integer(BaseResult)
+    ->  BaseVal = BaseResult
+    ;   BaseVal = 0
+    ),
+    %% Extract base input
+    (   BaseClauses = [clause(BaseHead2, _)|_],
+        BaseHead2 =.. [_|BaseArgs2],
+        BaseArgs2 = [BaseInput|_],
+        integer(BaseInput)
+    ->  BaseIn = BaseInput
+    ;   BaseIn = 0
+    ),
+    %% Find the other predicate being called (mutual step)
+    (   RecClauses = [clause(_, RecBody)|_],
+        mutual_recursion:extract_mutual_call(RecBody, AllPreds, Pred, CalledPred, _)
+    ->  atom_string(CalledPred, CalledStr)
+    ;   CalledStr = PredStr
+    ),
+    %% Build VB.NET method
+    (   Arity =:= 1 ->
+        %% Boolean: is_even/is_odd pattern
+        (   BaseVal =:= 1 -> BoolStr = "True" ; BoolStr = "False" ),
+        format(string(MethodCode),
+'    Function ~w(n As Long) As Boolean
+        If n = ~w Then
+            Return ~w
+        End If
+        Return ~w(n - 1)
+    End Function',
+            [PredStr, BaseIn, BoolStr, CalledStr])
+    ;   %% Value-returning: arity 2+
+        format(string(MethodCode),
+'    Function ~w(n As Long) As Long
+        If n = ~w Then
+            Return ~w
+        End If
+        Return ~w(n - 1) + 1
+    End Function',
+            [PredStr, BaseIn, BaseVal, CalledStr])
+    ),
+    vbnet_mutual_methods(Rest, AllPreds, RestCodes).
+
+%% --- Pattern 5: General recursion with visited set ---
+
+advanced_recursive_compiler:compile_general_recursive_pattern(vbnet, PredStr, _Arity, BaseClauses, _RecClauses, Code) :-
+    %% Extract base value
+    (   BaseClauses = [(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs],
+        last(BaseArgs, BaseResult),
+        integer(BaseResult)
+    ->  BaseVal = BaseResult
+    ;   BaseVal = 0
+    ),
+    %% Extract base input
+    (   BaseClauses = [(BaseHead2, _)|_],
+        BaseHead2 =.. [_|BaseArgs2],
+        BaseArgs2 = [BaseInput|_],
+        integer(BaseInput)
+    ->  BaseIn = BaseInput
+    ;   BaseIn = 0
+    ),
+    format(string(Code),
+'Imports System
+Imports System.Collections.Generic
+
+Module PrologGenerated
+    Function ~w(start As String) As Long
+        Dim visited As New HashSet(Of String)
+        Return ~w_worker(start, visited)
+    End Function
+
+    Function ~w_worker(current As String, visited As HashSet(Of String)) As Long
+        If visited.Contains(current) Then
+            Return ~w
+        End If
+        visited.Add(current)
+        '' Base case
+        If current = "~w" Then
+            Return ~w
+        End If
+        '' Recursive case — would be expanded from clause body
+        Return ~w
+    End Function
+
+    Sub Main(args() As String)
+        If args.Length >= 1 Then
+            Console.WriteLine(~w(args(0)))
+        End If
+    End Sub
+End Module
+', [PredStr, PredStr, PredStr, BaseVal, BaseIn, BaseVal, BaseVal, PredStr]).

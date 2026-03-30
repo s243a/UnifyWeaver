@@ -110,7 +110,7 @@ Orchestrates the compilation of complex recursion patterns. It uses a priority-b
          │                            ▼
          │                  ┌───────────────────────────┐
          │                  │   Try Advanced Patterns   │
-         │                  │  (tail -> linear -> multicall -> direct_multi_call -> fold -> tree -> mutual) │
+         │                  │  (tail -> linear -> multicall -> direct_multi_call -> fold -> tree -> mutual -> general) │
          │                  └───────────┬───────────────┘
          │                              │
          └───────────────┬──────────────┘
@@ -147,7 +147,7 @@ Orchestrates the compilation of complex recursion patterns. It uses a priority-b
     *   If the predicate is **non-recursive**, it is handed off to the `stream_compiler`.
     *   If the predicate is **recursive**, it is passed to the `advanced_recursive_compiler`.
 
-8.  **Advanced Pattern Matching:** The advanced compiler attempts to match the predicate against its known patterns in priority order: tail recursion, linear recursion, multi-call linear recursion, direct multi-call recursion (clause-analysis approach), fold pattern, tree recursion, and finally mutual recursion (via SCC detection).
+8.  **Advanced Pattern Matching:** The advanced compiler attempts to match the predicate against its known patterns in priority order: tail recursion, linear recursion, multi-call linear recursion, direct multi-call recursion (clause-analysis approach), fold pattern, tree recursion, mutual recursion (via SCC detection), and finally general recursion (with visited-set cycle detection).
 
 9.  **Constraint Analysis:** The compiler queries the `constraint_analyzer` to fetch any constraints for the predicate (e.g. `unique(true)`).
 
