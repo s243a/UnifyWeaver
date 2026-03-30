@@ -4139,6 +4139,13 @@ python_elif_return_lines([branch(If, Then)|Rest], DefaultGoal, VarMap, [ElifLine
 %  Extract the result value from a branch (Then or Else).
 python_branch_value(_Module:Goal, VarMap, Value) :-
     !, python_branch_value(Goal, VarMap, Value).
+python_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    python_guard_condition(VarMap, If, Cond),
+    python_branch_value(Then, VarMap, ThenVal),
+    python_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '~w if ~w else ~w', [ThenVal, Cond, ElseVal]).
 python_branch_value((A, B), VarMap, Value) :-
     !,
     % Multi-goal branch: take value from last goal

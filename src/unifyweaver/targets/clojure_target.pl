@@ -875,6 +875,13 @@ clojure_nested_if_cond_pairs([branch(If, Then)|Rest], DefaultGoal, VarMap, Code)
 %% clojure_branch_value — extract result value from a branch
 clojure_branch_value(_Module:Goal, VarMap, Value) :-
     !, clojure_branch_value(Goal, VarMap, Value).
+clojure_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    clojure_guard_condition(VarMap, If, Cond),
+    clojure_branch_value(Then, VarMap, ThenVal),
+    clojure_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '(if ~w ~w ~w)', [Cond, ThenVal, ElseVal]).
 clojure_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),

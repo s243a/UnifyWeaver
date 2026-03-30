@@ -2953,6 +2953,13 @@ awk_classified_output_goal(Goal, VarMap0, Line, VarMapOut) :-
 
 %% awk_classified_branch_value(+Branch, +VarMap, -ExprStr)
 %%  Inline branch value extractor for AWK (mirrors awk_branch_value).
+awk_classified_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    awk_guard_condition(VarMap, If, Cond),
+    awk_classified_branch_value(Then, VarMap, ThenVal),
+    awk_classified_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '(~w) ? ~w : ~w', [Cond, ThenVal, ElseVal]).
 awk_classified_branch_value(Branch, VarMap, ExprStr) :-
     normalize_goals(Branch, Goals),
     last(Goals, LastGoal),
@@ -3065,6 +3072,13 @@ awk_branches_to_ternary([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :-
 %% awk_branch_value — extract result value from a branch
 awk_branch_value(_Module:Goal, VarMap, Value) :-
     !, awk_branch_value(Goal, VarMap, Value).
+awk_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    awk_guard_condition(VarMap, If, Cond),
+    awk_branch_value(Then, VarMap, ThenVal),
+    awk_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '(~w) ? ~w : ~w', [Cond, ThenVal, ElseVal]).
 awk_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),

@@ -1547,6 +1547,13 @@ kotlin_branches_to_if_expr([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :
 %% kotlin_branch_value — extract result value from a branch
 kotlin_branch_value(_Module:Goal, VarMap, Value) :-
     !, kotlin_branch_value(Goal, VarMap, Value).
+kotlin_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    kotlin_guard_condition(VarMap, If, Cond),
+    kotlin_branch_value(Then, VarMap, ThenVal),
+    kotlin_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), 'if (~w) ~w else ~w', [Cond, ThenVal, ElseVal]).
 kotlin_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),

@@ -1236,6 +1236,13 @@ java_branches_to_ternary([branch(If, Then)|Rest], DefaultGoal, VarMap, Code) :-
 %% java_branch_value — extract result value from a branch
 java_branch_value(_Module:Goal, VarMap, Value) :-
     !, java_branch_value(Goal, VarMap, Value).
+java_branch_value(Goal, VarMap, Value) :-
+    if_then_else_goal(Goal, If, Then, Else),
+    !,
+    java_guard_condition(VarMap, If, Cond),
+    java_branch_value(Then, VarMap, ThenVal),
+    java_branch_value(Else, VarMap, ElseVal),
+    format(string(Value), '(~w) ? ~w : ~w', [Cond, ThenVal, ElseVal]).
 java_branch_value((A, B), VarMap, Value) :-
     !,
     normalize_goals((A, B), Goals),
