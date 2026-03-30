@@ -614,22 +614,32 @@ compile_general_recursive_kotlin(Name, BaseClauses, RecClauses, Code) :-
     ),
     
     format(string(Code),
-"        // General recursive predicate: ~w - with memoization
+"        // General recursive predicate: ~w - with memoization + visited-set cycle detection
         @Suppress(\"UNCHECKED_CAST\")
-        val memo = record.getOrPut(\"__memo__\") { mutableMapOf<String, Any?>() } 
+        val memo = record.getOrPut(\"__memo__\") { mutableMapOf<String, Any?>() }
             as MutableMap<String, Any?>
-        
+        val visited = record.getOrPut(\"__visited__\") { mutableSetOf<String>() }
+            as MutableSet<String>
+
         val key = record[\"arg0\"].toString()
+
+        // Cycle detection: if already visiting this key, return empty
+        if (key in visited) {
+            return mutableMapOf()
+        }
+
         memo[key]?.let { return it as MutableMap<String, Any?> }
-        
+
+        val newVisited = visited.toMutableSet().apply { add(key) }
         val current = record.toMutableMap()
-        
+        current[\"__visited__\"] = newVisited
+
         // Base case check
         if (~w) {
             memo[key] = current
             return current
         }
-        
+
         // Recursive computation with memoization
         val result = ~w
         memo[key] = result
@@ -642,7 +652,7 @@ generate_memoized_recursive_kotlin(Body, Name, Code) :-
     (   Args = [Expr|_]
     ->  expr_to_kotlin(Expr, KotlinExpr),
         format(string(Code),
-"process(mutableMapOf(\"arg0\" to ~w, \"__memo__\" to memo))!!", [KotlinExpr])
+"process(mutableMapOf(\"arg0\" to ~w, \"__memo__\" to memo, \"__visited__\" to newVisited))!!", [KotlinExpr])
     ;   Code = "current"
     ).
 
