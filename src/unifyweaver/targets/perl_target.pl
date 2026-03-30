@@ -1971,6 +1971,7 @@ print ~w($ARGV[0]), "\\n" if @ARGV;
 % ============================================================================
 
 :- use_module('../core/advanced/mutual_recursion').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 :- multifile mutual_recursion:compile_mutual_pattern/5.
 
 mutual_recursion:compile_mutual_pattern(perl, Predicates, MemoEnabled, _MemoStrategy, PerlCode) :-
@@ -2073,6 +2074,27 @@ extract_goals_perl(Goal, [Goal]).
 % ============================================================================
 
 :- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% No-visited-pattern — plain recursive without cycle detection
+advanced_recursive_compiler:compile_general_recursive_pattern(perl, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BH, true)|_]
+    ->  BH =.. [_|BaseArgs], last(BaseArgs, BaseVal),
+        BaseArgs = [BaseKey|_],
+        format(string(BaseCheck), '    return ("~w") if $arg1 eq "~w";', [BaseVal, BaseKey])
+    ;   BaseCheck = '    # no base case extracted'
+    ),
+    format(string(Code),
+'# General recursive: ~w (plain, no visited pattern)\n\c
+sub ~w {\n\c
+    my ($arg1) = @_;\n\c
+~w\n\c
+    return ~w($arg1);\n\c
+}\n',
+    [PredStr, PredStr, BaseCheck, PredStr]).
 
 %% Arity-2: wrapper + worker with base case check and recursive accumulation
 advanced_recursive_compiler:compile_general_recursive_pattern(perl, PredStr, 2, BaseClauses, RecClauses, Code) :-

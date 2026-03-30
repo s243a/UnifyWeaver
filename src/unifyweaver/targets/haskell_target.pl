@@ -1417,6 +1417,7 @@ main = do
 % ============================================================================
 
 :- use_module('../core/advanced/mutual_recursion').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 :- multifile mutual_recursion:compile_mutual_pattern/5.
 
 mutual_recursion:compile_mutual_pattern(haskell, Predicates, MemoEnabled, _MemoStrategy, HsCode) :-
@@ -1540,6 +1541,25 @@ main = do
 %% ============================================
 
 :- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% No-visited-pattern — plain recursive without cycle detection
+advanced_recursive_compiler:compile_general_recursive_pattern(haskell, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs], last(BaseArgs, BaseResult)
+    ->  term_to_atom(BaseResult, BaseValAtom), atom_string(BaseValAtom, BaseValStr),
+        BaseArgs = [BaseInput|_], term_to_atom(BaseInput, BaseInAtom), atom_string(BaseInAtom, BaseInStr)
+    ;   BaseValStr = "[]", BaseInStr = "0"
+    ),
+    format(string(Code),
+'~w :: String -> [String]\n\c
+~w arg1\n\c
+  | arg1 == ~w = [~w]\n\c
+  | otherwise = ~w (show arg1)\n',
+    [PredStr, PredStr, BaseInStr, BaseValStr, PredStr]).
 
 advanced_recursive_compiler:compile_general_recursive_pattern(haskell, PredStr, _Arity, BaseClauses, _RecClauses, Code) :-
     %% Extract base value from first base clause

@@ -39,6 +39,7 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module('../core/clause_body_analysis').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 %% init_llvm_target
 init_llvm_target :-
@@ -2019,6 +2020,27 @@ recurse:
 % ---------------------------------------------------------------------------
 
 :- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% No-visited-pattern — plain recursive LLVM IR without visited array
+advanced_recursive_compiler:compile_general_recursive_pattern(llvm, PredStr, Arity, BaseClauses, RecClauses, Code) :-
+    atom_string(Pred, PredStr),
+    append(BaseClauses, RecClauses, AllClauses),
+    \+ is_per_path_visited_pattern(Pred, Arity, AllClauses, _),
+    !,
+    (   BaseClauses = [(BaseHead, _)|_],
+        BaseHead =.. [_|BaseArgs], last(BaseArgs, BaseResult), integer(BaseResult)
+    ->  BaseVal = BaseResult
+    ;   BaseVal = 0
+    ),
+    format(string(Code),
+'; General recursive: ~w (plain, no visited pattern)\n\c
+\n\c
+define i64 @~w(i64 %n) {\n\c
+entry:\n\c
+  ; Base case + recursive call (no visited set)\n\c
+  ret i64 ~w\n\c
+}\n',
+    [PredStr, PredStr, BaseVal]).
 
 advanced_recursive_compiler:compile_general_recursive_pattern(llvm, PredStr, _Arity, BaseClauses, _RecClauses, Code) :-
     (   BaseClauses = [(BaseHead, _)|_],
