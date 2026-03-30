@@ -110,6 +110,53 @@ Key requirements:
   check via `index()`
 - **No recursion limit** — stack depth bounded by graph diameter
 
+#### AWK Performance Note: String vs. Array Visited Sets
+
+The current AWK implementation uses comma-delimited path strings with
+`index(path, ",node,")` for membership checks. This is **O(n) per check**
+(linear substring scan), which makes AWK slower than Python's `frozenset`
+(O(1) hash lookup) for graph traversal workloads.
+
+**Recommended optimization** (future work): Encode the visited set as
+AWK associative array entries keyed by `(stack_depth, node)`:
+
+```awk
+# Instead of: stk_path[sp] = path "," nb ","
+# Use:        for each node in parent's visited, copy to child's depth
+#             visited[sp, nb] = 1
+
+# Membership check becomes O(1):
+# Instead of: if (index(path, "," nb ",") > 0) continue
+# Use:        if ((sp, nb) in visited) continue
+```
+
+The challenge is managing per-path state: when popping the stack, the
+child depth's visited entries must be cleaned up (or use a depth-keyed
+scheme where entries at depth > sp are implicitly invalid). Approaches:
+
+1. **Depth-keyed arrays**: `visited[depth, node] = 1`. When backtracking
+   (sp decreases), entries at higher depths are stale but harmless if
+   we only check `visited[current_sp, node]`. However, this doesn't
+   capture the full path — only whether a node was visited at a specific
+   stack depth.
+
+2. **Copy-on-push with cleanup**: When pushing, copy parent's visited
+   set to child's depth. When popping, delete child's entries. This is
+   O(path_length) per push but O(1) per membership check.
+
+3. **Path hash**: Maintain a hash of the visited set as a single integer,
+   updated incrementally. Membership check uses a separate per-depth
+   array. Trades memory for speed.
+
+4. **Foreign function interface**: Call a C extension for O(1) hash set
+   operations. Risk: FFI overhead per call may negate the speedup,
+   especially for the many small membership checks in DFS.
+
+Approach (2) is likely the best balance of correctness and performance
+for AWK. It replaces O(n) string scans with O(1) array lookups at the
+cost of O(path_length) copies per stack push — which is the same
+asymptotic cost as Python's `frozenset | {node}`.
+
 ### Strategy C: Semi-Naive with Path Tracking (C# Query Engine)
 
 The C# parameterized query engine uses `FixpointNode` with delta sets.
