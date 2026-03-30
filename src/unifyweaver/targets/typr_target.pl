@@ -34,6 +34,12 @@
 ]).
 :- use_module('r_target', [compile_predicate_to_r/3, init_r_target/0, infer_clauses_return_type/2]).
 :- use_module('type_declarations').
+:- use_module('../core/clause_body_analysis', [
+    normalize_goals/2,
+    clause_guard_output_split/4,
+    head_conditions/3,
+    lookup_var/3
+]).
 
 :- multifile mutual_recursion:compile_mutual_pattern/5.
 
@@ -7215,7 +7221,9 @@ typr_function_body(PredSpec, _Options, _TypedMode, Clauses, "bool", Body) :-
     format(string(Body), 'result <- @{ local({ ~w }) }@;\nresult', [MatchExpr]).
 typr_function_body(PredSpec, Options, _TypedMode, Clauses, ReturnType, Body) :-
     generic_typr_return_type(PredSpec, Clauses, ReturnType),
-    (   native_typr_clause_body(PredSpec, Clauses, Body)
+    (   cba_typr_clause_body(PredSpec, Clauses, Body)
+    ->  true
+    ;   native_typr_clause_body(PredSpec, Clauses, Body)
     ->  true
     ;   wrapped_r_body_expression(PredSpec, Options, WrappedExpr),
         format(string(Body), 'result <- @{ ~w }@;\nresult', [WrappedExpr])
@@ -7343,6 +7351,149 @@ r_literal(Value, Literal) :-
     format(string(Literal), '~w', [Value]).
 r_literal(Value, Literal) :-
     term_string(Value, Literal).
+
+%% ============================================
+%% CLAUSE_BODY_ANALYSIS-BASED NATIVE LOWERING
+%% ============================================
+%% Handles simple guard/output predicates via the shared framework.
+%% Falls through to the existing native_typr_clause_body for complex cases.
+
+cba_typr_clause_body(PredSpec, Clauses, Body) :-
+    Clauses \= [],
+    maplist(cba_typr_clause_pair, Clauses, Branches),
+    Branches \= [],
+    pred_spec_name(PredSpec, PredName),
+    cba_branches_to_typr_if_chain(Branches, IfChain),
+    format(string(Body), '~w else {\n\tstop("No matching clause for ~w")\n}', [IfChain, PredName]).
+
+cba_typr_clause_pair(Head-Body, branch(Condition, ClauseCode)) :-
+    cba_typr_clause(Head, Body, Condition, ClauseCode),
+    !.
+
+cba_typr_clause(Head, Body, Condition, ClauseCode) :-
+    Head =.. [_|HeadArgs],
+    %% Module-qualify to avoid conflict with local build_head_varmap
+    clause_body_analysis:build_head_varmap(HeadArgs, 1, VarMap),
+    clause_body_analysis:head_conditions(HeadArgs, 1, HeadConditions),
+    clause_body_analysis:normalize_goals(Body, Goals),
+    Goals \= [],
+    clause_body_analysis:clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+    maplist(cba_typr_guard_condition(VarMap), GuardGoals, GuardConditions),
+    append(HeadConditions, GuardConditions, AllConditions0),
+    maplist(cba_typr_render_head_condition(VarMap), AllConditions0, AllConditions),
+    cba_combine_typr_conditions(AllConditions, Condition),
+    cba_typr_output_code(OutputGoals, VarMap, ClauseCode).
+
+cba_typr_render_head_condition(_VarMap, const_match(Index, Value), CondStr) :-
+    !,
+    format(string(ArgName), "arg~w", [Index]),
+    r_literal(Value, LitStr),
+    format(string(CondStr), '@{ identical(~w, ~w) }@', [ArgName, LitStr]).
+cba_typr_render_head_condition(_, var_bind(_Index), 'TRUE') :- !.
+cba_typr_render_head_condition(VarMap, Cond, CondStr) :-
+    cba_typr_guard_condition(VarMap, Cond, CondStr).
+
+cba_combine_typr_conditions([], 'TRUE').
+cba_combine_typr_conditions(Conditions, Combined) :-
+    exclude(==('TRUE'), Conditions, Filtered),
+    (   Filtered == []
+    ->  Combined = 'TRUE'
+    ;   maplist(cba_typr_unwrap_r_expr, Filtered, RawExprs),
+        atomic_list_concat(RawExprs, ' && ', InnerExpr),
+        format(string(Combined), '@{ ~w }@', [InnerExpr])
+    ).
+
+%% Unwrap @{ ... }@ wrapper for combining conditions
+cba_typr_unwrap_r_expr(Expr, Raw) :-
+    atom(Expr),
+    atom_string(Expr, ExprStr),
+    (   sub_string(ExprStr, 0, 3, _, "@{ "),
+        sub_string(ExprStr, _, 3, 0, " }@")
+    ->  sub_string(ExprStr, 3, _, 3, Raw)
+    ;   Raw = ExprStr
+    ).
+cba_typr_unwrap_r_expr(Expr, Raw) :-
+    string(Expr),
+    (   sub_string(Expr, 0, 3, _, "@{ "),
+        sub_string(Expr, _, 3, 0, " }@")
+    ->  sub_string(Expr, 3, _, 3, Raw)
+    ;   Raw = Expr
+    ).
+
+%% cba_typr_guard_condition(+VarMap, +Goal, -CondStr)
+cba_typr_guard_condition(VarMap, Goal, CondStr) :-
+    Goal =.. [Op, Left, Right],
+    cba_typr_cmp_op(Op, TypROp),
+    cba_typr_expr(Left, VarMap, LeftStr),
+    cba_typr_expr(Right, VarMap, RightStr),
+    format(string(CondStr), '@{ ~w ~w ~w }@', [LeftStr, TypROp, RightStr]).
+
+cba_typr_cmp_op(>, ">").
+cba_typr_cmp_op(<, "<").
+cba_typr_cmp_op(>=, ">=").
+cba_typr_cmp_op(=<, "<=").
+cba_typr_cmp_op(=:=, "==").
+cba_typr_cmp_op(=\=, "!=").
+
+%% cba_typr_expr(+Expr, +VarMap, -Str)
+cba_typr_expr(Var, VarMap, Str) :-
+    var(Var), !,
+    clause_body_analysis:lookup_var(Var, VarMap, Str).
+cba_typr_expr(Expr, VarMap, Str) :-
+    Expr =.. [Op, Left, Right],
+    cba_typr_arith_op(Op, TypROp),
+    !,
+    cba_typr_expr(Left, VarMap, LeftStr),
+    cba_typr_expr(Right, VarMap, RightStr),
+    format(string(Str), "(~w ~w ~w)", [LeftStr, TypROp, RightStr]).
+cba_typr_expr(abs(X), VarMap, Str) :-
+    !,
+    cba_typr_expr(X, VarMap, XStr),
+    format(string(Str), "abs(~w)", [XStr]).
+cba_typr_expr(-(X), VarMap, Str) :-
+    !,
+    cba_typr_expr(X, VarMap, XStr),
+    format(string(Str), "(-~w)", [XStr]).
+cba_typr_expr(Value, _VarMap, Str) :-
+    r_literal(Value, Str).
+
+cba_typr_arith_op(+, "+").
+cba_typr_arith_op(-, "-").
+cba_typr_arith_op(*, "*").
+cba_typr_arith_op(/, "/").
+cba_typr_arith_op(mod, "%%").
+cba_typr_arith_op(//, "%/%").
+
+%% cba_typr_output_code(+OutputGoals, +VarMap, -Code)
+cba_typr_output_code([Goal|_], VarMap, Code) :-
+    Goal = (_Result is Expr),
+    !,
+    cba_typr_expr(Expr, VarMap, ExprStr),
+    format(string(Code), '@{ ~w }@', [ExprStr]).
+cba_typr_output_code([Goal|_], VarMap, Code) :-
+    Goal = (_Result = Value),
+    !,
+    (   var(Value)
+    ->  clause_body_analysis:lookup_var(Value, VarMap, Code)
+    ;   r_literal(Value, LitStr),
+        format(string(Code), '~w', [LitStr])
+    ).
+cba_typr_output_code([Goal|_], VarMap, Code) :-
+    Goal = (Cond -> Then ; Else),
+    !,
+    cba_typr_guard_condition(VarMap, Cond, CondStr),
+    cba_typr_output_code([Then], VarMap, ThenStr),
+    cba_typr_output_code([Else], VarMap, ElseStr),
+    format(string(Code), 'if (~w) {\n\t~w\n} else {\n\t~w\n}', [CondStr, ThenStr, ElseStr]).
+cba_typr_output_code([], _VarMap, "NULL").
+
+%% cba_branches_to_typr_if_chain(+Branches, -Code)
+cba_branches_to_typr_if_chain([branch(Cond, Expr)], Code) :-
+    !,
+    format(string(Code), 'if (~w) {\n\t~w\n}', [Cond, Expr]).
+cba_branches_to_typr_if_chain([branch(Cond, Expr)|Rest], Code) :-
+    cba_branches_to_typr_if_chain(Rest, RestCode),
+    format(string(Code), 'if (~w) {\n\t~w\n} else ~w', [Cond, Expr, RestCode]).
 
 native_typr_clause_body(PredSpec, [Head-Body], Code) :-
     native_typr_clause(Head, Body, Condition, ClauseCode),
