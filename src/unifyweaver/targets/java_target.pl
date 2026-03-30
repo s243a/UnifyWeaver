@@ -1646,7 +1646,8 @@ linear_fold_java(PredStr, ClassName, BaseClauses, MemoEnabled, Code) :-
         RecCall =.. [_, _, AccVar],
         linear_recursion:find_last_is_expression(RBody, _ is FoldExpr),
         % For list patterns, InputVar is [H|T] — extract the head element variable
-        (   InputVar = [HeadVar|_] -> true ; HeadVar = InputVar ),
+        % Must use nonvar check to avoid unifying a free variable with [H|T]
+        (   nonvar(InputVar), InputVar = [HeadVar|_] -> true ; HeadVar = InputVar ),
         translate_fold_expr_java(FoldExpr, HeadVar, AccVar, JavaOp)
     ;   JavaOp = "current * acc"
     ),
