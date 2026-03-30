@@ -38,6 +38,10 @@ let {{pred}}_worker <- function(current, visited, from_nodes, to_nodes) {
 	results
 };
 
+let {{pred}}_from_vectors <- function(start, from_nodes, to_nodes) {
+	{{pred}}_worker(start, start, from_nodes, to_nodes)
+};
+
 let {{pred}} <- function(start) {
-	{{pred}}_worker(start, start, {{base}}_from, {{base}}_to)
+	{{pred}}_from_vectors(start, {{base}}_from, {{base}}_to)
 };

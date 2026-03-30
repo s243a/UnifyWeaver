@@ -5047,8 +5047,9 @@ test(recursive_compiler_supports_typr_per_path_visited_recursion) :-
     once(sub_string(Code, _, _, _, "results <- c(results, pair(next_node, 1));")),
     once(sub_string(Code, _, _, _, "sub_results <- category_ancestor_worker(next_node, c(visited, next_node), from_nodes, to_nodes);")),
     once(sub_string(Code, _, _, _, "pair(.subset2(sub_result, 1), .subset2(sub_result, 2) + 1)")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_from_vectors <- function(start, from_nodes, to_nodes)")),
     once(sub_string(Code, _, _, _, "let category_ancestor <- function(start)")),
-    once(sub_string(Code, _, _, _, "category_ancestor_worker(start, start, category_parent_from, category_parent_to)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_from_vectors(start, category_parent_from, category_parent_to)")),
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
@@ -5077,8 +5078,9 @@ test(recursive_compiler_supports_typr_weighted_per_path_visited_recursion) :-
     once(sub_string(Code, _, _, _, "results <- c(results, pair(next_node, pair(1, 10)));")),
     once(sub_string(Code, _, _, _, "sub_results <- category_ancestor_weight_worker(next_node, c(visited, next_node), from_nodes, to_nodes);")),
     once(sub_string(Code, _, _, _, "pair(.subset2(sub_result, 1), pair(.subset2(.subset2(sub_result, 2), 1) + 1, .subset2(.subset2(sub_result, 2), 2) + 10))")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_weight_from_vectors <- function(start, from_nodes, to_nodes)")),
     once(sub_string(Code, _, _, _, "let category_ancestor_weight <- function(start)")),
-    once(sub_string(Code, _, _, _, "category_ancestor_weight_worker(start, start, category_parent_from, category_parent_to)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_weight_from_vectors(start, category_parent_from, category_parent_to)")),
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
@@ -5106,7 +5108,9 @@ test(recursive_compiler_supports_typr_mode_driven_per_path_visited_recursion) :-
     once(sub_string(Code, _, _, _, "let category_ancestor_from_end_worker <- function(current, visited, from_nodes, to_nodes)")),
     once(sub_string(Code, _, _, _, "results <- c(results, pair(next_node, 1));")),
     once(sub_string(Code, _, _, _, "sub_results <- category_ancestor_from_end_worker(next_node, c(visited, next_node), from_nodes, to_nodes);")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_from_end_from_vectors <- function(start, from_nodes, to_nodes)")),
     once(sub_string(Code, _, _, _, "let category_ancestor_from_end <- function(start)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_from_end_from_vectors(start, category_parent_from, category_parent_to)")),
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
@@ -5135,7 +5139,9 @@ test(recursive_compiler_supports_typr_mode_driven_weighted_per_path_visited_recu
     once(sub_string(Code, _, _, _, "let category_ancestor_weight_from_end_worker <- function(current, visited, from_nodes, to_nodes)")),
     once(sub_string(Code, _, _, _, "results <- c(results, pair(next_node, pair(1, 10)));")),
     once(sub_string(Code, _, _, _, "sub_results <- category_ancestor_weight_from_end_worker(next_node, c(visited, next_node), from_nodes, to_nodes);")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_weight_from_end_from_vectors <- function(start, from_nodes, to_nodes)")),
     once(sub_string(Code, _, _, _, "let category_ancestor_weight_from_end <- function(start)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_weight_from_end_from_vectors(start, category_parent_from, category_parent_to)")),
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 

@@ -236,7 +236,8 @@ includes:
   seeded scalar step relation and detected `Visited` position lower to a
   native TypR recursive worker that returns nested pair results with one
   direct node output and one or more additive numeric outputs; this path still
-  assumes one recursion-driving scalar input
+  assumes one recursion-driving scalar input, but it now also emits a native
+  `*_from_vectors` runtime helper over the same scalar step-relation shape
 - accumulator-style tail-recursive predicates such as `factorial_acc/3`,
   lowered to TypR functions that use raw-expression loop bodies instead of
   relabeled standalone R scripts
