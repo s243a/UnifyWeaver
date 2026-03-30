@@ -1513,3 +1513,94 @@ extract_goals_typescript((A, B), Goals) :- !,
     append(GA, GB, Goals).
 extract_goals_typescript(true, []) :- !.
 extract_goals_typescript(Goal, [Goal]).
+
+% ============================================================================
+% GENERAL RECURSIVE PATTERN (visited-set cycle detection)
+% ============================================================================
+
+:- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% Arity-2: wrapper + worker with base case check and recursive accumulation
+advanced_recursive_compiler:compile_general_recursive_pattern(typescript, PredStr, 2, BaseClauses, RecClauses, Code) :-
+    %% Build camelCase worker name
+    atom_string(PredAtom, PredStr),
+    atom_concat(PredAtom, 'Worker', WorkerAtom),
+    atom_string(WorkerAtom, WorkerStr),
+    %% Extract base case key/value from first base clause
+    (   BaseClauses = [(BH, true)|_]
+    ->  BH =.. [_, BaseKey, BaseVal],
+        format(string(BaseCheck),
+            '    if (arg1 === "~w") return ["~w"];', [BaseKey, BaseVal])
+    ;   BaseCheck = '    // no base case extracted'
+    ),
+    %% Extract recursive step from first recursive clause
+    (   RecClauses = [(_, RecBody)|_]
+    ->  extract_rec_call_typescript(RecBody, PredStr, WorkerStr, RecCallExpr)
+    ;   format(string(RecCallExpr), '~w(arg1, visited)', [WorkerStr])
+    ),
+    format(string(Code),
+'// General recursive: ~w (with cycle detection)\n\c
+function ~w(arg1: string): string[] {\n\c
+    return ~w(arg1, new Set<string>());\n\c
+}\n\c
+\n\c
+function ~w(arg1: string, visited: Set<string>): string[] {\n\c
+    if (visited.has(arg1)) return [];\n\c
+    visited.add(arg1);\n\c
+~w\n\c
+    const sub = ~w;\n\c
+    return [...sub];\n\c
+}\n',
+    [PredStr, PredStr, WorkerStr, WorkerStr, BaseCheck, RecCallExpr]).
+
+%% Arity-3: wrapper + worker with counter/output style
+advanced_recursive_compiler:compile_general_recursive_pattern(typescript, PredStr, 3, BaseClauses, RecClauses, Code) :-
+    atom_string(PredAtom, PredStr),
+    atom_concat(PredAtom, 'Worker', WorkerAtom),
+    atom_string(WorkerAtom, WorkerStr),
+    (   BaseClauses = [(BH, true)|_]
+    ->  BH =.. [_, BaseKey, _, BaseVal],
+        format(string(BaseCheck),
+            '    if (arg1 === "~w") return ["~w"];', [BaseKey, BaseVal])
+    ;   BaseCheck = '    // no base case extracted'
+    ),
+    (   RecClauses = [(_, RecBody)|_]
+    ->  extract_rec_call_typescript(RecBody, PredStr, WorkerStr, RecCallExpr)
+    ;   format(string(RecCallExpr), '~w(arg1, visited)', [WorkerStr])
+    ),
+    format(string(Code),
+'// General recursive: ~w (with cycle detection)\n\c
+function ~w(arg1: string): string[] {\n\c
+    return ~w(arg1, new Set<string>());\n\c
+}\n\c
+\n\c
+function ~w(arg1: string, visited: Set<string>): string[] {\n\c
+    if (visited.has(arg1)) return [];\n\c
+    visited.add(arg1);\n\c
+~w\n\c
+    return ~w;\n\c
+}\n',
+    [PredStr, PredStr, WorkerStr, WorkerStr, BaseCheck, RecCallExpr]).
+
+extract_rec_call_typescript((A, B), PredStr, WorkerStr, Expr) :-
+    nonvar(A),
+    functor(A, Pred, _),
+    atom_string(Pred, PredStr), !,
+    A =.. [_|CallArgs],
+    (   CallArgs = [Arg1|_]
+    ->  format(string(Expr), '~w(~w, visited)', [WorkerStr, Arg1])
+    ;   format(string(Expr), '~w(arg1, visited)', [WorkerStr])
+    ).
+extract_rec_call_typescript((_, B), PredStr, WorkerStr, Expr) :- !,
+    extract_rec_call_typescript(B, PredStr, WorkerStr, Expr).
+extract_rec_call_typescript(Goal, PredStr, WorkerStr, Expr) :-
+    nonvar(Goal),
+    functor(Goal, Pred, _),
+    atom_string(Pred, PredStr), !,
+    Goal =.. [_|CallArgs],
+    (   CallArgs = [Arg1|_]
+    ->  format(string(Expr), '~w(~w, visited)', [WorkerStr, Arg1])
+    ;   format(string(Expr), '~w(arg1, visited)', [WorkerStr])
+    ).
+extract_rec_call_typescript(_, _PredStr, WorkerStr, Expr) :-
+    format(string(Expr), '~w(arg1, visited)', [WorkerStr]).

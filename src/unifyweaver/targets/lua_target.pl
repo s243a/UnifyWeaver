@@ -1609,3 +1609,90 @@ test_lua_pipeline :-
     format('~n=== Lua Fixpoint Pipeline Test ===~n~s~n', [CodeGen]),
     retractall(user:step1(_, _)),
     retractall(user:step2(_, _)).
+
+% ============================================================================
+% GENERAL RECURSIVE PATTERN (visited-set cycle detection)
+% ============================================================================
+
+:- multifile advanced_recursive_compiler:compile_general_recursive_pattern/6.
+
+%% Arity-2: wrapper + worker with base case check and recursive accumulation
+advanced_recursive_compiler:compile_general_recursive_pattern(lua, PredStr, 2, BaseClauses, RecClauses, Code) :-
+    %% Extract base case key/value from first base clause
+    (   BaseClauses = [(BH, true)|_]
+    ->  BH =.. [_, BaseKey, BaseVal]
+    ;   BaseKey = 'nil', BaseVal = 'nil'
+    ),
+    %% Extract the recursive step argument from first recursive clause
+    (   RecClauses = [(_, RecBody)|_]
+    ->  extract_rec_call_lua(RecBody, PredStr, RecCallExpr)
+    ;   format(string(RecCallExpr), '~w_worker(arg1, visited)', [PredStr])
+    ),
+    format(string(Code),
+'-- General recursive: ~w (with cycle detection)\n\c
+function ~w(arg1)\n\c
+    local visited = {}\n\c
+    return ~w_worker(arg1, visited)\n\c
+end\n\c
+\n\c
+function ~w_worker(arg1, visited)\n\c
+    if visited[arg1] then return {} end\n\c
+    visited[arg1] = true\n\c
+    if arg1 == ~w then return {~w} end\n\c
+    local sub = ~w\n\c
+    local result = {}\n\c
+    for _, v in ipairs(sub) do\n\c
+        result[#result + 1] = v\n\c
+    end\n\c
+    return result\n\c
+end\n',
+    [PredStr, PredStr, PredStr, PredStr, BaseKey, BaseVal, RecCallExpr]).
+
+%% Arity-3: wrapper + worker with counter/output style
+advanced_recursive_compiler:compile_general_recursive_pattern(lua, PredStr, 3, BaseClauses, RecClauses, Code) :-
+    (   BaseClauses = [(BH, true)|_]
+    ->  BH =.. [_, BaseKey, _, BaseVal],
+        format(string(BaseCheck), 'if arg1 == ~w then return {~w} end', [BaseKey, BaseVal])
+    ;   BaseCheck = '-- no base case extracted'
+    ),
+    (   RecClauses = [(_, RecBody)|_]
+    ->  extract_rec_call_lua(RecBody, PredStr, RecCallExpr)
+    ;   format(string(RecCallExpr), '~w_worker(arg1, visited)', [PredStr])
+    ),
+    format(string(Code),
+'-- General recursive: ~w (with cycle detection)\n\c
+function ~w(arg1)\n\c
+    local visited = {}\n\c
+    return ~w_worker(arg1, visited)\n\c
+end\n\c
+\n\c
+function ~w_worker(arg1, visited)\n\c
+    if visited[arg1] then return {} end\n\c
+    visited[arg1] = true\n\c
+    ~w\n\c
+    return ~w\n\c
+end\n',
+    [PredStr, PredStr, PredStr, PredStr, BaseCheck, RecCallExpr]).
+
+extract_rec_call_lua((A, B), PredStr, Expr) :-
+    nonvar(A),
+    functor(A, Pred, _),
+    atom_string(Pred, PredStr), !,
+    A =.. [_|CallArgs],
+    (   CallArgs = [Arg1|_]
+    ->  format(string(Expr), '~w_worker(~w, visited)', [PredStr, Arg1])
+    ;   format(string(Expr), '~w_worker(arg1, visited)', [PredStr])
+    ).
+extract_rec_call_lua((_, B), PredStr, Expr) :- !,
+    extract_rec_call_lua(B, PredStr, Expr).
+extract_rec_call_lua(Goal, PredStr, Expr) :-
+    nonvar(Goal),
+    functor(Goal, Pred, _),
+    atom_string(Pred, PredStr), !,
+    Goal =.. [_|CallArgs],
+    (   CallArgs = [Arg1|_]
+    ->  format(string(Expr), '~w_worker(~w, visited)', [PredStr, Arg1])
+    ;   format(string(Expr), '~w_worker(arg1, visited)', [PredStr])
+    ).
+extract_rec_call_lua(_, PredStr, Expr) :-
+    format(string(Expr), '~w_worker(arg1, visited)', [PredStr]).

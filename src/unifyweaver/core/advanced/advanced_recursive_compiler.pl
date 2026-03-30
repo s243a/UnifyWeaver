@@ -77,6 +77,9 @@ compile_advanced_recursive(Pred/Arity, Options, BashCode) :-
         ;   \+ memberchk(mutual_recursion, SkipPatterns),
             try_mutual_recursion_detection(Pred/Arity, Options, BashCode) ->
             format('✓ Compiled as part of mutual recursion group~n')
+        ;   \+ memberchk(general_recursion, SkipPatterns),
+            try_general_recursion(Pred/Arity, Options, BashCode) ->
+            format('✓ Compiled as general recursion with visited-set~n')
         ;   % No pattern matched - fail back to caller
             format('✗ No advanced pattern matched~n'),
             fail
@@ -471,6 +474,46 @@ try_mutual_recursion_detection(Pred/Arity, Options, BashCode) :-
 
     % Compile the entire group
     compile_mutual_recursion(Group, Options, BashCode).
+
+%% ============================================
+%% GENERAL RECURSION (with visited-set)
+%% ============================================
+%%
+%% Catchall for recursive predicates that don't match any named pattern.
+%% Generates a recursive function with per-path visited-set for cycle safety.
+%% Targets register via compile_general_recursive_pattern/6.
+
+:- multifile compile_general_recursive_pattern/6.
+%% compile_general_recursive_pattern(+Target, +PredStr, +Arity, +BaseClauses, +RecClauses, -Code)
+
+try_general_recursion(Pred/Arity, Options, Code) :-
+    format('  Trying general recursion for ~w/~w~n', [Pred, Arity]),
+    (   member(target(Target), Options) -> true ; Target = bash ),
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, Arity),
+    findall((Head, Body), user:clause(Head, Body), AllClauses),
+    AllClauses \= [],
+    %% Separate base and recursive clauses
+    partition(is_recursive_clause(Pred), AllClauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    %% Dispatch to target
+    (   compile_general_recursive_pattern(Target, PredStr, Arity, BaseClauses, RecClauses, Code)
+    ->  true
+    ;   format('  No general recursion support for target ~w~n', [Target]),
+        fail
+    ).
+
+is_recursive_clause(Pred, (_Head, Body)) :-
+    contains_call(Body, Pred).
+
+contains_call((A, B), Pred) :- !,
+    (contains_call(A, Pred) ; contains_call(B, Pred)).
+contains_call((A ; B), Pred) :- !,
+    (contains_call(A, Pred) ; contains_call(B, Pred)).
+contains_call((A -> B), Pred) :- !,
+    (contains_call(A, Pred) ; contains_call(B, Pred)).
+contains_call(Goal, Pred) :-
+    compound(Goal), functor(Goal, Pred, _).
 
 %% compile_predicate_group(+Predicates, +Options, -BashCode)
 %  Compile a group of predicates together
