@@ -144,11 +144,13 @@ bring-up.
   runtime query helpers, native explicit `input(stdin|file|vfs|function)`
   loader wrappers, and native declared scalar or conservative pair-shaped
   runtime node parsing
-- conservative per-path visited recursion for `category_ancestor/4`-style
-  predicates, including weighted variants such as `category_ancestor_weight/5`,
-  with compile-time fact seeding, scalar node IDs, a detected `Visited`
-  position, and native TypR nested pair results for the direct node output
-  plus one or more additive numeric outputs
+- conservative per-path visited recursion for `category_ancestor/4`,
+  moved-input variants, and weighted variants such as
+  `category_ancestor_weight/5`, with compile-time fact seeding, scalar node
+  IDs, a detected `Visited` position, one recursion-driving scalar input, and
+  native TypR nested pair results for the direct node output plus one or more
+  additive numeric outputs; the same slice now also emits a native
+  `*_from_vectors` runtime helper
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,

@@ -231,11 +231,13 @@ includes:
   storage, vector-parameter runtime query helpers, explicit
   `input(stdin|file|vfs|function)` loader wrappers, and declared scalar or
   conservative pair-shaped runtime node parsing all stay in native TypR syntax
-- conservative per-path visited recursion like `category_ancestor/4` and
-  `category_ancestor_weight/5`, where a compile-time-seeded scalar step
-  relation and a detected `Visited` position lower to a native TypR recursive
-  worker that returns `(node, hops)` pairs or nested pair results with one or
-  more additive numeric outputs
+- conservative per-path visited recursion like `category_ancestor/4`,
+  moved-input variants, and `category_ancestor_weight/5`, where a compile-time-
+  seeded scalar step relation and detected `Visited` position lower to a
+  native TypR recursive worker that returns nested pair results with one
+  direct node output and one or more additive numeric outputs; this path still
+  assumes one recursion-driving scalar input, but it now also emits a native
+  `*_from_vectors` runtime helper over the same scalar step-relation shape
 - accumulator-style tail-recursive predicates such as `factorial_acc/3`,
   lowered to TypR functions that use raw-expression loop bodies instead of
   relabeled standalone R scripts

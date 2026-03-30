@@ -332,10 +332,13 @@ Current TypR lowering policy is intentionally mixed:
   conservative pair-shaped runtime node parsing in native TypR when the base
   relation shape is known at compile time
 - conservative per-path visited recursion may also stay native in TypR when it
-  matches the currently supported `category_ancestor/4`- and
-  `category_ancestor_weight/5`-style shape: a compile-time-seeded scalar step
-  relation, a detected `Visited` position, one direct node output, and one or
-  more additive numeric outputs returned as native nested pair results
+  matches the currently supported mode-driven scalar-seeded shape: a compile-
+  time-seeded scalar step relation, a detected `Visited` position, one
+  recursion-driving scalar input, one direct node output, and one or more
+  additive numeric outputs returned as native nested pair results, including
+  `category_ancestor/4`, moved-input variants, and
+  `category_ancestor_weight/5`; the same slice now also emits a native
+  `*_from_vectors` runtime helper without raw R
 - multi-step native TypR control-flow chains may keep later guards and outputs
   in native TypR when those guards depend on earlier bound values
 - simple comparison and boolean guard expressions over already-bound

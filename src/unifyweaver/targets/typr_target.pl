@@ -5028,10 +5028,11 @@ typr_per_path_visited_spec(
     ]
 ) :-
     single_linear_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause),
-    typr_per_path_visited_output_positions(Arity, VisitedPos, OutputPositions),
+    typr_per_path_visited_io_positions(Pred/Arity, VisitedPos, InputPos, OutputPositions),
     typr_per_path_visited_base_clause(
         BaseClause,
         Pred,
+        InputPos,
         VisitedPos,
         OutputPositions,
         BasePred,
@@ -5042,6 +5043,7 @@ typr_per_path_visited_spec(
         RecClause,
         Pred,
         BasePred,
+        InputPos,
         VisitedPos,
         OutputPositions,
         NodeOutputPos,
@@ -5058,8 +5060,49 @@ typr_per_path_visited_spec(
     typr_per_path_visited_result_expr(BaseOutputExprs, BaseResultExpr),
     typr_per_path_visited_result_expr(RecursiveOutputExprs, RecursiveResultExpr).
 
-typr_per_path_visited_output_positions(Arity, VisitedPos, OutputPositions) :-
+typr_per_path_visited_io_positions(Pred/Arity, VisitedPos, InputPos, OutputPositions) :-
+    typr_per_path_visited_mode_variants(Pred/Arity, ModeVariants),
+    (   ModeVariants == []
+    ->  typr_per_path_visited_default_io_positions(Arity, VisitedPos, InputPos, OutputPositions)
+    ;   member(Modes, ModeVariants),
+        typr_per_path_visited_supported_mode_vector(Modes, VisitedPos, InputPos, OutputPositions),
+        !
+    ).
+
+typr_per_path_visited_default_io_positions(Arity, VisitedPos, 1, OutputPositions) :-
     findall(Pos, (between(2, Arity, Pos), Pos =\= VisitedPos), OutputPositions),
+    OutputPositions \= [].
+
+typr_per_path_visited_mode_variants(Pred/Arity, ModeVariants) :-
+    (   current_predicate(user:mode/1)
+    ->  findall(Modes,
+            (   user:mode(ModeSpec),
+                typr_per_path_visited_mode_term_signature(ModeSpec, Pred/Arity),
+                typr_per_path_visited_parse_mode_spec(ModeSpec, Modes)
+            ),
+            ModeVariants)
+    ;   ModeVariants = []
+    ).
+
+typr_per_path_visited_mode_term_signature(Term, Pred/Arity) :-
+    compound(Term),
+    Term =.. [Pred|Args],
+    length(Args, Arity).
+
+typr_per_path_visited_parse_mode_spec(Term, Modes) :-
+    Term =.. [_|Args],
+    maplist(typr_per_path_visited_mode_symbol, Args, Modes).
+
+typr_per_path_visited_mode_symbol(+, input) :- !.
+typr_per_path_visited_mode_symbol(-, output) :- !.
+typr_per_path_visited_mode_symbol(?, any) :- !.
+
+typr_per_path_visited_supported_mode_vector(Modes, VisitedPos, InputPos, OutputPositions) :-
+    \+ member(any, Modes),
+    nth1(VisitedPos, Modes, input),
+    findall(Pos, (nth1(Pos, Modes, input), Pos =\= VisitedPos), InputPositions),
+    InputPositions = [InputPos],
+    findall(Pos, (nth1(Pos, Modes, output), Pos =\= VisitedPos), OutputPositions),
     OutputPositions \= [].
 
 typr_per_path_visited_scalar_node_type(atom).
@@ -5068,9 +5111,9 @@ typr_per_path_visited_scalar_node_type(integer).
 typr_per_path_visited_scalar_node_type(float).
 typr_per_path_visited_scalar_node_type(number).
 
-typr_per_path_visited_base_clause(Head-Body0, Pred, VisitedPos, OutputPositions, BasePred, NodeOutputPos, BaseAccumulatorPairs) :-
+typr_per_path_visited_base_clause(Head-Body0, Pred, InputPos, VisitedPos, OutputPositions, BasePred, NodeOutputPos, BaseAccumulatorPairs) :-
     Head =.. [Pred|HeadArgs],
-    nth1(1, HeadArgs, InputVar),
+    nth1(InputPos, HeadArgs, InputVar),
     nth1(VisitedPos, HeadArgs, VisitedVar),
     var(InputVar),
     var(VisitedVar),
@@ -5090,13 +5133,14 @@ typr_per_path_visited_recursive_clause(
     Head-Body0,
     Pred,
     BasePred,
+    InputPos,
     VisitedPos,
     OutputPositions,
     NodeOutputPos,
     RecursiveAccumulatorPairs
 ) :-
     Head =.. [Pred|HeadArgs],
-    nth1(1, HeadArgs, InputVar),
+    nth1(InputPos, HeadArgs, InputVar),
     nth1(VisitedPos, HeadArgs, VisitedVar),
     var(InputVar),
     var(VisitedVar),
@@ -5109,6 +5153,7 @@ typr_per_path_visited_recursive_clause(
     typr_per_path_visited_recursive_call(
         RecCallGoal,
         Pred,
+        InputPos,
         VisitedPos,
         MidVar,
         HeadArgs,
@@ -5190,10 +5235,10 @@ typr_per_path_visited_mid_step_goal(Goal, InputVar, MidVar, BasePred) :-
 typr_per_path_visited_negated_member_goal(\+ member(MemberVar, VisitedVar0), MemberVar, VisitedVar) :-
     VisitedVar0 == VisitedVar.
 
-typr_per_path_visited_recursive_call(Goal, Pred, VisitedPos, MidVar, HeadArgs, RecArgs, VisitedVar) :-
+typr_per_path_visited_recursive_call(Goal, Pred, InputPos, VisitedPos, MidVar, HeadArgs, RecArgs, VisitedVar) :-
     Goal =.. [Pred|RecArgs],
     same_length(HeadArgs, RecArgs),
-    nth1(1, RecArgs, RecInputVar),
+    nth1(InputPos, RecArgs, RecInputVar),
     nth1(VisitedPos, RecArgs, ConsVisited),
     RecInputVar == MidVar,
     nonvar(ConsVisited),
