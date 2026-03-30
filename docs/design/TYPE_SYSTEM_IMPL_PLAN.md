@@ -145,8 +145,10 @@ bring-up.
   loader wrappers, and native declared scalar or conservative pair-shaped
   runtime node parsing
 - conservative per-path visited recursion for `category_ancestor/4`-style
-  predicates with compile-time fact seeding, scalar node IDs, a last-position
-  `Visited` list, and native TypR `(node, hops)` pair results
+  predicates, including weighted variants such as `category_ancestor_weight/5`,
+  with compile-time fact seeding, scalar node IDs, a detected `Visited`
+  position, and native TypR nested pair results for the direct node output
+  plus one or more additive numeric outputs
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,
