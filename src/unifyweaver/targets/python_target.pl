@@ -5038,9 +5038,82 @@ compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
         % Check if this is tail recursion (can be optimized to a loop)
         (   is_tail_recursive(Name, RecClauses)
         ->  compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
-        ;   compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+        ;   %% Check if per-path visited pattern detected
+            python_clauses_to_ppv_pairs(Clauses, ClausePairs),
+            is_per_path_visited_pattern(Name, Arity, ClausePairs, VisitedPos)
+        ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
+            compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+        ;   %% General recursion — no visited pattern, skip visited-set
+            compile_general_recursive_no_visited(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
         )
     ).
+
+%% python_clauses_to_ppv_pairs(+Clauses, -Pairs)
+%  Convert [(Head, Body), ...] to pairs for is_per_path_visited_pattern.
+python_clauses_to_ppv_pairs([], []).
+python_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+    python_clauses_to_ppv_pairs(Rest, RestPairs).
+
+%% compile_general_recursive_no_visited(+Name, +Arity, +Base, +Rec, +Opts, -Code)
+%  General recursion WITHOUT visited-set (for predicates without the
+%  \+ member(X, Visited) pattern).
+compile_general_recursive_no_visited(Name, Arity, BaseClauses, RecClauses, Options, PythonCode) :-
+    %% Generate worker function without visited
+    generate_worker_function_no_visited(Name, Arity, BaseClauses, RecClauses, WorkerCode),
+
+    %% Generate streaming wrapper
+    generate_recursive_wrapper(Name, Arity, WrapperCode),
+
+    header_with_functools(Header),
+    helpers(Helpers),
+
+    generate_python_main(Options, Main),
+
+    format(string(Logic),
+"
+~s
+
+~s
+
+def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
+    \"\"\"Generated predicate logic - general recursive (no visited).\"\"\"
+    for record in records:
+        yield from _clause_0(record)
+\n", [WorkerCode, WrapperCode]),
+
+    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+%% generate_worker_function_no_visited(+Name, +Arity, +Base, +Rec, -Code)
+generate_worker_function_no_visited(Name, Arity, BaseClauses, RecClauses, WorkerCode) :-
+    (   Arity =:= 2
+    ->  generate_binary_worker(Name, BaseClauses, RecClauses, WorkerCode)
+    ;   Arity =:= 3
+    ->  generate_ternary_worker_no_visited(Name, BaseClauses, RecClauses, WorkerCode)
+    ;   format(string(WorkerCode), "# ERROR: No-visited recursion only supported for arity 2-3, got arity ~d\n", [Arity])
+    ).
+
+%% generate_ternary_worker_no_visited(+Name, +BaseClauses, +RecClauses, -Code)
+%  Like generate_ternary_worker but WITHOUT visited-set.
+generate_ternary_worker_no_visited(Name, BaseClauses, RecClauses, WorkerCode) :-
+    (   BaseClauses = [(BaseHead, BaseBody)|_]
+    ->  BaseHead =.. [_, BaseArg1, BaseArg2, BaseArg3],
+        translate_ternary_base(BaseArg1, BaseArg2, BaseArg3, BaseBody, Name, BaseCode)
+    ;   BaseCode = "    pass  # No base case"
+    ),
+    (   RecClauses = [(RecHead, RecBody)|_]
+    ->  RecHead =.. [_, _RecArg1, _RecArg2, _RecArg3],
+        translate_ternary_recursive(Name, RecBody, RecCode)
+    ;   RecCode = "    pass  # No recursive case"
+    ),
+    format(string(WorkerCode),
+"@functools.cache
+def _~w_worker(arg1):
+    \"\"\"Arity-3 recursive worker (no visited-set). Yields (arg2, arg3) tuples.\"\"\"
+    # Base case
+~s
+    # Recursive case
+~s
+", [Name, BaseCode, RecCode]).
 
 %% is_mutually_recursive(+Pred, -MutualGroup)
 %  Check if predicate is part of a mutual recursion group
