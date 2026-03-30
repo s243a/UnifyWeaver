@@ -54,7 +54,13 @@ def load_facts(facts_path):
                 root = inner.strip("'")
                 root_cats.add(root)
 
-    return dict(article_cats), dict(category_parents), root_cats
+    # Unescape Prolog string escapes (\' → ', \\ → \)
+    def unescape(d):
+        return {k.replace("\\'", "'").replace("\\\\", "\\"):
+                [v.replace("\\'", "'").replace("\\\\", "\\") for v in vs]
+                for k, vs in d.items()}
+
+    return unescape(article_cats), unescape(category_parents), root_cats
 
 
 def generate_awk(article_cats, category_parents, root_cats, n=5, max_depth=10):
