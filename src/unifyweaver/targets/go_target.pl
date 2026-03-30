@@ -6561,12 +6561,84 @@ contains_call_to((_, B), Pred) :-
 compile_general_recursive_to_go(Pred, Arity, Clauses, GoCode) :-
     atom_string(Pred, PredStr),
     partition(is_recursive_clause_go(Pred), Clauses, RecClauses, BaseClauses),
-    (   Arity =:= 3
-    ->  compile_ternary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode)
+    (   Arity =:= 3,
+        %% Check if per-path visited pattern detected
+        go_clauses_to_ppv_pairs(Clauses, PPVPairs),
+        is_per_path_visited_pattern(Pred, Arity, PPVPairs, VisitedPos)
+    ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
+        compile_ternary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode)
+    ;   Arity =:= 3
+    ->  %% Arity-3 without visited pattern — use memoized (no visited-set)
+        compile_ternary_recursive_go_no_visited(PredStr, BaseClauses, RecClauses, GoCode)
     ;   Arity =:= 2
     ->  compile_binary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode)
     ;   format(string(GoCode), '// General recursion for arity ~w not yet supported\n', [Arity])
     ).
+
+%% go_clauses_to_ppv_pairs(+Clauses, -Pairs)
+go_clauses_to_ppv_pairs([], []).
+go_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+    go_clauses_to_ppv_pairs(Rest, RestPairs).
+
+%% compile_ternary_recursive_go_no_visited(+PredStr, +BaseClauses, +RecClauses, -GoCode)
+%  Arity-3 recursive without visited-set (no \+ member pattern detected).
+compile_ternary_recursive_go_no_visited(PredStr, BaseClauses, RecClauses, GoCode) :-
+    %% Extract base case
+    go_extract_ternary_base(BaseClauses, PredStr, BaseCode),
+    %% Extract recursive case
+    go_extract_ternary_rec(RecClauses, PredStr, RecCode),
+    format(string(GoCode),
+'package main
+
+import (
+\t"fmt"
+\t"os"
+)
+
+type ~wResult struct {
+\tArg2 string
+\tArg3 int
+}
+
+func ~w(arg1 string) []~wResult {
+\tvar results []~wResult
+~w
+~w
+\treturn results
+}
+
+func main() {
+\tif len(os.Args) >= 2 {
+\t\tfor _, r := range ~w(os.Args[1]) {
+\t\t\tfmt.Printf("%%s:%%d\\n", r.Arg2, r.Arg3)
+\t\t}
+\t}
+}
+', [PredStr, PredStr, PredStr, PredStr, BaseCode, RecCode, PredStr]).
+
+go_extract_ternary_base([], _, '\t// No base case').
+go_extract_ternary_base([(BaseHead, _BaseBody)|_], PredStr, BaseCode) :-
+    BaseHead =.. [_, _Arg1, _Arg2, Arg3],
+    (integer(Arg3) -> format(string(Val), '~w', [Arg3]) ; Val = "1"),
+    format(string(BaseCode),
+'\t// Base case: direct relation lookup
+\tfor _, row := range ~w_data {
+\t\tif row[0] == arg1 {
+\t\t\tresults = append(results, ~wResult{row[1], ~w})
+\t\t}
+\t}', [PredStr, PredStr, Val]).
+
+go_extract_ternary_rec([], _, '\t// No recursive case').
+go_extract_ternary_rec([(_, _RecBody)|_], PredStr, RecCode) :-
+    format(string(RecCode),
+'\t// Recursive case
+\tfor _, row := range ~w_data {
+\t\tif row[0] == arg1 {
+\t\t\tfor _, sub := range ~w(row[1]) {
+\t\t\t\tresults = append(results, ~wResult{sub.Arg2, sub.Arg3 + 1})
+\t\t\t}
+\t\t}
+\t}', [PredStr, PredStr, PredStr]).
 
 %% compile_ternary_recursive_go(+PredStr, +BaseClauses, +RecClauses, -GoCode)
 %%
