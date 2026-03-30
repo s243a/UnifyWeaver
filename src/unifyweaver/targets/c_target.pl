@@ -444,35 +444,59 @@ compile_general_recursive_c(Name, BaseClauses, _RecClauses, Code) :-
     ->  generate_base_condition_c(BaseHead, BaseCondition)
     ;   BaseCondition = "0"
     ),
-    
+
     format(string(Code),
-"    /* General recursive predicate: ~w - using explicit stack */
+"    /* General recursive predicate: ~w - using explicit stack with visited set */
     #define MAX_STACK 1000
+    #define MAX_VISITED 1000
     cJSON* stack[MAX_STACK];
     int stack_top = 0;
-    
+    int visited[MAX_VISITED];
+    int visited_count = 0;
+
     stack[stack_top++] = cJSON_Duplicate(record, 1);
     cJSON* result = NULL;
-    
+
     while (stack_top > 0) {
         cJSON* current = stack[--stack_top];
-        
+
+        /* Cycle detection: check if current node already visited */
+        int arg1 = 0;
+        cJSON* arg1_item = cJSON_GetObjectItem(current, \"arg0\");
+        if (arg1_item && cJSON_IsNumber(arg1_item)) {
+            arg1 = arg1_item->valueint;
+        }
+        int already_visited = 0;
+        for (int i = 0; i < visited_count; i++) {
+            if (visited[i] == arg1) {
+                already_visited = 1;
+                break;
+            }
+        }
+        if (already_visited) {
+            cJSON_Delete(current);
+            continue;
+        }
+        if (visited_count < MAX_VISITED) {
+            visited[visited_count++] = arg1;
+        }
+
         /* Base case */
         if (~w) {
             result = current;
             break;
         }
-        
+
         /* Push recursive case onto stack */
         /* TODO: Compute next value and push */
         cJSON_Delete(current);
     }
-    
+
     /* Cleanup stack */
     while (stack_top > 0) {
         cJSON_Delete(stack[--stack_top]);
     }
-    
+
     return result ? result : cJSON_Duplicate(record, 1);", [Name, BaseCondition]).
 
 %% ============================================

@@ -337,29 +337,41 @@ compile_tail_recursive_cpp(Name, BaseClauses, _RecClauses, Code) :-
 %% ============================================
 
 compile_general_recursive_cpp(Name, BaseClauses, _RecClauses, Code) :-
+    collect_cpp_include('<unordered_set>'),
     (   BaseClauses = [(BaseHead, _)|_]
     ->  generate_base_condition_cpp(BaseHead, BaseCondition)
     ;   BaseCondition = "false"
     ),
-    
+
     format(string(Code),
-"    // General recursive predicate: ~w - using explicit stack
+"    // General recursive predicate: ~w - using explicit stack with visited set
     std::vector<json> stack;
+    std::unordered_set<std::string> visited;
     stack.push_back(record);
-    
+
     while (!stack.empty()) {
         json current = stack.back();
         stack.pop_back();
-        
+
+        // Cycle detection: check if current node already visited
+        std::string visit_key = current.value(\"arg0\", \"\");
+        if (visit_key.empty() && current.contains(\"arg0\") && current[\"arg0\"].is_number()) {
+            visit_key = std::to_string(current[\"arg0\"].get<int>());
+        }
+        if (visited.count(visit_key)) {
+            continue;
+        }
+        visited.insert(visit_key);
+
         // Base case
         if (~w) {
             return current;
         }
-        
+
         // Push recursive case onto stack
         // TODO: Compute next value and push
     }
-    
+
     return record;", [Name, BaseCondition]).
 
 %% ============================================

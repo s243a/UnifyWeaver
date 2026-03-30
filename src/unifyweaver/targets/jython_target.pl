@@ -580,22 +580,32 @@ compile_general_recursive_jython(Name, BaseClauses, RecClauses, Code) :-
     ),
     
     format(string(Code),
-"    # General recursive predicate: ~w - with memoization
+"    # General recursive predicate: ~w - with memoization + visited-set cycle detection
     memo = record.get('__memo__', {})
-    
+    visited = record.get('__visited__', None)
+    if visited is None:
+        visited = set()
+
     key = str(record.get('arg0'))
+
+    # Cycle detection: if already visiting this key, return
+    if key in visited:
+        return
+
     if key in memo:
         yield memo[key]
         return
-    
+
+    visited = visited | set([key])  # Python 2 compatible
     current = dict(record)
-    
+    current['__visited__'] = visited
+
     # Base case check
     if ~w:
         memo[key] = current
         yield current
         return
-    
+
     # Recursive computation with memoization
     result = ~w
     memo[key] = result
@@ -609,7 +619,7 @@ generate_memoized_recursive_jython(Body, Name, Code) :-
     (   Args = [Expr|_]
     ->  expr_to_jython(Expr, JythonExpr),
         format(string(Code),
-"list(process({'arg0': ~w, '__memo__': memo}))[0]", [JythonExpr])
+"list(process({'arg0': ~w, '__memo__': memo, '__visited__': visited}))[0]", [JythonExpr])
     ;   Code = "current"
     ).
 

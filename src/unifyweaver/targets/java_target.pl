@@ -679,24 +679,35 @@ compile_general_recursive_java(Name, BaseClauses, RecClauses, Code) :-
     ),
     
     format(string(Code),
-"        // General recursive predicate: ~w - with memoization
-        // Cache to avoid recomputation
+"        // General recursive predicate: ~w - with memoization and visited-set
         @SuppressWarnings(\"unchecked\")
         Map<String, Object> memo = (Map<String, Object>) record.getOrDefault(\"__memo__\", new HashMap<>());
-        
+        Set<String> visited = (Set<String>) record.getOrDefault(\"__visited__\", new HashSet<>());
+
         String key = record.get(\"arg0\").toString();
+
+        // Cycle detection: skip if already on this path
+        if (visited.contains(key)) {
+            return Optional.empty();
+        }
+
         if (memo.containsKey(key)) {
             return Optional.of((Map<String, Object>) memo.get(key));
         }
-        
+
+        // Add to visited set for this branch (copy for per-path semantics)
+        Set<String> newVisited = new HashSet<>(visited);
+        newVisited.add(key);
+
         Map<String, Object> current = new HashMap<>(record);
-        
+        current.put(\"__visited__\", newVisited);
+
         // Base case check
         if (~w) {
             memo.put(key, current);
             return Optional.of(current);
         }
-        
+
         // Recursive computation with memoization
         Map<String, Object> result = ~w;
         memo.put(key, result);
