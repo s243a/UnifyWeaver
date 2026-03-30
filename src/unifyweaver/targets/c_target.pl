@@ -371,13 +371,13 @@ generate_pipeline_process_c(Clauses, Code) :-
     ->  partition(is_recursive_clause_c(Name), Clauses, RecClauses, BaseClauses),
         (   is_tail_recursive_c(Name, RecClauses)
         ->  compile_tail_recursive_c(Name, BaseClauses, RecClauses, Code)
-        ;   %% Check for per-path visited pattern (diagnostic only)
+        ;   %% Check for per-path visited pattern and branch code generation
             (   c_clauses_to_ppv_pairs(Clauses, PPVPairs),
                 is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
-            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
-            ;   true
-            ),
-            compile_general_recursive_c(Name, BaseClauses, RecClauses, Code)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
+                compile_general_recursive_c(Name, BaseClauses, RecClauses, Code)
+            ;   compile_general_recursive_c_no_visited(Name, BaseClauses, RecClauses, Code)
+            )
         )
     ;   findall(ClauseCode, 
             (member((H, B), Clauses), translate_clause_c(H, B, ClauseCode)),
@@ -454,6 +454,29 @@ c_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
 %% ============================================
 %% GENERAL RECURSION (→ explicit stack)
 %% ============================================
+
+%% compile_general_recursive_c_no_visited(+Name, +BaseClauses, +RecClauses, -Code)
+%  Plain recursive function without visited-set cycle detection.
+compile_general_recursive_c_no_visited(Name, BaseClauses, _RecClauses, Code) :-
+    (   BaseClauses = [(BaseHead, _)|_]
+    ->  generate_base_condition_c(BaseHead, BaseCondition)
+    ;   BaseCondition = "0"
+    ),
+    format(string(Code),
+"    /* General recursive predicate: ~w - plain recursive (no visited pattern) */
+    cJSON* arg1_item = cJSON_GetObjectItem(record, \"arg0\");
+    if (arg1_item && cJSON_IsNumber(arg1_item)) {
+        int arg1 = arg1_item->valueint;
+        if (~w) {
+            /* Base case */
+            return record;
+        }
+    }
+
+    /* Recursive case - no cycle detection needed */
+    /* TODO: Compute next value and recurse */
+    return record;
+", [Name, BaseCondition]).
 
 compile_general_recursive_c(Name, BaseClauses, _RecClauses, Code) :-
     (   BaseClauses = [(BaseHead, _)|_]

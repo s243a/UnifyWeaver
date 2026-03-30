@@ -457,13 +457,13 @@ generate_pipeline_process_jython(Clauses, Code) :-
         % Check if tail recursive
         (   is_tail_recursive_jython(Name, RecClauses)
         ->  compile_tail_recursive_jython(Name, BaseClauses, RecClauses, Code)
-        ;   %% Check for per-path visited pattern (diagnostic only)
+        ;   %% Check for per-path visited pattern and branch code generation
             (   jython_clauses_to_ppv_pairs(Clauses, PPVPairs),
                 is_per_path_visited_pattern(Name, Arity, PPVPairs, VisitedPos)
-            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos])
-            ;   true
-            ),
-            compile_general_recursive_jython(Name, BaseClauses, RecClauses, Code)
+            ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
+                compile_general_recursive_jython(Name, BaseClauses, RecClauses, Code)
+            ;   compile_general_recursive_jython_no_visited(Name, BaseClauses, RecClauses, Code)
+            )
         )
     ;   % Generate clause-based processing
         findall(ClauseCode, 
@@ -580,6 +580,55 @@ jython_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
 %% ============================================
 %% GENERAL RECURSION PATTERN (→ memoization)
 %% ============================================
+
+%% compile_general_recursive_jython_no_visited(+Name, +BaseClauses, +RecClauses, -Code)
+%  Plain recursive function without visited-set cycle detection.
+%  Uses simple dict memoization but no per-path visited tracking.
+compile_general_recursive_jython_no_visited(Name, BaseClauses, RecClauses, Code) :-
+    % Generate base case
+    (   BaseClauses = [(BaseHead, _BaseBody)|_]
+    ->  generate_base_condition_jython(BaseHead, BaseCondition)
+    ;   BaseCondition = "False"
+    ),
+    % Generate recursive case
+    (   RecClauses = [(_, RecBody)|_]
+    ->  generate_plain_recursive_jython(RecBody, Name, RecursiveComputation)
+    ;   RecursiveComputation = "current"
+    ),
+    format(string(Code),
+"    # General recursive predicate: ~w - plain recursive (no visited pattern)
+    memo = record.get('__memo__', {})
+
+    key = str(record.get('arg0'))
+
+    if key in memo:
+        yield memo[key]
+        return
+
+    current = dict(record)
+
+    # Base case check
+    if ~w:
+        memo[key] = current
+        yield current
+        return
+
+    # Recursive computation with memoization (no cycle detection)
+    result = ~w
+    memo[key] = result
+    yield result", [Name, BaseCondition, RecursiveComputation]).
+
+%% generate_plain_recursive_jython(+Body, +Name, -Code)
+generate_plain_recursive_jython(Body, Name, Code) :-
+    extract_goal_jython(Body, Goal),
+    functor(Goal, Name, _),
+    Goal =.. [_|Args],
+    (   Args = [Expr|_]
+    ->  expr_to_jython(Expr, JythonExpr),
+        format(string(Code),
+"list(process({'arg0': ~w, '__memo__': memo}))[0]", [JythonExpr])
+    ;   Code = "current"
+    ).
 
 %% compile_general_recursive_jython(+Name, +BaseClauses, +RecClauses, -Code)
 compile_general_recursive_jython(Name, BaseClauses, RecClauses, Code) :-
