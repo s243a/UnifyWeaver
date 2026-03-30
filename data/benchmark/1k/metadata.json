@@ -1,0 +1,9 @@
+{
+  "source": "Simple English Wikipedia dumps (simplewiki)",
+  "database": "data/simplewiki/simplewiki_categories.db",
+  "root": "Physics",
+  "n_articles": 1000,
+  "n_content_categories": 76740,
+  "n_hierarchy_edges": 5933,
+  "max_depth": 20
+}
