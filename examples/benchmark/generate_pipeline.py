@@ -105,38 +105,56 @@ BEGIN {{
         adj[e[1], adj_n[e[1]]] = e[2]
     }}
 
-    # DFS all-simple-paths from each source category
+    # DFS all-simple-paths using recursive function simulation.
+    # Uses AWK associative array for O(1) visited lookup.
+    # Since AWK has no real recursion, we implement iterative DFS
+    # where each stack frame records the node to REMOVE from visited
+    # when backtracking (the node that was ADDED when entering this frame).
     # Store: ancestor_hops[source_cat, ancestor] = "h1 h2 h3 ..."
     for (src in adj_n) {{
+        # visited[node] = 1 means node is on current path
+        delete vis
+        vis[src] = 1
+
+        # Stack stores: node, hops, child_index (which child to explore next)
+        # When child_index > adj_n[node], we backtrack (remove node from vis)
         sp = 1
         stk_node[1] = src
         stk_hops[1] = 0
-        stk_path[1] = "," src ","
+        stk_cidx[1] = 1
 
         while (sp > 0) {{
             cur = stk_node[sp]
             hops = stk_hops[sp]
-            path = stk_path[sp]
-            sp--
+            ci = stk_cidx[sp]
 
-            nc = adj_n[cur]
-            for (j = 1; j <= nc; j++) {{
-                nb = adj[cur, j]
-                if (index(path, "," nb ",") > 0) continue
-                nh = hops + 1
-                if (nh > MAX_DEPTH) continue
-
-                # Record path to root if ancestor is root
-                if (nb == ROOT) {{
-                    key = src SUBSEP ROOT
-                    ancestor_hops[key] = ancestor_hops[key] " " nh
-                }}
-
-                sp++
-                stk_node[sp] = nb
-                stk_hops[sp] = nh
-                stk_path[sp] = path nb ","
+            if (ci > adj_n[cur] || hops >= MAX_DEPTH) {{
+                # Backtrack: all children explored or depth limit
+                delete vis[cur]
+                sp--
+                continue
             }}
+
+            # Advance to next child for this frame
+            stk_cidx[sp] = ci + 1
+
+            nb = adj[cur, ci]
+            if (nb in vis) continue  # O(1) cycle check
+
+            nh = hops + 1
+
+            # Record path to root
+            if (nb == ROOT) {{
+                key = src SUBSEP ROOT
+                ancestor_hops[key] = ancestor_hops[key] " " nh
+            }}
+
+            # Push child frame
+            vis[nb] = 1
+            sp++
+            stk_node[sp] = nb
+            stk_hops[sp] = nh
+            stk_cidx[sp] = 1
         }}
     }}
 
