@@ -57,7 +57,7 @@ The advanced recursion test suite (`test_advanced.pl`) validates pattern detecti
 | Call Graph | Predicate dependency graph construction, self-recursion, mutual edges |
 | SCC Detection | Tarjan's algorithm, separate SCCs, topological ordering |
 | Pattern Matchers | Tail/linear detection, recursive call counting, forbid mechanism, fold patterns |
-| Advanced Compiler | End-to-end orchestration (tail → linear → multicall → tree → mutual) |
+| Advanced Compiler | End-to-end orchestration (tail → linear → multicall → tree → mutual → general) |
 
 ### Running
 
