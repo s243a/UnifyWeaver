@@ -5062,7 +5062,7 @@ typr_per_path_visited_spec(
         RecursiveAccumulatorPairs
     ),
     resolve_node_type(Pred/Arity, BasePred/2, NodeTypeTerm),
-    typr_per_path_visited_scalar_node_type(NodeTypeTerm),
+    typr_per_path_visited_supported_node_type(NodeTypeTerm),
     atom_string(Pred, PredStr),
     atom_string(BasePred, BaseStr),
     empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
@@ -5125,6 +5125,13 @@ typr_per_path_visited_scalar_node_type(string).
 typr_per_path_visited_scalar_node_type(integer).
 typr_per_path_visited_scalar_node_type(float).
 typr_per_path_visited_scalar_node_type(number).
+
+typr_per_path_visited_supported_node_type(NodeTypeTerm) :-
+    typr_per_path_visited_scalar_node_type(NodeTypeTerm),
+    !.
+typr_per_path_visited_supported_node_type(pair(LeftType, RightType)) :-
+    typr_per_path_visited_scalar_node_type(LeftType),
+    typr_per_path_visited_scalar_node_type(RightType).
 
 typr_per_path_visited_base_clause(Head-Body0, Pred, InputPos, VisitedPos, OutputPositions, BasePred, NodeOutputPos, BaseAccumulatorPairs) :-
     Head =.. [Pred|HeadArgs],
