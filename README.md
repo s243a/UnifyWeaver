@@ -235,8 +235,9 @@ includes:
   moved-input variants, and `category_ancestor_weight/5`, where a compile-time-
   seeded step relation and detected `Visited` position lower to a native TypR
   recursive worker that returns nested pair results with one direct node
-  output and one or more additive numeric outputs; this path still assumes one
-  recursion-driving input, but it now also emits a native
+  output and one or more additive numeric outputs; this path now supports one
+  recursion-driving input plus conservative invariant non-visited inputs, and
+  it also emits a native
   `*_from_vectors` runtime helper, native `input(stdin|file|vfs|function)`
   wrappers, and declared scalar or conservative pair-shaped runtime node
   parsing such as `integer`, `number`, `pair(integer, integer)`, and

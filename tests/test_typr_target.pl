@@ -5356,4 +5356,88 @@ test(recursive_compiler_supports_typr_per_path_visited_pair_number_vfs_loader) :
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(recursive_compiler_supports_typr_invariant_per_path_visited_recursion) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_limited(_, _, _, _, _)),
+    retractall(user:mode(category_ancestor_limited(_, _, _, _, _))),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:mode(category_ancestor_limited(+, +, -, -, +))),
+    assertz(user:(category_ancestor_limited(Cat, Limit, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor_limited(Cat, Limit, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor_limited(Mid, Limit, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor_limited/5, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let category_ancestor_limited_worker <- function(current, visited, arg2, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "sub_results <- category_ancestor_limited_worker(next_node, c(visited, next_node), arg2, from_nodes, to_nodes);")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_limited_from_vectors <- function(start, arg2, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_limited <- function(start, arg2)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_limited_from_vectors(start, arg2, category_parent_from, category_parent_to)")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_weighted_invariant_per_path_visited_recursion) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_limit_weight(_, _, _, _, _, _)),
+    retractall(user:mode(category_ancestor_limit_weight(_, _, _, _, _, _))),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:mode(category_ancestor_limit_weight(+, +, -, -, -, +))),
+    assertz(user:(category_ancestor_limit_weight(Cat, Limit, Parent, 1, 10, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor_limit_weight(Cat, Limit, Ancestor, Hops, Cost, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor_limit_weight(Mid, Limit, Ancestor, H1, Cost1, [Mid|Visited]),
+        Hops is H1 + 1,
+        Cost is Cost1 + 10
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor_limit_weight/6, [target(typr), typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let category_ancestor_limit_weight_worker <- function(current, visited, arg2, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "results <- c(results, pair(next_node, pair(1, 10)));")),
+    once(sub_string(Code, _, _, _, "sub_results <- category_ancestor_limit_weight_worker(next_node, c(visited, next_node), arg2, from_nodes, to_nodes);")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_limit_weight <- function(start, arg2)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_limit_weight_from_vectors(start, arg2, category_parent_from, category_parent_to)")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_invariant_per_path_visited_function_input_mode) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_limited_fn(_, _, _, _, _)),
+    retractall(user:mode(category_ancestor_limited_fn(_, _, _, _, _))),
+    assertz(user:mode(category_ancestor_limited_fn(+, +, -, -, +))),
+    assertz(user:(category_ancestor_limited_fn(Cat, Limit, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor_limited_fn(Cat, Limit, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor_limited_fn(Mid, Limit, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor_limited_fn/5, [target(typr), typed_mode(explicit), input(function)], Code)),
+    once(sub_string(Code, _, _, _, "let category_ancestor_limited_fn_from_vectors <- function(start, arg2, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "let category_ancestor_limited_fn <- function(start, arg2, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "category_ancestor_limited_fn_from_vectors(start, arg2, from_nodes, to_nodes)")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
 :- end_tests(typr_target).
