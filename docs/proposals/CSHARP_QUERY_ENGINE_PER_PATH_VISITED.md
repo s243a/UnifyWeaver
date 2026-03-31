@@ -1,5 +1,26 @@
 # Proposal: Per-Path Visited Tracking in C# Query Engine
 
+## Status
+
+As of 2026-03-30, the C# query engine now handles the **canonical counted
+transitive-closure shape** with a dedicated
+`PathAwareTransitiveClosureNode`:
+
+```prolog
+path(X, Y, H) :- edge(X, Y), H is Base.
+path(X, Z, H) :- edge(X, Y), path(Y, Z, H1), H is H1 + Increment.
+```
+
+The compiler recognizes that pattern and the runtime evaluates it with
+DFS plus a copied visited set per branch, which gives the intended
+per-path cycle semantics for counted reachability on cyclic graphs.
+
+What is still not implemented in the C# query engine is **generic
+visited-list lowering** from Prolog source patterns such as
+`\+ member(X, Visited)` and `[X|Visited]`. This document therefore
+serves partly as historical context and partly as a note on the broader
+remaining work.
+
 ## Problem
 
 The C# query engine's `FixpointNode` produces **semantically incorrect
@@ -45,32 +66,36 @@ All other targets solve this with **per-path visited tracking**:
 These are all **path-at-a-time** (DFS) approaches. The C# query engine
 needs an equivalent that works within its plan-based architecture.
 
-## Proposed Solution
+## Implemented Solution
 
-### Option 1: PathAwareFixpointNode (recommended)
+### PathAwareTransitiveClosureNode (implemented)
 
-Add a new plan node `PathAwareFixpointNode` that tracks per-path visited
-state during evaluation. This node would:
+The implemented node is `PathAwareTransitiveClosureNode`. It specializes
+the common counted-reachability case instead of extending the generic
+`FixpointNode`.
 
-1. Evaluate the base plan (same as `FixpointNode`)
-2. For each delta tuple, track which "source" nodes led to it
-3. During recursive evaluation, exclude tuples that would revisit
-   a node already in the current derivation chain
-4. Use a `HashSet<string>` per derivation path
+The runtime:
+
+1. Builds an adjacency index from the edge relation
+2. Enumerates seeds either from the full edge set or from bound source
+   parameters
+3. Runs DFS from each seed
+4. Copies the visited set on each branch so sibling paths do not
+   interfere
+5. Emits `(source, target, hops)` rows with the configured base depth
+   and increment
 
 #### Implementation Sketch
 
 ```csharp
-private IEnumerable<object[]> ExecutePathAwareFixpoint(
-    PathAwareFixpointNode fixpoint, EvaluationContext? context)
+private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(
+    PathAwareTransitiveClosureNode closure, EvaluationContext? context)
 {
-    // Instead of global delta/total sets, maintain per-source DFS
-    var adj = BuildAdjacencyFromRelation(fixpoint.StepRelation, context);
+    var adj = BuildAdjacencyFromRelation(closure.EdgeRelation, context);
     var results = new List<object[]>();
 
-    foreach (var seed in GetSeeds(fixpoint, context))
+    foreach (var seed in GetSeeds(closure, context))
     {
-        // DFS with per-path visited (same as Go/Rust/Python)
         var stack = new Stack<(string node, int hops, HashSet<string> visited)>();
         stack.Push((seed, 0, new HashSet<string> { seed }));
 
@@ -94,42 +119,18 @@ private IEnumerable<object[]> ExecutePathAwareFixpoint(
 
 #### When to Use
 
-The compiler should emit `PathAwareFixpointNode` instead of `FixpointNode`
-when it detects the per-path visited pattern in the Prolog source
-(`is_per_path_visited_pattern/4` from `pattern_matchers.pl`).
+The compiler now emits `PathAwareTransitiveClosureNode` when it detects
+the counted transitive-closure shape above.
 
-For standard Datalog predicates (no visited list, no counters), the
-existing `FixpointNode` with semi-naive evaluation is correct and more
-efficient.
+For standard Datalog predicates without counters, the existing
+`TransitiveClosureNode`, `GroupedTransitiveClosureNode`, or generic
+fixpoint lowering still apply.
 
-### Option 2: Shortest-Path Dedup (approximation)
+### Remaining Generalization Work
 
-Deduplicate on `(source, ancestor)` pairs, keeping only the shortest
-hops. This is semantically different (loses multiple valid simple paths)
-but gives a close approximation for the d_eff formula where short paths
-dominate.
-
-Useful for applications that only need shortest-path distances, not
-all-simple-paths enumeration.
-
-### Option 3: Cycle Guard in Plan
-
-Add a `CycleGuardNode` that wraps the recursive step and filters out
-tuples that would create a cycle. This requires tracking the derivation
-chain in the evaluation context.
-
-More complex than Option 1 but preserves the plan-based architecture
-better.
-
-### Note on Engine Capabilities
-
-The C# query engine already has both **bottom-up** (semi-naive fixpoint)
-and **top-down** (demand-driven, parameterized) evaluation capabilities.
-The per-path visited pattern is a natural fit for the top-down path —
-the `ParamSeedNode` already seeds evaluation from known inputs, and
-demand closure computes backward reachability. Extending this to track
-per-path visited state during top-down evaluation should align with the
-existing architecture rather than fighting it.
+The broader visited-list compilation path is still open. In particular,
+predicates whose Prolog source explicitly threads a `Visited` list are
+not yet lowered into an equivalent query-plan node.
 
 ## Prior Work
 
@@ -181,8 +182,8 @@ Execute time scaling (DFS pipeline, NOT query engine):
 | 5K art | 4.74s | 6.86s | 11.36s | 10.98s |
 | 10K art | 9.48s | 12.44s | 18.71s | 22.14s |
 
-Once the query engine supports per-path visited, it should be
-benchmarked against these DFS pipeline numbers to verify it's
+The next step is to benchmark the query-engine implementation against
+these DFS pipeline numbers to verify that the specialized node is
 competitive or better.
 
 ### Benchmark data
@@ -224,7 +225,8 @@ var results = executor.Execute(plan,
 
 ## Benchmark Reference
 
-When fixed, compare against the DFS pipeline benchmark at 10K scale:
+For performance validation, compare against the DFS pipeline benchmark
+at 10K scale:
 
 | Target | Execute (10K articles) |
 |--------|----------------------|
@@ -237,10 +239,8 @@ potential for JIT optimization of the plan evaluation hot path.
 
 ## Priority
 
-This is **high priority** because:
-1. The query engine produces incorrect results without it
-2. The benchmark's headline result ("C# beats Rust at scale") is
-   from the DFS pipeline, not the query engine — we need the engine
-   to match
-3. The per-path visited pattern is the most common graph traversal
-   pattern in real applications
+The counted transitive-closure case is now implemented. The remaining
+high-priority work is:
+1. Lower explicit visited-list predicates into query plans
+2. Benchmark the specialized query-engine path against the DFS pipeline
+3. Extend the specialization beyond the current canonical counted shape

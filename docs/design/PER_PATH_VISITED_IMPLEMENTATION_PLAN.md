@@ -26,7 +26,7 @@ generates cycle-safe code in the target language.
 | **AWK** | ✅ Complete | `4adf62e3` | DFS with stack + path string | Hardcoded in `compile_general_recursive_to_awk`; not wired to pattern detection |
 | **Go** | ⚠️ Partial | `d731adf5` | Recursive function + `map[string]bool` copy | Generates visited code for ALL general recursion, not specifically when Visited pattern is detected |
 | **Python** | ⚠️ Partial | `6e0cdc32` | Recursive generator + `visited set` | Same — generates visited code for all arity-3 general recursion |
-| **C# Query** | ⚠️ Different | `1106388c` | Parameterized FixpointNode with `is/2` | Semi-naive with HashSet dedup; doesn't do per-path visited but may not need to (see Strategy C below) |
+| **C# Query** | ✅ For counted closure | local | `PathAwareTransitiveClosureNode` + DFS + copied `HashSet` per branch | Covers the canonical counted transitive-closure shape, but not generic visited-list lowering |
 
 ### Not Yet Implemented
 
@@ -195,18 +195,20 @@ function pred(source):
 
 #### Strategy C: Parameterized Query (C# Query Engine)
 
-The C# FixpointNode with semi-naive evaluation deduplicates on full
-tuples. For per-path semantics, two options:
+Current state: the C# query engine now recognizes the canonical counted
+transitive-closure shape and lowers it to
+`PathAwareTransitiveClosureNode`, evaluated with DFS plus a copied
+visited set per branch.
 
-**Option C1**: Generate a custom C# method (bypass FixpointNode):
-```csharp
-IEnumerable<(string Ancestor, int Hops)> CategoryAncestor(
-    string cat, HashSet<string> visited) { ... }
-```
+That means the main semantic bug for counted reachability on cyclic
+graphs is solved without extending the generic `FixpointNode`.
 
-**Option C2**: Use FixpointNode but accept shortest-path-only semantics
-as an approximation. Document that the C# target may produce slightly
-different d_eff values due to path deduplication.
+Remaining work for C# Query is broader than this specialized case:
+
+- Lower explicit visited-list Prolog patterns into query plans
+- Generalize beyond the current `edge + recursive call + arithmetic`
+  shape
+- Re-benchmark against the DFS pipeline and aggregation workloads
 
 ### Step 4: Add `\+` Negation-as-Guard to classify_goal_sequence
 
@@ -244,7 +246,7 @@ Recommended order (easiest first, most impactful first):
 | 4 | **TypeScript** | `Set<string>` is native; recursive generators via `yield*` |
 | 5 | **C/C++** | DFS stack approach; needs memory management for visited sets |
 | 6 | **AWK** | Already done (DFS stack with path strings) |
-| 7 | **C# Query** | Different architecture; may use custom C# method or accept approximation |
+| 7 | **C# Query** | Specialized counted closure is done; remaining work is generic visited-list lowering |
 | 8 | **Others** | Perl, Ruby, Haskell, etc. — follow the same Strategy A pattern |
 
 ## Testing Strategy

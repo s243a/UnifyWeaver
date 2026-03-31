@@ -157,20 +157,25 @@ for AWK. It replaces O(n) string scans with O(1) array lookups at the
 cost of O(path_length) copies per stack push — which is the same
 asymptotic cost as Python's `frozenset | {node}`.
 
-### Strategy C: Semi-Naive with Path Tracking (C# Query Engine)
+### Strategy C: Specialized Path-Aware Closure Node (C# Query Engine)
 
-The C# parameterized query engine uses `FixpointNode` with delta sets.
-To support per-path visited, the tuples would need to carry path
-information:
+The C# query engine now implements the canonical counted
+transitive-closure case with a dedicated
+`PathAwareTransitiveClosureNode`.
 
-- Tuple: `(source, ancestor, hops, path_hash)` where `path_hash`
-  encodes the visited set
-- Deduplication on the full tuple including path_hash
-- Join condition: new intermediate node not in path
+Instead of trying to teach the generic `FixpointNode` about path state,
+the compiler recognizes the common shape:
 
-This is more complex and may not be worth implementing in the IR —
-the C# query engine could instead generate a custom C# function that
-does DFS directly, bypassing the plan-based evaluation for this pattern.
+- base clause: `edge(X, Y), H is Base`
+- recursive clause: `edge(X, Mid), pred(Mid, Y, H1), H is H1 + Increment`
+
+The runtime then executes DFS from each seed, carrying a copied visited
+set per branch. This preserves per-path cycle semantics for counted
+reachability while keeping the rest of the query engine unchanged.
+
+What remains open is generic lowering of explicit visited-list
+predicates. If that broader case is needed, the engine may still need
+either a richer plan node or a more general path-carrying IR.
 
 ## Pattern Recognition
 
@@ -294,7 +299,7 @@ aggregation combines all path lengths into the dimensional distance metric.
 | Go | A (recursive + map copy) | Low | Already has visited param |
 | Rust | A (recursive + HashSet clone) | Low | Needs arity-3 deepening first |
 | AWK | B (explicit DFS stack) | Medium | No recursion, needs stack simulation |
-| C# Query | C (custom function) | High | May bypass FixpointNode for this pattern |
+| C# Query | C (specialized path-aware node) | Medium | Implemented for canonical counted closure; generic visited-list lowering remains |
 | C/C++ | B (explicit DFS stack) | Medium | Stack-based for performance |
 
 ## Prior Work

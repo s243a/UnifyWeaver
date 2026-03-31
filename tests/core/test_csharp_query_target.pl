@@ -142,6 +142,8 @@
 :- dynamic user:test_any_mode/2.
 :- dynamic user:test_group_step/4.
 :- dynamic user:test_group_reach_param/3.
+:- dynamic user:test_pathaware_edge/2.
+:- dynamic user:test_pathaware_reach/3.
 :- dynamic user:test_scanindex_allowed/1.
 :- dynamic user:test_scanindex_step/2.
 :- dynamic user:test_scanindex_reach_param/2.
@@ -288,6 +290,8 @@ test_csharp_query_target :-
         verify_parameterized_need_allows_post_agg,
         verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
+        verify_path_aware_transitive_closure_plan,
+        verify_parameterized_path_aware_transitive_closure_plan,
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
@@ -464,6 +468,28 @@ assert_grouped_recursive_rules(EdgePred, ReachPred) :-
         RecursiveCall
     )).
 
+assert_counted_recursive_fixture(EdgePred, ReachPred, BaseDepth, DepthIncrement, EdgeFacts) :-
+    maplist(assert_fact(EdgePred), EdgeFacts),
+    assert_counted_recursive_rules(EdgePred, ReachPred, BaseDepth, DepthIncrement).
+
+assert_counted_recursive_rules(EdgePred, ReachPred, BaseDepth, DepthIncrement) :-
+    BaseHead =.. [ReachPred, X, Y, Depth],
+    BaseEdge =.. [EdgePred, X, Y],
+    BaseAssign = (Depth is BaseDepth),
+    assertz(user:(BaseHead :-
+        BaseEdge,
+        BaseAssign
+    )),
+    RecursiveHead =.. [ReachPred, X, Z, Depth],
+    RecursiveEdge =.. [EdgePred, X, Y],
+    RecursiveCall =.. [ReachPred, Y, Z, PrevDepth],
+    RecursiveAssign = (Depth is PrevDepth + DepthIncrement),
+    assertz(user:(RecursiveHead :-
+        RecursiveEdge,
+        RecursiveCall,
+        RecursiveAssign
+    )).
+
 cleanup_recursive_fixture(EdgePred, ReachPred, Arity) :-
     functor(EdgeTerm, EdgePred, Arity),
     retractall(user:EdgeTerm),
@@ -472,6 +498,12 @@ cleanup_recursive_fixture(EdgePred, ReachPred, Arity) :-
     length(ModeArgs, Arity),
     ModeTerm =.. [ReachPred | ModeArgs],
     retractall(user:mode(ModeTerm)).
+
+cleanup_counted_recursive_fixture(EdgePred, ReachPred) :-
+    functor(EdgeTerm, EdgePred, 2),
+    retractall(user:EdgeTerm),
+    functor(ReachTerm, ReachPred, 3),
+    retractall(user:ReachTerm).
 
 setup_test_data :-
     cleanup_test_data,
@@ -1059,6 +1091,13 @@ setup_test_data :-
     assertz(user:mode(test_reachable_param_both(+, +))),
     assertz(user:(test_reachable_param_both(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable_param_both(X, Z) :- test_fact(X, Y), test_reachable_param_both(Y, Z))),
+    assert_counted_recursive_fixture(
+        test_pathaware_edge,
+        test_pathaware_reach,
+        1,
+        1,
+        [[a, b], [b, a], [b, c]]
+    ),
     assert_binary_recursive_fixture(
         test_probe_dir_forward_edge,
         test_probe_dir_forward_reach,
@@ -1266,6 +1305,7 @@ cleanup_test_data :-
     retractall(user:mode(test_reachable_param_end(_, _))),
     retractall(user:test_reachable_param_both(_, _)),
     retractall(user:mode(test_reachable_param_both(_, _))),
+    cleanup_counted_recursive_fixture(test_pathaware_edge, test_pathaware_reach),
     cleanup_recursive_fixture(test_probe_dir_forward_edge, test_probe_dir_forward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_backward_edge, test_probe_dir_backward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_mixed_edge, test_probe_dir_mixed_reach, 2),
@@ -3352,6 +3392,52 @@ verify_recursive_plan :-
         width:2
     }),
     maybe_run_query_runtime(Plan, ['alice,bob', 'bob,charlie', 'alice,charlie']).
+
+verify_path_aware_transitive_closure_plan :-
+    csharp_query_target:build_query_plan(test_pathaware_reach/3, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, path_aware_transitive_closure{type:path_aware_transitive_closure,
+        head:predicate{name:test_pathaware_reach, arity:3},
+        edge:predicate{name:test_pathaware_edge, arity:2},
+        base_depth:1,
+        depth_increment:1,
+        width:3
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareTransitiveClosureNode'),
+    maybe_run_query_runtime(Plan, [
+        'a,b,1',
+        'a,c,2',
+        'b,a,1',
+        'b,c,1'
+    ]).
+
+verify_parameterized_path_aware_transitive_closure_plan :-
+    csharp_target:build_query_plan(
+        test_pathaware_reach/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, output, output],
+    get_dict(root, Plan, path_aware_transitive_closure{type:path_aware_transitive_closure,
+        head:predicate{name:test_pathaware_reach, arity:3},
+        edge:predicate{name:test_pathaware_edge, arity:2},
+        base_depth:1,
+        depth_increment:1,
+        width:3
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    sub_string(Source, _, _, _, 'PathAwareTransitiveClosureNode'),
+    \+ sub_string(Source, _, _, _, '$need'),
+    \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
+    maybe_run_query_runtime(Plan,
+        ['a,b,1',
+         'a,c,2'],
+        [[a]]).
 
 verify_grouped_transitive_closure_plan :-
     csharp_query_target:build_query_plan(test_label_cat_reach/4, [target(csharp_query)], Plan),
