@@ -794,6 +794,9 @@ compile_transitive_closure(r, Pred, _Arity, BasePred, Options, GeneratedCode) :-
 
 %% TypR transitive closure — loaded from templates/targets/typr/transitive_closure.mustache
 compile_transitive_closure(typr, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    % TODO: Switch to composable templates once TypR-specific dict vars
+    % (empty_nodes_expr, from_nodes_expr, to_nodes_expr) are wired in.
+    % For now, typr_target.pl handles the full compilation with @{ }@ blocks.
     compile_predicate_to_typr(Pred/2, [base_pred(BasePred)|Options], GeneratedCode),
     !.
 
