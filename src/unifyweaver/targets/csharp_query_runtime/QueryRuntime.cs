@@ -330,7 +330,15 @@ namespace UnifyWeaver.QueryRuntime
         int PairProbeCacheAdmissionMinCost = 0,
         double PairProbeCacheAdmissionMinCostPerProbe = 0,
         int SeededCacheAdmissionMinRows = 0,
-        double SeededCacheAdmissionMinRowsPerSeed = 0);
+        double SeededCacheAdmissionMinRowsPerSeed = 0,
+        /// <summary>
+        /// Maximum number of fixpoint iterations before termination.
+        /// Prevents non-convergence on cyclic graphs with counter-bearing
+        /// recursive predicates (e.g., hop counting in transitive closure).
+        /// Default 0 = unlimited (standard Datalog convergence assumed).
+        /// Recommended: 50 for graphs with cycles and arithmetic counters.
+        /// </summary>
+        int MaxFixpointIterations = 0);
 
     public sealed record QueryNodeTrace(
         int Id,
@@ -1036,6 +1044,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly double _pairProbeCacheAdmissionMinCostPerProbe;
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
+        private readonly int _maxFixpointIterations;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
@@ -1048,6 +1057,7 @@ namespace UnifyWeaver.QueryRuntime
             _pairProbeCacheAdmissionMinCostPerProbe = Math.Max(0d, options.PairProbeCacheAdmissionMinCostPerProbe);
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
+            _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
         }
 
         public IEnumerable<object[]> Execute(
@@ -11253,6 +11263,14 @@ namespace UnifyWeaver.QueryRuntime
                 while (context.Deltas.TryGetValue(predicate, out var delta) && delta.Count > 0)
                 {
                     iteration++;
+                    // Max iteration bound: prevents non-convergence on cyclic
+                    // graphs with counter-bearing recursive predicates.
+                    // With d_eff formula (n=5), iterations beyond 50 contribute
+                    // negligibly: d^(-5) at depth 50 ≈ 3e-9.
+                    if (_maxFixpointIterations > 0 && iteration > _maxFixpointIterations)
+                    {
+                        break;
+                    }
                     var nextDelta = new List<object[]>();
                     foreach (var recursivePlan in fixpoint.RecursivePlans)
                     {
