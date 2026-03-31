@@ -239,7 +239,8 @@ namespace UnifyWeaver.QueryRuntime
         PredicateId EdgeRelation,
         PredicateId Predicate,
         int BaseDepth,
-        int DepthIncrement
+        int DepthIncrement,
+        int MaxDepth = 0
     ) : PlanNode;
 
     /// <summary>
@@ -953,7 +954,7 @@ namespace UnifyWeaver.QueryRuntime
                 OffsetNode offset => $"Offset count={offset.Count}",
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
-                PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement}",
+                PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -6942,7 +6943,7 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows);
+                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -6997,7 +6998,7 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows);
+                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -7013,8 +7014,10 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object, List<object[]>> succIndex,
             int baseDepth,
             int depthIncrement,
-            ICollection<object[]> output)
+            ICollection<object[]> output,
+            int maxDepth = 0)
         {
+            var emitted = new HashSet<(object?, int)>();
             var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
             stack.Push((seed, 0, new HashSet<object?> { seed }));
 
@@ -7044,7 +7047,16 @@ namespace UnifyWeaver.QueryRuntime
                     var nextDepth = depth == 0
                         ? baseDepth
                         : checked(depth + depthIncrement);
-                    output.Add(new object[] { seed!, next!, nextDepth });
+
+                    if (maxDepth > 0 && nextDepth > maxDepth)
+                    {
+                        continue;
+                    }
+
+                    if (emitted.Add((next, nextDepth)))
+                    {
+                        output.Add(new object[] { seed!, next!, nextDepth });
+                    }
 
                     var nextVisited = new HashSet<object?>(visited) { next };
                     stack.Push((next, nextDepth, nextVisited));

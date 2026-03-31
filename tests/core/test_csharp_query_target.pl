@@ -3401,6 +3401,7 @@ verify_path_aware_transitive_closure_plan :-
         edge:predicate{name:test_pathaware_edge, arity:2},
         base_depth:1,
         depth_increment:1,
+        max_depth:10,
         width:3
     }),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
@@ -3427,6 +3428,7 @@ verify_parameterized_path_aware_transitive_closure_plan :-
         edge:predicate{name:test_pathaware_edge, arity:2},
         base_depth:1,
         depth_increment:1,
+        max_depth:10,
         width:3
     }),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
