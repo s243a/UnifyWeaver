@@ -42,6 +42,7 @@ Layer 5: Validation (optional)
 | TypR | detect | monolithic | type-aware (10 vars) | native + R fallback | typr check |
 | Rust | detect | composable | basic + pred_cap | none | cargo check (manual) |
 | Go | detect | composable | basic + pred_cap | none | none |
+| WAM | detect | template_system | basic vars | symbolic VM | runtime verify |
 | Others | detect | composable | basic vars | none | none |
 
 ### Target: All Targets at Layer 3+
@@ -206,11 +207,12 @@ fallback_chain(_Target, Env, wam) :-
     environment_capability(Env, _AsmTarget).
 ```
 
-### WAM as Universal Hub
+### WAM as Universal Hub (Partially Implemented)
 
 For predicates requiring genuine unification, backtracking, or
 choice points — which native lowering cannot handle — WAM bytecode
-preserves Prolog semantics and fans out to existing assembly targets:
+preserves Prolog semantics and fans out to existing assembly targets.
+Phase 1 (Symbolic WAM + Runtime) is complete.
 
 ```
 WAM bytecode → WAT       (WASM environments)

@@ -187,7 +187,7 @@ reusable across all targets. Without it, a predicate like
 **Risk:** Medium — must verify extracted analysis produces identical
 results for TypR predicates that currently work.
 
-## Phase 6: Environment-Aware Fallback Chains
+## Phase 6: Environment-Aware Fallback Chains (IN PROGRESS)
 
 **Goal:** Maximum predicate coverage with fallbacks that respect
 deployment environment constraints.
@@ -227,7 +227,7 @@ Krakatau) that already exist.
        environment_capability(Env, _AsmTarget).
    ```
 
-2. WAM target as universal fallback hub:
+2. **WAM target as universal fallback hub (Phase 1 DONE)**:
    ```
    Prolog → WAM bytecode → WAT (WASM environments)
                          → Jamaica (JVM environments)
@@ -235,9 +235,8 @@ Krakatau) that already exist.
                          → GNU Prolog native (native environments)
    ```
    WAM is only needed for predicates that resist native lowering
-   (genuine unification, backtracking, choice points). Ship
-   recursive WAM output first (correct but unoptimized), then
-   apply tail/linear recursion transformations as a post-pass.
+   (genuine unification, backtracking, choice points). Symbolic
+   WAM target and verification runtime are implemented.
 
 3. JavaScript as target family, not single target:
    ```prolog
@@ -254,7 +253,9 @@ Krakatau) that already exist.
 
 **Effort:** Very high — WAM target is a major undertaking.
 
-**Risk:** High — WAM recursion must be managed; start with
+**Status:** Phase 1 (Symbolic WAM + Runtime) Complete.
+
+**Risk:** Medium — WAM recursion must be managed; start with
 correct-but-slow, optimize incrementally.
 
 ## Priority and Dependencies
@@ -272,7 +273,7 @@ Phase 4 (validation) ← independent, can start anytime
   ↓
 Phase 5 (shared clause body analysis) ← depends on Phase 3
   ↓
-Phase 6 (environment-aware fallback + WAM) ← depends on Phase 5
+Phase 6 (environment-aware fallback + WAM Hub) ← Phase 1 DONE
 ```
 
 ## Metrics

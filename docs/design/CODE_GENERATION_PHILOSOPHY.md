@@ -240,18 +240,20 @@ lowering, then fans out to assembly targets:
 
 ```
 Prolog predicate
-  └─ (resists native lowering) → WAM bytecode
+  └─ (resists native lowering) → WAM bytecode (Implemented)
         ├─ WAT  → WASM environments (browser, wasmtime)
         ├─ Jamaica → JVM environments
         └─ Krakatau → JVM environments
 ```
 
 WAT, Jamaica, and Krakatau targets already exist in UnifyWeaver.
-WAM as an intermediate representation is the missing hub. The
+WAM as an intermediate representation is the core hub. The
 recursion inherent in WAM's instruction set (environments, choice
-points) can be addressed incrementally: ship recursive WAM output
-first (correct but unoptimized), then apply the tail/linear
-recursion transformations from TypR's native lowering as a post-pass.
+points) is handled via symbolic instructions (`allocate`,
+`try_me_else`), with a symbolic runtime available for verification.
+The next step is to apply the tail/linear recursion transformations
+from TypR's native lowering as a post-pass or direct WAM lowering
+optimizations.
 
 ## JavaScript Is a Target Family
 
