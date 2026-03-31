@@ -173,4 +173,53 @@ test(uses_shared_analysis_module) :-
     current_predicate(clause_body_analysis:if_then_else_goal/4),
     current_predicate(clause_body_analysis:build_head_varmap/3).
 
+test(weighted_recursive_accumulation_lowering) :-
+    assert(user:(weighted_edge(a, b))),
+    assert(user:(weighted_edge(b, c))),
+    assert(user:(weighted_cost(a, 2))),
+    assert(user:(weighted_cost(b, 5))),
+    assert(user:(weighted_path(X, Y, Acc) :-
+        weighted_edge(X, Y),
+        weighted_cost(X, Cost),
+        Acc is Cost)),
+    assert(user:(weighted_path(X, Z, Acc) :-
+        weighted_edge(X, Y),
+        weighted_cost(X, Cost),
+        weighted_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + Cost)),
+    compile_rs(weighted_path/3, Code),
+    has(Code, "Path-aware recursive accumulation"),
+    has(Code, "let mut aux: HashMap<String, i64> = HashMap::new();"),
+    has(Code, "aux.insert(\"a\".to_string(), 2);"),
+    has(Code, "aux.insert(\"b\".to_string(), 5);"),
+    has(Code, "results.push((nb.clone(), *step_cost));"),
+    has(Code, "results.push((ancestor, (acc + *step_cost)));"),
+    retractall(user:weighted_edge(_, _)),
+    retractall(user:weighted_cost(_, _)),
+    retractall(user:weighted_path(_, _, _)).
+
+test(log_recursive_accumulation_lowering) :-
+    assert(user:(semantic_edge(a, b))),
+    assert(user:(semantic_edge(b, c))),
+    assert(user:(semantic_degree(a, 2))),
+    assert(user:(semantic_degree(b, 5))),
+    assert(user:(semantic_path(X, Y, Acc) :-
+        semantic_edge(X, Y),
+        semantic_degree(X, Deg),
+        Acc is log(Deg) / log(5))),
+    assert(user:(semantic_path(X, Z, Acc) :-
+        semantic_edge(X, Y),
+        semantic_degree(X, Deg),
+        semantic_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + (log(Deg) / log(5)))),
+    compile_rs(semantic_path/3, Code),
+    has(Code, "let mut aux: HashMap<String, f64> = HashMap::new();"),
+    has(Code, "aux.insert(\"a\".to_string(), 2.0);"),
+    has(Code, "aux.insert(\"b\".to_string(), 5.0);"),
+    has(Code, "((*step_cost).ln() / (5.0).ln())"),
+    has(Code, "(acc + ((*step_cost).ln() / (5.0).ln()))"),
+    retractall(user:semantic_edge(_, _)),
+    retractall(user:semantic_degree(_, _)),
+    retractall(user:semantic_path(_, _, _)).
+
 :- end_tests(rust_native_lowering).

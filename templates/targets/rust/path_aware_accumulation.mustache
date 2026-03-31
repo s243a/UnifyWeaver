@@ -1,0 +1,44 @@
+// Path-aware recursive accumulation: {{pred}}/3
+// Edge relation: {{step_rel}}/2
+// Auxiliary relation: {{aux_rel}}/2
+use std::collections::{HashMap, HashSet};
+
+fn {{pred}}_worker(
+    current: &str,
+    visited: &HashSet<String>,
+    adj: &HashMap<String, Vec<String>>,
+    aux: &HashMap<String, {{acc_type}}>
+) -> Vec<(String, {{acc_type}})> {
+    if visited.contains(current) {
+        return Vec::new();
+    }
+
+    let mut new_visited = visited.clone();
+    new_visited.insert(current.to_string());
+
+    let mut results = Vec::new();
+    if let (Some(neighbors), Some(step_cost)) = (adj.get(current), aux.get(current)) {
+        for nb in neighbors {
+            if !new_visited.contains(nb.as_str()) {
+                results.push((nb.clone(), {{base_expr}}));
+                for (ancestor, acc) in {{pred}}_worker(nb, &new_visited, adj, aux) {
+                    results.push((ancestor, {{recursive_expr}}));
+                }
+            }
+        }
+    }
+    results
+}
+
+fn main() {
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+{{step_block}}
+    let mut aux: HashMap<String, {{acc_type}}> = HashMap::new();
+{{aux_block}}
+
+    let visited = HashSet::new();
+    let results = {{pred}}_worker("test", &visited, &adj, &aux);
+    for (ancestor, acc) in &results {
+        println!("{}\t{}", ancestor, acc);
+    }
+}
