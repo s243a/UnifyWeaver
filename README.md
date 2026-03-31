@@ -312,8 +312,8 @@ includes:
   same supported guarded full-body forms after an earlier recursive group-
   call prefix, plus integer-return and threaded-context variants,
   lowered to TypR
-  functions that use raw-expression
-  memoized helper bodies inside TypR instead of wrapped-R fallback
+  functions that use native TypR
+  helper bodies instead of wrapped-R fallback
 - the first SCC IR-backed helper-goal slice is now in place:
   mixed tree/numeric SCCs with a local nonrecursive helper goal between
   recursive group calls now stay native in TypR instead of falling out with
@@ -340,7 +340,7 @@ includes:
   `tree_sum_prework/2`, `weighted_tree_sum_prework/3`,
   `tree_sum_branch/2`, `weighted_tree_sum_branch/3`,
   `tree_sum_asym_branch/2`, and `weighted_tree_sum_asym_branch/3`, lowered
-  to TypR functions that use raw-expression structural helper bodies over
+  to TypR functions that use native TypR structural helper bodies over
   `[]` / `[V, L, R]` trees, including limited native guards, local `is`
   steps, threaded invariant-context updates before the two subtree calls,
   per-subtree invariant-context updates for the left and right recursive

@@ -453,7 +453,7 @@ Current TypR lowering policy is intentionally mixed:
   tree/list/numeric SCCs where the tree-shaped predicate uses the same
   supported guarded full-body forms after an earlier recursive group-call
   prefix, plus integer-return and threaded-context variants,
-  using raw-expression memoized helper bodies inside TypR rather than
+  using native TypR memoized helper bodies inside TypR rather than
   wrapped-R fallback
 - the first SCC IR-backed slices are now in place for per-predicate
   ordered call bodies and for conservative mixed tree/numeric bodies with
