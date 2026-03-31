@@ -363,8 +363,9 @@ Completed:
 9. Extended the native generic path further so sequential guard/output control
    flow can stay in TypR when a later guard depends on an earlier bound value.
 10. Extended native multi-clause TypR lowering so supported branch bodies stay
-    native and introduce new branch-local intermediates with `let` rather than
-    raw `local({ ... })` wrappers.
+    native, fact-only predicates emit direct native boolean matches, and
+    branch-local intermediates use `let` rather than raw `local({ ... })`
+    wrappers.
 11. Extended the native guard path again so simple comparison and boolean
     expressions over already-bound intermediates can stay native in both
     top-level control-flow chains and supported branch bodies.
