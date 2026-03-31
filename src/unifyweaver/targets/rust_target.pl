@@ -70,6 +70,7 @@
 :- use_module('../core/pipeline_validation').
 :- use_module('../core/service_validation').
 :- use_module('../core/optimizer').
+:- use_module('../core/template_system', [render_template/3]).
 
 % Component system integration (ported from Go target)
 :- use_module('../core/component_registry').
@@ -3369,8 +3370,10 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
         compile_facts_to_rust(Pred, Arity, Clauses, FieldDelim, RustCode)
     ;   is_general_recursive_pattern_rust(Pred, Arity, Clauses) ->
         format('Type: general_recursion_arity_~w~n', [Arity]),
+        (   rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr)
+        ->  compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, RustCode)
         %% Check for per-path visited pattern and branch code generation
-        (   rust_clauses_to_ppv_pairs(Clauses, PPVPairs),
+        ;   rust_clauses_to_ppv_pairs(Clauses, PPVPairs),
             is_per_path_visited_pattern(Pred, Arity, PPVPairs, VisitedPos)
         ->  format('  Per-path visited pattern detected (visited at position ~w)~n', [VisitedPos]),
             compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode)
@@ -3414,7 +3417,7 @@ rust_clauses_to_ppv_pairs([Head-Body|Rest], [(Head, Body)|RestPairs]) :-
 compile_general_recursive_to_rust_no_visited(Pred, Arity, Clauses, RustCode) :-
     atom_string(Pred, PredStr),
     % Partition clauses
-    partition(is_rec_clause_rust(Pred), Clauses, _RecClauses, BaseClauses),
+    partition(is_rec_clause_rust(Pred), Clauses, RecClauses, BaseClauses),
     % Extract step relation from base case
     (   BaseClauses = [_BaseHead-BaseBody|_]
     ->  extract_goals_list_rust(BaseBody, BaseGoals),
@@ -3436,7 +3439,7 @@ compile_general_recursive_to_rust_no_visited(Pred, Arity, Clauses, RustCode) :-
         BaseConstStr = "1"
     ),
     % Extract arithmetic increment from recursive case
-    (   _RecClauses = [_RH-RecBody|_]
+    (   RecClauses = [_RH-RecBody|_]
     ->  extract_goals_list_rust(RecBody, RecGoals),
         (   member((_ is ArithExpr), RecGoals),
             ArithExpr = (_ + Incr),
@@ -3521,7 +3524,7 @@ fn main() {{
 compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode) :-
     atom_string(Pred, PredStr),
     % Partition clauses
-    partition(is_rec_clause_rust(Pred), Clauses, _RecClauses, BaseClauses),
+    partition(is_rec_clause_rust(Pred), Clauses, RecClauses, BaseClauses),
     % Extract step relation from base case
     (   BaseClauses = [_BaseHead-BaseBody|_]
     ->  extract_goals_list_rust(BaseBody, BaseGoals),
@@ -3544,7 +3547,7 @@ compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode) :-
         BaseConstStr = "1"
     ),
     % Extract arithmetic increment from recursive case
-    (   _RecClauses = [_RH-RecBody|_]
+    (   RecClauses = [_RH-RecBody|_]
     ->  extract_goals_list_rust(RecBody, RecGoals),
         (   member((_ is ArithExpr), RecGoals),
             ArithExpr = (_ + Incr),
@@ -3650,6 +3653,208 @@ is_rec_clause_rust(Pred, _Head-Body) :-
 extract_goals_list_rust((A, B), [A|Rest]) :- !,
     extract_goals_list_rust(B, Rest).
 extract_goals_list_rust(Goal, [Goal]).
+
+rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr) :-
+    partition(is_rec_clause_rust(Pred), Clauses, RecClauses, BaseClauses),
+    BaseClauses = [BaseHead-BaseBody|_],
+    RecClauses = [_RecHead-RecBody|_],
+    BaseHead =.. [Pred, From, To, Acc],
+    var(From),
+    var(To),
+    var(Acc),
+    extract_goals_list_rust(BaseBody, BaseGoals),
+    select(BaseArith, BaseGoals, BaseTerms),
+    BaseTerms = [BaseGoalA, BaseGoalB],
+    rust_edge_aux_terms(From, To, AuxValue, BaseGoalA, BaseGoalB, EdgeGoal, AuxGoal),
+    EdgeGoal =.. [StepRel, From, To],
+    AuxGoal =.. [AuxRel, From, AuxValue],
+    BaseArith = (Acc is BaseExpr),
+    term_variables(BaseExpr, BaseVars),
+    subset_vars(BaseVars, [AuxValue]),
+    extract_goals_list_rust(RecBody, RecGoals),
+    select(RecArith, RecGoals, RecTerms0),
+    select(RecAuxGoal, RecTerms0, RecTerms1),
+    select(RecEdgeGoal, RecTerms1, [RecCall]),
+    RecEdgeGoal =.. [StepRel, From, Mid],
+    RecAuxGoal =.. [AuxRel, From, AuxValue],
+    RecCall =.. [Pred, Mid, To, PrevAcc],
+    RecArith = (Acc is RecExpr),
+    term_variables(RecExpr, RecVars),
+    member_var_eq(PrevAcc, RecVars),
+    subset_vars(RecVars, [PrevAcc, AuxValue]).
+
+rust_edge_aux_terms(From, To, AuxValue, GoalA, GoalB, EdgeGoal, AuxGoal) :-
+    (   rust_binary_relation_term(From, To, GoalA),
+        rust_aux_relation_term(From, AuxValue, GoalB)
+    ->  EdgeGoal = GoalA,
+        AuxGoal = GoalB
+    ;   rust_binary_relation_term(From, To, GoalB),
+        rust_aux_relation_term(From, AuxValue, GoalA)
+    ->  EdgeGoal = GoalB,
+        AuxGoal = GoalA
+    ).
+
+rust_binary_relation_term(Left, Right, Goal0) :-
+    strip_module(Goal0, _, Goal),
+    functor(Goal, _, 2),
+    arg(1, Goal, Left),
+    arg(2, Goal, Right).
+
+rust_aux_relation_term(Key, Value, Goal0) :-
+    strip_module(Goal0, _, Goal),
+    functor(Goal, _, 2),
+    arg(1, Goal, Key),
+    arg(2, Goal, Value).
+
+compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, RustCode) :-
+    Arity =:= 3,
+    atom_string(Pred, PredStr),
+    atom_string(StepRel, StepRelStr),
+    atom_string(AuxRel, AuxRelStr),
+    rust_accumulation_numeric_type(BaseExpr, RecExpr, AccType),
+    rust_accumulation_expr(BaseExpr, [AuxValue-'*step_cost'], AccType, BaseExprCode),
+    rust_accumulation_expr(RecExpr, [PrevAcc-acc, AuxValue-'*step_cost'], AccType, RecExprCode),
+    functor(StepHead, StepRel, 2),
+    findall(A-B, (user:clause(StepHead, true), StepHead =.. [_, A, B]), StepFacts),
+    findall(StepLine,
+        (   member(K-V, StepFacts),
+            format(string(StepLine),
+                '    adj.entry("~w".to_string()).or_insert_with(Vec::new).push("~w".to_string());',
+                [K, V])
+        ),
+        StepLines),
+    atomic_list_concat(StepLines, '\n', StepBlock),
+    functor(AuxHead, AuxRel, 2),
+    findall(AuxLine,
+        (   user:clause(AuxHead, true),
+            AuxHead =.. [_, K, V],
+            rust_numeric_literal(AccType, V, AuxLiteral),
+            format(string(AuxLine),
+                '    aux.insert("~w".to_string(), ~w);',
+                [K, AuxLiteral])
+        ),
+        AuxLines),
+    atomic_list_concat(AuxLines, '\n', AuxBlock),
+    load_rust_template('path_aware_accumulation', Template),
+    render_template(Template, [
+        pred=PredStr,
+        step_rel=StepRelStr,
+        aux_rel=AuxRelStr,
+        acc_type=AccType,
+        step_block=StepBlock,
+        aux_block=AuxBlock,
+        base_expr=BaseExprCode,
+        recursive_expr=RecExprCode
+    ], RustCode).
+
+member_var_eq(Var, [Candidate|_]) :-
+    Var == Candidate, !.
+member_var_eq(Var, [_|Rest]) :-
+    member_var_eq(Var, Rest).
+
+subset_vars([], _).
+subset_vars([Var|Rest], Allowed) :-
+    member_var_eq(Var, Allowed),
+    subset_vars(Rest, Allowed).
+
+rust_accumulation_numeric_type(BaseExpr, RecExpr, "f64") :-
+    (   rust_expr_requires_float(BaseExpr)
+    ;   rust_expr_requires_float(RecExpr)
+    ),
+    !.
+rust_accumulation_numeric_type(_, _, "i64").
+
+rust_expr_requires_float(Expr) :-
+    number(Expr),
+    \+ integer(Expr),
+    !.
+rust_expr_requires_float(Expr) :-
+    compound(Expr),
+    (   Expr = (_ / _)
+    ;   Expr = (_ ** _)
+    ;   Expr =.. [log, _]
+    ;   Expr =.. [ln, _]
+    ),
+    !.
+rust_expr_requires_float(Expr) :-
+    compound(Expr),
+    Expr =.. [_|Args],
+    member(Arg, Args),
+    rust_expr_requires_float(Arg),
+    !.
+
+rust_numeric_literal("f64", Number, Literal) :-
+    number(Number),
+    !,
+    (   integer(Number)
+    ->  format(string(Literal), '~w.0', [Number])
+    ;   format(string(Literal), '~w', [Number])
+    ).
+rust_numeric_literal("i64", Number, Literal) :-
+    format(string(Literal), '~w', [Number]).
+
+rust_accumulation_expr(Expr, VarBindings, _Type, RustExpr) :-
+    var(Expr),
+    !,
+    lookup_var(Expr, VarBindings, RustExpr).
+rust_accumulation_expr(Number, _, Type, RustExpr) :-
+    number(Number),
+    !,
+    rust_numeric_literal(Type, Number, RustExpr).
+rust_accumulation_expr(-Expr, VarBindings, Type, RustExpr) :-
+    !,
+    rust_accumulation_expr(Expr, VarBindings, Type, Inner),
+    format(string(RustExpr), '(-~w)', [Inner]).
+rust_accumulation_expr(Left ** Right, VarBindings, Type, RustExpr) :-
+    !,
+    rust_accumulation_expr(Left, VarBindings, Type, LeftExpr),
+    rust_accumulation_expr(Right, VarBindings, Type, RightExpr),
+    format(string(RustExpr), '(~w).powf(~w)', [LeftExpr, RightExpr]).
+rust_accumulation_expr(log(Expr), VarBindings, Type, RustExpr) :-
+    !,
+    rust_accumulation_expr(Expr, VarBindings, Type, Inner),
+    format(string(RustExpr), '(~w).ln()', [Inner]).
+rust_accumulation_expr(ln(Expr), VarBindings, Type, RustExpr) :-
+    !,
+    rust_accumulation_expr(Expr, VarBindings, Type, Inner),
+    format(string(RustExpr), '(~w).ln()', [Inner]).
+rust_accumulation_expr(min(Left, Right), VarBindings, Type, RustExpr) :-
+    !,
+    rust_accumulation_expr(Left, VarBindings, Type, LeftExpr),
+    rust_accumulation_expr(Right, VarBindings, Type, RightExpr),
+    format(string(RustExpr), '(~w).min(~w)', [LeftExpr, RightExpr]).
+rust_accumulation_expr(max(Left, Right), VarBindings, Type, RustExpr) :-
+    !,
+    rust_accumulation_expr(Left, VarBindings, Type, LeftExpr),
+    rust_accumulation_expr(Right, VarBindings, Type, RightExpr),
+    format(string(RustExpr), '(~w).max(~w)', [LeftExpr, RightExpr]).
+rust_accumulation_expr(abs(Expr), VarBindings, Type, RustExpr) :-
+    !,
+    rust_accumulation_expr(Expr, VarBindings, Type, Inner),
+    format(string(RustExpr), '(~w).abs()', [Inner]).
+rust_accumulation_expr(Expr, VarBindings, Type, RustExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    rust_accumulation_expr(Left, VarBindings, Type, LeftExpr),
+    rust_accumulation_expr(Right, VarBindings, Type, RightExpr),
+    rust_op(StdOp, RustOp),
+    format(string(RustExpr), '(~w ~w ~w)', [LeftExpr, RustOp, RightExpr]).
+rust_accumulation_expr(Atom, _, _, RustExpr) :-
+    atom(Atom),
+    rust_literal(Atom, RustExpr).
+
+load_rust_template(Name, Template) :-
+    format(string(RelPath), 'templates/targets/rust/~w.mustache', [Name]),
+    format(string(VfsPath), '/user/templates/targets/rust/~w.mustache', [Name]),
+    (   exists_file(RelPath)
+    ->  read_file_to_string(RelPath, Template, [])
+    ;   exists_file(VfsPath)
+    ->  read_file_to_string(VfsPath, Template, [])
+    ;   format(user_error, 'Rust template not found: ~w (tried ~w)~n', [RelPath, VfsPath]),
+        fail
+    ).
 
 % ============================================================================
 % NATIVE CLAUSE BODY LOWERING

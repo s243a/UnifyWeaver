@@ -37,6 +37,21 @@ implementations, including compiled Rust:
 | vs Rust | 0.8x | 6.0x | 10.4x | 8.2x |
 | vs Go | 1.1x | 8.9x | 17.2x | 12.4x |
 
+Important semantic note:
+
+- The current C# query-engine benchmark path seeds `category_ancestor/3`
+  from unique categories and materializes unique `(seed, ancestor, hops)`
+  tuples.
+- The DFS pipelines enumerate all simple paths. If two distinct paths
+  reach the same ancestor with the same hop count, both contribute to
+  `d_eff`.
+- Therefore the query-engine benchmark is currently a performance
+  comparison for the deduplicated counted-closure path, not a
+  path-multiplicity-exact implementation of the full `effective_distance`
+  reference.
+- `benchmark_effective_distance.py` reports this explicitly via
+  `query_vs_csharp_dfs`.
+
 ### Why the Query Engine Wins
 
 The query engine's advantage comes from **seed deduplication**: many
@@ -163,6 +178,8 @@ Tables:
 | `generate_facts.py` | Alternative: fetch from Wikipedia API (for small datasets) |
 | `generate_pipeline.py` | Generate self-contained pipeline per target |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
+| `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs DFS binaries |
+| `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
 
@@ -187,6 +204,15 @@ python examples/benchmark/generate_pipeline.py \
 # Compile and run (file-based loading)
 go build -o bench pipelines/effective_distance.go
 ./bench data/benchmark/5k/category_parent.tsv data/benchmark/5k/article_category.tsv
+
+# Re-run the current non-regression benchmark
+python examples/benchmark/benchmark_effective_distance.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs
+
+# Measure overhead of the generalized path-aware accumulation runtime
+python examples/benchmark/benchmark_path_aware_accumulation.py \
+    --scales 300,1k,5k,10k
 ```
 
 ### Available Targets
