@@ -972,6 +972,14 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
             metadata:_{classification:recursive, options:Options, modes:Modes},
             is_recursive:true
         }
+    ;   maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations)
+    ->  Plan = plan{
+            head:HeadSpec,
+            root:Root,
+            relations:Relations,
+            metadata:_{classification:recursive, options:Options, modes:Modes},
+            is_recursive:true
+        }
     ;   maybe_grouped_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations)
     ->  Plan = plan{
             head:HeadSpec,
@@ -1123,6 +1131,100 @@ arithmetic_increment_assignment(Term0, TargetVar, PrevVar, Increment) :-
     ),
     number(Increment0),
     Increment is Increment0.
+
+%% Path-aware computed accumulation optimisation ----------------------------
+%
+% Detect the canonical path-aware accumulation pattern:
+%   path(X,Y,H) :- edge(X,Y), aux(X,V), H is BaseExpr(V).
+%   path(X,Z,H) :- edge(X,Y), aux(X,V), path(Y,Z,H1), H is StepExpr(H1,V).
+%
+% This generalises the counted closure fast path to explicit source-keyed
+% auxiliary lookups while preserving per-path cycle checks.
+
+maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations) :-
+    GroupSpecs = [HeadSpec],
+    get_dict(arity, HeadSpec, 3),
+    path_aware_transitive_closure_supported_modes(Modes),
+    BaseClauses = [BaseClause],
+    RecClauses = [RecClause],
+    path_aware_accumulation_base_clause(HeadSpec, BaseClause, EdgeSpec, AuxSpec, BaseExpression),
+    path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, RecClause, RecursiveExpression),
+    get_dict(name, EdgeSpec, EdgePred),
+    get_dict(arity, EdgeSpec, EdgeArity),
+    get_dict(name, AuxSpec, AuxPred),
+    get_dict(arity, AuxSpec, AuxArity),
+    ensure_relation(EdgePred, EdgeArity, [], Relations0),
+    ensure_relation(AuxPred, AuxArity, Relations0, Relations1),
+    dedup_relations(Relations1, Relations),
+    Root = path_aware_accumulation{
+        type:path_aware_accumulation,
+        head:HeadSpec,
+        edge:EdgeSpec,
+        auxiliary:AuxSpec,
+        base_expression:BaseExpression,
+        recursive_expression:RecursiveExpression,
+        max_depth:10,
+        width:3
+    }.
+
+path_aware_accumulation_base_clause(HeadSpec, Head-Body, EdgeSpec, AuxSpec, BaseExpression) :-
+    get_dict(name, HeadSpec, Pred),
+    Head =.. [Pred, From, To, Acc],
+    var(From),
+    var(To),
+    var(Acc),
+    body_to_list(Body, Terms),
+    select(ArithTerm0, Terms, Terms1),
+    Terms1 = [TermA0, TermB0],
+    path_aware_accumulation_edge_aux_terms(From, To, AuxValue, TermA0, TermB0, EdgeTerm0, AuxTerm0),
+    transitive_closure_edge_term(EdgeSpec, From, To, EdgeTerm0),
+    path_aware_auxiliary_term(AuxSpec, From, AuxValue, AuxTerm0),
+    arithmetic_assignment_expression(ArithTerm0, Acc, [From-0, To-1, AuxValue-3], BaseExpression).
+
+path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, Head-Body, RecursiveExpression) :-
+    get_dict(name, HeadSpec, Pred),
+    Head =.. [Pred, From, To, Acc],
+    var(From),
+    var(To),
+    var(Acc),
+    body_to_list(Body, Terms),
+    select(ArithTerm0, Terms, Terms1),
+    select(AuxTerm0, Terms1, Terms2),
+    select(EdgeTerm0, Terms2, [RecTerm0]),
+    transitive_closure_edge_term(EdgeSpec, From, Mid, EdgeTerm0),
+    path_aware_auxiliary_term(AuxSpec, From, AuxValue, AuxTerm0),
+    path_aware_transitive_recursive_term(Pred, Mid, To, PrevAcc, RecTerm0),
+    arithmetic_assignment_expression(ArithTerm0, Acc, [From-0, To-1, PrevAcc-2, AuxValue-3], RecursiveExpression).
+
+path_aware_accumulation_edge_aux_terms(From, To, AuxValue, TermA0, TermB0, EdgeTerm0, AuxTerm0) :-
+    (   binary_relation_term(From, To, TermA0),
+        path_aware_auxiliary_term(_, From, AuxValue, TermB0),
+        EdgeTerm0 = TermA0,
+        AuxTerm0 = TermB0
+    ;   binary_relation_term(From, To, TermB0),
+        path_aware_auxiliary_term(_, From, AuxValue, TermA0),
+        EdgeTerm0 = TermB0,
+        AuxTerm0 = TermA0
+    ).
+
+binary_relation_term(Left, Right, Term0) :-
+    strip_module(Term0, _, Term),
+    functor(Term, _, 2),
+    arg(1, Term, Left),
+    arg(2, Term, Right).
+
+path_aware_auxiliary_term(AuxSpec, Key, Value, Term0) :-
+    strip_module(Term0, _, Term),
+    Term =.. [AuxPred, Key, Value],
+    (   var(AuxSpec)
+    ->  AuxSpec = predicate{name:AuxPred, arity:2}
+    ;   AuxSpec = predicate{name:AuxPred, arity:2}
+    ).
+
+arithmetic_assignment_expression(Term0, TargetVar, VarMap, Expression) :-
+    strip_module(Term0, _, Term),
+    Term = (TargetVar is ExprTerm),
+    arithmetic_expression(ExprTerm, VarMap, Expression).
 
 %% Grouped transitive closure optimisation ----------------------------------
 %
@@ -3583,6 +3685,21 @@ emit_plan_expression(Node, Expr) :-
     atom_string(Name, NameStr),
     format(atom(Expr), 'new PathAwareTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w)',
         [EdgeNameStr, EdgeArity, NameStr, Arity, BaseDepth, DepthIncrement, MaxDepth]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, path_aware_accumulation), !,
+    get_dict(edge, Node, predicate{name:EdgeName, arity:EdgeArity}),
+    get_dict(auxiliary, Node, predicate{name:AuxName, arity:AuxArity}),
+    get_dict(head, Node, predicate{name:Name, arity:Arity}),
+    get_dict(base_expression, Node, BaseExpression),
+    get_dict(recursive_expression, Node, RecursiveExpression),
+    (get_dict(max_depth, Node, MaxDepth) -> true ; MaxDepth = 0),
+    emit_arithmetic_expression(BaseExpression, BaseExprCode),
+    emit_arithmetic_expression(RecursiveExpression, RecExprCode),
+    atom_string(EdgeName, EdgeNameStr),
+    atom_string(AuxName, AuxNameStr),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new PathAwareAccumulationNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w)',
+        [EdgeNameStr, EdgeArity, NameStr, Arity, AuxNameStr, AuxArity, BaseExprCode, RecExprCode, MaxDepth]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, fixpoint), !,
     get_dict(base, Node, BaseNode),

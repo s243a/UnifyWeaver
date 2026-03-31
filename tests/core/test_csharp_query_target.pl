@@ -144,6 +144,9 @@
 :- dynamic user:test_group_reach_param/3.
 :- dynamic user:test_pathaware_edge/2.
 :- dynamic user:test_pathaware_reach/3.
+:- dynamic user:test_weighted_edge/2.
+:- dynamic user:test_weighted_cost/2.
+:- dynamic user:test_weighted_path/3.
 :- dynamic user:test_scanindex_allowed/1.
 :- dynamic user:test_scanindex_step/2.
 :- dynamic user:test_scanindex_reach_param/2.
@@ -292,6 +295,8 @@ test_csharp_query_target :-
         verify_recursive_plan,
         verify_path_aware_transitive_closure_plan,
         verify_parameterized_path_aware_transitive_closure_plan,
+        verify_path_aware_accumulation_plan,
+        verify_parameterized_path_aware_accumulation_plan,
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
@@ -1098,6 +1103,23 @@ setup_test_data :-
         1,
         [[a, b], [b, a], [b, c]]
     ),
+    assertz(user:test_weighted_edge(a, b)),
+    assertz(user:test_weighted_edge(b, a)),
+    assertz(user:test_weighted_edge(b, c)),
+    assertz(user:test_weighted_edge(a, d)),
+    assertz(user:test_weighted_cost(a, 2)),
+    assertz(user:test_weighted_cost(b, 5)),
+    assertz(user:(test_weighted_path(X, Y, Acc) :-
+        test_weighted_edge(X, Y),
+        test_weighted_cost(X, Cost),
+        Acc is Cost
+    )),
+    assertz(user:(test_weighted_path(X, Z, Acc) :-
+        test_weighted_edge(X, Y),
+        test_weighted_cost(X, Cost),
+        test_weighted_path(Y, Z, Acc1),
+        Acc is Acc1 + Cost
+    )),
     assert_binary_recursive_fixture(
         test_probe_dir_forward_edge,
         test_probe_dir_forward_reach,
@@ -1306,6 +1328,9 @@ cleanup_test_data :-
     retractall(user:test_reachable_param_both(_, _)),
     retractall(user:mode(test_reachable_param_both(_, _))),
     cleanup_counted_recursive_fixture(test_pathaware_edge, test_pathaware_reach),
+    retractall(user:test_weighted_edge(_, _)),
+    retractall(user:test_weighted_cost(_, _)),
+    retractall(user:test_weighted_path(_, _, _)),
     cleanup_recursive_fixture(test_probe_dir_forward_edge, test_probe_dir_forward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_backward_edge, test_probe_dir_backward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_mixed_edge, test_probe_dir_mixed_reach, 2),
@@ -3439,6 +3464,53 @@ verify_parameterized_path_aware_transitive_closure_plan :-
     maybe_run_query_runtime(Plan,
         ['a,b,1',
          'a,c,2'],
+        [[a]]).
+
+verify_path_aware_accumulation_plan :-
+    csharp_query_target:build_query_plan(test_weighted_path/3, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, path_aware_accumulation{type:path_aware_accumulation,
+        head:predicate{name:test_weighted_path, arity:3},
+        edge:predicate{name:test_weighted_edge, arity:2},
+        auxiliary:predicate{name:test_weighted_cost, arity:2},
+        width:3
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    maybe_run_query_runtime(Plan, [
+        'a,b,2',
+        'a,c,7',
+        'a,d,2',
+        'b,a,5',
+        'b,c,5',
+        'b,d,7'
+    ]).
+
+verify_parameterized_path_aware_accumulation_plan :-
+    csharp_target:build_query_plan(
+        test_weighted_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, output, output],
+    get_dict(root, Plan, path_aware_accumulation{type:path_aware_accumulation,
+        head:predicate{name:test_weighted_path, arity:3},
+        edge:predicate{name:test_weighted_edge, arity:2},
+        auxiliary:predicate{name:test_weighted_cost, arity:2},
+        width:3
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    \+ sub_string(Source, _, _, _, '$need'),
+    \+ sub_string(Source, _, _, _, 'ParamSeedNode'),
+    maybe_run_query_runtime(Plan,
+        ['a,b,2',
+         'a,c,7',
+         'a,d,2'],
         [[a]]).
 
 verify_grouped_transitive_closure_plan :-

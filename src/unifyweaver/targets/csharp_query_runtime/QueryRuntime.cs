@@ -244,6 +244,20 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Computes a path-aware recursive accumulation where each step binds an
+    /// auxiliary value from the current source node and updates an accumulator
+    /// via arithmetic expressions.
+    /// </summary>
+    public sealed record PathAwareAccumulationNode(
+        PredicateId EdgeRelation,
+        PredicateId Predicate,
+        PredicateId AuxiliaryRelation,
+        ArithmeticExpression BaseExpression,
+        ArithmeticExpression RecursiveExpression,
+        int MaxDepth = 0
+    ) : PlanNode;
+
+    /// <summary>
     /// Indicates which relation a recursive reference should read from.
     /// </summary>
     public enum RecursiveRefKind
@@ -819,6 +833,7 @@ namespace UnifyWeaver.QueryRuntime
                     case TransitiveClosureNode:
                     case GroupedTransitiveClosureNode:
                     case PathAwareTransitiveClosureNode:
+                    case PathAwareAccumulationNode:
                         return;
 
                     case ProgramNode program:
@@ -955,6 +970,7 @@ namespace UnifyWeaver.QueryRuntime
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
                 PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth}",
+                PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -1183,6 +1199,33 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(pathAwareClosure, rows);
                 }
 
+                if (plan.Root is PathAwareAccumulationNode pathAwareAccumulation)
+                {
+                    IEnumerable<object[]> rows;
+                    if (inputPositions.Count > 0 && inputPositions[0] == 0)
+                    {
+                        rows = ExecuteSeededPathAwareAccumulation(pathAwareAccumulation, inputPositions, paramList, context);
+                        if (!(inputPositions.Count == 1 && inputPositions[0] == 0))
+                        {
+                            rows = FilterByParameters(rows, inputPositions, paramList);
+                        }
+                    }
+                    else
+                    {
+                        rows = FilterByParameters(ExecutePathAwareAccumulation(pathAwareAccumulation, context), inputPositions, paramList);
+                    }
+
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(pathAwareAccumulation);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(pathAwareAccumulation, rows);
+                }
+
                 if (plan.Root is RelationScanNode scan)
                 {
                     var rows = ExecuteBoundFactScan(scan, inputPositions, paramList, context);
@@ -1326,6 +1369,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 case PathAwareTransitiveClosureNode closure:
                     result = ExecutePathAwareTransitiveClosure(closure, context);
+                    break;
+
+                case PathAwareAccumulationNode closure:
+                    result = ExecutePathAwareAccumulation(closure, context);
                     break;
 
                 case FixpointNode fixpoint:
@@ -1757,6 +1804,11 @@ namespace UnifyWeaver.QueryRuntime
 
                 case PathAwareTransitiveClosureNode closure:
                     predicates.Add(closure.EdgeRelation);
+                    return;
+
+                case PathAwareAccumulationNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.AuxiliaryRelation);
                     return;
 
                 case MutualFixpointNode mutual:
@@ -7060,6 +7112,179 @@ namespace UnifyWeaver.QueryRuntime
 
                     var nextVisited = new HashSet<object?>(visited) { next };
                     stack.Push((next, nextDepth, nextVisited));
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ExecutePathAwareAccumulation(PathAwareAccumulationNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "PathAwareAccumulation");
+
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
+                var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
+                var seeds = new List<object?>();
+                var seenSeeds = new HashSet<object?>();
+
+                foreach (var edge in edges)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var seed = edge[0];
+                    if (seenSeeds.Add(seed))
+                    {
+                        seeds.Add(seed);
+                    }
+                }
+
+                seeds.Sort(CompareCacheSeedValues);
+                var totalRows = new List<object[]>();
+                foreach (var seed in seeds)
+                {
+                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.MaxDepth);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededPathAwareAccumulation(
+            PathAwareAccumulationNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "PathAwareAccumulationSeeded");
+
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
+                var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
+                var seeds = new List<object?>();
+                var seenSeeds = new HashSet<object?>();
+
+                foreach (var paramTuple in parameters)
+                {
+                    if (paramTuple is null || paramTuple.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetParameterValue(paramTuple, inputPositions, 0, out var seed))
+                    {
+                        continue;
+                    }
+
+                    if (seenSeeds.Add(seed))
+                    {
+                        seeds.Add(seed);
+                    }
+                }
+
+                seeds.Sort(CompareCacheSeedValues);
+                var totalRows = new List<object[]>();
+                foreach (var seed in seeds)
+                {
+                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.MaxDepth);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private void AppendPathAwareAccumulationRowsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            ArithmeticExpression baseExpression,
+            ArithmeticExpression recursiveExpression,
+            ICollection<object[]> output,
+            int maxDepth = 0)
+        {
+            var emitted = new HashSet<RowWrapper>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+            var stack = new Stack<(object? Node, object Accumulator, int Depth, HashSet<object?> Visited)>();
+            stack.Push((seed, 0, 0, new HashSet<object?> { seed }));
+
+            while (stack.Count > 0)
+            {
+                var (current, accumulator, depth, visited) = stack.Pop();
+                var currentKey = current ?? NullFactIndexKey;
+                if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                {
+                    continue;
+                }
+
+                for (var edgeIndex = edgeBucket.Count - 1; edgeIndex >= 0; edgeIndex--)
+                {
+                    var edge = edgeBucket[edgeIndex];
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var next = edge[1];
+                    if (visited.Contains(next))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    if (maxDepth > 0 && nextDepth > maxDepth)
+                    {
+                        continue;
+                    }
+
+                    for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                    {
+                        var auxRow = auxBucket[auxIndexPos];
+                        if (auxRow is null || auxRow.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var auxValue = auxRow[1];
+                        var evalTuple = new object[] { current!, next!, accumulator, auxValue! };
+                        var nextAccumulator = depth == 0
+                            ? EvaluateArithmeticExpression(baseExpression, evalTuple)
+                            : EvaluateArithmeticExpression(recursiveExpression, evalTuple);
+
+                        var dedupRow = new object[] { next!, nextAccumulator };
+                        if (emitted.Add(new RowWrapper(dedupRow)))
+                        {
+                            output.Add(new object[] { seed!, next!, nextAccumulator });
+                        }
+
+                        var nextVisited = new HashSet<object?>(visited) { next };
+                        stack.Push((next, nextAccumulator, nextDepth, nextVisited));
+                    }
                 }
             }
         }
