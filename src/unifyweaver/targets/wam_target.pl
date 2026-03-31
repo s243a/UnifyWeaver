@@ -260,10 +260,48 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ;   atomic(Arg)
     ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I]),
         V1 = V0
-    ;   % TODO: put_structure
+    ;   compound(Arg)
+    ->  Arg =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        next_x_reg(V0, XReg, V_temp),
+        bind_var(Arg, XReg, V_temp, V2),
+        format(string(StructCode), "    put_structure ~w/~w, A~w", [F, SArity, I]),
+        compile_set_arguments(SubArgs, V2, V1, SetCode),
+        (   SetCode == ""
+        ->  Code = StructCode
+        ;   format(string(Code), "~w~n~w", [StructCode, SetCode])
+        )
+    ;   % Fallback for unknown terms — allocate a fresh variable
         next_x_reg(V0, XReg, V_temp),
         bind_var(Arg, XReg, V_temp, V1),
         format(string(Code), "    put_variable ~w, A~w", [XReg, I])
+    ).
+
+%% compile_set_arguments(+Args, +VIn, -VOut, -Code)
+%  Emits set_value/set_variable instructions for put_structure sub-arguments.
+compile_set_arguments([], V, V, "").
+compile_set_arguments([Arg|Rest], V0, Vf, Code) :-
+    (   var(Arg)
+    ->  (   get_var_reg(Arg, V0, Reg)
+        ->  format(string(ArgCode), "    set_value ~w", [Reg]),
+            V1 = V0
+        ;   next_x_reg(V0, XReg, V_temp),
+            bind_var(Arg, XReg, V_temp, V1),
+            format(string(ArgCode), "    set_variable ~w", [XReg])
+        )
+    ;   atomic(Arg)
+    ->  % For atomic sub-args, emit set_constant directly
+        V1 = V0,
+        format(string(ArgCode), "    set_constant ~w", [Arg])
+    ;   % Nested compound — allocate a register for the sub-structure
+        next_x_reg(V0, XReg, V_temp),
+        bind_var(Arg, XReg, V_temp, V1),
+        format(string(ArgCode), "    set_variable ~w", [XReg])
+    ),
+    compile_set_arguments(Rest, V1, Vf, RestCode),
+    (   RestCode == ""
+    ->  Code = ArgCode
+    ;   format(string(Code), "~w~n~w", [ArgCode, RestCode])
     ).
 
 %% Variable Mapping Helpers
