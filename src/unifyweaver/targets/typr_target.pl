@@ -6533,23 +6533,22 @@ build_typr_linear_recursive_body(
     },
     Body
 ) :-
-    linear_recursive_guard_lines(RecursiveGuardExpr, Pred, GuardLines),
-    format(string(BaseLine), '        ~w', [BaseOutputExpr]),
-    format(string(AccInitLine), '        acc = ~w;', [BaseOutputExpr]),
+    linear_recursive_guard_lines(RecursiveGuardExpr, Pred, RawGuardLines),
+    typr_nativeize_statement_lines(RawGuardLines, GuardLines),
+    format(string(ResultInitLine), '    ~w <- ~w;', [ResultName, BaseOutputExpr]),
+    format(string(AccInitLine), '    acc <- ~w;', [BaseOutputExpr]),
     format(string(LoopLine), '        for (current in ~w) {', [SeqExpr]),
-    format(string(AccStepLine), '            acc = ~w;', [FoldExpr]),
-    format(string(BaseCaseIfLine), '    if (identical(current_input, ~w)) {', [BaseInputLiteral]),
-    format(string(ResultIntroLine), 'let ~w <- @{', [ResultName]),
-    format(string(CurrentInputLine), '    current_input = ~w;', [InputArgName]),
+    format(string(AccStepLine), '            acc <- ~w;', [FoldExpr]),
+    format(string(ResultLine), '        ~w <- acc;', [ResultName]),
+    format(string(LoopIfLine), '    if (!identical(current_input, ~w)) {', [BaseInputLiteral]),
+    format(string(CurrentInputLine), '    current_input <- ~w;', [InputArgName]),
     format(string(AssignResultLine), '~w <- ~w;', [OutputArgName, ResultName]),
     atomic_list_concat(
         [
-            ResultIntroLine,
-            'local({',
             CurrentInputLine,
-            BaseCaseIfLine,
-            BaseLine,
-            '    } else {'
+            ResultInitLine,
+            AccInitLine,
+            LoopIfLine
         ],
         '\n',
         Prefix
@@ -6564,14 +6563,11 @@ build_typr_linear_recursive_body(
     append(
         RawLines0,
         [
-            AccInitLine,
             LoopLine,
             AccStepLine,
-            '        };',
-            '        acc',
+            '        }',
+            ResultLine,
             '    }',
-            '})',
-            '}@;',
             AssignResultLine,
             OutputArgName
         ],
@@ -6589,28 +6585,23 @@ build_typr_linear_recursive_list_body(
     },
     Body
 ) :-
-    format(string(BaseLine), '        ~w', [BaseOutputExpr]),
-    format(string(AccInitLine), '        acc = ~w;', [BaseOutputExpr]),
-    format(string(AccStepLine), '            acc = ~w;', [FoldExpr]),
-    format(string(ResultIntroLine), 'let ~w <- @{', [ResultName]),
-    format(string(CurrentInputLine), '    current_input = ~w;', [InputArgName]),
+    format(string(ResultInitLine), '    ~w <- ~w;', [ResultName, BaseOutputExpr]),
+    format(string(AccInitLine), '    acc <- ~w;', [BaseOutputExpr]),
+    format(string(AccStepLine), '            acc <- ~w;', [FoldExpr]),
+    format(string(ResultLine), '        ~w <- acc;', [ResultName]),
+    format(string(CurrentInputLine), '    current_input <- ~w;', [InputArgName]),
     format(string(AssignResultLine), '~w <- ~w;', [OutputArgName, ResultName]),
     atomic_list_concat(
         [
-            ResultIntroLine,
-            'local({',
             CurrentInputLine,
-            '    if (length(current_input) == 0) {',
-            BaseLine,
-            '    } else {',
+            ResultInitLine,
             AccInitLine,
+            '    if (length(current_input) > 0) {',
             '        for (current in rev(current_input)) {',
             AccStepLine,
-            '        };',
-            '        acc',
+            '        }',
+            ResultLine,
             '    }',
-            '})',
-            '}@;',
             AssignResultLine,
             OutputArgName
         ],
@@ -6979,6 +6970,25 @@ raw_guard_expr(GuardConditions, GuardExpr) :-
     combine_typr_conditions(GuardConditions, CombinedCondition),
     typr_condition_expr_text(CombinedCondition, GuardExpr).
 
+typr_nativeize_statement_lines([], []).
+typr_nativeize_statement_lines([Line0|Rest0], [Line|Rest]) :-
+    typr_nativeize_statement_line(Line0, Line),
+    typr_nativeize_statement_lines(Rest0, Rest).
+
+typr_nativeize_statement_line(Line0, Line) :-
+    (   sub_string(Line0, Before, 3, After, " = "),
+        sub_string(Line0, _, 1, 0, ";")
+    ->  sub_string(Line0, 0, Before, _, Left),
+        Start is Before + 3,
+        sub_string(Line0, Start, After, 0, Right),
+        string_concat(Left, " <- ", Prefix),
+        string_concat(Prefix, Right, Line)
+    ;   sub_string(Line0, Before, 2, 0, "};")
+    ->  sub_string(Line0, 0, Before, 2, Prefix),
+        string_concat(Prefix, "}", Line)
+    ;   Line = Line0
+    ).
+
 build_typr_tail_recursive_body(
     RecHead-_RecBody,
     loop_spec{
@@ -6995,15 +7005,18 @@ build_typr_tail_recursive_body(
     build_head_varmap([HeadInputVar, HeadAccVar, HeadOutVar], 1, HeadVarMap0),
     reserve_typr_internal_var(HeadVarMap0, _ResultToken, ResultName, _HeadVarMap, new),
     lookup_typr_var(HeadOutVar, HeadVarMap0, OutputName),
-    tail_recursive_guard_lines(GuardExpr, PredName, GuardLines),
+    tail_recursive_guard_lines(GuardExpr, PredName, RawGuardLines),
+    typr_nativeize_statement_lines(RawGuardLines, GuardLines),
+    typr_nativeize_statement_lines(StepLines, NativeStepLines),
     format_string('    while (!identical(current_input, ~w)) {', [BaseInputLiteral], WhileLine),
-    format_string('        current_input = ~w;', [NextInputExpr], NextInputLine),
-    format_string('        current_acc = ~w;', [NextAccExpr], NextAccLine),
+    format_string('        current_input <- ~w;', [NextInputExpr], NextInputLine),
+    format_string('        current_acc <- ~w;', [NextAccExpr], NextAccLine),
+    format_string('    ~w <- current_acc;', [ResultName], ResultLine),
+    format_string('~w <- ~w;', [OutputName, ResultName], AssignResultLine),
     append(
         [
-            'local({',
-            '    current_input = arg1;',
-            '    current_acc = arg2;',
+            '    current_input <- arg1;',
+            '    current_acc <- arg2;',
             WhileLine
         ],
         GuardLines,
@@ -7011,7 +7024,7 @@ build_typr_tail_recursive_body(
     ),
     append(
         RawLines0,
-        StepLines,
+        NativeStepLines,
         RawLines1
     ),
     append(
@@ -7019,19 +7032,14 @@ build_typr_tail_recursive_body(
         [
             NextInputLine,
             NextAccLine,
-            '    };',
-            '    current_acc',
-            '})'
+            '    }',
+            ResultLine,
+            AssignResultLine,
+            OutputName
         ],
         RawLines
     ),
-    atomic_list_concat(RawLines, '\n', RawExpr),
-    format(string(Body),
-'let ~w <- @{
-~w
-}@;
-~w <- ~w;
-~w', [ResultName, RawExpr, OutputName, ResultName, OutputName]).
+    atomic_list_concat(RawLines, '\n', Body).
 
 tail_recursive_guard_lines('TRUE', _PredName, []) :-
     !.

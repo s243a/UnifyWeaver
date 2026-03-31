@@ -199,14 +199,14 @@ bring-up.
     intermediate, the final output directly, or the later result set needed
     by subsequent native steps
   - accumulator-style tail-recursive predicates lowered to TypR-valid
-    functions with raw-expression loop bodies for the currently supported
+    functions with native TypR loop bodies for the currently supported
     tail-recursion shape
   - conservative single-recursive-call numeric linear-recursive predicates
-    lowered to TypR-valid functions with raw-expression fold/loop bodies for
+    lowered to TypR-valid functions with native TypR fold/loop bodies for
     the currently supported single-base shape with one recursion-driving
     argument and invariant context args
   - conservative single-recursive-call list linear-recursive predicates
-    lowered to TypR-valid functions with raw-expression fold/loop bodies for
+    lowered to TypR-valid functions with native TypR fold/loop bodies for
     the currently supported empty-list shape with one recursion-driving list
     argument and invariant context args
   - conservative arity-2 numeric multi-call tree-recursive predicates

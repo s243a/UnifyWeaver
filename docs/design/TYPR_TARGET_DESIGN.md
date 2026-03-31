@@ -56,15 +56,15 @@ This document focuses on architecture and rollout choices specific to TypR.
      by subsequent native steps
    - accumulator-style tail-recursive predicates that match the currently
      supported shared tail-recursion shape, emitted as TypR functions with
-     raw-expression loop bodies
+     native TypR loop bodies
    - conservative single-recursive-call numeric linear-recursive predicates
      that match the currently supported single-base fold shape with one
      recursion-driving argument and invariant context args, emitted as TypR
-     functions with raw-expression fold/loop bodies
+     functions with native TypR fold/loop bodies
    - conservative single-recursive-call list linear-recursive predicates
      that match the currently supported empty-list fold shape with one
      recursion-driving list argument and invariant context args, emitted as
-     TypR functions with raw-expression fold/loop bodies
+     TypR functions with native TypR fold/loop bodies
    - conservative arity-2 numeric multi-call tree-recursive predicates that
      match the currently supported memoized helper shape for `fib/2`-style
      recursion, emitted as TypR functions with raw-expression helper bodies
@@ -473,11 +473,11 @@ Current implementation note:
   later state before later native steps expand it, two-level nested guarded
   alternatives inside supported semicolon branches where each nested branch
   still selects the same later result set, accumulator-style tail-recursive
-  predicates compiled to raw-expression loop bodies inside TypR functions,
+  predicates compiled to native TypR loop bodies inside TypR functions,
   conservative single-recursive-call numeric linear-recursive predicates
-  compiled to raw-expression fold/loop bodies inside TypR functions,
+  compiled to native TypR fold/loop bodies inside TypR functions,
   conservative single-recursive-call list linear-recursive predicates
-  compiled to raw-expression fold/loop bodies inside TypR functions,
+  compiled to native TypR fold/loop bodies inside TypR functions,
   conservative arity-2 numeric multi-call tree-recursive predicates
   compiled to raw-expression memoized helper bodies inside TypR functions,
   conservative `N`-ary structural tree-recursive predicates compiled to

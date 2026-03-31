@@ -243,16 +243,16 @@ includes:
   parsing such as `integer`, `number`, `pair(integer, integer)`, and
   `pair(number, number)` over the same step-relation shape
 - accumulator-style tail-recursive predicates such as `factorial_acc/3`,
-  lowered to TypR functions that use raw-expression loop bodies instead of
+  lowered to TypR functions that use native TypR loop bodies instead of
   relabeled standalone R scripts
 - conservative single-recursive-call numeric linear-recursive predicates with
   one recursion-driving argument and invariant context args, such as
   `factorial_linear/2` and `power/3`, lowered to TypR functions that use
-  raw-expression fold/loop bodies instead of wrapped-R fallback
+  native TypR fold/loop bodies instead of wrapped-R fallback
 - conservative single-recursive-call list linear-recursive predicates with
   one recursion-driving list argument and invariant context args, such as
   `list_length/2` and `list_length_from/3`, lowered to TypR functions that
-  use raw-expression fold/loop bodies instead of wrapped-R fallback
+  use native TypR fold/loop bodies instead of wrapped-R fallback
 - conservative arity-2 numeric multi-call tree-recursive predicates such as
   `fib/2`, lowered to TypR functions that use raw-expression memoized helper
   bodies inside TypR instead of wrapped-R fallback
