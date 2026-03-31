@@ -43,6 +43,7 @@ test_wam_single_clause :-
         sub_string(S, _, _, _, 'test_grandparent/2:'),
         sub_string(S, _, _, _, 'allocate'),
         sub_string(S, _, _, _, 'get_variable'),
+        sub_string(S, _, _, _, 'put_value'),
         sub_string(S, _, _, _, 'call test_parent/2'),
         sub_string(S, _, _, _, 'deallocate'),
         sub_string(S, _, _, _, 'execute test_parent/2')
@@ -61,6 +62,7 @@ test_wam_recursion :-
         sub_string(S, _, _, _, 'trust_me'),
         sub_string(S, _, _, _, 'execute test_parent/2'),
         sub_string(S, _, _, _, 'allocate'),
+        sub_string(S, _, _, _, 'put_value'),
         sub_string(S, _, _, _, 'call test_parent/2'),
         sub_string(S, _, _, _, 'deallocate'),
         sub_string(S, _, _, _, 'execute test_ancestor/2')

@@ -8,7 +8,7 @@ This PR adds a new code generation target for the Warren Abstract Machine (WAM),
     - Compiles Prolog predicates to symbolic WAM instructions.
     - **Backtracking Support**: Emits `try_me_else`, `retry_me_else`, and `trust_me` for multi-clause predicates.
     - **Memory Management**: Implements `allocate`/`deallocate` for rule environments.
-    - **Variable Mapping**: Robust X-register allocation for temporary variables, including support for compound arguments in body goals.
+    - **Variable Mapping**: Robust X-register allocation for temporary variables, including proper threading and support for compound arguments in body goals.
     - **Unification**: Full support for `get_constant`, `get_variable`, `get_value`, and `get_structure`.
     - **Term Construction**: Support for `put_constant`, `put_variable`, and `put_value`.
     - **Optimization**: Implements Tail Call Optimization (TCO) via the `execute` instruction.

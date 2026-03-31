@@ -247,8 +247,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ->  (   get_var_reg(Arg, V0, Reg)
         ->  format(string(Code), "    put_value ~w, A~w", [Reg, I]),
             V1 = V0
-        ;   next_x_reg(V0, XReg, V1),
-            bind_var(Arg, XReg, V1, V1),
+        ;   next_x_reg(V0, XReg, V_temp),
+            bind_var(Arg, XReg, V_temp, V1),
             format(string(Code), "    put_variable ~w, A~w", [XReg, I])
         )
     ;   atomic(Arg)
