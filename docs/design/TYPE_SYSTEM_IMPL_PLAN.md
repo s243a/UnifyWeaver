@@ -210,7 +210,7 @@ bring-up.
     the currently supported empty-list shape with one recursion-driving list
     argument and invariant context args
   - conservative arity-2 numeric multi-call tree-recursive predicates
-    lowered to TypR-valid functions with raw-expression memoized helper
+    lowered to TypR-valid functions with native TypR memoized helper
     bodies for the currently supported `fib/2`-style shape
   - conservative arity-1 boolean mutual-recursive predicate groups lowered
     to TypR-valid functions with raw-expression memoized helper bodies for

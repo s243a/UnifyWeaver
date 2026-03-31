@@ -390,8 +390,8 @@ Current TypR lowering policy is intentionally mixed:
   TypR rather than wrapped-R fallback
 - conservative arity-2 numeric multi-call tree-recursive predicates may also
   lower to TypR-valid functions when they match the currently supported
-  memoized helper shape for `fib/2`-style recursion, using raw-expression
-  helper bodies inside TypR rather than wrapped-R fallback
+  memoized helper shape for `fib/2`-style recursion, using native TypR
+  helper bodies rather than wrapped-R fallback
 - conservative arity-1 boolean mutual-recursive predicate groups may also
   lower to TypR-valid functions when they match the currently supported
   `is_even/1` / `is_odd/1`-style numeric SCC shape, the

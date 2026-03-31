@@ -255,8 +255,8 @@ includes:
   `list_length/2` and `list_length_from/3`, lowered to TypR functions that
   use native TypR fold/loop bodies instead of wrapped-R fallback
 - conservative arity-2 numeric multi-call tree-recursive predicates such as
-  `fib/2`, lowered to TypR functions that use raw-expression memoized helper
-  bodies inside TypR instead of wrapped-R fallback
+  `fib/2`, lowered to TypR functions that use native TypR memoized helper
+  bodies instead of wrapped-R fallback
 - conservative boolean mutual-recursive predicate groups such as
   `is_even/1` / `is_odd/1`, `even_list/1` / `odd_list/1`,
   `even_left_tree/1` / `odd_left_tree/1`, and `even_tree/1` / `odd_tree/1`,
