@@ -31,9 +31,7 @@ test_wam_backtracking_simple :-
     (   % 1. Compile facts
         wam_target:compile_facts_to_wam(user:e2e_parent, 2, Code),
         % 2. Execute with query: e2e_parent(bob, charlie)?
-        % Note: our simple runtime doesn't do full backtracking yet, 
-        % but it should find the second fact via labels and CP if implemented.
-        % For now, execute_wam starts at the predicate label.
+        % This exercises the backtracking path since the first fact (alice, bob) will fail.
         wam_runtime:execute_wam(Code, e2e_parent(bob, charlie), _)
     ->  pass(Test)
     ;   fail_test(Test, 'E2E execution failed for second fact')

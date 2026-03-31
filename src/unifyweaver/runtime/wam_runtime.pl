@@ -70,8 +70,8 @@ is_label(Line, Label) :-
 %% parse_instr(+String, -Term)
 %  Parses "instr arg1, arg2" into instr(arg1, arg2)
 parse_instr(Str, Term) :-
-    % Handle space after opcode correctly
-    (   sub_string(Str, Before, _, After, " ") ->
+    % Deterministic split for opcode/args
+    (   once(sub_string(Str, Before, 1, After, " ")) ->
         sub_string(Str, 0, Before, _, OpStr),
         sub_string(Str, _, After, 0, ArgsStr),
         atom_string(Op, OpStr),
@@ -114,6 +114,9 @@ run_loop(S, Sf) :-
 fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
     nth1(PC, Code, Instr).
 
+%% backtrack(+StateIn, -StateOut)
+%  Restores state from choice point.
+%  NOTE: Symbolic trail unwinding is not implemented; bindings are currently persistent.
 backtrack(wam_state(_, _, _, _, _, _, [cp(NextPC, R, S, CP, T)|CPs], Code, L), wam_state(NextPC, R, S, [], T, CP, CPs, Code, L)).
 
 %% step_wam(+Instruction, +StateIn, -StateOut)

@@ -195,20 +195,25 @@ compile_unify_arguments([Arg|Rest], V0, Vf, Code) :-
 
 %% compile_body_goals(+Goals, +VarMap, +Options, -Code)
 compile_body_goals(Goals, V, _Options, Code) :-
-    length(Goals, N),
-    (   N > 1
-    ->  compile_goals(Goals, V, _, GoalsCode),
-        format(string(Code), "    allocate~n~w~n    deallocate", [GoalsCode])
-    ;   compile_goals(Goals, V, _, Code)
+    % Always allocate if there are any calls, to protect CP
+    (   member(G, Goals), G \= true, Goals \= [G]
+    ->  compile_goals(Goals, V, yes, _, GoalsCode),
+        format(string(Code), "    allocate~n~w", [GoalsCode])
+    ;   compile_goals(Goals, V, no, _, Code)
     ).
 
-compile_goals([], V, V, "").
-compile_goals([Goal|Rest], V0, Vf, Code) :-
+%% compile_goals(+Goals, +VarMap, +HasEnv, -Vf, -Code)
+compile_goals([], V, _, V, "").
+compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
     (   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        compile_goal_execute(Goal, V0, Vf, Code)
+        (   HasEnv == yes
+        ->  compile_goal_execute(Goal, V0, Vf, ExecCode),
+            format(string(Code), "    deallocate~n~w", [ExecCode])
+        ;   compile_goal_execute(Goal, V0, Vf, Code)
+        )
     ;   compile_goal_call(Goal, V0, V1, GoalCode),
-        compile_goals(Rest, V1, Vf, RestCode),
+        compile_goals(Rest, V1, HasEnv, Vf, RestCode),
         format(string(Code), "~w~n~w", [GoalCode, RestCode])
     ).
 
@@ -254,8 +259,9 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ;   atomic(Arg)
     ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I]),
         V1 = V0
-    ;   % Compound or other
+    ;   % TODO: put_structure
         next_x_reg(V0, XReg, V1),
+        bind_var(Arg, XReg, V1, V1),
         format(string(Code), "    put_variable ~w, A~w", [XReg, I])
     ).
 
