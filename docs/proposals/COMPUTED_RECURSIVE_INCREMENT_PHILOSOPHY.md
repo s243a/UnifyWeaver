@@ -209,16 +209,47 @@ for _, neighbor := range adj[current] {
 }
 ```
 
-### Strategy 2: Richer fixpoint plan composition (C# query engine)
+### Strategy 2: Path-Aware Linear Accumulation (C# query engine)
 
-The plan compiler builds a recursive plan that joins the edge relation
-with auxiliary relations during fixpoint iteration. The IR composes:
-- `JoinNode` to bind auxiliary values
-- `ArithmeticNode` to compute the increment
-- `FixpointNode` to drive the iteration
+The C# query engine already proved, with
+`PathAwareTransitiveClosureNode`, that a specialized path-aware runtime
+can outperform the DFS pipeline while preserving per-path semantics.
+That should be the template for the next step.
 
-No new node type is needed — just richer plan composition within the
-existing framework.
+For computed recursive increments, the engine should not rely on the
+generic `FixpointNode`. A semi-naive fixpoint still has the wrong state
+model for:
+
+- branch-local visited sets
+- accumulator values that change per path
+- auxiliary lookups performed at each recursive step
+
+Instead, the query engine should add a **generalized path-aware linear
+accumulation node** whose inputs are:
+
+- an edge relation
+- zero or more auxiliary relations or derived lookups
+- a base accumulator expression
+- a recursive increment expression
+- optional invariant grouping columns
+
+Operationally, the runtime evaluates this with DFS from each seed,
+carrying:
+
+- the current node
+- the accumulated value so far
+- a copied visited set for the current branch
+- any invariant group key state
+
+This is still a general mechanism, not a one-off semantic-distance
+primitive. Degree-corrected semantic distance is just the evaluation
+workload used to force the design toward sufficient generality.
+
+In other words:
+
+- **Constant increment counted closure** was Phase 1
+- **Computed path-aware linear accumulation** is Phase 2
+- **Semantic distance** is the eval, not the built-in
 
 ## Non-Goals
 

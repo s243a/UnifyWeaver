@@ -147,20 +147,43 @@ for neighbor in adj.get(current, []):
     # ... recurse
 ```
 
-### C# Query Engine (approach 2)
+### C# Query Engine
 
-The plan compiler generates a recursive plan with composed nodes:
+The C# query engine should lower this pattern to a dedicated
+**path-aware linear accumulation** plan node rather than to the generic
+`FixpointNode`.
 
+Rationale:
+- `FixpointNode` deduplicates by tuples, not by derivation path
+- visited-list semantics require branch-local state
+- computed increments must be evaluated at each hop with the current
+  auxiliary bindings
+
+Conceptually, the emitted node carries:
+
+```text
+PathAwareLinearAccumulationNode
+  edge relation
+  auxiliary lookup specs
+  base accumulator expression
+  recursive increment expression
+  optional group/invariant columns
+  optional max-depth bound
 ```
-FixpointNode
-  base: Join(edge, aux) -> Arithmetic(f(AuxVal)) -> Project
-  recursive: Join(edge, aux, RecursiveRef(delta))
-             -> Arithmetic(Acc1 + g(AuxVal))
-             -> Project
-```
 
-No new node types needed — `JoinNode`, `ArithmeticNode`, and
-`FixpointNode` compose to handle this.
+At runtime, evaluation proceeds by DFS from each seed:
+
+1. Bind the outgoing edge from the current node
+2. Resolve auxiliary values needed by the increment expression
+3. Evaluate the base or recursive accumulator expression
+4. Emit the new result row
+5. Recurse with a copied visited set for that branch
+
+The existing `PathAwareTransitiveClosureNode` is the degenerate case of
+this more general mechanism where:
+- there are no auxiliary relations
+- the base expression is a constant
+- the recursive expression is `PrevAcc + Constant`
 
 ## Auxiliary Relation Sources
 
@@ -175,7 +198,8 @@ The auxiliary relation can come from:
 For the evaluation problem (semantic distance), option 2 is most
 natural — the degree is derivable from `category_parent/2`. The
 compiler should recognize this and generate the degree map as a
-preprocessing step.
+preprocessing step or derived lookup relation for the path-aware
+accumulation runtime.
 
 ## Correctness Criteria
 

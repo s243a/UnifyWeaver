@@ -64,29 +64,53 @@ computed_recursive_pattern{
 
 **Depends on**: existing `is_per_path_visited_pattern/4`
 
-## Phase 1: C# Query Engine (approach 2)
+## Phase 1: C# Query Engine
 
-**Goal**: The plan compiler generates a `FixpointNode` with joined
-auxiliary relations and computed arithmetic for the accumulator.
+**Goal**: Generalize the existing
+`PathAwareTransitiveClosureNode` approach into a reusable
+path-aware linear accumulation mechanism for recursive predicates with
+computed increments.
 
 **Location**: `src/unifyweaver/targets/csharp_target.pl`
 
-### Step 1.1: Plan builder for computed increments
+### Step 1.1: Pattern builder for path-aware linear accumulation
 
-Add `maybe_computed_increment_plan/7` alongside
+Add a new detection/build step alongside
 `maybe_path_aware_transitive_closure_plan`:
 
 ```prolog
 maybe_computed_increment_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations) :-
     % Detect computed increment pattern from Phase 0
-    % Build FixpointNode with:
-    %   base plan: Join(edge, aux) -> Arithmetic -> Project
-    %   recursive plan: Join(edge, aux, RecRef) -> Arithmetic -> Project
+    % Build a dedicated path-aware accumulation node description
 ```
 
-This uses existing node types — no runtime changes needed.
+This should extract:
+- edge relation
+- auxiliary relation specs
+- accumulator position
+- base expression
+- recursive increment expression
+- invariant/group columns
+- supported mode pattern
 
-### Step 1.2: Auxiliary relation wiring
+The current counted closure optimization becomes the simplest instance
+of this generalized builder.
+
+### Step 1.2: Runtime node and execution path
+
+Add a dedicated runtime node to
+`src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs`.
+
+Minimum responsibilities:
+- DFS from each seed
+- copied visited set per branch
+- auxiliary lookups per step
+- accumulator evaluation per emitted row
+- seeded and unseeded execution modes
+
+This is a runtime change, not just a plan-composition change.
+
+### Step 1.3: Auxiliary relation wiring
 
 The plan must include the auxiliary relation in the provider's fact
 store. Two cases:
@@ -97,10 +121,11 @@ store. Two cases:
   can be computed as `aggregate_all(count, edge(X, _), D)` and generates
   the derived relation as a preprocessing step in the plan.
 
-Derived auxiliaries require a new plan node or a preprocessing step
-before fixpoint evaluation.
+Derived auxiliaries require either:
+- a preprocessing step that materializes the lookup relation, or
+- a runtime-side derived index builder for well-known cases like degree
 
-### Step 1.3: Test and validate
+### Step 1.4: Test and validate
 
 Test against the degree-corrected semantic distance on the dev dataset.
 Compare with Prolog reference output.
@@ -227,7 +252,7 @@ compilation strategies.
 | Phase | Effort | Notes |
 |-------|--------|-------|
 | 0 | Medium | Core pattern detection, must be general |
-| 1 | Medium | Plan composition, no new runtime nodes |
+| 1 | Medium-High | Requires both compiler detection and new runtime execution path |
 | 2 | Low-Medium | Extends existing Go DFS template |
 | 3 | Low-Medium | Mirrors Go work |
 | 4 | Low | Python generator is simpler |

@@ -116,7 +116,7 @@ For the benchmark, facts are exported to target-appropriate formats:
 %  loops through intermediate categories). We carry a Visited set to avoid
 %  infinite recursion. Each target must compile this to an equivalent
 %  memoization strategy:
-%    - C# Query: semi-naive fixpoint with HashSet deduplication
+%    - C# Query: specialized path-aware runtime node for this recursive shape
 %    - Go: visited map in fixpoint loop
 %    - AWK: associative array of seen nodes
 %    - Python: @functools.cache or explicit visited set
@@ -181,14 +181,15 @@ Each transpilation target must implement an equivalent:
 
 | Target | Cycle detection mechanism |
 |--------|--------------------------|
-| **C# Query** | Semi-naive fixpoint iteration with `HashSet<T>` — naturally converges; new iterations only process delta (newly discovered) tuples |
+| **C# Query** | Specialized path-aware recursive execution with copied visited state per branch |
 | **Go** | `map[string]bool` visited set in fixpoint loop |
 | **AWK** | Associative array `visited[node] = 1`; check before traversal |
 | **Python** | `@functools.cache` (memoization prevents recomputation) or explicit `visited: set` parameter |
 
-The C# query engine has an advantage here: its `FixpointNode` with semi-naive
-evaluation handles cycle detection automatically via delta-set convergence,
-without requiring the programmer to thread a visited set through the recursion.
+The C# query engine now handles the canonical hop-count benchmark with a
+specialized path-aware runtime node. That avoids requiring the user to
+thread visited state manually while still preserving Prolog's per-path
+semantics.
 
 ### Auxiliary Queries
 

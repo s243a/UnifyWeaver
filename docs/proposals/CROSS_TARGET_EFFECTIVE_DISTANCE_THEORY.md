@@ -85,7 +85,8 @@ streaming and imperative targets.
 Once paths are found, we must aggregate per-(article, folder) pair. This
 requires grouping and summing d^(-n) values — a relational aggregation over
 the output of a recursive computation. This is where the C# query engine's
-`AggregateNode` + `FixpointNode` composition should shine.
+aggregation machinery should shine, but only if the recursive path finder
+itself has the right semantics.
 
 **Pattern 3: Post-Aggregation Arithmetic**
 
@@ -119,24 +120,22 @@ Each path exploration allocates stack frames and visited-set copies. For
 deep graphs with high branching factor (category paths 10-20 hops deep),
 this means deep call stacks and per-frame memory overhead.
 
-**Bottom-up / semi-naive** (C# Query Engine): The `FixpointNode` evaluates
-iteratively — each round discovers new (Cat, Ancestor, Hops) tuples (the
-"delta set"), merges them into the accumulated result `HashSet<T>`, and
-repeats until no new tuples are found. This approach:
+**Specialized path-aware execution** (current C# Query Engine): For the
+canonical counted-closure case, the query engine now uses a dedicated
+path-aware runtime node instead of generic semi-naive fixpoint. That
+node still benefits from query-plan integration, provider indexing, and
+seed deduplication, but it evaluates the recursive step with branch-
+local visited state.
 
-- **No recursion stack**: Iteration is flat, so deep graphs don't risk
-  stack overflow
-- **Automatic deduplication**: The `HashSet` ensures each tuple is
-  discovered exactly once, regardless of how many paths lead to it
-- **Bounded working memory**: Only the delta set (newly discovered tuples
-  per iteration) is in active working memory; the full result set grows
-  monotonically but is never re-traversed
+This changes the design lesson for the query engine:
 
-This is a genuine architectural advantage of the query plan representation
-— not just a speed difference, but a fundamentally more memory-efficient
-evaluation strategy for recursive graph queries over large datasets. At
-50K+ articles with dense category hierarchies, the top-down approaches
-may struggle with memory while the bottom-up approach scales predictably.
+- generic `FixpointNode` is still appropriate for Datalog-style monotone
+  recursion
+- path-sensitive recursive accumulation should use a specialized runtime
+  path, not be forced through tuple-deduplicating fixpoint evaluation
+
+That is the architectural bridge between the earlier benchmark win and
+the next goal of degree-corrected semantic distance.
 
 ### Connection to Existing Hand-Crafted Python
 
@@ -199,10 +198,17 @@ generalize to **arity-N** recursive predicates by:
 - Generating variable-arity worker functions with positional argument mapping
 - Handling arbitrary arithmetic expressions in any argument position
 
-The C# parameterized query engine already handles this generically via its
-IR-based `FixpointNode` — the plan compiler resolves variable bindings
-positionally without arity-specific code. The other targets' native deepening
-should converge toward a similar arity-agnostic approach.
+The C# parameterized query engine already handles arity and plan
+composition generically, but not every recursive semantic pattern should
+lower to the same runtime primitive. The better lesson is:
+
+- keep the compiler arity-agnostic
+- add specialized runtime nodes where the state model truly differs
+- use the benchmark to decide when a new recursive lowering tier is
+  warranted
+
+The other targets' native deepening should converge toward a similar
+arity-agnostic front end, even if their runtimes remain procedural.
 
 ## Future Work: Degree-Corrected Semantic Distance
 
