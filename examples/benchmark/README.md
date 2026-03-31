@@ -20,9 +20,9 @@ implementations, including compiled Rust:
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
-| **C# Query Engine** | **0.40s** | **0.22s** | **0.66s** | **1.51s** |
-| C# DFS pipeline | 0.96s | 1.57s | 5.81s | 10.29s |
-| Rust DFS pipeline | 0.33s | 1.33s | 6.86s | 12.44s |
+| **C# Query Engine** | 0.60s | **0.41s** | **1.25s** | **3.13s** |
+| C# DFS pipeline | **0.44s** | 1.25s | 5.36s | 9.96s |
+| Rust DFS pipeline | — | 1.36s | 7.33s | 13.68s |
 | Go DFS pipeline | 0.43s | 1.96s | 11.36s | 18.71s |
 | Codon DFS pipeline | 0.67s | 2.55s | 10.98s | 22.14s |
 | CPython DFS pipeline | 0.73s | 2.93s | 15.71s | — |
@@ -33,8 +33,8 @@ implementations, including compiled Rust:
 
 | vs Target | 300 art | 1K art | 5K art | 10K art |
 |-----------|---------|--------|--------|---------|
-| vs C# DFS | 2.4x | 7.1x | 8.8x | 6.8x |
-| vs Rust | 0.8x | 6.0x | 10.4x | 8.2x |
+| vs C# DFS | 0.7x | 3.1x | 4.3x | 3.2x |
+| vs Rust | — | 3.3x | 5.9x | 4.4x |
 | vs Go | 1.1x | 8.9x | 17.2x | 12.4x |
 
 Semantic note:
@@ -45,6 +45,8 @@ Semantic note:
 - `benchmark_effective_distance.py` compares the query-engine output
   against the C# DFS reference and reports the result via
   `query_vs_csharp_dfs`.
+- Current post-fix runs report `query_vs_csharp_dfs = match` at
+  `300`, `1k`, `5k`, and `10k`.
 
 ### Why the Query Engine Wins
 
@@ -60,8 +62,10 @@ once per unique category seed, not once per article.
 | 10K | 10,000 | 888 | ~11x |
 
 At 1K scale, 1000 articles map to only 89 unique category seeds — the
-engine does ~11x less DFS work. The precomputed ancestor index then
-makes per-article aggregation nearly free.
+engine does ~11x less seed expansion work. Even with full per-path
+semantics restored, the precomputed ancestor index still makes
+per-article aggregation much cheaper than rerunning DFS from scratch for
+each article.
 
 ### DFS Pipeline Execute Time Scaling
 
@@ -88,25 +92,30 @@ For completeness, the original DFS pipeline comparison:
 
 ### Key Findings
 
-1. **The C# Query Engine is the fastest target at ALL scales** — 2.4-10x
-   faster than DFS pipelines. Seed deduplication and precomputed indexes
-   eliminate redundant graph traversals.
+1. **The C# Query Engine remains the fastest target in the intended
+   large-scale regime** — after restoring full per-path semantics, it is
+   still 3.1x faster than C# DFS at `1k`, 4.3x faster at `5k`, and 3.2x
+   faster at `10k`.
 
-2. **Among DFS pipelines, C# takes the lead at 1K+** — at 10K it's
-   1.3x faster than Rust and 2.0x faster than Go.
+2. **At small scale, the semantic fix makes the query engine slightly
+   slower than C# DFS** — at `300`, the query engine is `0.60s` vs
+   `0.44s` for C# DFS because it now preserves full path multiplicity
+   instead of collapsing equal `(ancestor, hops)` tuples.
 
-3. **At small scale (≤300), Rust DFS wins** — static compilation with zero
-   overhead. But the advantage disappears once the query engine's
-   precomputation pays off.
+3. **Among DFS pipelines, C# still leads at scale** — at `10k` it is
+   faster than Rust DFS (`9.96s` vs `13.68s`) and much faster than Go.
 
-4. **Go falls behind at scale** — `map[string]bool` copy-on-branch
+4. **The query engine still beats Rust DFS comfortably at scale** —
+   `3.3x` faster at `1k`, `5.9x` at `5k`, and `4.4x` at `10k`.
+
+5. **Go falls behind at scale** — `map[string]bool` copy-on-branch
    semantics are heavier than C#'s `HashSet`. Go is 2x slower than C#
    at 10K.
 
-5. **Codon approaches Go** — at 5K they were nearly tied (11.0s vs 11.4s).
+6. **Codon approaches Go** — at 5K they were nearly tied (11.0s vs 11.4s).
    At 10K Go pulled ahead again (18.7s vs 22.1s), but the gap is narrowing.
 
-6. **Prolog needs demand analysis** to compete — naive all-simple-paths
+7. **Prolog needs demand analysis** to compete — naive all-simple-paths
    exploration is combinatorially explosive. Design docs for this optimization
    are in `docs/proposals/PROLOG_TARGET_DEMAND_ANALYSIS_*.md`.
 
