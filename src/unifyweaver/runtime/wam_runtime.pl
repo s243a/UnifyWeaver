@@ -151,6 +151,39 @@ step_wam(put_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_sta
     put_assoc(Ai, R, Val, NR),
     NPC is PC + 1.
 
+%% put_structure F/N, Ai — begins constructing a compound term on the heap.
+%  Allocates a structure cell str(F/N) on the heap, stores the heap address
+%  in Ai, and enters "write mode" for subsequent set_variable/set_value.
+step_wam(put_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, NH, T, CP, CPS, Code, L)) :-
+    length(H, Addr),
+    append(H, [str(FN)], NH),
+    put_assoc(Ai, R, ref(Addr), NR),
+    NPC is PC + 1.
+
+%% set_variable Xn — pushes a new unbound variable onto the heap and binds Xn to it.
+step_wam(set_variable(Xn), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, NH, T, CP, CPS, Code, L)) :-
+    length(H, Addr),
+    format(atom(Var), "_H~w", [Addr]),
+    append(H, [Var], NH),
+    put_assoc(Xn, R, Var, NR),
+    NPC is PC + 1.
+
+%% set_value Xn — pushes the value of Xn onto the heap.
+step_wam(set_value(Xn), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, NH, T, CP, CPS, Code, L)) :-
+    get_assoc(Xn, R, Val),
+    append(H, [Val], NH),
+    NPC is PC + 1.
+
+%% set_constant C — pushes a constant value onto the heap.
+step_wam(set_constant(C), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, NH, T, CP, CPS, Code, L)) :-
+    append(H, [C], NH),
+    NPC is PC + 1.
+
+% NOTE: call/2 overwrites CP with the return address (PC+1). This is safe
+% because the compiler emits allocate (which saves CP to the environment
+% stack) before any call instruction in multi-goal bodies (N > 1 guard in
+% compile_body_goals). Single-goal bodies use execute instead of call,
+% so the outer CP is never lost.
 step_wam(call(P, _), wam_state(PC, R, S, H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)) :-
     get_assoc(P, L, NPC),
     NCP is PC + 1.

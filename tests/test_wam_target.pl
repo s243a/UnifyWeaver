@@ -5,7 +5,7 @@
 :- use_module('../src/unifyweaver/targets/wam_target').
 
 %% Test data (facts) - MUST BE DYNAMIC for clause/2 to work across modules
-:- dynamic test_parent/2, test_grandparent/2, test_ancestor/2.
+:- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2.
 
 test_parent(alice, bob).
 test_parent(bob, charlie).
@@ -16,6 +16,12 @@ test_grandparent(X, Z) :- test_parent(X, Y), test_parent(Y, Z).
 %% Recursive ancestor rule
 test_ancestor(X, Y) :- test_parent(X, Y).
 test_ancestor(X, Y) :- test_parent(X, Z), test_ancestor(Z, Y).
+
+%% Rule with compound body argument — exercises put_structure
+%  The body goal `test_check(pair(X, done))` has a compound argument.
+:- dynamic test_check/1.
+test_check(pair(_, _)).
+test_wrap(X) :- test_check(pair(X, done)).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -85,6 +91,19 @@ test_wam_module :-
         fail_test(Test, 'Incorrect WAM module output from template')
     ).
 
+test_wam_put_structure :-
+    Test = 'WAM: put_structure for compound body args',
+    (   wam_target:compile_predicate_to_wam(user:test_wrap/1, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'put_structure pair/2')
+    ->  pass(Test)
+    ;   (   wam_target:compile_predicate_to_wam(user:test_wrap/1, [], Code2)
+        ->  format(user_error, 'DEBUG: put_structure output:~n~w~n', [Code2])
+        ;   format(user_error, 'DEBUG: compile_predicate_to_wam failed~n', [])
+        ),
+        fail_test(Test, 'Missing put_structure in compound body arg output')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -94,6 +113,7 @@ run_tests :-
     test_wam_facts,
     test_wam_single_clause,
     test_wam_recursion,
+    test_wam_put_structure,
     test_wam_module,
     
     format('~n========================================~n'),
