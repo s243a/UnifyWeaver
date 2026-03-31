@@ -89,36 +89,38 @@ these higher-order predicates.
 
 ## C# Query Plan Execution Test
 
-The C# parameterized query engine compiles `category_ancestor/3` to a
-query plan with `FixpointNode`, `ParamSeedNode`, `KeyJoinNode`, and
-`ArithmeticNode`. However, **execution hangs** on the dev dataset
-(198 edges) — the fixpoint does not converge.
+The original version of this audit found that the C# parameterized query
+engine compiled counted reachability to a generic `FixpointNode`, which
+did not converge on cyclic graphs.
 
 **Root cause**: Same as AWK's original fixpoint issue. With hop counting,
 each iteration produces tuples with new hop values:
 `(cat, ancestor, 3)` ≠ `(cat, ancestor, 7)`. In a cyclic graph, the
 fixpoint never converges because new tuples keep appearing.
 
-**Fix needed**: The `FixpointNode` needs a max-depth guard or the
-per-path visited pattern to prevent unbounded iteration with counters.
-This is the same issue solved differently per target:
+This issue is now addressed for the **canonical counted transitive-
+closure shape** in the C# query engine via
+`PathAwareTransitiveClosureNode`, which uses DFS with per-path visited
+state instead of the generic semi-naive fixpoint.
+
+The same issue is solved differently per target:
 - Prolog: `max_depth/1` + `Visited` list
 - Go/Rust/Python: `depth` parameter in recursive function
 - AWK: `MAX_DEPTH` in DFS loop
-- C# Query Engine: **not yet solved** — FixpointNode has no depth bound
+- C# Query Engine: specialized path-aware closure node for the canonical
+  counted case
 
-This is a significant finding: the C# query engine's semi-naive
-evaluation does NOT handle cycle-bounded counters. The benchmark's
-DFS pipeline (which uses explicit visited sets) is algorithmically
-different from the query plan approach.
+The remaining gap is not this specific non-convergence bug, but the
+broader ability to lower more general visited-list predicates and the
+rest of the `effective_distance` pipeline.
 
 ## What Works End-to-End Today
 
-Only the **C# Query Engine** can compile the combination of
-`category_ancestor/3` + `aggregate_all/3` in a single query plan.
-But execution hangs due to fixpoint non-convergence on cyclic graphs
-with counters. It also can't compile `path_to_root/3` or
-`effective_distance/3` because of multi-clause and `setof/member` issues.
+The **C# Query Engine** remains the closest target for the combined
+`category_ancestor/3` + `aggregate_all/3` workload, and its counted-
+closure non-convergence issue is now fixed for the canonical pattern.
+It still can't compile `path_to_root/3` or `effective_distance/3`
+because of multi-clause and `setof/member` issues.
 
 **No target** can compile the full `effective_distance.pl` natively today.
 

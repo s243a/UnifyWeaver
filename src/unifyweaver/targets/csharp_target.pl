@@ -964,6 +964,14 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
             metadata:_{classification:recursive, options:Options, modes:Modes},
             is_recursive:true
         }
+    ;   maybe_path_aware_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations)
+    ->  Plan = plan{
+            head:HeadSpec,
+            root:Root,
+            relations:Relations,
+            metadata:_{classification:recursive, options:Options, modes:Modes},
+            is_recursive:true
+        }
     ;   maybe_grouped_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations)
     ->  Plan = plan{
             head:HeadSpec,
@@ -1033,6 +1041,87 @@ maybe_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Mod
         edge:EdgeSpec,
         width:2
     }.
+
+%% Path-aware counted transitive closure optimisation -----------------------
+%
+% Detect the canonical counted reachability pattern:
+%   path(X,Y,H) :- edge(X,Y), H is Base.
+%   path(X,Z,H) :- edge(X,Y), path(Y,Z,H1), H is H1 + Increment.
+%
+% Unlike the standard fixpoint, this shape must preserve per-path cycle
+% checks so cyclic graphs do not keep generating longer counter values.
+
+maybe_path_aware_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Modes, Root, Relations) :-
+    GroupSpecs = [HeadSpec],
+    get_dict(arity, HeadSpec, 3),
+    path_aware_transitive_closure_supported_modes(Modes),
+    BaseClauses = [BaseClause],
+    RecClauses = [RecClause],
+    path_aware_transitive_closure_base_clause(HeadSpec, BaseClause, EdgeSpec, BaseDepth),
+    path_aware_transitive_closure_recursive_rule_clause(HeadSpec, EdgeSpec, RecClause, DepthIncrement),
+    get_dict(name, EdgeSpec, EdgePred),
+    get_dict(arity, EdgeSpec, EdgeArity),
+    ensure_relation(EdgePred, EdgeArity, [], Relations0),
+    dedup_relations(Relations0, Relations),
+    Root = path_aware_transitive_closure{
+        type:path_aware_transitive_closure,
+        head:HeadSpec,
+        edge:EdgeSpec,
+        base_depth:BaseDepth,
+        depth_increment:DepthIncrement,
+        width:3
+    }.
+
+path_aware_transitive_closure_supported_modes(Modes) :-
+    input_positions(Modes, Positions),
+    subtract(Positions, [0, 1], Unsupported),
+    Unsupported == [].
+
+path_aware_transitive_closure_base_clause(HeadSpec, Head-Body, EdgeSpec, BaseDepth) :-
+    get_dict(name, HeadSpec, Pred),
+    Head =.. [Pred, From, To, Depth],
+    var(From),
+    var(To),
+    var(Depth),
+    body_to_list(Body, Terms),
+    select(ArithTerm0, Terms, [EdgeTerm0]),
+    arithmetic_constant_assignment(ArithTerm0, Depth, BaseDepth),
+    transitive_closure_edge_term(EdgeSpec, From, To, EdgeTerm0).
+
+path_aware_transitive_closure_recursive_rule_clause(HeadSpec, EdgeSpec, Head-Body, DepthIncrement) :-
+    get_dict(name, HeadSpec, Pred),
+    Head =.. [Pred, From, To, Depth],
+    var(From),
+    var(To),
+    var(Depth),
+    body_to_list(Body, Terms),
+    select(ArithTerm0, Terms, Terms1),
+    arithmetic_increment_assignment(ArithTerm0, Depth, PrevDepth, DepthIncrement),
+    Terms1 = [TermA0, TermB0],
+    (   transitive_closure_edge_term(EdgeSpec, From, Mid, TermA0),
+        path_aware_transitive_recursive_term(Pred, Mid, To, PrevDepth, TermB0)
+    ;   path_aware_transitive_recursive_term(Pred, From, Mid, PrevDepth, TermA0),
+        transitive_closure_edge_term(EdgeSpec, Mid, To, TermB0)
+    ).
+
+path_aware_transitive_recursive_term(Pred, From, To, Depth, Term0) :-
+    strip_module(Term0, _, Term),
+    Term =.. [Pred, From, To, Depth].
+
+arithmetic_constant_assignment(Term0, TargetVar, Value) :-
+    strip_module(Term0, _, Term),
+    Term = (TargetVar is Expr),
+    number(Expr),
+    Value is Expr.
+
+arithmetic_increment_assignment(Term0, TargetVar, PrevVar, Increment) :-
+    strip_module(Term0, _, Term),
+    Term = (TargetVar is Expr),
+    (   Expr = (PrevVar + Increment0)
+    ;   Expr = (Increment0 + PrevVar)
+    ),
+    number(Increment0),
+    Increment is Increment0.
 
 %% Grouped transitive closure optimisation ----------------------------------
 %
@@ -3482,6 +3571,16 @@ emit_plan_expression(Node, Expr) :-
     atom_string(Name, NameStr),
     format(atom(Expr), 'new GroupedTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w)',
         [EdgeNameStr, EdgeArity, NameStr, Arity, GroupIndicesLiteral]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, path_aware_transitive_closure), !,
+    get_dict(edge, Node, predicate{name:EdgeName, arity:EdgeArity}),
+    get_dict(head, Node, predicate{name:Name, arity:Arity}),
+    get_dict(base_depth, Node, BaseDepth),
+    get_dict(depth_increment, Node, DepthIncrement),
+    atom_string(EdgeName, EdgeNameStr),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new PathAwareTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w)',
+        [EdgeNameStr, EdgeArity, NameStr, Arity, BaseDepth, DepthIncrement]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, fixpoint), !,
     get_dict(base, Node, BaseNode),

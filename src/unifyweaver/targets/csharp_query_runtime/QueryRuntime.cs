@@ -232,6 +232,17 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Computes a counted transitive closure while preventing cycles on each
+    /// derivation path instead of deduplicating globally by node or tuple.
+    /// </summary>
+    public sealed record PathAwareTransitiveClosureNode(
+        PredicateId EdgeRelation,
+        PredicateId Predicate,
+        int BaseDepth,
+        int DepthIncrement
+    ) : PlanNode;
+
+    /// <summary>
     /// Indicates which relation a recursive reference should read from.
     /// </summary>
     public enum RecursiveRefKind
@@ -806,6 +817,7 @@ namespace UnifyWeaver.QueryRuntime
                     case UnitNode:
                     case TransitiveClosureNode:
                     case GroupedTransitiveClosureNode:
+                    case PathAwareTransitiveClosureNode:
                         return;
 
                     case ProgramNode program:
@@ -941,6 +953,7 @@ namespace UnifyWeaver.QueryRuntime
                 OffsetNode offset => $"Offset count={offset.Count}",
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
+                PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -1142,6 +1155,33 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(groupedClosure, rows);
                 }
 
+                if (plan.Root is PathAwareTransitiveClosureNode pathAwareClosure)
+                {
+                    IEnumerable<object[]> rows;
+                    if (inputPositions.Count > 0 && inputPositions[0] == 0)
+                    {
+                        rows = ExecuteSeededPathAwareTransitiveClosure(pathAwareClosure, inputPositions, paramList, context);
+                        if (!(inputPositions.Count == 1 && inputPositions[0] == 0))
+                        {
+                            rows = FilterByParameters(rows, inputPositions, paramList);
+                        }
+                    }
+                    else
+                    {
+                        rows = FilterByParameters(ExecutePathAwareTransitiveClosure(pathAwareClosure, context), inputPositions, paramList);
+                    }
+
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(pathAwareClosure);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(pathAwareClosure, rows);
+                }
+
                 if (plan.Root is RelationScanNode scan)
                 {
                     var rows = ExecuteBoundFactScan(scan, inputPositions, paramList, context);
@@ -1281,6 +1321,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 case GroupedTransitiveClosureNode closure:
                     result = ExecuteGroupedTransitiveClosure(closure, context);
+                    break;
+
+                case PathAwareTransitiveClosureNode closure:
+                    result = ExecutePathAwareTransitiveClosure(closure, context);
                     break;
 
                 case FixpointNode fixpoint:
@@ -1703,6 +1747,14 @@ namespace UnifyWeaver.QueryRuntime
                     return;
 
                 case TransitiveClosureNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    return;
+
+                case GroupedTransitiveClosureNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    return;
+
+                case PathAwareTransitiveClosureNode closure:
                     predicates.Add(closure.EdgeRelation);
                     return;
 
@@ -6853,6 +6905,150 @@ namespace UnifyWeaver.QueryRuntime
             finally
             {
                 context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(PathAwareTransitiveClosureNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "PathAwareTransitiveClosure");
+
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var seeds = new List<object?>();
+                var seenSeeds = new HashSet<object?>();
+
+                foreach (var edge in edges)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var seed = edge[0];
+                    if (seenSeeds.Add(seed))
+                    {
+                        seeds.Add(seed);
+                    }
+                }
+
+                seeds.Sort(CompareCacheSeedValues);
+                var totalRows = new List<object[]>();
+                foreach (var seed in seeds)
+                {
+                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededPathAwareTransitiveClosure(
+            PathAwareTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters,
+            EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+            if (inputPositions is null) throw new ArgumentNullException(nameof(inputPositions));
+            if (parameters is null) throw new ArgumentNullException(nameof(parameters));
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "PathAwareTransitiveClosureSeeded");
+
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var seeds = new List<object?>();
+                var seenSeeds = new HashSet<object?>();
+
+                foreach (var paramTuple in parameters)
+                {
+                    if (paramTuple is null || paramTuple.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetParameterValue(paramTuple, inputPositions, 0, out var seed))
+                    {
+                        continue;
+                    }
+
+                    if (seenSeeds.Add(seed))
+                    {
+                        seeds.Add(seed);
+                    }
+                }
+
+                seeds.Sort(CompareCacheSeedValues);
+                var totalRows = new List<object[]>();
+                foreach (var seed in seeds)
+                {
+                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static void AppendPathAwareRowsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            int baseDepth,
+            int depthIncrement,
+            ICollection<object[]> output)
+        {
+            var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
+            stack.Push((seed, 0, new HashSet<object?> { seed }));
+
+            while (stack.Count > 0)
+            {
+                var (current, depth, visited) = stack.Pop();
+                var lookupKey = current ?? NullFactIndexKey;
+                if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                {
+                    continue;
+                }
+
+                for (var i = bucket.Count - 1; i >= 0; i--)
+                {
+                    var edge = bucket[i];
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var next = edge[1];
+                    if (visited.Contains(next))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth == 0
+                        ? baseDepth
+                        : checked(depth + depthIncrement);
+                    output.Add(new object[] { seed!, next!, nextDepth });
+
+                    var nextVisited = new HashSet<object?>(visited) { next };
+                    stack.Push((next, nextDepth, nextVisited));
+                }
             }
         }
 
