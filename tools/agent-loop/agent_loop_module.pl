@@ -29,7 +29,13 @@
     shared_logic/3,
     logic_slot/3,
     expand_expr/3,
-    expand_template/3
+    expand_template/3,
+    %% Target feature flags and interop stubs
+    agent_target_feature/3,
+    feature_enabled/2,
+    interop_stub/4,
+    interop_method/5,
+    emit_interop_stubs/3
 ]).
 
 :- discontiguous generate_backend_full/3.
@@ -60,6 +66,326 @@ module_dependency(backends, costs, 'model_pricing/3 for cost tracking').
 module_dependency(backends, config, 'api_key_env_var/2 for key resolution').
 module_dependency(config, backends, 'api_key_env_var/2 backend name lookup').
 module_dependency(security, config, 'audit_profile_level/2 from config').
+
+%% =============================================================================
+%% Target Feature Flags
+%% =============================================================================
+%%
+%% agent_target_feature(+Target, +Feature, +Enabled)
+%%   Controls optional generation of target-specific features.
+%%   Feature generation code checks these facts to decide what to emit.
+%%
+%% Supported features:
+%%   wasm_bindings     — WASM interop via wasm-bindgen (#[wasm_bindgen])
+%%   ffi_bindings      — C FFI interop (extern "C" functions)
+%%   nif_bindings      — Erlang NIF interop (for Elixir/Erlang targets)
+%%   jni_bindings      — JNI interop (for JVM targets)
+%%   pymodule_bindings — Python module interop (via PyO3/pyo3)
+%%
+%% Usage:
+%%   To disable WASM bindings: retract(agent_target_feature(rust, wasm_bindings, true))
+%%   To enable FFI:            assert(agent_target_feature(rust, ffi_bindings, true))
+
+:- discontiguous agent_target_feature/3.
+:- dynamic agent_target_feature/3.
+:- discontiguous interop_stub/4.
+:- discontiguous interop_method/5.
+
+agent_target_feature(rust, wasm_bindings, true).
+agent_target_feature(rust, ffi_bindings, false).
+agent_target_feature(elixir, nif_bindings, false).
+
+%% feature_enabled(+Target, +Feature)
+%%   Convenience check — true if feature is explicitly enabled.
+feature_enabled(Target, Feature) :-
+    agent_target_feature(Target, Feature, true).
+
+%% =============================================================================
+%% Interop Stub Framework
+%% =============================================================================
+%%
+%% General-purpose language interop stub system. Defines which methods
+%% should be exposed via interop bindings and how they map to the
+%% internal API. The WASM bindings are one instance of this pattern;
+%% FFI, NIF, JNI, PyO3 are others.
+%%
+%% interop_stub(+InteropType, +MethodName, +Signature, +DelegateTo)
+%%   Declares an interop method to generate.
+%%   InteropType: wasm | ffi | nif | jni | pymodule
+%%   MethodName:  exported name visible to the host language
+%%   Signature:   sig(ArgTypes, ReturnType) — language-neutral
+%%   DelegateTo:  inner method on the state struct to call
+%%
+%% interop_method(+InteropType, +MethodName, +Category, +Doc, +Options)
+%%   Extended metadata for interop methods.
+%%   Category: context | costs | export | parsing | config
+%%   Options:  [constructor, mutable, ...] — modifiers
+
+%% --- WASM interop stubs (WasmAgent → WasmAgentState delegation) ---
+
+interop_stub(wasm, new, sig([usize, str, str], self), constructor).
+interop_stub(wasm, set_system_prompt, sig([str], void), set_system_prompt).
+interop_stub(wasm, add_user_message, sig([str], void), add_user_message).
+interop_stub(wasm, add_assistant_message, sig([str], void), add_assistant_message).
+interop_stub(wasm, add_tool_result, sig([str, str], void), add_tool_result).
+interop_stub(wasm, get_context_json, sig([], string), get_context_json).
+interop_stub(wasm, get_message_count, sig([], usize), get_message_count).
+interop_stub(wasm, clear_context, sig([], void), clear_context).
+interop_stub(wasm, build_request_json, sig([], string), build_request_json).
+interop_stub(wasm, parse_tool_calls, sig([str], string), parse_tool_calls).
+interop_stub(wasm, export_json, sig([], string), export_json).
+interop_stub(wasm, export_markdown, sig([], string), export_markdown).
+interop_stub(wasm, record_usage, sig([u64, u64], void), record_usage).
+interop_stub(wasm, get_cost_summary, sig([], string), get_cost_summary).
+
+interop_method(wasm, new, config, 'Create a new WASM agent with max tokens, backend, and model', [constructor]).
+interop_method(wasm, set_system_prompt, config, 'Set the system prompt for the agent', [mutable]).
+interop_method(wasm, add_user_message, context, 'Add a user message to the conversation', [mutable]).
+interop_method(wasm, add_assistant_message, context, 'Add an assistant response to the conversation', [mutable]).
+interop_method(wasm, add_tool_result, context, 'Add a tool execution result to the conversation', [mutable]).
+interop_method(wasm, get_context_json, context, 'Get the full conversation context as JSON', []).
+interop_method(wasm, get_message_count, context, 'Get the number of messages in context', []).
+interop_method(wasm, clear_context, context, 'Clear all messages from context', [mutable]).
+interop_method(wasm, build_request_json, parsing, 'Build an API request body as JSON', []).
+interop_method(wasm, parse_tool_calls, parsing, 'Parse tool calls from an API response JSON', []).
+interop_method(wasm, export_json, export, 'Export conversation as JSON', []).
+interop_method(wasm, export_markdown, export, 'Export conversation as Markdown', []).
+interop_method(wasm, record_usage, costs, 'Record token usage for cost tracking', [mutable]).
+interop_method(wasm, get_cost_summary, costs, 'Get formatted cost summary string', []).
+
+%% --- FFI interop stubs (C-compatible extern functions) ---
+
+interop_stub(ffi, agent_new, sig([usize, ptr_str, ptr_str], ptr), constructor).
+interop_stub(ffi, agent_free, sig([ptr], void), destructor).
+interop_stub(ffi, agent_add_user_message, sig([ptr, ptr_str], void), add_user_message).
+interop_stub(ffi, agent_add_assistant_message, sig([ptr, ptr_str], void), add_assistant_message).
+interop_stub(ffi, agent_build_request_json, sig([ptr], ptr_str), build_request_json).
+interop_stub(ffi, agent_parse_tool_calls, sig([ptr, ptr_str], ptr_str), parse_tool_calls).
+interop_stub(ffi, agent_clear_context, sig([ptr], void), clear_context).
+interop_stub(ffi, agent_free_string, sig([ptr_str], void), free_string).
+
+interop_method(ffi, agent_new, config, 'Allocate and initialize a new agent', [constructor]).
+interop_method(ffi, agent_free, config, 'Free agent memory', [destructor]).
+interop_method(ffi, agent_add_user_message, context, 'Add user message via C string', [mutable]).
+interop_method(ffi, agent_add_assistant_message, context, 'Add assistant message via C string', [mutable]).
+interop_method(ffi, agent_build_request_json, parsing, 'Build request, returns owned C string', []).
+interop_method(ffi, agent_parse_tool_calls, parsing, 'Parse tool calls, returns owned C string', []).
+interop_method(ffi, agent_clear_context, context, 'Clear conversation context', [mutable]).
+interop_method(ffi, agent_free_string, config, 'Free a string returned by the agent', []).
+
+%% =============================================================================
+%% Interop Code Generation Helpers
+%% =============================================================================
+
+%% emit_interop_stubs(+Stream, +Target, +InteropType)
+%%   Generate all interop stubs for the given type if the feature is enabled.
+emit_interop_stubs(S, Target, FeatureName) :-
+    feature_enabled(Target, FeatureName),
+    !,
+    interop_feature_type(FeatureName, InteropType),
+    findall(Name, interop_stub(InteropType, Name, _, _), Methods),
+    format(S, '\n// --- ~w interop stubs (auto-generated from interop_stub facts) ---\n\n', [InteropType]),
+    emit_interop_header(S, InteropType),
+    emit_interop_stubs_list(S, InteropType, Methods),
+    emit_interop_footer(S, InteropType).
+emit_interop_stubs(S, Target, FeatureName) :-
+    format(S, '\n// ~w interop: disabled (agent_target_feature(~w, ~w, false))\n', [FeatureName, Target, FeatureName]).
+
+%% interop_feature_type(+FeatureName, -InteropType)
+%%   Maps feature flag names to interop stub type keys.
+interop_feature_type(wasm_bindings, wasm).
+interop_feature_type(ffi_bindings, ffi).
+interop_feature_type(nif_bindings, nif).
+interop_feature_type(jni_bindings, jni).
+interop_feature_type(pymodule_bindings, pymodule).
+
+emit_interop_stubs_list(_, _, []).
+emit_interop_stubs_list(S, InteropType, [Method|Rest]) :-
+    (   emit_single_interop_stub(S, InteropType, Method)
+    ->  true
+    ;   format(S, '    // WARN: failed to generate stub for ~w\n', [Method])
+    ),
+    emit_interop_stubs_list(S, InteropType, Rest).
+
+%% emit_interop_header(+Stream, +InteropType)
+emit_interop_header(S, wasm) :-
+    write(S, '#[cfg(all(target_arch = "wasm32", feature = "wasm"))]\n'),
+    write(S, '#[wasm_bindgen]\n'),
+    write(S, 'pub struct WasmAgent {\n'),
+    write(S, '    inner: WasmAgentState,\n'),
+    write(S, '}\n\n'),
+    write(S, '#[cfg(all(target_arch = "wasm32", feature = "wasm"))]\n'),
+    write(S, '#[wasm_bindgen]\n'),
+    write(S, 'impl WasmAgent {\n').
+emit_interop_header(S, ffi) :-
+    write(S, '/// C-compatible FFI interface.\n'),
+    write(S, '/// Link with: -lagent_loop\n'),
+    write(S, '#[no_mangle]\n').
+emit_interop_header(_, _).
+
+%% emit_interop_footer(+Stream, +InteropType)
+emit_interop_footer(S, wasm) :-
+    write(S, '}\n').
+emit_interop_footer(_, _).
+
+%% emit_single_interop_stub(+Stream, +InteropType, +MethodName)
+emit_single_interop_stub(S, wasm, MethodName) :-
+    interop_stub(wasm, MethodName, sig(ArgTypes, RetType), DelegateTo),
+    interop_method(wasm, MethodName, _Category, Doc, Options),
+    format(S, '    /// ~w\n', [Doc]),
+    (   member(constructor, Options)
+    ->  write(S, '    #[wasm_bindgen(constructor)]\n'),
+        emit_wasm_constructor(S, ArgTypes)
+    ;   emit_wasm_method(S, MethodName, ArgTypes, RetType, DelegateTo, Options)
+    ).
+
+emit_single_interop_stub(S, ffi, MethodName) :-
+    interop_stub(ffi, MethodName, sig(ArgTypes, RetType), DelegateTo),
+    interop_method(ffi, MethodName, _Category, Doc, Options),
+    format(S, '/// ~w\n', [Doc]),
+    write(S, '#[no_mangle]\n'),
+    emit_ffi_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options).
+
+%% --- WASM method emitters ---
+
+emit_wasm_constructor(S, _ArgTypes) :-
+    write(S, '    pub fn new(max_tokens: usize, backend: &str, model: &str) -> Self {\n'),
+    write(S, '        Self { inner: WasmAgentState::new(max_tokens, backend, model) }\n'),
+    write(S, '    }\n\n').
+
+emit_wasm_method(S, MethodName, ArgTypes, RetType, DelegateTo, Options) :-
+    (   member(mutable, Options)
+    ->  SelfParam = '&mut self'
+    ;   SelfParam = '&self'
+    ),
+    wasm_arg_list(ArgTypes, ArgList),
+    wasm_return_type(RetType, RustRetType),
+    wasm_delegate_args(ArgTypes, DelegateArgs),
+    (   RustRetType == ""
+    ->  format(S, '    pub fn ~w(~w~w) {\n', [MethodName, SelfParam, ArgList]),
+        format(S, '        self.inner.~w(~w);\n', [DelegateTo, DelegateArgs]),
+        write(S, '    }\n\n')
+    ;   format(S, '    pub fn ~w(~w~w) -> ~w {\n', [MethodName, SelfParam, ArgList, RustRetType]),
+        format(S, '        self.inner.~w(~w)\n', [DelegateTo, DelegateArgs]),
+        write(S, '    }\n\n')
+    ).
+
+%% --- FFI function emitters ---
+
+emit_ffi_function(S, MethodName, _ArgTypes, _RetType, _DelegateTo, Options) :-
+    member(constructor, Options), !,
+    format(S, 'pub extern "C" fn ~w(max_tokens: usize, backend: *const c_char, model: *const c_char) -> *mut WasmAgentState {\n', [MethodName]),
+    write(S, '    let backend = unsafe { CStr::from_ptr(backend).to_str().unwrap_or("") };\n'),
+    write(S, '    let model = unsafe { CStr::from_ptr(model).to_str().unwrap_or("") };\n'),
+    write(S, '    Box::into_raw(Box::new(WasmAgentState::new(max_tokens, backend, model)))\n'),
+    write(S, '}\n\n').
+emit_ffi_function(S, MethodName, _ArgTypes, _RetType, _DelegateTo, Options) :-
+    member(destructor, Options), !,
+    format(S, 'pub extern "C" fn ~w(ptr: *mut WasmAgentState) {\n', [MethodName]),
+    write(S, '    if !ptr.is_null() { unsafe { drop(Box::from_raw(ptr)); } }\n'),
+    write(S, '}\n\n').
+emit_ffi_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options) :-
+    (   member(mutable, Options)
+    ->  write(S, 'pub extern "C" fn '), format(S, '~w(ptr: *mut WasmAgentState', [MethodName])
+    ;   write(S, 'pub extern "C" fn '), format(S, '~w(ptr: *const WasmAgentState', [MethodName])
+    ),
+    ffi_arg_list(ArgTypes, ArgList),
+    ffi_return_type(RetType, CRetType),
+    format(S, '~w)~w {\n', [ArgList, CRetType]),
+    write(S, '    let agent = unsafe { &mut *ptr };\n'),
+    ffi_delegate_call(S, DelegateTo, ArgTypes, RetType),
+    write(S, '}\n\n').
+
+%% --- Type mapping helpers ---
+
+wasm_arg_list([], "").
+wasm_arg_list([str|Rest], ArgList) :-
+    wasm_arg_list_acc(Rest, 1, ", s0: &str", ArgList).
+wasm_arg_list([usize|Rest], ArgList) :-
+    wasm_arg_list_acc(Rest, 1, ", n0: usize", ArgList).
+wasm_arg_list([u64|Rest], ArgList) :-
+    wasm_arg_list_acc(Rest, 1, ", n0: u64", ArgList).
+wasm_arg_list(Args, ArgList) :-
+    wasm_arg_list_acc(Args, 0, "", ArgList).
+
+wasm_arg_list_acc([], _, Acc, Acc).
+wasm_arg_list_acc([str|Rest], Idx, Acc, Result) :-
+    format(atom(Arg), ', s~w: &str', [Idx]),
+    atom_concat(Acc, Arg, NewAcc),
+    NextIdx is Idx + 1,
+    wasm_arg_list_acc(Rest, NextIdx, NewAcc, Result).
+wasm_arg_list_acc([usize|Rest], Idx, Acc, Result) :-
+    format(atom(Arg), ', n~w: usize', [Idx]),
+    atom_concat(Acc, Arg, NewAcc),
+    NextIdx is Idx + 1,
+    wasm_arg_list_acc(Rest, NextIdx, NewAcc, Result).
+wasm_arg_list_acc([u64|Rest], Idx, Acc, Result) :-
+    format(atom(Arg), ', n~w: u64', [Idx]),
+    atom_concat(Acc, Arg, NewAcc),
+    NextIdx is Idx + 1,
+    wasm_arg_list_acc(Rest, NextIdx, NewAcc, Result).
+
+wasm_return_type(void, "").
+wasm_return_type(string, "String").
+wasm_return_type(usize, "usize").
+wasm_return_type(self, "Self").
+
+wasm_delegate_args([], "").
+wasm_delegate_args([str], "s0").
+wasm_delegate_args([str, str], "s0, s1").
+wasm_delegate_args([usize, str, str], "n0, s0, s1").
+wasm_delegate_args([u64, u64], "n0, n1").
+wasm_delegate_args(Args, Result) :-
+    wasm_delegate_args_acc(Args, 0, 0, [], Parts),
+    atomic_list_concat(Parts, ', ', Result).
+
+wasm_delegate_args_acc([], _, _, Acc, Result) :- reverse(Acc, Result).
+wasm_delegate_args_acc([str|Rest], _SIdx, NIdx, Acc, Result) :-
+    format(atom(A), 's~w', [NIdx]),
+    NextN is NIdx + 1,
+    wasm_delegate_args_acc(Rest, 0, NextN, [A|Acc], Result).
+wasm_delegate_args_acc([usize|Rest], SIdx, _NIdx, Acc, Result) :-
+    format(atom(A), 'n~w', [SIdx]),
+    NextS is SIdx + 1,
+    wasm_delegate_args_acc(Rest, NextS, 0, [A|Acc], Result).
+wasm_delegate_args_acc([u64|Rest], SIdx, _NIdx, Acc, Result) :-
+    format(atom(A), 'n~w', [SIdx]),
+    NextS is SIdx + 1,
+    wasm_delegate_args_acc(Rest, NextS, 0, [A|Acc], Result).
+
+ffi_arg_list([], "").
+ffi_arg_list([ptr_str|Rest], Result) :-
+    ffi_arg_list_acc(Rest, 1, ", s0: *const c_char", Result).
+ffi_arg_list(Args, Result) :-
+    ffi_arg_list_acc(Args, 0, "", Result).
+
+ffi_arg_list_acc([], _, Acc, Acc).
+ffi_arg_list_acc([ptr_str|Rest], Idx, Acc, Result) :-
+    format(atom(Arg), ', s~w: *const c_char', [Idx]),
+    atom_concat(Acc, Arg, NewAcc),
+    NextIdx is Idx + 1,
+    ffi_arg_list_acc(Rest, NextIdx, NewAcc, Result).
+
+ffi_return_type(void, "").
+ffi_return_type(ptr, " -> *mut WasmAgentState").
+ffi_return_type(ptr_str, " -> *const c_char").
+
+ffi_delegate_call(S, DelegateTo, [ptr_str], ptr_str) :-
+    format(S, '    let s0 = unsafe { CStr::from_ptr(s0).to_str().unwrap_or("") };\n', []),
+    format(S, '    let result = agent.~w(s0);\n', [DelegateTo]),
+    write(S, '    CString::new(result).map(|s| s.into_raw()).unwrap_or(std::ptr::null())\n').
+ffi_delegate_call(S, DelegateTo, [], ptr_str) :-
+    format(S, '    let result = agent.~w();\n', [DelegateTo]),
+    write(S, '    CString::new(result).map(|s| s.into_raw()).unwrap_or(std::ptr::null())\n').
+ffi_delegate_call(S, DelegateTo, [ptr_str], void) :-
+    format(S, '    let s0 = unsafe { CStr::from_ptr(s0).to_str().unwrap_or("") };\n', []),
+    format(S, '    agent.~w(s0);\n', [DelegateTo]).
+ffi_delegate_call(S, DelegateTo, [ptr_str, ptr_str], void) :-
+    write(S, '    let s0 = unsafe { CStr::from_ptr(s0).to_str().unwrap_or("") };\n'),
+    write(S, '    let s1 = unsafe { CStr::from_ptr(s1).to_str().unwrap_or("") };\n'),
+    format(S, '    agent.~w(s0, s1);\n', [DelegateTo]).
+ffi_delegate_call(S, DelegateTo, [], void) :-
+    format(S, '    agent.~w();\n', [DelegateTo]).
 
 %% =============================================================================
 %% Agent Backend Definitions
@@ -7684,7 +8010,12 @@ generate_rust_wasm_bindings :-
     output_path(rust, 'wasm_bindings.rs', Path),
     open(Path, write, S),
     write_rust_header(S, wasm_bindings, 'WASM bindings for browser-based agent loop'),
-    write_rust(S, wasm_bindings),
+    %% Emit the WasmAgentState struct (always included — non-wasm code uses it too)
+    write_rust(S, wasm_bindings_state),
+    %% Emit interop stubs (WasmAgent wrapper) — gated by agent_target_feature
+    emit_interop_stubs(S, rust, wasm_bindings),
+    %% Emit FFI stubs if enabled
+    emit_interop_stubs(S, rust, ffi_bindings),
     close(S),
     format('  Generated rust/src/wasm_bindings.rs~n', []).
 
@@ -15377,9 +15708,11 @@ impl PluginManager {
 }
 ').
 
-%% --- Fragment: wasm_bindings (wasm_bindings.rs) ---
+%% --- Fragment: wasm_bindings_state (WasmAgentState struct — always compiled) ---
+%% The WasmAgent wrapper with #[wasm_bindgen] is now generated from interop_stub facts
+%% via emit_interop_stubs/3, gated by agent_target_feature(rust, wasm_bindings, true).
 
-rust_fragment(wasm_bindings, '
+rust_fragment(wasm_bindings_state, '
 //! WASM bindings for browser-based agent loop.
 //!
 //! This module provides WebAssembly-compatible wrappers for the core
@@ -15530,75 +15863,12 @@ impl WasmAgentState {
         out
     }
 }
-
-/// WASM-exported functions (only compiled for wasm32 targets).
-#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
-#[wasm_bindgen]
-pub struct WasmAgent {
-    inner: WasmAgentState,
-}
-
-#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
-#[wasm_bindgen]
-impl WasmAgent {
-    #[wasm_bindgen(constructor)]
-    pub fn new(max_tokens: usize, backend: &str, model: &str) -> Self {
-        Self { inner: WasmAgentState::new(max_tokens, backend, model) }
-    }
-
-    pub fn set_system_prompt(&mut self, prompt: &str) {
-        self.inner.set_system_prompt(prompt);
-    }
-
-    pub fn add_user_message(&mut self, content: &str) {
-        self.inner.add_user_message(content);
-    }
-
-    pub fn add_assistant_message(&mut self, content: &str) {
-        self.inner.add_assistant_message(content);
-    }
-
-    pub fn add_tool_result(&mut self, tool_call_id: &str, output: &str) {
-        self.inner.add_tool_result(tool_call_id, output);
-    }
-
-    pub fn get_context_json(&self) -> String {
-        self.inner.get_context_json()
-    }
-
-    pub fn get_message_count(&self) -> usize {
-        self.inner.get_message_count()
-    }
-
-    pub fn clear_context(&mut self) {
-        self.inner.clear_context();
-    }
-
-    pub fn build_request_json(&self) -> String {
-        self.inner.build_request_json()
-    }
-
-    pub fn parse_tool_calls(&self, response_json: &str) -> String {
-        self.inner.parse_tool_calls(response_json)
-    }
-
-    pub fn export_json(&self) -> String {
-        self.inner.export_json()
-    }
-
-    pub fn export_markdown(&self) -> String {
-        self.inner.export_markdown()
-    }
-
-    pub fn record_usage(&mut self, input_tokens: u64, output_tokens: u64) {
-        self.inner.record_usage(input_tokens, output_tokens);
-    }
-
-    pub fn get_cost_summary(&self) -> String {
-        self.inner.get_cost_summary()
-    }
-}
 ').
+
+%% NOTE: The WasmAgent struct and impl block with #[wasm_bindgen] annotations
+%% are now generated from interop_stub/4 facts via emit_interop_stubs/3.
+%% This enables the same pattern to generate FFI, NIF, JNI bindings etc.
+%% See: agent_target_feature(rust, wasm_bindings, true)
 
 %% --- Fragment: sessions_module (sessions.rs) ---
 
