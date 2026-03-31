@@ -16,7 +16,7 @@
 /** <module> WAM Runtime Emulator
 
 A symbolic emulator for the Warren Abstract Machine.
-State structure: wam_state(PC, Regs, Stack, Heap, Trail, CP, Code, Labels)
+State structure: wam_state(PC, Regs, Stack, Heap, Trail, CP, ChoicePoints, Code, Labels)
 */
 
 %% execute_wam(+Instructions, +Goal, -FinalRegs)
@@ -24,7 +24,7 @@ execute_wam(Instructions, Goal, FinalRegs) :-
     prepare_code(Instructions, Code, Labels),
     init_state(Goal, Code, Labels, S0),
     run_loop(S0, Sf),
-    Sf = wam_state(_, FinalRegs, _, _, _, _, _, _).
+    Sf = wam_state(_, FinalRegs, _, _, _, _, _, _, _).
 
 prepare_code(Raw, Instructions, Labels) :-
     (   is_list(Raw) -> Lines = Raw
@@ -70,6 +70,7 @@ is_label(Line, Label) :-
 %% parse_instr(+String, -Term)
 %  Parses "instr arg1, arg2" into instr(arg1, arg2)
 parse_instr(Str, Term) :-
+    % Handle space after opcode correctly
     (   sub_string(Str, Before, _, After, " ") ->
         sub_string(Str, 0, Before, _, OpStr),
         sub_string(Str, _, After, 0, ArgsStr),
@@ -80,7 +81,7 @@ parse_instr(Str, Term) :-
     ;   atom_string(Term, Str)
     ).
 
-init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], [], Code, Labels)) :-
+init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, Labels)) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
     format(atom(Target), "~w/~w", [Pred, Arity]),
@@ -97,7 +98,7 @@ build_regs([A|As], I, R) :-
     put_assoc(Key, R0, A, R).
 
 run_loop(S, Sf) :-
-    S = wam_state(PC, _, _, _, _, _, Code, L),
+    S = wam_state(PC, _, _, _, _, _, _, _, _),
     (   PC == halt -> Sf = S
     ;   (   fetch_instr(S, Instr)
         ->  (   step_wam(Instr, S, S1)
@@ -110,70 +111,69 @@ run_loop(S, Sf) :-
         )
     ).
 
-fetch_instr(wam_state(PC, _, _, _, _, _, Code, _), Instr) :-
+fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
     nth1(PC, Code, Instr).
 
-backtrack(wam_state(_, _, _, _, _, [cp(NextPC, R, S, T)|CPs], Code, L), wam_state(NextPC, R, S, [], T, CPs, Code, L)).
+backtrack(wam_state(_, _, _, _, _, _, [cp(NextPC, R, S, CP, T)|CPs], Code, L), wam_state(NextPC, R, S, [], T, CP, CPs, Code, L)).
 
 %% step_wam(+Instruction, +StateIn, -StateOut)
-step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, R, S, H, T, CP, Code, L)) :-
+step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     (   get_assoc(Ai, R, Val)
     ->  (Val == C -> NPC is PC + 1 ; fail)
     ;   fail
     ).
 
-step_wam(get_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, NR, S, H, T, CP, Code, L)) :-
+step_wam(get_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
     get_assoc(Ai, R, Val),
     put_assoc(Xn, R, Val, NR),
     NPC is PC + 1.
 
-step_wam(get_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, R, S, H, T, CP, Code, L)) :-
+step_wam(get_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     get_assoc(Ai, R, ValA),
     get_assoc(Xn, R, ValX),
     (ValA == ValX -> NPC is PC + 1 ; fail).
 
-step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, NR, S, H, T, CP, Code, L)) :-
+step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
     put_assoc(Ai, R, C, NR),
     NPC is PC + 1.
 
-step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, NR, S, H, T, CP, Code, L)) :-
+step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
     format(atom(NewVar), "_V~w", [PC]),
     put_assoc(Xn, R, NewVar, R1),
     put_assoc(Ai, R1, NewVar, NR),
     NPC is PC + 1.
 
-step_wam(put_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, NR, S, H, T, CP, Code, L)) :-
+step_wam(put_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
     get_assoc(Xn, R, Val),
     put_assoc(Ai, R, Val, NR),
     NPC is PC + 1.
 
-step_wam(call(P, _), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, R, [ret(RetPC)|S], H, T, CP, Code, L)) :-
+step_wam(call(P, _), wam_state(PC, R, S, H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)) :-
     get_assoc(P, L, NPC),
-    RetPC is PC + 1.
+    NCP is PC + 1.
 
-step_wam(execute(P), wam_state(_, R, S, H, T, CP, Code, L), wam_state(NPC, R, S, H, T, CP, Code, L)) :-
+step_wam(execute(P), wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     get_assoc(P, L, NPC).
 
-step_wam(proceed, wam_state(_, R, [ret(RetPC)|S], H, T, CP, Code, L), wam_state(RetPC, R, S, H, T, CP, Code, L)).
-step_wam(proceed, wam_state(_, R, [], H, T, CP, Code, L), wam_state(halt, R, [], H, T, CP, Code, L)).
+step_wam(proceed, wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(CP, R, S, H, T, halt, CPS, Code, L)).
 
-step_wam(allocate, wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, R, [env|S], H, T, CP, Code, L)) :-
+step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [env(CP)|S], H, T, CP, CPS, Code, L)) :-
     NPC is PC + 1.
 
-step_wam(deallocate, wam_state(PC, R, [env|S], H, T, CP, Code, L), wam_state(NPC, R, S, H, T, CP, Code, L)) :-
+step_wam(deallocate, wam_state(PC, R, [env(OldCP)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
     NPC is PC + 1.
 
-step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, R, S, H, T, [cp(NextPC, R, S, T)|CP], Code, L)) :-
+step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, CP, T)|CPS], Code, L)) :-
     get_assoc(NextL, L, NextPC),
     NPC is PC + 1.
 
-step_wam(trust_me, wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, R, S, H, T, NCP, Code, L)) :-
-    (CP = [_|NCP] -> true ; NCP = CP),
+step_wam(trust_me, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
+    (CPS = [_|NCPS] -> true ; NCPS = CPS),
     NPC is PC + 1.
 
-step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, Code, L), wam_state(NPC, R, S, H, T, NCP, Code, L)) :-
+step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
     get_assoc(NextL, L, NextPC),
-    (CP = [_|Rest] -> NCP = [cp(NextPC, R, S, T)|Rest] ; NCP = [cp(NextPC, R, S, T)]),
+    (CPS = [_|Rest] -> NCPS = [cp(NextPC, R, S, CP, T)|Rest] ; NCPS = [cp(NextPC, R, S, CP, T)]),
     NPC is PC + 1.
 
 test_wam_runtime :-

@@ -197,60 +197,66 @@ compile_unify_arguments([Arg|Rest], V0, Vf, Code) :-
 compile_body_goals(Goals, V, _Options, Code) :-
     length(Goals, N),
     (   N > 1
-    ->  compile_goals(Goals, V, GoalsCode),
+    ->  compile_goals(Goals, V, _, GoalsCode),
         format(string(Code), "    allocate~n~w~n    deallocate", [GoalsCode])
-    ;   compile_goals(Goals, V, Code)
+    ;   compile_goals(Goals, V, _, Code)
     ).
 
-compile_goals([], _, "").
-compile_goals([Goal|Rest], V, Code) :-
+compile_goals([], V, V, "").
+compile_goals([Goal|Rest], V0, Vf, Code) :-
     (   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        compile_goal_execute(Goal, V, Code)
-    ;   compile_goal_call(Goal, V, GoalCode),
-        compile_goals(Rest, V, RestCode),
+        compile_goal_execute(Goal, V0, Vf, Code)
+    ;   compile_goal_call(Goal, V0, V1, GoalCode),
+        compile_goals(Rest, V1, Vf, RestCode),
         format(string(Code), "~w~n~w", [GoalCode, RestCode])
     ).
 
-compile_goal_call(Goal, V, Code) :-
+compile_goal_call(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
-    compile_put_arguments(Args, 1, V, PutCode),
+    compile_put_arguments(Args, 1, V0, Vf, PutCode),
     format(string(CallCode), "    call ~w/~w, ~w", [Pred, Arity, Arity]),
     (   PutCode == ""
     ->  Code = CallCode
     ;   format(string(Code), "~w~n~w", [PutCode, CallCode])
     ).
 
-compile_goal_execute(Goal, V, Code) :-
+compile_goal_execute(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
-    compile_put_arguments(Args, 1, V, PutCode),
+    compile_put_arguments(Args, 1, V0, Vf, PutCode),
     format(string(ExecCode), "    execute ~w/~w", [Pred, Arity]),
     (   PutCode == ""
     ->  Code = ExecCode
     ;   format(string(Code), "~w~n~w", [PutCode, ExecCode])
     ).
 
-compile_put_arguments([], _, _, "").
-compile_put_arguments([Arg|Rest], I, V, Code) :-
-    compile_put_argument(Arg, I, V, ArgCode),
+compile_put_arguments([], _, V, V, "").
+compile_put_arguments([Arg|Rest], I, V0, Vf, Code) :-
+    compile_put_argument(Arg, I, V0, V1, ArgCode),
     NI is I + 1,
-    compile_put_arguments(Rest, NI, V, RestCode),
+    compile_put_arguments(Rest, NI, V1, Vf, RestCode),
     (   RestCode == ""
     ->  Code = ArgCode
     ;   format(string(Code), "~w~n~w", [ArgCode, RestCode])
     ).
 
-compile_put_argument(Arg, I, V, Code) :-
+compile_put_argument(Arg, I, V0, V1, Code) :-
     (   var(Arg)
-    ->  (   get_var_reg(Arg, V, Reg)
-        ->  format(string(Code), "    put_value ~w, A~w", [Reg, I])
-        ;   format(string(Code), "    put_variable X?, A~w", [I])
+    ->  (   get_var_reg(Arg, V0, Reg)
+        ->  format(string(Code), "    put_value ~w, A~w", [Reg, I]),
+            V1 = V0
+        ;   next_x_reg(V0, XReg, V1),
+            bind_var(Arg, XReg, V1, V1),
+            format(string(Code), "    put_variable ~w, A~w", [XReg, I])
         )
     ;   atomic(Arg)
-    ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I])
-    ;   format(string(Code), "    put_variable X?, A~w", [I])
+    ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I]),
+        V1 = V0
+    ;   % Compound or other
+        next_x_reg(V0, XReg, V1),
+        format(string(Code), "    put_variable ~w, A~w", [XReg, I])
     ).
 
 %% Variable Mapping Helpers
