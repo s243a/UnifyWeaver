@@ -63,7 +63,7 @@ All other targets solve this with **per-path visited tracking**:
 | Python | `frozenset` union per branch |
 | AWK | DFS stack with path string |
 
-These are all **path-at-a-time** (DFS) approaches. The C# query engine
+These are all **path-at-a-time** (DFS — depth-first search) approaches. The C# query engine
 needs an equivalent that works within its plan-based architecture.
 
 ## Implemented Solution

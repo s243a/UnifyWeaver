@@ -15,8 +15,8 @@ and specification.
 ### C# Query Engine vs DFS Pipelines
 
 The C# parameterized query engine (`PathAwareTransitiveClosureNode`) is
-dramatically faster than all DFS pipeline implementations, including
-compiled Rust:
+dramatically faster than all DFS (depth-first search) pipeline
+implementations, including compiled Rust:
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
