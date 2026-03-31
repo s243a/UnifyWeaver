@@ -87,12 +87,38 @@ these higher-order predicates.
 | `aggregate_all/3` compilation | Go, Python, AWK, Rust | High — requires collecting all solutions then aggregating |
 | Predicate-calls-predicate | All | Medium — compile multiple predicates and wire calls between them |
 
+## C# Query Plan Execution Test
+
+The C# parameterized query engine compiles `category_ancestor/3` to a
+query plan with `FixpointNode`, `ParamSeedNode`, `KeyJoinNode`, and
+`ArithmeticNode`. However, **execution hangs** on the dev dataset
+(198 edges) — the fixpoint does not converge.
+
+**Root cause**: Same as AWK's original fixpoint issue. With hop counting,
+each iteration produces tuples with new hop values:
+`(cat, ancestor, 3)` ≠ `(cat, ancestor, 7)`. In a cyclic graph, the
+fixpoint never converges because new tuples keep appearing.
+
+**Fix needed**: The `FixpointNode` needs a max-depth guard or the
+per-path visited pattern to prevent unbounded iteration with counters.
+This is the same issue solved differently per target:
+- Prolog: `max_depth/1` + `Visited` list
+- Go/Rust/Python: `depth` parameter in recursive function
+- AWK: `MAX_DEPTH` in DFS loop
+- C# Query Engine: **not yet solved** — FixpointNode has no depth bound
+
+This is a significant finding: the C# query engine's semi-naive
+evaluation does NOT handle cycle-bounded counters. The benchmark's
+DFS pipeline (which uses explicit visited sets) is algorithmically
+different from the query plan approach.
+
 ## What Works End-to-End Today
 
 Only the **C# Query Engine** can compile the combination of
 `category_ancestor/3` + `aggregate_all/3` in a single query plan.
-But it can't compile `path_to_root/3` or `effective_distance/3`
-because of the multi-clause and `setof/member` issues.
+But execution hangs due to fixpoint non-convergence on cyclic graphs
+with counters. It also can't compile `path_to_root/3` or
+`effective_distance/3` because of multi-clause and `setof/member` issues.
 
 **No target** can compile the full `effective_distance.pl` natively today.
 
