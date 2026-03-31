@@ -7069,7 +7069,6 @@ namespace UnifyWeaver.QueryRuntime
             ICollection<object[]> output,
             int maxDepth = 0)
         {
-            var emitted = new HashSet<(object?, int)>();
             var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
             stack.Push((seed, 0, new HashSet<object?> { seed }));
 
@@ -7105,10 +7104,7 @@ namespace UnifyWeaver.QueryRuntime
                         continue;
                     }
 
-                    if (emitted.Add((next, nextDepth)))
-                    {
-                        output.Add(new object[] { seed!, next!, nextDepth });
-                    }
+                    output.Add(new object[] { seed!, next!, nextDepth });
 
                     var nextVisited = new HashSet<object?>(visited) { next };
                     stack.Push((next, nextDepth, nextVisited));
@@ -7229,7 +7225,6 @@ namespace UnifyWeaver.QueryRuntime
             ICollection<object[]> output,
             int maxDepth = 0)
         {
-            var emitted = new HashSet<RowWrapper>(new RowWrapperComparer(StructuralArrayComparer.Instance));
             var stack = new Stack<(object? Node, object Accumulator, int Depth, HashSet<object?> Visited)>();
             stack.Push((seed, 0, 0, new HashSet<object?> { seed }));
 
@@ -7276,11 +7271,7 @@ namespace UnifyWeaver.QueryRuntime
                             ? EvaluateArithmeticExpression(baseExpression, evalTuple)
                             : EvaluateArithmeticExpression(recursiveExpression, evalTuple);
 
-                        var dedupRow = new object[] { next!, nextAccumulator };
-                        if (emitted.Add(new RowWrapper(dedupRow)))
-                        {
-                            output.Add(new object[] { seed!, next!, nextAccumulator });
-                        }
+                        output.Add(new object[] { seed!, next!, nextAccumulator });
 
                         var nextVisited = new HashSet<object?>(visited) { next };
                         stack.Push((next, nextAccumulator, nextDepth, nextVisited));

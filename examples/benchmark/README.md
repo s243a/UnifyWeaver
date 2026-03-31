@@ -37,19 +37,13 @@ implementations, including compiled Rust:
 | vs Rust | 0.8x | 6.0x | 10.4x | 8.2x |
 | vs Go | 1.1x | 8.9x | 17.2x | 12.4x |
 
-Important semantic note:
+Semantic note:
 
-- The current C# query-engine benchmark path seeds `category_ancestor/3`
-  from unique categories and materializes unique `(seed, ancestor, hops)`
-  tuples.
-- The DFS pipelines enumerate all simple paths. If two distinct paths
-  reach the same ancestor with the same hop count, both contribute to
-  `d_eff`.
-- Therefore the query-engine benchmark is currently a performance
-  comparison for the deduplicated counted-closure path, not a
-  path-multiplicity-exact implementation of the full `effective_distance`
-  reference.
-- `benchmark_effective_distance.py` reports this explicitly via
+- The current C# query-engine benchmark path preserves per-path cycle
+  checks without collapsing distinct simple paths that happen to reach
+  the same ancestor with the same hop count.
+- `benchmark_effective_distance.py` compares the query-engine output
+  against the C# DFS reference and reports the result via
   `query_vs_csharp_dfs`.
 
 ### Why the Query Engine Wins

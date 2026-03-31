@@ -1,12 +1,13 @@
 %% ==========================================================================
 %% Cross-Target Effective Distance Benchmark — C# Query Engine version
 %%
-%% The C# parameterized query engine handles is/2 arithmetic and cycle
-%% detection (via semi-naive FixpointNode) natively. Two adjustments
-%% from the generic Prolog version:
+%% The C# parameterized query engine handles is/2 arithmetic and
+%% path-aware recursion natively. Two adjustments from the generic
+%% Prolog version:
 %%
-%% 1. No explicit Visited list — FixpointNode handles cycle detection
-%%    automatically via delta-set convergence with HashSet deduplication.
+%% 1. No explicit Visited list — the specialized path-aware recursion
+%%    nodes in the C# query runtime track visited nodes per derivation
+%%    path while still preserving path multiplicity.
 %%
 %% 2. Base case constant moved from head to body — the query plan
 %%    compiler currently requires variables in head positions, with
@@ -44,7 +45,7 @@
 
 %% category_ancestor(+Cat, -Ancestor, -Hops)
 %% Transitive closure over category_parent/2 with hop counter.
-%% FixpointNode handles cycle detection automatically.
+%% The C# query engine lowers this to a path-aware counted closure.
 %%
 %% Note: base case uses "Hops is 1" instead of head constant "1"
 %% because the C# query plan compiler requires variables in head args.

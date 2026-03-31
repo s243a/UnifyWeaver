@@ -144,9 +144,14 @@
 :- dynamic user:test_group_reach_param/3.
 :- dynamic user:test_pathaware_edge/2.
 :- dynamic user:test_pathaware_reach/3.
+:- dynamic user:test_pathaware_multi_edge/2.
+:- dynamic user:test_pathaware_multi_reach/3.
 :- dynamic user:test_weighted_edge/2.
 :- dynamic user:test_weighted_cost/2.
 :- dynamic user:test_weighted_path/3.
+:- dynamic user:test_weighted_multi_edge/2.
+:- dynamic user:test_weighted_multi_cost/2.
+:- dynamic user:test_weighted_multi_path/3.
 :- dynamic user:test_scanindex_allowed/1.
 :- dynamic user:test_scanindex_step/2.
 :- dynamic user:test_scanindex_reach_param/2.
@@ -295,8 +300,10 @@ test_csharp_query_target :-
         verify_recursive_plan,
         verify_path_aware_transitive_closure_plan,
         verify_parameterized_path_aware_transitive_closure_plan,
+        verify_path_aware_transitive_closure_preserves_path_multiplicity,
         verify_path_aware_accumulation_plan,
         verify_parameterized_path_aware_accumulation_plan,
+        verify_path_aware_accumulation_preserves_path_multiplicity,
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
@@ -1103,6 +1110,13 @@ setup_test_data :-
         1,
         [[a, b], [b, a], [b, c]]
     ),
+    assert_counted_recursive_fixture(
+        test_pathaware_multi_edge,
+        test_pathaware_multi_reach,
+        1,
+        1,
+        [[a, b], [a, c], [b, d], [c, d]]
+    ),
     assertz(user:test_weighted_edge(a, b)),
     assertz(user:test_weighted_edge(b, a)),
     assertz(user:test_weighted_edge(b, c)),
@@ -1118,6 +1132,24 @@ setup_test_data :-
         test_weighted_edge(X, Y),
         test_weighted_cost(X, Cost),
         test_weighted_path(Y, Z, Acc1),
+        Acc is Acc1 + Cost
+    )),
+    assertz(user:test_weighted_multi_edge(a, b)),
+    assertz(user:test_weighted_multi_edge(a, c)),
+    assertz(user:test_weighted_multi_edge(b, d)),
+    assertz(user:test_weighted_multi_edge(c, d)),
+    assertz(user:test_weighted_multi_cost(a, 1)),
+    assertz(user:test_weighted_multi_cost(b, 1)),
+    assertz(user:test_weighted_multi_cost(c, 1)),
+    assertz(user:(test_weighted_multi_path(X, Y, Acc) :-
+        test_weighted_multi_edge(X, Y),
+        test_weighted_multi_cost(X, Cost),
+        Acc is Cost
+    )),
+    assertz(user:(test_weighted_multi_path(X, Z, Acc) :-
+        test_weighted_multi_edge(X, Y),
+        test_weighted_multi_cost(X, Cost),
+        test_weighted_multi_path(Y, Z, Acc1),
         Acc is Acc1 + Cost
     )),
     assert_binary_recursive_fixture(
@@ -1328,9 +1360,13 @@ cleanup_test_data :-
     retractall(user:test_reachable_param_both(_, _)),
     retractall(user:mode(test_reachable_param_both(_, _))),
     cleanup_counted_recursive_fixture(test_pathaware_edge, test_pathaware_reach),
+    cleanup_counted_recursive_fixture(test_pathaware_multi_edge, test_pathaware_multi_reach),
     retractall(user:test_weighted_edge(_, _)),
     retractall(user:test_weighted_cost(_, _)),
     retractall(user:test_weighted_path(_, _, _)),
+    retractall(user:test_weighted_multi_edge(_, _)),
+    retractall(user:test_weighted_multi_cost(_, _)),
+    retractall(user:test_weighted_multi_path(_, _, _)),
     cleanup_recursive_fixture(test_probe_dir_forward_edge, test_probe_dir_forward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_backward_edge, test_probe_dir_backward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_mixed_edge, test_probe_dir_mixed_reach, 2),
@@ -3466,6 +3502,25 @@ verify_parameterized_path_aware_transitive_closure_plan :-
          'a,c,2'],
         [[a]]).
 
+verify_path_aware_transitive_closure_preserves_path_multiplicity :-
+    csharp_target:build_query_plan(
+        test_pathaware_multi_reach/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_transitive_closure),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareTransitiveClosureNode'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    path_multiplicity_harness(ModuleClass, [[a]], 'a,d,2', HarnessSource),
+    maybe_run_query_runtime_with_harness(
+        Plan,
+        ['MATCH_COUNT:2'],
+        [[a]],
+        HarnessSource).
+
 verify_path_aware_accumulation_plan :-
     csharp_query_target:build_query_plan(test_weighted_path/3, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
@@ -3522,6 +3577,25 @@ verify_parameterized_path_aware_accumulation_plan :-
          'a,c,7',
          'a,d,2'],
         [[a]]).
+
+verify_path_aware_accumulation_preserves_path_multiplicity :-
+    csharp_target:build_query_plan(
+        test_weighted_multi_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_accumulation),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    path_multiplicity_harness(ModuleClass, [[a]], 'a,d,2', HarnessSource),
+    maybe_run_query_runtime_with_harness(
+        Plan,
+        ['MATCH_COUNT:2'],
+        [[a]],
+        HarnessSource).
 
 verify_grouped_transitive_closure_plan :-
     csharp_query_target:build_query_plan(test_label_cat_reach/4, [target(csharp_query)], Plan),
@@ -6645,6 +6719,37 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
      Console.WriteLine(string.Join(\",\", projected));
   }
   ', [ModuleClass, ParamDecl, ExecCall]).
+
+path_multiplicity_harness(ModuleClass, Params, MatchRow, Source) :-
+    csharp_params_literal(Params, ParamsLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+var parameters = ~w;
+var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+string FormatValue(object? value) => value switch
+{
+    JsonNode node => node.ToJsonString(jsonOptions),
+    JsonElement element => element.GetRawText(),
+    System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+    IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+    _ => value?.ToString() ?? string.Empty
+};
+
+var rows = executor.Execute(result.Plan, parameters, null)
+    .Select(row => string.Join(",", row.Take(result.Plan.Head.Arity).Select(FormatValue)))
+    .ToList();
+var matchCount = rows.Count(row => row == "~w");
+Console.WriteLine("MATCH_COUNT:" + matchCount.ToString(CultureInfo.InvariantCulture));
+', [ModuleClass, ParamsLiteral, MatchRow]).
 
 harness_source_with_strategy_flag(ModuleClass, Params, Strategy, Source) :-
     (   Params == []
