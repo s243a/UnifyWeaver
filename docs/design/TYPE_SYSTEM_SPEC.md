@@ -376,17 +376,17 @@ Current TypR lowering policy is intentionally mixed:
   subsequent native steps
 - accumulator-style tail-recursive predicates may also lower to TypR-valid
   functions when they match the conservative tail-recursion shape currently
-  supported by the shared recursion compiler, using raw-expression loop bodies
+  supported by the shared recursion compiler, using native TypR loop bodies
   inside TypR rather than relabeled standalone R output
 - conservative single-recursive-call numeric linear-recursive predicates may
   also lower to TypR-valid functions when they match the currently supported
   single-base, single-recursive-clause fold shape with one recursion-driving
-  argument and invariant context args, using raw-expression fold/loop bodies
+  argument and invariant context args, using native TypR fold/loop bodies
   inside TypR rather than wrapped-R fallback
 - conservative single-recursive-call list linear-recursive predicates may
   also lower to TypR-valid functions when they match the currently supported
   empty-list base-case fold shape with one recursion-driving list argument
-  and invariant context args, using raw-expression fold/loop bodies inside
+  and invariant context args, using native TypR fold/loop bodies inside
   TypR rather than wrapped-R fallback
 - conservative arity-2 numeric multi-call tree-recursive predicates may also
   lower to TypR-valid functions when they match the currently supported

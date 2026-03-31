@@ -420,8 +420,9 @@ test(recursive_compiler_supports_typr_tail_recursion_path) :-
     once(recursive_compiler:compile_recursive(factorial_acc/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let factorial_acc <- fn(arg1: int, arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "while (!identical(current_input, 0))")),
-    once(sub_string(Code, _, _, _, "current_acc = step_2;")),
+    once(sub_string(Code, _, _, _, "current_acc <- step_2;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_linear_recursion_path) :-
@@ -439,9 +440,10 @@ test(recursive_compiler_supports_typr_linear_recursion_path) :-
     once(recursive_compiler:compile_recursive(factorial_linear/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let factorial_linear <- fn(arg1: int, arg2: int): int")),
     once(sub_string(Code, _, _, _, "for (current in seq(current_input, 1))")),
-    once(sub_string(Code, _, _, _, "acc = (current * acc);")),
+    once(sub_string(Code, _, _, _, "acc <- (current * acc);")),
     once(sub_string(Code, _, _, _, "stop(\"No matching recursive clause for factorial_linear\")")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_list_linear_recursion_path) :-
@@ -456,10 +458,11 @@ test(recursive_compiler_supports_typr_list_linear_recursion_path) :-
     assertz(type_declarations:uw_return_type(list_length/2, integer)),
     once(recursive_compiler:compile_recursive(list_length/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let list_length <- fn(arg1: [#N, Any], arg2: int): int")),
-    once(sub_string(Code, _, _, _, "if (length(current_input) == 0)")),
+    once(sub_string(Code, _, _, _, "if (length(current_input) > 0)")),
     once(sub_string(Code, _, _, _, "for (current in rev(current_input))")),
-    once(sub_string(Code, _, _, _, "acc = (acc + 1);")),
+    once(sub_string(Code, _, _, _, "acc <- (acc + 1);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_tree_recursion_path) :-
@@ -1800,11 +1803,12 @@ test(recursive_compiler_supports_typr_nary_linear_recursion_path) :-
     assertz(type_declarations:uw_return_type(power/3, integer)),
     once(recursive_compiler:compile_recursive(power/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let power <- fn(arg1: int, arg2: int, arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
     once(sub_string(Code, _, _, _, "for (current in seq(current_input, 1))")),
-    once(sub_string(Code, _, _, _, "acc = (arg1 * acc);")),
+    once(sub_string(Code, _, _, _, "acc <- (arg1 * acc);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_list_linear_recursion_path) :-
@@ -1820,11 +1824,12 @@ test(recursive_compiler_supports_typr_nary_list_linear_recursion_path) :-
     assertz(type_declarations:uw_return_type(list_length_from/3, integer)),
     once(recursive_compiler:compile_recursive(list_length_from/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let list_length_from <- fn(arg1: int, arg2: [#N, Any], arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
-    once(sub_string(Code, _, _, _, "if (length(current_input) == 0)")),
-    once(sub_string(Code, _, _, _, "acc = (acc + 1);")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
+    once(sub_string(Code, _, _, _, "if (length(current_input) > 0)")),
+    once(sub_string(Code, _, _, _, "acc <- (acc + 1);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_guarded_nary_linear_recursion_path) :-
@@ -1842,10 +1847,11 @@ test(recursive_compiler_supports_typr_guarded_nary_linear_recursion_path) :-
     assertz(type_declarations:uw_return_type(power_if/3, integer)),
     once(recursive_compiler:compile_recursive(power_if/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let power_if <- fn(arg1: int, arg2: int, arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
-    once(sub_string(Code, _, _, _, "acc = if (@{ arg1 > 1 }@) { (arg1 * acc) } else { acc };")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
+    once(sub_string(Code, _, _, _, "acc <- if (@{ arg1 > 1 }@) { (arg1 * acc) } else { acc };")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_guarded_nary_list_linear_recursion_path) :-
@@ -1861,10 +1867,11 @@ test(recursive_compiler_supports_typr_guarded_nary_list_linear_recursion_path) :
     assertz(type_declarations:uw_return_type(count_occ/3, integer)),
     once(recursive_compiler:compile_recursive(count_occ/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let count_occ <- fn(arg1: int, arg2: [#N, int], arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
-    once(sub_string(Code, _, _, _, "acc = if (@{ arg1 == current }@) { (acc + 1) } else { acc };")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
+    once(sub_string(Code, _, _, _, "acc <- if (@{ arg1 == current }@) { (acc + 1) } else { acc };")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_multistate_nary_linear_recursion_path) :-
@@ -1888,11 +1895,12 @@ test(recursive_compiler_supports_typr_multistate_nary_linear_recursion_path) :-
     assertz(type_declarations:uw_return_type(power_multistate/3, integer)),
     once(recursive_compiler:compile_recursive(power_multistate/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let power_multistate <- fn(arg1: int, arg2: int, arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 > 1 }@) { (arg1 * acc) } else { acc }")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 > 1 }@) { ((arg1 * acc) + 1) } else { (acc + 2) }")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_multistate_nary_list_linear_recursion_path) :-
@@ -1914,11 +1922,12 @@ test(recursive_compiler_supports_typr_multistate_nary_list_linear_recursion_path
     assertz(type_declarations:uw_return_type(count_weighted/3, integer)),
     once(recursive_compiler:compile_recursive(count_weighted/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let count_weighted <- fn(arg1: int, arg2: [#N, int], arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { (acc + 1) } else { acc }")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { ((acc + 1) + 1) } else { (acc + 2) }")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_asymmetric_nary_linear_recursion_path) :-
@@ -1941,10 +1950,11 @@ test(recursive_compiler_supports_typr_asymmetric_nary_linear_recursion_path) :-
     assertz(type_declarations:uw_return_type(asym_rec_a/3, integer)),
     once(recursive_compiler:compile_recursive(asym_rec_a/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let asym_rec_a <- fn(arg1: int, arg2: int, arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 > 1 }@) { ((arg1 * acc) + 1) } else { ((acc + 2) + acc) }")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_asymmetric_nary_list_linear_recursion_path) :-
@@ -1965,10 +1975,11 @@ test(recursive_compiler_supports_typr_asymmetric_nary_list_linear_recursion_path
     assertz(type_declarations:uw_return_type(asym_rec_c/3, integer)),
     once(recursive_compiler:compile_recursive(asym_rec_c/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let asym_rec_c <- fn(arg1: int, arg2: [#N, int], arg3: int): int")),
-    once(sub_string(Code, _, _, _, "current_input = arg2;")),
+    once(sub_string(Code, _, _, _, "current_input <- arg2;")),
     once(sub_string(Code, _, _, _, "if (@{ arg1 == current }@) { ((acc + 1) + 1) } else { ((acc + 2) + acc) }")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(generic_body_predicates_reuse_r_backend) :-
