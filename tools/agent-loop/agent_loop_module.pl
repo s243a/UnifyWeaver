@@ -90,6 +90,7 @@ module_dependency(security, config, 'audit_profile_level/2 from config').
 :- dynamic agent_target_feature/3.
 :- discontiguous interop_stub/4.
 :- discontiguous interop_method/5.
+:- discontiguous ffi_arg_list_acc/4.
 
 agent_target_feature(rust, wasm_bindings, true).
 agent_target_feature(rust, ffi_bindings, false).
@@ -154,24 +155,118 @@ interop_method(wasm, record_usage, costs, 'Record token usage for cost tracking'
 interop_method(wasm, get_cost_summary, costs, 'Get formatted cost summary string', []).
 
 %% --- FFI interop stubs (C-compatible extern functions) ---
+%% Note: ptr (self) parameter is added automatically by emit_ffi_function;
+%%       ArgTypes here are the ADDITIONAL arguments after the self pointer.
 
 interop_stub(ffi, agent_new, sig([usize, ptr_str, ptr_str], ptr), constructor).
 interop_stub(ffi, agent_free, sig([ptr], void), destructor).
-interop_stub(ffi, agent_add_user_message, sig([ptr, ptr_str], void), add_user_message).
-interop_stub(ffi, agent_add_assistant_message, sig([ptr, ptr_str], void), add_assistant_message).
-interop_stub(ffi, agent_build_request_json, sig([ptr], ptr_str), build_request_json).
-interop_stub(ffi, agent_parse_tool_calls, sig([ptr, ptr_str], ptr_str), parse_tool_calls).
-interop_stub(ffi, agent_clear_context, sig([ptr], void), clear_context).
+interop_stub(ffi, agent_add_user_message, sig([ptr_str], void), add_user_message).
+interop_stub(ffi, agent_add_assistant_message, sig([ptr_str], void), add_assistant_message).
+interop_stub(ffi, agent_add_tool_result, sig([ptr_str, ptr_str], void), add_tool_result).
+interop_stub(ffi, agent_build_request_json, sig([], ptr_str), build_request_json).
+interop_stub(ffi, agent_parse_tool_calls, sig([ptr_str], ptr_str), parse_tool_calls).
+interop_stub(ffi, agent_clear_context, sig([], void), clear_context).
+interop_stub(ffi, agent_get_context_json, sig([], ptr_str), get_context_json).
+interop_stub(ffi, agent_export_json, sig([], ptr_str), export_json).
+interop_stub(ffi, agent_record_usage, sig([u64, u64], void), record_usage).
 interop_stub(ffi, agent_free_string, sig([ptr_str], void), free_string).
 
 interop_method(ffi, agent_new, config, 'Allocate and initialize a new agent', [constructor]).
 interop_method(ffi, agent_free, config, 'Free agent memory', [destructor]).
 interop_method(ffi, agent_add_user_message, context, 'Add user message via C string', [mutable]).
 interop_method(ffi, agent_add_assistant_message, context, 'Add assistant message via C string', [mutable]).
+interop_method(ffi, agent_add_tool_result, context, 'Add tool result via C strings', [mutable]).
 interop_method(ffi, agent_build_request_json, parsing, 'Build request, returns owned C string', []).
 interop_method(ffi, agent_parse_tool_calls, parsing, 'Parse tool calls, returns owned C string', []).
 interop_method(ffi, agent_clear_context, context, 'Clear conversation context', [mutable]).
-interop_method(ffi, agent_free_string, config, 'Free a string returned by the agent', []).
+interop_method(ffi, agent_get_context_json, context, 'Get context as JSON, returns owned C string', []).
+interop_method(ffi, agent_export_json, export, 'Export as JSON, returns owned C string', []).
+interop_method(ffi, agent_record_usage, costs, 'Record token usage', [mutable]).
+interop_method(ffi, agent_free_string, config, 'Free a string returned by the agent', [standalone]).
+
+%% --- NIF interop stubs (Erlang/Elixir NIF via rustler) ---
+
+interop_stub(nif, new, sig([usize, string, string], resource), constructor).
+interop_stub(nif, set_system_prompt, sig([resource, string], atom), set_system_prompt).
+interop_stub(nif, add_user_message, sig([resource, string], atom), add_user_message).
+interop_stub(nif, add_assistant_message, sig([resource, string], atom), add_assistant_message).
+interop_stub(nif, add_tool_result, sig([resource, string, string], atom), add_tool_result).
+interop_stub(nif, get_context_json, sig([resource], string), get_context_json).
+interop_stub(nif, build_request_json, sig([resource], string), build_request_json).
+interop_stub(nif, parse_tool_calls, sig([resource, string], string), parse_tool_calls).
+interop_stub(nif, clear_context, sig([resource], atom), clear_context).
+interop_stub(nif, record_usage, sig([resource, u64, u64], atom), record_usage).
+interop_stub(nif, export_json, sig([resource], string), export_json).
+interop_stub(nif, export_markdown, sig([resource], string), export_markdown).
+
+interop_method(nif, new, config, 'Create a new agent NIF resource', [constructor]).
+interop_method(nif, set_system_prompt, config, 'Set system prompt', [mutable]).
+interop_method(nif, add_user_message, context, 'Add user message', [mutable]).
+interop_method(nif, add_assistant_message, context, 'Add assistant message', [mutable]).
+interop_method(nif, add_tool_result, context, 'Add tool result', [mutable]).
+interop_method(nif, get_context_json, context, 'Get context as JSON string', []).
+interop_method(nif, build_request_json, parsing, 'Build API request JSON', []).
+interop_method(nif, parse_tool_calls, parsing, 'Parse tool calls from response', []).
+interop_method(nif, clear_context, context, 'Clear conversation context', [mutable]).
+interop_method(nif, record_usage, costs, 'Record token usage', [mutable]).
+interop_method(nif, export_json, export, 'Export conversation as JSON', []).
+interop_method(nif, export_markdown, export, 'Export conversation as Markdown', []).
+
+%% --- JNI interop stubs (Java Native Interface) ---
+
+interop_stub(jni, createAgent, sig([jlong, jstring, jstring], jlong), constructor).
+interop_stub(jni, destroyAgent, sig([jlong], void), destructor).
+interop_stub(jni, addUserMessage, sig([jlong, jstring], void), add_user_message).
+interop_stub(jni, addAssistantMessage, sig([jlong, jstring], void), add_assistant_message).
+interop_stub(jni, addToolResult, sig([jlong, jstring, jstring], void), add_tool_result).
+interop_stub(jni, buildRequestJson, sig([jlong], jstring), build_request_json).
+interop_stub(jni, parseToolCalls, sig([jlong, jstring], jstring), parse_tool_calls).
+interop_stub(jni, clearContext, sig([jlong], void), clear_context).
+interop_stub(jni, recordUsage, sig([jlong, jlong, jlong], void), record_usage).
+interop_stub(jni, exportJson, sig([jlong], jstring), export_json).
+
+interop_method(jni, createAgent, config, 'Create agent, returns pointer as jlong', [constructor]).
+interop_method(jni, destroyAgent, config, 'Destroy agent and free memory', [destructor]).
+interop_method(jni, addUserMessage, context, 'Add user message', [mutable]).
+interop_method(jni, addAssistantMessage, context, 'Add assistant message', [mutable]).
+interop_method(jni, addToolResult, context, 'Add tool result', [mutable]).
+interop_method(jni, buildRequestJson, parsing, 'Build request JSON', []).
+interop_method(jni, parseToolCalls, parsing, 'Parse tool calls from response', []).
+interop_method(jni, clearContext, context, 'Clear context', [mutable]).
+interop_method(jni, recordUsage, costs, 'Record token usage', [mutable]).
+interop_method(jni, exportJson, export, 'Export as JSON', []).
+
+%% --- PyO3 interop stubs (Python module via pyo3) ---
+
+interop_stub(pymodule, new, sig([usize, str, str], self), constructor).
+interop_stub(pymodule, set_system_prompt, sig([str], none), set_system_prompt).
+interop_stub(pymodule, add_user_message, sig([str], none), add_user_message).
+interop_stub(pymodule, add_assistant_message, sig([str], none), add_assistant_message).
+interop_stub(pymodule, add_tool_result, sig([str, str], none), add_tool_result).
+interop_stub(pymodule, get_context_json, sig([], str), get_context_json).
+interop_stub(pymodule, build_request_json, sig([], str), build_request_json).
+interop_stub(pymodule, parse_tool_calls, sig([str], str), parse_tool_calls).
+interop_stub(pymodule, clear_context, sig([], none), clear_context).
+interop_stub(pymodule, record_usage, sig([u64, u64], none), record_usage).
+interop_stub(pymodule, get_cost_summary, sig([], str), get_cost_summary).
+interop_stub(pymodule, export_json, sig([], str), export_json).
+interop_stub(pymodule, export_markdown, sig([], str), export_markdown).
+interop_stub(pymodule, get_message_count, sig([], usize), get_message_count).
+
+interop_method(pymodule, new, config, 'Create a new agent', [constructor]).
+interop_method(pymodule, set_system_prompt, config, 'Set system prompt', [mutable]).
+interop_method(pymodule, add_user_message, context, 'Add user message', [mutable]).
+interop_method(pymodule, add_assistant_message, context, 'Add assistant message', [mutable]).
+interop_method(pymodule, add_tool_result, context, 'Add tool result', [mutable]).
+interop_method(pymodule, get_context_json, context, 'Get context as JSON', []).
+interop_method(pymodule, build_request_json, parsing, 'Build API request JSON', []).
+interop_method(pymodule, parse_tool_calls, parsing, 'Parse tool calls from response', []).
+interop_method(pymodule, clear_context, context, 'Clear context', [mutable]).
+interop_method(pymodule, record_usage, costs, 'Record token usage', [mutable]).
+interop_method(pymodule, get_cost_summary, costs, 'Get cost summary', []).
+interop_method(pymodule, export_json, export, 'Export as JSON', []).
+interop_method(pymodule, export_markdown, export, 'Export as Markdown', []).
+interop_method(pymodule, get_message_count, context, 'Get message count', []).
 
 %% =============================================================================
 %% Interop Code Generation Helpers
@@ -220,11 +315,44 @@ emit_interop_header(S, wasm) :-
 emit_interop_header(S, ffi) :-
     write(S, '/// C-compatible FFI interface.\n'),
     write(S, '/// Link with: -lagent_loop\n'),
-    write(S, '#[no_mangle]\n').
+    write(S, 'use std::ffi::{CStr, CString, c_char};\n\n').
+emit_interop_header(S, nif) :-
+    write(S, '/// Erlang/Elixir NIF interface via rustler.\n'),
+    write(S, 'use rustler::{ResourceArc, Atom};\n'),
+    write(S, 'use std::sync::Mutex;\n\n'),
+    write(S, 'pub struct AgentResource(pub Mutex<WasmAgentState>);\n\n'),
+    write(S, 'mod atoms {\n    rustler::atoms! { ok }\n}\n\n'),
+    write(S, 'rustler::init!("Elixir.AgentLoop.Native", [\n'),
+    write(S, '    new, set_system_prompt, add_user_message, add_assistant_message,\n'),
+    write(S, '    add_tool_result, get_context_json, build_request_json,\n'),
+    write(S, '    parse_tool_calls, clear_context, record_usage,\n'),
+    write(S, '    export_json, export_markdown\n'),
+    write(S, ']);\n\n').
+emit_interop_header(S, jni) :-
+    write(S, '/// JNI interface for Java/Kotlin/Scala.\n'),
+    write(S, 'use jni::JNIEnv;\n'),
+    write(S, 'use jni::objects::{JClass, JString};\n'),
+    write(S, 'use jni::sys::{jlong, jstring};\n\n').
+emit_interop_header(S, pymodule) :-
+    write(S, '/// Python module via PyO3.\n'),
+    write(S, 'use pyo3::prelude::*;\n\n'),
+    write(S, '#[pyclass]\n'),
+    write(S, 'pub struct PyAgent {\n'),
+    write(S, '    inner: WasmAgentState,\n'),
+    write(S, '}\n\n'),
+    write(S, '#[pymethods]\n'),
+    write(S, 'impl PyAgent {\n').
 emit_interop_header(_, _).
 
 %% emit_interop_footer(+Stream, +InteropType)
 emit_interop_footer(S, wasm) :-
+    write(S, '}\n').
+emit_interop_footer(S, pymodule) :-
+    write(S, '}\n\n'),
+    write(S, '#[pymodule]\n'),
+    write(S, 'fn agent_loop(_py: Python, m: &PyModule) -> PyResult<()> {\n'),
+    write(S, '    m.add_class::<PyAgent>()?;\n'),
+    write(S, '    Ok(())\n'),
     write(S, '}\n').
 emit_interop_footer(_, _).
 
@@ -242,9 +370,29 @@ emit_single_interop_stub(S, wasm, MethodName) :-
 emit_single_interop_stub(S, ffi, MethodName) :-
     interop_stub(ffi, MethodName, sig(ArgTypes, RetType), DelegateTo),
     interop_method(ffi, MethodName, _Category, Doc, Options),
-    format(S, '/// ~w\n', [Doc]),
-    write(S, '#[no_mangle]\n'),
+    format(S, '/// ~w\n#[no_mangle]\n', [Doc]),
     emit_ffi_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options).
+
+%% --- NIF stub emitter ---
+emit_single_interop_stub(S, nif, MethodName) :-
+    interop_stub(nif, MethodName, sig(_ArgTypes, _RetType), DelegateTo),
+    interop_method(nif, MethodName, _Category, Doc, Options),
+    format(S, '    /// ~w\n', [Doc]),
+    emit_nif_function(S, MethodName, DelegateTo, Options).
+
+%% --- JNI stub emitter ---
+emit_single_interop_stub(S, jni, MethodName) :-
+    interop_stub(jni, MethodName, sig(ArgTypes, RetType), DelegateTo),
+    interop_method(jni, MethodName, _Category, Doc, Options),
+    format(S, '    /// ~w\n', [Doc]),
+    emit_jni_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options).
+
+%% --- PyO3 stub emitter ---
+emit_single_interop_stub(S, pymodule, MethodName) :-
+    interop_stub(pymodule, MethodName, sig(ArgTypes, RetType), DelegateTo),
+    interop_method(pymodule, MethodName, _Category, Doc, Options),
+    format(S, '    /// ~w\n', [Doc]),
+    emit_pyo3_method(S, MethodName, ArgTypes, RetType, DelegateTo, Options).
 
 %% --- WASM method emitters ---
 
@@ -285,9 +433,17 @@ emit_ffi_function(S, MethodName, _ArgTypes, _RetType, _DelegateTo, Options) :-
     write(S, '    if !ptr.is_null() { unsafe { drop(Box::from_raw(ptr)); } }\n'),
     write(S, '}\n\n').
 emit_ffi_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options) :-
+    member(standalone, Options), !,
+    %% Standalone function — no self pointer
+    ffi_arg_list_standalone(ArgTypes, ArgList),
+    ffi_return_type(RetType, CRetType),
+    format(S, 'pub extern "C" fn ~w(~w)~w {\n', [MethodName, ArgList, CRetType]),
+    ffi_delegate_call_standalone(S, DelegateTo, ArgTypes, RetType),
+    write(S, '}\n\n').
+emit_ffi_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options) :-
     (   member(mutable, Options)
-    ->  write(S, 'pub extern "C" fn '), format(S, '~w(ptr: *mut WasmAgentState', [MethodName])
-    ;   write(S, 'pub extern "C" fn '), format(S, '~w(ptr: *const WasmAgentState', [MethodName])
+    ->  format(S, 'pub extern "C" fn ~w(ptr: *mut WasmAgentState', [MethodName])
+    ;   format(S, 'pub extern "C" fn ~w(ptr: *const WasmAgentState', [MethodName])
     ),
     ffi_arg_list(ArgTypes, ArgList),
     ffi_return_type(RetType, CRetType),
@@ -295,6 +451,166 @@ emit_ffi_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options) :-
     write(S, '    let agent = unsafe { &mut *ptr };\n'),
     ffi_delegate_call(S, DelegateTo, ArgTypes, RetType),
     write(S, '}\n\n').
+
+%% --- NIF function emitters (rustler pattern) ---
+
+emit_nif_function(S, MethodName, _DelegateTo, Options) :-
+    member(constructor, Options), !,
+    format(S, '    #[rustler::nif]\n', []),
+    format(S, '    fn ~w(max_tokens: usize, backend: String, model: String) -> ResourceArc<AgentResource> {\n', [MethodName]),
+    write(S, '        let state = WasmAgentState::new(max_tokens, &backend, &model);\n'),
+    write(S, '        ResourceArc::new(AgentResource(Mutex::new(state)))\n'),
+    write(S, '    }\n\n').
+emit_nif_function(S, MethodName, DelegateTo, Options) :-
+    member(mutable, Options),
+    interop_stub(nif, MethodName, sig(ArgTypes, RetType), _),
+    nif_extra_args(ArgTypes, ExtraArgs),
+    !,
+    format(S, '    #[rustler::nif]\n', []),
+    format(S, '    fn ~w(resource: ResourceArc<AgentResource>~w) -> ~w {\n', [MethodName, ExtraArgs, RetType]),
+    write(S, '        let mut agent = resource.0.lock().unwrap();\n'),
+    nif_delegate_call(S, DelegateTo, ArgTypes, RetType),
+    write(S, '    }\n\n').
+emit_nif_function(S, MethodName, DelegateTo, _Options) :-
+    interop_stub(nif, MethodName, sig(ArgTypes, RetType), _),
+    nif_extra_args(ArgTypes, ExtraArgs),
+    format(S, '    #[rustler::nif]\n', []),
+    format(S, '    fn ~w(resource: ResourceArc<AgentResource>~w) -> ~w {\n', [MethodName, ExtraArgs, RetType]),
+    write(S, '        let agent = resource.0.lock().unwrap();\n'),
+    nif_delegate_call(S, DelegateTo, ArgTypes, RetType),
+    write(S, '    }\n\n').
+
+nif_extra_args([resource], "").
+nif_extra_args([resource, string], ", s0: String").
+nif_extra_args([resource, string, string], ", s0: String, s1: String").
+nif_extra_args([resource, u64, u64], ", n0: u64, n1: u64").
+nif_extra_args(_, "").
+
+nif_delegate_call(S, DelegateTo, [resource], string) :-
+    format(S, '        agent.~w()\n', [DelegateTo]).
+nif_delegate_call(S, DelegateTo, [resource, string], atom) :-
+    format(S, '        agent.~w(&s0);\n        atoms::ok()\n', [DelegateTo]).
+nif_delegate_call(S, DelegateTo, [resource, string, string], atom) :-
+    format(S, '        agent.~w(&s0, &s1);\n        atoms::ok()\n', [DelegateTo]).
+nif_delegate_call(S, DelegateTo, [resource], atom) :-
+    format(S, '        agent.~w();\n        atoms::ok()\n', [DelegateTo]).
+nif_delegate_call(S, DelegateTo, [resource, u64, u64], atom) :-
+    format(S, '        agent.~w(n0, n1);\n        atoms::ok()\n', [DelegateTo]).
+nif_delegate_call(S, DelegateTo, [resource, string], string) :-
+    format(S, '        agent.~w(&s0)\n', [DelegateTo]).
+
+%% --- JNI function emitters ---
+
+emit_jni_function(S, MethodName, _ArgTypes, _RetType, _DelegateTo, Options) :-
+    member(constructor, Options), !,
+    format(S, '    #[no_mangle]\n', []),
+    format(S, '    pub extern "system" fn Java_AgentLoop_~w(\n', [MethodName]),
+    write(S, '        env: JNIEnv, _class: JClass, max_tokens: jlong, backend: JString, model: JString\n'),
+    write(S, '    ) -> jlong {\n'),
+    write(S, '        let backend: String = env.get_string(backend).unwrap().into();\n'),
+    write(S, '        let model: String = env.get_string(model).unwrap().into();\n'),
+    write(S, '        let state = Box::new(WasmAgentState::new(max_tokens as usize, &backend, &model));\n'),
+    write(S, '        Box::into_raw(state) as jlong\n'),
+    write(S, '    }\n\n').
+emit_jni_function(S, MethodName, _ArgTypes, _RetType, _DelegateTo, Options) :-
+    member(destructor, Options), !,
+    format(S, '    #[no_mangle]\n', []),
+    format(S, '    pub extern "system" fn Java_AgentLoop_~w(\n', [MethodName]),
+    write(S, '        _env: JNIEnv, _class: JClass, ptr: jlong\n'),
+    write(S, '    ) {\n'),
+    write(S, '        if ptr != 0 { unsafe { drop(Box::from_raw(ptr as *mut WasmAgentState)); } }\n'),
+    write(S, '    }\n\n').
+emit_jni_function(S, MethodName, ArgTypes, RetType, DelegateTo, Options) :-
+    format(S, '    #[no_mangle]\n', []),
+    format(S, '    pub extern "system" fn Java_AgentLoop_~w(\n', [MethodName]),
+    jni_param_list(ArgTypes, ParamList),
+    format(S, '        env: JNIEnv, _class: JClass, ptr: jlong~w\n', [ParamList]),
+    jni_return_type(RetType, JniRetType),
+    format(S, '    )~w {\n', [JniRetType]),
+    (   member(mutable, Options)
+    ->  write(S, '        let agent = unsafe { &mut *(ptr as *mut WasmAgentState) };\n')
+    ;   write(S, '        let agent = unsafe { &*(ptr as *const WasmAgentState) };\n')
+    ),
+    jni_delegate_call(S, DelegateTo, ArgTypes, RetType),
+    write(S, '    }\n\n').
+
+jni_param_list([], "").
+jni_param_list([jlong], "").  % ptr already added
+jni_param_list([jlong, jstring], ", s0: JString").
+jni_param_list([jlong, jstring, jstring], ", s0: JString, s1: JString").
+jni_param_list([jlong, jlong, jlong], ", n0: jlong, n1: jlong").
+
+jni_return_type(void, "").
+jni_return_type(jstring, " -> jstring").
+jni_return_type(jlong, " -> jlong").
+
+jni_delegate_call(S, DelegateTo, [jlong], void) :-
+    format(S, '        agent.~w();\n', [DelegateTo]).
+jni_delegate_call(S, DelegateTo, [jlong, jstring], void) :-
+    write(S, '        let s0: String = env.get_string(s0).unwrap().into();\n'),
+    format(S, '        agent.~w(&s0);\n', [DelegateTo]).
+jni_delegate_call(S, DelegateTo, [jlong, jstring, jstring], void) :-
+    write(S, '        let s0: String = env.get_string(s0).unwrap().into();\n'),
+    write(S, '        let s1: String = env.get_string(s1).unwrap().into();\n'),
+    format(S, '        agent.~w(&s0, &s1);\n', [DelegateTo]).
+jni_delegate_call(S, DelegateTo, [jlong, jlong, jlong], void) :-
+    format(S, '        agent.~w(n0 as u64, n1 as u64);\n', [DelegateTo]).
+jni_delegate_call(S, DelegateTo, [jlong], jstring) :-
+    format(S, '        let result = agent.~w();\n', [DelegateTo]),
+    write(S, '        env.new_string(&result).unwrap().into_raw()\n').
+jni_delegate_call(S, DelegateTo, [jlong, jstring], jstring) :-
+    write(S, '        let s0: String = env.get_string(s0).unwrap().into();\n'),
+    format(S, '        let result = agent.~w(&s0);\n', [DelegateTo]),
+    write(S, '        env.new_string(&result).unwrap().into_raw()\n').
+
+%% --- PyO3 method emitters ---
+
+emit_pyo3_method(S, MethodName, _ArgTypes, _RetType, _DelegateTo, Options) :-
+    member(constructor, Options), !,
+    write(S, '    #[new]\n'),
+    format(S, '    fn ~w(max_tokens: usize, backend: &str, model: &str) -> Self {\n', [MethodName]),
+    write(S, '        Self { inner: WasmAgentState::new(max_tokens, backend, model) }\n'),
+    write(S, '    }\n\n').
+emit_pyo3_method(S, MethodName, ArgTypes, RetType, DelegateTo, Options) :-
+    (   member(mutable, Options)
+    ->  SelfParam = '&mut self'
+    ;   SelfParam = '&self'
+    ),
+    pyo3_arg_list(ArgTypes, ArgList),
+    pyo3_return_type(RetType, PyRetType),
+    (   PyRetType == ""
+    ->  format(S, '    fn ~w(~w~w) {\n', [MethodName, SelfParam, ArgList]),
+        pyo3_delegate_call(S, DelegateTo, ArgTypes, none),
+        write(S, '    }\n\n')
+    ;   format(S, '    fn ~w(~w~w) -> ~w {\n', [MethodName, SelfParam, ArgList, PyRetType]),
+        pyo3_delegate_call(S, DelegateTo, ArgTypes, RetType),
+        write(S, '    }\n\n')
+    ).
+
+pyo3_arg_list([], "").
+pyo3_arg_list([str], ", s0: &str").
+pyo3_arg_list([str, str], ", s0: &str, s1: &str").
+pyo3_arg_list([u64, u64], ", n0: u64, n1: u64").
+
+pyo3_return_type(none, "").
+pyo3_return_type(str, "String").
+pyo3_return_type(usize, "usize").
+pyo3_return_type(self, "Self").
+
+pyo3_delegate_call(S, DelegateTo, [], str) :-
+    format(S, '        self.inner.~w()\n', [DelegateTo]).
+pyo3_delegate_call(S, DelegateTo, [str], str) :-
+    format(S, '        self.inner.~w(s0)\n', [DelegateTo]).
+pyo3_delegate_call(S, DelegateTo, [], usize) :-
+    format(S, '        self.inner.~w()\n', [DelegateTo]).
+pyo3_delegate_call(S, DelegateTo, [str], none) :-
+    format(S, '        self.inner.~w(s0);\n', [DelegateTo]).
+pyo3_delegate_call(S, DelegateTo, [str, str], none) :-
+    format(S, '        self.inner.~w(s0, s1);\n', [DelegateTo]).
+pyo3_delegate_call(S, DelegateTo, [], none) :-
+    format(S, '        self.inner.~w();\n', [DelegateTo]).
+pyo3_delegate_call(S, DelegateTo, [u64, u64], none) :-
+    format(S, '        self.inner.~w(n0, n1);\n', [DelegateTo]).
 
 %% --- Type mapping helpers ---
 
@@ -386,6 +702,25 @@ ffi_delegate_call(S, DelegateTo, [ptr_str, ptr_str], void) :-
     format(S, '    agent.~w(s0, s1);\n', [DelegateTo]).
 ffi_delegate_call(S, DelegateTo, [], void) :-
     format(S, '    agent.~w();\n', [DelegateTo]).
+ffi_delegate_call(S, DelegateTo, [u64, u64], void) :-
+    format(S, '    agent.~w(n0, n1);\n', [DelegateTo]).
+
+%% Standalone FFI functions (no self pointer)
+ffi_arg_list_standalone([], "").
+ffi_arg_list_standalone([ptr_str], "s0: *const c_char").
+ffi_arg_list_standalone([ptr_str, ptr_str], "s0: *const c_char, s1: *const c_char").
+
+ffi_delegate_call_standalone(S, _DelegateTo, [ptr_str], void) :-
+    write(S, '    if !s0.is_null() {\n'),
+    write(S, '        unsafe { drop(CString::from_raw(s0 as *mut c_char)); }\n'),
+    write(S, '    }\n').
+
+%% FFI arg list for u64 types
+ffi_arg_list_acc([u64|Rest], Idx, Acc, Result) :-
+    format(atom(Arg), ', n~w: u64', [Idx]),
+    atom_concat(Acc, Arg, NewAcc),
+    NextIdx is Idx + 1,
+    ffi_arg_list_acc(Rest, NextIdx, NewAcc, Result).
 
 %% =============================================================================
 %% Agent Backend Definitions
