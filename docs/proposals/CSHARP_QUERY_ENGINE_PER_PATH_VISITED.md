@@ -82,45 +82,72 @@ The runtime:
 3. Runs DFS from each seed
 4. Copies the visited set on each branch so sibling paths do not
    interfere
-5. Emits `(source, target, hops)` rows with the configured base depth
+5. Deduplicates output by `(target, depth)` per seed — multiple simple
+   paths reaching the same node at the same hop count produce one row
+6. Enforces `MaxDepth` to match Prolog's `max_depth/1` semantics
+7. Emits `(source, target, hops)` rows with the configured base depth
    and increment
+
+#### Bugs Fixed (2026-03-30)
+
+Codex's initial implementation (commit `08df76b`) had two issues:
+
+1. **No output deduplication**: Multiple distinct simple paths to the
+   same `(target, hops)` produced duplicate rows. E.g., 56 paths from
+   Relativity to Container_categories at hops=20 → 56 identical output
+   rows. Fix: `emitted` HashSet keyed on `(target, depth)` per seed.
+
+2. **No max depth**: Without a depth limit, the DFS explores all simple
+   paths of arbitrary length. With per-path visited, simple paths in a
+   cyclic graph can be very long (hops 19-24+). Fix: `MaxDepth` field
+   on the record, enforced in `AppendPathAwareRowsForSeed`.
+
+Results on dev dataset (198 edges), querying "Relativity":
+
+| Version | Total rows | Unique pairs | Physics hops |
+|---------|-----------|-------------|-------------|
+| Before fix | 3930 | 522 | [2, 19, 20, 21, 22, 23, 24] |
+| Dedup only | 522 | 522 | [2, 19, 20, 21, 22, 23, 24] |
+| Dedup + MaxDepth=10 | 71 | 71 | [2] |
+| Prolog reference | 115* | 71 | [2] |
+
+*Prolog reports 115 derivations but 71 unique `(ancestor, hops)` pairs.
 
 #### Implementation Sketch
 
 ```csharp
-private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(
-    PathAwareTransitiveClosureNode closure, EvaluationContext? context)
+private static void AppendPathAwareRowsForSeed(
+    object? seed,
+    IReadOnlyDictionary<object, List<object[]>> succIndex,
+    int baseDepth, int depthIncrement,
+    ICollection<object[]> output, int maxDepth = 0)
 {
-    var adj = BuildAdjacencyFromRelation(closure.EdgeRelation, context);
-    var results = new List<object[]>();
+    var emitted = new HashSet<(object?, int)>();
+    var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
+    stack.Push((seed, 0, new HashSet<object?> { seed }));
 
-    foreach (var seed in GetSeeds(closure, context))
+    while (stack.Count > 0)
     {
-        var stack = new Stack<(string node, int hops, HashSet<string> visited)>();
-        stack.Push((seed, 0, new HashSet<string> { seed }));
-
-        while (stack.Count > 0)
+        var (current, depth, visited) = stack.Pop();
+        foreach (var neighbor in GetNeighbors(current, succIndex))
         {
-            var (cur, hops, visited) = stack.Pop();
-            foreach (var neighbor in adj.GetValueOrDefault(cur, Array.Empty<string>()))
-            {
-                if (visited.Contains(neighbor)) continue;
-                results.Add(new object[] { seed, neighbor, hops + 1 });
-
-                var newVisited = new HashSet<string>(visited) { neighbor };
-                stack.Push((neighbor, hops + 1, newVisited));
-            }
+            if (visited.Contains(neighbor)) continue;
+            var nextDepth = depth == 0 ? baseDepth : depth + depthIncrement;
+            if (maxDepth > 0 && nextDepth > maxDepth) continue;
+            if (emitted.Add((neighbor, nextDepth)))
+                output.Add(new object[] { seed!, neighbor!, nextDepth });
+            var nextVisited = new HashSet<object?>(visited) { neighbor };
+            stack.Push((neighbor, nextDepth, nextVisited));
         }
     }
-
-    return results;
 }
 ```
 
 #### When to Use
 
 The compiler now emits `PathAwareTransitiveClosureNode` when it detects
-the counted transitive-closure shape above.
+the counted transitive-closure shape above. The `MaxDepth` defaults to
+10 (matching Prolog's `max_depth/1`).
 
 For standard Datalog predicates without counters, the existing
 `TransitiveClosureNode`, `GroupedTransitiveClosureNode`, or generic

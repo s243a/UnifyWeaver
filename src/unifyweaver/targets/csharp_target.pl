@@ -1069,6 +1069,7 @@ maybe_path_aware_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecC
         edge:EdgeSpec,
         base_depth:BaseDepth,
         depth_increment:DepthIncrement,
+        max_depth:10,
         width:3
     }.
 
@@ -3577,10 +3578,11 @@ emit_plan_expression(Node, Expr) :-
     get_dict(head, Node, predicate{name:Name, arity:Arity}),
     get_dict(base_depth, Node, BaseDepth),
     get_dict(depth_increment, Node, DepthIncrement),
+    (get_dict(max_depth, Node, MaxDepth) -> true ; MaxDepth = 0),
     atom_string(EdgeName, EdgeNameStr),
     atom_string(Name, NameStr),
-    format(atom(Expr), 'new PathAwareTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w)',
-        [EdgeNameStr, EdgeArity, NameStr, Arity, BaseDepth, DepthIncrement]).
+    format(atom(Expr), 'new PathAwareTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w)',
+        [EdgeNameStr, EdgeArity, NameStr, Arity, BaseDepth, DepthIncrement, MaxDepth]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, fixpoint), !,
     get_dict(base, Node, BaseNode),
