@@ -14,41 +14,56 @@ and specification.
 
 ### Execute Time Scaling
 
-| Target | 300 art | 1K art | 5K art | Trend |
-|--------|---------|--------|--------|-------|
-| **C#** | 0.43s | **1.13s** | **4.74s** | Scales best — LINQ-inspired query engine |
-| **Rust** | **0.33s** | 1.33s | 6.86s | Fastest at small scale |
-| **Go** | 0.43s | 1.96s | 11.36s | Falls behind at scale |
-| **Codon** | 0.67s | 2.55s | 10.98s | Compiled Python |
-| **CPython** | 0.73s | 2.93s | 15.71s | Drops off at scale |
-| **Prolog** | 1.26s | — | — | Dropped: needs demand analysis optimization |
-| **AWK** | 2.46s | — | — | Dropped: interpreter overhead on graph DFS |
+| Target | 300 art | 1K art | 5K art | 10K art | Trend |
+|--------|---------|--------|--------|---------|-------|
+| **C#** | 0.43s | **1.13s** | **4.74s** | **9.48s** | Scales best — LINQ-inspired query engine |
+| **Rust** | **0.33s** | 1.33s | 6.86s | 12.44s | Fastest at small scale, overtaken by C# |
+| **Go** | 0.43s | 1.96s | 11.36s | 18.71s | Falls behind at scale |
+| **Codon** | 0.67s | 2.55s | 10.98s | 22.14s | Compiled Python, approaching Go |
+| **CPython** | 0.73s | 2.93s | 15.71s | — | Dropped at 10K |
+| **Prolog** | 1.26s | — | — | — | Dropped: needs demand analysis |
+| **AWK** | 2.46s | — | — | — | Dropped: interpreter overhead |
 
 ### Compile Time (file-based loading)
 
-| Target | 300 art | 1K art | 5K art |
-|--------|---------|--------|--------|
-| Go | 0.50s | 0.35s | 0.13s |
-| Rust | 0.65s | 0.72s | 0.31s |
-| C# | 3.00s | 2.94s | 1.21s |
-| Codon | 4.16s | 4.75s | 4.00s |
+| Target | 300 art | 1K art | 5K art | 10K art |
+|--------|---------|--------|--------|---------|
+| Go | 0.50s | 0.35s | 0.13s | 0.17s |
+| Rust | 0.65s | 0.72s | 0.31s | 0.36s |
+| C# | 3.00s | 2.94s | 1.21s | 2.76s |
+| Codon | 4.16s | 4.75s | 4.00s | 5.53s |
 
 ### Key Findings
 
-1. **C# takes the lead at 1K+ articles** — the parameterized query engine's
-   LINQ-inspired architecture (HashSet dedup, .NET JIT optimization) scales
-   better than raw compiled DFS in Rust/Go.
+1. **C# takes the lead at 1K+ articles and widens the gap** — at 10K it's
+   1.3x faster than Rust and 2.0x faster than Go. The LINQ-inspired
+   parameterized query engine architecture scales better than raw compiled
+   DFS.
 
-2. **Visited-set data structure determines performance** at small scale:
-   O(1) hash (Rust/Go/C#/Python) vs O(n) list/string (Prolog/AWK).
+2. **At small scale (≤300), Rust wins** — static compilation with zero
+   overhead. But the advantage fades as data structures and evaluation
+   strategy matter more.
 
-3. **At large scale, JIT and evaluation strategy matter more** — C#'s .NET
-   JIT aggressively optimizes the hot DFS loop, overtaking statically
-   compiled Rust.
+3. **Go falls behind at scale** — `map[string]bool` copy-on-branch
+   semantics are heavier than C#'s `HashSet`. Go is 2x slower than C#
+   at 10K.
 
-4. **Prolog needs demand analysis** to compete — naive all-simple-paths
+4. **Codon approaches Go** — at 5K they were nearly tied (11.0s vs 11.4s).
+   At 10K Go pulled ahead again (18.7s vs 22.1s), but the gap is narrowing
+   relative to other targets. Codon may overtake Go at larger scales.
+
+5. **Prolog needs demand analysis** to compete — naive all-simple-paths
    exploration is combinatorially explosive. Design docs for this optimization
    are in `docs/proposals/PROLOG_TARGET_DEMAND_ANALYSIS_*.md`.
+
+### Target Recommendations by Audience
+
+| Audience | Recommended Target | Why |
+|----------|-------------------|-----|
+| Enterprise / .NET | C# | Best scaling, purpose-built query engine |
+| ML / Data Science | Codon | Stay in Python, competitive performance |
+| Cloud / DevOps | Go | Fast compile, good ecosystem |
+| Systems / Embedded | Rust | Fastest at small scale, no runtime |
 
 ## Data Provenance
 
@@ -165,6 +180,7 @@ The long-term approach is for UnifyWeaver to compile the **full**
 | 300 | 289 | 6008 | All-target comparison |
 | 1K | 1000 | 5933 | Scaling analysis |
 | 5K | 5000 | 12981 | Performance divergence |
+| 10K | 10000 | 25227 | C# lead confirmed, Codon vs Go |
 
 ## Design Documents
 
