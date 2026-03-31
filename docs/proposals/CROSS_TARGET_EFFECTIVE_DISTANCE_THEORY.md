@@ -35,7 +35,7 @@ controls the relative contribution of short versus long paths:
 |---------|----------|----------------|
 | n → ∞   | min(dᵢ) | Only shortest path matters |
 | n = 5   | Short paths dominate, long paths contribute | Default balance |
-| n = 2   | Euclidean-like mean | Moderate blending |
+| n = 2   | Euclidean-like mean | Laplacian case — governs diffusion/random walks |
 | n = 1   | Harmonic mean | All paths contribute significantly |
 | n → 0   | Geometric mean | Equal log-weighting |
 

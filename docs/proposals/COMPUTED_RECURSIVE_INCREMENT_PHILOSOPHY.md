@@ -11,6 +11,27 @@ within radius r grows as r^d. The parameter `n` encodes this growth
 rate, controlling how aggressively short paths dominate the distance
 measure.
 
+### Special Case: n=2 and the Graph Laplacian
+
+At n=2, the power mean reduces to the root-mean-square (Euclidean)
+distance. This corresponds to the **graph Laplacian** — the second-order
+operator L = D - A (degree matrix minus adjacency matrix) that governs
+diffusion and random walks on graphs.
+
+The Green's function of the Laplacian in d dimensions decays as
+1/r^(d-2). At d=2 this becomes logarithmic, connecting to the
+fundamental solution of the 2D Laplace equation. So n=2 is the
+natural dimensionality for Laplacian-governed processes: heat
+diffusion, random walks, electrical resistance distance.
+
+Higher n (like our default n=5) corresponds to higher-order operators
+that enforce stronger locality — short paths dominate more aggressively
+than Laplacian diffusion would predict.
+
+See also: `docs/proposals/KERNEL_SMOOTHING_THEORY.md` for the graph
+Laplacian spectral decomposition and Green's functions as low-pass
+filters on eigenvalues.
+
 ### Semantic Distance vs Routing Distance
 
 Not all hops in a graph carry equal meaning. This distinction gives
