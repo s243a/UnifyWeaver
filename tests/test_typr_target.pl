@@ -5302,4 +5302,58 @@ test(recursive_compiler_supports_typr_per_path_visited_number_stdin_loader) :-
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(recursive_compiler_supports_typr_per_path_visited_pair_integer_stdin_loader) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(pair(1, 2), pair(3, 4))),
+    assertz(user:category_parent(pair(3, 4), pair(5, 6))),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, pair(integer, integer))),
+    assertz(type_declarations:uw_type(category_parent/2, 2, pair(integer, integer))),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(stdin)], Code)),
+    once(sub_string(Code, _, _, _, "let category_parent_parse_node <- function(text)")),
+    once(sub_string(Code, _, _, _, "pair_parts <- strsplit(trimws(text), \",\");")),
+    once(sub_string(Code, _, _, _, "pair(as__integer(trimws(pair_parts[1])), as__integer(trimws(pair_parts[2])))")),
+    once(sub_string(Code, _, _, _, "results <- c(results, category_parent_parse_node(parts[1]));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, category_parent_parse_node(parts[2]));")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(recursive_compiler_supports_typr_per_path_visited_pair_number_vfs_loader) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    assertz(user:category_parent(pair(1.5, 2.5), pair(3.5, 4.5))),
+    assertz(user:category_parent(pair(3.5, 4.5), pair(5.5, 6.5))),
+    assertz(user:(category_ancestor(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, pair(number, number))),
+    assertz(type_declarations:uw_type(category_parent/2, 2, pair(number, number))),
+    once(recursive_compiler:compile_recursive(category_ancestor/4, [target(typr), typed_mode(explicit), input(vfs("family_tree"))], Code)),
+    once(sub_string(Code, _, _, _, "let category_parent_parse_node <- function(text)")),
+    once(sub_string(Code, _, _, _, "pair_parts <- strsplit(trimws(text), \",\");")),
+    once(sub_string(Code, _, _, _, "pair(as__numeric(trimws(pair_parts[1])), as__numeric(trimws(pair_parts[2])))")),
+    once(sub_string(Code, _, _, _, "results <- c(results, category_parent_parse_node(parts[1]));")),
+    once(sub_string(Code, _, _, _, "results <- c(results, category_parent_parse_node(parts[2]));")),
+    \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
 :- end_tests(typr_target).
