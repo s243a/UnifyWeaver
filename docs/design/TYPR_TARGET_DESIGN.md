@@ -67,7 +67,7 @@ This document focuses on architecture and rollout choices specific to TypR.
      TypR functions with native TypR fold/loop bodies
    - conservative arity-2 numeric multi-call tree-recursive predicates that
      match the currently supported memoized helper shape for `fib/2`-style
-     recursion, emitted as TypR functions with raw-expression helper bodies
+     recursion, emitted as TypR functions with native TypR helper bodies
    - conservative arity-1 boolean mutual-recursive predicate groups that
      match the currently supported `is_even/1` / `is_odd/1`-style numeric
      SCC shape, `even_list/1` / `odd_list/1`-style list-structural SCC
@@ -479,7 +479,7 @@ Current implementation note:
   conservative single-recursive-call list linear-recursive predicates
   compiled to native TypR fold/loop bodies inside TypR functions,
   conservative arity-2 numeric multi-call tree-recursive predicates
-  compiled to raw-expression memoized helper bodies inside TypR functions,
+  compiled to native TypR memoized helper bodies inside TypR functions,
   conservative `N`-ary structural tree-recursive predicates compiled to
   raw-expression structural helper bodies inside TypR functions, including
   limited native guards, local `is` steps, threaded invariant-context

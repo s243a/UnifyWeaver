@@ -6625,17 +6625,15 @@ build_typr_tree_recursive_body(
     },
     Body
 ) :-
-    format(string(ResultIntroLine), 'let ~w <- @{', [ResultName]),
     format(string(MemoLine), '    ~w <- new.env(hash=TRUE, parent=emptyenv());', [MemoName]),
     format(string(HelperLine), '    ~w <- function(current_input) {', [HelperName]),
     format(string(KeyLine), '        key <- as.character(current_input);', []),
-    format(string(HelperCallLine), '    ~w(~w)', [HelperName, InputArgName]),
+    format(string(ResultLine), '    ~w <- ~w(~w);', [ResultName, HelperName, InputArgName]),
     format(string(AssignResultLine), '~w <- ~w;', [OutputArgName, ResultName]),
-    tree_recursive_dispatch_lines(BaseCases, GuardExpr, StepLines, CallLines, ResultExpr, MemoName, DispatchLines),
+    tree_recursive_dispatch_lines(BaseCases, GuardExpr, StepLines, CallLines, ResultExpr, MemoName, RawDispatchLines),
+    typr_nativeize_statement_lines(RawDispatchLines, DispatchLines),
     append(
         [
-            ResultIntroLine,
-            'local({',
             MemoLine,
             HelperLine,
             KeyLine
@@ -6646,10 +6644,8 @@ build_typr_tree_recursive_body(
     append(
         RawLines0,
         [
-            '    };',
-            HelperCallLine,
-            '})',
-            '}@;',
+            '    }',
+            ResultLine,
             AssignResultLine,
             OutputArgName
         ],
@@ -6674,15 +6670,13 @@ build_typr_structural_tree_recursive_body(
     },
     Body
 ) :-
-    format(string(ResultIntroLine), 'let ~w <- @{', [ResultName]),
     format(string(HelperLine), '    ~w <- function(~w) {', [HelperName, HelperParamList]),
-    format(string(HelperCallLine), '    ~w(~w)', [HelperName, HelperCallArgList]),
+    format(string(ResultLine), '    ~w <- ~w(~w);', [ResultName, HelperName, HelperCallArgList]),
     format(string(AssignResultLine), '~w <- ~w;', [OutputArgName, ResultName]),
-    structural_tree_dispatch_lines(Pred, BaseOutputExpr, GuardExpr, StepLines, CallLines, ResultExpr, DispatchLines),
+    structural_tree_dispatch_lines(Pred, BaseOutputExpr, GuardExpr, StepLines, CallLines, ResultExpr, RawDispatchLines),
+    typr_nativeize_statement_lines(RawDispatchLines, DispatchLines),
     append(
         [
-            ResultIntroLine,
-            'local({',
             HelperLine
         ],
         DispatchLines,
@@ -6691,10 +6685,8 @@ build_typr_structural_tree_recursive_body(
     append(
         RawLines0,
         [
-            '    };',
-            HelperCallLine,
-            '})',
-            '}@;',
+            '    }',
+            ResultLine,
             AssignResultLine,
             OutputArgName
         ],

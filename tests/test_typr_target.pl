@@ -484,9 +484,11 @@ test(recursive_compiler_supports_typr_tree_recursion_path) :-
     once(sub_string(Code, _, _, _, "let fib <- fn(arg1: int, arg2: int): int")),
     once(sub_string(Code, _, _, _, "fib_memo <- new.env(hash=TRUE, parent=emptyenv())")),
     once(sub_string(Code, _, _, _, "fib_impl <- function(current_input)")),
-    once(sub_string(Code, _, _, _, "call_1 = fib_impl(step_1);")),
-    once(sub_string(Code, _, _, _, "result = (call_1 + call_2);")),
+    once(sub_string(Code, _, _, _, "call_1 <- fib_impl(step_1);")),
+    once(sub_string(Code, _, _, _, "result <- (call_1 + call_2);")),
+    once(sub_string(Code, _, _, _, "v3 <- fib_impl(arg1);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_mutual_recursion_path) :-
@@ -1032,12 +1034,13 @@ test(recursive_compiler_supports_typr_structural_tree_recursion_path) :-
     assertz(type_declarations:uw_type(tree_sum/2, 2, integer)),
     assertz(type_declarations:uw_return_type(tree_sum/2, integer)),
     once(recursive_compiler:compile_recursive(tree_sum/2, [target(typr), typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "let tree_sum <- fn(arg1: [#N, Any], arg2: int): int")),
+    once(sub_string(Code, _, _, _, "let tree_sum <- fn(")),
     once(sub_string(Code, _, _, _, "tree_sum_impl <- function(current_tree)")),
-    once(sub_string(Code, _, _, _, "value = .subset2(current_tree, 1);")),
-    once(sub_string(Code, _, _, _, "left_result = tree_sum_impl(left);")),
-    once(sub_string(Code, _, _, _, "result = ((value + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "value <- .subset2(current_tree, 1);")),
+    once(sub_string(Code, _, _, _, "left_result <- tree_sum_impl(left);")),
+    once(sub_string(Code, _, _, _, "result <- ((value + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_structural_tree_height_path) :-
@@ -1054,8 +1057,9 @@ test(recursive_compiler_supports_typr_structural_tree_height_path) :-
     once(recursive_compiler:compile_recursive(tree_height/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let tree_height <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "tree_height_impl <- function(current_tree)")),
-    once(sub_string(Code, _, _, _, "result = (1 + max(left_result, right_result));")),
+    once(sub_string(Code, _, _, _, "result <- (1 + max(left_result, right_result));")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_structural_tree_prework_path) :-
@@ -1074,9 +1078,10 @@ test(recursive_compiler_supports_typr_structural_tree_prework_path) :-
     once(recursive_compiler:compile_recursive(tree_sum_prework/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let tree_sum_prework <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "if (!(value >= 0)) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
-    once(sub_string(Code, _, _, _, "result = ((step_1 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value + 1);")),
+    once(sub_string(Code, _, _, _, "result <- ((step_1 + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_structural_tree_branching_path) :-
@@ -1099,10 +1104,11 @@ test(recursive_compiler_supports_typr_structural_tree_branching_path) :-
     once(recursive_compiler:compile_recursive(tree_sum_branch/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let tree_sum_branch <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
-    once(sub_string(Code, _, _, _, "step_2 = (step_1 + 1);")),
-    once(sub_string(Code, _, _, _, "result = ((step_2 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (step_1 + 1);")),
+    once(sub_string(Code, _, _, _, "result <- ((step_2 + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_structural_tree_asymmetric_branching_path) :-
@@ -1120,10 +1126,11 @@ test(recursive_compiler_supports_typr_structural_tree_asymmetric_branching_path)
     once(recursive_compiler:compile_recursive(tree_sum_asym_branch/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let tree_sum_asym_branch <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
-    once(sub_string(Code, _, _, _, "step_2 = (value + 2);")),
-    once(sub_string(Code, _, _, _, "result = if (@{ value > 0 }@) { ((step_1 + left_result) + right_result) } else { ((step_2 + left_result) + right_result) };")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (value + 2);")),
+    once(sub_string(Code, _, _, _, "result <- if (@{ value > 0 }@) { ((step_1 + left_result) + right_result) } else { ((step_2 + left_result) + right_result) };")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_recursion_path) :-
@@ -1141,10 +1148,11 @@ test(recursive_compiler_supports_typr_nary_structural_tree_recursion_path) :-
     once(recursive_compiler:compile_recursive(weighted_tree_sum/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_sum <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_sum_impl <- function(current_tree, arg2)")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_impl(left, arg2);")),
-    once(sub_string(Code, _, _, _, "result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_sum_impl(left, arg2);")),
+    once(sub_string(Code, _, _, _, "result <- (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_invariant_step_path) :-
@@ -1163,12 +1171,13 @@ test(recursive_compiler_supports_typr_nary_structural_tree_invariant_step_path) 
     once(recursive_compiler:compile_recursive(weighted_tree_sum_scale_step/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_scale_step <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_sum_scale_step_impl <- function(current_tree, arg2)")),
-    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 1);")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_scale_step_impl(left, step_1);")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_scale_step_impl(right, step_1);")),
-    once(sub_string(Code, _, _, _, "result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_sum_scale_step_impl(left, step_1);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_sum_scale_step_impl(right, step_1);")),
+    once(sub_string(Code, _, _, _, "result <- (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_invariant_branch_path) :-
@@ -1188,13 +1197,14 @@ test(recursive_compiler_supports_typr_nary_structural_tree_invariant_branch_path
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_scale_branch <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_sum_scale_branch_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 1);")),
-    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 2);")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_scale_branch_impl(left, step_1);")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_scale_branch_impl(right, step_1);")),
-    once(sub_string(Code, _, _, _, "result = (((value * step_1) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (arg2 + 2);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_sum_scale_branch_impl(left, step_1);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_sum_scale_branch_impl(right, step_1);")),
+    once(sub_string(Code, _, _, _, "result <- (((value * step_1) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_structural_tree_branch_local_calls_path) :-
@@ -1213,14 +1223,15 @@ test(recursive_compiler_supports_typr_structural_tree_branch_local_calls_path) :
     once(sub_string(Code, _, _, _, "let tree_sum_branch_calls <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "tree_sum_branch_calls_impl <- function(current_tree)")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "step_1 = left;")),
-    once(sub_string(Code, _, _, _, "step_2 = right;")),
-    once(sub_string(Code, _, _, _, "step_1 = right;")),
-    once(sub_string(Code, _, _, _, "step_2 = left;")),
-    once(sub_string(Code, _, _, _, "left_result = tree_sum_branch_calls_impl(step_1);")),
-    once(sub_string(Code, _, _, _, "right_result = tree_sum_branch_calls_impl(step_2);")),
-    once(sub_string(Code, _, _, _, "result = ((value + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- left;")),
+    once(sub_string(Code, _, _, _, "step_2 <- right;")),
+    once(sub_string(Code, _, _, _, "step_1 <- right;")),
+    once(sub_string(Code, _, _, _, "step_2 <- left;")),
+    once(sub_string(Code, _, _, _, "left_result <- tree_sum_branch_calls_impl(step_1);")),
+    once(sub_string(Code, _, _, _, "right_result <- tree_sum_branch_calls_impl(step_2);")),
+    once(sub_string(Code, _, _, _, "result <- ((value + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_weighted_structural_tree_branch_local_calls_path) :-
@@ -1241,16 +1252,17 @@ test(recursive_compiler_supports_typr_weighted_structural_tree_branch_local_call
     once(sub_string(Code, _, _, _, "let weighted_tree_branch_calls <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_branch_calls_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = left;")),
-    once(sub_string(Code, _, _, _, "step_2 = right;")),
-    once(sub_string(Code, _, _, _, "step_1 = right;")),
-    once(sub_string(Code, _, _, _, "step_2 = left;")),
-    once(sub_string(Code, _, _, _, "step_3 = (arg2 + 1);")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_branch_calls_impl(step_1, step_3);")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_branch_calls_impl(step_2, arg2);")),
-    once(sub_string(Code, _, _, _, "result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- left;")),
+    once(sub_string(Code, _, _, _, "step_2 <- right;")),
+    once(sub_string(Code, _, _, _, "step_1 <- right;")),
+    once(sub_string(Code, _, _, _, "step_2 <- left;")),
+    once(sub_string(Code, _, _, _, "step_3 <- (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_branch_calls_impl(step_1, step_3);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_branch_calls_impl(step_2, arg2);")),
+    once(sub_string(Code, _, _, _, "result <- (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_structural_tree_recursive_branch_body_path) :-
@@ -1274,12 +1286,13 @@ test(recursive_compiler_supports_typr_structural_tree_recursive_branch_body_path
     once(sub_string(Code, _, _, _, "tree_sum_recursive_branch_impl <- function(current_tree)")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
     once(sub_string(Code, _, _, _, "} else {")),
-    once(sub_string(Code, _, _, _, "left_result = tree_sum_recursive_branch_impl(left);")),
-    once(sub_string(Code, _, _, _, "right_result = tree_sum_recursive_branch_impl(right);")),
-    \+ sub_string(Code, _, _, _, "left_result = tree_sum_recursive_branch_impl(right);"),
-    \+ sub_string(Code, _, _, _, "right_result = tree_sum_recursive_branch_impl(left);"),
-    once(sub_string(Code, _, _, _, "branch_result = ((value + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "left_result <- tree_sum_recursive_branch_impl(left);")),
+    once(sub_string(Code, _, _, _, "right_result <- tree_sum_recursive_branch_impl(right);")),
+    \+ sub_string(Code, _, _, _, "left_result <- tree_sum_recursive_branch_impl(right);"),
+    \+ sub_string(Code, _, _, _, "right_result <- tree_sum_recursive_branch_impl(left);"),
+    once(sub_string(Code, _, _, _, "branch_result <- ((value + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_weighted_structural_tree_recursive_branch_body_path) :-
@@ -1304,13 +1317,14 @@ test(recursive_compiler_supports_typr_weighted_structural_tree_recursive_branch_
     once(sub_string(Code, _, _, _, "weighted_tree_recursive_branch_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
     once(sub_string(Code, _, _, _, "} else {")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_recursive_branch_impl(left, arg2);")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_recursive_branch_impl(right, arg2);")),
-    \+ sub_string(Code, _, _, _, "left_result = weighted_tree_recursive_branch_impl(right, arg2);"),
-    \+ sub_string(Code, _, _, _, "right_result = weighted_tree_recursive_branch_impl(left, arg2);"),
-    once(sub_string(Code, _, _, _, "branch_result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_recursive_branch_impl(left, arg2);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_recursive_branch_impl(right, arg2);")),
+    \+ sub_string(Code, _, _, _, "left_result <- weighted_tree_recursive_branch_impl(right, arg2);"),
+    \+ sub_string(Code, _, _, _, "right_result <- weighted_tree_recursive_branch_impl(left, arg2);"),
+    once(sub_string(Code, _, _, _, "branch_result <- (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nested_structural_tree_recursive_branch_body_path) :-
@@ -1338,10 +1352,11 @@ test(recursive_compiler_supports_typr_nested_structural_tree_recursive_branch_bo
     once(sub_string(Code, _, _, _, "tree_sum_nested_recursive_branch_impl <- function(current_tree)")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
     once(sub_string(Code, _, _, _, "if (value > 1) {")),
-    once(sub_string(Code, _, _, _, "right_result = tree_sum_nested_recursive_branch_impl(right);")),
-    once(sub_string(Code, _, _, _, "left_result = tree_sum_nested_recursive_branch_impl(left);")),
-    once(sub_string(Code, _, _, _, "branch_result = ((value + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "right_result <- tree_sum_nested_recursive_branch_impl(right);")),
+    once(sub_string(Code, _, _, _, "left_result <- tree_sum_nested_recursive_branch_impl(left);")),
+    once(sub_string(Code, _, _, _, "branch_result <- ((value + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_weighted_nested_structural_tree_recursive_branch_body_path) :-
@@ -1370,11 +1385,12 @@ test(recursive_compiler_supports_typr_weighted_nested_structural_tree_recursive_
     once(sub_string(Code, _, _, _, "weighted_tree_nested_recursive_branch_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_nested_recursive_branch_impl(right, arg2);")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_nested_recursive_branch_impl(left, arg2);")),
-    once(sub_string(Code, _, _, _, "branch_result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_nested_recursive_branch_impl(right, arg2);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_nested_recursive_branch_impl(left, arg2);")),
+    once(sub_string(Code, _, _, _, "branch_result <- (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nested_structural_tree_branch_recombine_path) :-
@@ -1404,9 +1420,10 @@ test(recursive_compiler_supports_typr_nested_structural_tree_branch_recombine_pa
     once(sub_string(Code, _, _, _, "tree_sum_nested_branch_recombine_impl <- function(current_tree)")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
     once(sub_string(Code, _, _, _, "if (value > 1) {")),
-    once(sub_string(Code, _, _, _, "branch_result = (((value + left_result) + right_result) + 1);")),
-    once(sub_string(Code, _, _, _, "branch_result = ((value + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "branch_result <- (((value + left_result) + right_result) + 1);")),
+    once(sub_string(Code, _, _, _, "branch_result <- ((value + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_weighted_nested_structural_tree_branch_recombine_path) :-
@@ -1437,10 +1454,11 @@ test(recursive_compiler_supports_typr_weighted_nested_structural_tree_branch_rec
     once(sub_string(Code, _, _, _, "weighted_tree_nested_branch_recombine_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "branch_result = ((((value * arg2) + left_result) + right_result) + 1);")),
-    once(sub_string(Code, _, _, _, "branch_result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "branch_result <- ((((value * arg2) + left_result) + right_result) + 1);")),
+    once(sub_string(Code, _, _, _, "branch_result <- (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nested_structural_tree_branch_prework_path) :-
@@ -1468,10 +1486,11 @@ test(recursive_compiler_supports_typr_nested_structural_tree_branch_prework_path
     once(sub_string(Code, _, _, _, "let tree_sum_nested_branch_prework <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "tree_sum_nested_branch_prework_impl <- function(current_tree)")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value + 1);")),
     once(sub_string(Code, _, _, _, "if (value > 1) {")),
-    once(sub_string(Code, _, _, _, "branch_result = ((step_1 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "branch_result <- ((step_1 + left_result) + right_result);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_weighted_nested_structural_tree_branch_prework_path) :-
@@ -1500,11 +1519,12 @@ test(recursive_compiler_supports_typr_weighted_nested_structural_tree_branch_pre
     once(sub_string(Code, _, _, _, "let weighted_tree_nested_branch_prework <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_nested_branch_prework_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value * arg2);")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
-    once(sub_string(Code, _, _, _, "branch_result = ((step_1 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "branch_result <- ((step_1 + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_double_nested_structural_tree_calls_path) :-
@@ -1537,11 +1557,12 @@ test(recursive_compiler_supports_typr_double_nested_structural_tree_calls_path) 
     once(recursive_compiler:compile_recursive(tree_sum_double_nested_calls/2, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let tree_sum_double_nested_calls <- fn(arg1: [#N, Any], arg2: int): int")),
     once(sub_string(Code, _, _, _, "tree_sum_double_nested_calls_impl <- function(current_tree)")),
-    once(sub_string(Code, _, _, _, "step_1 = (value + 1);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value + 1);")),
     once(sub_string(Code, _, _, _, "if (value > 1) {")),
     once(sub_string(Code, _, _, _, "if (value > 2) {")),
-    once(sub_string(Code, _, _, _, "branch_result = (((step_1 + (if (value > 2) { left_result } else { left_result })) + (if (value > 2) { right_result } else { right_result })) + 1);")),
+    once(sub_string(Code, _, _, _, "branch_result <- (((step_1 + (if (value > 2) { left_result } else { left_result })) + (if (value > 2) { right_result } else { right_result })) + 1);")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_weighted_double_nested_structural_tree_calls_path) :-
@@ -1576,12 +1597,13 @@ test(recursive_compiler_supports_typr_weighted_double_nested_structural_tree_cal
     once(sub_string(Code, _, _, _, "let weighted_tree_double_nested_calls <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_double_nested_calls_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value * arg2);")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
     once(sub_string(Code, _, _, _, "if (arg2 > 2) {")),
-    once(sub_string(Code, _, _, _, "branch_result = (((step_1 + (if (arg2 > 2) { left_result } else { left_result })) + (if (arg2 > 2) { right_result } else { right_result })) + 1);")),
+    once(sub_string(Code, _, _, _, "branch_result <- (((step_1 + (if (arg2 > 2) { left_result } else { left_result })) + (if (arg2 > 2) { right_result } else { right_result })) + 1);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_subtree_invariant_path) :-
@@ -1601,13 +1623,14 @@ test(recursive_compiler_supports_typr_nary_structural_tree_subtree_invariant_pat
     once(recursive_compiler:compile_recursive(weighted_tree_sum_subtree_scale/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_subtree_scale <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_sum_subtree_scale_impl <- function(current_tree, arg2)")),
-    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 1);")),
-    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 2);")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_subtree_scale_impl(left, step_1);")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_subtree_scale_impl(right, step_2);")),
-    once(sub_string(Code, _, _, _, "result = (((value * arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (arg2 + 2);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_sum_subtree_scale_impl(left, step_1);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_sum_subtree_scale_impl(right, step_2);")),
+    once(sub_string(Code, _, _, _, "result <- (((value * arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_subtree_branch_path) :-
@@ -1632,15 +1655,16 @@ test(recursive_compiler_supports_typr_nary_structural_tree_subtree_branch_path) 
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_subtree_branch <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_sum_subtree_branch_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 1);")),
-    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 2);")),
-    once(sub_string(Code, _, _, _, "step_1 = (arg2 + 3);")),
-    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 4);")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_sum_subtree_branch_impl(left, step_1);")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_sum_subtree_branch_impl(right, step_2);")),
-    once(sub_string(Code, _, _, _, "result = ((((value * step_1) + left_result) + right_result) + step_2);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (arg2 + 2);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (arg2 + 3);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (arg2 + 4);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_sum_subtree_branch_impl(left, step_1);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_sum_subtree_branch_impl(right, step_2);")),
+    once(sub_string(Code, _, _, _, "result <- ((((value * step_1) + left_result) + right_result) + step_2);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_double_nested_structural_tree_subtree_context_guard_path) :-
@@ -1677,18 +1701,19 @@ test(recursive_compiler_supports_typr_double_nested_structural_tree_subtree_cont
     once(sub_string(Code, _, _, _, "let weighted_tree_double_nested_subtree_context_guard <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_double_nested_subtree_context_guard_impl <- function(current_tree, arg2)")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value * arg2);")),
     once(sub_string(Code, _, _, _, "if (value > 0) {")),
     once(sub_string(Code, _, _, _, "if (arg2 > 2) {")),
-    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 1);")),
-    once(sub_string(Code, _, _, _, "step_3 = (arg2 + 2);")),
-    once(sub_string(Code, _, _, _, "step_2 = (arg2 + 3);")),
-    once(sub_string(Code, _, _, _, "step_3 = (arg2 + 4);")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_double_nested_subtree_context_guard_impl(left, step_2);")),
-    once(sub_string(Code, _, _, _, "right_result = weighted_tree_double_nested_subtree_context_guard_impl(right, step_3);")),
-    once(sub_string(Code, _, _, _, "branch_result = ((((step_1 + left_result) + right_result) + step_3) + 1);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (arg2 + 1);")),
+    once(sub_string(Code, _, _, _, "step_3 <- (arg2 + 2);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (arg2 + 3);")),
+    once(sub_string(Code, _, _, _, "step_3 <- (arg2 + 4);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_double_nested_subtree_context_guard_impl(left, step_2);")),
+    once(sub_string(Code, _, _, _, "right_result <- weighted_tree_double_nested_subtree_context_guard_impl(right, step_3);")),
+    once(sub_string(Code, _, _, _, "branch_result <- ((((step_1 + left_result) + right_result) + step_3) + 1);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_prework_path) :-
@@ -1708,10 +1733,11 @@ test(recursive_compiler_supports_typr_nary_structural_tree_prework_path) :-
     once(recursive_compiler:compile_recursive(weighted_tree_sum_prework/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_prework <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "if (!(arg2 > 0)) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
-    once(sub_string(Code, _, _, _, "result = ((step_1 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value * arg2);")),
+    once(sub_string(Code, _, _, _, "result <- ((step_1 + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_branching_path) :-
@@ -1735,11 +1761,12 @@ test(recursive_compiler_supports_typr_nary_structural_tree_branching_path) :-
     once(recursive_compiler:compile_recursive(weighted_tree_sum_branch/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_branch <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
-    once(sub_string(Code, _, _, _, "step_2 = (step_1 + 1);")),
-    once(sub_string(Code, _, _, _, "result = ((step_2 + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value * arg2);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (step_1 + 1);")),
+    once(sub_string(Code, _, _, _, "result <- ((step_2 + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_asymmetric_branching_path) :-
@@ -1758,11 +1785,12 @@ test(recursive_compiler_supports_typr_nary_structural_tree_asymmetric_branching_
     once(recursive_compiler:compile_recursive(weighted_tree_sum_asym_branch/3, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_sum_asym_branch <- fn(arg1: [#N, Any], arg2: int, arg3: int): int")),
     once(sub_string(Code, _, _, _, "if (arg2 > 1) {")),
-    once(sub_string(Code, _, _, _, "step_1 = (value * arg2);")),
-    once(sub_string(Code, _, _, _, "step_2 = (value + arg2);")),
-    once(sub_string(Code, _, _, _, "result = if (@{ arg2 > 1 }@) { ((step_1 + left_result) + right_result) } else { ((step_2 + left_result) + right_result) };")),
+    once(sub_string(Code, _, _, _, "step_1 <- (value * arg2);")),
+    once(sub_string(Code, _, _, _, "step_2 <- (value + arg2);")),
+    once(sub_string(Code, _, _, _, "result <- if (@{ arg2 > 1 }@) { ((step_1 + left_result) + right_result) } else { ((step_2 + left_result) + right_result) };")),
     once(sub_string(Code, _, _, _, "arg3 <- v4;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_structural_tree_recursion_nonleading_driver_path) :-
@@ -1781,11 +1809,12 @@ test(recursive_compiler_supports_typr_nary_structural_tree_recursion_nonleading_
     once(recursive_compiler:compile_recursive(weighted_tree_affine_sum/4, [target(typr), typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let weighted_tree_affine_sum <- fn(arg1: int, arg2: int, arg3: [#N, Any], arg4: int): int")),
     once(sub_string(Code, _, _, _, "weighted_tree_affine_sum_impl <- function(current_tree, arg1, arg2)")),
-    once(sub_string(Code, _, _, _, "left_result = weighted_tree_affine_sum_impl(left, arg1, arg2);")),
-    once(sub_string(Code, _, _, _, "result = ((((value * arg1) + arg2) + left_result) + right_result);")),
+    once(sub_string(Code, _, _, _, "left_result <- weighted_tree_affine_sum_impl(left, arg1, arg2);")),
+    once(sub_string(Code, _, _, _, "result <- ((((value * arg1) + arg2) + left_result) + right_result);")),
     once(sub_string(Code, _, _, _, "weighted_tree_affine_sum_impl(arg3, arg1, arg2)")),
     once(sub_string(Code, _, _, _, "arg4 <- v5;")),
     \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
 test(recursive_compiler_supports_typr_nary_linear_recursion_path) :-
