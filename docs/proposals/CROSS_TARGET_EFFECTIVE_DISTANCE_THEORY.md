@@ -204,6 +204,73 @@ IR-based `FixpointNode` — the plan compiler resolves variable bindings
 positionally without arity-specific code. The other targets' native deepening
 should converge toward a similar arity-agnostic approach.
 
+## Future Work: Degree-Corrected Semantic Distance
+
+The hop-count distance used in d_eff treats every edge equally, but in a
+category hierarchy, a hop through a high-degree node carries less semantic
+specificity than a hop through a low-degree node. A category with 100
+children has effectively "collapsed" a tree of depth log_n(100) into a
+single level.
+
+### The Log-Degree Correction
+
+The corrected semantic distance through a path replaces each unit hop
+with the logarithmic depth of the tree that node would represent:
+
+    d_semantic = Σ_i log_n(degree(node_i))
+
+where:
+- `degree(node_i)` is the out-degree (number of children) of node i
+- `n` is the dimensionality parameter (same as in d_eff)
+- `log_n` is the base-n logarithm
+
+The base of the logarithm IS the graph dimensionality `n`. This unifies
+the degree correction with the existing spectral dimension parameter:
+
+- A node with branching factor = n contributes exactly 1 semantic hop
+- A node with branching factor > n contributes > 1 (collapsed tree)
+- A node with branching factor < n contributes < 1 (sparse branch)
+
+### Examples (n=5)
+
+| Node | Degree | Semantic hops | Interpretation |
+|------|--------|---------------|---------------|
+| Subfields_of_physics | 12 | log_5(12) = 1.54 | Slightly more than 1 hop |
+| Container_categories | 200 | log_5(200) = 3.29 | Collapsed 3+ levels |
+| Nuclear_physics | 3 | log_5(3) = 0.68 | Less than 1 hop (specific) |
+
+### Routing vs Semantic Distance
+
+This correction applies specifically to **semantic distance** — measuring
+how much meaning is traversed. For **routing distance** (finding short
+paths), raw hop count is correct because dense hub nodes help rather than
+hinder reachability.
+
+| Application | Distance measure | Dense hubs |
+|------------|-----------------|------------|
+| Routing / reachability | Raw hops | Help (scale-free advantage) |
+| Semantic classification | log_n(degree) corrected | Penalized (less specific) |
+| Category influence | Configurable | Application-dependent |
+| Random walk coverage | Degree-dependent | Attract walkers (gravity wells) |
+
+### Integration with d_eff
+
+The corrected effective distance becomes:
+
+    d_eff_semantic = (Σ d_semantic_i^(-n))^(-1/n)
+
+where each d_semantic_i is the log-degree-corrected path length. The
+dimensionality parameter `n` does triple duty:
+
+1. **Aggregation exponent**: controls short-path vs long-path weighting
+2. **Log base for degree correction**: defines "natural" branching factor
+3. **Spectral dimension**: characterizes the graph's intrinsic geometry
+
+This is a natural extension of the current benchmark. The implementation
+would require passing node degrees through the transitive closure
+computation — either as an additional column in the edge relation or as
+a post-processing step using the adjacency index.
+
 ## Future Work: Tree Construction from Effective Distance
 
 The effective distance computation has a natural extension to **tree/mindmap
