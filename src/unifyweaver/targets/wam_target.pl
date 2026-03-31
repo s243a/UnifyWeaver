@@ -195,8 +195,9 @@ compile_unify_arguments([Arg|Rest], V0, Vf, Code) :-
 
 %% compile_body_goals(+Goals, +VarMap, +Options, -Code)
 compile_body_goals(Goals, V, _Options, Code) :-
-    % Always allocate if there are any calls, to protect CP
-    (   member(G, Goals), G \= true, Goals \= [G]
+    length(Goals, N),
+    % Safe allocation guard for Phase 1
+    (   N > 1
     ->  compile_goals(Goals, V, yes, _, GoalsCode),
         format(string(Code), "    allocate~n~w", [GoalsCode])
     ;   compile_goals(Goals, V, no, _, Code)
@@ -260,8 +261,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I]),
         V1 = V0
     ;   % TODO: put_structure
-        next_x_reg(V0, XReg, V1),
-        bind_var(Arg, XReg, V1, V1),
+        next_x_reg(V0, XReg, V_temp),
+        bind_var(Arg, XReg, V_temp, V1),
         format(string(Code), "    put_variable ~w, A~w", [XReg, I])
     ).
 
