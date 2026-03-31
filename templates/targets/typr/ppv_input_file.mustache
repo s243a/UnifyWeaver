@@ -3,7 +3,7 @@ let {{base}}_lines_from_file <- function() {
 	readLines("{{input_path}}")
 };
 
-let {{pred}} <- function(start) {
+let {{pred}} <- function(start{{invariant_param_suffix}}) {
 	lines <- {{base}}_lines_from_file();
-	{{pred}}_from_vectors(start, {{base}}_from_lines(lines), {{base}}_to_lines(lines))
+	{{pred}}_from_vectors(start{{invariant_param_suffix}}, {{base}}_from_lines(lines), {{base}}_to_lines(lines))
 };

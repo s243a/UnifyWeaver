@@ -334,10 +334,11 @@ Current TypR lowering policy is intentionally mixed:
 - conservative per-path visited recursion may also stay native in TypR when it
   matches the currently supported mode-driven seeded shape: a compile-time-
   seeded step relation, a detected `Visited` position, one recursion-driving
-  input, one direct node output, and one or more additive numeric outputs
-  returned as native nested pair results, including `category_ancestor/4`,
-  moved-input variants, and `category_ancestor_weight/5`; the same slice now
-  also emits a native `*_from_vectors` runtime helper, native
+  input plus conservative invariant non-visited inputs, one direct node
+  output, and one or more additive numeric outputs returned as native nested
+  pair results, including `category_ancestor/4`, moved-input variants,
+  `category_ancestor_weight/5`, and conservative invariant-input variants; the
+  same slice now also emits a native `*_from_vectors` runtime helper, native
   `input(stdin|file|vfs|function)` wrappers, and declared scalar or
   conservative pair-shaped runtime node parsing such as `integer`, `number`,
   `pair(integer, integer)`, and `pair(number, number)`, without raw R

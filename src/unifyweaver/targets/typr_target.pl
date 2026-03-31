@@ -5035,19 +5035,22 @@ typr_per_path_visited_spec(
         to_line_expr=ToLineExpr,
         from_nodes_expr=FromNodesExpr,
         to_nodes_expr=ToNodesExpr,
+        invariant_param_suffix=InvariantParamSuffix,
         base_result_expr=BaseResultExpr,
         recursive_result_expr=RecursiveResultExpr
     ]
 ) :-
     single_linear_recursive_clause_pair(Pred, Arity, Clauses, BaseClause, RecClause),
-    typr_per_path_visited_io_positions(Pred/Arity, VisitedPos, InputPos, OutputPositions),
+    typr_per_path_visited_io_positions(Pred/Arity, VisitedPos, InputPositions, OutputPositions),
     typr_per_path_visited_base_clause(
         BaseClause,
         Pred,
-        InputPos,
+        InputPositions,
         VisitedPos,
         OutputPositions,
         BasePred,
+        DriverPos,
+        InvariantPositions,
         NodeOutputPos,
         BaseAccumulatorPairs
     ),
@@ -5055,7 +5058,8 @@ typr_per_path_visited_spec(
         RecClause,
         Pred,
         BasePred,
-        InputPos,
+        DriverPos,
+        InvariantPositions,
         VisitedPos,
         OutputPositions,
         NodeOutputPos,
@@ -5070,21 +5074,23 @@ typr_per_path_visited_spec(
     typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 1, FromLineExpr),
     typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 2, ToLineExpr),
     base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
+    typr_per_path_visited_invariant_arg_names(InvariantPositions, InvariantArgNames),
+    typr_per_path_visited_param_suffix(InvariantArgNames, InvariantParamSuffix),
     typr_per_path_visited_base_output_exprs(OutputPositions, NodeOutputPos, BaseAccumulatorPairs, BaseOutputExprs),
     typr_per_path_visited_recursive_output_exprs(OutputPositions, NodeOutputPos, RecursiveAccumulatorPairs, RecursiveOutputExprs),
     typr_per_path_visited_result_expr(BaseOutputExprs, BaseResultExpr),
     typr_per_path_visited_result_expr(RecursiveOutputExprs, RecursiveResultExpr).
 
-typr_per_path_visited_io_positions(Pred/Arity, VisitedPos, InputPos, OutputPositions) :-
+typr_per_path_visited_io_positions(Pred/Arity, VisitedPos, InputPositions, OutputPositions) :-
     typr_per_path_visited_mode_variants(Pred/Arity, ModeVariants),
     (   ModeVariants == []
-    ->  typr_per_path_visited_default_io_positions(Arity, VisitedPos, InputPos, OutputPositions)
+    ->  typr_per_path_visited_default_io_positions(Arity, VisitedPos, InputPositions, OutputPositions)
     ;   member(Modes, ModeVariants),
-        typr_per_path_visited_supported_mode_vector(Modes, VisitedPos, InputPos, OutputPositions),
+        typr_per_path_visited_supported_mode_vector(Modes, VisitedPos, InputPositions, OutputPositions),
         !
     ).
 
-typr_per_path_visited_default_io_positions(Arity, VisitedPos, 1, OutputPositions) :-
+typr_per_path_visited_default_io_positions(Arity, VisitedPos, [1], OutputPositions) :-
     findall(Pos, (between(2, Arity, Pos), Pos =\= VisitedPos), OutputPositions),
     OutputPositions \= [].
 
@@ -5112,11 +5118,11 @@ typr_per_path_visited_mode_symbol(+, input) :- !.
 typr_per_path_visited_mode_symbol(-, output) :- !.
 typr_per_path_visited_mode_symbol(?, any) :- !.
 
-typr_per_path_visited_supported_mode_vector(Modes, VisitedPos, InputPos, OutputPositions) :-
+typr_per_path_visited_supported_mode_vector(Modes, VisitedPos, InputPositions, OutputPositions) :-
     \+ member(any, Modes),
     nth1(VisitedPos, Modes, input),
     findall(Pos, (nth1(Pos, Modes, input), Pos =\= VisitedPos), InputPositions),
-    InputPositions = [InputPos],
+    InputPositions \= [],
     findall(Pos, (nth1(Pos, Modes, output), Pos =\= VisitedPos), OutputPositions),
     OutputPositions \= [].
 
@@ -5133,15 +5139,25 @@ typr_per_path_visited_supported_node_type(pair(LeftType, RightType)) :-
     typr_per_path_visited_scalar_node_type(LeftType),
     typr_per_path_visited_scalar_node_type(RightType).
 
-typr_per_path_visited_base_clause(Head-Body0, Pred, InputPos, VisitedPos, OutputPositions, BasePred, NodeOutputPos, BaseAccumulatorPairs) :-
+typr_per_path_visited_base_clause(
+    Head-Body0,
+    Pred,
+    InputPositions,
+    VisitedPos,
+    OutputPositions,
+    BasePred,
+    DriverPos,
+    InvariantPositions,
+    NodeOutputPos,
+    BaseAccumulatorPairs
+) :-
     Head =.. [Pred|HeadArgs],
-    nth1(InputPos, HeadArgs, InputVar),
     nth1(VisitedPos, HeadArgs, VisitedVar),
-    var(InputVar),
     var(VisitedVar),
     typr_mutual_goal_list(Body0, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
-    typr_per_path_visited_base_goals(Goals, InputVar, VisitedVar, BasePred, StepOutputVar),
+    typr_per_path_visited_base_goals(Goals, StepInputVar, VisitedVar, BasePred, StepOutputVar),
+    typr_per_path_visited_driver_and_invariants(InputPositions, HeadArgs, StepInputVar, DriverPos, InvariantPositions),
     typr_per_path_visited_node_output_position(HeadArgs, OutputPositions, StepOutputVar, NodeOutputPos),
     typr_per_path_visited_base_accumulator_pairs(HeadArgs, OutputPositions, NodeOutputPos, BaseAccumulatorPairs).
 
@@ -5155,14 +5171,15 @@ typr_per_path_visited_recursive_clause(
     Head-Body0,
     Pred,
     BasePred,
-    InputPos,
+    DriverPos,
+    InvariantPositions,
     VisitedPos,
     OutputPositions,
     NodeOutputPos,
     RecursiveAccumulatorPairs
 ) :-
     Head =.. [Pred|HeadArgs],
-    nth1(InputPos, HeadArgs, InputVar),
+    nth1(DriverPos, HeadArgs, InputVar),
     nth1(VisitedPos, HeadArgs, VisitedVar),
     var(InputVar),
     var(VisitedVar),
@@ -5175,7 +5192,8 @@ typr_per_path_visited_recursive_clause(
     typr_per_path_visited_recursive_call(
         RecCallGoal,
         Pred,
-        InputPos,
+        DriverPos,
+        InvariantPositions,
         VisitedPos,
         MidVar,
         HeadArgs,
@@ -5193,6 +5211,19 @@ typr_per_path_visited_recursive_clause(
         AccumulatorGoals,
         RecursiveAccumulatorPairs
     ).
+
+typr_per_path_visited_driver_and_invariants(InputPositions, HeadArgs, StepInputVar, DriverPos, InvariantPositions) :-
+    findall(
+        Pos,
+        (
+            member(Pos, InputPositions),
+            nth1(Pos, HeadArgs, HeadInputVar),
+            HeadInputVar == StepInputVar
+        ),
+        DriverPositions
+    ),
+    DriverPositions = [DriverPos],
+    exclude(=(DriverPos), InputPositions, InvariantPositions).
 
 typr_per_path_visited_node_output_position(HeadArgs, OutputPositions, StepOutputVar, NodeOutputPos) :-
     member(NodeOutputPos, OutputPositions),
@@ -5246,7 +5277,7 @@ typr_per_path_visited_recursive_accumulator_pairs_1(
 typr_per_path_visited_step_goal(Goal, InputVar, OutputVar, BasePred) :-
     Goal =.. [BasePred, StepInputVar, StepOutputVar],
     BasePred \= member,
-    StepInputVar == InputVar,
+    InputVar = StepInputVar,
     OutputVar = StepOutputVar.
 
 typr_per_path_visited_mid_step_goal(Goal, InputVar, MidVar, BasePred) :-
@@ -5257,16 +5288,24 @@ typr_per_path_visited_mid_step_goal(Goal, InputVar, MidVar, BasePred) :-
 typr_per_path_visited_negated_member_goal(\+ member(MemberVar, VisitedVar0), MemberVar, VisitedVar) :-
     VisitedVar0 == VisitedVar.
 
-typr_per_path_visited_recursive_call(Goal, Pred, InputPos, VisitedPos, MidVar, HeadArgs, RecArgs, VisitedVar) :-
+typr_per_path_visited_recursive_call(Goal, Pred, DriverPos, InvariantPositions, VisitedPos, MidVar, HeadArgs, RecArgs, VisitedVar) :-
     Goal =.. [Pred|RecArgs],
     same_length(HeadArgs, RecArgs),
-    nth1(InputPos, RecArgs, RecInputVar),
+    nth1(DriverPos, RecArgs, RecInputVar),
     nth1(VisitedPos, RecArgs, ConsVisited),
     RecInputVar == MidVar,
     nonvar(ConsVisited),
     ConsVisited = [VisitedHead|VisitedTail],
     VisitedHead == MidVar,
-    VisitedTail == VisitedVar.
+    VisitedTail == VisitedVar,
+    typr_per_path_visited_invariants_static(InvariantPositions, HeadArgs, RecArgs).
+
+typr_per_path_visited_invariants_static([], _HeadArgs, _RecArgs).
+typr_per_path_visited_invariants_static([Pos|Rest], HeadArgs, RecArgs) :-
+    nth1(Pos, HeadArgs, HeadInvariantVar),
+    nth1(Pos, RecArgs, RecInvariantVar),
+    HeadInvariantVar == RecInvariantVar,
+    typr_per_path_visited_invariants_static(Rest, HeadArgs, RecArgs).
 
 typr_per_path_visited_hops_goal(HopsVar is Expr, HopsVar, PrevHopsVar, HopIncrement) :-
     typr_per_path_visited_hops_expr(Expr, PrevHopsVar, HopIncrement).
@@ -5312,6 +5351,16 @@ typr_per_path_visited_result_expr([Expr], Expr) :- !.
 typr_per_path_visited_result_expr([Expr|Rest], ResultExpr) :-
     typr_per_path_visited_result_expr(Rest, RestExpr),
     format(string(ResultExpr), 'pair(~w, ~w)', [Expr, RestExpr]).
+
+typr_per_path_visited_invariant_arg_names([], []).
+typr_per_path_visited_invariant_arg_names([Pos|Rest], [Name|RestNames]) :-
+    format(string(Name), 'arg~w', [Pos]),
+    typr_per_path_visited_invariant_arg_names(Rest, RestNames).
+
+typr_per_path_visited_param_suffix([], '').
+typr_per_path_visited_param_suffix(Names, Suffix) :-
+    atomic_list_concat(Names, ', ', Inner),
+    format(string(Suffix), ', ~w', [Inner]).
 
 typr_per_path_visited_result_extract_expr(ResultExpr, 1, 1, ResultExpr) :- !.
 typr_per_path_visited_result_extract_expr(ResultExpr, 1, _OutputCount, ExtractExpr) :-

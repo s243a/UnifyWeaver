@@ -43,14 +43,14 @@ let {{base}}_to_lines <- function(lines) {
 	results
 };
 
-let {{pred}}_worker <- function(current, visited, from_nodes, to_nodes) {
+let {{pred}}_worker <- function(current, visited{{invariant_param_suffix}}, from_nodes, to_nodes) {
 	results <- c();
 	neighbors <- {{base}}_neighbors(current, from_nodes, to_nodes);
 
 	for (next_node in neighbors) {
 		if (!any(visited == next_node)) {
 			results <- c(results, {{base_result_expr}});
-			sub_results <- {{pred}}_worker(next_node, c(visited, next_node), from_nodes, to_nodes);
+			sub_results <- {{pred}}_worker(next_node, c(visited, next_node){{invariant_param_suffix}}, from_nodes, to_nodes);
 
 			for (sub_result in sub_results) {
 				results <- c(results, {{recursive_result_expr}});
@@ -61,6 +61,6 @@ let {{pred}}_worker <- function(current, visited, from_nodes, to_nodes) {
 	results
 };
 
-let {{pred}}_from_vectors <- function(start, from_nodes, to_nodes) {
-	{{pred}}_worker(start, start, from_nodes, to_nodes)
+let {{pred}}_from_vectors <- function(start{{invariant_param_suffix}}, from_nodes, to_nodes) {
+	{{pred}}_worker(start, start{{invariant_param_suffix}}, from_nodes, to_nodes)
 };
