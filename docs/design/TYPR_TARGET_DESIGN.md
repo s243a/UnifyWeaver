@@ -129,7 +129,7 @@ This document focuses on architecture and rollout choices specific to TypR.
      supported guarded full-body forms after an earlier recursive group-
      call prefix, plus integer-return and threaded-context variants,
      emitted as TypR
-     functions with raw-expression memoized helper bodies
+     functions with native TypR memoized helper bodies
    - conservative `N`-ary structural tree-recursive predicates that match
      the currently supported `[]` / `[V, L, R]` shape with one tree-driving
      argument, invariant context args, and limited native guards, local
@@ -146,7 +146,7 @@ This document focuses on architecture and rollout choices specific to TypR.
      expression, multiple nested branch-local control points around the two
      subtree calls, or asymmetric branch-local prework that is reconciled
      later by a guarded result expression, emitted as TypR functions with
-     raw-expression structural helper bodies
+     native TypR structural helper bodies
    - guarded post-recursive recombination inside those same single-recursive-
      call numeric and list linear-recursive shapes when the later result and
      branch-local selected intermediate values are chosen by supported
@@ -481,7 +481,7 @@ Current implementation note:
   conservative arity-2 numeric multi-call tree-recursive predicates
   compiled to native TypR memoized helper bodies inside TypR functions,
   conservative `N`-ary structural tree-recursive predicates compiled to
-  raw-expression structural helper bodies inside TypR functions, including
+  native TypR structural helper bodies inside TypR functions, including
   limited native guards, local `is` steps, threaded invariant-context
   updates before the two subtree calls, per-subtree invariant-context
   updates for the left and right recursive calls, branch-local recursive-

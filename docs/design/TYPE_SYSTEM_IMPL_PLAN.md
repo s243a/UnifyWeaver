@@ -213,7 +213,7 @@ bring-up.
     lowered to TypR-valid functions with native TypR memoized helper
     bodies for the currently supported `fib/2`-style shape
   - conservative arity-1 boolean mutual-recursive predicate groups lowered
-    to TypR-valid functions with raw-expression memoized helper bodies for
+    to TypR-valid functions with native TypR helper bodies for
     the currently supported `is_even/1` / `is_odd/1`-style numeric SCC
     shape, `even_list/1` / `odd_list/1`-style list-structural SCC shape,
     and `even_left_tree/1` / `odd_left_tree/1`-style tree-structural SCC
@@ -284,7 +284,7 @@ bring-up.
   - the next implementation step should therefore keep expanding the shared
     SCC IR instead of adding more matcher families
   - conservative `N`-ary structural tree-recursive predicates lowered to
-    TypR-valid functions with raw-expression structural helper bodies for
+    TypR-valid functions with native TypR structural helper bodies for
     the currently supported `[]` / `[V, L, R]` shape with invariant context
     args and limited native guards, local `is` steps, threaded invariant-
     context updates before the two subtree calls, per-subtree invariant-

@@ -3478,21 +3478,19 @@ typr_mutual_wrapper_code(GroupName, Specs, true, Spec, Code) :-
     typr_mutual_wrapper_helper_call_expr(Spec, HelperName, HelperCallExpr),
     findall(HelperCode, (
         member(HelperSpec, Specs),
-        typr_mutual_helper_code(GroupName, true, HelperSpec, HelperCode)
+        typr_mutual_helper_code(GroupName, true, HelperSpec, RawHelperCode),
+        typr_nativeize_statement_text(RawHelperCode, HelperCode)
     ), HelperCodes),
     atomic_list_concat(HelperCodes, '\n', HelpersText),
     indent_text(HelpersText, "\t", IndentedHelpersText),
+    format(string(ResultLine), '\tresult <- ~w;', [HelperCallExpr]),
     format(string(Code),
 'let ~w <- fn(~w): ~w {
-\tresult <- @{
-\tlocal({
 \t    ~w_memo <- new.env(hash=TRUE, parent=emptyenv());
 ~w
-\t    ~w
-\t})
-\t}@;
+\n~w
 \tresult
-};', [PredStr, TypedArgList, ReturnType, GroupName, IndentedHelpersText, HelperCallExpr]).
+};', [PredStr, TypedArgList, ReturnType, GroupName, IndentedHelpersText, ResultLine]).
 typr_mutual_wrapper_code(GroupName, Specs, false, Spec, Code) :-
     PredStr = Spec.pred_str,
     TypedArgList = Spec.typed_arg_list,
@@ -3501,20 +3499,18 @@ typr_mutual_wrapper_code(GroupName, Specs, false, Spec, Code) :-
     typr_mutual_wrapper_helper_call_expr(Spec, HelperName, HelperCallExpr),
     findall(HelperCode, (
         member(HelperSpec, Specs),
-        typr_mutual_helper_code(GroupName, false, HelperSpec, HelperCode)
+        typr_mutual_helper_code(GroupName, false, HelperSpec, RawHelperCode),
+        typr_nativeize_statement_text(RawHelperCode, HelperCode)
     ), HelperCodes),
     atomic_list_concat(HelperCodes, '\n', HelpersText),
     indent_text(HelpersText, "\t", IndentedHelpersText),
+    format(string(ResultLine), '\tresult <- ~w;', [HelperCallExpr]),
     format(string(Code),
 'let ~w <- fn(~w): ~w {
-\tresult <- @{
-\tlocal({
 ~w
-\t    ~w
-\t})
-\t}@;
+\n~w
 \tresult
-};', [PredStr, TypedArgList, ReturnType, IndentedHelpersText, HelperCallExpr]).
+};', [PredStr, TypedArgList, ReturnType, IndentedHelpersText, ResultLine]).
 
 typr_mutual_helper_code(GroupName, true, Spec, Code) :-
     Kind = Spec.kind,
@@ -6966,6 +6962,11 @@ typr_nativeize_statement_lines([], []).
 typr_nativeize_statement_lines([Line0|Rest0], [Line|Rest]) :-
     typr_nativeize_statement_line(Line0, Line),
     typr_nativeize_statement_lines(Rest0, Rest).
+
+typr_nativeize_statement_text(Text0, Text) :-
+    split_string(Text0, "\n", "", Lines0),
+    typr_nativeize_statement_lines(Lines0, Lines),
+    atomic_list_concat(Lines, '\n', Text).
 
 typr_nativeize_statement_line(Line0, Line) :-
     (   sub_string(Line0, Before, 3, After, " = "),
