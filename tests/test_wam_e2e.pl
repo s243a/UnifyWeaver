@@ -7,6 +7,7 @@
 
 %% Test data
 e2e_parent(alice, bob).
+e2e_parent(bob, charlie).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -17,22 +18,25 @@ fail_test(Test, Reason) :-
 %% Tests
 test_wam_compilation_and_execution :-
     Test = 'WAM E2E: Fact compilation and execution',
-    (   % 1. Compile fact to WAM (symbolic)
-        % Note: we'll use a simplified instruction set for the manual emulator step
-        Code = [
-            get_constant(alice, 'A1'),
-            get_constant(bob, 'A2'),
-            proceed
-        ],
-        % 2. Initialize registers for query: e2e_parent(alice, bob)?
-        % In a real E2E, we'd parse the output of compile_facts_to_wam
-        % For this first step, we verify step_wam logic
-        wam_runtime:execute_wam(['e2e_parent/2': get_constant(alice, 'A1'), 
-                                'e2e_parent/2_next': get_constant(bob, 'A2'),
-                                'e2e_parent/2_next_next': proceed], 
-                                e2e_parent(alice, bob), _FinalRegs)
+    (   % 1. Compile facts to WAM
+        wam_target:compile_facts_to_wam(user:e2e_parent, 2, Code),
+        % 2. Execute WAM code with query: e2e_parent(alice, bob)?
+        wam_runtime:execute_wam(Code, e2e_parent(alice, bob), _FinalRegs)
     ->  pass(Test)
     ;   fail_test(Test, 'E2E execution failed')
+    ).
+
+test_wam_backtracking_simple :-
+    Test = 'WAM E2E: Simple backtracking (second fact)',
+    (   % 1. Compile facts
+        wam_target:compile_facts_to_wam(user:e2e_parent, 2, Code),
+        % 2. Execute with query: e2e_parent(bob, charlie)?
+        % Note: our simple runtime doesn't do full backtracking yet, 
+        % but it should find the second fact via labels and CP if implemented.
+        % For now, execute_wam starts at the predicate label.
+        wam_runtime:execute_wam(Code, e2e_parent(bob, charlie), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'E2E execution failed for second fact')
     ).
 
 run_tests :-
@@ -41,6 +45,7 @@ run_tests :-
     format('========================================~n~n'),
     
     test_wam_compilation_and_execution,
+    test_wam_backtracking_simple,
     
     format('~n========================================~n'),
     format('E2E tests completed~n'),

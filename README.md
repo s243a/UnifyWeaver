@@ -32,6 +32,7 @@ UnifyWeaver supports multiple compilation strategies depending on the target and
 | **Fixed-Point (Query Engine)** | IR + runtime with semi-naive evaluation for complex recursion | C# Query Runtime |
 | **Generator-Based** | Lazy evaluation via Python generators with memoization | Python |
 | **Declarative Output** | SQL queries for external database execution | SQL |
+| **Symbolic WAM** | Low-level abstract machine instructions for complex unification/backtracking | WAM (Hub) |
 
 ## Recursion Pattern Support
 

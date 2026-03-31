@@ -31,12 +31,15 @@ src/unifyweaver/
 │       ├── mutual_recursion.pl
 │       ├── multicall_linear_recursion.pl
 │       └── direct_multi_call_recursion.pl
+├── runtime/
+│   └── wam_runtime.pl
 └── targets/
     ├── r_target.pl
     ├── go_target.pl
     ├── rust_target.pl
     ├── python_target.pl
-    └── csharp_target.pl
+    ├── csharp_target.pl
+    └── wam_target.pl
 ```
 
 ### template_system.pl
@@ -289,8 +292,9 @@ Tests generate example scripts in `output/` directory that can be executed direc
 ### Implemented
 - Mutual recursion via SCC detection
 - Tail recursion optimization to loops
-- Multiple backend support (R, Go, Rust, Python, C#) via multifile target delegation
+- Multiple backend support (R, Go, Rust, Python, C#, WAM) via multifile target delegation
 - Tree recursion, multi-call linear recursion, and direct multi-call recursion patterns
+- **WAM Hub**: Symbolic abstract machine target for complex unification and backtracking fallback
 
 ### Planned
 - External template file support (currently templates are auto-generated)
