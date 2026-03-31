@@ -7738,11 +7738,12 @@ dotnet_env(Dir, Env) :-
            | BaseEnv].
 
 :- if(\+ current_predicate(environ/1)).
-% SWI-Prolog for Windows does not provide environ/1. Provide a lightweight
-% fallback so our dotnet harness can preserve the full process environment while
+% SWI-Prolog builds may omit environ/1. Provide a lightweight fallback so
+% the dotnet harness can preserve the current process environment while
 % overriding dotnet-specific vars.
 environ(Env) :-
-    process_create(path('cmd.exe'), ['/c', set], [stdout(pipe(Out)), process(PID)]),
+    env_dump_command(Command, Args),
+    process_create(Command, Args, [stdout(pipe(Out)), process(PID)]),
     read_string(Out, _, Output),
     close(Out),
     process_wait(PID, exit(_)),
@@ -7750,11 +7751,16 @@ environ(Env) :-
     include(non_empty_line, Lines0, Lines),
     findall(Name=Value,
         (   member(Line, Lines),
-            parse_cmd_env_line(Line, Name, Value)
+            parse_env_line(Line, Name, Value)
         ),
         Env).
 
-parse_cmd_env_line(Line, Name, Value) :-
+env_dump_command(path('cmd.exe'), ['/c', set]) :-
+    current_prolog_flag(windows, true),
+    !.
+env_dump_command(path(env), []).
+
+parse_env_line(Line, Name, Value) :-
     sub_string(Line, SepPos, 1, After, "="),
     sub_string(Line, 0, SepPos, _, NameStr),
     ValueStart is SepPos + 1,
