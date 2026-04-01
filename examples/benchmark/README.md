@@ -182,8 +182,10 @@ Tables:
 | `generate_pipeline.py` | Generate self-contained pipeline per target |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
 | `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs C#/Rust/Go DFS binaries |
+| `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
+| `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
 
@@ -214,6 +216,11 @@ python examples/benchmark/benchmark_effective_distance.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
 
+# Compare minimum-hop shortest path across query engine and DFS targets
+python examples/benchmark/benchmark_shortest_path_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
+
 # Measure overhead of the generalized path-aware accumulation runtime
 python examples/benchmark/benchmark_path_aware_accumulation.py \
     --scales 300,1k,5k,10k
@@ -221,6 +228,11 @@ python examples/benchmark/benchmark_path_aware_accumulation.py \
 # Measure directed-table pruning on weighted path-aware accumulation
 python examples/benchmark/benchmark_weighted_shortest_path.py \
     --scales 300,1k,5k,10k
+
+# Compare positive weighted minimum path distance across query engine and DFS targets
+python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
 ```
 
 The current native-lowering comparison surface across non-query targets is:
@@ -233,6 +245,16 @@ The current native-lowering comparison surface across non-query targets is:
   - all-path effective distance
   - minimum hop distance
   - positive weighted minimum path distance
+
+The benchmark split is now:
+
+- cross-target:
+  - `benchmark_effective_distance.py`
+  - `benchmark_shortest_path_cross_target.py`
+  - `benchmark_weighted_shortest_path_cross_target.py`
+- C# query-engine internal mode comparison:
+  - `benchmark_shortest_path_to_root.py`
+  - `benchmark_weighted_shortest_path.py`
 
 ### Weighted `Min` Results
 
