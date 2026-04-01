@@ -7782,6 +7782,11 @@ native_typr_output_expr(filter(DF, Expr, Out), VarMap0, _PredName, VarMap, Final
     typr_resolve_value(VarMap0, DF, RDF),
     typr_translate_r_expr(Expr, VarMap0, RExpr),
     format(string(OutputExpr), '@{ subset(~w, ~w) }@', [RDF, RExpr]).
+native_typr_output_expr(atom_string(InValue, OutVar), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    var(OutVar),
+    !,
+    ensure_typr_var(VarMap0, OutVar, FinalExpr, VarMap, IntroKind),
+    typr_resolve_value(VarMap0, InValue, OutputExpr).
 native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),

@@ -200,7 +200,7 @@ includes:
 - simple alias or arithmetic assignment tails after an earlier native
   string-transform or length-producing step
 - simple alias tails after native conversion, list, and path producers such as
-  `to_numeric/2`, `reverse/2`, and `dirname/2`
+  `to_numeric/2`, `reverse/2`, `dirname/2`, and `atom_string/2`
 - guard-style command predicates such as `is_character/1`
 - unary TypR-safe I/O commands such as `cat/1` and `print/1`, emitted as
   native fixed-arity TypR calls
@@ -385,7 +385,8 @@ The wrapped fallback boundary is now beyond the first native
 string-transform/output-tail slice; if this area is extended further, the next
 real audit target is the producer-goal family after the currently supported
 `string_lower/2`, `string_upper/2`, `string_length/2`, `to_numeric/2`,
-`reverse/2`, and `dirname/2` follow-on alias or arithmetic tails.
+`reverse/2`, `dirname/2`, and `atom_string/2` follow-on alias or arithmetic
+tails.
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)
