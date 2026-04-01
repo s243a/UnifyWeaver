@@ -450,7 +450,9 @@ Current implementation note:
   same step-relation shape
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
-  predicates, sequential guard/output control-flow chains, simple comparison
+  predicates, including unary TypR-safe I/O commands such as `cat/1` and
+  `print/1` that emit native fixed-arity TypR calls, sequential guard/output
+  control-flow chains, simple comparison
   and boolean guard expressions over already-bound intermediates, structured
   fan-out chains where one earlier value feeds multiple later outputs or
   conditions, structured split-and-recombine chains where guarded derived

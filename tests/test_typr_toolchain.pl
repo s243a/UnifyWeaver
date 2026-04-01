@@ -41,6 +41,38 @@ test(generated_output_checks_with_typr, [condition(typr_cli_available)]) :-
     ),
     retractall(user:simple_fact(_)).
 
+test(cat_command_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(say_cat(Msg) :- cat(Msg))),
+    assertz(type_declarations:uw_type(say_cat/1, 1, atom)),
+    once(compile_predicate_to_typr(say_cat/1, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:say_cat(_)).
+
+test(print_command_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(say_print(Msg) :- print(Msg))),
+    assertz(type_declarations:uw_type(say_print/1, 1, atom)),
+    once(compile_predicate_to_typr(say_print/1, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:say_print(_)).
+
 test(transitive_closure_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:edge(a, b)),
