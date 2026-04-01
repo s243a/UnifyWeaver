@@ -160,6 +160,40 @@ test(sub_atom_alias_after_native_outputs_check_with_typr, [condition(typr_cli_av
     ),
     retractall(user:sub_atom_alias(_, _)).
 
+test(sub_atom_offset_alias_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(sub_atom_offset_alias(A, Out) :- sub_atom(A, 2, 3, _, Tmp), Out = Tmp)),
+    assertz(type_declarations:uw_type(sub_atom_offset_alias/2, 1, atom)),
+    assertz(type_declarations:uw_type(sub_atom_offset_alias/2, 2, atom)),
+    once(compile_predicate_to_typr(sub_atom_offset_alias/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:sub_atom_offset_alias(_, _)).
+
+test(string_substr_alias_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(string_substr_alias(A, Out) :- string_substr(A, 2, 4, Tmp), Out = Tmp)),
+    assertz(type_declarations:uw_type(string_substr_alias/2, 1, atom)),
+    assertz(type_declarations:uw_type(string_substr_alias/2, 2, atom)),
+    once(compile_predicate_to_typr(string_substr_alias/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:string_substr_alias(_, _)).
+
 test(cat_command_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:(say_cat(Msg) :- cat(Msg))),

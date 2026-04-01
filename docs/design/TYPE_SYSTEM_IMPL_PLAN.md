@@ -170,8 +170,8 @@ bring-up.
   - simple alias or arithmetic assignment tails after an earlier native
     string-transform or length-producing step
   - simple alias tails after native conversion, list, and path producers such
-    as `to_numeric/2`, `reverse/2`, `dirname/2`, `atom_string/2`, and
-    narrowed `sub_atom/5`
+    as `to_numeric/2`, `reverse/2`, `dirname/2`, `atom_string/2`, narrowed
+    `sub_atom/5`, and `string_substr/4`
   - guard-style command predicates lowered into clause conditions
   - sequential native control-flow chains where earlier outputs feed later
     guards and outputs
