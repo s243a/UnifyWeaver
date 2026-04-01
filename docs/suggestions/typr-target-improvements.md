@@ -24,7 +24,9 @@ Add regression tests for:
 - Compare TypR output vs R output for semantic equivalence
 
 ### 4. TypR upstream issues to track
-- **Variadic functions**: `cat("x =", x)` doesn't work, need `cat(paste("x =", x))`
+- **Variadic functions**: TypR-safe bindings should stay fixed-arity. Unary
+  `cat/1` and `print/1` are fine, but `cat("x =", x)` still needs
+  `cat(paste("x =", x))`
 - **Braceless function bodies**: `function(x) x * x` drops the body, must use braces
 - **`io.ty` not loadable**: New .ty files aren't picked up by the std generator parser
 - **`default.ty` skipped**: Contains syntax the parser rejects (`{}` record types, `let` definitions mixed with `@` declarations)

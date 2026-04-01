@@ -18,6 +18,8 @@ cleanup_typr_test :-
     retractall(user:tc(_, _)),
     retractall(user:simple_fact(_)),
     retractall(user:lower_name(_, _)),
+    retractall(user:say_cat(_)),
+    retractall(user:say_print(_)),
     retractall(user:classify_name(_, _)),
     retractall(user:inferred_lower(_, _)),
     retractall(user:classify_name_guarded(_, _)),
@@ -2023,6 +2025,28 @@ test(generic_body_predicates_reuse_r_backend) :-
     once(compile_predicate_to_typr(lower_name/2, [typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let lower_name <- fn(arg1: char, arg2: char): char")),
     once(sub_string(Code, _, _, _, "tolower(arg1)")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(generic_cat_command_predicates_emit_native_typr) :-
+    clear_type_declarations,
+    assertz(user:(say_cat(Msg) :- cat(Msg))),
+    assertz(type_declarations:uw_type(say_cat/1, 1, atom)),
+    once(compile_predicate_to_typr(say_cat/1, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let say_cat <- fn(arg1: char): bool")),
+    once(sub_string(Code, _, _, _, "cat(arg1);")),
+    \+ sub_string(Code, _, _, _, "local({"),
+    \+ sub_string(Code, _, _, _, "(function("),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(generic_print_command_predicates_emit_native_typr) :-
+    clear_type_declarations,
+    assertz(user:(say_print(Msg) :- print(Msg))),
+    assertz(type_declarations:uw_type(say_print/1, 1, atom)),
+    once(compile_predicate_to_typr(say_print/1, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let say_print <- fn(arg1: char): bool")),
+    once(sub_string(Code, _, _, _, "print(arg1);")),
+    \+ sub_string(Code, _, _, _, "local({"),
     \+ sub_string(Code, _, _, _, "(function("),
     generated_typr_is_valid(Code, exit(0)).
 

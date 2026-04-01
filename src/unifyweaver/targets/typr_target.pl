@@ -7677,6 +7677,9 @@ native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, _SeenOutput, _LastExpr0
 native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, _SeenOutput, _LastExpr0, Conditions, [Line|RestLines], TailCode, VarMapOut) :-
     native_typr_output_goal(Goal, VarMap0, PredName, VarMap1, Line, OutExpr),
     native_typr_prefix_goals(Rest, VarMap1, PredName, true, OutExpr, Conditions, RestLines, TailCode, VarMapOut).
+native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, SeenOutput, LastExpr, Conditions, [Line|RestLines], TailCode, VarMapOut) :-
+    native_typr_command_goal(Goal, VarMap0, Line),
+    native_typr_prefix_goals(Rest, VarMap0, PredName, SeenOutput, LastExpr, Conditions, RestLines, TailCode, VarMapOut).
 native_typr_prefix_goals([Goal|Rest], VarMap0, PredName, false, LastExpr, [GuardCondition|RestConditions], RestLines, TailCode, VarMapOut) :-
     native_typr_guard_goal(Goal, VarMap0, GuardCondition),
     native_typr_prefix_goals(Rest, VarMap0, PredName, false, LastExpr, RestConditions, RestLines, TailCode, VarMapOut).
@@ -7699,6 +7702,11 @@ native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, _LastExpr0, Pe
     guard_condition_expression(PendingGuards, GuardExpr),
     conditional_output_line(GuardExpr, PredName, IntroKind, OutVar, OutputExpr, Line),
     native_typr_guarded_tail_sequence(Rest, VarMap1, PredName, OutVar, [], RestLines, FinalExpr, VarMapOut).
+native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, LastExpr, PendingGuards, [Line|RestLines], FinalExpr, VarMapOut) :-
+    native_typr_command_goal(Goal, VarMap0, CommandLine),
+    guard_condition_expression(PendingGuards, GuardExpr),
+    conditional_command_line(GuardExpr, PredName, CommandLine, Line),
+    native_typr_guarded_tail_sequence(Rest, VarMap0, PredName, LastExpr, [], RestLines, FinalExpr, VarMapOut).
 native_typr_guarded_tail_sequence([Goal|Rest], VarMap0, PredName, LastExpr, PendingGuards0, Lines, FinalExpr, VarMapOut) :-
     native_typr_guard_goal(Goal, VarMap0, GuardCondition),
     append(PendingGuards0, [GuardCondition], PendingGuards),
@@ -7765,9 +7773,8 @@ native_typr_output_expr(group_by(DF, Col, Out), VarMap0, _PredName, VarMap, Fina
     format(string(OutputExpr), '@{ aggregate(. ~~ ~w, data=~w, FUN=list) }@', [RCol, RDF]).
 native_typr_output_expr(Goal, VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     functor(Goal, Pred, Arity),
-    binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
+    typr_simple_binding(Pred/Arity, TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
-    simple_r_binding_target(TargetName),
     Goal =.. [_|Args],
     length(Inputs, InCount),
     length(InArgs, InCount),
@@ -8102,9 +8109,8 @@ typr_goal_output_var_simple(sort_by(_, _, OutputVar), OutputVar).
 typr_goal_output_var_simple(group_by(_, _, OutputVar), OutputVar).
 typr_goal_output_var_simple(Goal, OutputVar) :-
     functor(Goal, Pred, Arity),
-    binding(r, Pred/Arity, TargetName, Inputs, Outputs, _Options),
+    typr_simple_binding(Pred/Arity, _TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
-    simple_r_binding_target(TargetName),
     Goal =.. [_|Args],
     length(Inputs, InCount),
     length(Outputs, OutCount),
@@ -8269,9 +8275,8 @@ native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
     !.
 native_typr_guard_goal(Goal, VarMap, GuardCondition) :-
     functor(Goal, Pred, Arity),
-    binding(r, Pred/Arity, TargetName, Inputs, [], Options),
+    typr_simple_binding(Pred/Arity, TargetName, Inputs, [], Options),
     member(pattern(command), Options),
-    simple_r_binding_target(TargetName),
     Goal =.. [_|Args],
     length(Inputs, InCount),
     length(InArgs, InCount),
@@ -8293,6 +8298,43 @@ simple_r_binding_target(TargetName) :-
 simple_r_binding_target(TargetName) :-
     string(TargetName),
     \+ sub_string(TargetName, _, _, _, "~").
+
+typr_simple_binding(PredSpec, TargetName, Inputs, Outputs, Options) :-
+    binding(r, PredSpec, TargetName, Inputs, Outputs, Options),
+    typr_simple_binding_target(PredSpec, TargetName, Inputs, Outputs, Options).
+
+typr_simple_binding_target(cat/1, TargetName, Inputs, [], Options) :-
+    member(effect(io), Options),
+    simple_r_binding_target(TargetName),
+    Inputs = [_].
+typr_simple_binding_target(print/1, TargetName, Inputs, [], Options) :-
+    member(effect(io), Options),
+    simple_r_binding_target(TargetName),
+    Inputs = [_].
+typr_simple_binding_target(_PredSpec, TargetName, _Inputs, _Outputs, Options) :-
+    simple_r_binding_target(TargetName),
+    \+ member(effect(io), Options).
+
+native_typr_command_goal(_Module:Goal, VarMap, Line) :-
+    !,
+    native_typr_command_goal(Goal, VarMap, Line).
+native_typr_command_goal(Goal, VarMap, Line) :-
+    functor(Goal, Pred, Arity),
+    typr_simple_binding(Pred/Arity, TargetName, Inputs, [], Options),
+    member(effect(io), Options),
+    Goal =.. [_|Args],
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, [], Args),
+    maplist(typr_resolve_value(VarMap), InArgs, ResolvedInArgs),
+    typr_native_call_expression(TargetName, ResolvedInArgs, CommandExpr),
+    format(string(Line), '~w;', [CommandExpr]).
+
+typr_native_call_expression(TargetName, [], Expr) :-
+    format(string(Expr), '~w', [TargetName]).
+typr_native_call_expression(TargetName, ResolvedInArgs, Expr) :-
+    atomic_list_concat(ResolvedInArgs, ', ', ArgText),
+    format(string(Expr), '~w(~w)', [TargetName, ArgText]).
 
 typr_resolve_value(VarMap, Var, Value) :-
     var(Var),
@@ -8351,6 +8393,15 @@ conditional_output_line(GuardExpr, PredName, IntroKind, OutVar, OutputExpr, Line
 } else {
 	stop("No matching clause for ~w")
 };', [Prefix, OutVar, GuardExpr, OutputExpr, PredName]).
+
+conditional_command_line(none, _PredName, CommandLine, CommandLine).
+conditional_command_line(GuardExpr, PredName, CommandLine, Line) :-
+    format(string(Line),
+'if (~w) {
+	~w
+} else {
+	stop("No matching clause for ~w")
+}', [GuardExpr, CommandLine, PredName]).
 
 guard_tail_final_expression([], _PredName, none, 'true').
 guard_tail_final_expression([], _PredName, LastExpr, LastExpr) :-

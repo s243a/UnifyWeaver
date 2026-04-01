@@ -198,6 +198,8 @@ includes:
 
 - simple output-producing binding chains
 - guard-style command predicates such as `is_character/1`
+- unary TypR-safe I/O commands such as `cat/1` and `print/1`, emitted as
+  native fixed-arity TypR calls
 - multi-step native control-flow chains where an earlier output feeds a later
   guard and output
 - simple comparison and boolean guard expressions over already-bound
