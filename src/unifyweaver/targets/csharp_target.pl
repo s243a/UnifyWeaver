@@ -1071,6 +1071,12 @@ maybe_path_aware_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecC
     get_dict(arity, EdgeSpec, EdgeArity),
     ensure_relation(EdgePred, EdgeArity, [], Relations0),
     dedup_relations(Relations0, Relations),
+    get_dict(name, HeadSpec, HeadName),
+    (   current_predicate(pattern_matchers:declared_table_modes/3),
+        pattern_matchers:declared_table_modes(HeadName, 3, TableModes)
+    ->  true
+    ;   TableModes = [lattice, lattice, lattice]
+    ),
     Root = path_aware_transitive_closure{
         type:path_aware_transitive_closure,
         head:HeadSpec,
@@ -1078,6 +1084,7 @@ maybe_path_aware_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecC
         base_depth:BaseDepth,
         depth_increment:DepthIncrement,
         max_depth:10,
+        table_modes:TableModes,
         width:3
     }.
 
@@ -3681,10 +3688,27 @@ emit_plan_expression(Node, Expr) :-
     get_dict(base_depth, Node, BaseDepth),
     get_dict(depth_increment, Node, DepthIncrement),
     (get_dict(max_depth, Node, MaxDepth) -> true ; MaxDepth = 0),
+    % Extract table mode for accumulator (position 2 for arity-3 TC)
+    (   get_dict(table_modes, Node, TableModes),
+        nth0(2, TableModes, AccTableMode),
+        AccTableMode \= lattice
+    ->  table_mode_csharp_enum(AccTableMode, TableModeStr)
+    ;   TableModeStr = "TableMode.All"
+    ),
     atom_string(EdgeName, EdgeNameStr),
     atom_string(Name, NameStr),
-    format(atom(Expr), 'new PathAwareTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w)',
-        [EdgeNameStr, EdgeArity, NameStr, Arity, BaseDepth, DepthIncrement, MaxDepth]).
+    format(atom(Expr), 'new PathAwareTransitiveClosureNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w, ~w)',
+        [EdgeNameStr, EdgeArity, NameStr, Arity, BaseDepth, DepthIncrement, MaxDepth, TableModeStr]).
+
+%% table_mode_csharp_enum(+Mode, -CsharpStr) is det.
+%  Maps a table mode atom to a C# TableMode enum string.
+table_mode_csharp_enum(min, "TableMode.Min").
+table_mode_csharp_enum(max, "TableMode.Max").
+table_mode_csharp_enum(first, "TableMode.First").
+table_mode_csharp_enum(sum, "TableMode.Sum").
+table_mode_csharp_enum(count, "TableMode.Count").
+table_mode_csharp_enum(lattice, "TableMode.All").
+table_mode_csharp_enum(_, "TableMode.All").
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, path_aware_accumulation), !,
     get_dict(edge, Node, predicate{name:EdgeName, arity:EdgeArity}),

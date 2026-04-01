@@ -28,6 +28,9 @@
     split_body_at_recursive_call/5,       % +Body, +Pred, -PreGoals, -RecCall, -PostGoals
     % Per-path visited recursion pattern
     is_per_path_visited_pattern/4,        % +Name, +Arity, +Clauses, -VisitedPos
+    % Mode-directed tabling
+    declared_table_modes/3,                % +Pred, +Arity, -TableModes
+    parse_table_spec/2,                    % +TableSpec, -TableModes
     test_pattern_matchers/0         % Test predicate
 ]).
 
@@ -837,3 +840,76 @@ test_pattern_matchers :-
     catch(abolish(test_sum_linear/2), _, true),
 
     writeln('=== PATTERN MATCHERS TESTS COMPLETE ===').
+
+
+% =============================================================================
+% Mode-Directed Tabling
+% =============================================================================
+%
+% Parses :- table pred(_, _, min). directives (XSB/SWI compatible).
+% The user asserts these as user:table/1 facts (analogous to user:mode/1).
+%
+% Table modes per argument:
+%   lattice  — default, keep all values (no aggregation, written as _)
+%   min      — keep minimum value, enables branch-and-bound pruning
+%   max      — keep maximum value, enables branch-and-bound pruning
+%   first    — keep first derivation only, enables early termination
+%   sum      — accumulate sum (no pruning, but in-place aggregation)
+%   count    — count derivations (no pruning, memory optimization)
+%
+% Usage in Prolog source:
+%   :- table category_ancestor(_, _, min).
+%
+% The compiler stores this as:
+%   user:table(category_ancestor(_, _, min)).
+%
+% Targets query declared_table_modes/3 to get the modes.
+
+%% declared_table_modes(+Pred, +Arity, -TableModes) is semidet.
+%  Looks up user:table/1 declarations for Pred/Arity.
+%  TableModes is a list of atoms: lattice, min, max, first, sum, count.
+%  Fails if no table directive exists for this predicate.
+declared_table_modes(Pred, Arity, TableModes) :-
+    current_predicate(user:table/1),
+    user:table(TableSpec),
+    compound(TableSpec),
+    functor(TableSpec, Pred, Arity),
+    parse_table_spec(TableSpec, TableModes).
+
+%% parse_table_spec(+TableSpec, -TableModes) is det.
+%  Parses a table/1 argument into a list of table mode atoms.
+%  E.g., parse_table_spec(path(_, _, min), [lattice, lattice, min]).
+parse_table_spec(TableSpec, TableModes) :-
+    compound(TableSpec),
+    TableSpec =.. [_Pred | Args],
+    maplist(parse_table_arg, Args, TableModes).
+
+%% parse_table_arg(+Arg, -Mode) is det.
+%  Parses a single table argument.
+parse_table_arg(Arg, lattice) :- var(Arg), !.
+parse_table_arg(_, lattice) :- !.    % anonymous variable _
+parse_table_arg(min, min) :- !.
+parse_table_arg(max, max) :- !.
+parse_table_arg(first, first) :- !.
+parse_table_arg(sum, sum) :- !.
+parse_table_arg(count, count) :- !.
+parse_table_arg(lattice, lattice) :- !.
+parse_table_arg(Arg, lattice) :-
+    format(user_error,
+           'Warning: unknown table mode ~w, defaulting to lattice~n',
+           [Arg]).
+
+%% has_directed_table_mode(+Pred, +Arity, -Position, -Mode) is nondet.
+%  Finds positions with non-lattice table modes.
+%  Position is 0-indexed.
+has_directed_table_mode(Pred, Arity, Position, Mode) :-
+    declared_table_modes(Pred, Arity, TableModes),
+    nth0(Position, TableModes, Mode),
+    Mode \= lattice.
+
+%% table_enables_pruning(+Pred, +Arity) is semidet.
+%  True if the table directive for Pred/Arity enables branch-and-bound
+%  pruning (has a min or max mode on some argument).
+table_enables_pruning(Pred, Arity) :-
+    has_directed_table_mode(Pred, Arity, _, Mode),
+    memberchk(Mode, [min, max]).
