@@ -153,38 +153,100 @@ remove_assoc_key(Key, Assoc, Value, NewAssoc) :-
     ).
 
 %% step_wam(+Instruction, +StateIn, -StateOut)
-step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
-    (   get_assoc(Ai, R, Val)
-    ->  (Val == C -> NPC is PC + 1 ; fail)
+step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+    get_assoc(Ai, R, Val),
+    (   Val == C
+    ->  NR = R, NT = T, NPC is PC + 1
+    ;   is_unbound_var(Val)
+    ->  % Unify: bind the variable to the constant
+        trail_binding(Ai, R, T, NT),
+        put_assoc(Ai, R, C, NR),
+        NPC is PC + 1
     ;   fail
     ).
 
-step_wam(get_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+step_wam(get_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, NS, H, NT, CP, CPS, Code, L)) :-
     get_assoc(Ai, R, Val),
     trail_binding(Xn, R, T, NT),
-    put_assoc(Xn, R, Val, NR),
+    put_reg(Xn, Val, R, NR, S, NS),
     NPC is PC + 1.
 
-step_wam(get_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+step_wam(get_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, NS, H, NT, CP, CPS, Code, L)) :-
     get_assoc(Ai, R, ValA),
-    get_assoc(Xn, R, ValX),
-    (ValA == ValX -> NPC is PC + 1 ; fail).
+    get_reg(Xn, R, S, ValX),
+    (   ValA == ValX
+    ->  NR = R, NS = S, NT = T, NPC is PC + 1
+    ;   is_unbound_var(ValA)
+    ->  trail_binding(Ai, R, T, NT),
+        put_assoc(Ai, R, ValX, NR), NS = S,
+        NPC is PC + 1
+    ;   is_unbound_var(ValX)
+    ->  trail_binding(Xn, R, T, NT),
+        put_reg(Xn, ValA, R, NR, S, NS),
+        NPC is PC + 1
+    ;   fail
+    ).
+
+%% get_structure F/N, Ai — checks that Ai holds a compound term with functor F
+%  and arity N. On success, pushes the sub-arguments as a unify context onto
+%  the stack so that subsequent unify_* instructions can consume them.
+step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [unify_ctx(SubArgs)|S], H, T, CP, CPS, Code, L)) :-
+    get_assoc(Ai, R, Val),
+    Val =.. [F|SubArgs],
+    length(SubArgs, Arity),
+    format(atom(FN_check), "~w/~w", [F, Arity]),
+    FN_check == FN,
+    NPC is PC + 1.
+
+%% unify_variable Xn — in read mode, binds the next sub-argument to Xn.
+step_wam(unify_variable(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
+         wam_state(NPC, NR, NewS, H, NT, CP, CPS, Code, L)) :-
+    trail_binding(Xn, R, T, NT),
+    (   RestArgs == []
+    ->  BaseS = S
+    ;   BaseS = [unify_ctx(RestArgs)|S]
+    ),
+    put_reg(Xn, Arg, R, NR, BaseS, NewS),
+    NPC is PC + 1.
+
+%% unify_value Xn — in read mode, checks that the next sub-argument matches Xn.
+step_wam(unify_value(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
+    get_reg(Xn, R, S, Val),
+    Val == Arg,
+    (   RestArgs == []
+    ->  NewS = S
+    ;   NewS = [unify_ctx(RestArgs)|S]
+    ),
+    NPC is PC + 1.
+
+%% unify_constant C — in read mode, checks that the next sub-argument is constant C.
+step_wam(unify_constant(C), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
+    Arg == C,
+    (   RestArgs == []
+    ->  NewS = S
+    ;   NewS = [unify_ctx(RestArgs)|S]
+    ),
+    NPC is PC + 1.
 
 step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
     trail_binding(Ai, R, T, NT),
     put_assoc(Ai, R, C, NR),
     NPC is PC + 1.
 
-step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, NS, H, NT, CP, CPS, Code, L)) :-
     format(atom(NewVar), "_V~w", [PC]),
     trail_binding(Xn, R, T, T1),
     trail_binding(Ai, R, T1, NT),
-    put_assoc(Xn, R, NewVar, R1),
+    put_reg(Xn, NewVar, R, R1, S, S1),
     put_assoc(Ai, R1, NewVar, NR),
+    (   is_y_reg(Xn) -> NS = S1 ; NS = S
+    ),
     NPC is PC + 1.
 
 step_wam(put_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
-    get_assoc(Xn, R, Val),
+    get_reg(Xn, R, S, Val),
     trail_binding(Ai, R, T, NT),
     put_assoc(Ai, R, Val, NR),
     NPC is PC + 1.
@@ -199,16 +261,16 @@ step_wam(put_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam
     NPC is PC + 1.
 
 %% set_variable Xn — pushes a new unbound variable onto the heap and binds Xn to it.
-step_wam(set_variable(Xn), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, NH, T, CP, CPS, Code, L)) :-
+step_wam(set_variable(Xn), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, NS, NH, T, CP, CPS, Code, L)) :-
     length(H, Addr),
     format(atom(Var), "_H~w", [Addr]),
     append(H, [Var], NH),
-    put_assoc(Xn, R, Var, NR),
+    put_reg(Xn, Var, R, NR, S, NS),
     NPC is PC + 1.
 
 %% set_value Xn — pushes the value of Xn onto the heap.
 step_wam(set_value(Xn), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, NH, T, CP, CPS, Code, L)) :-
-    get_assoc(Xn, R, Val),
+    get_reg(Xn, R, S, Val),
     append(H, [Val], NH),
     NPC is PC + 1.
 
@@ -231,10 +293,13 @@ step_wam(execute(P), wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, 
 
 step_wam(proceed, wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(CP, R, S, H, T, halt, CPS, Code, L)).
 
-step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [env(CP)|S], H, T, CP, CPS, Code, L)) :-
+%% allocate — creates an environment frame with saved CP and empty Yi storage.
+step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [env(CP, YRegs)|S], H, T, CP, CPS, Code, L)) :-
+    empty_assoc(YRegs),
     NPC is PC + 1.
 
-step_wam(deallocate, wam_state(PC, R, [env(OldCP)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
+%% deallocate — restores CP from the environment frame.
+step_wam(deallocate, wam_state(PC, R, [env(OldCP, _)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
     NPC is PC + 1.
 
 step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, CP, T)|CPS], Code, L)) :-
@@ -250,12 +315,43 @@ step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_
     (CPS = [_|Rest] -> NCPS = [cp(NextPC, R, S, CP, T)|Rest] ; NCPS = [cp(NextPC, R, S, CP, T)]),
     NPC is PC + 1.
 
+%% is_unbound_var(+Val)
+%  Checks if a value represents a WAM unbound variable (generated by put_variable).
+is_unbound_var(Val) :-
+    atom(Val),
+    sub_atom(Val, 0, 2, _, '_V').
+
 %% trail_binding(+Key, +Regs, +TrailIn, -TrailOut)
 %  Records the old value of Key (or 'unbound' if absent) on the trail.
 trail_binding(Key, Regs, Trail, [trail(Key, OldValue)|Trail]) :-
     (   get_assoc(Key, Regs, OldValue) -> true
     ;   OldValue = unbound
     ).
+
+%% Yi register helpers — read/write permanent variables in the environment frame.
+is_y_reg(Reg) :-
+    atom(Reg),
+    sub_atom(Reg, 0, 1, _, 'Y').
+
+%% get_reg(+Reg, +Regs, +Stack, -Value)
+%  Gets a register value. Yi registers are read from the top environment frame.
+get_reg(Reg, _R, Stack, Val) :-
+    is_y_reg(Reg), !,
+    member(env(_, YRegs), Stack), !,
+    get_assoc(Reg, YRegs, Val).
+get_reg(Reg, R, _, Val) :-
+    get_assoc(Reg, R, Val).
+
+%% put_reg(+Reg, +Val, +Regs, -NewRegs, +Stack, -NewStack)
+%  Sets a register value. Yi registers are written to the top environment frame.
+put_reg(Reg, Val, R, R, Stack, NewStack) :-
+    is_y_reg(Reg), !,
+    update_top_env(Stack, Reg, Val, NewStack).
+put_reg(Reg, Val, R, NR, Stack, Stack) :-
+    put_assoc(Reg, R, Val, NR).
+
+update_top_env([env(CP, YRegs)|Rest], Reg, Val, [env(CP, NewYRegs)|Rest]) :-
+    put_assoc(Reg, YRegs, Val, NewYRegs).
 
 test_wam_runtime :-
     Code = [
