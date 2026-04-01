@@ -36,6 +36,7 @@
 :- use_module(library(pairs), [pairs_values/2]).
 :- use_module(library(ugraphs), [vertices/2, vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3, top_sort/2]).
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
+:- use_module('../core/advanced/pattern_matchers', [declared_table_modes/3]).
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/csharp_bindings').
 :- use_module('../core/pipeline_validation').
@@ -1072,8 +1073,7 @@ maybe_path_aware_transitive_closure_plan(HeadSpec, GroupSpecs, BaseClauses, RecC
     ensure_relation(EdgePred, EdgeArity, [], Relations0),
     dedup_relations(Relations0, Relations),
     get_dict(name, HeadSpec, HeadName),
-    (   current_predicate(pattern_matchers:declared_table_modes/3),
-        pattern_matchers:declared_table_modes(HeadName, 3, TableModes)
+    (   declared_table_modes(HeadName, 3, TableModes)
     ->  true
     ;   TableModes = [lattice, lattice, lattice]
     ),

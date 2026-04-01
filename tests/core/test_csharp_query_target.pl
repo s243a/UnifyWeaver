@@ -146,6 +146,8 @@
 :- dynamic user:test_pathaware_reach/3.
 :- dynamic user:test_pathaware_multi_edge/2.
 :- dynamic user:test_pathaware_multi_reach/3.
+:- dynamic user:test_pathaware_min_edge/2.
+:- dynamic user:test_pathaware_min_reach/3.
 :- dynamic user:test_weighted_edge/2.
 :- dynamic user:test_weighted_cost/2.
 :- dynamic user:test_weighted_path/3.
@@ -157,6 +159,7 @@
 :- dynamic user:test_scanindex_reach_param/2.
 :- dynamic user:test_scanindex_reach_filtered/2.
 :- dynamic user:mode/1.
+:- dynamic user:'table'/1.
 :- dynamic user:test_negation_cycle_root/1.
 :- dynamic user:test_negation_cycle_p/1.
 :- dynamic user:test_negation_cycle_q/1.
@@ -301,6 +304,7 @@ test_csharp_query_target :-
         verify_path_aware_transitive_closure_plan,
         verify_parameterized_path_aware_transitive_closure_plan,
         verify_path_aware_transitive_closure_preserves_path_multiplicity,
+        verify_path_aware_transitive_closure_min_mode_plan,
         verify_path_aware_accumulation_plan,
         verify_parameterized_path_aware_accumulation_plan,
         verify_path_aware_accumulation_preserves_path_multiplicity,
@@ -1117,6 +1121,14 @@ setup_test_data :-
         1,
         [[a, b], [a, c], [b, d], [c, d]]
     ),
+    assert_counted_recursive_fixture(
+        test_pathaware_min_edge,
+        test_pathaware_min_reach,
+        1,
+        1,
+        [[a, b], [a, c], [b, d], [c, e], [e, d]]
+    ),
+    assertz(user:'table'(test_pathaware_min_reach(_, _, min))),
     assertz(user:test_weighted_edge(a, b)),
     assertz(user:test_weighted_edge(b, a)),
     assertz(user:test_weighted_edge(b, c)),
@@ -1361,6 +1373,8 @@ cleanup_test_data :-
     retractall(user:mode(test_reachable_param_both(_, _))),
     cleanup_counted_recursive_fixture(test_pathaware_edge, test_pathaware_reach),
     cleanup_counted_recursive_fixture(test_pathaware_multi_edge, test_pathaware_multi_reach),
+    cleanup_counted_recursive_fixture(test_pathaware_min_edge, test_pathaware_min_reach),
+    retractall(user:'table'(_)),
     retractall(user:test_weighted_edge(_, _)),
     retractall(user:test_weighted_cost(_, _)),
     retractall(user:test_weighted_path(_, _, _)),
@@ -3522,6 +3536,32 @@ verify_path_aware_transitive_closure_preserves_path_multiplicity :-
         ['MATCH_COUNT:2'],
         [[a]],
         HarnessSource).
+
+verify_path_aware_transitive_closure_min_mode_plan :-
+    csharp_target:build_query_plan(
+        test_pathaware_min_reach/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, path_aware_transitive_closure{type:path_aware_transitive_closure,
+        head:predicate{name:test_pathaware_min_reach, arity:3},
+        edge:predicate{name:test_pathaware_min_edge, arity:2},
+        base_depth:1,
+        depth_increment:1,
+        max_depth:10,
+        table_modes:[lattice, lattice, min],
+        width:3
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareTransitiveClosureNode'),
+    sub_string(Source, _, _, _, 'TableMode.Min'),
+    maybe_run_query_runtime(Plan,
+        ['a,b,1',
+         'a,c,1',
+         'a,d,2',
+         'a,e,2'],
+        [[a]]).
 
 verify_path_aware_accumulation_plan :-
     csharp_query_target:build_query_plan(test_weighted_path/3, [target(csharp_query)], Plan),

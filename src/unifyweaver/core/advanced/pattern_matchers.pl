@@ -870,8 +870,8 @@ test_pattern_matchers :-
 %  TableModes is a list of atoms: lattice, min, max, first, sum, count.
 %  Fails if no table directive exists for this predicate.
 declared_table_modes(Pred, Arity, TableModes) :-
-    current_predicate(user:table/1),
-    user:table(TableSpec),
+    current_predicate(user:'table'/1),
+    user:'table'(TableSpec),
     compound(TableSpec),
     functor(TableSpec, Pred, Arity),
     parse_table_spec(TableSpec, TableModes).
@@ -887,13 +887,13 @@ parse_table_spec(TableSpec, TableModes) :-
 %% parse_table_arg(+Arg, -Mode) is det.
 %  Parses a single table argument.
 parse_table_arg(Arg, lattice) :- var(Arg), !.
-parse_table_arg(_, lattice) :- !.    % anonymous variable _
 parse_table_arg(min, min) :- !.
 parse_table_arg(max, max) :- !.
 parse_table_arg(first, first) :- !.
 parse_table_arg(sum, sum) :- !.
 parse_table_arg(count, count) :- !.
 parse_table_arg(lattice, lattice) :- !.
+parse_table_arg(_, lattice) :- !.    % anonymous variable _
 parse_table_arg(Arg, lattice) :-
     format(user_error,
            'Warning: unknown table mode ~w, defaulting to lattice~n',

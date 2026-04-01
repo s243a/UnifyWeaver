@@ -240,7 +240,8 @@ namespace UnifyWeaver.QueryRuntime
         PredicateId Predicate,
         int BaseDepth,
         int DepthIncrement,
-        int MaxDepth = 0
+        int MaxDepth = 0,
+        TableMode AccumulatorMode = TableMode.All
     ) : PlanNode;
 
     /// <summary>
@@ -256,6 +257,16 @@ namespace UnifyWeaver.QueryRuntime
         ArithmeticExpression RecursiveExpression,
         int MaxDepth = 0
     ) : PlanNode;
+
+    public enum TableMode
+    {
+        All,
+        Min,
+        Max,
+        First,
+        Sum,
+        Count
+    }
 
     /// <summary>
     /// Indicates which relation a recursive reference should read from.
@@ -969,7 +980,7 @@ namespace UnifyWeaver.QueryRuntime
                 OffsetNode offset => $"Offset count={offset.Count}",
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
-                PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth}",
+                PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
                 PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
@@ -6995,7 +7006,7 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.MaxDepth);
+                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -7050,7 +7061,7 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.MaxDepth);
+                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -7067,8 +7078,11 @@ namespace UnifyWeaver.QueryRuntime
             int baseDepth,
             int depthIncrement,
             ICollection<object[]> output,
+            TableMode accumulatorMode,
             int maxDepth = 0)
         {
+            var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
+            var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
             var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
             stack.Push((seed, 0, new HashSet<object?> { seed }));
 
@@ -7104,10 +7118,48 @@ namespace UnifyWeaver.QueryRuntime
                         continue;
                     }
 
-                    output.Add(new object[] { seed!, next!, nextDepth });
+                    if (bestKnown is not null)
+                    {
+                        if (bestKnown.TryGetValue(next, out var bestDepth))
+                        {
+                            switch (accumulatorMode)
+                            {
+                                case TableMode.Min:
+                                    if (nextDepth >= bestDepth)
+                                    {
+                                        continue;
+                                    }
+                                    break;
+                                case TableMode.Max:
+                                    if (nextDepth <= bestDepth)
+                                    {
+                                        continue;
+                                    }
+                                    break;
+                                case TableMode.First:
+                                    continue;
+                            }
+                        }
+
+                        bestKnown[next] = nextDepth;
+                    }
+                    else
+                    {
+                        output.Add(new object[] { seed!, next!, nextDepth });
+                    }
 
                     var nextVisited = new HashSet<object?>(visited) { next };
                     stack.Push((next, nextDepth, nextVisited));
+                }
+            }
+
+            if (bestKnown is not null)
+            {
+                var bestRows = new List<KeyValuePair<object?, int>>(bestKnown);
+                bestRows.Sort((left, right) => CompareCacheSeedValues(left.Key, right.Key));
+                foreach (var (target, depth) in bestRows)
+                {
+                    output.Add(new object[] { seed!, target!, depth });
                 }
             }
         }
