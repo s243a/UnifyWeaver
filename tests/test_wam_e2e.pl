@@ -53,6 +53,15 @@ e2e_is_atom(X) :- atom(X).
 e2e_capital(france, paris).
 e2e_capital(germany, berlin).
 
+%% List builtin test data
+:- dynamic e2e_has_member/2.
+e2e_has_member(X, List) :- member(X, List).
+
+%% Structure-indexed predicate (compound first args)
+:- dynamic e2e_shape_area/2.
+e2e_shape_area(circle(R), A) :- A is 3 * R * R.
+e2e_shape_area(rect(W, H), A) :- A is W * H.
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -187,6 +196,33 @@ test_wam_indexing :-
     ;   fail_test(Test, 'First-argument indexing failed')
     ).
 
+test_wam_findall :-
+    Test = 'WAM E2E: findall_wam multi-solution',
+    (   wam_target:compile_facts_to_wam(user:e2e_capital, 2, Code),
+        wam_runtime:findall_wam(Code, e2e_capital(Country, City),
+            ['Country'=Country, 'City'=City], AllBindings),
+        length(AllBindings, 2)
+    ->  pass(Test)
+    ;   fail_test(Test, 'findall_wam did not return 2 solutions')
+    ).
+
+test_wam_list_member :-
+    Test = 'WAM E2E: List builtin (member/2)',
+    (   wam_target:compile_predicate_to_wam(user:e2e_has_member/2, [], Code),
+        wam_runtime:execute_wam(Code, e2e_has_member(b, [a, b, c]), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'List member builtin failed')
+    ).
+
+test_wam_structure_index :-
+    Test = 'WAM E2E: Structure indexing (switch_on_structure)',
+    (   wam_target:compile_predicate_to_wam(user:e2e_shape_area/2, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'switch_on_structure')
+    ->  pass(Test)
+    ;   fail_test(Test, 'switch_on_structure not emitted for compound heads')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM Target E2E Test Suite~n'),
@@ -203,7 +239,10 @@ run_tests :-
     test_wam_builtin_is,
     test_wam_builtin_type_check,
     test_wam_solve,
+    test_wam_findall,
+    test_wam_list_member,
     test_wam_indexing,
+    test_wam_structure_index,
     
     format('~n========================================~n'),
     (   test_failed

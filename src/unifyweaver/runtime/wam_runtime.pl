@@ -8,6 +8,7 @@
 :- module(wam_runtime, [
     execute_wam/3,       % +InstructionsString, +Query, -Results
     solve_wam/4,         % +InstructionsString, +Query, +VarNames, -Bindings
+    findall_wam/4,       % +InstructionsString, +Query, +VarNames, -AllBindings
     test_wam_runtime/0
 ]).
 
@@ -400,6 +401,68 @@ lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
     ;   lookup_index(Val, Rest, Labels, TargetPC)
     ).
 
+%% switch_on_structure — indexes on compound first argument's functor/arity.
+step_wam(Instr, wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    Instr =.. [switch_on_structure|Entries],
+    Entries \= [],
+    (   get_assoc('A1', R, Val),
+        \+ is_unbound_var(Val),
+        compound(Val),
+        Val =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        format(atom(FN), "~w/~w", [F, SArity]),
+        lookup_index(FN, Entries, L, TargetPC)
+    ->  NPC = TargetPC
+    ;   NPC is PC + 1
+    ).
+
+%% switch_on_term — type-based dispatch for mixed first arguments.
+%  Parsed as switch_on_term('constant:...', 'structure:...').
+step_wam(Instr, wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    Instr =.. [switch_on_term|Args],
+    Args \= [],
+    (   get_assoc('A1', R, Val),
+        \+ is_unbound_var(Val)
+    ->  (   atomic(Val)
+        ->  find_term_index_section('constant', Args, Entries),
+            (   lookup_index(Val, Entries, L, TargetPC)
+            ->  NPC = TargetPC
+            ;   NPC is PC + 1
+            )
+        ;   compound(Val)
+        ->  Val =.. [F|SubArgs],
+            length(SubArgs, SArity),
+            format(atom(FN), "~w/~w", [F, SArity]),
+            find_term_index_section('structure', Args, Entries),
+            (   lookup_index(FN, Entries, L, TargetPC)
+            ->  NPC = TargetPC
+            ;   NPC is PC + 1
+            )
+        ;   NPC is PC + 1
+        )
+    ;   NPC is PC + 1
+    ).
+
+find_term_index_section(Type, Args, Entries) :-
+    atom_string(Type, TypeStr),
+    member(Arg, Args),
+    atom_string(Arg, ArgStr),
+    atom_concat(TypeStr, ':', Prefix),
+    atom_string(Prefix, PrefixStr),
+    sub_string(ArgStr, 0, _, After, PrefixStr),
+    sub_string(ArgStr, _, After, 0, Rest),
+    (   Rest \= "none"
+    ->  split_string(Rest, ",", " ", Pairs),
+        maplist([PairStr, Entry]>>(
+            atom_string(PA, PairStr),
+            Entry = PA
+        ), Pairs, Entries)
+    ;   Entries = []
+    ), !.
+find_term_index_section(_, _, []).
+
 step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, CP, T)|CPS], Code, L)) :-
     get_assoc(NextL, L, NextPC),
     NPC is PC + 1.
@@ -578,6 +641,43 @@ step_wam(builtin_call('\\+/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
     ;   fail
     ).
 
+%% List builtins — delegate to Prolog's native list operations.
+%% These are handled as runtime builtins since list operations involve
+%% recursive structure manipulation better done natively.
+step_wam(builtin_call('member/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Elem),
+    get_assoc('A2', R, List),
+    member(Elem, List),
+    NPC is PC + 1.
+
+step_wam(builtin_call('append/3', 3), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, L1),
+    get_assoc('A2', R, L2),
+    get_assoc('A3', R, L3),
+    (   is_unbound_var(L3)
+    ->  append(L1, L2, Result),
+        trail_binding('A3', R, T, NT),
+        put_assoc('A3', R, Result, NR)
+    ;   append(L1, L2, L3),
+        NR = R, NT = T
+    ),
+    NPC is PC + 1.
+
+step_wam(builtin_call('length/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, List),
+    get_assoc('A2', R, Len),
+    (   is_unbound_var(Len)
+    ->  length(List, Result),
+        trail_binding('A2', R, T, NT),
+        put_assoc('A2', R, Result, NR)
+    ;   length(List, Len),
+        NR = R, NT = T
+    ),
+    NPC is PC + 1.
+
 %% eval_arith(+Expr, +Regs, +Stack, +Heap, -Result)
 %  Evaluates an arithmetic expression. Numbers pass through. Register
 %  names are dereferenced. Heap refs are reconstructed. Compounds are evaluated.
@@ -650,6 +750,38 @@ extract_bindings([Name=Var|Rest], Query, Regs, [Name=Value|RestBindings]) :-
     ;   Value = Var
     ),
     extract_bindings(Rest, Query, Regs, RestBindings).
+
+%% =====================================================
+%% findall_wam/4 — collect all solutions via backtracking
+%% =====================================================
+
+%% findall_wam(+Instructions, +Query, +VarNames, -AllBindings)
+%  Returns a list of binding sets, one per solution. Runs the WAM
+%  program and collects all successful execution paths by continuing
+%  to backtrack after each solution.
+findall_wam(Instructions, Query, VarNames, AllBindings) :-
+    prepare_code(Instructions, Code, Labels),
+    copy_term(Query-VarNames, QCopy-VNCopy),
+    init_state(QCopy, Code, Labels, S0),
+    run_all_solutions(S0, QCopy, VNCopy, AllBindings).
+
+run_all_solutions(S0, Query, VarNames, AllBindings) :-
+    run_all_acc(S0, Query, VarNames, [], RevBindings),
+    reverse(RevBindings, AllBindings).
+
+run_all_acc(State, Query, VarNames, Acc, AllBindings) :-
+    (   run_loop(State, Sf),
+        Sf = wam_state(_, FinalRegs, _, _, _, _, CPS, _, _)
+    ->  extract_bindings(VarNames, Query, FinalRegs, Bindings),
+        NewAcc = [Bindings|Acc],
+        % Try to backtrack for more solutions
+        (   CPS = [_|_],
+            backtrack(Sf, SBT)
+        ->  run_all_acc(SBT, Query, VarNames, NewAcc, AllBindings)
+        ;   AllBindings = NewAcc
+        )
+    ;   AllBindings = Acc
+    ).
 
 %% =====================================================
 %% Tests

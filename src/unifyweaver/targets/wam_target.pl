@@ -100,28 +100,97 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ).
 
 %% build_first_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
-%  If all clauses have atomic first arguments, emit a switch_on_constant
-%  table that maps first-arg values directly to clause labels.
+%  Analyzes first arguments of all clauses and emits indexing instructions.
+%  - All atomic first args → switch_on_constant
+%  - All compound first args → switch_on_structure
+%  - Mixed types → switch_on_term (type-based dispatch)
+%  - Any variable first args → no indexing (variable matches anything)
 build_first_arg_index(Pred, Arity, Clauses, IndexCode) :-
-    length(Clauses, N),
-    build_index_entries(Clauses, 1, N, Pred, Arity, Entries),
-    Entries \= [],
-    format_index_entries(Entries, EntriesStr),
-    format(string(IndexCode), "    switch_on_constant ~w", [EntriesStr]).
-
-build_index_entries([], _, _, _, _, []).
-build_index_entries([Head-_|Rest], I, N, Pred, Arity, Entries) :-
-    Head =.. [_|[FirstArg|_]],
-    NextI is I + 1,
-    build_index_entries(Rest, NextI, N, Pred, Arity, RestEntries),
-    (   atomic(FirstArg)
-    ->  (   I == 1
-        ->  Label = default  % first clause is the default entry point
-        ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
-        ),
-        Entries = [FirstArg-Label|RestEntries]
-    ;   Entries = []  % non-constant first arg — can't index
+    classify_first_args(Clauses, Types),
+    \+ member(variable, Types),  % can't index if any clause has a variable first arg
+    (   forall(member(T, Types), T = constant)
+    ->  build_constant_index(Clauses, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode), "    switch_on_constant ~w", [EntriesStr])
+    ;   forall(member(T, Types), T = structure)
+    ->  build_structure_index(Clauses, 1, Pred, Arity, Entries),
+        Entries \= [],
+        format_index_entries(Entries, EntriesStr),
+        format(string(IndexCode), "    switch_on_structure ~w", [EntriesStr])
+    ;   % Mixed — emit switch_on_term with type-based dispatch
+        build_term_index(Clauses, 1, Pred, Arity, Types, ConstEntries, StructEntries),
+        format_switch_on_term(ConstEntries, StructEntries, IndexCode)
     ).
+
+classify_first_args([], []).
+classify_first_args([Head-_|Rest], [Type|RestTypes]) :-
+    Head =.. [_|[FirstArg|_]],
+    (   var(FirstArg) -> Type = variable
+    ;   atomic(FirstArg) -> Type = constant
+    ;   compound(FirstArg) -> Type = structure
+    ;   Type = variable
+    ),
+    classify_first_args(Rest, RestTypes).
+
+build_constant_index([], _, _, _, []).
+build_constant_index([Head-_|Rest], I, Pred, Arity, [FirstArg-Label|RestEntries]) :-
+    Head =.. [_|[FirstArg|_]],
+    (   I == 1 -> Label = default
+    ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
+    ),
+    NextI is I + 1,
+    build_constant_index(Rest, NextI, Pred, Arity, RestEntries).
+
+build_structure_index([], _, _, _, []).
+build_structure_index([Head-_|Rest], I, Pred, Arity, [FN-Label|RestEntries]) :-
+    Head =.. [_|[FirstArg|_]],
+    FirstArg =.. [F|SubArgs],
+    length(SubArgs, SArity),
+    format(atom(FN), "~w/~w", [F, SArity]),
+    (   I == 1 -> Label = default
+    ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
+    ),
+    NextI is I + 1,
+    build_structure_index(Rest, NextI, Pred, Arity, RestEntries).
+
+build_term_index([], _, _, _, _, [], []).
+build_term_index([Head-_|Rest], I, Pred, Arity, [Type|RestTypes],
+                 ConstEntries, StructEntries) :-
+    Head =.. [_|[FirstArg|_]],
+    (   I == 1 -> Label = default
+    ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
+    ),
+    NextI is I + 1,
+    build_term_index(Rest, NextI, Pred, Arity, RestTypes,
+                     RestConst, RestStruct),
+    (   Type = constant
+    ->  ConstEntries = [FirstArg-Label|RestConst],
+        StructEntries = RestStruct
+    ;   Type = structure
+    ->  FirstArg =.. [F|SubArgs],
+        length(SubArgs, SArity),
+        format(atom(FN), "~w/~w", [F, SArity]),
+        ConstEntries = RestConst,
+        StructEntries = [FN-Label|RestStruct]
+    ;   ConstEntries = RestConst,
+        StructEntries = RestStruct
+    ).
+
+format_switch_on_term(ConstEntries, StructEntries, IndexCode) :-
+    (   ConstEntries \= []
+    ->  format_index_entries(ConstEntries, CStr),
+        ConstPart = CStr
+    ;   ConstPart = "none"
+    ),
+    (   StructEntries \= []
+    ->  format_index_entries(StructEntries, SStr),
+        StructPart = SStr
+    ;   StructPart = "none"
+    ),
+    format(string(IndexCode),
+           "    switch_on_term constant:~w, structure:~w",
+           [ConstPart, StructPart]).
 
 format_index_entries(Entries, Str) :-
     maplist([K-V, S]>>format(atom(S), "~w:~w", [K, V]), Entries, Parts),
@@ -400,6 +469,9 @@ is_builtin_pred(true, 0).    % control
 is_builtin_pred(fail, 0).
 is_builtin_pred('!', 0).     % cut
 is_builtin_pred(\+, 1).      % negation-as-failure
+is_builtin_pred(member, 2).  % list operations
+is_builtin_pred(append, 3).
+is_builtin_pred(length, 2).
 
 compile_put_arguments([], _, V, V, "").
 compile_put_arguments([Arg|Rest], I, V0, Vf, Code) :-
