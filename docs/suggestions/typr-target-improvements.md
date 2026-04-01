@@ -47,21 +47,16 @@ The "Prolog generates TypR" workbook pattern works well for demos:
 
 Consider auto-generating this workbook pattern as a SciREPL package.
 
-### 6. Cross-cell variable persistence for TypR kernel
-Currently each TypR cell runs independently — variables don't persist across
-cells. This is because `executeRaw()` creates a fresh `captureR` context each
-time. To fix this, the TypR kernel should:
+### 6. TypR std library preamble optimization
+Cross-cell variable persistence works — tested and confirmed. Variables
+assigned in one TypR cell are available in subsequent cells.
 
-1. Run generated R code in webR's **global environment** (not a shelter)
-2. Accumulate the TypR std library preamble only on first execution
-3. Skip re-emitting `Integer()`, `Character()`, etc. on subsequent cells
-4. Track which definitions have been loaded to avoid redefinition errors
+Remaining optimization: each TypR cell re-emits the full std library
+preamble (~400 lines of type constructors). This is redundant after
+the first cell. The kernel should:
 
-This would allow natural notebook workflows:
-```
-Cell 1 (TypR): let x <- 42;
-Cell 2 (TypR): cat(x);   # ← currently fails, x not in scope
-```
+1. Track whether the std library has been loaded in this session
+2. Skip re-emitting `Integer()`, `Character()`, `Boolean()`, etc.
+3. Only emit the `# === Main Code ===` section on subsequent cells
 
-**Workaround:** Put all code in a single cell. The Prolog compiler cells
-append queries to the generated code for this reason.
+This is a performance optimization, not a correctness issue.
