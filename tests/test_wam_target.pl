@@ -23,11 +23,14 @@ test_ancestor(X, Y) :- test_parent(X, Z), test_ancestor(Z, Y).
 test_check(pair(_, _)).
 test_wrap(X) :- test_check(pair(X, done)).
 
+:- dynamic test_failed/0.
+
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
 
 fail_test(Test, Reason) :-
-    format('[FAIL] ~w: ~w~n', [Test, Reason]).
+    format('[FAIL] ~w: ~w~n', [Test, Reason]),
+    (   test_failed -> true ; assert(test_failed) ).
 
 %% Tests
 test_wam_facts :-
@@ -117,7 +120,12 @@ run_tests :-
     test_wam_module,
     
     format('~n========================================~n'),
-    format('All tests completed~n'),
-    format('========================================~n').
+    (   test_failed
+    ->  format('Some tests FAILED~n'),
+        format('========================================~n'),
+        halt(1)
+    ;   format('All tests passed~n'),
+        format('========================================~n')
+    ).
 
 :- initialization(run_tests, main).
