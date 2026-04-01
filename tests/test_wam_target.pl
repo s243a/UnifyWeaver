@@ -23,6 +23,10 @@ test_ancestor(X, Y) :- test_parent(X, Z), test_ancestor(Z, Y).
 test_check(pair(_, _)).
 test_wrap(X) :- test_check(pair(X, done)).
 
+%% Compound head — exercises get_structure + unify_constant
+:- dynamic test_color/2.
+test_color(rgb(255, 0, 0), red).
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -107,6 +111,21 @@ test_wam_put_structure :-
         fail_test(Test, 'Missing put_structure in compound body arg output')
     ).
 
+test_wam_compound_head :-
+    Test = 'WAM: compound head (get_structure)',
+    (   wam_target:compile_predicate_to_wam(user:test_color/2, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'get_structure rgb/3'),
+        sub_string(S, _, _, _, 'unify_constant 255'),
+        sub_string(S, _, _, _, 'get_constant red')
+    ->  pass(Test)
+    ;   (   wam_target:compile_predicate_to_wam(user:test_color/2, [], Code2)
+        ->  format(user_error, 'DEBUG: compound head output:~n~w~n', [Code2])
+        ;   format(user_error, 'DEBUG: compile failed~n', [])
+        ),
+        fail_test(Test, 'Missing get_structure in compound head output')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -117,6 +136,7 @@ run_tests :-
     test_wam_single_clause,
     test_wam_recursion,
     test_wam_put_structure,
+    test_wam_compound_head,
     test_wam_module,
     
     format('~n========================================~n'),

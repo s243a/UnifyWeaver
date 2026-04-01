@@ -13,6 +13,16 @@ e2e_parent(bob, charlie).
 :- dynamic e2e_grandparent/2.
 e2e_grandparent(X, Z) :- e2e_parent(X, Y), e2e_parent(Y, Z).
 
+%% Recursive rule — multi-clause, backtracking, recursive calls
+:- dynamic e2e_ancestor/2.
+e2e_ancestor(X, Y) :- e2e_parent(X, Y).
+e2e_ancestor(X, Y) :- e2e_parent(X, Z), e2e_ancestor(Z, Y).
+
+%% Compound head facts — exercises get_structure + unify_* in the runtime
+:- dynamic e2e_color/2.
+e2e_color(rgb(255, 0, 0), red).
+e2e_color(rgb(0, 255, 0), green).
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -56,6 +66,26 @@ test_wam_rule_execution :-
     ;   fail_test(Test, 'E2E rule execution failed for grandparent')
     ).
 
+test_wam_recursive_execution :-
+    Test = 'WAM E2E: Recursive rule (ancestor)',
+    (   % Compile parent + ancestor, execute ancestor(alice, charlie)
+        % Path: alice->bob (parent), bob->charlie (parent) via recursive clause
+        wam_target:compile_wam_module(
+            [user:e2e_parent/2, user:e2e_ancestor/2], [], Code),
+        wam_runtime:execute_wam(Code, e2e_ancestor(alice, charlie), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive ancestor execution failed')
+    ).
+
+test_wam_compound_head :-
+    Test = 'WAM E2E: Compound head unification (get_structure)',
+    (   % Compile color/2 with compound first arg, query rgb(255,0,0) -> red
+        wam_target:compile_predicate_to_wam(user:e2e_color/2, [], Code),
+        wam_runtime:execute_wam(Code, e2e_color(rgb(255, 0, 0), red), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Compound head unification failed')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM Target E2E Test Suite~n'),
@@ -64,6 +94,8 @@ run_tests :-
     test_wam_compilation_and_execution,
     test_wam_backtracking_simple,
     test_wam_rule_execution,
+    test_wam_recursive_execution,
+    test_wam_compound_head,
     
     format('~n========================================~n'),
     (   test_failed

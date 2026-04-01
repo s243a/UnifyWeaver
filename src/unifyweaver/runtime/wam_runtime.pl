@@ -76,9 +76,17 @@ parse_instr(Str, Term) :-
         sub_string(Str, _, After, 0, ArgsStr),
         atom_string(Op, OpStr),
         split_string(ArgsStr, ",", " \t", ArgList),
-        maplist(atom_string, ArgAtoms, ArgList),
+        maplist(parse_arg, ArgList, ArgAtoms),
         Term =.. [Op|ArgAtoms]
     ;   atom_string(Term, Str)
+    ).
+
+%% parse_arg(+String, -Value)
+%  Converts a string argument to an atom, or a number if it looks numeric.
+parse_arg(Str, Val) :-
+    (   number_string(Num, Str)
+    ->  Val = Num
+    ;   atom_string(Val, Str)
     ).
 
 init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, Labels)) :-
@@ -120,8 +128,10 @@ fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
 %  choice point was created. On backtrack, we restore registers to their
 %  saved state from the choice point, then apply trail entries to undo any
 %  bindings that leaked into the saved register set.
+%% backtrack restores state from the top choice point but does NOT pop it.
+%% The choice point is removed by trust_me, or updated by retry_me_else.
 backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, CP, SavedTrail)|CPs], Code, L),
-          wam_state(NextPC, RestoredR, S, [], SavedTrail, CP, CPs, Code, L)) :-
+          wam_state(NextPC, RestoredR, S, [], SavedTrail, CP, [cp(NextPC, R, S, CP, SavedTrail)|CPs], Code, L)) :-
     unwind_trail(Trail, SavedTrail, R, RestoredR).
 
 %% unwind_trail(+CurrentTrail, +SavedTrail, +Regs, -RestoredRegs)
@@ -187,18 +197,35 @@ step_wam(get_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_sta
     ;   fail
     ).
 
-%% get_structure F/N, Ai — checks that Ai holds a compound term with functor F
-%  and arity N. On success, pushes the sub-arguments as a unify context onto
-%  the stack so that subsequent unify_* instructions can consume them.
-step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [unify_ctx(SubArgs)|S], H, T, CP, CPS, Code, L)) :-
+%% get_structure F/N, Ai — two modes:
+%  Read mode: Ai holds a compound term — verify functor/arity and push sub-args
+%  as unify_ctx for subsequent unify_* instructions to match.
+%  Write mode: Ai holds an unbound variable — allocate a structure on the heap,
+%  bind Ai to it, and push write_ctx so unify_* instructions build sub-args.
+step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
     get_assoc(Ai, R, Val),
-    Val =.. [F|SubArgs],
-    length(SubArgs, Arity),
-    format(atom(FN_check), "~w/~w", [F, Arity]),
-    FN_check == FN,
-    NPC is PC + 1.
+    (   is_unbound_var(Val)
+    ->  % Write mode: construct structure on heap
+        length(H, Addr),
+        append(H, [str(FN)], NH),
+        trail_binding(Ai, R, T, NT),
+        put_assoc(Ai, R, ref(Addr), NR),
+        atom_string(FN, FNStr),
+        split_string(FNStr, "/", "", [_, ArStr]),
+        number_string(WriteArity, ArStr),
+        NPC is PC + 1,
+        StateOut = wam_state(NPC, NR, [write_ctx(WriteArity)|S], NH, NT, CP, CPS, Code, L)
+    ;   % Read mode: match existing structure
+        Val =.. [F|SubArgs],
+        length(SubArgs, Arity),
+        format(atom(FN_check), "~w/~w", [F, Arity]),
+        FN_check == FN,
+        NPC is PC + 1,
+        StateOut = wam_state(NPC, R, [unify_ctx(SubArgs)|S], H, T, CP, CPS, Code, L)
+    ).
 
-%% unify_variable Xn — in read mode, binds the next sub-argument to Xn.
+%% unify_variable Xn — read mode: bind next sub-arg to Xn.
+%%                     write mode: create new var on heap and bind Xn to it.
 step_wam(unify_variable(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, NR, NewS, H, NT, CP, CPS, Code, L)) :-
     trail_binding(Xn, R, T, NT),
@@ -208,8 +235,19 @@ step_wam(unify_variable(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, 
     ),
     put_reg(Xn, Arg, R, NR, BaseS, NewS),
     NPC is PC + 1.
+step_wam(unify_variable(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code, L),
+         wam_state(NPC, NR, NewS, NH, T, CP, CPS, Code, L)) :-
+    N > 0,
+    length(H, Addr),
+    format(atom(Var), "_H~w", [Addr]),
+    append(H, [Var], NH),
+    N1 is N - 1,
+    (   N1 == 0 -> BaseS = S ; BaseS = [write_ctx(N1)|S] ),
+    put_reg(Xn, Var, R, NR, BaseS, NewS),
+    NPC is PC + 1.
 
-%% unify_value Xn — in read mode, checks that the next sub-argument matches Xn.
+%% unify_value Xn — read mode: check next sub-arg matches Xn.
+%%                   write mode: push value of Xn onto heap.
 step_wam(unify_value(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
     get_reg(Xn, R, S, Val),
@@ -219,8 +257,17 @@ step_wam(unify_value(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, 
     ;   NewS = [unify_ctx(RestArgs)|S]
     ),
     NPC is PC + 1.
+step_wam(unify_value(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, NewS, NH, T, CP, CPS, Code, L)) :-
+    N > 0,
+    get_reg(Xn, R, S, Val),
+    append(H, [Val], NH),
+    N1 is N - 1,
+    (   N1 == 0 -> NewS = S ; NewS = [write_ctx(N1)|S] ),
+    NPC is PC + 1.
 
-%% unify_constant C — in read mode, checks that the next sub-argument is constant C.
+%% unify_constant C — read mode: check next sub-arg equals C.
+%%                     write mode: push C onto heap.
 step_wam(unify_constant(C), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
     Arg == C,
@@ -228,6 +275,13 @@ step_wam(unify_constant(C), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T
     ->  NewS = S
     ;   NewS = [unify_ctx(RestArgs)|S]
     ),
+    NPC is PC + 1.
+step_wam(unify_constant(C), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, NewS, NH, T, CP, CPS, Code, L)) :-
+    N > 0,
+    append(H, [C], NH),
+    N1 is N - 1,
+    (   N1 == 0 -> NewS = S ; NewS = [write_ctx(N1)|S] ),
     NPC is PC + 1.
 
 step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
