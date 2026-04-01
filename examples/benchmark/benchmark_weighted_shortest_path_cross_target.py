@@ -369,11 +369,13 @@ def normalize_output(output: str) -> str:
         parts = line.split("\t")
         if len(parts) != 3:
             continue
-        rows.append((parts[0], parts[1], round(float(parts[2]), 12)))
+        # Cross-target weighted runs can differ by ~1e-12 due to floating-point
+        # formatting/evaluation order while still being semantically identical.
+        rows.append((parts[0], parts[1], round(float(parts[2]), 9)))
     rows.sort(key=lambda item: (item[2], item[0], item[1]))
     normalized = [header]
     for article, root, value in rows:
-        normalized.append(f"{article}\t{root}\t{value:.12f}")
+        normalized.append(f"{article}\t{root}\t{value:.9f}")
     return "\n".join(normalized)
 
 

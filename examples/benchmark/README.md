@@ -303,7 +303,7 @@ Latest local results:
 | 300 | 0.181s | 0.466s | 0.353s | 0.487s | match |
 | 1k | 0.142s | 1.409s | 1.447s | 2.206s | match |
 | 5k | 0.250s | 5.957s | 7.994s | 12.404s | match |
-| 10k | 0.460s | 10.845s | 15.198s | 20.549s | DIFFERENT |
+| 10k | 0.381s | 10.593s | 14.234s | 19.460s | match |
 
 Speedups of C# query engine:
 
@@ -314,14 +314,14 @@ Speedups of C# query engine:
 | 5k | 23.81x | 31.94x | 49.57x |
 | 10k | 23.57x | 33.02x | 44.65x |
 
-Current caveat:
+Comparison note:
 
-- at `300`, `1k`, and `5k`, all four weighted implementations matched
-- at `10k`, the DFS targets still matched each other, but `csharp-query`
-  diverged from the DFS result on this weighted workload
-- so the cross-target weighted benchmark is useful now, but the `10k`
-  C# query-engine result still needs investigation before it should be
-  treated as fully settled
+- the earlier apparent weighted `10k` mismatch turned out to be
+  benchmark normalization sensitivity at roughly `1e-12`, not a semantic
+  query-engine bug
+- the cross-target weighted benchmark now normalizes floating-point
+  outputs with a tolerance appropriate for cross-language evaluation
+  order differences
 
 ### Weighted `Min` Results
 
