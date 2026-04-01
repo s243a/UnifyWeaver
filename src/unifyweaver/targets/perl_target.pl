@@ -817,11 +817,7 @@ compile_nonrecursive_rules(Pred, Arity, Clauses, Code) :-
     Arity1 is Arity - 1,
     build_perl_arg_list(Arity1, ArgList),
     format(string(Code),
-'#!/usr/bin/env perl
-use strict;
-use warnings;
-
-sub ~w {
+'sub ~w {
 ~w~w
 }
 

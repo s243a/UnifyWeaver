@@ -397,32 +397,42 @@ combine_ps_conditions([C|Cs], Combined) :-
     combine_ps_conditions(Cs, Rest),
     format(string(Combined), '~w -and ~w', [C, Rest]).
 
-%% branches_to_ps_if_chain
+%% branches_to_ps_if_chain — uses if/elseif/else pattern
 branches_to_ps_if_chain(Branches, PredSpec, Code) :-
-    ps_if_chain_lines(Branches, Lines),
-    format(string(Fallback), '    Write-Error "No matching clause for ~w"', [PredSpec]),
+    ps_if_chain_lines(Branches, first, Lines),
+    format(string(Fallback), '    } else {\n        Write-Error "No matching clause for ~w"\n    }', [PredSpec]),
     append(Lines, [Fallback], AllLines),
     atomic_list_concat(AllLines, '\n', Code).
 
-ps_if_chain_lines([], []).
-ps_if_chain_lines([branch(Cond, Value)], Lines) :-
+ps_if_chain_lines([], _, []).
+ps_if_chain_lines([branch(Cond, Value)], first, Lines) :-
+    !,
     (   Cond == "true"
     ->  format(string(L), '    return ~w', [Value]),
         Lines = [L]
     ;   format(string(L1), '    if (~w) {', [Cond]),
         format(string(L2), '        return ~w', [Value]),
-        Lines = [L1, L2, '    }']
+        Lines = [L1, L2]
     ).
-ps_if_chain_lines([branch(Cond, Value)|Rest], Lines) :-
-    Rest \= [],
+ps_if_chain_lines([branch(Cond, Value)], elseif, Lines) :-
+    !,
+    format(string(L1), '    } elseif (~w) {', [Cond]),
+    format(string(L2), '        return ~w', [Value]),
+    Lines = [L1, L2].
+ps_if_chain_lines([branch(Cond, Value)|Rest], first, Lines) :-
     (   Cond == "true"
     ->  format(string(L), '    return ~w', [Value]),
         Lines = [L]
-    ;   ps_if_chain_lines(Rest, RestLines),
+    ;   ps_if_chain_lines(Rest, elseif, RestLines),
         format(string(L1), '    if (~w) {', [Cond]),
         format(string(L2), '        return ~w', [Value]),
-        Lines = [L1, L2, '    }' | RestLines]
+        Lines = [L1, L2 | RestLines]
     ).
+ps_if_chain_lines([branch(Cond, Value)|Rest], elseif, Lines) :-
+    ps_if_chain_lines(Rest, elseif, RestLines),
+    format(string(L1), '    } elseif (~w) {', [Cond]),
+    format(string(L2), '        return ~w', [Value]),
+    Lines = [L1, L2 | RestLines].
 
 %% compile_source_xml(+PredName, +File, +Tags, -PsCode)
 %  Generates PowerShell code to stream an XML file and flatten specific tags.
