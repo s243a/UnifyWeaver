@@ -1,6 +1,9 @@
 :- module(test_go_native_lowering, [test_go_native_lowering/0]).
 :- use_module(library(plunit)).
 :- use_module('../../src/unifyweaver/targets/go_target').
+:- use_module('../../src/unifyweaver/core/constraint_analyzer').
+
+:- dynamic user:'table'/1.
 
 test_go_native_lowering :-
     run_tests([go_native_lowering]).
@@ -137,5 +140,125 @@ test(uses_shared_analysis_module) :-
     current_predicate(clause_body_analysis:normalize_goals/2),
     current_predicate(clause_body_analysis:if_then_else_goal/4),
     current_predicate(clause_body_analysis:build_head_varmap/3).
+
+test(weighted_recursive_accumulation_lowering) :-
+    assert(user:(weighted_edge(a, b))),
+    assert(user:(weighted_edge(b, c))),
+    assert(user:(weighted_cost(a, 2))),
+    assert(user:(weighted_cost(b, 5))),
+    assert(user:(weighted_path(X, Y, Acc) :-
+        weighted_edge(X, Y),
+        weighted_cost(X, Cost),
+        Acc is Cost)),
+    assert(user:(weighted_path(X, Z, Acc) :-
+        weighted_edge(X, Y),
+        weighted_cost(X, Cost),
+        weighted_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + Cost)),
+    compile_go(weighted_path/3, Code),
+    has(Code, "Path-aware recursive accumulation"),
+    has(Code, "var weighted_pathAux = map[string]int{}"),
+    has(Code, "results = append(results, weighted_pathResult{nb, stepCost})"),
+    has(Code, "results = append(results, weighted_pathResult{sub.Value, (sub.Acc + stepCost)})"),
+    retractall(user:weighted_edge(_, _)),
+    retractall(user:weighted_cost(_, _)),
+    retractall(user:weighted_path(_, _, _)).
+
+test(log_recursive_accumulation_lowering) :-
+    assert(user:(semantic_edge(a, b))),
+    assert(user:(semantic_edge(b, c))),
+    assert(user:(semantic_degree(a, 2))),
+    assert(user:(semantic_degree(b, 5))),
+    assert(user:(semantic_path(X, Y, Acc) :-
+        semantic_edge(X, Y),
+        semantic_degree(X, Deg),
+        Acc is log(Deg) / log(5))),
+    assert(user:(semantic_path(X, Z, Acc) :-
+        semantic_edge(X, Y),
+        semantic_degree(X, Deg),
+        semantic_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + (log(Deg) / log(5)))),
+    compile_go(semantic_path/3, Code),
+    has(Code, "var semantic_pathAux = map[string]float64{}"),
+    has(Code, "\"math\""),
+    has(Code, "math.Log(stepCost) / math.Log(5.0)"),
+    retractall(user:semantic_edge(_, _)),
+    retractall(user:semantic_degree(_, _)),
+    retractall(user:semantic_path(_, _, _)).
+
+test(min_counted_recursive_lowering) :-
+    assert(user:(min_edge(a, b))),
+    assert(user:(min_edge(b, c))),
+    assert(user:(min_reach(X, Y, H) :-
+        min_edge(X, Y),
+        H is 1)),
+    assert(user:(min_reach(X, Z, H) :-
+        min_edge(X, Y),
+        min_reach(Y, Z, H1),
+        H is H1 + 1)),
+    assertz(user:'table'(min_reach(_, _, min))),
+    compile_go(min_reach/3, Code),
+    has(Code, "minimum-hop transitive closure"),
+    has(Code, "container/list"),
+    has(Code, "func min_reachMin"),
+    has(Code, "best := map[string]int{}"),
+    retractall(user:min_edge(_, _)),
+    retractall(user:min_reach(_, _, _)),
+    retractall(user:'table'(min_reach(_, _, min))).
+
+test(weighted_min_recursive_accumulation_lowering) :-
+    assert(user:(weighted_min_edge(a, b))),
+    assert(user:(weighted_min_edge(b, c))),
+    assert(user:(weighted_min_cost(a, 2))),
+    assert(user:(weighted_min_cost(b, 5))),
+    assert(user:(weighted_min_path(X, Y, Acc) :-
+        weighted_min_edge(X, Y),
+        weighted_min_cost(X, Cost),
+        Acc is Cost)),
+    assert(user:(weighted_min_path(X, Z, Acc) :-
+        weighted_min_edge(X, Y),
+        weighted_min_cost(X, Cost),
+        weighted_min_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + Cost)),
+    assertz(user:'table'(weighted_min_path(_, _, min))),
+    declare_constraint(weighted_min_path/3, [positive_step(3)]),
+    compile_go(weighted_min_path/3, Code),
+    has(Code, "positive weighted minimum accumulation"),
+    has(Code, "\"container/heap\""),
+    has(Code, "func weighted_min_pathMin"),
+    has(Code, "best := map[string]int{}"),
+    has(Code, "Cost: stepCost"),
+    has(Code, "Cost: (cost + stepCost)"),
+    retractall(user:weighted_min_edge(_, _)),
+    retractall(user:weighted_min_cost(_, _)),
+    retractall(user:weighted_min_path(_, _, _)),
+    clear_constraints(weighted_min_path/3),
+    retractall(user:'table'(weighted_min_path(_, _, min))).
+
+test(weighted_min_guarded_recursive_accumulation_lowering) :-
+    assert(user:(weighted_guard_edge(a, b))),
+    assert(user:(weighted_guard_edge(b, c))),
+    assert(user:(weighted_guard_cost(a, 2))),
+    assert(user:(weighted_guard_cost(b, 5))),
+    assert(user:(weighted_guard_path(X, Y, Acc) :-
+        weighted_guard_edge(X, Y),
+        weighted_guard_cost(X, Cost),
+        Cost > 0,
+        Acc is Cost)),
+    assert(user:(weighted_guard_path(X, Z, Acc) :-
+        weighted_guard_edge(X, Y),
+        weighted_guard_cost(X, Cost),
+        Cost > 0,
+        weighted_guard_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + Cost)),
+    assertz(user:'table'(weighted_guard_path(_, _, min))),
+    compile_go(weighted_guard_path/3, Code),
+    has(Code, "positive weighted minimum accumulation"),
+    has(Code, "func weighted_guard_pathMin"),
+    has(Code, "\"container/heap\""),
+    retractall(user:weighted_guard_edge(_, _)),
+    retractall(user:weighted_guard_cost(_, _)),
+    retractall(user:weighted_guard_path(_, _, _)),
+    retractall(user:'table'(weighted_guard_path(_, _, min))).
 
 :- end_tests(go_native_lowering).

@@ -181,7 +181,7 @@ Tables:
 | `generate_facts.py` | Alternative: fetch from Wikipedia API (for small datasets) |
 | `generate_pipeline.py` | Generate self-contained pipeline per target |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
-| `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs DFS binaries |
+| `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs C#/Rust/Go DFS binaries |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `effective_distance.pl` | Benchmark Prolog program |
@@ -212,7 +212,7 @@ go build -o bench pipelines/effective_distance.go
 # Re-run the current non-regression benchmark
 python examples/benchmark/benchmark_effective_distance.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-query,csharp-dfs,rust-dfs
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
 
 # Measure overhead of the generalized path-aware accumulation runtime
 python examples/benchmark/benchmark_path_aware_accumulation.py \
@@ -222,6 +222,17 @@ python examples/benchmark/benchmark_path_aware_accumulation.py \
 python examples/benchmark/benchmark_weighted_shortest_path.py \
     --scales 300,1k,5k,10k
 ```
+
+The current native-lowering comparison surface across non-query targets is:
+
+- Rust DFS:
+  - all-path effective distance
+  - minimum hop distance
+  - positive weighted minimum path distance
+- Go DFS:
+  - all-path effective distance
+  - minimum hop distance
+  - positive weighted minimum path distance
 
 ### Weighted `Min` Results
 

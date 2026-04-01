@@ -93,6 +93,7 @@
 :- use_module('../core/optimizer').
 :- use_module('../core/constraint_analyzer').
 :- use_module('../core/index_analyzer').
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4, parse_table_spec/2]).
 
 % Track required imports from bindings
 :- dynamic required_binding_import/1.
@@ -6535,6 +6536,19 @@ count_recursive_calls_go_(_, _, Acc, Acc).
 %%
 %% Generates a recursive Go function with visited-set cycle detection.
 
+go_declared_table_mode(Pred/Arity, Mode) :-
+    clause(user:'table'(TableSpec), true),
+    compound(TableSpec),
+    functor(TableSpec, Pred, Arity),
+    parse_table_spec(TableSpec, Modes),
+    nth1(Arity, Modes, Mode),
+    !.
+go_declared_table_mode(_, all).
+
+go_positive_step_metadata(Pred/Arity, Position) :-
+    get_constraints(Pred/Arity, Constraints),
+    member(positive_step(Position), Constraints).
+
 %% is_general_recursive_pattern_go(+Pred, +Arity, +Clauses)
 %  Detect non-tail general recursion (has base + recursive clauses,
 %  recursive call is NOT in tail position).
@@ -6560,8 +6574,12 @@ contains_call_to((_, B), Pred) :-
 %% compile_general_recursive_to_go(+Pred, +Arity, +Clauses, -GoCode)
 compile_general_recursive_to_go(Pred, Arity, Clauses, GoCode) :-
     atom_string(Pred, PredStr),
+    go_declared_table_mode(Pred/Arity, TableMode),
     partition(is_recursive_clause_go(Pred), Clauses, RecClauses, BaseClauses),
     (   Arity =:= 3,
+        go_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven)
+    ->  compile_general_recursive_accumulation_to_go(Pred, Arity, TableMode, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven, GoCode)
+    ;   Arity =:= 3,
         %% Check if per-path visited pattern detected
         go_clauses_to_ppv_pairs(Clauses, PPVPairs),
         is_per_path_visited_pattern(Pred, Arity, PPVPairs, VisitedPos)
@@ -6577,17 +6595,69 @@ compile_general_recursive_to_go(Pred, Arity, Clauses, GoCode) :-
 
 %% go_clauses_to_ppv_pairs(+Clauses, -Pairs)
 go_clauses_to_ppv_pairs([], []).
-go_clauses_to_ppv_pairs([(Head, Body)|Rest], [(Head, Body)|RestPairs]) :-
+go_clauses_to_ppv_pairs([Head-Body|Rest], [(Head, Body)|RestPairs]) :-
     go_clauses_to_ppv_pairs(Rest, RestPairs).
 
 %% compile_ternary_recursive_go_no_visited(+PredStr, +BaseClauses, +RecClauses, -GoCode)
 %  Arity-3 recursive without visited-set (no \+ member pattern detected).
 compile_ternary_recursive_go_no_visited(PredStr, BaseClauses, RecClauses, GoCode) :-
+    atom_string(Pred, PredStr),
+    go_declared_table_mode(Pred/3, TableMode),
     %% Extract base case
     go_extract_ternary_base(BaseClauses, PredStr, BaseCode),
     %% Extract recursive case
     go_extract_ternary_rec(RecClauses, PredStr, RecCode),
-    format(string(GoCode),
+    (   TableMode == min
+    ->  go_extract_ternary_base_const(BaseClauses, BaseConstStr),
+        go_extract_ternary_increment(RecClauses, IncrStr),
+        format(string(GoCode),
+'// Path-aware minimum-hop transitive closure: ~w/3
+package main
+
+import (
+\t"container/list"
+\t"fmt"
+)
+
+type ~wState struct {
+\tNode string
+\tDepth int
+}
+
+var ~wData [][]string
+
+func ~wMin(start string) map[string]int {
+\tbest := map[string]int{}
+\tqueue := list.New()
+\tfor _, row := range ~wData {
+\t\tif len(row) >= 2 && row[0] == start {
+\t\t\tqueue.PushBack(~wState{Node: row[1], Depth: ~w})
+\t\t}
+\t}
+\tfor queue.Len() > 0 {
+\t\tfront := queue.Front()
+\t\tqueue.Remove(front)
+\t\tstate := front.Value.(~wState)
+\t\tif existing, ok := best[state.Node]; ok && state.Depth >= existing {
+\t\t\tcontinue
+\t\t}
+\t\tbest[state.Node] = state.Depth
+\t\tfor _, row := range ~wData {
+\t\t\tif len(row) >= 2 && row[0] == state.Node {
+\t\t\t\tqueue.PushBack(~wState{Node: row[1], Depth: state.Depth + ~w})
+\t\t\t}
+\t\t}
+\t}
+\treturn best
+}
+
+func main() {
+\tfor node, depth := range ~wMin("test") {
+\t\tfmt.Printf("%%s\\t%%d\\n", node, depth)
+\t}
+}
+', [PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, BaseConstStr, PredStr, PredStr, PredStr, IncrStr, PredStr])
+    ;   format(string(GoCode),
 'package main
 
 import (
@@ -6614,10 +6684,11 @@ func main() {
 \t\t}
 \t}
 }
-', [PredStr, PredStr, PredStr, PredStr, BaseCode, RecCode, PredStr]).
+', [PredStr, PredStr, PredStr, PredStr, BaseCode, RecCode, PredStr])
+    ).
 
 go_extract_ternary_base([], _, '\t// No base case').
-go_extract_ternary_base([(BaseHead, _BaseBody)|_], PredStr, BaseCode) :-
+go_extract_ternary_base([BaseHead-_BaseBody|_], PredStr, BaseCode) :-
     BaseHead =.. [_, _Arg1, _Arg2, Arg3],
     (integer(Arg3) -> format(string(Val), '~w', [Arg3]) ; Val = "1"),
     format(string(BaseCode),
@@ -6629,7 +6700,7 @@ go_extract_ternary_base([(BaseHead, _BaseBody)|_], PredStr, BaseCode) :-
 \t}', [PredStr, PredStr, Val]).
 
 go_extract_ternary_rec([], _, '\t// No recursive case').
-go_extract_ternary_rec([(_, _RecBody)|_], PredStr, RecCode) :-
+go_extract_ternary_rec([_RecHead-RecBody|_], PredStr, RecCode) :-
     format(string(RecCode),
 '\t// Recursive case
 \tfor _, row := range ~w_data {
@@ -6646,6 +6717,8 @@ go_extract_ternary_rec([(_, _RecBody)|_], PredStr, RecCode) :-
 %% - Base case: lookup step relation, yield (result, constant)
 %% - Recursive: step through intermediate, recurse, compute counter
 compile_ternary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode) :-
+    atom_string(Pred, PredStr),
+    go_declared_table_mode(Pred/3, TableMode),
     % Extract base case info
     (   BaseClauses = [BaseHead-BaseBody|_]
     ->  BaseHead =.. [_|BaseArgs],
@@ -6680,7 +6753,55 @@ compile_ternary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode) :-
     ;   IncrStr = "1"
     ),
     % Generate Go code
-    format(string(GoCode),
+    (   TableMode == min
+    ->  format(string(GoCode),
+'// Path-aware minimum-hop transitive closure: ~w/3
+package main
+
+import (
+\t"container/list"
+\t"fmt"
+)
+
+type ~wState struct {
+\tNode string
+\tDepth int
+}
+
+var ~wData [][]string // populated from facts
+
+func ~wMin(start string) map[string]int {
+\tbest := map[string]int{}
+\tqueue := list.New()
+\tfor _, row := range ~wData {
+\t\tif len(row) >= 2 && row[0] == start {
+\t\t\tqueue.PushBack(~wState{Node: row[1], Depth: ~s})
+\t\t}
+\t}
+\tfor queue.Len() > 0 {
+\t\tfront := queue.Front()
+\t\tqueue.Remove(front)
+\t\tstate := front.Value.(~wState)
+\t\tif existing, ok := best[state.Node]; ok && state.Depth >= existing {
+\t\t\tcontinue
+\t\t}
+\t\tbest[state.Node] = state.Depth
+\t\tfor _, row := range ~wData {
+\t\t\tif len(row) >= 2 && row[0] == state.Node {
+\t\t\t\tqueue.PushBack(~wState{Node: row[1], Depth: state.Depth + ~s})
+\t\t\t}
+\t\t}
+\t}
+\treturn best
+}
+
+func main() {
+\tfor node, depth := range ~wMin("test") {
+\t\tfmt.Printf("%%s\\t%%d\\n", node, depth)
+\t}
+}
+', [PredStr, PredStr, StepRelStr, PredStr, StepRelStr, PredStr, BaseConstStr, StepRelStr, PredStr, IncrStr, PredStr])
+    ;   format(string(GoCode),
 '// Transitive closure with counter: ~w/3
 // Step relation: ~w/2
 type ~wResult struct {
@@ -6723,7 +6844,28 @@ func ~w(arg1 string, visited map[string]bool) []~wResult {
     StepRelStr,
     PredStr, BaseConstStr,
     PredStr,
-    PredStr, IncrStr]).
+    PredStr, IncrStr])
+    ).
+
+go_extract_ternary_base_const(BaseClauses, BaseConstStr) :-
+    (   BaseClauses = [BaseHead-_|_],
+        BaseHead =.. [_|BaseArgs],
+        length(BaseArgs, 3),
+        nth1(3, BaseArgs, BaseConst),
+        number(BaseConst)
+    ->  format(string(BaseConstStr), "~w", [BaseConst])
+    ;   BaseConstStr = "1"
+    ).
+
+go_extract_ternary_increment(RecClauses, IncrStr) :-
+    (   RecClauses = [_RecHead-RecBody|_],
+        extract_goals_list_go(RecBody, RecGoals),
+        member((_ is ArithExpr), RecGoals),
+        ArithExpr = (_ + Incr),
+        number(Incr)
+    ->  format(string(IncrStr), "~w", [Incr])
+    ;   IncrStr = "1"
+    ).
 
 %% compile_binary_recursive_go(+PredStr, +BaseClauses, +RecClauses, -GoCode)
 compile_binary_recursive_go(PredStr, BaseClauses, RecClauses, GoCode) :-
@@ -6769,6 +6911,373 @@ func ~w(arg1 string, visited map[string]bool) []string {
 extract_goals_list_go((A, B), [A|Rest]) :- !,
     extract_goals_list_go(B, Rest).
 extract_goals_list_go(Goal, [Goal]).
+
+go_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepProven) :-
+    partition(is_recursive_clause_go(Pred), Clauses, RecClauses, BaseClauses),
+    BaseClauses = [BaseHead-BaseBody|_],
+    RecClauses = [_RecHead-RecBody|_],
+    BaseHead =.. [Pred, From, To, Acc],
+    var(From),
+    var(To),
+    var(Acc),
+    extract_goals_list_go(BaseBody, BaseGoals),
+    select(BaseArith, BaseGoals, BaseTerms0),
+    go_extract_positive_step_guard(BaseTerms0, AuxValue, BaseTerms, BasePositiveStep),
+    BaseTerms = [BaseGoalA, BaseGoalB],
+    go_edge_aux_terms(From, To, AuxValue, BaseGoalA, BaseGoalB, EdgeGoal, AuxGoal),
+    EdgeGoal =.. [StepRel, From, To],
+    AuxGoal =.. [AuxRel, From, AuxValue],
+    BaseArith = (Acc is BaseExpr),
+    term_variables(BaseExpr, BaseVars),
+    subset_go_vars(BaseVars, [AuxValue]),
+    extract_goals_list_go(RecBody, RecGoals),
+    select(RecArith, RecGoals, RecTermsWithGuard),
+    go_extract_positive_step_guard(RecTermsWithGuard, AuxValue, RecTerms0, RecPositiveStep),
+    select(RecAuxGoal, RecTerms0, RecTerms1),
+    select(RecEdgeGoal, RecTerms1, [RecCall]),
+    RecEdgeGoal =.. [StepRel, From, Mid],
+    RecAuxGoal =.. [AuxRel, From, AuxValue],
+    RecCall =.. [Pred, Mid, To, PrevAcc],
+    RecArith = (Acc is RecExpr),
+    term_variables(RecExpr, RecVars),
+    member_var_eq_go(PrevAcc, RecVars),
+    subset_go_vars(RecVars, [PrevAcc, AuxValue]),
+    (   (BasePositiveStep == true ; RecPositiveStep == true)
+    ->  PositiveStepProven = true
+    ;   PositiveStepProven = false
+    ).
+
+go_extract_positive_step_guard(Terms, AuxValue, RemainingTerms, true) :-
+    select(Guard0, Terms, RemainingTerms),
+    go_positive_step_guard(Guard0, AuxValue),
+    !.
+go_extract_positive_step_guard(Terms, _AuxValue, Terms, false).
+
+go_positive_step_guard(Goal0, AuxValue) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [>, AuxValue, Value],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [<, Value, AuxValue],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [>=, AuxValue, Value],
+        number(Value),
+        Value > 0
+    ;   Goal =.. [=<, Value, AuxValue],
+        number(Value),
+        Value > 0
+    ).
+
+go_edge_aux_terms(From, To, AuxValue, GoalA0, GoalB0, EdgeGoal, AuxGoal) :-
+    strip_module(GoalA0, _, GoalA),
+    strip_module(GoalB0, _, GoalB),
+    (   functor(GoalA, _, 2),
+        arg(1, GoalA, From),
+        arg(2, GoalA, To),
+        functor(GoalB, _, 2),
+        arg(1, GoalB, From),
+        arg(2, GoalB, AuxValue)
+    ->  EdgeGoal = GoalA,
+        AuxGoal = GoalB
+    ;   functor(GoalB, _, 2),
+        arg(1, GoalB, From),
+        arg(2, GoalB, To),
+        functor(GoalA, _, 2),
+        arg(1, GoalA, From),
+        arg(2, GoalA, AuxValue)
+    ->  EdgeGoal = GoalB,
+        AuxGoal = GoalA
+    ).
+
+member_var_eq_go(Var, [Candidate|_]) :-
+    Var == Candidate, !.
+member_var_eq_go(Var, [_|Rest]) :-
+    member_var_eq_go(Var, Rest).
+
+subset_go_vars([], _).
+subset_go_vars([Var|Rest], Allowed) :-
+    member_var_eq_go(Var, Allowed),
+    subset_go_vars(Rest, Allowed).
+
+go_accumulation_numeric_type(BaseExpr, RecExpr, "float64") :-
+    (   go_expr_requires_float(BaseExpr)
+    ;   go_expr_requires_float(RecExpr)
+    ),
+    !.
+go_accumulation_numeric_type(_, _, "int").
+
+go_expr_requires_float(Expr) :-
+    number(Expr),
+    \+ integer(Expr),
+    !.
+go_expr_requires_float(Expr) :-
+    compound(Expr),
+    (   Expr = (_ / _)
+    ;   Expr = (_ ** _)
+    ;   Expr =.. [log, _]
+    ;   Expr =.. [ln, _]
+    ),
+    !.
+go_expr_requires_float(Expr) :-
+    compound(Expr),
+    Expr =.. [_|Args],
+    member(Arg, Args),
+    go_expr_requires_float(Arg),
+    !.
+
+go_numeric_literal("float64", Number, Literal) :-
+    number(Number),
+    !,
+    (   integer(Number)
+    ->  format(string(Literal), '~w.0', [Number])
+    ;   format(string(Literal), '~w', [Number])
+    ).
+go_numeric_literal("int", Number, Literal) :-
+    format(string(Literal), '~w', [Number]).
+
+go_accumulation_expr(Expr, VarBindings, _Type, GoExpr) :-
+    var(Expr),
+    !,
+    lookup_go_var(Expr, VarBindings, GoExpr).
+go_accumulation_expr(Number, _, Type, GoExpr) :-
+    number(Number),
+    !,
+    go_numeric_literal(Type, Number, GoExpr).
+go_accumulation_expr(-Expr, VarBindings, Type, GoExpr) :-
+    !,
+    go_accumulation_expr(Expr, VarBindings, Type, Inner),
+    format(string(GoExpr), '(-~w)', [Inner]).
+go_accumulation_expr(log(Expr), VarBindings, _Type, GoExpr) :-
+    !,
+    go_accumulation_expr(Expr, VarBindings, "float64", Inner),
+    format(string(GoExpr), 'math.Log(~w)', [Inner]).
+go_accumulation_expr(ln(Expr), VarBindings, _Type, GoExpr) :-
+    !,
+    go_accumulation_expr(Expr, VarBindings, "float64", Inner),
+    format(string(GoExpr), 'math.Log(~w)', [Inner]).
+go_accumulation_expr(min(Left, Right), VarBindings, Type, GoExpr) :-
+    !,
+    go_accumulation_expr(Left, VarBindings, Type, LeftExpr),
+    go_accumulation_expr(Right, VarBindings, Type, RightExpr),
+    format(string(GoExpr), 'min(~w, ~w)', [LeftExpr, RightExpr]).
+go_accumulation_expr(max(Left, Right), VarBindings, Type, GoExpr) :-
+    !,
+    go_accumulation_expr(Left, VarBindings, Type, LeftExpr),
+    go_accumulation_expr(Right, VarBindings, Type, RightExpr),
+    format(string(GoExpr), 'max(~w, ~w)', [LeftExpr, RightExpr]).
+go_accumulation_expr(Expr, VarBindings, Type, GoExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    expr_op(Op, StdOp),
+    !,
+    go_accumulation_expr(Left, VarBindings, Type, LeftExpr),
+    go_accumulation_expr(Right, VarBindings, Type, RightExpr),
+    go_op(StdOp, GoOp),
+    format(string(GoExpr), '(~w ~w ~w)', [LeftExpr, GoOp, RightExpr]).
+go_accumulation_expr(Atom, _, _, GoExpr) :-
+    atom(Atom),
+    format(string(GoExpr), '"~w"', [Atom]).
+
+lookup_go_var(Var, [BindingVar-Expr|_], Expr) :-
+    Var == BindingVar,
+    !.
+lookup_go_var(Var, [_|Rest], Expr) :-
+    lookup_go_var(Var, Rest, Expr).
+
+compile_general_recursive_accumulation_to_go(Pred, Arity, TableMode, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven, GoCode) :-
+    Arity =:= 3,
+    atom_string(Pred, PredStr),
+    atom_string(StepRel, StepRelStr),
+    atom_string(AuxRel, AuxRelStr),
+    (   (PositiveStepGuardProven == true ; go_positive_step_metadata(Pred/Arity, Arity))
+    ->  PositiveStepProven = true
+    ;   PositiveStepProven = false
+    ),
+    go_accumulation_numeric_type(BaseExpr, RecExpr, AccType),
+    go_accumulation_expr(BaseExpr, [AuxValue-'stepCost'], AccType, BaseExprCode),
+    go_accumulation_expr(RecExpr, [PrevAcc-'sub.Acc', AuxValue-'stepCost'], AccType, RecExprCode),
+    go_accumulation_expr(RecExpr, [PrevAcc-'cost', AuxValue-'stepCost'], AccType, MinRecExprCode),
+    functor(StepHead, StepRel, 2),
+    findall(A-B, (module_clause(StepHead, true), StepHead =.. [_, A, B]), StepFacts),
+    findall(StepLine,
+        (   member(K-V, StepFacts),
+            format(string(StepLine), '\t~wData = append(~wData, []string{"~w", "~w"})', [StepRelStr, StepRelStr, K, V])
+        ),
+        StepLines),
+    atomic_list_concat(StepLines, '\n', StepBlock),
+    functor(AuxHead, AuxRel, 2),
+    findall(AuxLine,
+        (   module_clause(AuxHead, true),
+            AuxHead =.. [_, K, V],
+            go_numeric_literal(AccType, V, AuxLiteral),
+            format(string(AuxLine), '\t~wAux["~w"] = ~w', [PredStr, K, AuxLiteral])
+        ),
+        AuxLines),
+    atomic_list_concat(AuxLines, '\n', AuxBlock),
+    (   TableMode == min,
+        PositiveStepProven == true
+    ->  compile_go_min_accumulation(PredStr, StepRelStr, AuxRelStr, AccType, StepBlock, AuxBlock, BaseExprCode, MinRecExprCode, GoCode)
+    ;   compile_go_all_accumulation(PredStr, StepRelStr, AuxRelStr, AccType, StepBlock, AuxBlock, BaseExprCode, RecExprCode, GoCode)
+    ).
+
+go_math_import(ExprCode, '\t"math"\n') :-
+    sub_string(ExprCode, _, _, _, 'math.'),
+    !.
+go_math_import(_, '').
+
+compile_go_all_accumulation(PredStr, StepRelStr, AuxRelStr, AccType, StepBlock, AuxBlock, BaseExprCode, RecExprCode, GoCode) :-
+    go_math_import(BaseExprCode, BaseMathImport),
+    go_math_import(RecExprCode, RecMathImport),
+    atomic_list_concat([BaseMathImport, RecMathImport], '', MathImports0),
+    (MathImports0 = "" -> MathImports = "" ; sort(["\t\"math\"\n"], Sorted), atomic_list_concat(Sorted, '', MathImports)),
+    format(string(GoCode),
+'// Path-aware recursive accumulation: ~w/3
+// Edge relation: ~w/2
+// Auxiliary relation: ~w/2
+package main
+
+import (
+\t"fmt"
+~s)
+
+type ~wResult struct {
+\tValue string
+\tAcc   ~w
+}
+
+var ~wData [][]string
+var ~wAux = map[string]~w{}
+
+func ~w(arg1 string, visited map[string]bool) []~wResult {
+\tif visited[arg1] {
+\t\treturn nil
+\t}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {
+\t\tnewVisited[k] = v
+\t}
+\tnewVisited[arg1] = true
+
+\tvar results []~wResult
+\tfor _, row := range ~wData {
+\t\tif len(row) >= 2 && row[0] == arg1 {
+\t\t\tnb := row[1]
+\t\t\tif !newVisited[nb] {
+\t\t\t\tstepCost := ~wAux[arg1]
+\t\t\t\tresults = append(results, ~wResult{nb, ~w})
+\t\t\t\tfor _, sub := range ~w(nb, newVisited) {
+\t\t\t\t\tresults = append(results, ~wResult{sub.Value, ~w})
+\t\t\t\t}
+\t\t\t}
+\t\t}
+\t}
+\treturn results
+}
+
+func main() {
+~w
+~w
+\tvisited := map[string]bool{}
+\tfor _, result := range ~w("test", visited) {
+\t\tfmt.Printf("%%s\\t%%v\\n", result.Value, result.Acc)
+\t}
+}
+', [PredStr, StepRelStr, AuxRelStr, MathImports,
+    PredStr, AccType,
+    StepRelStr, PredStr, AccType,
+    PredStr, PredStr,
+    PredStr,
+    StepRelStr,
+    PredStr,
+    PredStr, BaseExprCode,
+    PredStr,
+    PredStr, RecExprCode,
+    StepBlock, AuxBlock,
+    PredStr]).
+
+compile_go_min_accumulation(PredStr, StepRelStr, AuxRelStr, AccType, StepBlock, AuxBlock, BaseExprCode, MinRecExprCode, GoCode) :-
+    go_math_import(BaseExprCode, BaseMathImport),
+    go_math_import(MinRecExprCode, RecMathImport),
+    atomic_list_concat([BaseMathImport, RecMathImport], '', MathImports0),
+    (MathImports0 = "" -> MathImports = "" ; sort(["\t\"math\"\n"], Sorted), atomic_list_concat(Sorted, '', MathImports)),
+    format(string(StateType), '~wState', [PredStr]),
+    format(string(HeapType), '~wHeap', [PredStr]),
+    format(string(DataName), '~wData', [StepRelStr]),
+    format(string(AuxName), '~wAux', [PredStr]),
+    format(string(MinFunc), '~wMin', [PredStr]),
+    format(string(Header), '// Path-aware positive weighted minimum accumulation: ~w/3\n// Edge relation: ~w/2\n// Auxiliary relation: ~w/2\npackage main\n\nimport (\n\t"container/heap"\n\t"fmt"\n~s)\n', [PredStr, StepRelStr, AuxRelStr, MathImports]),
+    format(string(Types),
+'type ~w struct {
+\tNode string
+\tCost ~w
+\tIndex int
+}
+
+type ~w []~w
+
+func (h ~w) Len() int { return len(h) }
+func (h ~w) Less(i, j int) bool { return h[i].Cost < h[j].Cost }
+func (h ~w) Swap(i, j int) { h[i], h[j] = h[j], h[i]; h[i].Index = i; h[j].Index = j }
+func (h *~w) Push(x interface{}) { *h = append(*h, x.(~w)) }
+func (h *~w) Pop() interface{} {
+\told := *h
+\tn := len(old)
+\titem := old[n-1]
+\t*h = old[:n-1]
+\treturn item
+}
+
+var ~w [][]string
+var ~w = map[string]~w{}
+', [StateType, AccType, HeapType, StateType, HeapType, HeapType, HeapType, HeapType, StateType, HeapType, DataName, AuxName, AccType]),
+    format(string(FuncCode),
+'func ~w(start string) map[string]~w {
+\tbest := map[string]~w{}
+\tpq := &~w{}
+\theap.Init(pq)
+
+\tstepCost, ok := ~w[start]
+\tif ok {
+\t\tfor _, row := range ~w {
+\t\t\tif len(row) >= 2 && row[0] == start {
+\t\t\t\tstate := ~w{Node: row[1], Cost: ~w}
+\t\t\t\theap.Push(pq, state)
+\t\t\t}
+\t\t}
+\t}
+
+\tfor pq.Len() > 0 {
+\t\tstate := heap.Pop(pq).(~w)
+\t\tcost := state.Cost
+\t\tnode := state.Node
+\t\tif existing, ok := best[node]; ok && cost >= existing {
+\t\t\tcontinue
+\t\t}
+\t\tbest[node] = cost
+\t\tstepCost, ok := ~w[node]
+\t\tif !ok {
+\t\t\tcontinue
+\t\t}
+\t\tfor _, row := range ~w {
+\t\t\tif len(row) >= 2 && row[0] == node {
+\t\t\t\theap.Push(pq, ~w{Node: row[1], Cost: ~w})
+\t\t\t}
+\t\t}
+\t}
+\treturn best
+}
+', [MinFunc, AccType, AccType, HeapType, AuxName, DataName, StateType, BaseExprCode, StateType, AuxName, DataName, StateType, MinRecExprCode]),
+    format(string(MainCode),
+'func main() {
+~w
+~w
+\tfor node, cost := range ~w("test") {
+\t\tfmt.Printf("%%s\\t%%v\\n", node, cost)
+\t}
+}
+', [StepBlock, AuxBlock, MinFunc]),
+    atomic_list_concat([Header, Types, FuncCode, MainCode], '\n', GoCode).
 
 %% ============================================
 %% MUTUAL RECURSION
