@@ -41,6 +41,40 @@ test(generated_output_checks_with_typr, [condition(typr_cli_available)]) :-
     ),
     retractall(user:simple_fact(_)).
 
+test(alias_assignments_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(alias_after_output(Name, Out) :- string_lower(Name, Lower), Out = Lower)),
+    assertz(type_declarations:uw_type(alias_after_output/2, 1, atom)),
+    assertz(type_declarations:uw_type(alias_after_output/2, 2, atom)),
+    once(compile_predicate_to_typr(alias_after_output/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:alias_after_output(_, _)).
+
+test(arithmetic_assignments_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(arith_after_output(Name, Out) :- string_length(Name, Len), Out is Len + 1)),
+    assertz(type_declarations:uw_type(arith_after_output/2, 1, atom)),
+    assertz(type_declarations:uw_type(arith_after_output/2, 2, integer)),
+    once(compile_predicate_to_typr(arith_after_output/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:arith_after_output(_, _)).
+
 test(cat_command_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:(say_cat(Msg) :- cat(Msg))),

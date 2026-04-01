@@ -197,6 +197,8 @@ branches it lowers directly to native TypR syntax. That native subset now
 includes:
 
 - simple output-producing binding chains
+- simple alias or arithmetic assignment tails after an earlier native
+  string-transform or length-producing step
 - guard-style command predicates such as `is_character/1`
 - unary TypR-safe I/O commands such as `cat/1` and `print/1`, emitted as
   native fixed-arity TypR calls
@@ -377,10 +379,11 @@ includes:
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
 
 More complex generic bodies still fall back to the wrapped R path.
-That currently includes generic string-transform/output-tail shapes such as
-`string_lower(Name, Lower), Out = Lower` or
-`string_length(Name, Len), Out is Len + 1`; the limiting step is the earlier
-producer goal, not the final assignment tail.
+The wrapped fallback boundary is now beyond the first native
+string-transform/output-tail slice; if this area is extended further, the next
+real audit target is the producer-goal family after the currently supported
+`string_lower/2`, `string_upper/2`, and `string_length/2` follow-on alias or
+arithmetic tails.
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)

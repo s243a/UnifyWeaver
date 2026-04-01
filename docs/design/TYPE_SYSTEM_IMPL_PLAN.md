@@ -167,6 +167,8 @@ bring-up.
 - native TypR lowering for a conservative subset of generic non-recursive rule
   bodies:
   - simple output-producing binding chains
+  - simple alias or arithmetic assignment tails after an earlier native
+    string-transform or length-producing step
   - guard-style command predicates lowered into clause conditions
   - sequential native control-flow chains where earlier outputs feed later
     guards and outputs

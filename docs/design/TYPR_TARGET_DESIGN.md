@@ -507,14 +507,14 @@ Current implementation note:
 
 Current wrapped-fallback boundary note:
 
-- simple assignment tails such as `Out = Lower` or `Out is Len + 1` do not by
-  themselves qualify a generic body for native TypR lowering when the earlier
-  producer goals still come from the R-backed generic path
-- representative cases are string-transform/output-tail bodies such as
-  `string_lower(Name, Lower), Out = Lower` and
-  `string_length(Name, Len), Out is Len + 1`
-- treat those as wrapped-fallback cases until the producer-goal layer itself
-  has a clean native TypR lowering
+- the first producer-follow-on slice is now native:
+  `string_lower/2`, `string_upper/2`, and `string_length/2` may feed a simple
+  alias or arithmetic assignment tail such as `Out = Lower` or
+  `Out is Len + 1`
+- the remaining wrapped fallback boundary is now beyond that first
+  string-transform/output-tail slice
+- if this area is revisited again, the next real audit target is the next
+  unsupported producer-goal family rather than the final assignment tail
 - fixed-arity unary I/O stays native (`cat/1`, `print/1`), but variadic-style
   output should still be composed with `paste` first, e.g.
   `cat(paste("x =", x))`
