@@ -120,8 +120,8 @@ The immediate explicit-guard mechanism is the minimum acceptable
 The declarative metadata mechanism is now available through
  `constraint/2` with `positive_step(N)`.
 
-The remaining work before broad Rust adoption is not syntax design but
- deciding how broadly targets should rely on:
+The remaining work before broader cross-target adoption is not syntax
+ design but deciding how broadly targets should rely on:
 
 - explicit positive guards
 - declarative `positive_step/1` metadata
@@ -132,4 +132,6 @@ Current implementation status:
 - C# weighted `Min` lowering consumes both explicit guards and
   `positive_step/1` metadata
 - Rust native lowering for counted and positive-additive weighted `Min`
+  now consumes the same contracts during native emission
+- Go native lowering for counted and positive-additive weighted `Min`
   now consumes the same contracts during native emission
