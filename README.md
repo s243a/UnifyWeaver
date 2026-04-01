@@ -200,6 +200,8 @@ includes:
 - guard-style command predicates such as `is_character/1`
 - unary TypR-safe I/O commands such as `cat/1` and `print/1`, emitted as
   native fixed-arity TypR calls
+- multi-argument output should still be composed explicitly, e.g.
+  `cat(paste("x =", x))`
 - multi-step native control-flow chains where an earlier output feeds a later
   guard and output
 - simple comparison and boolean guard expressions over already-bound
@@ -375,6 +377,10 @@ includes:
 - dataframe helpers such as `filter/3`, `sort_by/3`, and `group_by/3`
 
 More complex generic bodies still fall back to the wrapped R path.
+That currently includes generic string-transform/output-tail shapes such as
+`string_lower(Name, Lower), Out = Lower` or
+`string_length(Name, Len), Out is Len + 1`; the limiting step is the earlier
+producer goal, not the final assignment tail.
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)

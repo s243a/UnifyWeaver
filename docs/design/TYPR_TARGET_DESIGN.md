@@ -505,6 +505,20 @@ Current implementation note:
   dataframe helper calls, and literal-guarded branch selection; more complex
   bodies still fall back to wrapped R
 
+Current wrapped-fallback boundary note:
+
+- simple assignment tails such as `Out = Lower` or `Out is Len + 1` do not by
+  themselves qualify a generic body for native TypR lowering when the earlier
+  producer goals still come from the R-backed generic path
+- representative cases are string-transform/output-tail bodies such as
+  `string_lower(Name, Lower), Out = Lower` and
+  `string_length(Name, Len), Out is Len + 1`
+- treat those as wrapped-fallback cases until the producer-goal layer itself
+  has a clean native TypR lowering
+- fixed-arity unary I/O stays native (`cat/1`, `print/1`), but variadic-style
+  output should still be composed with `paste` first, e.g.
+  `cat(paste("x =", x))`
+
 Follow-on work:
 
 1. Extend TypR beyond the current conservative native generic subset.
