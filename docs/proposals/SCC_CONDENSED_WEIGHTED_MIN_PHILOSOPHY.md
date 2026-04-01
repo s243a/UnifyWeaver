@@ -3,23 +3,25 @@
 ## Why This Exists
 
 The current weighted `min` support for `PathAwareAccumulationNode` is
-correct, but not yet fast enough to justify its purpose.
+now split into two practical cases.
 
 That is a different situation from counted shortest path:
 
 - counted `min` on `PathAwareTransitiveClosureNode` already delivers the
   expected performance win
-- weighted `min` on `PathAwareAccumulationNode` still pays too much for
-  exact per-path state management
+- positive-additive weighted `min` on `PathAwareAccumulationNode` now
+  also has a fast runtime path based on layered dynamic programming
+- broader weighted `min` shapes with more path-sensitive continuation
+  still need a better structural solution than exact frontier tracking
 
-So the next step should not be another local frontier tweak alone. It
-should be a change in the **graph model** that reduces how much
-path-specific state the runtime has to remember.
+So the remaining next step is no longer "make weighted `min` fast at
+all." It is narrower: improve the cases that are not reducible to the
+current positive-additive fast path.
 
 ## Core Intuition
 
-The expensive part of weighted `min` today is not arithmetic. It is the
-fact that correctness depends on more than:
+For the remaining hard cases, the expensive part of weighted `min` is
+not arithmetic. It is the fact that correctness depends on more than:
 
 - current node
 - current accumulated cost
@@ -48,13 +50,15 @@ general graph:
 - much stronger pruning and dynamic-programming opportunities
 
 The Wikipedia-style category graph used in the benchmark is not fully
-acyclic, but its cycles are local rather than universal. That makes SCC
-condensation attractive because:
+acyclic, but the measured SCC structure is very favorable: only a small
+number of cyclic SCCs remain, and the largest cyclic SCC is small. That
+makes SCC condensation attractive because:
 
 - it removes global cyclic structure from the outer graph
 - it may sharply reduce the number of states that need exact visited-set
   tracking
-- it gives us a path toward `min` actually beating `all`
+- it gives us a path toward handling the broader weighted `min` cases
+  that are not already solved by the positive-additive fast path
 
 ## What This Is Not
 
@@ -81,11 +85,14 @@ That suggests the following hierarchy:
 1. Counted `min` on simple path-aware closure
    Use scalar best-known pruning.
 
-2. Weighted `min` on an SCC-condensed component DAG
+2. Weighted `min` on a positive-additive recurrence with hop bound
+   Use layered dynamic programming over `(node, depth)`.
+
+3. Weighted `min` on an SCC-condensed component DAG
    Use dynamic-programming or component-level best-known pruning where
    possible.
 
-3. Weighted `min` inside cyclic SCCs
+4. Weighted `min` inside cyclic SCCs
    Use exact path-aware state only where condensation does not remove the
    ambiguity.
 
@@ -114,7 +121,9 @@ This proposal should only be considered successful if it achieves both:
    weighted `min` workloads
 2. a clear runtime advantage over `All`, especially at larger scales
 
-The target is not just "less slow than before." The target is for
-weighted `min` to become meaningfully faster than full weighted path
-enumeration, even if the gain is smaller than the counted shortest-path
-case.
+That bar is now met for the positive-additive benchmarked case. The
+remaining success criterion for this SCC direction is narrower:
+
+1. preserve exact output agreement for the broader weighted `Min`
+   workload class
+2. beat the exact frontier fallback on those broader cases

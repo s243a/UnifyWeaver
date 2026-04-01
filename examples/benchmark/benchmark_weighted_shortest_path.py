@@ -78,6 +78,9 @@ class Program
         var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var outDegree = new Dictionary<string, int>(StringComparer.Ordinal);
         var sourceNodes = new HashSet<string>(StringComparer.Ordinal);
+        var adjacency = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var allNodes = new HashSet<string>(StringComparer.Ordinal);
+        var edgeCount = 0;
 
         foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
         {
@@ -95,6 +98,22 @@ class Program
             provider.AddFact(edgeId, parts[0], parts[1]);
             sourceNodes.Add(parts[0]);
             outDegree[parts[0]] = outDegree.TryGetValue(parts[0], out var degree) ? degree + 1 : 1;
+            allNodes.Add(parts[0]);
+            allNodes.Add(parts[1]);
+            edgeCount++;
+
+            if (!adjacency.TryGetValue(parts[0], out var neighbors))
+            {
+                neighbors = new List<string>();
+                adjacency[parts[0]] = neighbors;
+            }
+
+            neighbors.Add(parts[1]);
+        }
+
+        foreach (var node in allNodes)
+        {
+            adjacency.TryAdd(node, new List<string>());
         }
 
         foreach (var source in sourceNodes)
@@ -126,6 +145,7 @@ class Program
             categories.Add(parts[1]);
         }
 
+        var sccStats = ComputeSccStats(adjacency);
         swLoad.Stop();
 
         var plan = new QueryPlan(
@@ -235,7 +255,126 @@ class Program
         Console.Error.WriteLine($"seed_count={seedParams.Count}");
         Console.Error.WriteLine($"tuple_count={rows.Count}");
         Console.Error.WriteLine($"article_count={results.Count}");
+        Console.Error.WriteLine($"graph_nodes={allNodes.Count}");
+        Console.Error.WriteLine($"graph_edges={edgeCount}");
+        Console.Error.WriteLine($"scc_count={sccStats.SccCount}");
+        Console.Error.WriteLine($"cyclic_scc_count={sccStats.CyclicSccCount}");
+        Console.Error.WriteLine($"largest_scc={sccStats.LargestScc}");
+        Console.Error.WriteLine($"largest_cyclic_scc={sccStats.LargestCyclicScc}");
+        Console.Error.WriteLine($"condensed_edges={sccStats.CondensedEdgeCount}");
     }
+
+    static SccStats ComputeSccStats(Dictionary<string, List<string>> adjacency)
+    {
+        var index = 0;
+        var indexMap = new Dictionary<string, int>(StringComparer.Ordinal);
+        var lowLink = new Dictionary<string, int>(StringComparer.Ordinal);
+        var onStack = new HashSet<string>(StringComparer.Ordinal);
+        var stack = new Stack<string>();
+        var componentByNode = new Dictionary<string, int>(StringComparer.Ordinal);
+        var componentSizes = new List<int>();
+        var componentHasSelfLoop = new List<bool>();
+
+        void StrongConnect(string node)
+        {
+            indexMap[node] = index;
+            lowLink[node] = index;
+            index++;
+            stack.Push(node);
+            onStack.Add(node);
+
+            foreach (var next in adjacency[node])
+            {
+                if (!indexMap.ContainsKey(next))
+                {
+                    StrongConnect(next);
+                    lowLink[node] = Math.Min(lowLink[node], lowLink[next]);
+                }
+                else if (onStack.Contains(next))
+                {
+                    lowLink[node] = Math.Min(lowLink[node], indexMap[next]);
+                }
+            }
+
+            if (lowLink[node] == indexMap[node])
+            {
+                var componentId = componentSizes.Count;
+                var size = 0;
+                var hasSelfLoop = false;
+
+                while (true)
+                {
+                    var member = stack.Pop();
+                    onStack.Remove(member);
+                    componentByNode[member] = componentId;
+                    size++;
+                    if (adjacency[member].Contains(member, StringComparer.Ordinal))
+                    {
+                        hasSelfLoop = true;
+                    }
+
+                    if (member == node)
+                    {
+                        break;
+                    }
+                }
+
+                componentSizes.Add(size);
+                componentHasSelfLoop.Add(hasSelfLoop);
+            }
+        }
+
+        foreach (var node in adjacency.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {
+            if (!indexMap.ContainsKey(node))
+            {
+                StrongConnect(node);
+            }
+        }
+
+        var condensedEdges = new HashSet<(int From, int To)>();
+        foreach (var (from, neighbors) in adjacency)
+        {
+            var fromComponent = componentByNode[from];
+            foreach (var to in neighbors)
+            {
+                var toComponent = componentByNode[to];
+                if (fromComponent != toComponent)
+                {
+                    condensedEdges.Add((fromComponent, toComponent));
+                }
+            }
+        }
+
+        var cyclicSccCount = 0;
+        var largestScc = 0;
+        var largestCyclicScc = 0;
+        for (var i = 0; i < componentSizes.Count; i++)
+        {
+            var size = componentSizes[i];
+            largestScc = Math.Max(largestScc, size);
+            var isCyclic = size > 1 || componentHasSelfLoop[i];
+            if (isCyclic)
+            {
+                cyclicSccCount++;
+                largestCyclicScc = Math.Max(largestCyclicScc, size);
+            }
+        }
+
+        return new SccStats(
+            componentSizes.Count,
+            cyclicSccCount,
+            largestScc,
+            largestCyclicScc,
+            condensedEdges.Count);
+    }
+
+    readonly record struct SccStats(
+        int SccCount,
+        int CyclicSccCount,
+        int LargestScc,
+        int LargestCyclicScc,
+        int CondensedEdgeCount);
 }
 """
 

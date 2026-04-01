@@ -223,6 +223,41 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
     --scales 300,1k,5k,10k
 ```
 
+### Weighted `Min` Results
+
+The current positive-additive weighted `Min` fast path in the C# query
+engine is now materially faster than `All` while preserving exact output
+agreement on the benchmarked workload.
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_weighted_shortest_path.py \
+    --scales 300,1k,5k,10k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | All | Min | Speedup | Output Match |
+|-------|-----|-----|---------|--------------|
+| 300 | 0.627s | 0.184s | 3.41x | match |
+| 1k | 0.440s | 0.139s | 3.17x | match |
+| 5k | 1.188s | 0.236s | 5.03x | match |
+| 10k | 2.930s | 0.419s | 6.98x | match |
+
+The same run also reports SCC metrics for the category graph. At `10k`
+the graph has:
+
+- `8247` nodes
+- `25227` edges
+- `8204` SCCs
+- `17` cyclic SCCs
+- largest cyclic SCC size `35`
+
+That matters because it suggests the remaining hard cyclic structure is
+small and localized, which is favorable for future SCC-condensed
+strategies on broader weighted `Min` workloads.
+
 ### Available Targets
 
 | Target | Flag | Run Command |
