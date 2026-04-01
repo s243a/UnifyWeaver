@@ -71,6 +71,7 @@
 :- use_module('../core/service_validation').
 :- use_module('../core/optimizer').
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module('../core/constraint_analyzer', [get_constraints/2]).
 
 % Component system integration (ported from Go target)
 :- use_module('../core/component_registry').
@@ -80,7 +81,7 @@
 :- use_module('../core/clause_body_analysis', except([translate_expr/3])).
 
 % Per-path visited pattern detection
-:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4, parse_table_spec/2]).
 
 % Track collected components for code generation
 :- dynamic collected_component/2.
@@ -3372,8 +3373,8 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
         compile_facts_to_rust(Pred, Arity, Clauses, FieldDelim, RustCode)
     ;   is_general_recursive_pattern_rust(Pred, Arity, Clauses) ->
         format('Type: general_recursion_arity_~w~n', [Arity]),
-        (   rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr)
-        ->  compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, RustCode)
+        (   rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven)
+        ->  compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven, RustCode)
         %% Check for per-path visited pattern and branch code generation
         ;   rust_clauses_to_ppv_pairs(Clauses, PPVPairs),
             is_per_path_visited_pattern(Pred, Arity, PPVPairs, VisitedPos)
@@ -3392,6 +3393,19 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
 %%
 %% Handles transitive closure with counter patterns.
 %% Generates recursive Rust function with HashSet<String> visited parameter.
+
+rust_declared_table_mode(Pred/Arity, Mode) :-
+    clause(user:'table'(TableSpec), true),
+    compound(TableSpec),
+    functor(TableSpec, Pred, Arity),
+    parse_table_spec(TableSpec, Modes),
+    nth1(Arity, Modes, Mode),
+    !.
+rust_declared_table_mode(_, all).
+
+rust_positive_step_metadata(Pred/Arity, Position) :-
+    get_constraints(Pred/Arity, Constraints),
+    member(positive_step(Position), Constraints).
 
 is_general_recursive_pattern_rust(Pred, Arity, Clauses) :-
     Arity >= 2,
@@ -3418,6 +3432,7 @@ rust_clauses_to_ppv_pairs([Head-Body|Rest], [(Head, Body)|RestPairs]) :-
 %  Plain recursive Rust function without HashSet<String> visited parameter.
 compile_general_recursive_to_rust_no_visited(Pred, Arity, Clauses, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_declared_table_mode(Pred/Arity, TableMode),
     % Partition clauses
     partition(is_rec_clause_rust(Pred), Clauses, RecClauses, BaseClauses),
     % Extract step relation from base case
@@ -3464,7 +3479,17 @@ compile_general_recursive_to_rust_no_visited(Pred, Arity, Clauses, RustCode) :-
         ),
         FactLines),
     atomic_list_concat(FactLines, '\n', FactBlock),
-    (   Arity =:= 3
+    (   Arity =:= 3,
+        TableMode == min
+    ->  load_rust_template('path_aware_transitive_closure_min', Template),
+        render_template(Template, [
+            pred=PredStr,
+            step_rel=StepRelStr,
+            base_const=BaseConstStr,
+            recursive_increment=IncrStr,
+            step_block=FactBlock
+        ], RustCode)
+    ;   Arity =:= 3
     ->  format(string(RustCode),
 '// Transitive closure with counter: ~w/3 (no visited pattern)
 // Step relation: ~w/2
@@ -3525,6 +3550,7 @@ fn main() {{
 
 compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_declared_table_mode(Pred/Arity, TableMode),
     % Partition clauses
     partition(is_rec_clause_rust(Pred), Clauses, RecClauses, BaseClauses),
     % Extract step relation from base case
@@ -3572,7 +3598,17 @@ compile_general_recursive_to_rust(Pred, Arity, Clauses, RustCode) :-
         ),
         FactLines),
     atomic_list_concat(FactLines, '\n', FactBlock),
-    (   Arity =:= 3
+    (   Arity =:= 3,
+        TableMode == min
+    ->  load_rust_template('path_aware_transitive_closure_min', Template),
+        render_template(Template, [
+            pred=PredStr,
+            step_rel=StepRelStr,
+            base_const=BaseConstStr,
+            recursive_increment=IncrStr,
+            step_block=FactBlock
+        ], RustCode)
+    ;   Arity =:= 3
     ->  format(string(RustCode),
 '// Transitive closure with counter: ~w/3
 // Step relation: ~w/2
@@ -3656,7 +3692,7 @@ extract_goals_list_rust((A, B), [A|Rest]) :- !,
     extract_goals_list_rust(B, Rest).
 extract_goals_list_rust(Goal, [Goal]).
 
-rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr) :-
+rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepProven) :-
     partition(is_rec_clause_rust(Pred), Clauses, RecClauses, BaseClauses),
     BaseClauses = [BaseHead-BaseBody|_],
     RecClauses = [_RecHead-RecBody|_],
@@ -3665,7 +3701,8 @@ rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAc
     var(To),
     var(Acc),
     extract_goals_list_rust(BaseBody, BaseGoals),
-    select(BaseArith, BaseGoals, BaseTerms),
+    select(BaseArith, BaseGoals, BaseTerms0),
+    rust_extract_positive_step_guard(BaseTerms0, AuxValue, BaseTerms, BasePositiveStep),
     BaseTerms = [BaseGoalA, BaseGoalB],
     rust_edge_aux_terms(From, To, AuxValue, BaseGoalA, BaseGoalB, EdgeGoal, AuxGoal),
     EdgeGoal =.. [StepRel, From, To],
@@ -3674,7 +3711,8 @@ rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAc
     term_variables(BaseExpr, BaseVars),
     subset_vars(BaseVars, [AuxValue]),
     extract_goals_list_rust(RecBody, RecGoals),
-    select(RecArith, RecGoals, RecTerms0),
+    select(RecArith, RecGoals, RecTermsWithGuard),
+    rust_extract_positive_step_guard(RecTermsWithGuard, AuxValue, RecTerms0, RecPositiveStep),
     select(RecAuxGoal, RecTerms0, RecTerms1),
     select(RecEdgeGoal, RecTerms1, [RecCall]),
     RecEdgeGoal =.. [StepRel, From, Mid],
@@ -3683,7 +3721,33 @@ rust_computed_increment_pattern(Pred, Clauses, StepRel, AuxRel, AuxValue, PrevAc
     RecArith = (Acc is RecExpr),
     term_variables(RecExpr, RecVars),
     member_var_eq(PrevAcc, RecVars),
-    subset_vars(RecVars, [PrevAcc, AuxValue]).
+    subset_vars(RecVars, [PrevAcc, AuxValue]),
+    (   (BasePositiveStep == true ; RecPositiveStep == true)
+    ->  PositiveStepProven = true
+    ;   PositiveStepProven = false
+    ).
+
+rust_extract_positive_step_guard(Terms, AuxValue, RemainingTerms, true) :-
+    select(Guard0, Terms, RemainingTerms),
+    rust_positive_step_guard(Guard0, AuxValue),
+    !.
+rust_extract_positive_step_guard(Terms, _AuxValue, Terms, false).
+
+rust_positive_step_guard(Goal0, AuxValue) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [>, AuxValue, Value],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [<, Value, AuxValue],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [>=, AuxValue, Value],
+        number(Value),
+        Value > 0
+    ;   Goal =.. [=<, Value, AuxValue],
+        number(Value),
+        Value > 0
+    ).
 
 rust_edge_aux_terms(From, To, AuxValue, GoalA, GoalB, EdgeGoal, AuxGoal) :-
     (   rust_binary_relation_term(From, To, GoalA),
@@ -3708,14 +3772,20 @@ rust_aux_relation_term(Key, Value, Goal0) :-
     arg(1, Goal, Key),
     arg(2, Goal, Value).
 
-compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, RustCode) :-
+compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven, RustCode) :-
     Arity =:= 3,
     atom_string(Pred, PredStr),
     atom_string(StepRel, StepRelStr),
     atom_string(AuxRel, AuxRelStr),
+    rust_declared_table_mode(Pred/Arity, TableMode),
+    (   (PositiveStepGuardProven == true ; rust_positive_step_metadata(Pred/Arity, Arity))
+    ->  PositiveStepProven = true
+    ;   PositiveStepProven = false
+    ),
     rust_accumulation_numeric_type(BaseExpr, RecExpr, AccType),
     rust_accumulation_expr(BaseExpr, [AuxValue-'*step_cost'], AccType, BaseExprCode),
     rust_accumulation_expr(RecExpr, [PrevAcc-acc, AuxValue-'*step_cost'], AccType, RecExprCode),
+    rust_accumulation_expr(RecExpr, [PrevAcc-cost, AuxValue-'*step_cost'], AccType, MinRecExprCode),
     functor(StepHead, StepRel, 2),
     findall(A-B, (user:clause(StepHead, true), StepHead =.. [_, A, B]), StepFacts),
     findall(StepLine,
@@ -3737,7 +3807,11 @@ compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, Aux
         ),
         AuxLines),
     atomic_list_concat(AuxLines, '\n', AuxBlock),
-    load_rust_template('path_aware_accumulation', Template),
+    (   TableMode == min,
+        PositiveStepProven == true
+    ->  load_rust_template('path_aware_accumulation_min', Template)
+    ;   load_rust_template('path_aware_accumulation', Template)
+    ),
     render_template(Template, [
         pred=PredStr,
         step_rel=StepRelStr,
@@ -3746,7 +3820,8 @@ compile_general_recursive_accumulation_to_rust(Pred, Arity, StepRel, AuxRel, Aux
         step_block=StepBlock,
         aux_block=AuxBlock,
         base_expr=BaseExprCode,
-        recursive_expr=RecExprCode
+        recursive_expr=RecExprCode,
+        min_recursive_expr=MinRecExprCode
     ], RustCode).
 
 member_var_eq(Var, [Candidate|_]) :-

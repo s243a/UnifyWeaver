@@ -1,0 +1,87 @@
+// Path-aware positive weighted minimum accumulation: {{pred}}/3
+// Edge relation: {{step_rel}}/2
+// Auxiliary relation: {{aux_rel}}/2
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
+
+#[derive(Clone, Debug)]
+struct State {
+    cost: {{acc_type}},
+    node: String,
+}
+
+impl PartialEq for State {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node && self.cost == other.cost
+    }
+}
+
+impl Eq for State {}
+
+impl Ord for State {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost
+            .partial_cmp(&self.cost)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| self.node.cmp(&other.node))
+    }
+}
+
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn {{pred}}_min(
+    start: &str,
+    adj: &HashMap<String, Vec<String>>,
+    aux: &HashMap<String, {{acc_type}}>
+) -> Vec<(String, {{acc_type}})> {
+    let mut best: HashMap<String, {{acc_type}}> = HashMap::new();
+    let mut heap: BinaryHeap<State> = BinaryHeap::new();
+
+    if let (Some(neighbors), Some(step_cost)) = (adj.get(start), aux.get(start)) {
+        for nb in neighbors {
+            heap.push(State {
+                cost: {{base_expr}},
+                node: nb.clone(),
+            });
+        }
+    }
+
+    while let Some(State { cost, node }) = heap.pop() {
+        if let Some(existing) = best.get(&node) {
+            if cost >= *existing {
+                continue;
+            }
+        }
+        best.insert(node.clone(), cost);
+
+        if let (Some(neighbors), Some(step_cost)) = (adj.get(&node), aux.get(&node)) {
+            for nb in neighbors {
+                heap.push(State {
+                    cost: {{min_recursive_expr}},
+                    node: nb.clone(),
+                });
+            }
+        }
+    }
+
+    let mut results: Vec<(String, {{acc_type}})> = best.into_iter().collect();
+    results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal)));
+    results
+}
+
+fn main() {
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+{{step_block}}
+    let mut aux: HashMap<String, {{acc_type}}> = HashMap::new();
+{{aux_block}}
+
+    let results = {{pred}}_min("test", &adj, &aux);
+    for (ancestor, acc) in &results {
+        println!("{}\t{}", ancestor, acc);
+    }
+}

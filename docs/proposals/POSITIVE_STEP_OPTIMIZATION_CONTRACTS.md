@@ -121,8 +121,15 @@ The declarative metadata mechanism is now available through
  `constraint/2` with `positive_step(N)`.
 
 The remaining work before broad Rust adoption is not syntax design but
- deciding how much Rust native lowering should rely on:
+ deciding how broadly targets should rely on:
 
 - explicit positive guards
 - declarative `positive_step/1` metadata
 - or both
+
+Current implementation status:
+
+- C# weighted `Min` lowering consumes both explicit guards and
+  `positive_step/1` metadata
+- Rust native lowering for counted and positive-additive weighted `Min`
+  now consumes the same contracts during native emission
