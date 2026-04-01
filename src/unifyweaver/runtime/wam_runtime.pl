@@ -115,9 +115,42 @@ fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
     nth1(PC, Code, Instr).
 
 %% backtrack(+StateIn, -StateOut)
-%  Restores state from choice point.
-%  NOTE: Symbolic trail unwinding is not implemented; bindings are currently persistent.
-backtrack(wam_state(_, _, _, _, _, _, [cp(NextPC, R, S, CP, T)|CPs], Code, L), wam_state(NextPC, R, S, [], T, CP, CPs, Code, L)).
+%  Restores state from choice point and unwinds the trail.
+%  The trail records bindings as trail(Key, OldValue) entries made since the
+%  choice point was created. On backtrack, we restore registers to their
+%  saved state from the choice point, then apply trail entries to undo any
+%  bindings that leaked into the saved register set.
+backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, CP, SavedTrail)|CPs], Code, L),
+          wam_state(NextPC, RestoredR, S, [], SavedTrail, CP, CPs, Code, L)) :-
+    unwind_trail(Trail, SavedTrail, R, RestoredR).
+
+%% unwind_trail(+CurrentTrail, +SavedTrail, +Regs, -RestoredRegs)
+%  Undoes bindings recorded on the trail since the choice point was created.
+%  Trail entries newer than SavedTrail are unwound in reverse order.
+unwind_trail(Trail, SavedTrail, Regs, RestoredRegs) :-
+    trail_diff(Trail, SavedTrail, NewEntries),
+    undo_bindings(NewEntries, Regs, RestoredRegs).
+
+trail_diff(Trail, Trail, []) :- !.
+trail_diff([], _, []) :- !.
+trail_diff([Entry|Rest], SavedTrail, [Entry|Diff]) :-
+    trail_diff(Rest, SavedTrail, Diff).
+
+undo_bindings([], Regs, Regs).
+undo_bindings([trail(Key, OldValue)|Rest], Regs, RestoredRegs) :-
+    (   OldValue == unbound
+    ->  remove_assoc_key(Key, Regs, _, R1)
+    ;   put_assoc(Key, Regs, OldValue, R1)
+    ),
+    undo_bindings(Rest, R1, RestoredRegs).
+
+%% remove_assoc_key(+Key, +Assoc, -Value, -NewAssoc)
+%  Remove a key from an assoc. If key not found, return assoc unchanged.
+remove_assoc_key(Key, Assoc, Value, NewAssoc) :-
+    (   get_assoc(Key, Assoc, Value)
+    ->  put_assoc(Key, Assoc, '$deleted', NewAssoc)
+    ;   NewAssoc = Assoc, Value = unbound
+    ).
 
 %% step_wam(+Instruction, +StateIn, -StateOut)
 step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
@@ -126,8 +159,9 @@ step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_s
     ;   fail
     ).
 
-step_wam(get_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
+step_wam(get_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
     get_assoc(Ai, R, Val),
+    trail_binding(Xn, R, T, NT),
     put_assoc(Xn, R, Val, NR),
     NPC is PC + 1.
 
@@ -136,18 +170,22 @@ step_wam(get_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_sta
     get_assoc(Xn, R, ValX),
     (ValA == ValX -> NPC is PC + 1 ; fail).
 
-step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
+step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+    trail_binding(Ai, R, T, NT),
     put_assoc(Ai, R, C, NR),
     NPC is PC + 1.
 
-step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
+step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
     format(atom(NewVar), "_V~w", [PC]),
+    trail_binding(Xn, R, T, T1),
+    trail_binding(Ai, R, T1, NT),
     put_assoc(Xn, R, NewVar, R1),
     put_assoc(Ai, R1, NewVar, NR),
     NPC is PC + 1.
 
-step_wam(put_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, T, CP, CPS, Code, L)) :-
+step_wam(put_value(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
     get_assoc(Xn, R, Val),
+    trail_binding(Ai, R, T, NT),
     put_assoc(Ai, R, Val, NR),
     NPC is PC + 1.
 
@@ -211,6 +249,13 @@ step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_
     get_assoc(NextL, L, NextPC),
     (CPS = [_|Rest] -> NCPS = [cp(NextPC, R, S, CP, T)|Rest] ; NCPS = [cp(NextPC, R, S, CP, T)]),
     NPC is PC + 1.
+
+%% trail_binding(+Key, +Regs, +TrailIn, -TrailOut)
+%  Records the old value of Key (or 'unbound' if absent) on the trail.
+trail_binding(Key, Regs, Trail, [trail(Key, OldValue)|Trail]) :-
+    (   get_assoc(Key, Regs, OldValue) -> true
+    ;   OldValue = unbound
+    ).
 
 test_wam_runtime :-
     Code = [

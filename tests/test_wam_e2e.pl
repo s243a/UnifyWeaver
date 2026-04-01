@@ -9,11 +9,14 @@
 e2e_parent(alice, bob).
 e2e_parent(bob, charlie).
 
+:- dynamic test_failed/0.
+
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
 
 fail_test(Test, Reason) :-
-    format('[FAIL] ~w: ~w~n', [Test, Reason]).
+    format('[FAIL] ~w: ~w~n', [Test, Reason]),
+    (   test_failed -> true ; assert(test_failed) ).
 
 %% Tests
 test_wam_compilation_and_execution :-
@@ -46,7 +49,12 @@ run_tests :-
     test_wam_backtracking_simple,
     
     format('~n========================================~n'),
-    format('E2E tests completed~n'),
-    format('========================================~n').
+    (   test_failed
+    ->  format('Some tests FAILED~n'),
+        format('========================================~n'),
+        halt(1)
+    ;   format('All E2E tests passed~n'),
+        format('========================================~n')
+    ).
 
 :- initialization(run_tests, main).
