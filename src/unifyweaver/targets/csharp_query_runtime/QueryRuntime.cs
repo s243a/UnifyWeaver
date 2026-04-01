@@ -7287,8 +7287,24 @@ namespace UnifyWeaver.QueryRuntime
             var frontier = useMinPruning
                 ? new Dictionary<object?, List<VisitedAccumulatorState>>()
                 : null;
-            var initialVisited = new HashSet<object?> { seed };
-            var initialState = new VisitedAccumulatorState(0, initialVisited, initialVisited.Count, ComputeVisitedMaskA(seed), ComputeVisitedMaskB(seed));
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
+
+            int GetNodeId(object? value)
+            {
+                var key = value ?? NullFactIndexKey;
+                if (nodeIds.TryGetValue(key, out var existing))
+                {
+                    return existing;
+                }
+
+                var id = nextNodeId++;
+                nodeIds[key] = id;
+                return id;
+            }
+
+            var initialPath = CompactVisitedPath.Create(GetNodeId(seed));
+            var initialState = new VisitedAccumulatorState(0, initialPath);
             var stack = new Stack<(object? Node, VisitedAccumulatorState State, int Depth)>();
             stack.Push((seed, initialState, 0));
 
@@ -7301,7 +7317,7 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 var accumulator = state.Accumulator;
-                var visited = state.Visited;
+                var visited = state.Path;
 
                 var currentKey = current ?? NullFactIndexKey;
                 if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
@@ -7318,7 +7334,8 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     var next = edge[1];
-                    if (visited.Contains(next))
+                    var nextId = GetNodeId(next);
+                    if (visited.Contains(nextId))
                     {
                         continue;
                     }
@@ -7342,13 +7359,7 @@ namespace UnifyWeaver.QueryRuntime
                         var nextAccumulator = depth == 0
                             ? EvaluateArithmeticExpression(baseExpression, evalTuple)
                             : EvaluateArithmeticExpression(recursiveExpression, evalTuple);
-                        var nextVisited = new HashSet<object?>(visited) { next };
-                        var nextState = new VisitedAccumulatorState(
-                            nextAccumulator,
-                            nextVisited,
-                            state.VisitedCount + 1,
-                            state.MaskA | ComputeVisitedMaskA(next),
-                            state.MaskB | ComputeVisitedMaskB(next));
+                        var nextState = new VisitedAccumulatorState(nextAccumulator, visited.Extend(nextId));
 
                         if (preserveAllPaths)
                         {
@@ -7399,24 +7410,24 @@ namespace UnifyWeaver.QueryRuntime
 
             foreach (var candidate in states)
             {
-                var sameState = ReferenceEquals(candidate.Visited, state.Visited) && Equals(candidate.Accumulator, state.Accumulator);
+                var sameState = ReferenceEquals(candidate.Path, state.Path) && Equals(candidate.Accumulator, state.Accumulator);
                 if (sameState)
                 {
                     continue;
                 }
 
-                if (candidate.VisitedCount > state.VisitedCount)
+                if (candidate.Path.Count > state.Path.Count)
                 {
                     continue;
                 }
 
-                if ((candidate.MaskA & ~state.MaskA) != 0 || (candidate.MaskB & ~state.MaskB) != 0)
+                if ((candidate.Path.MaskA & ~state.Path.MaskA) != 0 || (candidate.Path.MaskB & ~state.Path.MaskB) != 0)
                 {
                     continue;
                 }
 
                 if (CompareValues(candidate.Accumulator, state.Accumulator) <= 0 &&
-                    candidate.Visited.IsSubsetOf(state.Visited))
+                    candidate.Path.IsSubsetOf(state.Path))
                 {
                     return true;
                 }
@@ -7439,18 +7450,18 @@ namespace UnifyWeaver.QueryRuntime
             for (var i = states.Count - 1; i >= 0; i--)
             {
                 var existing = states[i];
-                if (state.VisitedCount > existing.VisitedCount)
+                if (state.Path.Count > existing.Path.Count)
                 {
                     continue;
                 }
 
-                if ((state.MaskA & ~existing.MaskA) != 0 || (state.MaskB & ~existing.MaskB) != 0)
+                if ((state.Path.MaskA & ~existing.Path.MaskA) != 0 || (state.Path.MaskB & ~existing.Path.MaskB) != 0)
                 {
                     continue;
                 }
 
                 if (CompareValues(state.Accumulator, existing.Accumulator) <= 0 &&
-                    state.Visited.IsSubsetOf(existing.Visited))
+                    state.Path.IsSubsetOf(existing.Path))
                 {
                     states.RemoveAt(i);
                 }
@@ -7459,24 +7470,110 @@ namespace UnifyWeaver.QueryRuntime
             states.Add(state);
         }
 
-        private static ulong ComputeVisitedMaskA(object? value)
-        {
-            var hash = value?.GetHashCode() ?? 0;
-            return 1UL << (hash & 63);
-        }
-
-        private static ulong ComputeVisitedMaskB(object? value)
-        {
-            var hash = value?.GetHashCode() ?? 0;
-            return 1UL << ((int)((uint)hash >> 6) & 63);
-        }
-
         private sealed record VisitedAccumulatorState(
             object Accumulator,
-            HashSet<object?> Visited,
-            int VisitedCount,
-            ulong MaskA,
-            ulong MaskB);
+            CompactVisitedPath Path);
+
+        private sealed class CompactVisitedPath
+        {
+            private readonly int[] _nodeIds;
+
+            private CompactVisitedPath(int[] nodeIds, int count, ulong maskA, ulong maskB)
+            {
+                _nodeIds = nodeIds;
+                Count = count;
+                MaskA = maskA;
+                MaskB = maskB;
+            }
+
+            public int Count { get; }
+
+            public ulong MaskA { get; }
+
+            public ulong MaskB { get; }
+
+            public static CompactVisitedPath Create(int nodeId)
+            {
+                return new CompactVisitedPath(new[] { nodeId }, 1, ComputeVisitedMaskA(nodeId), ComputeVisitedMaskB(nodeId));
+            }
+
+            public bool Contains(int nodeId)
+            {
+                var maskA = ComputeVisitedMaskA(nodeId);
+                if ((MaskA & maskA) == 0)
+                {
+                    return false;
+                }
+
+                var maskB = ComputeVisitedMaskB(nodeId);
+                if ((MaskB & maskB) == 0)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < Count; i++)
+                {
+                    if (_nodeIds[i] == nodeId)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            public CompactVisitedPath Extend(int nodeId)
+            {
+                var nodeIds = new int[Count + 1];
+                Array.Copy(_nodeIds, nodeIds, Count);
+                nodeIds[Count] = nodeId;
+                return new CompactVisitedPath(nodeIds, Count + 1, MaskA | ComputeVisitedMaskA(nodeId), MaskB | ComputeVisitedMaskB(nodeId));
+            }
+
+            public bool IsSubsetOf(CompactVisitedPath other)
+            {
+                if (Count > other.Count)
+                {
+                    return false;
+                }
+
+                if ((MaskA & ~other.MaskA) != 0 || (MaskB & ~other.MaskB) != 0)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < Count; i++)
+                {
+                    var found = false;
+                    var value = _nodeIds[i];
+                    for (var j = 0; j < other.Count; j++)
+                    {
+                        if (value == other._nodeIds[j])
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found)
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        private static ulong ComputeVisitedMaskA(int value)
+        {
+            return 1UL << (value & 63);
+        }
+
+        private static ulong ComputeVisitedMaskB(int value)
+        {
+            return 1UL << ((value >> 6) & 63);
+        }
 
         private IEnumerable<object[]> ExecuteGroupedTransitiveClosure(GroupedTransitiveClosureNode closure, EvaluationContext? parentContext)
         {
