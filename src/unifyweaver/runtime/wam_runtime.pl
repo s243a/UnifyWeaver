@@ -237,6 +237,34 @@ step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), Sta
         StateOut = wam_state(NPC, R, [unify_ctx(SubArgs)|S], H, T, CP, CPS, Code, L)
     ).
 
+%% get_list Ai — sugar for get_structure './2', Ai.
+%  Read mode: decomposes a list [H|T] into head and tail for unify_*.
+%  Write mode: begins constructing a list on the heap.
+step_wam(get_list(Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
+    get_assoc(Ai, R, Val),
+    (   is_unbound_var(Val)
+    ->  % Write mode
+        length(H, Addr),
+        append(H, [str('./2')], NH),
+        trail_binding(Ai, R, T, NT),
+        put_assoc(Ai, R, ref(Addr), NR),
+        NPC is PC + 1,
+        StateOut = wam_state(NPC, NR, [write_ctx(2)|S], NH, NT, CP, CPS, Code, L)
+    ;   is_list(Val), Val = [Head|Tail]
+    ->  % Read mode: Prolog list
+        NPC is PC + 1,
+        StateOut = wam_state(NPC, R, [unify_ctx([Head, Tail])|S], H, T, CP, CPS, Code, L)
+    ;   fail
+    ).
+
+%% put_list Ai — begins constructing a list [H|T] on the heap.
+step_wam(put_list(Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, NR, S, NH, T, CP, CPS, Code, L)) :-
+    length(H, Addr),
+    append(H, [str('./2')], NH),
+    put_assoc(Ai, R, ref(Addr), NR),
+    NPC is PC + 1.
+
 %% unify_variable Xn — read mode: bind next sub-arg to Xn.
 %%                     write mode: create new var on heap and bind Xn to it.
 step_wam(unify_variable(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
@@ -399,6 +427,18 @@ lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
         ;   get_assoc(Label, Labels, TargetPC)
         )
     ;   lookup_index(Val, Rest, Labels, TargetPC)
+    ).
+
+%% switch_on_constant_a2 — second-argument indexing for constants.
+step_wam(Instr, wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    Instr =.. [switch_on_constant_a2|Entries],
+    Entries \= [],
+    (   get_assoc('A2', R, Val),
+        \+ is_unbound_var(Val),
+        lookup_index(Val, Entries, L, TargetPC)
+    ->  NPC = TargetPC
+    ;   NPC is PC + 1
     ).
 
 %% switch_on_structure — indexes on compound first argument's functor/arity.

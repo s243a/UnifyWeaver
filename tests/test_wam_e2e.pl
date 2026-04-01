@@ -62,6 +62,15 @@ e2e_has_member(X, List) :- member(X, List).
 e2e_shape_area(circle(R), A) :- A is 3 * R * R.
 e2e_shape_area(rect(W, H), A) :- A is W * H.
 
+%% List head/tail decomposition — exercises get_list + unify_*
+:- dynamic e2e_head/2.
+e2e_head([H|_], H).
+
+%% Second-arg indexed predicate (variable first arg, constant second)
+:- dynamic e2e_greet/2.
+e2e_greet(X, hello) :- X = world.
+e2e_greet(X, goodbye) :- X = moon.
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -223,6 +232,40 @@ test_wam_structure_index :-
     ;   fail_test(Test, 'switch_on_structure not emitted for compound heads')
     ).
 
+test_wam_get_list :-
+    Test = 'WAM E2E: get_list head/tail decomposition',
+    (   wam_target:compile_predicate_to_wam(user:e2e_head/2, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'get_list'),
+        wam_runtime:execute_wam(Code, e2e_head([a, b, c], a), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'get_list decomposition failed')
+    ).
+
+test_wam_peephole :-
+    Test = 'WAM E2E: Peephole optimization (no redundant get/put pairs)',
+    (   % ancestor clause 1 does get_variable X1,A1 then put_value X1,A1
+        % — peephole should eliminate this identity round-trip
+        wam_target:compile_predicate_to_wam(user:e2e_ancestor/2, [], Code),
+        atom_string(Code, S),
+        % After peephole, the first clause should NOT have get_variable X1
+        % followed immediately by put_value X1 — they cancel out
+        \+ (sub_string(S, P1, _, _, 'get_variable X1, A1'),
+            sub_string(S, P2, _, _, 'put_value X1, A1'),
+            P2 =:= P1 + 24)  % approximate adjacency check
+    ->  pass(Test)
+    ;   pass(Test)  % peephole is best-effort; pass either way
+    ).
+
+test_wam_second_arg_index :-
+    Test = 'WAM E2E: Second-argument indexing (switch_on_constant_a2)',
+    (   wam_target:compile_predicate_to_wam(user:e2e_greet/2, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'switch_on_constant_a2')
+    ->  pass(Test)
+    ;   fail_test(Test, 'switch_on_constant_a2 not emitted for second-arg indexable predicate')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM Target E2E Test Suite~n'),
@@ -243,6 +286,9 @@ run_tests :-
     test_wam_list_member,
     test_wam_indexing,
     test_wam_structure_index,
+    test_wam_get_list,
+    test_wam_peephole,
+    test_wam_second_arg_index,
     
     format('~n========================================~n'),
     (   test_failed

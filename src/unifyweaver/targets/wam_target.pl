@@ -89,12 +89,17 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     format(string(Label), "~w/~w:", [Pred, Arity]),
     (   length(Clauses, 1)
     ->  Clauses = [Clause],
-        compile_single_clause_wam(Clause, Options, ClausesCode)
-    ;   compile_multi_clause_wam(Pred, Arity, Clauses, Options, ClausesCode)
+        compile_single_clause_wam(Clause, Options, ClausesCode0)
+    ;   compile_multi_clause_wam(Pred, Arity, Clauses, Options, ClausesCode0)
     ),
-    % Generate first-argument index if all clauses have constant first args
+    % Apply peephole optimization
+    peephole_optimize(ClausesCode0, ClausesCode),
+    % Generate argument index (try first arg, fall back to second arg)
     (   length(Clauses, NC), NC > 1,
-        build_first_arg_index(Pred, Arity, Clauses, IndexCode)
+        (   build_first_arg_index(Pred, Arity, Clauses, IndexCode)
+        ;   Arity >= 2,
+            build_second_arg_index(Pred, Arity, Clauses, IndexCode)
+        )
     ->  format(string(Code), "~w~n~w~n~w", [Label, IndexCode, ClausesCode])
     ;   format(string(Code), "~w~n~w", [Label, ClausesCode])
     ).
@@ -128,6 +133,7 @@ classify_first_args([Head-_|Rest], [Type|RestTypes]) :-
     Head =.. [_|[FirstArg|_]],
     (   var(FirstArg) -> Type = variable
     ;   atomic(FirstArg) -> Type = constant
+    ;   is_list_term(FirstArg) -> Type = structure  % lists are './2' structures
     ;   compound(FirstArg) -> Type = structure
     ;   Type = variable
     ),
@@ -191,6 +197,40 @@ format_switch_on_term(ConstEntries, StructEntries, IndexCode) :-
     format(string(IndexCode),
            "    switch_on_term constant:~w, structure:~w",
            [ConstPart, StructPart]).
+
+%% build_second_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
+%  When first-arg indexing fails (e.g., all variable first args),
+%  try indexing on the second argument instead.
+build_second_arg_index(Pred, Arity, Clauses, IndexCode) :-
+    classify_second_args(Clauses, Types),
+    \+ member(variable, Types),
+    forall(member(T, Types), T = constant),
+    build_constant_index_on(Clauses, 2, 1, Pred, Arity, Entries),
+    Entries \= [],
+    format_index_entries(Entries, EntriesStr),
+    format(string(IndexCode), "    switch_on_constant_a2 ~w", [EntriesStr]).
+
+classify_second_args([], []).
+classify_second_args([Head-_|Rest], [Type|RestTypes]) :-
+    Head =.. [_|Args],
+    (   length(Args, L), L >= 2, nth1(2, Args, SecondArg)
+    ->  (   var(SecondArg) -> Type = variable
+        ;   atomic(SecondArg) -> Type = constant
+        ;   Type = variable
+        )
+    ;   Type = variable
+    ),
+    classify_second_args(Rest, RestTypes).
+
+build_constant_index_on([], _, _, _, _, []).
+build_constant_index_on([Head-_|Rest], ArgPos, I, Pred, Arity, [Val-Label|RestEntries]) :-
+    Head =.. [_|Args],
+    nth1(ArgPos, Args, Val),
+    (   I == 1 -> Label = default
+    ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
+    ),
+    NextI is I + 1,
+    build_constant_index_on(Rest, ArgPos, NextI, Pred, Arity, RestEntries).
 
 format_index_entries(Entries, Str) :-
     maplist([K-V, S]>>format(atom(S), "~w:~w", [K, V]), Entries, Parts),
@@ -278,6 +318,11 @@ compile_head_argument(Arg, I, V0, V1, Code) :-
     ;   atomic(Arg)
     ->  format(string(Code), "    get_constant ~w, A~w", [Arg, I]),
         V1 = V0
+    ;   is_list_term(Arg)
+    ->  Arg = [H|T],
+        format(string(Fst), "    get_list A~w", [I]),
+        compile_unify_arguments([H, T], V0, V1, SubCode),
+        format(string(Code), "~w~n~w", [Fst, SubCode])
     ;   compound(Arg)
     ->  Arg =.. [F|SubArgs],
         length(SubArgs, Arity),
@@ -285,6 +330,9 @@ compile_head_argument(Arg, I, V0, V1, Code) :-
         compile_unify_arguments(SubArgs, V0, V1, SubCode),
         format(string(Code), "~w~n~w", [Fst, SubCode])
     ).
+
+%% is_list_term(+Term) — true if Term is a non-empty list cons cell [H|T].
+is_list_term(Term) :- nonvar(Term), Term = [_|_].
 
 compile_unify_arguments([], V, V, "").
 compile_unify_arguments([Arg|Rest], V0, Vf, Code) :-
@@ -497,6 +545,16 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
     ;   atomic(Arg)
     ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I]),
         V1 = V0
+    ;   is_list_term(Arg)
+    ->  Arg = [H|T],
+        next_x_reg(V0, XReg, V_temp),
+        bind_var(Arg, XReg, V_temp, V2),
+        format(string(ListCode), "    put_list A~w", [I]),
+        compile_set_arguments([H, T], V2, V1, SetCode),
+        (   SetCode == ""
+        ->  Code = ListCode
+        ;   format(string(Code), "~w~n~w", [ListCode, SetCode])
+        )
     ;   compound(Arg)
     ->  Arg =.. [F|SubArgs],
         length(SubArgs, SArity),
@@ -591,6 +649,62 @@ compile_facts_to_wam(PredIndicator, Arity, Code) :-
         fail
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, [], Code)
     ).
+
+%% =====================================================
+%% Peephole Optimization
+%% =====================================================
+
+%% peephole_optimize(+CodeStr, -OptimizedStr)
+%  Applies peephole optimizations to a WAM instruction string.
+%  Operates on the string representation, line by line.
+peephole_optimize(Code, Optimized) :-
+    split_string(Code, "\n", "", Lines),
+    peephole_lines(Lines, OptLines),
+    atomic_list_concat(OptLines, '\n', Optimized).
+
+peephole_lines([], []).
+% Eliminate put_value Xn, Ai followed by get_variable Xn, Ai (identity)
+peephole_lines([L1, L2|Rest], Result) :-
+    normalize_ws(L1, N1),
+    normalize_ws(L2, N2),
+    atom_string(N1, S1), atom_string(N2, S2),
+    match_put_get_identity(S1, S2), !,
+    peephole_lines(Rest, Result).
+% Eliminate put_value Xn, Ai immediately followed by put_value Xn, Ai (duplicate)
+peephole_lines([L1, L2|Rest], [L1|Result]) :-
+    normalize_ws(L1, N1),
+    normalize_ws(L2, N2),
+    N1 == N2,
+    atom_string(N1, S1),
+    sub_string(S1, 0, _, _, "put_"), !,
+    peephole_lines(Rest, Result).
+% Eliminate get_variable Xn, Ai followed by put_value Xn, Ai (pass-through)
+peephole_lines([L1, L2|Rest], Result) :-
+    normalize_ws(L1, N1),
+    normalize_ws(L2, N2),
+    atom_string(N1, S1), atom_string(N2, S2),
+    match_get_put_passthrough(S1, S2), !,
+    peephole_lines(Rest, Result).
+peephole_lines([L|Rest], [L|Result]) :-
+    peephole_lines(Rest, Result).
+
+normalize_ws(Str, Normalized) :-
+    split_string(Str, " \t", " \t", Parts),
+    delete(Parts, "", Clean),
+    atomic_list_concat(Clean, ' ', Normalized).
+
+%% match_put_get_identity(+PutStr, +GetStr)
+%  put_value X1, A1 followed by get_variable X1, A1 — the get is redundant.
+match_put_get_identity(Put, Get) :-
+    split_string(Put, " ,", " ,", ["put_value", Reg, Ai]),
+    split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]).
+
+%% match_get_put_passthrough(+GetStr, +PutStr)
+%  get_variable X1, A1 followed by put_value X1, A1 — both redundant
+%  (the value is already in Ai and doesn't need round-tripping through Xn).
+match_get_put_passthrough(Get, Put) :-
+    split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]),
+    split_string(Put, " ,", " ,", ["put_value", Reg, Ai]).
 
 %% write_wam_program(+Code, +Filename)
 write_wam_program(Code, Filename) :-
