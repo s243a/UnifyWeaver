@@ -7285,18 +7285,23 @@ namespace UnifyWeaver.QueryRuntime
                 ? new Dictionary<object?, object>()
                 : null;
             var frontier = useMinPruning
-                ? new Dictionary<object?, List<(object Accumulator, HashSet<object?> Visited)>>()
+                ? new Dictionary<object?, List<VisitedAccumulatorState>>()
                 : null;
-            var stack = new Stack<(object? Node, object Accumulator, int Depth, HashSet<object?> Visited)>();
-            stack.Push((seed, 0, 0, new HashSet<object?> { seed }));
+            var initialVisited = new HashSet<object?> { seed };
+            var initialState = new VisitedAccumulatorState(0, initialVisited, initialVisited.Count, ComputeVisitedMaskA(seed), ComputeVisitedMaskB(seed));
+            var stack = new Stack<(object? Node, VisitedAccumulatorState State, int Depth)>();
+            stack.Push((seed, initialState, 0));
 
             while (stack.Count > 0)
             {
-                var (current, accumulator, depth, visited) = stack.Pop();
-                if (useMinPruning && current is not null && IsDominatedMinState(frontier!, current, accumulator, visited))
+                var (current, state, depth) = stack.Pop();
+                if (useMinPruning && current is not null && IsDominatedMinState(frontier!, current, state))
                 {
                     continue;
                 }
+
+                var accumulator = state.Accumulator;
+                var visited = state.Visited;
 
                 var currentKey = current ?? NullFactIndexKey;
                 if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
@@ -7338,6 +7343,12 @@ namespace UnifyWeaver.QueryRuntime
                             ? EvaluateArithmeticExpression(baseExpression, evalTuple)
                             : EvaluateArithmeticExpression(recursiveExpression, evalTuple);
                         var nextVisited = new HashSet<object?>(visited) { next };
+                        var nextState = new VisitedAccumulatorState(
+                            nextAccumulator,
+                            nextVisited,
+                            state.VisitedCount + 1,
+                            state.MaskA | ComputeVisitedMaskA(next),
+                            state.MaskB | ComputeVisitedMaskB(next));
 
                         if (preserveAllPaths)
                         {
@@ -7345,12 +7356,12 @@ namespace UnifyWeaver.QueryRuntime
                         }
                         else
                         {
-                            if (IsDominatedMinState(frontier!, next, nextAccumulator, nextVisited))
+                            if (IsDominatedMinState(frontier!, next, nextState))
                             {
                                 continue;
                             }
 
-                            RecordMinState(frontier!, next, nextAccumulator, nextVisited);
+                            RecordMinState(frontier!, next, nextState);
                             if (!bestKnown!.TryGetValue(next, out var bestAccumulator) ||
                                 CompareValues(nextAccumulator, bestAccumulator) < 0)
                             {
@@ -7358,7 +7369,7 @@ namespace UnifyWeaver.QueryRuntime
                             }
                         }
 
-                        stack.Push((next, nextAccumulator, nextDepth, nextVisited));
+                        stack.Push((next, nextState, nextDepth));
                     }
                 }
             }
@@ -7377,25 +7388,35 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static bool IsDominatedMinState(
-            IReadOnlyDictionary<object?, List<(object Accumulator, HashSet<object?> Visited)>> frontier,
+            IReadOnlyDictionary<object?, List<VisitedAccumulatorState>> frontier,
             object? node,
-            object accumulator,
-            HashSet<object?> visited)
+            VisitedAccumulatorState state)
         {
             if (!frontier.TryGetValue(node, out var states))
             {
                 return false;
             }
 
-            foreach (var (bestAccumulator, bestVisited) in states)
+            foreach (var candidate in states)
             {
-                var sameState = ReferenceEquals(bestVisited, visited) && Equals(bestAccumulator, accumulator);
+                var sameState = ReferenceEquals(candidate.Visited, state.Visited) && Equals(candidate.Accumulator, state.Accumulator);
                 if (sameState)
                 {
                     continue;
                 }
 
-                if (CompareValues(bestAccumulator, accumulator) <= 0 && bestVisited.IsSubsetOf(visited))
+                if (candidate.VisitedCount > state.VisitedCount)
+                {
+                    continue;
+                }
+
+                if ((candidate.MaskA & ~state.MaskA) != 0 || (candidate.MaskB & ~state.MaskB) != 0)
+                {
+                    continue;
+                }
+
+                if (CompareValues(candidate.Accumulator, state.Accumulator) <= 0 &&
+                    candidate.Visited.IsSubsetOf(state.Visited))
                 {
                     return true;
                 }
@@ -7405,28 +7426,57 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static void RecordMinState(
-            IDictionary<object?, List<(object Accumulator, HashSet<object?> Visited)>> frontier,
+            IDictionary<object?, List<VisitedAccumulatorState>> frontier,
             object? node,
-            object accumulator,
-            HashSet<object?> visited)
+            VisitedAccumulatorState state)
         {
             if (!frontier.TryGetValue(node, out var states))
             {
-                states = new List<(object Accumulator, HashSet<object?> Visited)>();
+                states = new List<VisitedAccumulatorState>();
                 frontier[node] = states;
             }
 
             for (var i = states.Count - 1; i >= 0; i--)
             {
-                var (existingAccumulator, existingVisited) = states[i];
-                if (CompareValues(accumulator, existingAccumulator) <= 0 && visited.IsSubsetOf(existingVisited))
+                var existing = states[i];
+                if (state.VisitedCount > existing.VisitedCount)
+                {
+                    continue;
+                }
+
+                if ((state.MaskA & ~existing.MaskA) != 0 || (state.MaskB & ~existing.MaskB) != 0)
+                {
+                    continue;
+                }
+
+                if (CompareValues(state.Accumulator, existing.Accumulator) <= 0 &&
+                    state.Visited.IsSubsetOf(existing.Visited))
                 {
                     states.RemoveAt(i);
                 }
             }
 
-            states.Add((accumulator, visited));
+            states.Add(state);
         }
+
+        private static ulong ComputeVisitedMaskA(object? value)
+        {
+            var hash = value?.GetHashCode() ?? 0;
+            return 1UL << (hash & 63);
+        }
+
+        private static ulong ComputeVisitedMaskB(object? value)
+        {
+            var hash = value?.GetHashCode() ?? 0;
+            return 1UL << ((int)((uint)hash >> 6) & 63);
+        }
+
+        private sealed record VisitedAccumulatorState(
+            object Accumulator,
+            HashSet<object?> Visited,
+            int VisitedCount,
+            ulong MaskA,
+            ulong MaskB);
 
         private IEnumerable<object[]> ExecuteGroupedTransitiveClosure(GroupedTransitiveClosureNode closure, EvaluationContext? parentContext)
         {
