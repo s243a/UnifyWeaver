@@ -256,6 +256,73 @@ The benchmark split is now:
   - `benchmark_shortest_path_to_root.py`
   - `benchmark_weighted_shortest_path.py`
 
+### Cross-Target Shortest-Path Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_shortest_path_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+Latest local results:
+
+| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs DFS |
+|-------|---------:|--------:|---------:|-------:|--------------|
+| 300 | 0.142s | 0.424s | 0.361s | 0.472s | match |
+| 1k | 0.104s | 1.350s | 1.400s | 2.101s | match |
+| 5k | 0.202s | 5.697s | 7.445s | 12.323s | match |
+| 10k | 0.433s | 10.313s | 14.462s | 20.487s | match |
+
+Speedups of C# query engine:
+
+| Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------:|------------:|----------:|
+| 300 | 3.00x | 2.55x | 3.33x |
+| 1k | 13.04x | 13.52x | 20.29x |
+| 5k | 28.15x | 36.79x | 60.89x |
+| 10k | 23.84x | 33.43x | 47.35x |
+
+### Cross-Target Weighted Shortest-Path Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+Latest local results:
+
+| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
+|-------|---------:|--------:|---------:|-------:|-----------------|
+| 300 | 0.181s | 0.466s | 0.353s | 0.487s | match |
+| 1k | 0.142s | 1.409s | 1.447s | 2.206s | match |
+| 5k | 0.250s | 5.957s | 7.994s | 12.404s | match |
+| 10k | 0.460s | 10.845s | 15.198s | 20.549s | DIFFERENT |
+
+Speedups of C# query engine:
+
+| Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------:|------------:|----------:|
+| 300 | 2.57x | 1.95x | 2.69x |
+| 1k | 9.91x | 10.18x | 15.51x |
+| 5k | 23.81x | 31.94x | 49.57x |
+| 10k | 23.57x | 33.02x | 44.65x |
+
+Current caveat:
+
+- at `300`, `1k`, and `5k`, all four weighted implementations matched
+- at `10k`, the DFS targets still matched each other, but `csharp-query`
+  diverged from the DFS result on this weighted workload
+- so the cross-target weighted benchmark is useful now, but the `10k`
+  C# query-engine result still needs investigation before it should be
+  treated as fully settled
+
 ### Weighted `Min` Results
 
 The current positive-additive weighted `Min` fast path in the C# query
