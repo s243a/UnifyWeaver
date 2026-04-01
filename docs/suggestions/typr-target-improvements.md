@@ -9,6 +9,14 @@ type-checked. As TypR matures (especially variadic function support and
 environment/hash types), these blocks should be progressively replaced with
 native TypR constructs.
 
+Important current boundary:
+- the remaining generic wrapped fallback is not just an unnecessary wrapper
+- generic bodies like `string_lower(Name, Lower), Out = Lower` still depend on
+  the R-backed producer step, so promoting only the final assignment tail is
+  the wrong abstraction
+- if this area is revisited, start with the producer-goal family, not the
+  final `=` or `is/2` tail
+
 **Example:** `parent_graph <- @{ new.env(hash = TRUE, parent = emptyenv()) }@;`
 could become native when TypR supports environment types.
 
