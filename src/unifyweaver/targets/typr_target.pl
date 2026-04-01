@@ -7345,10 +7345,33 @@ inferred_typr_return_type(Clauses, ReturnType) :-
 generic_typr_return_type(PredSpec, Clauses, ReturnType) :-
     (   typr_declared_return_type(PredSpec, ReturnType)
     ->  true
+    ;   native_generic_clause_return_type(PredSpec, Clauses, ReturnType)
+    ->  true
     ;   inferred_typr_return_type(Clauses, ReturnType)
     ->  true
     ;   ReturnType = "Any"
     ).
+
+native_generic_clause_return_type(PredSpec, Clauses, ReturnType) :-
+    findall(
+        OutputPos,
+        (
+            member(Head-Body, Clauses),
+            native_generic_clause_output_position(Head, Body, OutputPos)
+        ),
+        [FirstPos|RestPositions]
+    ),
+    maplist(=(FirstPos), RestPositions),
+    predicate_arg_type(PredSpec, FirstPos, AbstractType),
+    resolve_type(AbstractType, typr, ReturnType).
+
+native_generic_clause_output_position(Head, Body, OutputPos) :-
+    typr_alternative_output_var(Body, OutputVar),
+    Head =.. [_|HeadArgs],
+    nth1(OutputPos, HeadArgs, HeadArg),
+    var(HeadArg),
+    HeadArg == OutputVar,
+    !.
 
 all_fact_clauses([]).
 all_fact_clauses([_-true|Rest]) :-
@@ -7772,6 +7795,9 @@ native_typr_output_expr(group_by(DF, Col, Out), VarMap0, _PredName, VarMap, Fina
     typr_resolve_value(VarMap0, Col, RCol),
     format(string(OutputExpr), '@{ aggregate(. ~~ ~w, data=~w, FUN=list) }@', [RCol, RDF]).
 native_typr_output_expr(Goal, VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    native_typr_assignment_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind),
+    !.
+native_typr_output_expr(Goal, VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     functor(Goal, Pred, Arity),
     typr_simple_binding(Pred/Arity, TargetName, Inputs, Outputs, _Options),
     Outputs = [_],
@@ -8104,6 +8130,15 @@ typr_if_then_goal_output_vars(ThenGoal, OutputVars) :-
 typr_goal_output_var_simple(_Module:Goal, OutputVar) :-
     !,
     typr_goal_output_var_simple(Goal, OutputVar).
+typr_goal_output_var_simple(is(OutputVar, _Expr), OutputVar) :-
+    var(OutputVar),
+    !.
+typr_goal_output_var_simple(=(Left, _Right), Left) :-
+    var(Left),
+    !.
+typr_goal_output_var_simple(=(_Left, Right), Right) :-
+    var(Right),
+    !.
 typr_goal_output_var_simple(filter(_, _, OutputVar), OutputVar).
 typr_goal_output_var_simple(sort_by(_, _, OutputVar), OutputVar).
 typr_goal_output_var_simple(group_by(_, _, OutputVar), OutputVar).
@@ -8158,6 +8193,8 @@ native_typr_if_condition(IfGoal, VarMap, IfCondition) :-
 varmap_contains_var([StoredVar-_|_], Var) :-
     Var == StoredVar,
     !.
+varmap_contains_var([], _) :-
+    fail.
 varmap_contains_var([_|Rest], Var) :-
     varmap_contains_var(Rest, Var).
 
@@ -8335,6 +8372,45 @@ typr_native_call_expression(TargetName, [], Expr) :-
 typr_native_call_expression(TargetName, ResolvedInArgs, Expr) :-
     atomic_list_concat(ResolvedInArgs, ', ', ArgText),
     format(string(Expr), '~w(~w)', [TargetName, ArgText]).
+
+native_typr_assignment_expr(Goal, VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    native_typr_unification_output(Goal, VarMap0, OutVar, ValueExpr),
+    ensure_typr_var(VarMap0, OutVar, FinalExpr, VarMap, IntroKind),
+    OutputExpr = ValueExpr.
+native_typr_assignment_expr(is(OutVar, Expr), VarMap0, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    var(OutVar),
+    typr_output_binding_var_allowed(VarMap0, OutVar),
+    ensure_typr_var(VarMap0, OutVar, FinalExpr, VarMap, IntroKind),
+    typr_assignment_value_expr(Expr, VarMap0, OutputExpr).
+
+native_typr_unification_output(=(Left, Right), VarMap0, OutVar, ValueExpr) :-
+    var(Left),
+    typr_output_binding_var_allowed(VarMap0, Left),
+    OutVar = Left,
+    typr_assignment_value_expr(Right, VarMap0, ValueExpr).
+native_typr_unification_output(=(Left, Right), VarMap0, OutVar, ValueExpr) :-
+    var(Right),
+    typr_output_binding_var_allowed(VarMap0, Right),
+    OutVar = Right,
+    typr_assignment_value_expr(Left, VarMap0, ValueExpr).
+
+typr_output_binding_var_allowed(VarMap, Var) :-
+    \+ varmap_contains_var(VarMap, Var),
+    !.
+typr_output_binding_var_allowed(VarMap, Var) :-
+    lookup_typr_var(Var, VarMap, ArgName),
+    sub_string(ArgName, 0, 3, _, "arg").
+
+typr_assignment_value_expr(Value, VarMap, ValueExpr) :-
+    (   var(Value)
+    ->  typr_resolve_value(VarMap, Value, ValueExpr)
+    ;   atomic(Value)
+    ->  typr_resolve_value(VarMap, Value, ValueExpr)
+    ;   cba_typr_expr(Value, VarMap, ValueExpr)
+    ->  true
+    ;   typr_translate_r_expr(Value, VarMap, RExpr),
+        format(string(ValueExpr), '@{ ~w }@', [RExpr])
+    ).
 
 typr_resolve_value(VarMap, Var, Value) :-
     var(Var),
