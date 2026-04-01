@@ -7324,7 +7324,7 @@ typr_function_body(PredSpec, _Options, _TypedMode, Clauses, "bool", Body) :-
     all_fact_clauses(Clauses),
     fact_match_expression(PredSpec, Clauses, MatchExpr),
     !,
-    format(string(Body), 'result <- ~w;\nresult', [MatchExpr]).
+    format(string(Body), 'let result <- ~w;\nresult', [MatchExpr]).
 typr_function_body(PredSpec, Options, _TypedMode, Clauses, ReturnType, Body) :-
     generic_typr_return_type(PredSpec, Clauses, ReturnType),
     (   cba_typr_clause_body(PredSpec, Clauses, Body)

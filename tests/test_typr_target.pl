@@ -394,7 +394,7 @@ test(generic_predicates_receive_typed_signature) :-
     once(compile_predicate_to_typr(simple_fact/1, [typed_mode(explicit)], Code)),
     once(sub_string(Code, _, _, _, "let simple_fact <- fn(arg1: char): bool")),
     once(sub_string(Code, _, _, _, "identical(arg1, \"hello\")")),
-    once(sub_string(Code, _, _, _, "result <- identical(arg1, \"hello\");")),
+    once(sub_string(Code, _, _, _, "let result <- identical(arg1, \"hello\");")),
     \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
