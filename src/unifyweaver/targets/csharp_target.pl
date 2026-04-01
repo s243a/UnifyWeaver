@@ -48,6 +48,7 @@
 :- use_module('csharp_runtime/custom_csharp', []).
 
 :- dynamic query_materialized_relation/1.
+:- discontiguous emit_plan_expression/2.
 
 % Track collected components for code generation
 :- dynamic collected_component/2.
@@ -1163,6 +1164,11 @@ maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses
     ensure_relation(EdgePred, EdgeArity, [], Relations0),
     ensure_relation(AuxPred, AuxArity, Relations0, Relations1),
     dedup_relations(Relations1, Relations),
+    get_dict(name, HeadSpec, HeadName),
+    (   declared_table_modes(HeadName, 3, TableModes)
+    ->  true
+    ;   TableModes = [lattice, lattice, lattice]
+    ),
     Root = path_aware_accumulation{
         type:path_aware_accumulation,
         head:HeadSpec,
@@ -1171,6 +1177,7 @@ maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses
         base_expression:BaseExpression,
         recursive_expression:RecursiveExpression,
         max_depth:10,
+        table_modes:TableModes,
         width:3
     }.
 
@@ -3717,13 +3724,19 @@ emit_plan_expression(Node, Expr) :-
     get_dict(base_expression, Node, BaseExpression),
     get_dict(recursive_expression, Node, RecursiveExpression),
     (get_dict(max_depth, Node, MaxDepth) -> true ; MaxDepth = 0),
+    (   get_dict(table_modes, Node, TableModes),
+        nth0(2, TableModes, AccTableMode),
+        AccTableMode \= lattice
+    ->  table_mode_csharp_enum(AccTableMode, TableModeStr)
+    ;   TableModeStr = "TableMode.All"
+    ),
     emit_arithmetic_expression(BaseExpression, BaseExprCode),
     emit_arithmetic_expression(RecursiveExpression, RecExprCode),
     atom_string(EdgeName, EdgeNameStr),
     atom_string(AuxName, AuxNameStr),
     atom_string(Name, NameStr),
-    format(atom(Expr), 'new PathAwareAccumulationNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w)',
-        [EdgeNameStr, EdgeArity, NameStr, Arity, AuxNameStr, AuxArity, BaseExprCode, RecExprCode, MaxDepth]).
+    format(atom(Expr), 'new PathAwareAccumulationNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w, ~w)',
+        [EdgeNameStr, EdgeArity, NameStr, Arity, AuxNameStr, AuxArity, BaseExprCode, RecExprCode, MaxDepth, TableModeStr]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, fixpoint), !,
     get_dict(base, Node, BaseNode),
