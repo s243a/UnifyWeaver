@@ -1,6 +1,9 @@
 :- module(test_rust_native_lowering, [test_rust_native_lowering/0]).
 :- use_module(library(plunit)).
 :- use_module('../../src/unifyweaver/targets/rust_target').
+:- use_module('../../src/unifyweaver/core/constraint_analyzer').
+
+:- dynamic user:'table'/1.
 
 test_rust_native_lowering :-
     run_tests([rust_native_lowering]).
@@ -197,6 +200,81 @@ test(weighted_recursive_accumulation_lowering) :-
     retractall(user:weighted_edge(_, _)),
     retractall(user:weighted_cost(_, _)),
     retractall(user:weighted_path(_, _, _)).
+
+test(min_counted_recursive_lowering) :-
+    assert(user:(min_edge(a, b))),
+    assert(user:(min_edge(b, c))),
+    assert(user:(min_reach(X, Y, H) :-
+        min_edge(X, Y),
+        H is 1)),
+    assert(user:(min_reach(X, Z, H) :-
+        min_edge(X, Y),
+        min_reach(Y, Z, H1),
+        H is H1 + 1)),
+    assert(user:'table'(min_reach(_, _, min))),
+    compile_rs(min_reach/3, Code),
+    has(Code, "Path-aware minimum-hop transitive closure"),
+    has(Code, "VecDeque"),
+    has(Code, "fn min_reach_min"),
+    has(Code, "let mut best: HashMap<String, i32> = HashMap::new();"),
+    retractall(user:min_edge(_, _)),
+    retractall(user:min_reach(_, _, _)),
+    retractall(user:'table'(min_reach(_, _, min))).
+
+test(weighted_min_recursive_accumulation_lowering) :-
+    assert(user:(weighted_min_edge(a, b))),
+    assert(user:(weighted_min_edge(b, c))),
+    assert(user:(weighted_min_cost(a, 2))),
+    assert(user:(weighted_min_cost(b, 5))),
+    assert(user:(weighted_min_path(X, Y, Acc) :-
+        weighted_min_edge(X, Y),
+        weighted_min_cost(X, Cost),
+        Acc is Cost)),
+    assert(user:(weighted_min_path(X, Z, Acc) :-
+        weighted_min_edge(X, Y),
+        weighted_min_cost(X, Cost),
+        weighted_min_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + Cost)),
+    assert(user:'table'(weighted_min_path(_, _, min))),
+    declare_constraint(weighted_min_path/3, [positive_step(3)]),
+    compile_rs(weighted_min_path/3, Code),
+    has(Code, "Path-aware positive weighted minimum accumulation"),
+    has(Code, "BinaryHeap"),
+    has(Code, "fn weighted_min_path_min"),
+    has(Code, "let mut best: HashMap<String, i64> = HashMap::new();"),
+    has(Code, "cost: *step_cost"),
+    has(Code, "cost: (cost + *step_cost)"),
+    retractall(user:weighted_min_edge(_, _)),
+    retractall(user:weighted_min_cost(_, _)),
+    retractall(user:weighted_min_path(_, _, _)),
+    clear_constraints(weighted_min_path/3),
+    retractall(user:'table'(weighted_min_path(_, _, min))).
+
+test(weighted_min_guarded_recursive_accumulation_lowering) :-
+    assert(user:(weighted_guard_edge(a, b))),
+    assert(user:(weighted_guard_edge(b, c))),
+    assert(user:(weighted_guard_cost(a, 2))),
+    assert(user:(weighted_guard_cost(b, 5))),
+    assert(user:(weighted_guard_path(X, Y, Acc) :-
+        weighted_guard_edge(X, Y),
+        weighted_guard_cost(X, Cost),
+        Cost > 0,
+        Acc is Cost)),
+    assert(user:(weighted_guard_path(X, Z, Acc) :-
+        weighted_guard_edge(X, Y),
+        weighted_guard_cost(X, Cost),
+        Cost > 0,
+        weighted_guard_path(Y, Z, PrevAcc),
+        Acc is PrevAcc + Cost)),
+    assertz(user:'table'(weighted_guard_path(_, _, min))),
+    compile_rs(weighted_guard_path/3, Code),
+    has(Code, "Path-aware positive weighted minimum accumulation"),
+    has(Code, "fn weighted_guard_path_min"),
+    has(Code, "BinaryHeap"),
+    retractall(user:weighted_guard_edge(_, _)),
+    retractall(user:weighted_guard_cost(_, _)),
+    retractall(user:weighted_guard_path(_, _, _)),
+    retractall(user:'table'(weighted_guard_path(_, _, min))).
 
 test(log_recursive_accumulation_lowering) :-
     assert(user:(semantic_edge(a, b))),

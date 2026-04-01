@@ -1,0 +1,43 @@
+// Path-aware minimum-hop transitive closure: {{pred}}/3
+// Step relation: {{step_rel}}/2
+use std::collections::{HashMap, VecDeque};
+
+fn {{pred}}_min(start: &str, adj: &HashMap<String, Vec<String>>) -> Vec<(String, i32)> {
+    let mut best: HashMap<String, i32> = HashMap::new();
+    let mut queue: VecDeque<(String, i32)> = VecDeque::new();
+
+    if let Some(neighbors) = adj.get(start) {
+        for nb in neighbors {
+            queue.push_back((nb.clone(), {{base_const}}));
+        }
+    }
+
+    while let Some((node, depth)) = queue.pop_front() {
+        if let Some(existing) = best.get(&node) {
+            if depth >= *existing {
+                continue;
+            }
+        }
+        best.insert(node.clone(), depth);
+
+        if let Some(neighbors) = adj.get(&node) {
+            for nb in neighbors {
+                queue.push_back((nb.clone(), depth + {{recursive_increment}}));
+            }
+        }
+    }
+
+    let mut results: Vec<(String, i32)> = best.into_iter().collect();
+    results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    results
+}
+
+fn main() {
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+{{step_block}}
+
+    let results = {{pred}}_min("test", &adj);
+    for (ancestor, hops) in &results {
+        println!("{}\t{}", ancestor, hops);
+    }
+}
