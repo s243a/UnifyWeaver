@@ -35,6 +35,7 @@
 :- use_module(library(option)).
 :- use_module(library(pairs), [pairs_values/2]).
 :- use_module(library(ugraphs), [vertices/2, vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3, top_sort/2]).
+:- use_module('../core/constraint_analyzer', [get_constraints/2]).
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
 :- use_module('../core/advanced/pattern_matchers', [declared_table_modes/3]).
 :- use_module('../core/binding_registry').
@@ -1155,8 +1156,8 @@ maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses
     path_aware_transitive_closure_supported_modes(Modes),
     BaseClauses = [BaseClause],
     RecClauses = [RecClause],
-    path_aware_accumulation_base_clause(HeadSpec, BaseClause, EdgeSpec, AuxSpec, BaseExpression, PositiveStepProven),
-    path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, RecClause, RecursiveExpression, PositiveStepProven),
+    path_aware_accumulation_base_clause(HeadSpec, BaseClause, EdgeSpec, AuxSpec, BaseExpression, PositiveStepGuardProven),
+    path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, RecClause, RecursiveExpression, PositiveStepGuardProven),
     get_dict(name, EdgeSpec, EdgePred),
     get_dict(arity, EdgeSpec, EdgeArity),
     get_dict(name, AuxSpec, AuxPred),
@@ -1168,6 +1169,14 @@ maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses
     (   declared_table_modes(HeadName, 3, TableModes)
     ->  true
     ;   TableModes = [lattice, lattice, lattice]
+    ),
+    (   path_aware_accumulation_positive_step_metadata(HeadName/3, 3)
+    ->  PositiveStepMetadataProven = true
+    ;   PositiveStepMetadataProven = false
+    ),
+    (PositiveStepGuardProven == true ; PositiveStepMetadataProven == true
+    ->  PositiveStepProven = true
+    ;   PositiveStepProven = false
     ),
     Root = path_aware_accumulation{
         type:path_aware_accumulation,
@@ -1181,6 +1190,10 @@ maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses
         table_modes:TableModes,
         width:3
     }.
+
+path_aware_accumulation_positive_step_metadata(Pred, Position) :-
+    get_constraints(Pred, Constraints),
+    member(positive_step(Position), Constraints).
 
 path_aware_accumulation_base_clause(HeadSpec, Head-Body, EdgeSpec, AuxSpec, BaseExpression, PositiveStepProven) :-
     get_dict(name, HeadSpec, Pred),

@@ -116,7 +116,7 @@ normalize_constraints([unordered|Rest], [unordered(true)|NormRest]) :- !,
 normalize_constraints([ordered|Rest], [unordered(false)|NormRest]) :- !,
     normalize_constraints(Rest, NormRest).
 normalize_constraints([C|Rest], [C|NormRest]) :-
-    (C = unique(_) ; C = unordered(_)), !,
+    (C = unique(_) ; C = unordered(_) ; C = positive_step(_)), !,
     normalize_constraints(Rest, NormRest).
 normalize_constraints([Invalid|_], _) :-
     format('ERROR: Invalid constraint: ~w~n', [Invalid]),
@@ -147,7 +147,15 @@ get_constraints(Pred, Constraints) :-
 merge_constraints(Defaults, Declared, Merged) :-
     merge_constraint_list(Defaults, Declared, unique, MergedUnique),
     merge_constraint_list(Defaults, Declared, unordered, MergedOrdered),
-    append(MergedUnique, MergedOrdered, Merged).
+    findall(Constraint,
+        (   member(Constraint, Declared),
+            functor(Constraint, Functor, _),
+            Functor \= unique,
+            Functor \= unordered
+        ),
+        Extras),
+    append(MergedUnique, MergedOrdered, BaseMerged),
+    append(BaseMerged, Extras, Merged).
 
 merge_constraint_list(Defaults, Declared, Key, [Result]) :-
     Constraint =.. [Key, _],
