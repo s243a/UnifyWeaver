@@ -2192,6 +2192,19 @@ test(atom_string_alias_after_native_outputs_stays_native) :-
     \+ sub_string(Code, _, _, _, "Unknown predicate"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(sub_atom_alias_after_native_outputs_stays_native) :-
+    clear_type_declarations,
+    assertz(user:(sub_atom_alias(A, Out) :- sub_atom(A, 0, 2, _, Tmp), Out = Tmp)),
+    assertz(type_declarations:uw_type(sub_atom_alias/2, 1, atom)),
+    assertz(type_declarations:uw_type(sub_atom_alias/2, 2, atom)),
+    once(compile_predicate_to_typr(sub_atom_alias/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let sub_atom_alias <- fn(arg1: char, arg2: char): char")),
+    once(sub_string(Code, _, _, _, "let v3 <- @{ substr(arg1, 1, 2) }@;")),
+    once(sub_string(Code, _, _, _, "arg2 <- v3;")),
+    \+ sub_string(Code, _, _, _, "(function("),
+    \+ sub_string(Code, _, _, _, "Unknown predicate"),
+    generated_typr_is_valid(Code, exit(0)).
+
 test(multi_decision_guard_chains_use_let_for_new_intermediates) :-
     clear_type_declarations,
     assertz(user:(multi_guard_chain(Name, Out) :- string_lower(Name, Lower), is_character(Lower), string_length(Lower, Len), is_numeric(Len), string_upper(Lower, Upper), is_character(Upper), string_concat(Upper, '!', Out))),
