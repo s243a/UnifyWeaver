@@ -822,12 +822,21 @@ csharp_branch_value(Value, _VarMap, ExprStr) :-
     csharp_literal(Value, ExprStr).
 
 %% branches_to_csharp_if_chain(+Branches, -Code)
-branches_to_csharp_if_chain([branch(Cond, Expr)], Code) :-
+%%   First branch uses 'if', subsequent use 'else if'.
+branches_to_csharp_if_chain([First|Rest], Code) :-
+    First = branch(Cond, Expr),
+    (   Rest == []
+    ->  format(atom(Code), '    if (~w)\n    {\n        return ~w;\n    }', [Cond, Expr])
+    ;   branches_to_csharp_elif_chain(Rest, ElifCode),
+        format(atom(Code), '    if (~w)\n    {\n        return ~w;\n    }\n~w', [Cond, Expr, ElifCode])
+    ).
+
+branches_to_csharp_elif_chain([branch(Cond, Expr)], Code) :-
     !,
-    format(atom(Code), '    if (~w)\n    {\n        return ~w;\n    }', [Cond, Expr]).
-branches_to_csharp_if_chain([branch(Cond, Expr)|Rest], Code) :-
-    branches_to_csharp_if_chain(Rest, RestCode),
-    format(atom(Code), '    if (~w)\n    {\n        return ~w;\n    }\n    else ~w', [Cond, Expr, RestCode]).
+    format(atom(Code), '    else if (~w)\n    {\n        return ~w;\n    }', [Cond, Expr]).
+branches_to_csharp_elif_chain([branch(Cond, Expr)|Rest], Code) :-
+    branches_to_csharp_elif_chain(Rest, RestCode),
+    format(atom(Code), '    else if (~w)\n    {\n        return ~w;\n    }\n~w', [Cond, Expr, RestCode]).
 
 %% test_linq_recursive_output/0 - Print both styles for comparison
 test_linq_recursive_output :-
