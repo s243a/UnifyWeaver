@@ -401,7 +401,20 @@ compile_set_arguments([Arg|Rest], V0, Vf, Code) :-
     ->  % For atomic sub-args, emit set_constant directly
         V1 = V0,
         format(string(ArgCode), "    set_constant ~w", [Arg])
-    ;   % Nested compound — allocate a register for the sub-structure
+    ;   % Nested compound — recursively emit put_structure + set_* for sub-args
+        compound(Arg)
+    ->  Arg =.. [F|NestedArgs],
+        length(NestedArgs, NArity),
+        next_x_reg(V0, XReg, V_temp),
+        bind_var(Arg, XReg, V_temp, V1a),
+        format(string(SetCode), "    set_variable ~w", [XReg]),
+        format(string(PutCode), "    put_structure ~w/~w, ~w", [F, NArity, XReg]),
+        compile_set_arguments(NestedArgs, V1a, V1, NestedCode),
+        (   NestedCode == ""
+        ->  format(string(ArgCode), "~w~n~w", [SetCode, PutCode])
+        ;   format(string(ArgCode), "~w~n~w~n~w", [SetCode, PutCode, NestedCode])
+        )
+    ;   % Fallback
         next_x_reg(V0, XReg, V_temp),
         bind_var(Arg, XReg, V_temp, V1),
         format(string(ArgCode), "    set_variable ~w", [XReg])

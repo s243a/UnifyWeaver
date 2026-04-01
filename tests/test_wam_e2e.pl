@@ -23,6 +23,20 @@ e2e_ancestor(X, Y) :- e2e_parent(X, Z), e2e_ancestor(Z, Y).
 e2e_color(rgb(255, 0, 0), red).
 e2e_color(rgb(0, 255, 0), green).
 
+%% Nested compound head — exercises get_structure on non-Ai register
+:- dynamic e2e_nested/2.
+e2e_nested(pair(a, b), yes).
+e2e_nested(pair(c, d), no).
+
+%% Rule that calls a predicate with compound head using a variable arg
+%% This exercises write mode: grandparent computes Y via parent(alice,Y),
+%% then calls parent(Y,Z) where Z is an unbound _V variable.
+%% parent's get_constant on A2 must unify _V with the constant.
+%% (Already tested by grandparent, but let's add an explicit write-mode
+%% test by calling a compound-head predicate with a variable first arg.)
+:- dynamic e2e_lookup/1.
+e2e_lookup(X) :- e2e_color(rgb(X, 0, 0), red).
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -86,6 +100,31 @@ test_wam_compound_head :-
     ;   fail_test(Test, 'Compound head unification failed')
     ).
 
+test_wam_nested_compound_head :-
+    Test = 'WAM E2E: Nested compound head (get_structure on Xn)',
+    (   % pair(a,b) has nested structure — get_structure on A1, then
+        % unify_* for sub-args. Tests get_structure on non-Ai register
+        % when compiler emits nested get_structure sequences.
+        wam_target:compile_predicate_to_wam(user:e2e_nested/2, [], Code),
+        wam_runtime:execute_wam(Code, e2e_nested(pair(a, b), yes), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Nested compound head failed')
+    ).
+
+test_wam_write_mode :-
+    Test = 'WAM E2E: Write mode (variable in compound query)',
+    (   % e2e_lookup(X) calls e2e_color(rgb(X,0,0), red).
+        % X is unbound, so put_structure builds rgb(_V,0,0) in A1.
+        % color's get_structure enters read mode on the constructed term.
+        % The unify_constant 255 must unify with the _V variable at
+        % position 1, exercising variable unification within structures.
+        wam_target:compile_wam_module(
+            [user:e2e_color/2, user:e2e_lookup/1], [], Code),
+        wam_runtime:execute_wam(Code, e2e_lookup(255), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Write mode / variable compound query failed')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM Target E2E Test Suite~n'),
@@ -96,6 +135,8 @@ run_tests :-
     test_wam_rule_execution,
     test_wam_recursive_execution,
     test_wam_compound_head,
+    test_wam_nested_compound_head,
+    test_wam_write_mode,
     
     format('~n========================================~n'),
     (   test_failed

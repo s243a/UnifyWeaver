@@ -27,6 +27,12 @@ test_wrap(X) :- test_check(pair(X, done)).
 :- dynamic test_color/2.
 test_color(rgb(255, 0, 0), red).
 
+%% Nested compound body arg — exercises recursive put_structure
+:- dynamic test_nested_check/1.
+test_nested_check(box(inner(_, _))).
+:- dynamic test_nested_wrap/1.
+test_nested_wrap(X) :- test_nested_check(box(inner(X, done))).
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -126,6 +132,20 @@ test_wam_compound_head :-
         fail_test(Test, 'Missing get_structure in compound head output')
     ).
 
+test_wam_nested_put_structure :-
+    Test = 'WAM: nested put_structure for compound body args',
+    (   wam_target:compile_predicate_to_wam(user:test_nested_wrap/1, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'put_structure box/1'),
+        sub_string(S, _, _, _, 'put_structure inner/2')
+    ->  pass(Test)
+    ;   (   wam_target:compile_predicate_to_wam(user:test_nested_wrap/1, [], Code2)
+        ->  format(user_error, 'DEBUG: nested put_structure output:~n~w~n', [Code2])
+        ;   format(user_error, 'DEBUG: compile failed~n', [])
+        ),
+        fail_test(Test, 'Missing nested put_structure in output')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -136,6 +156,7 @@ run_tests :-
     test_wam_single_clause,
     test_wam_recursion,
     test_wam_put_structure,
+    test_wam_nested_put_structure,
     test_wam_compound_head,
     test_wam_module,
     
