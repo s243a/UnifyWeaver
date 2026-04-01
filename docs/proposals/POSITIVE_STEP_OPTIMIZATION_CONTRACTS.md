@@ -65,16 +65,19 @@ This keeps semantics explicit in the query itself and is easy to
 
 ## Mechanism 2: Declarative Positive-Step Metadata
 
-The longer-term mechanism should be a declarative compiler-visible
- contract, distinct from the query body.
-
-Possible shapes:
+The compiler-visible metadata mechanism is now implemented through the
+ existing constraint system:
 
 ```prolog
 :- constraint(path/3, [positive_step(3)]).
 ```
 
-or
+This proves that the accumulator-bearing position is driven by a
+ strictly positive recursive step for optimization purposes.
+
+The earlier alternative spellings remain historical design ideas:
+
+Possible shapes:
 
 ```prolog
 :- optimization_contract(path/3, [min_step_positive]).
@@ -82,7 +85,7 @@ or
 
 or a target-neutral metadata term attached to the accumulator position.
 
-The exact syntax is still open, but the design goal is:
+The chosen syntax keeps the design goal:
 
 - the user states positivity once
 - the compiler records it in plan metadata
@@ -92,8 +95,8 @@ The exact syntax is still open, but the design goal is:
 
 1. implement explicit guard recognition now
 2. keep runtime inference as a fallback for backwards compatibility
-3. design the declarative metadata mechanism next
-4. use one of these explicit contracts before extending Rust lowering
+3. keep runtime inference as a fallback for backwards compatibility
+4. use the declarative `constraint/2` contract before extending Rust lowering
 
 ## Why Rust Should Wait For This
 
@@ -114,6 +117,12 @@ That keeps the cross-target story coherent and avoids benchmark-specific
 The immediate explicit-guard mechanism is the minimum acceptable
  contract before moving to Rust on weighted `min`.
 
-The declarative metadata mechanism is still proposed work, but should be
- designed before we rely on weighted `min` native lowering broadly
- across targets.
+The declarative metadata mechanism is now available through
+ `constraint/2` with `positive_step(N)`.
+
+The remaining work before broad Rust adoption is not syntax design but
+ deciding how much Rust native lowering should rely on:
+
+- explicit positive guards
+- declarative `positive_step/1` metadata
+- or both
