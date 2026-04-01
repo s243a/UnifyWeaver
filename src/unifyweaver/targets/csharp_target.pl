@@ -1155,8 +1155,8 @@ maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses
     path_aware_transitive_closure_supported_modes(Modes),
     BaseClauses = [BaseClause],
     RecClauses = [RecClause],
-    path_aware_accumulation_base_clause(HeadSpec, BaseClause, EdgeSpec, AuxSpec, BaseExpression),
-    path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, RecClause, RecursiveExpression),
+    path_aware_accumulation_base_clause(HeadSpec, BaseClause, EdgeSpec, AuxSpec, BaseExpression, PositiveStepProven),
+    path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, RecClause, RecursiveExpression, PositiveStepProven),
     get_dict(name, EdgeSpec, EdgePred),
     get_dict(arity, EdgeSpec, EdgeArity),
     get_dict(name, AuxSpec, AuxPred),
@@ -1176,12 +1176,13 @@ maybe_path_aware_accumulation_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses
         auxiliary:AuxSpec,
         base_expression:BaseExpression,
         recursive_expression:RecursiveExpression,
+        positive_step_proven:PositiveStepProven,
         max_depth:10,
         table_modes:TableModes,
         width:3
     }.
 
-path_aware_accumulation_base_clause(HeadSpec, Head-Body, EdgeSpec, AuxSpec, BaseExpression) :-
+path_aware_accumulation_base_clause(HeadSpec, Head-Body, EdgeSpec, AuxSpec, BaseExpression, PositiveStepProven) :-
     get_dict(name, HeadSpec, Pred),
     Head =.. [Pred, From, To, Acc],
     var(From),
@@ -1189,13 +1190,14 @@ path_aware_accumulation_base_clause(HeadSpec, Head-Body, EdgeSpec, AuxSpec, Base
     var(Acc),
     body_to_list(Body, Terms),
     select(ArithTerm0, Terms, Terms1),
-    Terms1 = [TermA0, TermB0],
+    maybe_extract_positive_step_guard(Terms1, AuxValue, RelationTerms, PositiveStepProven),
+    RelationTerms = [TermA0, TermB0],
     path_aware_accumulation_edge_aux_terms(From, To, AuxValue, TermA0, TermB0, EdgeTerm0, AuxTerm0),
     transitive_closure_edge_term(EdgeSpec, From, To, EdgeTerm0),
     path_aware_auxiliary_term(AuxSpec, From, AuxValue, AuxTerm0),
     arithmetic_assignment_expression(ArithTerm0, Acc, [From-0, To-1, AuxValue-3], BaseExpression).
 
-path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, Head-Body, RecursiveExpression) :-
+path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, Head-Body, RecursiveExpression, PositiveStepProven) :-
     get_dict(name, HeadSpec, Pred),
     Head =.. [Pred, From, To, Acc],
     var(From),
@@ -1203,12 +1205,35 @@ path_aware_accumulation_recursive_rule_clause(HeadSpec, EdgeSpec, AuxSpec, Head-
     var(Acc),
     body_to_list(Body, Terms),
     select(ArithTerm0, Terms, Terms1),
-    select(AuxTerm0, Terms1, Terms2),
+    maybe_extract_positive_step_guard(Terms1, AuxValue, TermsNoGuard, PositiveStepProven),
+    select(AuxTerm0, TermsNoGuard, Terms2),
     select(EdgeTerm0, Terms2, [RecTerm0]),
     transitive_closure_edge_term(EdgeSpec, From, Mid, EdgeTerm0),
     path_aware_auxiliary_term(AuxSpec, From, AuxValue, AuxTerm0),
     path_aware_transitive_recursive_term(Pred, Mid, To, PrevAcc, RecTerm0),
     arithmetic_assignment_expression(ArithTerm0, Acc, [From-0, To-1, PrevAcc-2, AuxValue-3], RecursiveExpression).
+
+maybe_extract_positive_step_guard(Terms, AuxValue, RemainingTerms, true) :-
+    select(Guard0, Terms, RemainingTerms),
+    positive_step_guard(Guard0, AuxValue),
+    !.
+maybe_extract_positive_step_guard(Terms, _AuxValue, Terms, false).
+
+positive_step_guard(Goal0, AuxValue) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [>, AuxValue, Value],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [<, Value, AuxValue],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [>=, AuxValue, Value],
+        number(Value),
+        Value > 0
+    ;   Goal =.. [=<, Value, AuxValue],
+        number(Value),
+        Value > 0
+    ).
 
 path_aware_accumulation_edge_aux_terms(From, To, AuxValue, TermA0, TermB0, EdgeTerm0, AuxTerm0) :-
     (   binary_relation_term(From, To, TermA0),
@@ -3724,6 +3749,7 @@ emit_plan_expression(Node, Expr) :-
     get_dict(base_expression, Node, BaseExpression),
     get_dict(recursive_expression, Node, RecursiveExpression),
     (get_dict(max_depth, Node, MaxDepth) -> true ; MaxDepth = 0),
+    (get_dict(positive_step_proven, Node, PositiveStepProven) -> true ; PositiveStepProven = false),
     (   get_dict(table_modes, Node, TableModes),
         nth0(2, TableModes, AccTableMode),
         AccTableMode \= lattice
@@ -3732,11 +3758,12 @@ emit_plan_expression(Node, Expr) :-
     ),
     emit_arithmetic_expression(BaseExpression, BaseExprCode),
     emit_arithmetic_expression(RecursiveExpression, RecExprCode),
+    (PositiveStepProven == true -> PositiveStepStr = "true" ; PositiveStepStr = "false"),
     atom_string(EdgeName, EdgeNameStr),
     atom_string(AuxName, AuxNameStr),
     atom_string(Name, NameStr),
-    format(atom(Expr), 'new PathAwareAccumulationNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w, ~w)',
-        [EdgeNameStr, EdgeArity, NameStr, Arity, AuxNameStr, AuxArity, BaseExprCode, RecExprCode, MaxDepth, TableModeStr]).
+    format(atom(Expr), 'new PathAwareAccumulationNode(new PredicateId("~w", ~w), new PredicateId("~w", ~w), new PredicateId("~w", ~w), ~w, ~w, ~w, ~w, ~w)',
+        [EdgeNameStr, EdgeArity, NameStr, Arity, AuxNameStr, AuxArity, BaseExprCode, RecExprCode, MaxDepth, TableModeStr, PositiveStepStr]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, fixpoint), !,
     get_dict(base, Node, BaseNode),
