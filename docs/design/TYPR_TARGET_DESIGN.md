@@ -512,8 +512,9 @@ Current wrapped-fallback boundary note:
   alias or arithmetic assignment tail such as `Out = Lower` or
   `Out is Len + 1`
 - the next audited producer families also stay native for simple alias tails,
-  including representative conversion, list, and path producers such as
-  `to_numeric/2`, `reverse/2`, and `dirname/2`
+  including representative conversion, list, path, and atom/string bridge
+  producers such as `to_numeric/2`, `reverse/2`, `dirname/2`, and
+  `atom_string/2`
 - the remaining wrapped fallback boundary is now beyond that first
   producer-follow-on slice
 - if this area is revisited again, the next real audit target is the next
