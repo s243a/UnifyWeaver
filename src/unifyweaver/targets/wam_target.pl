@@ -92,7 +92,40 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
         compile_single_clause_wam(Clause, Options, ClausesCode)
     ;   compile_multi_clause_wam(Pred, Arity, Clauses, Options, ClausesCode)
     ),
-    format(string(Code), "~w~n~w", [Label, ClausesCode]).
+    % Generate first-argument index if all clauses have constant first args
+    (   length(Clauses, NC), NC > 1,
+        build_first_arg_index(Pred, Arity, Clauses, IndexCode)
+    ->  format(string(Code), "~w~n~w~n~w", [Label, IndexCode, ClausesCode])
+    ;   format(string(Code), "~w~n~w", [Label, ClausesCode])
+    ).
+
+%% build_first_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
+%  If all clauses have atomic first arguments, emit a switch_on_constant
+%  table that maps first-arg values directly to clause labels.
+build_first_arg_index(Pred, Arity, Clauses, IndexCode) :-
+    length(Clauses, N),
+    build_index_entries(Clauses, 1, N, Pred, Arity, Entries),
+    Entries \= [],
+    format_index_entries(Entries, EntriesStr),
+    format(string(IndexCode), "    switch_on_constant ~w", [EntriesStr]).
+
+build_index_entries([], _, _, _, _, []).
+build_index_entries([Head-_|Rest], I, N, Pred, Arity, Entries) :-
+    Head =.. [_|[FirstArg|_]],
+    NextI is I + 1,
+    build_index_entries(Rest, NextI, N, Pred, Arity, RestEntries),
+    (   atomic(FirstArg)
+    ->  (   I == 1
+        ->  Label = default  % first clause is the default entry point
+        ;   format(atom(Label), "L_~w_~w_~w", [Pred, Arity, I])
+        ),
+        Entries = [FirstArg-Label|RestEntries]
+    ;   Entries = []  % non-constant first arg — can't index
+    ).
+
+format_index_entries(Entries, Str) :-
+    maplist([K-V, S]>>format(atom(S), "~w:~w", [K, V]), Entries, Parts),
+    atomic_list_concat(Parts, ', ', Str).
 
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-
@@ -310,7 +343,10 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ->  Goal =.. [Pred|Args],
             length(Args, Arity),
             compile_put_arguments(Args, 1, V0, Vf, PutCode),
-            format(string(ExecCode), "    execute ~w/~w", [Pred, Arity]),
+            (   is_builtin_pred(Pred, Arity)
+            ->  format(string(ExecCode), "    builtin_call ~w/~w, ~w~n    proceed", [Pred, Arity, Arity])
+            ;   format(string(ExecCode), "    execute ~w/~w", [Pred, Arity])
+            ),
             (   PutCode == ""
             ->  format(string(Code), "    deallocate~n~w", [ExecCode])
             ;   format(string(Code), "~w~n    deallocate~n~w", [PutCode, ExecCode])
@@ -326,7 +362,10 @@ compile_goal_call(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
     compile_put_arguments(Args, 1, V0, Vf, PutCode),
-    format(string(CallCode), "    call ~w/~w, ~w", [Pred, Arity, Arity]),
+    (   is_builtin_pred(Pred, Arity)
+    ->  format(string(CallCode), "    builtin_call ~w/~w, ~w", [Pred, Arity, Arity])
+    ;   format(string(CallCode), "    call ~w/~w, ~w", [Pred, Arity, Arity])
+    ),
     (   PutCode == ""
     ->  Code = CallCode
     ;   format(string(Code), "~w~n~w", [PutCode, CallCode])
@@ -336,11 +375,27 @@ compile_goal_execute(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
     compile_put_arguments(Args, 1, V0, Vf, PutCode),
-    format(string(ExecCode), "    execute ~w/~w", [Pred, Arity]),
+    (   is_builtin_pred(Pred, Arity)
+    ->  format(string(BuiltinCode), "    builtin_call ~w/~w, ~w", [Pred, Arity, Arity]),
+        format(string(ExecCode), "~w~n    proceed", [BuiltinCode])
+    ;   format(string(ExecCode), "    execute ~w/~w", [Pred, Arity])
+    ),
     (   PutCode == ""
     ->  Code = ExecCode
     ;   format(string(Code), "~w~n~w", [PutCode, ExecCode])
     ).
+
+%% is_builtin_pred(+Pred, +Arity)
+%  Recognized built-in predicates that the runtime handles directly.
+is_builtin_pred(is, 2).
+is_builtin_pred(>, 2).
+is_builtin_pred(<, 2).
+is_builtin_pred(>=, 2).
+is_builtin_pred(=<, 2).
+is_builtin_pred(=:=, 2).
+is_builtin_pred(=\=, 2).
+is_builtin_pred(==, 2).
+is_builtin_pred(\==, 2).
 
 compile_put_arguments([], _, V, V, "").
 compile_put_arguments([Arg|Rest], I, V0, Vf, Code) :-

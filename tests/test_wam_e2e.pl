@@ -37,6 +37,18 @@ e2e_nested(pair(c, d), no).
 :- dynamic e2e_lookup/1.
 e2e_lookup(X) :- e2e_color(rgb(X, 0, 0), red).
 
+%% Built-in arithmetic — exercises builtin_call is/2 and >/2
+:- dynamic e2e_double/2.
+e2e_double(X, Y) :- Y is X * 2.
+
+:- dynamic e2e_positive/1.
+e2e_positive(X) :- X > 0.
+
+%% Predicate for solve_wam test — multi-clause facts
+:- dynamic e2e_capital/2.
+e2e_capital(france, paris).
+e2e_capital(germany, berlin).
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -125,6 +137,44 @@ test_wam_write_mode :-
     ;   fail_test(Test, 'Write mode / variable compound query failed')
     ).
 
+test_wam_builtin_arithmetic :-
+    Test = 'WAM E2E: Built-in arithmetic (is/2, >/2)',
+    (   wam_target:compile_predicate_to_wam(user:e2e_positive/1, [], Code),
+        wam_runtime:execute_wam(Code, e2e_positive(5), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Built-in arithmetic failed')
+    ).
+
+test_wam_builtin_is :-
+    Test = 'WAM E2E: Built-in is/2 evaluation',
+    (   wam_target:compile_predicate_to_wam(user:e2e_double/2, [], Code),
+        wam_runtime:execute_wam(Code, e2e_double(3, 6), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Built-in is/2 failed')
+    ).
+
+test_wam_solve :-
+    Test = 'WAM E2E: solve_wam variable bindings',
+    (   wam_target:compile_facts_to_wam(user:e2e_capital, 2, Code),
+        wam_runtime:solve_wam(Code, e2e_capital(france, City),
+            ['City'=City], Bindings),
+        Bindings = ['City'=paris]
+    ->  pass(Test)
+    ;   fail_test(Test, 'solve_wam binding extraction failed')
+    ).
+
+test_wam_indexing :-
+    Test = 'WAM E2E: First-argument indexing (switch_on_constant)',
+    (   % Compile parent/2 — should have switch_on_constant index
+        wam_target:compile_facts_to_wam(user:e2e_parent, 2, Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'switch_on_constant'),
+        % Should still execute correctly with indexing
+        wam_runtime:execute_wam(Code, e2e_parent(bob, charlie), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'First-argument indexing failed')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM Target E2E Test Suite~n'),
@@ -137,6 +187,10 @@ run_tests :-
     test_wam_compound_head,
     test_wam_nested_compound_head,
     test_wam_write_mode,
+    test_wam_builtin_arithmetic,
+    test_wam_builtin_is,
+    test_wam_solve,
+    test_wam_indexing,
     
     format('~n========================================~n'),
     (   test_failed
