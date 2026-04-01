@@ -386,16 +386,20 @@ compile_goal_execute(Goal, V0, Vf, Code) :-
     ).
 
 %% is_builtin_pred(+Pred, +Arity)
-%  Recognized built-in predicates that the runtime handles directly.
-is_builtin_pred(is, 2).
-is_builtin_pred(>, 2).
-is_builtin_pred(<, 2).
-is_builtin_pred(>=, 2).
-is_builtin_pred(=<, 2).
-is_builtin_pred(=:=, 2).
-is_builtin_pred(=\=, 2).
-is_builtin_pred(==, 2).
-is_builtin_pred(\==, 2).
+%  Recognized built-in predicates that the WAM runtime handles directly.
+%  Delegates to clause_body_analysis for guard/comparison detection,
+%  with explicit entries for arithmetic and control builtins.
+is_builtin_pred(Pred, Arity) :-
+    % Build a goal term to test with is_guard_goal/2
+    length(MockArgs, Arity),
+    Goal =.. [Pred|MockArgs],
+    is_guard_goal(Goal, []),  % empty varmap — we just need structural match
+    !.
+is_builtin_pred(is, 2).      % arithmetic evaluation (output goal, not a guard)
+is_builtin_pred(true, 0).    % control
+is_builtin_pred(fail, 0).
+is_builtin_pred('!', 0).     % cut
+is_builtin_pred(\+, 1).      % negation-as-failure
 
 compile_put_arguments([], _, V, V, "").
 compile_put_arguments([Arg|Rest], I, V0, Vf, Code) :-

@@ -508,6 +508,13 @@ step_wam(builtin_call('\\==/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
     V1 \== V2,
     NPC is PC + 1.
 
+step_wam(builtin_call('\\=/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, V1),
+    get_assoc('A2', R, V2),
+    V1 \== V2,
+    NPC is PC + 1.
+
 is_comparison_op('>/2').
 is_comparison_op('</2').
 is_comparison_op('>=/2').
@@ -521,6 +528,55 @@ apply_comparison('>=/2', N1, N2) :- N1 >= N2.
 apply_comparison('=</2', N1, N2) :- N1 =< N2.
 apply_comparison('=:=/2', N1, N2) :- N1 =:= N2.
 apply_comparison('=\\=/2', N1, N2) :- N1 =\= N2.
+
+%% Type check builtins
+step_wam(builtin_call(Op, 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    is_type_check_op(Op),
+    get_assoc('A1', R, Val),
+    apply_type_check(Op, Val),
+    NPC is PC + 1.
+
+is_type_check_op('integer/1').
+is_type_check_op('float/1').
+is_type_check_op('number/1').
+is_type_check_op('atom/1').
+is_type_check_op('compound/1').
+is_type_check_op('var/1').
+is_type_check_op('nonvar/1').
+is_type_check_op('is_list/1').
+
+apply_type_check('integer/1', V) :- integer(V).
+apply_type_check('float/1', V) :- float(V).
+apply_type_check('number/1', V) :- number(V).
+apply_type_check('atom/1', V) :- atom(V), \+ is_unbound_var(V).
+apply_type_check('compound/1', V) :- compound(V).
+apply_type_check('var/1', V) :- is_unbound_var(V).
+apply_type_check('nonvar/1', V) :- \+ is_unbound_var(V).
+apply_type_check('is_list/1', V) :- is_list(V).
+
+%% Control builtins
+step_wam(builtin_call('true/0', 0), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    NPC is PC + 1.
+
+step_wam(builtin_call('fail/0', 0), _, _) :- fail.
+
+%% Cut — discard all choice points
+step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, _, Code, L),
+         wam_state(NPC, R, S, H, T, CP, [], Code, L)) :-
+    NPC is PC + 1.
+
+%% Negation-as-failure \+/1 — not directly callable via builtin_call
+%% since it requires executing a sub-goal. For Phase 1, \+ is handled
+%% as a guard that always succeeds or fails based on argument truthiness.
+step_wam(builtin_call('\\+/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Val),
+    (   Val == fail ; Val == false ; is_unbound_var(Val)
+    ->  NPC is PC + 1
+    ;   fail
+    ).
 
 %% eval_arith(+Expr, +Regs, +Stack, +Heap, -Result)
 %  Evaluates an arithmetic expression. Numbers pass through. Register

@@ -44,6 +44,10 @@ e2e_double(X, Y) :- Y is X * 2.
 :- dynamic e2e_positive/1.
 e2e_positive(X) :- X > 0.
 
+%% Type check built-in — exercises builtin_call atom/1
+:- dynamic e2e_is_atom/1.
+e2e_is_atom(X) :- atom(X).
+
 %% Predicate for solve_wam test — multi-clause facts
 :- dynamic e2e_capital/2.
 e2e_capital(france, paris).
@@ -153,6 +157,14 @@ test_wam_builtin_is :-
     ;   fail_test(Test, 'Built-in is/2 failed')
     ).
 
+test_wam_builtin_type_check :-
+    Test = 'WAM E2E: Built-in type check (atom/1)',
+    (   wam_target:compile_predicate_to_wam(user:e2e_is_atom/1, [], Code),
+        wam_runtime:execute_wam(Code, e2e_is_atom(hello), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Built-in type check failed')
+    ).
+
 test_wam_solve :-
     Test = 'WAM E2E: solve_wam variable bindings',
     (   wam_target:compile_facts_to_wam(user:e2e_capital, 2, Code),
@@ -189,6 +201,7 @@ run_tests :-
     test_wam_write_mode,
     test_wam_builtin_arithmetic,
     test_wam_builtin_is,
+    test_wam_builtin_type_check,
     test_wam_solve,
     test_wam_indexing,
     
