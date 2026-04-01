@@ -8,10 +8,14 @@ than `All` while preserving exact per-path semantics.
 Current status:
 
 - correctness is in place
-- local runtime optimizations reduced the cost of the exact frontier
-- weighted `min` is still slower than `All`
+- positive-additive weighted `min` now has a fast runtime path and
+  clearly beats `All`
+- SCC instrumentation is in place in the weighted benchmark harness
+- the remaining work is to broaden fast weighted `min` beyond the
+  positive-additive case
 
-So the next step must be algorithmic.
+So the next step remains algorithmic, but for a narrower class of
+workloads than when this plan was first drafted.
 
 ## Phase 0: Baseline Preservation
 
@@ -25,12 +29,21 @@ This gives us a known-correct baseline to compare against.
 
 ## Phase 1: Graph Structure Measurement
 
+Status: completed for the current benchmark harness.
+
 Add instrumentation to the weighted benchmark path to measure:
 
 - SCC count
 - SCC size distribution
 - largest SCC
 - condensation DAG size
+
+Current measured shape is favorable:
+
+- `10k`: `8247` nodes, `25227` edges
+- `8204` SCCs total
+- `17` cyclic SCCs
+- largest cyclic SCC size `35`
 
 Deliverable:
 
@@ -45,7 +58,8 @@ Reason:
 
 ## Phase 2: Internal Runtime Prototype
 
-Prototype a new internal runtime strategy for:
+Prototype a new internal runtime strategy for the remaining weighted
+`min` cases not already handled by the positive-additive fast path:
 
 - `PathAwareAccumulationNode`
 - `TableMode.Min`
@@ -71,10 +85,16 @@ Add a runtime applicability check:
 - use SCC-condensed strategy when safe
 - otherwise fall back to current exact frontier
 
-Possible early rule:
+Current selection boundary:
 
-- enable only for monotone additive `min`
-- disable for unsupported expression shapes
+- use the layered dynamic-programming fast path for strictly positive
+  additive `min`
+- use the exact frontier fallback otherwise
+
+Next selection work:
+
+- determine where SCC-condensed evaluation can replace the frontier
+  fallback safely
 
 Deliverable:
 
@@ -101,11 +121,17 @@ Track:
 - SCC metrics
 - local state counts
 
-Success criteria:
+Current positive-additive benchmark results already satisfy the intended
+performance goal:
 
-- exact output match at all scales
-- weighted `min` faster than `all` at larger scales
-- visible crossover toward a meaningful win, ideally around `2x`
+- `300`: `3.41x`
+- `1k`: `3.17x`
+- `5k`: `5.03x`
+- `10k`: `6.98x`
+
+So for the SCC work, success criteria should be read as applying to the
+broader remaining weighted `min` cases that still fall back to the exact
+frontier algorithm.
 
 ## Phase 5: Documentation and Rollout
 
@@ -156,11 +182,17 @@ Mitigation:
 
 ## Immediate Next Coding Step
 
-The first code step after this document set should be:
+The original first code step after this document set was:
 
 1. add SCC measurement instrumentation to the weighted benchmark/runtime
 2. record actual SCC structure for `300/1k/5k/10k`
 3. decide whether the component-DAG strategy is justified by the data
 
-That keeps the next implementation grounded in the actual graph rather
-than intuition alone.
+That step is now complete.
+
+The next coding step should be:
+
+1. identify weighted `Min` recurrence shapes not covered by the current
+   positive-additive fast path
+2. prototype SCC-condensed evaluation for one of those broader cases
+3. benchmark it against the exact frontier fallback
