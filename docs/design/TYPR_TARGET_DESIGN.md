@@ -515,6 +515,8 @@ Current wrapped-fallback boundary note:
   including representative conversion, list, path, and atom/string bridge
   producers such as `to_numeric/2`, `reverse/2`, `dirname/2`, and
   `atom_string/2`
+- the next narrowed substring-style slice is also native when it stays within
+  constant-offset/constant-length `sub_atom/5` followed by a simple alias tail
 - the remaining wrapped fallback boundary is now beyond that first
   producer-follow-on slice
 - if this area is revisited again, the next real audit target is the next

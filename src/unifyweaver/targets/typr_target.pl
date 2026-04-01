@@ -7787,6 +7787,19 @@ native_typr_output_expr(atom_string(InValue, OutVar), VarMap0, _PredName, VarMap
     !,
     ensure_typr_var(VarMap0, OutVar, FinalExpr, VarMap, IntroKind),
     typr_resolve_value(VarMap0, InValue, OutputExpr).
+native_typr_output_expr(sub_atom(InValue, Before, Length, After, OutVar), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    var(OutVar),
+    var(After),
+    integer(Before),
+    integer(Length),
+    Before >= 0,
+    Length >= 0,
+    !,
+    ensure_typr_var(VarMap0, OutVar, FinalExpr, VarMap, IntroKind),
+    typr_resolve_value(VarMap0, InValue, InExpr),
+    Start is Before + 1,
+    End is Before + Length,
+    format(string(OutputExpr), '@{ substr(~w, ~w, ~w) }@', [InExpr, Start, End]).
 native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
