@@ -7182,6 +7182,9 @@ namespace UnifyWeaver.QueryRuntime
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
+                PositiveStepEvaluator? stepEvaluator = null;
+                var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
+                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, out stepEvaluator);
 
                 foreach (var edge in edges)
                 {
@@ -7201,7 +7204,14 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    if (usePositiveMinFastPath)
+                    {
+                        AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                    }
+                    else
+                    {
+                        AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    }
                 }
 
                 return totalRows;
@@ -7235,6 +7245,9 @@ namespace UnifyWeaver.QueryRuntime
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
+                PositiveStepEvaluator? stepEvaluator = null;
+                var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
+                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, out stepEvaluator);
 
                 foreach (var paramTuple in parameters)
                 {
@@ -7258,7 +7271,14 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    if (usePositiveMinFastPath)
+                    {
+                        AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                    }
+                    else
+                    {
+                        AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    }
                 }
 
                 return totalRows;
@@ -7268,6 +7288,216 @@ namespace UnifyWeaver.QueryRuntime
                 context.FixpointDepth--;
             }
         }
+
+        private delegate double PositiveStepEvaluator(object current, object next, object auxValue);
+
+        // For strictly positive additive steps, the minimum-cost walk within a hop
+        // budget is simple automatically. That lets us replace the expensive
+        // visited-state frontier with dynamic programming over (node, depth).
+        private void AppendPositiveMinAccumulationRowsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            PositiveStepEvaluator stepEvaluator,
+            ICollection<object[]> output,
+            int maxDepth = 0)
+        {
+            var effectiveMaxDepth = maxDepth > 0 ? maxDepth : int.MaxValue;
+            var depthCosts = new List<Dictionary<object?, double>>(effectiveMaxDepth == int.MaxValue ? 16 : effectiveMaxDepth + 1)
+            {
+                new Dictionary<object?, double> { [seed] = 0d }
+            };
+            var bestKnown = new Dictionary<object?, double>();
+
+            for (var depth = 0; depth < effectiveMaxDepth && depth < depthCosts.Count; depth++)
+            {
+                var currentLayer = depthCosts[depth];
+                if (currentLayer.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var (current, currentCost) in currentLayer)
+                {
+                    var currentKey = current ?? NullFactIndexKey;
+                    if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    if (nextDepth > effectiveMaxDepth)
+                    {
+                        continue;
+                    }
+
+                    while (depthCosts.Count <= nextDepth)
+                    {
+                        depthCosts.Add(new Dictionary<object?, double>());
+                    }
+
+                    var nextLayer = depthCosts[nextDepth];
+                    for (var edgeIndex = edgeBucket.Count - 1; edgeIndex >= 0; edgeIndex--)
+                    {
+                        var edge = edgeBucket[edgeIndex];
+                        if (edge is null || edge.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var next = edge[1];
+                        for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                        {
+                            var auxRow = auxBucket[auxIndexPos];
+                            if (auxRow is null || auxRow.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var step = stepEvaluator(current!, next!, auxRow[1]!);
+                            var nextCost = currentCost + step;
+
+                            if (!nextLayer.TryGetValue(next, out var existingCost) || nextCost < existingCost)
+                            {
+                                nextLayer[next] = nextCost;
+                            }
+
+                            if (!bestKnown.TryGetValue(next, out var bestCost) || nextCost < bestCost)
+                            {
+                                bestKnown[next] = nextCost;
+                            }
+                        }
+                    }
+                }
+            }
+
+            var bestRows = bestKnown
+                .OrderBy(kvp => kvp.Key, Comparer<object?>.Create(CompareCacheSeedValues))
+                .ToList();
+            foreach (var (target, cost) in bestRows)
+            {
+                output.Add(new object[] { seed!, target!, cost });
+            }
+        }
+
+        private bool TryCreatePositiveAdditiveStepEvaluator(
+            ArithmeticExpression baseExpression,
+            ArithmeticExpression recursiveExpression,
+            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            out PositiveStepEvaluator? evaluator)
+        {
+            evaluator = null;
+            if (!TryExtractMinStepExpression(baseExpression, recursiveExpression, out var stepExpression))
+            {
+                return false;
+            }
+
+            foreach (var (currentKey, edgeBucket) in succIndex)
+            {
+                if (!auxIndex.TryGetValue(currentKey, out var auxBucket))
+                {
+                    continue;
+                }
+
+                foreach (var edge in edgeBucket)
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    foreach (var auxRow in auxBucket)
+                    {
+                        if (auxRow is null || auxRow.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var evalTuple = new object[] { edge[0]!, edge[1]!, 0, auxRow[1]! };
+                        var stepObject = EvaluateArithmeticExpression(stepExpression, evalTuple);
+                        double step;
+                        try
+                        {
+                            step = Convert.ToDouble(stepObject, CultureInfo.InvariantCulture);
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+
+                        if (!(step > 0d))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            evaluator = (current, next, auxValue) =>
+            {
+                var evalTuple = new object[] { current, next, 0, auxValue };
+                var stepObject = EvaluateArithmeticExpression(stepExpression, evalTuple);
+                return Convert.ToDouble(stepObject, CultureInfo.InvariantCulture);
+            };
+            return true;
+        }
+
+        private static bool TryExtractMinStepExpression(
+            ArithmeticExpression baseExpression,
+            ArithmeticExpression recursiveExpression,
+            out ArithmeticExpression stepExpression)
+        {
+            stepExpression = baseExpression;
+            if (ReferencesAccumulator(baseExpression))
+            {
+                return false;
+            }
+
+            if (recursiveExpression is not BinaryArithmeticExpression { Operator: ArithmeticBinaryOperator.Add } add)
+            {
+                return false;
+            }
+
+            if (add.Left is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, add.Right))
+            {
+                stepExpression = add.Right;
+                return true;
+            }
+
+            if (add.Right is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, add.Left))
+            {
+                stepExpression = add.Left;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool ReferencesAccumulator(ArithmeticExpression expression) =>
+            expression switch
+            {
+                ColumnExpression { Index: 2 } => true,
+                ColumnExpression => false,
+                ConstantExpression => false,
+                UnaryArithmeticExpression unary => ReferencesAccumulator(unary.Operand),
+                BinaryArithmeticExpression binary => ReferencesAccumulator(binary.Left) || ReferencesAccumulator(binary.Right),
+                _ => true
+            };
+
+        private static bool ArithmeticExpressionStructuralEquals(ArithmeticExpression left, ArithmeticExpression right) =>
+            (left, right) switch
+            {
+                (ColumnExpression l, ColumnExpression r) => l.Index == r.Index,
+                (ConstantExpression l, ConstantExpression r) => Equals(l.Value, r.Value),
+                (UnaryArithmeticExpression l, UnaryArithmeticExpression r) =>
+                    l.Operator == r.Operator && ArithmeticExpressionStructuralEquals(l.Operand, r.Operand),
+                (BinaryArithmeticExpression l, BinaryArithmeticExpression r) =>
+                    l.Operator == r.Operator &&
+                    ArithmeticExpressionStructuralEquals(l.Left, r.Left) &&
+                    ArithmeticExpressionStructuralEquals(l.Right, r.Right),
+                _ => false
+            };
 
         private void AppendPathAwareAccumulationRowsForSeed(
             object? seed,
