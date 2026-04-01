@@ -9,6 +9,10 @@
 e2e_parent(alice, bob).
 e2e_parent(bob, charlie).
 
+%% Rule — exercises allocate/deallocate, call/execute, Yi registers
+:- dynamic e2e_grandparent/2.
+e2e_grandparent(X, Z) :- e2e_parent(X, Y), e2e_parent(Y, Z).
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -40,6 +44,18 @@ test_wam_backtracking_simple :-
     ;   fail_test(Test, 'E2E execution failed for second fact')
     ).
 
+test_wam_rule_execution :-
+    Test = 'WAM E2E: Rule compilation and execution (grandparent)',
+    (   % 1. Compile both parent facts and grandparent rule
+        wam_target:compile_wam_module(
+            [user:e2e_parent/2, user:e2e_grandparent/2], [], Code),
+        % 2. Execute: grandparent(alice, charlie)? should succeed
+        %    (alice->bob via parent, bob->charlie via parent)
+        wam_runtime:execute_wam(Code, e2e_grandparent(alice, charlie), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'E2E rule execution failed for grandparent')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM Target E2E Test Suite~n'),
@@ -47,6 +63,7 @@ run_tests :-
     
     test_wam_compilation_and_execution,
     test_wam_backtracking_simple,
+    test_wam_rule_execution,
     
     format('~n========================================~n'),
     (   test_failed
