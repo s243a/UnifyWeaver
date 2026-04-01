@@ -256,7 +256,8 @@ namespace UnifyWeaver.QueryRuntime
         ArithmeticExpression BaseExpression,
         ArithmeticExpression RecursiveExpression,
         int MaxDepth = 0,
-        TableMode AccumulatorMode = TableMode.All
+        TableMode AccumulatorMode = TableMode.All,
+        bool PositiveStepProven = false
     ) : PlanNode;
 
     public enum TableMode
@@ -982,7 +983,7 @@ namespace UnifyWeaver.QueryRuntime
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
                 PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
-                PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
+                PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode} positiveStep={closure.PositiveStepProven}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -7184,7 +7185,7 @@ namespace UnifyWeaver.QueryRuntime
                 var seenSeeds = new HashSet<object?>();
                 PositiveStepEvaluator? stepEvaluator = null;
                 var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
-                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, out stepEvaluator);
+                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
 
                 foreach (var edge in edges)
                 {
@@ -7247,7 +7248,7 @@ namespace UnifyWeaver.QueryRuntime
                 var seenSeeds = new HashSet<object?>();
                 PositiveStepEvaluator? stepEvaluator = null;
                 var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
-                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, out stepEvaluator);
+                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
 
                 foreach (var paramTuple in parameters)
                 {
@@ -7385,12 +7386,24 @@ namespace UnifyWeaver.QueryRuntime
             ArithmeticExpression recursiveExpression,
             IReadOnlyDictionary<object, List<object[]>> succIndex,
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            bool positiveStepProven,
             out PositiveStepEvaluator? evaluator)
         {
             evaluator = null;
             if (!TryExtractMinStepExpression(baseExpression, recursiveExpression, out var stepExpression))
             {
                 return false;
+            }
+
+            if (positiveStepProven)
+            {
+                evaluator = (current, next, auxValue) =>
+                {
+                    var evalTuple = new object[] { current, next, 0, auxValue };
+                    var stepObject = EvaluateArithmeticExpression(stepExpression, evalTuple);
+                    return Convert.ToDouble(stepObject, CultureInfo.InvariantCulture);
+                };
+                return true;
             }
 
             foreach (var (currentKey, edgeBucket) in succIndex)
