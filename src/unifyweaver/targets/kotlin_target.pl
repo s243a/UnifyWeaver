@@ -1756,25 +1756,36 @@ combine_kotlin_conditions([C|Rest], Combined) :-
     format(string(Combined), '~w && ~w', [C, RestCombined]).
 
 %% branches_to_kotlin_if_chain(+Branches, +PredSpec, -Code)
-branches_to_kotlin_if_chain([branch(Cond, ClauseCode)], PredSpec, Code) :-
-    !,
+%%   Uses if/else if/else pattern (not sequential if/return).
+branches_to_kotlin_if_chain([First|Rest], PredSpec, Code) :-
+    First = branch(Cond, ClauseCode),
     (   Cond == "true"
+    ->  format(string(Code), '    return ~w', [ClauseCode])
+    ;   Rest == []
     ->  format(string(Code),
-'    return ~w', [ClauseCode])
-    ;   format(string(Code),
 '    if (~w) {
         return ~w
-    }
-    throw RuntimeException("No matching clause for ~w")', [Cond, ClauseCode, PredSpec])
+    } else {
+        throw RuntimeException("No matching clause for ~w")
+    }', [Cond, ClauseCode, PredSpec])
+    ;   kotlin_elif_chain(Rest, PredSpec, ElifCode),
+        format(string(Code),
+'    if (~w) {
+        return ~w
+~w', [Cond, ClauseCode, ElifCode])
     ).
-branches_to_kotlin_if_chain([branch(Cond, ClauseCode)|Rest], PredSpec, Code) :-
-    (   Cond == "true"
-    ->  format(string(ThisBlock),
-'    return ~w', [ClauseCode])
-    ;   format(string(ThisBlock),
-'    if (~w) {
+
+kotlin_elif_chain([branch(Cond, ClauseCode)], PredSpec, Code) :-
+    !,
+    format(string(Code),
+'    } else if (~w) {
         return ~w
-    }', [Cond, ClauseCode])
-    ),
-    branches_to_kotlin_if_chain(Rest, PredSpec, RestCode),
-    format(string(Code), '~w~n~w', [ThisBlock, RestCode]).
+    } else {
+        throw RuntimeException("No matching clause for ~w")
+    }', [Cond, ClauseCode, PredSpec]).
+kotlin_elif_chain([branch(Cond, ClauseCode)|Rest], PredSpec, Code) :-
+    kotlin_elif_chain(Rest, PredSpec, RestCode),
+    format(string(Code),
+'    } else if (~w) {
+        return ~w
+~w', [Cond, ClauseCode, RestCode]).
