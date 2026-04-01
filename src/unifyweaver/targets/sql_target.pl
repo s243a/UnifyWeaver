@@ -20,6 +20,14 @@
 
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
+:- use_module('../core/clause_body_analysis', [
+    normalize_goals/2,
+    clause_guard_output_split/4,
+    classify_goal_sequence/3,
+    build_head_varmap/3,
+    head_conditions/3,
+    lookup_var/3
+]).
 
 % Suppress singleton warnings
 :- style_check(-singleton).
@@ -157,12 +165,20 @@ compile_predicate_to_sql(Predicate, Options, SQLCode) :-
 %  Compile multiple clauses to SQL with UNION
 %
 compile_clauses_to_sql(Name, Arity, HeadBodyPairs, Options, SQLCode) :-
-    (   HeadBodyPairs = [head_body(Head, Body)]
+    %% Try native clause body lowering first (multi-clause → CASE WHEN)
+    pairs_to_head_body_list(HeadBodyPairs, Clauses),
+    (   compile_native_sql(Name, Arity, Clauses, Options, SQLCode)
+    ->  true
+    ;   HeadBodyPairs = [head_body(Head, Body)]
     ->  % Single clause - direct compilation
         compile_single_clause(Name, Arity, Body, Head, Options, SQLCode)
     ;   % Multiple clauses - use UNION
         compile_union_clauses(Name, Arity, HeadBodyPairs, Options, SQLCode)
     ).
+
+pairs_to_head_body_list([], []).
+pairs_to_head_body_list([head_body(H,B)|Rest], [H-B|RestPairs]) :-
+    pairs_to_head_body_list(Rest, RestPairs).
 
 %% compile_union_clauses(+Name, +Arity, +HeadBodyPairs, +Options, -SQLCode)
 %  Compile multiple clauses using UNION
@@ -3028,3 +3044,287 @@ write_sql_file(SQLCode, FilePath) :-
     format(Stream, '~w', [SQLCode]),
     close(Stream),
     format('SQL written to: ~w~n', [FilePath]).
+
+%% ============================================
+%% NATIVE CLAUSE BODY LOWERING (via clause_body_analysis)
+%% ============================================
+%%
+%% Generates SQL CASE WHEN expressions from multi-clause guard/output
+%% predicates. Also supports CREATE FUNCTION (PL/pgSQL) output mode.
+%%
+%% Output modes (controlled by sql_output_mode option):
+%%   case_select (default) — SELECT with CASE WHEN expression
+%%   create_function       — CREATE FUNCTION with IF/ELSIF (PL/pgSQL)
+%%   case_expression       — bare CASE WHEN expression only
+
+%% compile_native_sql(+Pred, +Arity, +Clauses, +Options, -Code)
+compile_native_sql(Pred, Arity, Clauses, Options, Code) :-
+    Clauses \= [],
+    %% Skip pure facts — existing SQL fact export is better
+    \+ forall(member(_-Body, Clauses), Body == true),
+    atom_string(Pred, PredStr),
+    (   member(sql_output_mode(Mode), Options)
+    ->  true
+    ;   Mode = case_select
+    ),
+    native_sql_clause_body(PredStr, Arity, Clauses, WhenClauses),
+    sql_format_output(Mode, PredStr, Arity, WhenClauses, Code).
+
+%% native_sql_clause_body(+PredStr, +Arity, +Clauses, -WhenClauses)
+%%   Analyze clauses and produce list of when(Condition, Result) terms.
+native_sql_clause_body(_PredStr, _Arity, Clauses, WhenClauses) :-
+    maplist(native_sql_clause_pair, Clauses, WhenClauses),
+    WhenClauses \= [].
+
+native_sql_clause_pair(Head-Body, when(Condition, ResultExpr)) :-
+    native_sql_clause(Head, Body, Condition, ResultExpr),
+    !.
+
+%% native_sql_clause(+Head, +Body, -Condition, -ResultExpr)
+native_sql_clause(Head, Body, Condition, ResultExpr) :-
+    Head =.. [_|HeadArgs],
+    length(HeadArgs, Arity),
+    clause_body_analysis:build_head_varmap(HeadArgs, 1, VarMap),
+    (   Arity > 1
+    ->  append(_, [OutputHeadArg], HeadArgs),
+        sql_head_conditions(HeadArgs, 1, Arity, HeadConditions)
+    ;   OutputHeadArg = _,
+        sql_head_conditions(HeadArgs, 1, Arity, HeadConditions)
+    ),
+    clause_body_analysis:normalize_goals(Body, Goals),
+    (   Goals == []
+    ->  sql_resolve_value(VarMap, OutputHeadArg, ResultExpr),
+        GoalConditions = []
+    ;   (   Arity > 1, nonvar(OutputHeadArg)
+        ->  clause_body_analysis:clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+            maplist(sql_guard_condition(VarMap), GuardGoals, GoalConditions),
+            (   OutputGoals == []
+            ->  sql_literal(OutputHeadArg, ResultExpr)
+            ;   sql_output_expr(OutputGoals, VarMap, ResultExpr)
+            )
+        ;   sql_goal_sequence(Goals, VarMap, GoalConditions, ResultExpr)
+        )
+    ),
+    append(HeadConditions, GoalConditions, AllConditions),
+    combine_sql_conditions(AllConditions, Condition).
+
+sql_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    clause_body_analysis:classify_goal_sequence(Goals, VarMap, ClassifiedGoals),
+    ClassifiedGoals \= [],
+    sql_render_classified_last(ClassifiedGoals, VarMap, Conditions, Code),
+    !.
+sql_goal_sequence(Goals, VarMap, Conditions, Code) :-
+    clause_body_analysis:clause_guard_output_split(Goals, VarMap, GuardGoals, OutputGoals),
+    maplist(sql_guard_condition(VarMap), GuardGoals, Conditions),
+    sql_output_expr(OutputGoals, VarMap, Code).
+
+sql_render_classified_last([output_ite(If, Then, Else, _)], VarMap, [], Code) :- !,
+    sql_guard_condition(VarMap, If, Cond),
+    sql_ite_value(Then, VarMap, ThenVal),
+    sql_ite_value(Else, VarMap, ElseVal),
+    format(atom(Code), 'CASE WHEN ~w THEN ~w ELSE ~w END', [Cond, ThenVal, ElseVal]).
+sql_render_classified_last([output(Goal, _, _)], VarMap, [], Code) :- !,
+    sql_output_expr([Goal], VarMap, Code).
+sql_render_classified_last([guard(Goal, _)|Rest], VarMap, [Cond|RestConds], Code) :- !,
+    sql_guard_condition(VarMap, Goal, Cond),
+    sql_render_classified_last(Rest, VarMap, RestConds, Code).
+sql_render_classified_last(_, _, [], "NULL").
+
+%% sql_head_conditions — exclude last arg (output position)
+sql_head_conditions([], _, _, []).
+sql_head_conditions([_], _, Arity, []) :- Arity > 1, !.
+sql_head_conditions([HeadArg|Rest], Index, Arity, Conditions) :-
+    (   var(HeadArg)
+    ->  Conditions = RestConditions
+    ;   format(atom(ArgName), 'arg~w', [Index]),
+        sql_literal(HeadArg, Literal),
+        format(atom(Cond), '~w = ~w', [ArgName, Literal]),
+        Conditions = [Cond|RestConditions]
+    ),
+    NextIndex is Index + 1,
+    sql_head_conditions(Rest, NextIndex, Arity, RestConditions).
+
+sql_resolve_value(VarMap, Value, Code) :-
+    (   var(Value)
+    ->  clause_body_analysis:lookup_var(Value, VarMap, Code)
+    ;   sql_literal(Value, Code)
+    ).
+
+%% sql_guard_condition(+VarMap, +Goal, -CondStr)
+sql_guard_condition(VarMap, Goal, CondStr) :-
+    Goal =.. [Op, Left, Right],
+    sql_cmp_op(Op, SqlOp),
+    sql_expr(Left, VarMap, LeftStr),
+    sql_expr(Right, VarMap, RightStr),
+    format(atom(CondStr), '~w ~w ~w', [LeftStr, SqlOp, RightStr]).
+
+sql_cmp_op(>, ">").
+sql_cmp_op(<, "<").
+sql_cmp_op(>=, ">=").
+sql_cmp_op(=<, "<=").
+sql_cmp_op(=:=, "=").
+sql_cmp_op(=\=, "<>").
+
+%% sql_expr(+Expr, +VarMap, -Str)
+sql_expr(Var, VarMap, Str) :-
+    var(Var), !,
+    clause_body_analysis:lookup_var(Var, VarMap, Str).
+sql_expr(Expr, VarMap, Str) :-
+    Expr =.. [Op, Left, Right],
+    sql_arith_op(Op, SqlOp),
+    !,
+    sql_expr(Left, VarMap, LeftStr),
+    sql_expr(Right, VarMap, RightStr),
+    format(atom(Str), '(~w ~w ~w)', [LeftStr, SqlOp, RightStr]).
+sql_expr(abs(X), VarMap, Str) :-
+    !,
+    sql_expr(X, VarMap, XStr),
+    format(atom(Str), 'ABS(~w)', [XStr]).
+sql_expr(-(X), VarMap, Str) :-
+    !,
+    sql_expr(X, VarMap, XStr),
+    format(atom(Str), '(-~w)', [XStr]).
+sql_expr(Value, _VarMap, Str) :-
+    sql_literal(Value, Str).
+
+sql_arith_op(+, "+").
+sql_arith_op(-, "-").
+sql_arith_op(*, "*").
+sql_arith_op(/, "/").
+sql_arith_op(mod, "%").
+sql_arith_op(//, "/").
+
+%% sql_literal(+Value, -Str)
+sql_literal(Value, Str) :-
+    number(Value), !,
+    format(atom(Str), '~w', [Value]).
+sql_literal(Value, Str) :-
+    atom(Value), !,
+    format(atom(Str), '''~w''', [Value]).
+sql_literal(Value, Str) :-
+    format(atom(Str), '''~w''', [Value]).
+
+%% sql_output_expr(+OutputGoals, +VarMap, -Code)
+sql_output_expr([Goal|_], VarMap, Code) :-
+    Goal = (_Result is Expr),
+    !,
+    sql_expr(Expr, VarMap, Code).
+sql_output_expr([Goal|_], VarMap, Code) :-
+    Goal = (_Result = Value),
+    !,
+    sql_resolve_value(VarMap, Value, Code).
+sql_output_expr([Goal|_], VarMap, Code) :-
+    Goal = (Cond -> Then ; Else),
+    !,
+    sql_guard_condition(VarMap, Cond, CondStr),
+    sql_ite_value(Then, VarMap, ThenStr),
+    sql_ite_value(Else, VarMap, ElseStr),
+    format(atom(Code), 'CASE WHEN ~w THEN ~w ELSE ~w END', [CondStr, ThenStr, ElseStr]).
+sql_output_expr([], _VarMap, "NULL").
+
+%% sql_ite_value(+Branch, +VarMap, -Str)
+sql_ite_value(_Result = Value, VarMap, Str) :- !,
+    sql_resolve_value(VarMap, Value, Str).
+sql_ite_value(_Result is Expr, VarMap, Str) :- !,
+    sql_expr(Expr, VarMap, Str).
+sql_ite_value((Cond -> Then ; Else), VarMap, Str) :- !,
+    sql_guard_condition(VarMap, Cond, CondStr),
+    sql_ite_value(Then, VarMap, ThenStr),
+    sql_ite_value(Else, VarMap, ElseStr),
+    format(atom(Str), 'CASE WHEN ~w THEN ~w ELSE ~w END', [CondStr, ThenStr, ElseStr]).
+sql_ite_value(Value, _VarMap, Str) :-
+    sql_literal(Value, Str).
+
+combine_sql_conditions([], 'TRUE').
+combine_sql_conditions(Conditions, Combined) :-
+    exclude(==('TRUE'), Conditions, Filtered),
+    (   Filtered == []
+    ->  Combined = 'TRUE'
+    ;   atomic_list_concat(Filtered, ' AND ', Combined)
+    ).
+
+%% ============================================
+%% SQL OUTPUT FORMATTERS
+%% ============================================
+
+%% sql_format_output(+Mode, +PredStr, +Arity, +WhenClauses, -Code)
+
+%% Mode: case_select — SELECT with CASE WHEN (default, portable)
+sql_format_output(case_select, PredStr, Arity, WhenClauses, Code) :-
+    ArgCount is Arity - 1,
+    sql_arg_columns(ArgCount, ArgCols),
+    sql_when_clauses_to_case(WhenClauses, CaseExpr),
+    format(atom(Code),
+'-- Generated by UnifyWeaver SQL Target - Native Clause Lowering
+-- Predicate: ~w/~w
+-- Usage: Replace @arg1..@argN with actual values or column references
+
+SELECT~w
+    ~w AS result;', [PredStr, Arity, ArgCols, CaseExpr]).
+
+%% Mode: create_function — CREATE FUNCTION with IF/ELSIF (PL/pgSQL)
+sql_format_output(create_function, PredStr, Arity, WhenClauses, Code) :-
+    ArgCount is Arity - 1,
+    sql_func_params(ArgCount, Params),
+    sql_when_clauses_to_if_chain(WhenClauses, PredStr, IfChain),
+    format(atom(Code),
+'-- Generated by UnifyWeaver SQL Target - Native Clause Lowering (PL/pgSQL)
+-- Predicate: ~w/~w
+
+CREATE OR REPLACE FUNCTION ~w(~w)
+RETURNS TEXT AS $$
+BEGIN
+~w
+END;
+$$ LANGUAGE plpgsql;', [PredStr, Arity, PredStr, Params, IfChain]).
+
+%% Mode: case_expression — bare CASE WHEN only
+sql_format_output(case_expression, PredStr, Arity, WhenClauses, Code) :-
+    sql_when_clauses_to_case(WhenClauses, CaseExpr),
+    format(atom(Code),
+'-- ~w/~w as CASE expression
+~w', [PredStr, Arity, CaseExpr]).
+
+%% --- Helpers ---
+
+sql_arg_columns(0, "") :- !.
+sql_arg_columns(N, Cols) :-
+    numlist(1, N, Indices),
+    maplist([I, Col]>>(format(atom(Col), '\n    @arg~w AS arg~w,', [I, I])), Indices, ColList),
+    atomic_list_concat(ColList, '', Cols).
+
+sql_func_params(0, "") :- !.
+sql_func_params(N, Params) :-
+    numlist(1, N, Indices),
+    maplist([I, P]>>(format(atom(P), 'arg~w INTEGER', [I])), Indices, ParamList),
+    atomic_list_concat(ParamList, ', ', Params).
+
+%% Generate CASE WHEN ... END from when(Cond, Result) list
+sql_when_clauses_to_case(WhenClauses, CaseExpr) :-
+    maplist(sql_format_when, WhenClauses, WhenStrs),
+    atomic_list_concat(WhenStrs, ' ', WhenBlock),
+    format(atom(CaseExpr), 'CASE ~w ELSE NULL END', [WhenBlock]).
+
+sql_format_when(when(Condition, Result), WhenStr) :-
+    (   Condition == 'TRUE'
+    ->  format(atom(WhenStr), 'WHEN TRUE THEN ~w', [Result])
+    ;   format(atom(WhenStr), 'WHEN ~w THEN ~w', [Condition, Result])
+    ).
+
+%% Generate IF/ELSIF chain for PL/pgSQL from when(Cond, Result) list
+sql_when_clauses_to_if_chain(WhenClauses, PredStr, IfChain) :-
+    sql_when_to_if_list(WhenClauses, first, Lines),
+    atomic_list_concat(Lines, '\n', Body),
+    format(atom(IfChain),
+'~w
+    ELSE
+        RAISE EXCEPTION \'No matching clause for ~w\';
+    END IF;', [Body, PredStr]).
+
+sql_when_to_if_list([], _, []).
+sql_when_to_if_list([when(Cond, Result)|Rest], first, [Line|RestLines]) :-
+    format(atom(Line), '    IF ~w THEN\n        RETURN ~w;', [Cond, Result]),
+    sql_when_to_if_list(Rest, elif, RestLines).
+sql_when_to_if_list([when(Cond, Result)|Rest], elif, [Line|RestLines]) :-
+    format(atom(Line), '    ELSIF ~w THEN\n        RETURN ~w;', [Cond, Result]),
+    sql_when_to_if_list(Rest, elif, RestLines).
