@@ -75,6 +75,57 @@ test(arithmetic_assignments_after_native_outputs_check_with_typr, [condition(typ
     ),
     retractall(user:arith_after_output(_, _)).
 
+test(conversion_alias_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(to_numeric_alias(Value, Out) :- to_numeric(Value, Tmp), Out = Tmp)),
+    assertz(type_declarations:uw_type(to_numeric_alias/2, 1, atom)),
+    assertz(type_declarations:uw_type(to_numeric_alias/2, 2, number)),
+    once(compile_predicate_to_typr(to_numeric_alias/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:to_numeric_alias(_, _)).
+
+test(list_alias_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(reverse_alias(Xs, Out) :- reverse(Xs, Tmp), Out = Tmp)),
+    assertz(type_declarations:uw_type(reverse_alias/2, 1, list(string))),
+    assertz(type_declarations:uw_type(reverse_alias/2, 2, list(string))),
+    once(compile_predicate_to_typr(reverse_alias/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:reverse_alias(_, _)).
+
+test(path_alias_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(dirname_alias(Path, Out) :- dirname(Path, Tmp), Out = Tmp)),
+    assertz(type_declarations:uw_type(dirname_alias/2, 1, atom)),
+    assertz(type_declarations:uw_type(dirname_alias/2, 2, atom)),
+    once(compile_predicate_to_typr(dirname_alias/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:dirname_alias(_, _)).
+
 test(cat_command_output_checks_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:(say_cat(Msg) :- cat(Msg))),
