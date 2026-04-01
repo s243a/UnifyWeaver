@@ -255,7 +255,8 @@ namespace UnifyWeaver.QueryRuntime
         PredicateId AuxiliaryRelation,
         ArithmeticExpression BaseExpression,
         ArithmeticExpression RecursiveExpression,
-        int MaxDepth = 0
+        int MaxDepth = 0,
+        TableMode AccumulatorMode = TableMode.All
     ) : PlanNode;
 
     public enum TableMode
@@ -981,7 +982,7 @@ namespace UnifyWeaver.QueryRuntime
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
                 PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
-                PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth}",
+                PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -7200,7 +7201,7 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.MaxDepth);
+                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -7257,7 +7258,7 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.MaxDepth);
+                    AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -7275,14 +7276,28 @@ namespace UnifyWeaver.QueryRuntime
             ArithmeticExpression baseExpression,
             ArithmeticExpression recursiveExpression,
             ICollection<object[]> output,
+            TableMode accumulatorMode,
             int maxDepth = 0)
         {
+            var useMinPruning = accumulatorMode == TableMode.Min;
+            var preserveAllPaths = !useMinPruning;
+            var bestKnown = useMinPruning
+                ? new Dictionary<object?, object>()
+                : null;
+            var frontier = useMinPruning
+                ? new Dictionary<object?, List<(object Accumulator, HashSet<object?> Visited)>>()
+                : null;
             var stack = new Stack<(object? Node, object Accumulator, int Depth, HashSet<object?> Visited)>();
             stack.Push((seed, 0, 0, new HashSet<object?> { seed }));
 
             while (stack.Count > 0)
             {
                 var (current, accumulator, depth, visited) = stack.Pop();
+                if (useMinPruning && current is not null && IsDominatedMinState(frontier!, current, accumulator, visited))
+                {
+                    continue;
+                }
+
                 var currentKey = current ?? NullFactIndexKey;
                 if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
                 {
@@ -7322,14 +7337,95 @@ namespace UnifyWeaver.QueryRuntime
                         var nextAccumulator = depth == 0
                             ? EvaluateArithmeticExpression(baseExpression, evalTuple)
                             : EvaluateArithmeticExpression(recursiveExpression, evalTuple);
-
-                        output.Add(new object[] { seed!, next!, nextAccumulator });
-
                         var nextVisited = new HashSet<object?>(visited) { next };
+
+                        if (preserveAllPaths)
+                        {
+                            output.Add(new object[] { seed!, next!, nextAccumulator });
+                        }
+                        else
+                        {
+                            if (IsDominatedMinState(frontier!, next, nextAccumulator, nextVisited))
+                            {
+                                continue;
+                            }
+
+                            RecordMinState(frontier!, next, nextAccumulator, nextVisited);
+                            if (!bestKnown!.TryGetValue(next, out var bestAccumulator) ||
+                                CompareValues(nextAccumulator, bestAccumulator) < 0)
+                            {
+                                bestKnown[next] = nextAccumulator;
+                            }
+                        }
+
                         stack.Push((next, nextAccumulator, nextDepth, nextVisited));
                     }
                 }
             }
+
+            if (!preserveAllPaths && bestKnown is not null)
+            {
+                var bestRows = bestKnown
+                    .OrderBy(kvp => kvp.Key, Comparer<object?>.Create(CompareCacheSeedValues))
+                    .ToList();
+
+                foreach (var (target, accumulator) in bestRows)
+                {
+                    output.Add(new object[] { seed!, target!, accumulator });
+                }
+            }
+        }
+
+        private static bool IsDominatedMinState(
+            IReadOnlyDictionary<object?, List<(object Accumulator, HashSet<object?> Visited)>> frontier,
+            object? node,
+            object accumulator,
+            HashSet<object?> visited)
+        {
+            if (!frontier.TryGetValue(node, out var states))
+            {
+                return false;
+            }
+
+            foreach (var (bestAccumulator, bestVisited) in states)
+            {
+                var sameState = ReferenceEquals(bestVisited, visited) && Equals(bestAccumulator, accumulator);
+                if (sameState)
+                {
+                    continue;
+                }
+
+                if (CompareValues(bestAccumulator, accumulator) <= 0 && bestVisited.IsSubsetOf(visited))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void RecordMinState(
+            IDictionary<object?, List<(object Accumulator, HashSet<object?> Visited)>> frontier,
+            object? node,
+            object accumulator,
+            HashSet<object?> visited)
+        {
+            if (!frontier.TryGetValue(node, out var states))
+            {
+                states = new List<(object Accumulator, HashSet<object?> Visited)>();
+                frontier[node] = states;
+            }
+
+            for (var i = states.Count - 1; i >= 0; i--)
+            {
+                var (existingAccumulator, existingVisited) = states[i];
+                if (CompareValues(accumulator, existingAccumulator) <= 0 && visited.IsSubsetOf(existingVisited))
+                {
+                    states.RemoveAt(i);
+                }
+            }
+
+            states.Add((accumulator, visited));
         }
 
         private IEnumerable<object[]> ExecuteGroupedTransitiveClosure(GroupedTransitiveClosureNode closure, EvaluationContext? parentContext)

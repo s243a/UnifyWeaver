@@ -183,6 +183,7 @@ Tables:
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
 | `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs DFS binaries |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
+| `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
 
@@ -215,6 +216,10 @@ python examples/benchmark/benchmark_effective_distance.py \
 
 # Measure overhead of the generalized path-aware accumulation runtime
 python examples/benchmark/benchmark_path_aware_accumulation.py \
+    --scales 300,1k,5k,10k
+
+# Measure directed-table pruning on weighted path-aware accumulation
+python examples/benchmark/benchmark_weighted_shortest_path.py \
     --scales 300,1k,5k,10k
 ```
 
