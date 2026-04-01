@@ -199,7 +199,18 @@ compile_unify_arguments([Arg|Rest], V0, Vf, Code) :-
     ;   atomic(Arg)
     ->  format(string(ArgCode), "    unify_constant ~w", [Arg]),
         V1 = V0
-    ;   % Nested structure
+    ;   % Nested structure — emit unify_variable for a temp register,
+        % then get_structure + unify_* for the nested sub-arguments.
+        compound(Arg)
+    ->  Arg =.. [F|NestedArgs],
+        length(NestedArgs, NArity),
+        next_x_reg(V0, XReg, V_temp),
+        bind_var(Arg, XReg, V_temp, V1a),
+        format(string(UnifyCode), "    unify_variable ~w", [XReg]),
+        format(string(GetCode), "    get_structure ~w/~w, ~w", [F, NArity, XReg]),
+        compile_unify_arguments(NestedArgs, V1a, V1, NestedCode),
+        format(string(ArgCode), "~w~n~w~n~w", [UnifyCode, GetCode, NestedCode])
+    ;   % Fallback
         next_x_reg(V0, XReg, V_temp),
         bind_var(Arg, XReg, V_temp, V1),
         format(string(ArgCode), "    unify_variable ~w", [XReg])
