@@ -318,7 +318,7 @@ if __name__ == "__main__":
 '''
 
 
-def generate_go(article_cats, category_parents, root_cats, n=5, max_depth=10):
+def generate_go_effective_distance(article_cats, category_parents, root_cats, n=5, max_depth=10):
     """Generate Go program that loads data from TSV files."""
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -462,7 +462,7 @@ func main() {{
 '''
 
 
-def generate_rust(article_cats, category_parents, root_cats, n=5, max_depth=10):
+def generate_rust_effective_distance(article_cats, category_parents, root_cats, n=5, max_depth=10):
     """Generate Rust program that loads data from TSV files."""
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -579,7 +579,7 @@ fn main() {{
 '''
 
 
-def generate_csharp(article_cats, category_parents, root_cats, n=5, max_depth=10):
+def generate_csharp_effective_distance(article_cats, category_parents, root_cats, n=5, max_depth=10):
     """Generate C# program that loads data from TSV files."""
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -795,13 +795,744 @@ main()
 '''
 
 
+def generate_go_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = list(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Shortest path to root benchmark (Go)
+// Usage: ./shortest_path_to_root <category_parent.tsv> <article_category.tsv>
+package main
+
+import (
+\t"bufio"
+\t"fmt"
+\t"os"
+\t"sort"
+\t"strings"
+)
+
+const ROOT = "{root}"
+const MAX_DEPTH = {max_depth}
+
+func loadTSVPairs(path string) map[string][]string {{
+\tm := make(map[string][]string)
+\tf, err := os.Open(path)
+\tif err != nil {{
+\t\tfmt.Fprintf(os.Stderr, "Cannot open %s: %v\\n", path, err)
+\t\tos.Exit(1)
+\t}}
+\tdefer f.Close()
+\tscanner := bufio.NewScanner(f)
+\tfirst := true
+\tfor scanner.Scan() {{
+\t\tline := scanner.Text()
+\t\tif first {{
+\t\t\tfirst = false
+\t\t\tif strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {{
+\t\t\t\tcontinue
+\t\t\t}}
+\t\t}}
+\t\tparts := strings.SplitN(line, "\\t", 2)
+\t\tif len(parts) == 2 {{
+\t\t\tm[parts[0]] = append(m[parts[0]], parts[1])
+\t\t}}
+\t}}
+\treturn m
+}}
+
+func categoryAncestorDFS(cat string, visited map[string]bool, adj map[string][]string, depth int) [][2]int {{
+\tif visited[cat] || depth >= MAX_DEPTH {{
+\t\treturn nil
+\t}}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {{
+\t\tnewVisited[k] = v
+\t}}
+\tnewVisited[cat] = true
+
+\tvar results [][2]int
+\tfor _, parent := range adj[cat] {{
+\t\tif !newVisited[parent] {{
+\t\t\tresults = append(results, [2]int{{0, 1}})
+\t\t\tfor _, sub := range categoryAncestorDFS(parent, newVisited, adj, depth+1) {{
+\t\t\t\tresults = append(results, [2]int{{0, sub[1] + 1}})
+\t\t\t}}
+\t\t}}
+\t}}
+\treturn results
+}}
+
+type pathResult struct {{
+\tancestor string
+\thops int
+}}
+
+func categoryAncestorPaths(cat string, visited map[string]bool, adj map[string][]string, depth int) []pathResult {{
+\tif visited[cat] || depth >= MAX_DEPTH {{
+\t\treturn nil
+\t}}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {{
+\t\tnewVisited[k] = v
+\t}}
+\tnewVisited[cat] = true
+
+\tvar results []pathResult
+\tfor _, parent := range adj[cat] {{
+\t\tif !newVisited[parent] {{
+\t\t\tresults = append(results, pathResult{{parent, 1}})
+\t\t\tfor _, sub := range categoryAncestorPaths(parent, newVisited, adj, depth+1) {{
+\t\t\t\tresults = append(results, pathResult{{sub.ancestor, sub.hops + 1}})
+\t\t\t}}
+\t\t}}
+\t}}
+\treturn results
+}}
+
+type articleResult struct {{
+\tarticle string
+\tdistance int
+}}
+
+func main() {{
+\tif len(os.Args) < 3 {{
+\t\tfmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\\n", os.Args[0])
+\t\tos.Exit(1)
+\t}}
+
+\tadj := loadTSVPairs(os.Args[1])
+\tartCats := loadTSVPairs(os.Args[2])
+
+\tvar arts []string
+\tfor art := range artCats {{
+\t\tarts = append(arts, art)
+\t}}
+\tsort.Strings(arts)
+
+\tvar results []articleResult
+\tfor _, art := range arts {{
+\t\tbest := -1
+\t\tfor _, cat := range artCats[art] {{
+\t\t\tif cat == ROOT {{
+\t\t\t\tif best == -1 || 1 < best {{
+\t\t\t\t\tbest = 1
+\t\t\t\t}}
+\t\t\t}}
+\t\t\tfor _, pr := range categoryAncestorPaths(cat, map[string]bool{{}}, adj, 0) {{
+\t\t\t\tif pr.ancestor == ROOT {{
+\t\t\t\t\tdist := pr.hops + 1
+\t\t\t\t\tif best == -1 || dist < best {{
+\t\t\t\t\t\tbest = dist
+\t\t\t\t\t}}
+\t\t\t\t}}
+\t\t\t}}
+\t\t}}
+\t\tif best != -1 {{
+\t\t\tresults = append(results, articleResult{{art, best}})
+\t\t}}
+\t}}
+
+\tsort.Slice(results, func(i, j int) bool {{
+\t\tif results[i].distance != results[j].distance {{
+\t\t\treturn results[i].distance < results[j].distance
+\t\t}}
+\t\treturn results[i].article < results[j].article
+\t}})
+
+\tfmt.Println("article\\troot_category\\tshortest_path")
+\tfor _, r := range results {{
+\t\tfmt.Printf("%s\\t%s\\t%d\\n", r.article, ROOT, r.distance)
+\t}}
+}}
+'''
+
+
+def generate_rust_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = list(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Shortest path to root benchmark (Rust)
+use std::collections::{{HashMap, HashSet}};
+use std::env;
+use std::fs;
+use std::io::{{BufRead, BufReader}};
+
+const ROOT: &str = "{root}";
+const MAX_DEPTH: usize = {max_depth};
+
+fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {{
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let file = fs::File::open(path).unwrap_or_else(|e| panic!("Cannot open {{}}: {{}}", path, e));
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {{
+        let line = line.unwrap();
+        if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {{
+            continue;
+        }}
+        let parts: Vec<&str> = line.splitn(2, '\\t').collect();
+        if parts.len() == 2 {{
+            map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
+        }}
+    }}
+    map
+}}
+
+fn category_ancestor_paths(
+    cat: &str,
+    visited: &HashSet<String>,
+    adj: &HashMap<String, Vec<String>>,
+    depth: usize,
+) -> Vec<(String, i32)> {{
+    if visited.contains(cat) || depth >= MAX_DEPTH {{
+        return Vec::new();
+    }}
+    let mut new_visited = visited.clone();
+    new_visited.insert(cat.to_string());
+
+    let mut results = Vec::new();
+    if let Some(neighbors) = adj.get(cat) {{
+        for nb in neighbors {{
+            if !new_visited.contains(nb.as_str()) {{
+                results.push((nb.clone(), 1));
+                for (ancestor, h) in category_ancestor_paths(nb, &new_visited, adj, depth + 1) {{
+                    results.push((ancestor, h + 1));
+                }}
+            }}
+        }}
+    }}
+    results
+}}
+
+fn main() {{
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {{
+        eprintln!("Usage: {{}} <category_parent.tsv> <article_category.tsv>", args[0]);
+        std::process::exit(1);
+    }}
+
+    let adj = load_tsv_pairs(&args[1]);
+    let art_cats = load_tsv_pairs(&args[2]);
+    let mut arts: Vec<&String> = art_cats.keys().collect();
+    arts.sort();
+
+    let mut results: Vec<(i32, String)> = Vec::new();
+    for art in arts {{
+        let mut best: Option<i32> = None;
+        if let Some(cats) = art_cats.get(art) {{
+            for cat in cats {{
+                if cat == ROOT {{
+                    best = Some(best.map_or(1, |b| b.min(1)));
+                }}
+                let visited = HashSet::new();
+                for (ancestor, h) in category_ancestor_paths(cat, &visited, &adj, 0) {{
+                    if ancestor == ROOT {{
+                        let dist = h + 1;
+                        best = Some(best.map_or(dist, |b| b.min(dist)));
+                    }}
+                }}
+            }}
+        }}
+        if let Some(best_dist) = best {{
+            results.push((best_dist, art.to_string()));
+        }}
+    }}
+
+    results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    println!("article\\troot_category\\tshortest_path");
+    for (dist, art) in results {{
+        println!("{{}}\\t{{}}\\t{{}}", art, ROOT, dist);
+    }}
+}}
+'''
+
+
+def generate_csharp_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = list(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Shortest path to root benchmark (C#)
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+
+class ShortestPathBenchmark
+{{
+    const string ROOT = "{root}";
+    const int MAX_DEPTH = {max_depth};
+
+    static Dictionary<string, List<string>> LoadTsvPairs(string path)
+    {{
+        var map = new Dictionary<string, List<string>>();
+        foreach (var (line, i) in File.ReadLines(path).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child"))) continue;
+            var parts = line.Split('\\t', 2);
+            if (parts.Length == 2)
+            {{
+                if (!map.ContainsKey(parts[0])) map[parts[0]] = new List<string>();
+                map[parts[0]].Add(parts[1]);
+            }}
+        }}
+        return map;
+    }}
+
+    static List<(string ancestor, int hops)> CategoryAncestorDFS(
+        string cat, HashSet<string> visited,
+        Dictionary<string, List<string>> adj, int depth)
+    {{
+        var results = new List<(string, int)>();
+        if (visited.Contains(cat) || depth >= MAX_DEPTH) return results;
+
+        var newVisited = new HashSet<string>(visited) {{ cat }};
+        if (adj.TryGetValue(cat, out var neighbors))
+        {{
+            foreach (var nb in neighbors)
+            {{
+                if (!newVisited.Contains(nb))
+                {{
+                    results.Add((nb, 1));
+                    foreach (var (ancestor, h) in CategoryAncestorDFS(nb, newVisited, adj, depth + 1))
+                    {{
+                        results.Add((ancestor, h + 1));
+                    }}
+                }}
+            }}
+        }}
+        return results;
+    }}
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var adj = LoadTsvPairs(args[0]);
+        var artCats = LoadTsvPairs(args[1]);
+        var results = new List<(int Distance, string Article)>();
+
+        foreach (var art in artCats.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {{
+            int? best = null;
+            foreach (var cat in artCats[art])
+            {{
+                if (cat == ROOT)
+                {{
+                    best = best is null ? 1 : Math.Min(best.Value, 1);
+                }}
+                foreach (var (ancestor, hops) in CategoryAncestorDFS(cat, new HashSet<string>(), adj, 0))
+                {{
+                    if (ancestor == ROOT)
+                    {{
+                        var dist = hops + 1;
+                        best = best is null ? dist : Math.Min(best.Value, dist);
+                    }}
+                }}
+            }}
+            if (best is not null)
+            {{
+                results.Add((best.Value, art));
+            }}
+        }}
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Distance.CompareTo(b.Distance);
+            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("article\\troot_category\\tshortest_path");
+        foreach (var (distance, art) in results)
+        {{
+            Console.WriteLine($"{{art}}\\t{{ROOT}}\\t{{distance}}");
+        }}
+    }}
+}}
+'''
+
+
+def generate_go_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = list(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Weighted shortest path to root benchmark (Go)
+package main
+
+import (
+\t"bufio"
+\t"fmt"
+\t"math"
+\t"os"
+\t"sort"
+\t"strings"
+)
+
+const ROOT = "{root}"
+const MAX_DEPTH = {max_depth}
+
+func loadTSVPairs(path string) map[string][]string {{
+\tm := make(map[string][]string)
+\tf, err := os.Open(path)
+\tif err != nil {{
+\t\tfmt.Fprintf(os.Stderr, "Cannot open %s: %v\\n", path, err)
+\t\tos.Exit(1)
+\t}}
+\tdefer f.Close()
+\tscanner := bufio.NewScanner(f)
+\tfirst := true
+\tfor scanner.Scan() {{
+\t\tline := scanner.Text()
+\t\tif first {{
+\t\t\tfirst = false
+\t\t\tif strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {{
+\t\t\t\tcontinue
+\t\t\t}}
+\t\t}}
+\t\tparts := strings.SplitN(line, "\\t", 2)
+\t\tif len(parts) == 2 {{
+\t\t\tm[parts[0]] = append(m[parts[0]], parts[1])
+\t\t}}
+\t}}
+\treturn m
+}}
+
+type pathResultWeighted struct {{
+\tancestor string
+\tweight float64
+}}
+
+func categoryWeightedDFS(
+\tcat string,
+\tvisited map[string]bool,
+\tadj map[string][]string,
+\tweights map[string]float64,
+\tdepth int,
+) []pathResultWeighted {{
+\tif visited[cat] || depth >= MAX_DEPTH {{
+\t\treturn nil
+\t}}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {{
+\t\tnewVisited[k] = v
+\t}}
+\tnewVisited[cat] = true
+
+\tstepCost := weights[cat]
+\tvar results []pathResultWeighted
+\tfor _, parent := range adj[cat] {{
+\t\tif !newVisited[parent] {{
+\t\t\tresults = append(results, pathResultWeighted{{parent, stepCost}})
+\t\t\tfor _, sub := range categoryWeightedDFS(parent, newVisited, adj, weights, depth+1) {{
+\t\t\t\tresults = append(results, pathResultWeighted{{sub.ancestor, sub.weight + stepCost}})
+\t\t\t}}
+\t\t}}
+\t}}
+\treturn results
+}}
+
+type articleWeightedResult struct {{
+\tarticle string
+\tdistance float64
+}}
+
+func main() {{
+\tif len(os.Args) < 3 {{
+\t\tfmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\\n", os.Args[0])
+\t\tos.Exit(1)
+\t}}
+
+\tadj := loadTSVPairs(os.Args[1])
+\tartCats := loadTSVPairs(os.Args[2])
+\tweights := make(map[string]float64)
+\tfor child, parents := range adj {{
+\t\tdegree := len(parents)
+\t\tweights[child] = 1.0 + math.Log(math.Max(1.0, float64(degree)))/math.Log(5.0)
+\t}}
+
+\tvar arts []string
+\tfor art := range artCats {{
+\t\tarts = append(arts, art)
+\t}}
+\tsort.Strings(arts)
+
+\tvar results []articleWeightedResult
+\tfor _, art := range arts {{
+\t\tvar best *float64
+\t\tfor _, cat := range artCats[art] {{
+\t\t\tif cat == ROOT {{
+\t\t\t\tzero := 0.0
+\t\t\t\tif best == nil || zero < *best {{
+\t\t\t\t\tbest = &zero
+\t\t\t\t}}
+\t\t\t}}
+\t\t\tfor _, pr := range categoryWeightedDFS(cat, map[string]bool{{}}, adj, weights, 0) {{
+\t\t\t\tif pr.ancestor == ROOT {{
+\t\t\t\t\tvalue := pr.weight
+\t\t\t\t\tif best == nil || value < *best {{
+\t\t\t\t\t\tbest = &value
+\t\t\t\t\t}}
+\t\t\t\t}}
+\t\t\t}}
+\t\t}}
+\t\tif best != nil {{
+\t\t\tresults = append(results, articleWeightedResult{{art, *best}})
+\t\t}}
+\t}}
+
+\tsort.Slice(results, func(i, j int) bool {{
+\t\tif results[i].distance != results[j].distance {{
+\t\t\treturn results[i].distance < results[j].distance
+\t\t}}
+\t\treturn results[i].article < results[j].article
+\t}})
+
+\tfmt.Println("article\\troot_category\\tweighted_shortest_path")
+\tfor _, r := range results {{
+\t\tfmt.Printf("%s\\t%s\\t%.12f\\n", r.article, ROOT, r.distance)
+\t}}
+}}
+'''
+
+
+def generate_rust_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = list(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Weighted shortest path to root benchmark (Rust)
+use std::collections::{{HashMap, HashSet}};
+use std::env;
+use std::fs;
+use std::io::{{BufRead, BufReader}};
+
+const ROOT: &str = "{root}";
+const MAX_DEPTH: usize = {max_depth};
+
+fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {{
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let file = fs::File::open(path).unwrap_or_else(|e| panic!("Cannot open {{}}: {{}}", path, e));
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {{
+        let line = line.unwrap();
+        if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {{
+            continue;
+        }}
+        let parts: Vec<&str> = line.splitn(2, '\\t').collect();
+        if parts.len() == 2 {{
+            map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
+        }}
+    }}
+    map
+}}
+
+fn category_weighted_dfs(
+    cat: &str,
+    visited: &HashSet<String>,
+    adj: &HashMap<String, Vec<String>>,
+    weights: &HashMap<String, f64>,
+    depth: usize,
+) -> Vec<(String, f64)> {{
+    if visited.contains(cat) || depth >= MAX_DEPTH {{
+        return Vec::new();
+    }}
+    let mut new_visited = visited.clone();
+    new_visited.insert(cat.to_string());
+
+    let step_cost = *weights.get(cat).unwrap_or(&1.0);
+    let mut results = Vec::new();
+    if let Some(neighbors) = adj.get(cat) {{
+        for nb in neighbors {{
+            if !new_visited.contains(nb.as_str()) {{
+                results.push((nb.clone(), step_cost));
+                for (ancestor, w) in category_weighted_dfs(nb, &new_visited, adj, weights, depth + 1) {{
+                    results.push((ancestor, w + step_cost));
+                }}
+            }}
+        }}
+    }}
+    results
+}}
+
+fn main() {{
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {{
+        eprintln!("Usage: {{}} <category_parent.tsv> <article_category.tsv>", args[0]);
+        std::process::exit(1);
+    }}
+
+    let adj = load_tsv_pairs(&args[1]);
+    let art_cats = load_tsv_pairs(&args[2]);
+    let mut weights: HashMap<String, f64> = HashMap::new();
+    for (child, parents) in &adj {{
+        let degree = parents.len().max(1) as f64;
+        weights.insert(child.clone(), 1.0 + degree.log(5.0));
+    }}
+
+    let mut arts: Vec<&String> = art_cats.keys().collect();
+    arts.sort();
+
+    let mut results: Vec<(f64, String)> = Vec::new();
+    for art in arts {{
+        let mut best: Option<f64> = None;
+        if let Some(cats) = art_cats.get(art) {{
+            for cat in cats {{
+                if cat == ROOT {{
+                    best = Some(best.map_or(0.0, |b| b.min(0.0)));
+                }}
+                let visited = HashSet::new();
+                for (ancestor, weight) in category_weighted_dfs(cat, &visited, &adj, &weights, 0) {{
+                    if ancestor == ROOT {{
+                        best = Some(best.map_or(weight, |b| b.min(weight)));
+                    }}
+                }}
+            }}
+        }}
+        if let Some(best_dist) = best {{
+            results.push((best_dist, art.to_string()));
+        }}
+    }}
+
+    results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+    println!("article\\troot_category\\tweighted_shortest_path");
+    for (dist, art) in results {{
+        println!("{{}}\\t{{}}\\t{{:.12}}", art, ROOT, dist);
+    }}
+}}
+'''
+
+
+def generate_csharp_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = list(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Weighted shortest path to root benchmark (C#)
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+
+class WeightedShortestPathBenchmark
+{{
+    const string ROOT = "{root}";
+    const int MAX_DEPTH = {max_depth};
+
+    static Dictionary<string, List<string>> LoadTsvPairs(string path)
+    {{
+        var map = new Dictionary<string, List<string>>();
+        foreach (var (line, i) in File.ReadLines(path).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child"))) continue;
+            var parts = line.Split('\\t', 2);
+            if (parts.Length == 2)
+            {{
+                if (!map.ContainsKey(parts[0])) map[parts[0]] = new List<string>();
+                map[parts[0]].Add(parts[1]);
+            }}
+        }}
+        return map;
+    }}
+
+    static List<(string ancestor, double weight)> CategoryWeightedDFS(
+        string cat, HashSet<string> visited,
+        Dictionary<string, List<string>> adj,
+        Dictionary<string, double> weights,
+        int depth)
+    {{
+        var results = new List<(string, double)>();
+        if (visited.Contains(cat) || depth >= MAX_DEPTH) return results;
+
+        var newVisited = new HashSet<string>(visited) {{ cat }};
+        var stepCost = weights.TryGetValue(cat, out var cost) ? cost : 1.0;
+        if (adj.TryGetValue(cat, out var neighbors))
+        {{
+            foreach (var nb in neighbors)
+            {{
+                if (!newVisited.Contains(nb))
+                {{
+                    results.Add((nb, stepCost));
+                    foreach (var (ancestor, subWeight) in CategoryWeightedDFS(nb, newVisited, adj, weights, depth + 1))
+                    {{
+                        results.Add((ancestor, subWeight + stepCost));
+                    }}
+                }}
+            }}
+        }}
+        return results;
+    }}
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var adj = LoadTsvPairs(args[0]);
+        var artCats = LoadTsvPairs(args[1]);
+        var weights = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var (child, parents) in adj)
+        {{
+            var degree = Math.Max(1, parents.Count);
+            weights[child] = 1.0 + Math.Log(degree, 5.0);
+        }}
+
+        var results = new List<(double Distance, string Article)>();
+        foreach (var art in artCats.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {{
+            double? best = null;
+            foreach (var cat in artCats[art])
+            {{
+                if (cat == ROOT)
+                {{
+                    best = best is null ? 0.0 : Math.Min(best.Value, 0.0);
+                }}
+                foreach (var (ancestor, weight) in CategoryWeightedDFS(cat, new HashSet<string>(), adj, weights, 0))
+                {{
+                    if (ancestor == ROOT)
+                    {{
+                        best = best is null ? weight : Math.Min(best.Value, weight);
+                    }}
+                }}
+            }}
+            if (best is not null)
+            {{
+                results.Add((best.Value, art));
+            }}
+        }}
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Distance.CompareTo(b.Distance);
+            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("article\\troot_category\\tweighted_shortest_path");
+        foreach (var (distance, art) in results)
+        {{
+            Console.WriteLine($"{{art}}\\t{{ROOT}}\\t{{distance.ToString("F12", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+}}
+'''
+
+
 GENERATORS = {
-    'awk': generate_awk,
-    'python': generate_python,
-    'codon': generate_codon,
-    'go': generate_go,
-    'rust': generate_rust,
-    'csharp': generate_csharp,
+    'effective_distance': {
+        'awk': generate_awk,
+        'python': generate_python,
+        'codon': generate_codon,
+        'go': generate_go_effective_distance,
+        'rust': generate_rust_effective_distance,
+        'csharp': generate_csharp_effective_distance,
+    },
+    'shortest_path_to_root': {
+        'go': generate_go_shortest_path,
+        'rust': generate_rust_shortest_path,
+        'csharp': generate_csharp_shortest_path,
+    },
+    'weighted_shortest_path': {
+        'go': generate_go_weighted_shortest_path,
+        'rust': generate_rust_weighted_shortest_path,
+        'csharp': generate_csharp_weighted_shortest_path,
+    },
 }
 
 
@@ -811,7 +1542,13 @@ def main():
     )
     parser.add_argument("--facts", required=True, help="Prolog facts file")
     parser.add_argument("--root", default="Physics", help="Root category")
-    parser.add_argument("--target", required=True, choices=list(GENERATORS.keys()))
+    parser.add_argument(
+        "--workload",
+        default="effective_distance",
+        choices=list(GENERATORS.keys()),
+        help="Benchmark workload to generate",
+    )
+    parser.add_argument("--target", required=True, help="Target language")
     parser.add_argument("--output", required=True, help="Output file path")
     parser.add_argument("--n", type=float, default=5, help="Dimensionality parameter")
     parser.add_argument("--max-depth", type=int, default=10,
@@ -824,7 +1561,13 @@ def main():
     if args.root:
         root_cats = {args.root}
 
-    generator = GENERATORS[args.target]
+    workload_generators = GENERATORS[args.workload]
+    if args.target not in workload_generators:
+        supported = ", ".join(sorted(workload_generators.keys()))
+        print(f"Unsupported target '{args.target}' for workload '{args.workload}'. Supported: {supported}", file=sys.stderr)
+        sys.exit(2)
+
+    generator = workload_generators[args.target]
     code = generator(article_cats, category_parents, root_cats,
                      n=int(args.n), max_depth=args.max_depth)
 
