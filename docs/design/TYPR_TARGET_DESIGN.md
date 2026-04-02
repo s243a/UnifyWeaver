@@ -523,6 +523,12 @@ Current wrapped-fallback boundary note:
   `string_sub/4`, `string_format/3`, and `string_grepl/3`
 - the first list-producing Prolog string helper slice is now native for simple
   alias tails: `split_string/4` with a constant separator and empty pad chars
+- TypR annotation modes are now regression-covered against implementation:
+  `typed_mode(explicit)`, `typed_mode(infer)`, `typed_mode(off)`, and
+  per-predicate `uw_typed_mode/2` precedence over per-call options
+- current CLI boundary: `infer` and `off` are validated with `typr check`;
+  the current `typr build` path remains stricter about typed function
+  signatures
 - the remaining wrapped fallback boundary is now beyond that first
   producer-follow-on slice
 - if this area is revisited again, the next real audit target is the next

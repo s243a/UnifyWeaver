@@ -176,6 +176,12 @@ bring-up.
     `string_format/3`, and `string_grepl/3`, plus the first conservative
     list-producing `split_string/4` slice with a constant separator and empty
     pad chars
+  - TypR annotation-mode behavior is regression-covered:
+    `explicit`, `infer`, `off`, and per-predicate `uw_typed_mode/2`
+    precedence over per-call options
+  - current CLI boundary: `infer`/`off` mode coverage is anchored on
+    `typr check`; the current `typr build` path is stricter about typed
+    function signatures
   - guard-style command predicates lowered into clause conditions
   - sequential native control-flow chains where earlier outputs feed later
     guards and outputs
