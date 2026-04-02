@@ -26,6 +26,13 @@ setup_correlated_aggregate_example :-
     assertz(user:rel(x, 1)),
     assertz(user:(outer_sum(X, S) :- base(X), aggregate_all(sum(V), rel(X, V), S))).
 
+setup_grouped_correlated_aggregate_example :-
+    cleanup_all,
+    assertz(user:base(x)),
+    assertz(user:rel(x, tag_a, 1)),
+    assertz(user:rel(x, tag_b, 2)),
+    assertz(user:(outer_group_sum(X, Tag, S) :- base(X), aggregate_all(sum(V), rel(X, Tag, V), Tag, S))).
+
 cleanup_all :-
     catch(abolish(user:sale/2), _, true),
     catch(abolish(user:high_sale_count/1), _, true),
@@ -33,7 +40,9 @@ cleanup_all :-
     catch(abolish(user:dept_big_total/2), _, true),
     catch(abolish(user:base/1), _, true),
     catch(abolish(user:rel/2), _, true),
-    catch(abolish(user:outer_sum/2), _, true).
+    catch(abolish(user:rel/3), _, true),
+    catch(abolish(user:outer_sum/2), _, true),
+    catch(abolish(user:outer_group_sum/3), _, true).
 
 :- begin_tests(go_generator_aggregate_subplans).
 
@@ -56,12 +65,29 @@ test(compile_grouped_filtered_sum_aggregate, [
     sub_string(Code, _, _, _, "groups := make(map[interface{}][]float64)"),
     sub_string(Code, _, _, _, "dept_big_total").
 
-test(reject_correlated_aggregate, [
+test(compile_correlated_aggregate, [
     setup(setup_correlated_aggregate_example),
     cleanup(cleanup_all)
 ]) :-
     compile_predicate_to_go(outer_sum/2, [mode(generator)], Code),
-    sub_string(Code, _, _, _, "Unsupported correlated aggregate form").
+    \+ sub_string(Code, _, _, _, "Unsupported correlated aggregate form"),
+    sub_string(Code, _, _, _, "if fact.Relation != \"base\""),
+    sub_string(Code, _, _, _, "if f.Relation == \"rel\" && (f.Args[\"arg0\"] == fact.Args[\"arg0\"])"),
+    sub_string(Code, _, _, _, "\"arg0\": fact.Args[\"arg0\"]"),
+    sub_string(Code, _, _, _, "\"arg1\": agg").
+
+test(compile_grouped_correlated_aggregate, [
+    setup(setup_grouped_correlated_aggregate_example),
+    cleanup(cleanup_all)
+]) :-
+    compile_predicate_to_go(outer_group_sum/3, [mode(generator)], Code),
+    \+ sub_string(Code, _, _, _, "Unsupported correlated aggregate form"),
+    sub_string(Code, _, _, _, "if fact.Relation != \"base\""),
+    sub_string(Code, _, _, _, "groups := make(map[interface{}][]float64)"),
+    sub_string(Code, _, _, _, "if f.Relation == \"rel\" && (f.Args[\"arg0\"] == fact.Args[\"arg0\"])"),
+    sub_string(Code, _, _, _, "\"arg0\": fact.Args[\"arg0\"]"),
+    sub_string(Code, _, _, _, "\"arg1\": key"),
+    sub_string(Code, _, _, _, "\"arg2\": agg").
 
 :- end_tests(go_generator_aggregate_subplans).
 
