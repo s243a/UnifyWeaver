@@ -66,10 +66,23 @@ e2e_shape_area(rect(W, H), A) :- A is W * H.
 :- dynamic e2e_head/2.
 e2e_head([H|_], H).
 
+%% List in head (third arg) — exercises get_list for matching
+:- dynamic e2e_cons/3.
+e2e_cons(H, T, [H|T]).
+
+%% Compound head with variable sub-args — exercises unify_value with unbound
+:- dynamic e2e_pair_first/2.
+e2e_pair_first(pair(X, _), X).
+
 %% Second-arg indexed predicate (variable first arg, constant second)
 :- dynamic e2e_greet/2.
 e2e_greet(X, hello) :- X = world.
 e2e_greet(X, goodbye) :- X = moon.
+
+%% Body list construction — exercises put_list + set_*
+%  e2e_wrap_in_list/2 calls e2e_has_member with a constructed [X] list.
+:- dynamic e2e_wrap_in_list/1.
+e2e_wrap_in_list(X) :- e2e_has_member(X, [X]).
 
 :- dynamic test_failed/0.
 
@@ -242,6 +255,35 @@ test_wam_get_list :-
     ;   fail_test(Test, 'get_list decomposition failed')
     ).
 
+test_wam_get_list_match :-
+    Test = 'WAM E2E: get_list head matching (cons)',
+    (   wam_target:compile_predicate_to_wam(user:e2e_cons/3, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'get_list'),
+        wam_runtime:execute_wam(Code, e2e_cons(a, [b, c], [a, b, c]), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'get_list head matching failed')
+    ).
+
+test_wam_unify_value_unbound :-
+    Test = 'WAM E2E: unify_value with unbound variable',
+    (   wam_target:compile_predicate_to_wam(user:e2e_pair_first/2, [], Code),
+        wam_runtime:execute_wam(Code, e2e_pair_first(pair(hello, world), hello), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'unify_value with unbound variable failed')
+    ).
+
+test_wam_put_list_body :-
+    Test = 'WAM E2E: put_list body construction',
+    (   wam_target:compile_wam_module(
+            [user:e2e_has_member/2, user:e2e_wrap_in_list/1], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'put_list'),
+        wam_runtime:execute_wam(Code, e2e_wrap_in_list(hello), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'put_list body construction failed')
+    ).
+
 test_wam_peephole :-
     Test = 'WAM E2E: Peephole optimization (no redundant get/put pairs)',
     (   % ancestor clause 1 does get_variable X1,A1 then put_value X1,A1
@@ -287,6 +329,9 @@ run_tests :-
     test_wam_indexing,
     test_wam_structure_index,
     test_wam_get_list,
+    test_wam_get_list_match,
+    test_wam_unify_value_unbound,
+    test_wam_put_list_body,
     test_wam_peephole,
     test_wam_second_arg_index,
     

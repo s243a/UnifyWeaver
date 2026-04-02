@@ -516,6 +516,26 @@ step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_
     (CPS = [_|Rest] -> NCPS = [cp(NextPC, R, S, CP, T)|Rest] ; NCPS = [cp(NextPC, R, S, CP, T)]),
     NPC is PC + 1.
 
+%% deref_heap(+Value, +Heap, -DereferencedValue)
+%  Reconstructs a Prolog term from a heap reference. If Value is ref(Addr),
+%  looks up the structure on the heap and recursively dereferences sub-args.
+%  Non-ref values pass through unchanged.
+deref_heap(ref(Addr), Heap, Term) :- !,
+    nth0(Addr, Heap, str(FN)),
+    atom_string(FN, FNStr),
+    split_string(FNStr, "/", "", [FStr, ArStr]),
+    atom_string(F, FStr),
+    number_string(HArity, ArStr),
+    StartIdx is Addr + 1,
+    heap_subargs(Heap, StartIdx, HArity, SubArgs),
+    maplist({Heap}/[A, D]>>deref_heap(A, Heap, D), SubArgs, DerefArgs),
+    (   F == '.'
+    ->  DerefArgs = [Head, Tail],
+        Term = [Head|Tail]
+    ;   Term =.. [F|DerefArgs]
+    ).
+deref_heap(Val, _, Val).
+
 %% heap_subargs(+Heap, +StartIdx, +Count, -SubArgs)
 %  Extracts Count elements from the heap starting at StartIdx.
 heap_subargs(_, _, 0, []) :- !.
@@ -686,29 +706,35 @@ step_wam(builtin_call('\\+/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
 %% recursive structure manipulation better done natively.
 step_wam(builtin_call('member/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
          wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
-    get_assoc('A1', R, Elem),
-    get_assoc('A2', R, List),
+    get_assoc('A1', R, ElemRaw),
+    get_assoc('A2', R, ListRaw),
+    deref_heap(ElemRaw, H, Elem),
+    deref_heap(ListRaw, H, List),
     member(Elem, List),
     NPC is PC + 1.
 
 step_wam(builtin_call('append/3', 3), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
          wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
-    get_assoc('A1', R, L1),
-    get_assoc('A2', R, L2),
+    get_assoc('A1', R, L1Raw),
+    get_assoc('A2', R, L2Raw),
     get_assoc('A3', R, L3),
+    deref_heap(L1Raw, H, L1),
+    deref_heap(L2Raw, H, L2),
     (   is_unbound_var(L3)
     ->  append(L1, L2, Result),
         trail_binding('A3', R, T, NT),
         put_assoc('A3', R, Result, NR)
-    ;   append(L1, L2, L3),
+    ;   deref_heap(L3, H, L3D),
+        append(L1, L2, L3D),
         NR = R, NT = T
     ),
     NPC is PC + 1.
 
 step_wam(builtin_call('length/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
          wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
-    get_assoc('A1', R, List),
+    get_assoc('A1', R, ListRaw),
     get_assoc('A2', R, Len),
+    deref_heap(ListRaw, H, List),
     (   is_unbound_var(Len)
     ->  length(List, Result),
         trail_binding('A2', R, T, NT),
