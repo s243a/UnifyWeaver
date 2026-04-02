@@ -22879,6 +22879,78 @@ py_fragment(extract_tool_calls_anthropic, '    def _extract_tool_calls(self, res
         return tool_calls
 ').
 
+%% --- Fragment: cascading tool call extraction (generated from response_parser_chain facts) ---
+
+py_fragment(extract_tool_calls_cascade, '    def _extract_tool_calls(self, response) -> list[ToolCall]:
+        """Extract tool calls using cascading parser chain.
+
+        Tries multiple response formats in order (configured per backend
+        via response_parser_chain facts). First successful parse wins.
+        """
+        # Try OpenAI format: choices[0].message.tool_calls
+        if hasattr(response, \'choices\') and response.choices:
+            choice = response.choices[0]
+            if hasattr(choice, \'message\') and hasattr(choice.message, \'tool_calls\') and choice.message.tool_calls:
+                return self._parse_openai_tool_calls(choice.message.tool_calls)
+
+        # Try dict-based OpenAI format (raw JSON response)
+        if isinstance(response, dict):
+            choices = response.get(\'choices\', [])
+            if choices:
+                msg = choices[0].get(\'message\', {})
+                tcs = msg.get(\'tool_calls\', [])
+                if tcs:
+                    return self._parse_openai_dict_tool_calls(tcs)
+
+        # Try Anthropic format: content[].type == \"tool_use\"
+        if hasattr(response, \'content\') and response.content:
+            tool_blocks = [b for b in response.content if hasattr(b, \'type\') and b.type == \'tool_use\']
+            if tool_blocks:
+                return [ToolCall(name=b.name, arguments=b.input, id=b.id) for b in tool_blocks]
+
+        # Try dict-based Anthropic format
+        if isinstance(response, dict) and \'content\' in response:
+            content = response[\'content\']
+            if isinstance(content, list):
+                tool_blocks = [b for b in content if isinstance(b, dict) and b.get(\'type\') == \'tool_use\']
+                if tool_blocks:
+                    return [ToolCall(name=b[\'name\'], arguments=b.get(\'input\', {}), id=b.get(\'id\', \'\')) for b in tool_blocks]
+
+        return []
+
+    def _parse_openai_tool_calls(self, tool_calls) -> list[ToolCall]:
+        """Parse OpenAI SDK tool call objects."""
+        import json as _json
+        result = []
+        for tc in tool_calls:
+            if tc.type == "function":
+                try:
+                    args = _json.loads(tc.function.arguments)
+                except (ValueError, AttributeError):
+                    args = {"raw": str(tc.function.arguments)}
+                result.append(ToolCall(name=tc.function.name, arguments=args, id=tc.id))
+        return result
+
+    def _parse_openai_dict_tool_calls(self, tool_calls) -> list[ToolCall]:
+        """Parse OpenAI-format tool calls from raw dict response."""
+        import json as _json
+        result = []
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            try:
+                args = _json.loads(func.get("arguments", "{}"))
+            except (ValueError, TypeError):
+                args = {"raw": str(func.get("arguments", ""))}
+            result.append(ToolCall(name=func.get("name", ""), arguments=args, id=tc.get("id", "")))
+        return result
+').
+
+%% --- Helper: emit_parser_chain_comment(+Stream, +BackendName) ---
+%% Emits a comment showing the parser chain for documentation.
+emit_parser_chain_comment(S, Backend) :-
+    resolve_parser_chain(Backend, Parsers),
+    format(S, '    # Parser chain: ~w~n', [Parsers]).
+
 %% --- Fragments describe_tool_call_* deleted: now generated from tool_description/5 facts ---
 
 %% --- Fragment: _clean_output (simple, for ollama_cli) ---
@@ -29047,7 +29119,8 @@ generate_backend_full(S, coro, _) :-
     write(S, '        return []\n\n'),
     generate_backend_helpers(S, coro).
 
-%% --- openrouter_api (uses: messages_builder_openrouter, describe_tool_call_openrouter, sse_streaming_openrouter) ---
+%% --- openrouter_api (uses: messages_builder_openrouter, describe_tool_call_openrouter, sse_streaming_openrouter)
+%%     Parser chain: [openai, anthropic, raw_json] — cascade for proxy backends ---
 
 generate_backend_full(S, openrouter_api, _) :-
     generate_backend_header(S, openrouter_api),
@@ -29096,25 +29169,20 @@ generate_backend_full(S, openrouter_api, _) :-
     write(S, '        try:\n            with urlopen(req, timeout=300) as resp:\n'),
     write(S, '                data = json.loads(resp.read().decode(\'utf-8\'))\n'),
     write_py(S, error_handler_urllib),
-    write(S, '\n        content = ""\n        tool_calls = []\n        tokens = {}\n\n'),
-    write(S, '        if data.get(\'choices\'):\n            choice = data[\'choices\'][0]\n'),
-    write(S, '            msg = choice.get(\'message\', {})\n\n'),
-    write(S, '            content = msg.get(\'content\') or \'\'\n\n'),
-    write(S, '            for tc in msg.get(\'tool_calls\', []):\n'),
-    write(S, '                if tc.get(\'type\') == \'function\':\n'),
-    write(S, '                    func = tc.get(\'function\', {})\n'),
-    write(S, '                    try:\n'),
-    write(S, '                        arguments = json.loads(func.get(\'arguments\', \'{}\'))\n'),
-    write(S, '                    except json.JSONDecodeError:\n'),
-    write(S, '                        arguments = {"raw": func.get(\'arguments\', \'\')}\n'),
-    write(S, '                    tool_calls.append(ToolCall(\n'),
-    write(S, '                        name=func.get(\'name\', \'\'),\n'),
-    write(S, '                        arguments=arguments,\n'),
-    write(S, '                        id=tc.get(\'id\', \'\')\n                    ))\n'),
-    write(S, '                    if on_status:\n'),
-    write(S, '                        desc = self._describe_tool_call(\n'),
-    write(S, '                            func.get(\'name\', \'?\'), arguments)\n'),
-    write(S, '                        on_status(f"[{len(tool_calls)}] {desc}")\n\n'),
+    write(S, '\n        # Extract content from response\n'),
+    write(S, '        content = ""\n        if data.get(\'choices\'):\n'),
+    write(S, '            choice = data[\'choices\'][0]\n'),
+    write(S, '            msg = choice.get(\'message\', {})\n'),
+    write(S, '            content = msg.get(\'content\') or \'\'\n'),
+    write(S, '        elif data.get(\'content\') and isinstance(data[\'content\'], list):\n'),
+    write(S, '            # Anthropic format\n'),
+    write(S, '            content = \'\'.join(b.get(\'text\', \'\') for b in data[\'content\'] if b.get(\'type\') == \'text\')\n\n'),
+    write(S, '        # Extract tool calls using cascading parser (openai → anthropic → raw_json)\n'),
+    write(S, '        tool_calls = self._extract_tool_calls(data)\n'),
+    write(S, '        if on_status and tool_calls:\n'),
+    write(S, '            for i, tc in enumerate(tool_calls, 1):\n'),
+    write(S, '                desc = self._describe_tool_call(tc.name, tc.arguments)\n'),
+    write(S, '                on_status(f"[{i}] {desc}")\n\n'),
     write(S, '        usage = data.get(\'usage\', {})\n        if usage:\n'),
     write(S, '            tokens = {\n                \'input\': usage.get(\'prompt_tokens\', 0),\n'),
     write(S, '                \'output\': usage.get(\'completion_tokens\', 0),\n'),
@@ -29127,6 +29195,9 @@ generate_backend_full(S, openrouter_api, _) :-
     write_py(S, sse_streaming_openrouter),
     write(S, '\n'),
     generate_describe_tool_call(S, openrouter_api),
+    write(S, '\n'),
+    emit_parser_chain_comment(S, openrouter_api),
+    write_py(S, extract_tool_calls_cascade),
     write(S, '\n'),
     write_py(S, name_property, [display_name='OpenRouter ({self.model})']).
 
