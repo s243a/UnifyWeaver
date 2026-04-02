@@ -14,12 +14,15 @@
     compile_step_wam_to_rust/2,          % -MatchArms
     compile_wam_helpers_to_rust/2,       % -HelperFunctions
     compile_wam_runtime_to_rust/2,       % +Options, -RustCode
-    compile_wam_predicate_to_rust/4      % +Pred/Arity, +WamCode, +Options, -RustCode
+    compile_wam_predicate_to_rust/4,     % +Pred/Arity, +WamCode, +Options, -RustCode
+    write_wam_rust_project/3             % +Predicates, +Options, +ProjectDir
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(option)).
 :- use_module('../core/template_system').
 :- use_module('../bindings/rust_wam_bindings').
+:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 
 % ============================================================================
 % PHASE 2: step_wam/3 → Rust match arms
@@ -622,3 +625,123 @@ build_rust_wam_arg_setup(Arity, Setup) :-
     maplist([I, S]>>format(string(S),
         '    vm.set_reg("A~w", a~w);', [I, I]), Indices, Lines),
     atomic_list_concat(Lines, '\n', Setup).
+
+% ============================================================================
+% CARGO PROJECT GENERATION
+% ============================================================================
+
+%% write_wam_rust_project(+Predicates, +Options, +ProjectDir)
+%  Generates a complete Cargo crate with:
+%  - Cargo.toml
+%  - src/value.rs      (Value enum — from template)
+%  - src/instructions.rs (Instruction enum — from template)
+%  - src/state.rs      (WamState struct — from template + transpiled runtime)
+%  - src/lib.rs        (module layout + compiled predicates)
+%
+%  Predicates is a list of Module:Pred/Arity indicators to compile.
+%  Each predicate is attempted via native lowering first, falling back
+%  to WAM compilation.
+%
+%  Options:
+%    module_name(Name)   — crate/module name (default: 'wam_generated')
+%    wam_fallback(Bool)  — enable/disable WAM fallback (default: true)
+%    include_runtime(Bool) — include transpiled WAM runtime (default: true)
+write_wam_rust_project(Predicates, Options, ProjectDir) :-
+    option(module_name(ModuleName), Options, 'wam_generated'),
+    get_time(TimeStamp),
+    format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+
+    % Create directory structure
+    make_directory_path(ProjectDir),
+    directory_file_path(ProjectDir, 'src', SrcDir),
+    make_directory_path(SrcDir),
+
+    % Generate Cargo.toml
+    render_named_template(rust_wam_cargo,
+        [module_name=ModuleName], CargoContent),
+    directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
+    write_file(CargoPath, CargoContent),
+
+    % Write value.rs from template file
+    read_template_file('templates/targets/rust_wam/value.rs.mustache', ValueTemplate),
+    render_template(ValueTemplate, [date=Date], ValueCode),
+    directory_file_path(SrcDir, 'value.rs', ValuePath),
+    write_file(ValuePath, ValueCode),
+
+    % Write instructions.rs from template file
+    read_template_file('templates/targets/rust_wam/instructions.rs.mustache', InstrTemplate),
+    render_template(InstrTemplate, [date=Date], InstrCode),
+    directory_file_path(SrcDir, 'instructions.rs', InstrPath),
+    write_file(InstrPath, InstrCode),
+
+    % Generate state.rs: template + transpiled runtime methods
+    option(include_runtime(IncludeRuntime), Options, true),
+    read_template_file('templates/targets/rust_wam/state.rs.mustache', StateTemplate),
+    render_template(StateTemplate, [date=Date], StateBase),
+    (   IncludeRuntime == true
+    ->  compile_wam_runtime_to_rust(Options, RuntimeCode),
+        format(string(StateCode), "~w\n\n~w", [StateBase, RuntimeCode])
+    ;   StateCode = StateBase
+    ),
+    directory_file_path(SrcDir, 'state.rs', StatePath),
+    write_file(StatePath, StateCode),
+
+    % Compile predicates and generate lib.rs
+    compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    render_named_template(rust_wam_lib,
+        [module_name=ModuleName, date=Date, predicates_code=PredicatesCode],
+        LibContent),
+    directory_file_path(SrcDir, 'lib.rs', LibPath),
+    write_file(LibPath, LibContent),
+
+    format('WAM Rust project created at: ~w~n', [ProjectDir]),
+    format('  Predicates compiled: ~w~n', [Predicates]).
+
+%% compile_predicates_for_project(+Predicates, +Options, -Code)
+%  Compiles each predicate, trying native lowering first, then WAM fallback.
+compile_predicates_for_project([], _, "").
+compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
+    (   PredIndicator = Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity, Module = user
+    ),
+    (   % Try native Rust lowering first
+        catch(
+            rust_target:compile_predicate_to_rust(Module:Pred/Arity,
+                [include_main(false)|Options], PredCode),
+            _, fail)
+    ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
+        Strategy = native
+    ;   % Fall back to WAM compilation
+        option(wam_fallback(WamFB), Options, true),
+        WamFB \== false,
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
+        compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, PredCode)
+    ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
+        Strategy = wam
+    ;   % Neither worked — emit a stub
+        format(string(PredCode),
+            '// ~w/~w: compilation failed (neither native nor WAM)', [Pred, Arity]),
+        Strategy = failed
+    ),
+    compile_predicates_for_project(Rest, Options, RestCode),
+    (   RestCode == ""
+    ->  format(string(Code), "// Strategy: ~w\n~w", [Strategy, PredCode])
+    ;   format(string(Code), "// Strategy: ~w\n~w\n\n~w", [Strategy, PredCode, RestCode])
+    ).
+
+%% write_file(+Path, +Content)
+write_file(Path, Content) :-
+    setup_call_cleanup(
+        open(Path, write, Stream),
+        format(Stream, "~w", [Content]),
+        close(Stream)
+    ).
+
+%% read_template_file(+RelativePath, -Content)
+%  Reads a template file from the project directory.
+read_template_file(RelativePath, Content) :-
+    (   exists_file(RelativePath)
+    ->  read_file_to_string(RelativePath, Content, [])
+    ;   format(atom(Content),
+            '// Template not found: ~w', [RelativePath])
+    ).
