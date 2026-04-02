@@ -4396,8 +4396,18 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
     (   member(AggGoal, Goals),
         is_aggregate_goal_go(AggGoal)
     ->  % Aggregate rule - extract HAVING filters (builtins after aggregate)
-        extract_having_filters(Goals, AggGoal, HavingFilters),
-        compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, HavingFilters, Config, Code)
+        append(BeforeAgg, [AggGoal|AfterAgg], Goals),
+        include(is_builtin_goal_go, AfterAgg, HavingFilters),
+        exclude(is_builtin_goal_go, AfterAgg, UnsupportedAfterAgg),
+        (   BeforeAgg == [],
+            UnsupportedAfterAgg == []
+        ->  compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, HavingFilters, Config, Code)
+        ;   format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    // Unsupported correlated aggregate form
+    return nil
+}", [RuleName])
+        )
     ;   % Normal rule (joins, negation, etc.)
         partition(is_builtin_goal_go, Goals, Builtins, RelGoals),
         
@@ -4541,7 +4551,31 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, InnerGoal
         HavingIfEnd = ""
     ),
     
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    
+    // Skip if not triggered by this relation
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    
+    count := 0.0
+    for _, f := range total {
+        if f.Relation == \"~w\" {
+            count += 1.0
+        }
+    }
+    
+    if count > 0 {
+        agg := count~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    
+    return results
+}", [RuleName, Pred, Pred, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
@@ -4568,7 +4602,8 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, InnerGoal
     }
     
     return results
-}", [RuleName, Pred, Pred, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd]).
+}", [RuleName, Pred, Pred, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ).
 
 %% compile_go_grouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +Op, +Expr, +InnerGoal, +GroupVar, +Result, +HavingFilters, +Config, -Code)
 compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, InnerGoal, GroupVar, Result, HavingFilters, _Config, Code) :-
@@ -4595,7 +4630,37 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, InnerGoal,
     ;   HavingCode = ""
     ),
     
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    
+    // Skip if not triggered by this relation
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    
+    groups := make(map[interface{}]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" {
+            key := f.Args[\"arg~w\"]
+            groups[key] += 1.0
+        }
+    }
+    
+    for key, agg := range groups {
+        if agg > 0 {
+            ~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{\"arg0\": key, \"arg1\": agg},
+            })
+        }
+    }
+    
+    return results
+}", [RuleName, Pred, Pred, GroupIdx, HavingCode, HeadPred])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
@@ -4628,7 +4693,8 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, InnerGoal,
     }
     
     return results
-}", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred]).
+}", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred])
+    ).
 
 compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, RelGoal, GoalInfo, Result, HavingFilters, _Config, Code) :-
     RelGoal =.. [Pred|Args],
@@ -4650,7 +4716,26 @@ compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, R
     ;   HavingIfStart = "",
         HavingIfEnd = ""
     ),
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    count := 0.0
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            count += 1.0
+        }
+    }
+    if count > 0 {
+        agg := count~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    return results
+}", [RuleName, Pred, Pred, FilterCond, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     if fact.Relation != \"~w\" {
@@ -4670,7 +4755,8 @@ compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, R
             results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
     }
     return results
-}", [RuleName, Pred, Pred, FilterCond, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd]).
+}", [RuleName, Pred, Pred, FilterCond, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ).
 
 compile_go_grouped_subplan_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, RelGoal, GoalInfo, GroupVar, Result, HavingFilters, _Config, Code) :-
     RelGoal =.. [Pred|Args],
@@ -4690,7 +4776,32 @@ compile_go_grouped_subplan_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, Re
             }", [HavingCond])
     ;   HavingCode = ""
     ),
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    groups := make(map[interface{}]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            key := f.Args[\"arg~w\"]
+            groups[key] += 1.0
+        }
+    }
+    for key, agg := range groups {
+        if agg > 0 {
+            ~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{\"arg0\": key, \"arg1\": agg},
+            })
+        }
+    }
+    return results
+}", [RuleName, Pred, Pred, FilterCond, GroupIdx, HavingCode, HeadPred])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     if fact.Relation != \"~w\" {
@@ -4716,7 +4827,8 @@ compile_go_grouped_subplan_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, Re
         }
     }
     return results
-}", [RuleName, Pred, Pred, FilterCond, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred]).
+}", [RuleName, Pred, Pred, FilterCond, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred])
+    ).
 
 %% decompose_agg_op(+OpTerm, -Op, -ValueVar)
 decompose_agg_op(count, count, _).
