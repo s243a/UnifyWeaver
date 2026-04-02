@@ -31,21 +31,16 @@ max_depth(10).
 influence_dimension(5).
 
 % category_ancestor(Source, Ancestor, Hops)
-% Counted transitive closure with per-path visited (arity-4 internal)
-category_ancestor(Cat, Parent, 1, Visited) :-
-    category_parent(Cat, Parent),
-    \+ member(Parent, Visited).
-category_ancestor(Cat, Ancestor, Hops, Visited) :-
-    max_depth(MaxD),
-    length(Visited, Depth), Depth < MaxD, !,
-    category_parent(Cat, Mid),
-    \+ member(Mid, Visited),
-    category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
-    Hops is H1 + 1.
-
-% Wrapper without Visited parameter (for external queries)
+% Counted transitive closure written in the direct recursive form the
+% current native lowerings compile across targets.
+category_ancestor(Cat, Parent, 1) :-
+    category_parent(Cat, Parent).
 category_ancestor(Cat, Ancestor, Hops) :-
-    category_ancestor(Cat, Ancestor, Hops, [Cat]).
+    max_depth(MaxD),
+    category_parent(Cat, Mid),
+    category_ancestor(Mid, Ancestor, H1),
+    Hops is H1 + 1,
+    Hops =< MaxD.
 
 % root_category_set/1 — collect all root categories (parents with no parents)
 root_category_set(Roots) :-
@@ -54,15 +49,18 @@ root_category_set(Roots) :-
 % article_root_weight(Article, Root, Weight)
 % For each article, compute spectral weight hops^(-n) for each path to root
 article_root_weight(Article, Root, Weight) :-
+    article_category(Article, Cat),
+    root_category(Root),
+    Cat = Root,
+    Weight is 1.0.    % direct membership = distance 1, weight 1^(-n) = 1
+article_root_weight(Article, Root, Weight) :-
     influence_dimension(N),
     article_category(Article, Cat),
     root_category(Root),
-    (   Cat = Root
-    ->  Weight is 1.0    % direct membership = distance 1, weight 1^(-n) = 1
-    ;   category_ancestor(Cat, Root, Hops),
-        Distance is Hops + 1,  % +1 because article→category is 1 hop
-        Weight is Distance ** (-N)
-    ).
+    Cat \= Root,
+    category_ancestor(Cat, Root, Hops),
+    Distance is Hops + 1,  % +1 because article→category is 1 hop
+    Weight is Distance ** (-N).
 
 % category_influence(Root, Score)
 % Total influence of a root category across all articles

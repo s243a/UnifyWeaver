@@ -55,6 +55,30 @@ test(compile_outer_category_influence_aggregate, [
     compile_predicate_to_go(category_influence/2, [mode(generator)], Code),
     sub_string(Code, _, _, _, 'if fact.Relation != "root_category"'),
     sub_string(Code, _, _, _, 'if f.Relation == "article_root_weight" && (f.Args["arg1"] == fact.Args["arg0"])'),
+    sub_string(Code, _, _, _, 'agg := 0.0; for _, v := range values { agg += v }'),
+    sub_string(Code, _, _, _, 'Relation: "article_root_weight"'),
+    sub_string(Code, _, _, _, 'idx.Lookup("category_ancestor", "arg0"').
+
+test(compile_real_category_influence_benchmark, [
+    setup(user:consult('examples/benchmark/category_influence.pl')),
+    cleanup((
+        catch(abolish(user:max_depth/1), _, true),
+        catch(abolish(user:influence_dimension/1), _, true),
+        catch(abolish(user:category_parent/2), _, true),
+        catch(abolish(user:article_category/2), _, true),
+        catch(abolish(user:root_category/1), _, true),
+        catch(abolish(user:category_ancestor/3), _, true),
+        catch(abolish(user:root_category_set/1), _, true),
+        catch(abolish(user:article_root_weight/3), _, true),
+        catch(abolish(user:category_influence/2), _, true),
+        catch(abolish(user:run/0), _, true)
+    ))
+]) :-
+    compile_predicate_to_go(category_influence/2, [mode(generator)], Code),
+    sub_string(Code, _, _, _, 'Relation: "category_influence"'),
+    sub_string(Code, _, _, _, 'Relation: "article_root_weight"'),
+    sub_string(Code, _, _, _, 'Relation: "category_ancestor"'),
+    sub_string(Code, _, _, _, 'math.Pow('),
     sub_string(Code, _, _, _, 'agg := 0.0; for _, v := range values { agg += v }').
 
 :- end_tests(go_generator_category_influence).
