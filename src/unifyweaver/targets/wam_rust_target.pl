@@ -15,7 +15,8 @@
     compile_wam_helpers_to_rust/2,       % -HelperFunctions
     compile_wam_runtime_to_rust/2,       % +Options, -RustCode
     compile_wam_predicate_to_rust/4,     % +Pred/Arity, +WamCode, +Options, -RustCode
-    write_wam_rust_project/3             % +Predicates, +Options, +ProjectDir
+    write_wam_rust_project/3,            % +Predicates, +Options, +ProjectDir
+    cargo_check_project/2                % +ProjectDir, -Result
 ]).
 
 :- use_module(library(lists)).
@@ -596,22 +597,171 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %% compile_wam_predicate_to_rust(+Pred/Arity, +WamCode, +Options, -RustCode)
 %  Given WAM compiled code for a predicate, generate a Rust wrapper function
 %  that creates instruction data and executes it via the WAM runtime.
-compile_wam_predicate_to_rust(Pred/Arity, _WamCode, _Options, RustCode) :-
+compile_wam_predicate_to_rust(Pred/Arity, WamCode, _Options, RustCode) :-
     atom_string(Pred, PredStr),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
+    % Convert WAM instruction string to Rust Instruction enum literals
+    wam_code_to_rust_instructions(WamCode, InstrLiterals, LabelLiterals),
     format(string(RustCode),
 '/// WAM-compiled predicate: ~w/~w
-/// Falls back to WAM execution for predicates that resist native lowering.
+/// Compiled via WAM for predicates that resist native lowering.
 pub fn ~w(~w) -> bool {
-    // WAM instructions would be parsed from the compiled WAM code
-    // and executed via the WamState runtime.
-    let mut vm = WamState::new(vec![], std::collections::HashMap::new());
+    use std::collections::HashMap;
+    let code: Vec<Instruction> = vec![
 ~w
-    // TODO: Parse and load WAM instructions from compiled code
-    // vm.run()
-    false
-}', [PredStr, Arity, PredStr, ArgList, ArgSetup]).
+    ];
+    let mut labels: HashMap<String, usize> = HashMap::new();
+~w
+    let mut vm = WamState::new(code, labels);
+~w
+    vm.run()
+}', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ArgSetup]).
+
+%% wam_code_to_rust_instructions(+WamCodeStr, -InstrLiterals, -LabelLiterals)
+%  Parses a WAM code string and generates Rust vec![] entries and label map inserts.
+wam_code_to_rust_instructions(WamCode, InstrLiterals, LabelLiterals) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_rust(Lines, 1, InstrParts, LabelParts),
+    atomic_list_concat(InstrParts, '\n', InstrLiterals),
+    atomic_list_concat(LabelParts, '\n', LabelLiterals).
+
+wam_lines_to_rust([], _, [], []).
+wam_lines_to_rust([Line|Rest], PC, Instrs, Labels) :-
+    split_string(Line, " \t", " \t", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  wam_lines_to_rust(Rest, PC, Instrs, Labels)
+    ;   CleanParts = [First|_],
+        (   % Label line: "pred/2:" or "L_pred_2_2:"
+            sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelName),
+            format(string(LabelInsert),
+                '    labels.insert("~w".to_string(), ~w);', [LabelName, PC]),
+            Labels = [LabelInsert|RestLabels],
+            wam_lines_to_rust(Rest, PC, Instrs, RestLabels)
+        ;   % Instruction line
+            wam_line_to_rust_instr(CleanParts, RustInstr),
+            format(string(InstrEntry), '        ~w,', [RustInstr]),
+            NPC is PC + 1,
+            Instrs = [InstrEntry|RestInstrs],
+            wam_lines_to_rust(Rest, NPC, RestInstrs, Labels)
+        )
+    ).
+
+%% wam_line_to_rust_instr(+Parts, -RustExpr)
+%  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
+wam_line_to_rust_instr(["get_constant", C, Ai], Rust) :-
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::GetConstant(Value::Atom("~w".to_string()), "~w".to_string())',
+        [CC, CAi]).
+wam_line_to_rust_instr(["get_variable", Xn, Ai], Rust) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::GetVariable("~w".to_string(), "~w".to_string())',
+        [CXn, CAi]).
+wam_line_to_rust_instr(["get_value", Xn, Ai], Rust) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::GetValue("~w".to_string(), "~w".to_string())',
+        [CXn, CAi]).
+wam_line_to_rust_instr(["get_structure", FN, Ai], Rust) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::GetStructure("~w".to_string(), "~w".to_string())',
+        [CFN, CAi]).
+wam_line_to_rust_instr(["get_list", Ai], Rust) :-
+    clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::GetList("~w".to_string())', [CAi]).
+wam_line_to_rust_instr(["unify_variable", Xn], Rust) :-
+    format(string(Rust),
+        'Instruction::UnifyVariable("~w".to_string())', [Xn]).
+wam_line_to_rust_instr(["unify_value", Xn], Rust) :-
+    format(string(Rust),
+        'Instruction::UnifyValue("~w".to_string())', [Xn]).
+wam_line_to_rust_instr(["unify_constant", C], Rust) :-
+    (   number_string(N, C)
+    ->  format(string(Rust),
+            'Instruction::UnifyConstant(Value::Integer(~w))', [N])
+    ;   format(string(Rust),
+            'Instruction::UnifyConstant(Value::Atom("~w".to_string()))', [C])
+    ).
+wam_line_to_rust_instr(["put_constant", C, Ai], Rust) :-
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::PutConstant(Value::Atom("~w".to_string()), "~w".to_string())',
+        [CC, CAi]).
+wam_line_to_rust_instr(["put_variable", Xn, Ai], Rust) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::PutVariable("~w".to_string(), "~w".to_string())',
+        [CXn, CAi]).
+wam_line_to_rust_instr(["put_value", Xn, Ai], Rust) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::PutValue("~w".to_string(), "~w".to_string())',
+        [CXn, CAi]).
+wam_line_to_rust_instr(["put_structure", FN, Ai], Rust) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    format(string(Rust),
+        'Instruction::PutStructure("~w".to_string(), "~w".to_string())',
+        [CFN, CAi]).
+wam_line_to_rust_instr(["put_list", Ai], Rust) :-
+    format(string(Rust),
+        'Instruction::PutList("~w".to_string())', [Ai]).
+wam_line_to_rust_instr(["set_variable", Xn], Rust) :-
+    format(string(Rust),
+        'Instruction::SetVariable("~w".to_string())', [Xn]).
+wam_line_to_rust_instr(["set_value", Xn], Rust) :-
+    format(string(Rust),
+        'Instruction::SetValue("~w".to_string())', [Xn]).
+wam_line_to_rust_instr(["set_constant", C], Rust) :-
+    (   number_string(N, C)
+    ->  format(string(Rust),
+            'Instruction::SetConstant(Value::Integer(~w))', [N])
+    ;   format(string(Rust),
+            'Instruction::SetConstant(Value::Atom("~w".to_string()))', [C])
+    ).
+wam_line_to_rust_instr(["allocate"], "Instruction::Allocate").
+wam_line_to_rust_instr(["deallocate"], "Instruction::Deallocate").
+wam_line_to_rust_instr(["call", P, N], Rust) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    format(string(Rust),
+        'Instruction::Call("~w".to_string(), ~w)', [CP, Num]).
+wam_line_to_rust_instr(["execute", P], Rust) :-
+    format(string(Rust),
+        'Instruction::Execute("~w".to_string())', [P]).
+wam_line_to_rust_instr(["proceed"], "Instruction::Proceed").
+wam_line_to_rust_instr(["builtin_call", Op, N], Rust) :-
+    clean_comma(Op, COp), clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    format(string(Rust),
+        'Instruction::BuiltinCall("~w".to_string(), ~w)', [COp, Num]).
+wam_line_to_rust_instr(["try_me_else", Label], Rust) :-
+    format(string(Rust),
+        'Instruction::TryMeElse("~w".to_string())', [Label]).
+wam_line_to_rust_instr(["trust_me"], "Instruction::TrustMe").
+wam_line_to_rust_instr(["retry_me_else", Label], Rust) :-
+    format(string(Rust),
+        'Instruction::RetryMeElse("~w".to_string())', [Label]).
+% Indexing instructions — skip for now (handled by label dispatch)
+wam_line_to_rust_instr(["switch_on_constant"|_], "/* switch_on_constant — handled via labels */").
+wam_line_to_rust_instr(["switch_on_structure"|_], "/* switch_on_structure — handled via labels */").
+wam_line_to_rust_instr(["switch_on_constant_a2"|_], "/* switch_on_constant_a2 — handled via labels */").
+% Fallback for unknown instructions
+wam_line_to_rust_instr(Parts, Rust) :-
+    atomic_list_concat(Parts, ' ', Joined),
+    format(string(Rust), '/* unknown: ~w */', [Joined]).
+
+clean_comma(Str, Clean) :-
+    (   sub_string(Str, _, 1, 0, ",")
+    ->  sub_string(Str, 0, _, 1, Clean)
+    ;   Clean = Str
+    ).
 
 build_rust_wam_arg_list(0, "vm: &mut WamState") :- !.
 build_rust_wam_arg_list(Arity, ArgList) :-
@@ -744,4 +894,46 @@ read_template_file(RelativePath, Content) :-
     ->  read_file_to_string(RelativePath, Content, [])
     ;   format(atom(Content),
             '// Template not found: ~w', [RelativePath])
+    ).
+
+% ============================================================================
+% CARGO CHECK VALIDATION
+% ============================================================================
+
+%% cargo_check_project(+ProjectDir, -Result)
+%  Runs `cargo check` on a generated Rust project to verify the code compiles.
+%  Result is one of:
+%    ok               — cargo check succeeded
+%    error(ExitCode, Output) — cargo check failed
+%    not_available     — cargo not found on PATH
+cargo_check_project(ProjectDir, Result) :-
+    (   % Check if cargo is available
+        catch(
+            (process_create(path(cargo), ['--version'],
+                [stdout(pipe(S)), stderr(pipe(_)), process(Pid)]),
+             read_string(S, _, _), close(S),
+             process_wait(Pid, exit(0))),
+            _, fail)
+    ->  % Run cargo check
+        format(atom(Cmd), 'cd "~w" && cargo check 2>&1', [ProjectDir]),
+        catch(
+            (process_create(path(sh), ['-c', Cmd],
+                [stdout(pipe(Out)), stderr(pipe(Err)), process(Pid2)]),
+             read_string(Out, _, OutStr), close(Out),
+             read_string(Err, _, ErrStr), close(Err),
+             process_wait(Pid2, exit(ExitCode))),
+            E,
+            (format(user_error, 'cargo check error: ~w~n', [E]),
+             ExitCode = -1, OutStr = "", ErrStr = "")
+        ),
+        (   ExitCode == 0
+        ->  Result = ok,
+            format('cargo check: OK~n')
+        ;   atomic_list_concat([OutStr, ErrStr], '\n', FullOutput),
+            Result = error(ExitCode, FullOutput),
+            format(user_error, 'cargo check failed (exit ~w):~n~w~n',
+                [ExitCode, FullOutput])
+        )
+    ;   Result = not_available,
+        format(user_error, 'cargo not found on PATH~n', [])
     ).
