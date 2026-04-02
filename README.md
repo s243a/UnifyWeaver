@@ -396,6 +396,15 @@ arithmetic tails, and the first list-producing Prolog string helper slice
 `split_string/4` with a constant separator and empty pad chars followed by a
 simple alias tail.
 
+TypR annotation modes are regression-covered too:
+- `typed_mode(explicit)` emits available annotations
+- `typed_mode(infer)` keeps the current minimal scalar-annotation behavior
+- `typed_mode(off)` emits untyped function signatures
+- per-predicate `uw_typed_mode/2` overrides per-call mode options
+- current CLI validation boundary: `infer` and `off` are covered with
+  `typr check`; the current `typr build` path still expects typed function
+  signatures more often than the checker does
+
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)
 

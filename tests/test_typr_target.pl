@@ -400,6 +400,38 @@ test(generic_predicates_receive_typed_signature) :-
     \+ sub_string(Code, _, _, _, "local({"),
     generated_typr_is_valid(Code, exit(0)).
 
+test(infer_mode_omits_scalar_arg_annotations_for_generic_predicates) :-
+    clear_type_declarations,
+    assertz(user:simple_fact(hello)),
+    assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
+    once(compile_predicate_to_typr(simple_fact/1, [typed_mode(infer)], Code)),
+    once(sub_string(Code, _, _, _, "let simple_fact <- fn(arg1) {")),
+    \+ sub_string(Code, _, _, _, "fn(arg1: char)"),
+    \+ sub_string(Code, _, _, _, ": bool"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(off_mode_emits_untyped_generic_signature) :-
+    clear_type_declarations,
+    assertz(user:simple_fact(hello)),
+    assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
+    once(compile_predicate_to_typr(simple_fact/1, [typed_mode(off)], Code)),
+    once(sub_string(Code, _, _, _, "let simple_fact <- fn(arg1) {")),
+    \+ sub_string(Code, _, _, _, ": bool"),
+    \+ sub_string(Code, _, _, _, ": char"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(per_predicate_typed_mode_overrides_call_option_for_generic_predicates) :-
+    clear_type_declarations,
+    assertz(user:(declared_mode_pred(Name, Out) :- string_length(Name, Len), Out is Len + 1)),
+    assertz(type_declarations:uw_type(declared_mode_pred/2, 1, atom)),
+    assertz(type_declarations:uw_type(declared_mode_pred/2, 2, integer)),
+    assertz(type_declarations:uw_typed_mode(declared_mode_pred/2, off)),
+    once(compile_predicate_to_typr(declared_mode_pred/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let declared_mode_pred <- fn(arg1, arg2) {")),
+    \+ sub_string(Code, _, _, _, ": int"),
+    \+ sub_string(Code, _, _, _, ": char"),
+    generated_typr_is_valid(Code, exit(0)).
+
 test(recursive_compiler_supports_typr_non_recursive_path) :-
     clear_type_declarations,
     assertz(user:simple_fact(hello)),

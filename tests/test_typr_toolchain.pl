@@ -41,6 +41,53 @@ test(generated_output_checks_with_typr, [condition(typr_cli_available)]) :-
     ),
     retractall(user:simple_fact(_)).
 
+test(infer_mode_generic_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:simple_fact(hello)),
+    assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
+    once(compile_predicate_to_typr(simple_fact/1, [typed_mode(infer)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check'])
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:simple_fact(_)).
+
+test(off_mode_generic_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:simple_fact(hello)),
+    assertz(type_declarations:uw_type(simple_fact/1, 1, atom)),
+    once(compile_predicate_to_typr(simple_fact/1, [typed_mode(off)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check'])
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:simple_fact(_)).
+
+test(per_predicate_mode_override_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    assertz(user:(declared_mode_pred(Name, Out) :- string_length(Name, Len), Out is Len + 1)),
+    assertz(type_declarations:uw_type(declared_mode_pred/2, 1, atom)),
+    assertz(type_declarations:uw_type(declared_mode_pred/2, 2, integer)),
+    assertz(type_declarations:uw_typed_mode(declared_mode_pred/2, off)),
+    once(compile_predicate_to_typr(declared_mode_pred/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check'])
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:declared_mode_pred(_, _)).
+
 test(alias_assignments_after_native_outputs_check_with_typr, [condition(typr_cli_available)]) :-
     clear_type_declarations,
     assertz(user:(alias_after_output(Name, Out) :- string_lower(Name, Lower), Out = Lower)),
