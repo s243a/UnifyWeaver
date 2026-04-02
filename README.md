@@ -404,6 +404,10 @@ TypR annotation modes are regression-covered too:
 - current CLI validation boundary: `infer` and `off` are covered with
   `typr check`; the current `typr build` path still expects typed function
   signatures more often than the checker does
+- per-path unique-path work also has a dedicated TypR design note:
+  [docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md](docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md)
+  which records the next intended move: invariant-input helper/guard support
+  first, then path-aware aggregation slices
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)
