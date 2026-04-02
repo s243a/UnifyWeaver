@@ -71,6 +71,8 @@
 :- use_module('../core/service_validation').
 :- use_module('../core/optimizer').
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_rust_target', [compile_wam_predicate_to_rust/4]).
 :- use_module('../core/constraint_analyzer', [get_constraints/2]).
 
 % Component system integration (ported from Go target)
@@ -3396,6 +3398,35 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
         )
     ;   Clauses = [SingleHead-SingleBody], SingleBody \= true ->
         compile_single_rule_to_rust(Pred, Arity, SingleHead, SingleBody, FieldDelim, Unique, IncludeMain, RustCode)
+    ;   fail
+    ).
+
+%% WAM fallback tier: when all native lowering tiers fail, compile
+%% via WAM and generate Rust wrapper. Controlled by wam_fallback option
+%% (default: true). Set wam_fallback(false) to disable and see how far
+%% native lowering can go.
+%%
+%% To exclude WAM fallback globally:
+%%   :- set_prolog_flag(rust_wam_fallback, false).
+%% Or per-call:
+%%   compile_predicate_to_rust(Pred/Arity, [wam_fallback(false)], Code).
+compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
+    % Check if WAM fallback is enabled
+    option(wam_fallback(WamFallback), Options, default),
+    (   WamFallback == false -> fail  % explicitly disabled
+    ;   WamFallback == default,
+        catch(current_prolog_flag(rust_wam_fallback, false), _, fail)
+    ->  fail  % disabled via Prolog flag
+    ;   true  % enabled (default)
+    ),
+    % All native tiers failed — fall back to WAM compilation
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses \= [],
+    format(user_error, 'WAM fallback: ~w/~w resists native lowering, using WAM compilation~n', [Pred, Arity]),
+    (   PredIndicator = user:Pred/Arity,
+        wam_target:compile_predicate_to_wam(PredIndicator, Options, WamCode)
+    ->  wam_rust_target:compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode)
     ;   fail
     ).
 
