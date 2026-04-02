@@ -685,6 +685,13 @@ peephole_lines([L1, L2|Rest], Result) :-
     atom_string(N1, S1), atom_string(N2, S2),
     match_get_put_passthrough(S1, S2), !,
     peephole_lines(Rest, Result).
+% Eliminate put_variable Xn, Ai followed by put_value Xn, Ai (same register, same arg)
+peephole_lines([L1, L2|Rest], [L1|Result]) :-
+    normalize_ws(L1, N1),
+    normalize_ws(L2, N2),
+    atom_string(N1, S1), atom_string(N2, S2),
+    match_put_variable_put_value(S1, S2), !,
+    peephole_lines(Rest, Result).
 peephole_lines([L|Rest], [L|Result]) :-
     peephole_lines(Rest, Result).
 
@@ -694,17 +701,24 @@ normalize_ws(Str, Normalized) :-
     atomic_list_concat(Clean, ' ', Normalized).
 
 %% match_put_get_identity(+PutStr, +GetStr)
-%  put_value X1, A1 followed by get_variable X1, A1 — the get is redundant.
+%  put_value Xn/Yn, Ai followed by get_variable Xn/Yn, Ai — the get is redundant.
 match_put_get_identity(Put, Get) :-
     split_string(Put, " ,", " ,", ["put_value", Reg, Ai]),
     split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]).
 
 %% match_get_put_passthrough(+GetStr, +PutStr)
-%  get_variable X1, A1 followed by put_value X1, A1 — both redundant
-%  (the value is already in Ai and doesn't need round-tripping through Xn).
+%  get_variable Xn/Yn, Ai followed by put_value Xn/Yn, Ai — both redundant
+%  (the value is already in Ai and doesn't need round-tripping through Xn/Yn).
 match_get_put_passthrough(Get, Put) :-
     split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]),
     split_string(Put, " ,", " ,", ["put_value", Reg, Ai]).
+
+%% match_put_variable_put_value(+PutVarStr, +PutValStr)
+%  put_variable Xn/Yn, Ai followed by put_value Xn/Yn, Aj where Ai == Aj
+%  — the put_value is redundant (value already in Ai from put_variable).
+match_put_variable_put_value(PutVar, PutVal) :-
+    split_string(PutVar, " ,", " ,", ["put_variable", Reg, Ai]),
+    split_string(PutVal, " ,", " ,", ["put_value", Reg, Ai]).
 
 %% write_wam_program(+Code, +Filename)
 write_wam_program(Code, Filename) :-

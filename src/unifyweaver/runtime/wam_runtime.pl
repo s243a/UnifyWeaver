@@ -243,13 +243,20 @@ step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), Sta
 step_wam(get_list(Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
     get_assoc(Ai, R, Val),
     (   is_unbound_var(Val)
-    ->  % Write mode
+    ->  % Write mode: construct list on heap
         length(H, Addr),
         append(H, [str('./2')], NH),
         trail_binding(Ai, R, T, NT),
         put_assoc(Ai, R, ref(Addr), NR),
         NPC is PC + 1,
         StateOut = wam_state(NPC, NR, [write_ctx(2)|S], NH, NT, CP, CPS, Code, L)
+    ;   Val = ref(Addr)
+    ->  % Read mode on heap-constructed list
+        nth0(Addr, H, str('./2')),
+        StartIdx is Addr + 1,
+        heap_subargs(H, StartIdx, 2, SubArgs),
+        NPC is PC + 1,
+        StateOut = wam_state(NPC, R, [unify_ctx(SubArgs)|S], H, T, CP, CPS, Code, L)
     ;   is_list(Val), Val = [Head|Tail]
     ->  % Read mode: Prolog list
         NPC is PC + 1,
@@ -287,12 +294,23 @@ step_wam(unify_variable(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, C
     put_reg(Xn, Var, R, NR, BaseS, NewS),
     NPC is PC + 1.
 
-%% unify_value Xn — read mode: check next sub-arg matches Xn.
+%% unify_value Xn — read mode: unify next sub-arg with Xn's value.
+%%                   Supports unbound variables on either side.
 %%                   write mode: push value of Xn onto heap.
 step_wam(unify_value(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
-         wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
+         wam_state(NPC, NR, NewS, H, NT, CP, CPS, Code, L)) :-
     get_reg(Xn, R, S, Val),
-    Val == Arg,
+    (   Val == Arg
+    ->  NR = R, NT = T
+    ;   is_unbound_var(Val)
+    ->  % Xn is unbound — bind it to the sub-arg
+        trail_binding(Xn, R, T, NT),
+        put_reg(Xn, Arg, R, NR, S, _)
+    ;   is_unbound_var(Arg)
+    ->  % Sub-arg is unbound — succeeds (Arg unifies with Val)
+        NR = R, NT = T
+    ;   fail
+    ),
     (   RestArgs == []
     ->  NewS = S
     ;   NewS = [unify_ctx(RestArgs)|S]
@@ -307,11 +325,15 @@ step_wam(unify_value(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code
     (   N1 == 0 -> NewS = S ; NewS = [write_ctx(N1)|S] ),
     NPC is PC + 1.
 
-%% unify_constant C — read mode: check next sub-arg equals C.
+%% unify_constant C — read mode: unify next sub-arg with constant C.
+%%                     Supports unbound sub-args (bind to C).
 %%                     write mode: push C onto heap.
 step_wam(unify_constant(C), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
-    Arg == C,
+    (   Arg == C -> true
+    ;   is_unbound_var(Arg) -> true  % unbound unifies with any constant
+    ;   fail
+    ),
     (   RestArgs == []
     ->  NewS = S
     ;   NewS = [unify_ctx(RestArgs)|S]

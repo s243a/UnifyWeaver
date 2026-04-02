@@ -71,6 +71,18 @@ e2e_head([H|_], H).
 e2e_greet(X, hello) :- X = world.
 e2e_greet(X, goodbye) :- X = moon.
 
+%% List in head (third arg) — exercises get_list for matching
+:- dynamic e2e_cons/3.
+e2e_cons(H, T, [H|T]).
+
+%% List construction in body — exercises put_list + set_*
+:- dynamic e2e_wrap_list/2.
+e2e_wrap_list(X, Result) :- Result = [X].
+
+%% Compound head with variable sub-args — exercises unify_value with unbound
+:- dynamic e2e_pair_first/2.
+e2e_pair_first(pair(X, _), X).
+
 :- dynamic test_failed/0.
 
 pass(Test) :-
@@ -266,6 +278,26 @@ test_wam_second_arg_index :-
     ;   fail_test(Test, 'switch_on_constant_a2 not emitted for second-arg indexable predicate')
     ).
 
+test_wam_get_list_match :-
+    Test = 'WAM E2E: get_list head matching (cons)',
+    (   wam_target:compile_predicate_to_wam(user:e2e_cons/3, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'get_list'),
+        wam_runtime:execute_wam(Code, e2e_cons(a, [b, c], [a, b, c]), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'get_list head matching failed')
+    ).
+
+test_wam_unify_value_unbound :-
+    Test = 'WAM E2E: unify_value with unbound variable',
+    (   % pair_first(pair(hello, _), hello) — the _ is unbound in the query
+        % unify_value must handle the unbound second sub-arg
+        wam_target:compile_predicate_to_wam(user:e2e_pair_first/2, [], Code),
+        wam_runtime:execute_wam(Code, e2e_pair_first(pair(hello, world), hello), _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'unify_value with unbound variable failed')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM Target E2E Test Suite~n'),
@@ -287,8 +319,10 @@ run_tests :-
     test_wam_indexing,
     test_wam_structure_index,
     test_wam_get_list,
+    test_wam_get_list_match,
     test_wam_peephole,
     test_wam_second_arg_index,
+    test_wam_unify_value_unbound,
     
     format('~n========================================~n'),
     (   test_failed
