@@ -4598,8 +4598,8 @@ compile_go_trigger_block(TriggerGoal, OtherGoals, Builtins, HeadPred, HeadArgs, 
     
     (   OtherGoals == []
     ->  % Simple rule
-        compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
-        compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
+        compile_go_builtins_with_state(Builtins, VarMap0, Config, BuiltinCode, VarMap1),
+        compile_go_head_construction(HeadPred, HeadArgs, VarMap1, Config, HeadCode),
         format(string(BodyCode), "~w\n        ~w", [BuiltinCode, HeadCode])
     ;   % Join rule
         compile_go_join_with_result(OtherGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, BodyCode)
@@ -5187,8 +5187,8 @@ is_binding_goal_go(Goal) :-
 %  Generate nested join loops with result emission inside innermost loop
 compile_go_join_with_result([], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
     % Base case: generate builtin checks and result emit
-    compile_go_builtins(Builtins, VarMap, Config, BuiltinCode),
-    compile_go_head_construction(HeadPred, HeadArgs, VarMap, Config, HeadCode),
+    compile_go_builtins_with_state(Builtins, VarMap, Config, BuiltinCode, VarMap1),
+    compile_go_head_construction(HeadPred, HeadArgs, VarMap1, Config, HeadCode),
     format(string(Code), "~w\n            ~w", [BuiltinCode, HeadCode]).
 
 compile_go_join_with_result([Goal|Rest], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
@@ -5310,16 +5310,29 @@ compile_go_join_condition(Args, VarMap, _Config, VarName, Condition) :-
 %  Generate builtin constraint checks
 compile_go_builtins([], _, _, "").
 compile_go_builtins(Builtins, VarMap, Config, Code) :-
-    findall(Check,
-        (   member(B, Builtins),
-            compile_go_single_builtin(B, VarMap, Config, Check)
-        ),
-        Checks),
-    (   Checks == []
+    compile_go_builtins_with_state(Builtins, VarMap, Config, Code, _).
+
+compile_go_builtins_with_state([], VarMap, _, "", VarMap).
+compile_go_builtins_with_state([Builtin|Rest], VarMap0, Config, Code, VarMapOut) :-
+    compile_go_single_builtin_state(Builtin, VarMap0, Config, Check, VarMap1),
+    compile_go_builtins_with_state(Rest, VarMap1, Config, RestCode, VarMapOut),
+    (   Check == "", RestCode == ""
     ->  Code = ""
-    ;   atomic_list_concat(Checks, "\n", ChecksStr),
-        format(string(Code), "\n    // Constraint checks\n~w\n", [ChecksStr])
+    ;   Check == ""
+    ->  Code = RestCode
+    ;   RestCode == ""
+    ->  format(string(Code), "\n    // Constraint checks\n~w\n", [Check])
+    ;   format(string(Code), "\n    // Constraint checks\n~w\n~w", [Check, RestCode])
     ).
+
+%% compile_go_single_builtin_state(+Builtin, +VarMapIn, +Config, -Code, -VarMapOut)
+%  Builtin compilation with support for computed variable bindings.
+compile_go_single_builtin_state(Var is Expr, VarMap, Config, "", [Var-expr(GoExpr)|VarMap]) :-
+    var(Var),
+    !,
+    translate_go_numeric_expr(Expr, VarMap, Config, GoExpr).
+compile_go_single_builtin_state(Goal, VarMap, Config, Check, VarMap) :-
+    compile_go_single_builtin(Goal, VarMap, Config, Check).
 
 %% compile_go_single_builtin(+Builtin, +VarMap, +Config, -Check)
 compile_go_single_builtin(Goal, VarMap, Config, Check) :-
@@ -5345,6 +5358,17 @@ compile_go_single_builtin(Goal, VarMap, Config, Check) :-
 compile_go_single_builtin(Goal, VarMap, Config, Check) :-
     Goal =.. [Op, Left, Right],
     member(Op-GoOp, ['>' - ">", '<' - "<", '>=' - ">=", '=<' - "<=", '=:=' - "==", '=\\=' - "!="]),
+    !,
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Check),
+"    if !(~w ~w ~w) {
+        return results
+    }", [LeftExpr, GoOp, RightExpr]).
+
+compile_go_single_builtin(Goal, VarMap, Config, Check) :-
+    Goal =.. [Op, Left, Right],
+    member(Op-GoOp, ['==' - "==", '\\=' - "!="]),
     !,
     translate_go_expr(Left, VarMap, Config, LeftExpr),
     translate_go_expr(Right, VarMap, Config, RightExpr),
@@ -5497,6 +5521,9 @@ translate_go_expr(Var, VarMap, _, Expr) :-
     (   % Case 1: Direct mapping (Var, GoVarName) used in JSON mode
         member((V, GoVarName), VarMap), Var == V
     ->  atom_string(GoVarName, Expr)
+    ;   % Case 1b: computed expression binding
+        member(V-expr(GoExpr), VarMap), Var == V
+    ->  Expr = GoExpr
     ;   % Case 2: source mapping (Var, source(Source, Idx)) used in Datalog mode
         member(V-source(Source, Idx), VarMap), Var == V
     ->  format(string(Expr), "~w.Args[\"arg~w\"]", [Source, Idx])
@@ -5518,6 +5545,41 @@ translate_go_expr(Expr, VarMap, Config, GoExpr) :-
     translate_go_expr(Right, VarMap, Config, RightExpr),
     format(string(GoExpr), "(~w ~w ~w)", [LeftExpr, Op, RightExpr]).
 translate_go_expr(_, _, _, "nil").
+
+translate_go_numeric_expr(Var, VarMap, _, Expr) :-
+    var(Var),
+    !,
+    (   member(V-expr(GoExpr), VarMap), Var == V
+    ->  Expr = GoExpr
+    ;   member((V, GoVarName), VarMap), Var == V
+    ->  atom_string(GoVarName, Expr)
+    ;   member(V-source(Source, Idx), VarMap), Var == V
+    ->  format(string(Expr), "toFloat64Must(~w.Args[\"arg~w\"])", [Source, Idx])
+    ;   Expr = "0"
+    ).
+translate_go_numeric_expr(Num, _, _, Expr) :-
+    number(Num),
+    !,
+    format(string(Expr), "~w", [Num]).
+translate_go_numeric_expr(-(Expr0), VarMap, Config, Expr) :-
+    !,
+    translate_go_numeric_expr(Expr0, VarMap, Config, InnerExpr),
+    format(string(Expr), "(-(~w))", [InnerExpr]).
+translate_go_numeric_expr(Expr0, VarMap, Config, Expr) :-
+    Expr0 =.. [Op, Left, Right],
+    member(Op, [+, -, *, /]),
+    !,
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Expr), "(~w ~w ~w)", [LeftExpr, Op, RightExpr]).
+translate_go_numeric_expr(Left ** Right, VarMap, Config, Expr) :-
+    !,
+    collect_binding_import('math'),
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Expr), "math.Pow(~w, ~w)", [LeftExpr, RightExpr]).
+translate_go_numeric_expr(Expr0, VarMap, Config, Expr) :-
+    translate_go_expr(Expr0, VarMap, Config, Expr).
 
 %% compile_go_head_construction(+HeadPred, +HeadArgs, +VarMap, +Config, -Code)
 %  Generate code to construct result fact
