@@ -45,7 +45,11 @@
     component_in_layer/2,
     should_emit_component/1,
     core_components/1,
-    host_components/1
+    host_components/1,
+    %% Response parser chains
+    response_parser_chain/2,
+    response_parser/3,
+    resolve_parser_chain/2
 ]).
 
 :- discontiguous generate_backend_full/3.
@@ -239,6 +243,82 @@ host_components(Components) :-
 %%   Convenience check — true if feature is explicitly enabled.
 feature_enabled(Target, Feature) :-
     agent_target_feature(Target, Feature, true).
+
+%% =============================================================================
+%% Response Parser Chains
+%% =============================================================================
+%%
+%% response_parser_chain(+BackendName, +ParserList)
+%%   Defines the cascade of response formats to try when parsing API responses.
+%%   Each parser is tried in order; first successful parse wins.
+%%
+%% Parser types:
+%%   anthropic       — content[].type=="tool_use" format
+%%   openai          — choices[0].message.tool_calls format
+%%   openai_stream   — streaming delta chunks
+%%   raw_json        — bare JSON extraction fallback
+%%
+%% Used by backends that proxy multiple providers (e.g. OpenRouter)
+%% where the response format depends on the underlying model.
+
+:- discontiguous response_parser_chain/2.
+:- discontiguous response_parser/3.
+
+%% --- Per-backend parser chains ---
+response_parser_chain(claude_api,    [anthropic]).
+response_parser_chain(openai_api,    [openai]).
+response_parser_chain(gemini,        [openai]).         % Gemini uses OpenAI-compatible format
+response_parser_chain(ollama_api,    [openai]).
+response_parser_chain(ollama_cli,    [raw_json]).
+response_parser_chain(coro,          [raw_json]).
+response_parser_chain(claude_code,   [raw_json]).
+response_parser_chain(openrouter_api,[openai, anthropic, raw_json]).  % proxy: try all
+
+%% --- Parser definitions ---
+%% response_parser(+ParserName, +Description, +DetectionRule)
+%%   DetectionRule describes how to detect if a response matches this format.
+
+response_parser(anthropic, 'Anthropic Messages API format', [
+    detection(has_field("content"), content_is_array, has_type_field("tool_use")),
+    extract_text(content_blocks_text),
+    extract_tools(content_blocks_tool_use)
+]).
+
+response_parser(openai, 'OpenAI Chat Completions format', [
+    detection(has_field("choices"), has_message_field, has_tool_calls_field),
+    extract_text(choices_message_content),
+    extract_tools(choices_message_tool_calls)
+]).
+
+response_parser(openai_stream, 'OpenAI streaming delta format', [
+    detection(has_field("choices"), has_delta_field),
+    extract_text(delta_content),
+    extract_tools(delta_tool_calls)
+]).
+
+response_parser(raw_json, 'Raw JSON extraction fallback', [
+    detection(always),
+    extract_text(full_text_content),
+    extract_tools(extract_json_blocks)
+]).
+
+%% resolve_parser_chain(+BackendName, -Parsers)
+%%   Get the parser chain for a backend, defaulting to [openai, raw_json].
+resolve_parser_chain(Backend, Parsers) :-
+    (   response_parser_chain(Backend, Parsers)
+    ->  true
+    ;   Parsers = [openai, raw_json]  % sensible default
+    ).
+
+%% parser_detection_rule(+ParserName, -Rule)
+parser_detection_rule(Parser, Rule) :-
+    response_parser(Parser, _, Props),
+    member(detection(Rule), Props).
+
+%% parser_count(-Count)
+parser_count(Count) :-
+    findall(P, response_parser(P, _, _), Ps),
+    length(Ps, Count).
 
 %% =============================================================================
 %% Interop Stub Framework

@@ -98,6 +98,7 @@
 
 % Native clause body lowering (shared analysis infrastructure)
 :- use_module('../core/clause_body_analysis', except([translate_expr/3])).
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 % Service validation (Client-Server Phase 2)
 :- use_module('../core/service_validation').
