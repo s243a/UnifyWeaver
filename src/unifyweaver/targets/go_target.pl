@@ -92,6 +92,7 @@
 :- use_module('../core/service_validation').
 :- use_module('../core/optimizer').
 :- use_module('../core/constraint_analyzer').
+:- use_module('../core/advanced/pattern_matchers', [classify_aggregate/2]).
 :- use_module('../core/index_analyzer').
 :- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4, parse_table_spec/2]).
 
@@ -4281,6 +4282,14 @@ func toFloat64(v interface{}) (float64, bool) {
     }
 }
 
+func toFloat64Must(v interface{}) float64 {
+    f, ok := toFloat64(v)
+    if !ok {
+        return 0
+    }
+    return f
+}
+
 // Index provides O(1) lookup by relation and argument value
 type Index struct {
     // byArg[relation][argN][value] -> []*Fact
@@ -4466,16 +4475,33 @@ extract_having_filters(_, _, []).
 compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal0, HavingFilters, Config, Code) :-
     format(string(RuleName), "ApplyRule_~w", [Index]),
     
-    % Normalize aggregate/3 -> aggregate_all/3
     normalize_aggregate_goal_go(AggGoal0, AggGoal),
-    
-    % Decompose aggregate goal
-    (   AggGoal = aggregate_all(OpTerm, InnerGoal, GroupVar, Result)
-    ->  % Grouped aggregation (aggregate_all/4)
-        compile_go_grouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, GroupVar, Result, HavingFilters, Config, Code)
-    ;   AggGoal = aggregate_all(OpTerm, InnerGoal, Result)
-    ->  % Ungrouped aggregation (aggregate_all/3)
-        compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, HavingFilters, Config, Code)
+    classify_aggregate(AggGoal, AggInfo),
+    get_dict(type, AggInfo, Type),
+    get_dict(goal, AggInfo, InnerGoal),
+    get_dict(goal_info, AggInfo, GoalInfo),
+    get_dict(group, AggInfo, GroupVar),
+    get_dict(result, AggInfo, Result),
+    get_dict(op, AggInfo, Op),
+    get_dict(expr, AggInfo, Expr),
+    (   Type = all,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = [],
+        InnerGoal == RelGoal
+    ->  compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, RelGoal, Result, HavingFilters, Config, Code)
+    ;   Type = group,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = [],
+        InnerGoal == RelGoal
+    ->  compile_go_grouped_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, RelGoal, GroupVar, Result, HavingFilters, Config, Code)
+    ;   Type = all,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = []
+    ->  compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, RelGoal, GoalInfo, Result, HavingFilters, Config, Code)
+    ;   Type = group,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = []
+    ->  compile_go_grouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, RelGoal, GoalInfo, GroupVar, Result, HavingFilters, Config, Code)
     ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     // Unsupported aggregate form
@@ -4483,16 +4509,13 @@ compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal0, HavingFilters, Co
 }", [RuleName])
     ).
 
-%% compile_go_ungrouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +Result, +HavingFilters, +Config, -Code)
-compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, HavingFilters, _Config, Code) :-
+%% compile_go_ungrouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +Op, +Expr, +InnerGoal, +Result, +HavingFilters, +Config, -Code)
+compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, InnerGoal, Result, HavingFilters, _Config, Code) :-
     InnerGoal =.. [Pred|Args],
     
-    % Determine the aggregate operation and value variable
-    decompose_agg_op(OpTerm, Op, ValueVar),
-    
     % Find value variable index in inner goal args
-    (   var(ValueVar)
-    ->  find_var_index_go(ValueVar, Args, ValueIdx)
+    (   var(Expr)
+    ->  find_var_index_go(Expr, Args, ValueIdx)
     ;   ValueIdx = -1  % count doesn't need a value index
     ),
     
@@ -4547,17 +4570,14 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, 
     return results
 }", [RuleName, Pred, Pred, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd]).
 
-%% compile_go_grouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +GroupVar, +Result, +HavingFilters, +Config, -Code)
-compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, GroupVar, Result, HavingFilters, _Config, Code) :-
+%% compile_go_grouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +Op, +Expr, +InnerGoal, +GroupVar, +Result, +HavingFilters, +Config, -Code)
+compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, InnerGoal, GroupVar, Result, HavingFilters, _Config, Code) :-
     InnerGoal =.. [Pred|Args],
-    
-    % Determine the aggregate operation and value variable
-    decompose_agg_op(OpTerm, Op, ValueVar),
     
     % Find group key and value indices
     find_var_index_go(GroupVar, Args, GroupIdx),
-    (   var(ValueVar)
-    ->  find_var_index_go(ValueVar, Args, ValueIdx)
+    (   var(Expr)
+    ->  find_var_index_go(Expr, Args, ValueIdx)
     ;   ValueIdx = -1
     ),
     
@@ -4610,6 +4630,94 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, G
     return results
 }", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred]).
 
+compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, RelGoal, GoalInfo, Result, HavingFilters, _Config, Code) :-
+    RelGoal =.. [Pred|Args],
+    build_go_aggregate_filter_conditions(GoalInfo, Args, FilterCond),
+    (   var(Expr)
+    ->  find_var_index_go(Expr, Args, ValueIdx)
+    ;   ValueIdx = -1
+    ),
+    go_agg_code(Op, AggCode),
+    length(HeadArgs, NumArgs),
+    (   NumArgs == 1 -> ArgsStr = "\"arg0\": agg" ; ArgsStr = "\"arg0\": agg" ),
+    (   HavingFilters \= []
+    ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+        format(string(HavingIfStart), "
+        // HAVING clause filter
+        if ~w {", [HavingCond]),
+        HavingIfEnd = "
+        }"
+    ;   HavingIfStart = "",
+        HavingIfEnd = ""
+    ),
+    format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    var values []float64
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                values = append(values, val)
+            }
+        }
+    }
+    if len(values) > 0 {
+        ~w~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    return results
+}", [RuleName, Pred, Pred, FilterCond, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd]).
+
+compile_go_grouped_subplan_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, RelGoal, GoalInfo, GroupVar, Result, HavingFilters, _Config, Code) :-
+    RelGoal =.. [Pred|Args],
+    build_go_aggregate_filter_conditions(GoalInfo, Args, FilterCond),
+    find_var_index_go(GroupVar, Args, GroupIdx),
+    (   var(Expr)
+    ->  find_var_index_go(Expr, Args, ValueIdx)
+    ;   ValueIdx = -1
+    ),
+    go_agg_code(Op, AggCode),
+    (   HavingFilters \= []
+    ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+        format(string(HavingCode), "
+            // HAVING clause filter
+            if !(~w) {
+                continue
+            }", [HavingCond])
+    ;   HavingCode = ""
+    ),
+    format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    groups := make(map[interface{}][]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            key := f.Args[\"arg~w\"]
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                groups[key] = append(groups[key], val)
+            }
+        }
+    }
+    for key, values := range groups {
+        if len(values) > 0 {
+            ~w~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{\"arg0\": key, \"arg1\": agg},
+            })
+        }
+    }
+    return results
+}", [RuleName, Pred, Pred, FilterCond, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred]).
+
 %% decompose_agg_op(+OpTerm, -Op, -ValueVar)
 decompose_agg_op(count, count, _).
 decompose_agg_op(sum(V), sum, V).
@@ -4618,6 +4726,39 @@ decompose_agg_op(max(V), max, V).
 decompose_agg_op(avg(V), avg, V).
 decompose_agg_op(set(V), set, V).
 decompose_agg_op(bag(V), bag, V).
+
+build_go_aggregate_filter_conditions(GoalInfo, Args, Condition) :-
+    get_dict(constraints, GoalInfo, Constraints),
+    build_go_aggregate_filter_conditions_(Constraints, Args, Parts),
+    (   Parts == []
+    ->  Condition = "true"
+    ;   atomic_list_concat(Parts, " && ", Condition)
+    ).
+
+build_go_aggregate_filter_conditions_([], _Args, []).
+build_go_aggregate_filter_conditions_([Constraint|Rest], Args, [Part|Parts]) :-
+    go_aggregate_constraint_condition(Constraint, Args, Part),
+    !,
+    build_go_aggregate_filter_conditions_(Rest, Args, Parts).
+build_go_aggregate_filter_conditions_([_|Rest], Args, Parts) :-
+    build_go_aggregate_filter_conditions_(Rest, Args, Parts).
+
+go_aggregate_constraint_condition(Constraint, Args, Cond) :-
+    Constraint =.. [Op, Left, Right],
+    member(Op-GoOp, [(>)-">", (<)-"<", (>=)-">=", (=<)-"<=", (=:=)-"==", (=\=)-"!="]),
+    go_aggregate_operand(Left, Args, LeftExpr),
+    go_aggregate_operand(Right, Args, RightExpr),
+    format(string(Cond), "~w ~w ~w", [LeftExpr, GoOp, RightExpr]).
+
+go_aggregate_operand(Term, Args, Expr) :-
+    var(Term),
+    !,
+    find_var_index_go(Term, Args, Index),
+    format(string(Expr), "toFloat64Must(f.Args[\"arg~w\"])", [Index]).
+go_aggregate_operand(Term, _Args, Expr) :-
+    number(Term),
+    !,
+    format(string(Expr), "~w", [Term]).
 
 %% generate_having_conditions(+HavingFilters, +ResultVar, -GoCondition)
 %  Translate HAVING filter builtins to Go conditions

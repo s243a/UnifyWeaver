@@ -34,6 +34,7 @@
     % Aggregate classification
     classify_aggregate/2,                  % +AggTerm, -AggInfo
     parse_aggregate_template/3,            % +Template, -Op, -Expr
+    classify_aggregate_goal/2,             % +Goal, -GoalInfo
     test_pattern_matchers/0         % Test predicate
 ]).
 
@@ -58,11 +59,13 @@ classify_aggregate(Term0, AggInfo) :-
     ),
     nonvar(Goal),
     parse_aggregate_template(Template, Op, Expr),
+    classify_aggregate_goal(Goal, GoalInfo),
     AggInfo = agg_info{
         type: Type,
         op: Op,
         expr: Expr,
         goal: Goal,
+        goal_info: GoalInfo,
         group: Group,
         result: Result
     }.
@@ -74,6 +77,53 @@ parse_aggregate_template(max(Expr), max, Expr).
 parse_aggregate_template(avg(Expr), avg, Expr).
 parse_aggregate_template(set(Expr), set, Expr).
 parse_aggregate_template(bag(Expr), bag, Expr).
+
+classify_aggregate_goal(Goal0, GoalInfo) :-
+    strip_module(Goal0, _, Goal),
+    aggregate_goal_terms(Goal, Terms),
+    include(aggregate_relation_term, Terms, RelationTerms),
+    include(aggregate_arithmetic_term, Terms, ArithmeticTerms),
+    include(aggregate_constraint_term, Terms, ConstraintTerms),
+    subtract(Terms, RelationTerms, NonRelationTerms0),
+    subtract(NonRelationTerms0, ArithmeticTerms, NonRelationTerms1),
+    subtract(NonRelationTerms1, ConstraintTerms, OtherTerms),
+    GoalInfo = agg_goal{
+        terms: Terms,
+        relations: RelationTerms,
+        arithmetic: ArithmeticTerms,
+        constraints: ConstraintTerms,
+        other: OtherTerms
+    }.
+
+aggregate_goal_terms(true, []) :- !.
+aggregate_goal_terms((A, B), Terms) :- !,
+    aggregate_goal_terms(A, TermsA),
+    aggregate_goal_terms(B, TermsB),
+    append(TermsA, TermsB, Terms).
+aggregate_goal_terms(Goal, [Goal]).
+
+aggregate_arithmetic_term(Term0) :-
+    strip_module(Term0, _, Term),
+    nonvar(Term),
+    Term = (_ is _).
+
+aggregate_constraint_term(Term0) :-
+    strip_module(Term0, _, Term),
+    nonvar(Term),
+    compound(Term),
+    functor(Term, Fun, Arity),
+    member(Fun/Arity,
+        ['>'/2, '<'/2, '>='/2, '=<'/2, '=:='/2, '=\\='/2, '=='/2, '\\=='/2]).
+
+aggregate_relation_term(Term0) :-
+    strip_module(Term0, _, Term),
+    nonvar(Term),
+    compound(Term),
+    \+ aggregate_arithmetic_term(Term),
+    \+ aggregate_constraint_term(Term),
+    \+ (Term = (_,_)),
+    \+ (Term = (_;_)),
+    \+ (Term = (_->_)).
 
 %% is_tail_recursive_accumulator(+Pred/Arity, -AccInfo)
 %  Detect tail recursion with accumulator pattern
