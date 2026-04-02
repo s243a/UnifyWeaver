@@ -1,5 +1,12 @@
 # aggregate_all/3 Compilation: Philosophy
 
+This document revises the earlier proposal at commit `a25e0a7`.
+Reference version:
+
+```text
+git show a25e0a7:docs/proposals/AGGREGATE_ALL_COMPILATION_PHILOSOPHY.md
+```
+
 ## The Abstraction Boundary
 
 Prolog's `aggregate_all/3` is the natural boundary between **relational
@@ -23,16 +30,21 @@ cannot compile the reduction. Every benchmark so far works around this
 by hand-writing the aggregation loop in native code (the pipeline
 approach).
 
-Compiling `aggregate_all/3` closes this gap. It is the minimum
-abstraction that lets UnifyWeaver compile **complete analytical
-queries** from Prolog to target languages, not just the recursive
-core.
+Compiling `aggregate_all/3` closes this gap. More precisely, it closes
+the gap for targets that still require hand-written aggregation wrappers
+around already-compiled recursive predicates. The C# query engine is not
+starting from zero here: it already has `AggregateNode` and
+`AggregateSubplanNode` support in the runtime and partial compiler-side
+handling of aggregate forms. The real work is to make `aggregate_all/3`
+a coherent cross-target compilation feature rather than a partial C#
+special case.
 
 ## Why This Matters
 
-Without `aggregate_all`, UnifyWeaver is a **recursive relation
-compiler**. With it, UnifyWeaver becomes an **analytical query
-compiler**.
+Without general `aggregate_all/3` compilation, UnifyWeaver is still
+primarily a **recursive relation compiler** with some target-specific
+aggregation exceptions. With it, UnifyWeaver becomes a more general
+**analytical query compiler**.
 
 The difference:
 
@@ -47,7 +59,8 @@ The difference:
 
 Every real analytical workload has an aggregation step. The category
 hierarchy benchmarks demonstrate this clearly: the recursive TC is
-fast, but the user still needs to write aggregation code by hand.
+fast, but outside the partial C# path the user still needs to write
+aggregation code by hand.
 
 ## The Composition Model
 
@@ -70,8 +83,9 @@ These are separate compilation concerns:
 1. **Relation production** — already solved (TC nodes, fixpoint, DFS)
 2. **Relation reduction** — the new work (aggregate_all)
 
-This separation means we don't need to change the recursive machinery.
-We need to add a layer that consumes its output.
+This separation means we do not need to redesign the recursive
+machinery first. We need a more general layer that consumes its output
+consistently across targets.
 
 ## Relationship to Existing Features
 
@@ -87,16 +101,37 @@ They compose naturally:
 - Use `min` tabling inside the TC for shortest-path pruning
 - Use `aggregate_all(sum(...))` outside the TC for influence scores
 
-### Pipeline approach (generate_pipeline.py)
+### Pipeline approach (`generate_pipeline.py`)
 
 The pipeline approach generates complete native programs that include
 both recursion AND aggregation. It works, but it's not compilation —
 it's code generation from a template, bypassing UnifyWeaver's compiler.
 
-`aggregate_all` compilation lets UnifyWeaver emit the same code that
-`generate_pipeline.py` produces, but from Prolog source.
+`aggregate_all` compilation should eventually let UnifyWeaver emit the
+same code that `generate_pipeline.py` produces, but from Prolog source
+and through the ordinary compiler path.
 
-### C# query engine GroupedTransitiveClosureNode
+### Existing C# aggregation support
+
+The current repository already has:
+
+- `AggregateNode`
+- `AggregateSubplanNode`
+- compiler-side parsing of several aggregate forms in
+  [csharp_target.pl](/home/s243a/Projects/UnifyWeaver/context/gemini/UnifyWeaver/src/unifyweaver/targets/csharp_target.pl)
+- runtime execution in
+  [QueryRuntime.cs](/home/s243a/Projects/UnifyWeaver/context/gemini/UnifyWeaver/src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs)
+
+So the philosophical question is not “should C# invent an aggregation
+node?” but rather:
+
+- how do we normalize aggregate detection and semantics across targets?
+- how much of the existing C# aggregation IR should become the shared
+  conceptual model?
+- which forms should be wrapper code on native targets versus plan
+  nodes in the query engine?
+
+### C# query engine `GroupedTransitiveClosureNode`
 
 The grouped TC node handles a specific case: transitive closure with
 invariant columns (grouping by label/category). This is related but
@@ -111,17 +146,17 @@ There are two strategies for compiling `aggregate_all`:
 
 **Strategy A: Aggregation as a plan node** (C# query engine)
 
-Add an `AggregateNode` to the query plan IR that wraps a sub-plan
-and applies reduction:
+Use the existing `AggregateNode`/`AggregateSubplanNode` plan concepts
+as the query-engine realization of `aggregate_all/3`:
 
 ```
-AggregateNode(sum, position=2,
-    input=PathAwareTransitiveClosureNode(...))
+AggregateSubplanNode(sum, valueIndex=2,
+    subplan=PathAwareTransitiveClosureNode(...))
 ```
 
 This is the right approach for the query engine because it composes
-within the plan evaluation framework and can be optimized by the
-planner.
+within the plan evaluation framework and already exists in partial form.
+The task is to broaden and regularize it.
 
 **Strategy B: Aggregation as wrapper code** (Go, Rust, Python)
 
@@ -168,14 +203,31 @@ Templates we should support:
 | `set(X)` | Unique X values | `ARRAY_AGG(DISTINCT x)` |
 
 Phase 1 should support `sum`, `count`, `min`, `max`. Phase 2 adds
-`bag` and `set`. Phase 3 adds grouped aggregation.
+`bag` and `set` if they prove necessary for real workloads. Phase 3
+adds grouped recursive aggregation.
 
 ## Non-Goals
 
-- Replacing `findall/3` or `setof/3` — those are list-collection
-  predicates, not aggregation. `aggregate_all` subsumes them for
-  the analytical use case.
+- Replacing `findall/3` or `setof/3` wholesale. Those are adjacent but
+  different collection semantics. `aggregate_all/3` is the right first
+  analytical target, but not a full replacement for every collection
+  predicate.
 - Supporting arbitrary templates — focus on the standard aggregate
   functions that map to SQL/LINQ equivalents.
 - Nested aggregation — `aggregate_all` inside `aggregate_all`. This
   is out of scope for now.
+
+## Change Summary
+
+Edited by `gpt-5.4 (medium)`.
+
+Main changes relative to `a25e0a7`:
+
+- clarified that C# already has partial aggregate runtime/compiler
+  support
+- reframed the problem from “add AggregateNode” to “generalize and
+  unify aggregate_all/3 compilation across targets”
+- made the wrapper-vs-node discussion concrete for the existing C#
+  architecture
+- narrowed some overbroad claims about `findall/3` replacement and
+  “no aggregation support”

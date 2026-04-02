@@ -1,8 +1,15 @@
 # aggregate_all/3 Compilation: Specification
 
+This document revises the earlier proposal at commit `a25e0a7`.
+Reference version:
+
+```text
+git show a25e0a7:docs/proposals/AGGREGATE_ALL_COMPILATION_SPEC.md
+```
+
 ## Supported Forms
 
-### Phase 1: Scalar aggregation over a single goal
+### Phase 1: Scalar aggregation over a narrow goal class
 
 ```prolog
 aggregate_all(AggOp(Expr), Goal, Result)
@@ -11,7 +18,12 @@ aggregate_all(AggOp(Expr), Goal, Result)
 Where:
 - `AggOp` is one of: `sum`, `count`, `min`, `max`
 - `Expr` is an arithmetic expression over variables bound by `Goal`
-- `Goal` is a conjunction of relation lookups and/or recursive calls
+- `Goal` is initially limited to:
+  - a plain extensional relation goal, or
+  - a single compiled recursive predicate, or
+  - a simple conjunction whose non-recursive terms can be lowered into
+    an aggregate subplan without introducing multiple independent
+    recursive branches
 - `Result` is bound to the aggregate value
 
 Examples:
@@ -57,7 +69,8 @@ category_influence(Root, Score) :-
 ```
 
 Here `Root` is bound before `aggregate_all` is called, so the
-aggregation is implicitly grouped by `Root`.
+aggregation is implicitly grouped by `Root`. Phase 2 should support
+this common case first rather than inventing a new grouping syntax.
 
 ### Phase 3: Collection aggregation
 
@@ -102,8 +115,11 @@ The goal inside `aggregate_all` falls into categories:
 | Conjunction with arithmetic | `rec(C, R, H), W is f(H)` | TC output + compute + aggregate |
 | Multi-recursive | `rec1(...), rec2(...)` | Out of scope for Phase 1 |
 
-Phase 1 targets the first four categories. The conjunction case
-(fact + recursion + arithmetic) is the most common in real queries.
+Phase 1 targets the first three categories, plus the simple arithmetic
+post-processing case when it can be compiled as a subplan over a single
+recursive branch. The conjunction case
+(fact + recursion + arithmetic) is the most common in real queries, but
+multi-recursive conjunctions should stay out of scope initially.
 
 ### Template parsing
 
@@ -118,22 +134,19 @@ parse_aggregate_template(set(Expr), set, Expr).
 
 ## Target-Specific Compilation
 
-### C# Query Engine: AggregateNode
+### C# Query Engine: Existing aggregate IR
 
-Add a new plan node that wraps a sub-plan and applies reduction:
+The C# query engine already contains:
+
+- `AggregateNode`
+- `AggregateSubplanNode`
+
+So the C# specification is about mapping `aggregate_all/3` into those
+existing runtime constructs rather than inventing them from scratch.
 
 ```csharp
-public sealed record AggregateNode(
-    PlanNode Input,
-    AggregateOp Op,       // Sum, Count, Min, Max, Bag, Set
-    int ValueIndex,        // which column of input to aggregate
-    int? GroupIndex = null  // optional: which column to group by
-) : PlanNode;
-
-public enum AggregateOp
-{
-    Sum, Count, Min, Max, Bag, Set
-}
+The relevant runtime surface is already in
+[QueryRuntime.cs](/home/s243a/Projects/UnifyWeaver/context/gemini/UnifyWeaver/src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs).
 ```
 
 Execution:
@@ -173,8 +186,8 @@ private IEnumerable<object[]> ExecuteAggregate(
 This composes with existing plan nodes:
 
 ```
-AggregateNode(Sum, valueIndex=2,
-    ArithmeticNode(Hops ^ (-5),
+AggregateSubplanNode(Sum, valueIndex=2,
+    subplan=ArithmeticNode(...,
         PathAwareTransitiveClosureNode(...)))
 ```
 
@@ -235,9 +248,9 @@ fn category_influence(root: &str, adj: &HashMap<String, Vec<String>>,
 | Rust | Generated wrapper function | Same as Go |
 | Python/Codon | Generated wrapper function | Same pattern |
 
-The C# approach is more general (the planner can optimize, e.g.,
-pushing aggregation into the TC node). The native approach is simpler
-and sufficient for Phase 1.
+The C# approach is more general because the planner already has a plan
+IR and can eventually optimize aggregate placement. The native approach
+is simpler and sufficient for Phase 1.
 
 ## Composition with Existing Machinery
 
@@ -335,3 +348,18 @@ category_influence(Root, Score) :-
         Score),
     Score > 0.
 ```
+
+## Change Summary
+
+Edited by `gpt-5.4 (medium)`.
+
+Main changes relative to `a25e0a7`:
+
+- corrected the C# section to reflect existing `AggregateNode` and
+  `AggregateSubplanNode` support
+- narrowed Phase 1 from a broad “single goal” story to a tighter goal
+  class that matches realistic initial implementation work
+- clarified grouping as the ordinary free-variable case rather than a
+  new mechanism
+- tightened the specification so unsupported multi-recursive aggregate
+  forms are not implicitly promised

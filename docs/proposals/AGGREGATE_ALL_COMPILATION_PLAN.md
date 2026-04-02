@@ -1,5 +1,12 @@
 # aggregate_all/3 Compilation: Implementation Plan
 
+This document revises the earlier proposal at commit `a25e0a7`.
+Reference version:
+
+```text
+git show a25e0a7:docs/proposals/AGGREGATE_ALL_COMPILATION_PLAN.md
+```
+
 ## Overview
 
 This plan adds `aggregate_all/3` compilation to UnifyWeaver, starting
@@ -7,12 +14,16 @@ with scalar aggregation over recursive goals and building toward
 grouped recursive aggregation. The primary evaluation workload is
 category influence propagation.
 
-## Phase 0: Pattern Detection (shared core)
+## Phase 0: Pattern Detection and Normalization (shared core)
 
 **Goal**: Detect `aggregate_all/3` in clause bodies and classify the
-template, goal, and grouping structure.
+template, goal, and grouping structure in a shared way that C#, Go,
+and Rust can all consume.
 
-**Location**: `src/unifyweaver/core/advanced/pattern_matchers.pl`
+**Location**:
+- `src/unifyweaver/core/advanced/pattern_matchers.pl`
+- with possible extraction/reuse from existing aggregate parsing in
+  `src/unifyweaver/targets/csharp_target.pl`
 
 ### Step 0.1: Template parser
 
@@ -63,29 +74,26 @@ detect_aggregate_grouping(ClauseHead, PreGoals, AggGoal, GroupVars) :-
 
 **Depends on**: nothing (can start immediately)
 
-## Phase 1: C# Query Engine — AggregateNode
+## Phase 1: C# Query Engine — Reuse and Generalize Existing Aggregate IR
 
-**Goal**: Add an `AggregateNode` to the query plan IR that wraps a
-sub-plan and applies scalar reduction.
+**Goal**: Reuse the existing `AggregateNode` / `AggregateSubplanNode`
+runtime support and generalize compiler-side `aggregate_all/3`
+lowering around it.
 
 **Location**:
 - `src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs`
 - `src/unifyweaver/targets/csharp_target.pl`
 
-### Step 1.1: Runtime node definition
+### Step 1.1: Audit current support
 
-```csharp
-public enum AggregateOp { Sum, Count, Min, Max, Bag, Set }
+Before adding runtime surface, audit what already exists:
 
-public sealed record AggregateNode(
-    PlanNode Input,
-    AggregateOp Op,
-    int ValueIndex,
-    int? GroupIndex = null
-) : PlanNode;
-```
+- `AggregateNode`
+- `AggregateSubplanNode`
+- current compiler-side parsing of `aggregate_all`
+- current tests for aggregate support in C#
 
-### Step 1.2: Runtime execution
+### Step 1.2: Fill the semantic gaps
 
 ```csharp
 case AggregateNode agg:
@@ -113,10 +121,11 @@ case AggregateNode agg:
     break;
 ```
 
-### Step 1.3: Plan builder
+### Step 1.3: Shared plan builder path
 
-In `csharp_target.pl`, detect `aggregate_all` in clause bodies and
-emit an `AggregateNode` wrapping the sub-plan:
+In `csharp_target.pl`, stop treating aggregate parsing as a partially
+special path and align it with the shared aggregate classification from
+Phase 0.
 
 ```prolog
 build_aggregate_plan(AggInfo, SubPlan, AggregatePlan) :-
@@ -131,7 +140,7 @@ build_aggregate_plan(AggInfo, SubPlan, AggregatePlan) :-
     }.
 ```
 
-### Step 1.4: Emitter
+### Step 1.4: Emitter and tests
 
 ```prolog
 emit_plan_expression(Node, Expr) :-
@@ -146,10 +155,11 @@ emit_plan_expression(Node, Expr) :-
         [InputExpr, OpStr, ValueIndex]).
 ```
 
-### Step 1.5: Test
+Start with:
 
-Test with `aggregate_all(sum(W), (test_fact(X, Y), W is Y * 2), S)`.
-Compare with hand-computed result.
+- non-recursive `sum/count/min/max`
+- recursive scalar aggregate over a single recursive predicate
+- arithmetic post-processing over recursive output
 
 **Depends on**: Phase 0
 
@@ -160,7 +170,7 @@ recursive predicate output.
 
 **Location**: `src/unifyweaver/targets/go_target.pl`
 
-### Step 2.1: Detect aggregate_all in clause body
+### Step 2.1: Detect `aggregate_all/3` in clause body
 
 When compiling a predicate whose body contains `aggregate_all`, the
 Go target should:
@@ -179,7 +189,11 @@ emit_go_aggregate_wrapper(AggInfo, WorkerName, Code) :-
 
 ### Step 2.3: Test
 
-Same test queries as Phase 1, verify cross-target consistency.
+Use the same semantic cases as C#:
+
+- non-recursive sanity
+- recursive scalar aggregate
+- arithmetic post-processing over recursive output
 
 **Depends on**: Phase 0
 
@@ -211,10 +225,10 @@ bound before the aggregate call).
 
 Emit grouping columns into the AggInfo dict.
 
-### Step 4.2: C# query engine — GroupIndex parameter
+### Step 4.2: C# query engine — existing grouping hooks
 
-The `AggregateNode` already has `GroupIndex`. Populate it from the
-detected grouping variables.
+Use the existing grouping fields/indices in the aggregate plan/runtime
+path rather than adding a fresh grouping concept.
 
 ### Step 4.3: Native targets — grouped loops
 
@@ -257,8 +271,8 @@ test_sum(Total) :-
     aggregate_all(sum(V), test_scores(_, V), Total).
 ```
 
-This can be implemented before or in parallel with Phase 1, as a
-simpler test case.
+This should be implemented before broad recursive aggregation work, as a
+simpler semantic baseline.
 
 **Depends on**: Phase 0
 
@@ -273,16 +287,17 @@ Phase 0 (pattern detection)
 Phase 4 (grouped aggregation) — after any target completes
 ```
 
-Phase 0 is the critical path. Phase 5 (non-recursive sanity) is the
-simplest validation and should run first. Phases 1-3 are independent
-per-target work.
+Phase 0 is the critical path. Phase 5 (non-recursive sanity) should run
+first. Phase 1 should focus on normalizing and broadening existing C#
+support, not rebuilding it. Phases 2-3 are then the real cross-target
+expansion.
 
 ## Effort Estimates
 
 | Phase | Effort | Notes |
 |-------|--------|-------|
 | 0 | Low-Medium | Template parsing, goal classification |
-| 1 | Medium | New plan node + execution + emitter |
+| 1 | Medium | Reuse existing C# aggregate runtime, broaden lowering/tests |
 | 2 | Low-Medium | Wrapper generation, pattern exists in pipeline |
 | 3 | Low-Medium | Mirrors Go work |
 | 4 | Medium | Grouping detection + grouped execution |
@@ -319,3 +334,17 @@ computation. At 10K scale:
 | `docs/design/FULL_TRANSPILATION_AUDIT.md` | Lists aggregate_all as a gap for all targets |
 | `examples/benchmark/category_influence.pl` | Primary evaluation workload for Phase 4 |
 | `examples/benchmark/effective_distance.pl` | Uses aggregate_all in Prolog source |
+
+## Change Summary
+
+Edited by `gpt-5.4 (medium)`.
+
+Main changes relative to `a25e0a7`:
+
+- corrected Phase 1 from “add AggregateNode” to “audit, reuse, and
+  broaden existing C# aggregate support”
+- strengthened Phase 0 as shared normalization rather than target-local
+  parsing
+- promoted non-recursive aggregate sanity checks as a true early gate
+- tightened the initial recursive scope to aggregation-friendly,
+  single-branch forms
