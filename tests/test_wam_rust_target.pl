@@ -5,6 +5,7 @@
 :- use_module('../src/unifyweaver/targets/wam_rust_target').
 :- use_module('../src/unifyweaver/targets/rust_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
+:- use_module('../src/unifyweaver/core/template_system', [render_named_template/3]).
 
 %% Test predicate that resists native lowering — multi-clause rule with
 %% mutual body calls and compound unification that no native tier handles.
@@ -232,6 +233,83 @@ test_compile_wam_runtime_output :-
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).
 
+%% Phase: Cargo project generation tests
+
+test_write_wam_rust_project :-
+    Test = 'WAM-Rust: write_wam_rust_project generates crate',
+    TmpDir = 'output/test_wam_rust_crate',
+    (   % Clean up any previous test run
+        (   exists_directory(TmpDir)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true)
+        ;   true
+        ),
+        write_wam_rust_project(
+            [user:test_simple_fact/2],
+            [module_name('test_crate')],
+            TmpDir),
+        % Verify files exist
+        directory_file_path(TmpDir, 'Cargo.toml', CargoPath),
+        exists_file(CargoPath),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        exists_file(LibPath),
+        directory_file_path(SrcDir, 'value.rs', ValuePath),
+        exists_file(ValuePath),
+        directory_file_path(SrcDir, 'instructions.rs', InstrPath),
+        exists_file(InstrPath),
+        directory_file_path(SrcDir, 'state.rs', StatePath),
+        exists_file(StatePath),
+        % Verify Cargo.toml has the module name
+        read_file_to_string(CargoPath, CargoStr, []),
+        sub_string(CargoStr, _, _, _, 'test_crate'),
+        % Verify lib.rs has predicate code
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'pub mod value'),
+        % Verify state.rs has runtime impl
+        read_file_to_string(StatePath, StateStr, []),
+        sub_string(StateStr, _, _, _, 'impl WamState'),
+        sub_string(StateStr, _, _, _, 'fn step'),
+        % Clean up
+        catch(delete_directory_and_contents(TmpDir), _, true)
+    ->  pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Cargo crate generation failed or missing files')
+    ).
+
+test_project_cargo_content :-
+    Test = 'WAM-Rust: Cargo.toml has correct content',
+    (   render_named_template(rust_wam_cargo,
+            [module_name='my_wam_crate'], Content),
+        atom_string(Content, S),
+        sub_string(S, _, _, _, 'my_wam_crate'),
+        sub_string(S, _, _, _, '[package]'),
+        sub_string(S, _, _, _, 'edition = "2021"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Cargo.toml template rendering failed')
+    ).
+
+test_project_with_wam_fallback :-
+    Test = 'WAM-Rust: project includes WAM-compiled predicates',
+    TmpDir = 'output/test_wam_rust_fallback',
+    (   (   exists_directory(TmpDir)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true)
+        ;   true
+        ),
+        write_wam_rust_project(
+            [user:test_resistant/3],
+            [module_name('fallback_test'), wam_fallback(true)],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % Should contain WAM-compiled wrapper
+        sub_string(LibStr, _, _, _, 'test_resistant'),
+        catch(delete_directory_and_contents(TmpDir), _, true)
+    ->  pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'WAM fallback predicate not in generated project')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -250,6 +328,9 @@ run_tests :-
     test_wam_fallback_flag,
     test_generated_rust_has_wam_wrapper,
     test_compile_wam_runtime_output,
+    test_write_wam_rust_project,
+    test_project_cargo_content,
+    test_project_with_wam_fallback,
 
     format('~n========================================~n'),
     (   test_failed
