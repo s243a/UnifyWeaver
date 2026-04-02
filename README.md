@@ -392,7 +392,9 @@ real audit target is the producer-goal family after the currently supported
 substring slices such as `sub_atom/5` and `string_substr/4`, and
 representative extra-parameter string producers such as `string_replace/4`,
 `string_sub/4`, `string_format/3`, and `string_grepl/3` follow-on alias or
-arithmetic tails.
+arithmetic tails, and the first list-producing Prolog string helper slice
+`split_string/4` with a constant separator and empty pad chars followed by a
+simple alias tail.
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)

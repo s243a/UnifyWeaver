@@ -7800,6 +7800,15 @@ native_typr_output_expr(sub_atom(InValue, Before, Length, After, OutVar), VarMap
     Start is Before + 1,
     End is Before + Length,
     format(string(OutputExpr), '@{ substr(~w, ~w, ~w) }@', [InExpr, Start, End]).
+native_typr_output_expr(split_string(InValue, Separator, PadChars, OutVar), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
+    var(OutVar),
+    atomic(Separator),
+    typr_split_string_empty_pad(PadChars),
+    !,
+    ensure_typr_var(VarMap0, OutVar, FinalExpr, VarMap, IntroKind),
+    typr_resolve_value(VarMap0, InValue, InExpr),
+    typr_resolve_value(VarMap0, Separator, SepExpr),
+    format(string(OutputExpr), '@{ strsplit(~w, ~w) }@', [InExpr, SepExpr]).
 native_typr_output_expr(sort_by(DF, Col, Out), VarMap0, _PredName, VarMap, FinalExpr, OutputExpr, IntroKind) :-
     !,
     ensure_typr_var(VarMap0, Out, FinalExpr, VarMap, IntroKind),
@@ -8599,6 +8608,9 @@ typr_name_index(Name, Index) :-
         sub_string(Name, 1, _, 0, Digits)
     ),
     number_string(Index, Digits).
+
+typr_split_string_empty_pad('').
+typr_split_string_empty_pad("").
 
 lookup_typr_var(Var, [StoredVar-Name|_], Name) :-
     Var == StoredVar,
