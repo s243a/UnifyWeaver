@@ -35,7 +35,17 @@
     feature_enabled/2,
     interop_stub/4,
     interop_method/5,
-    emit_interop_stubs/3
+    emit_interop_stubs/3,
+    %% Context profiles
+    agent_context_profile/2,
+    active_context_profile/1,
+    context_method_included/1,
+    %% Host executor separation
+    agent_component/3,
+    component_in_layer/2,
+    should_emit_component/1,
+    core_components/1,
+    host_components/1
 ]).
 
 :- discontiguous generate_backend_full/3.
@@ -95,6 +105,135 @@ module_dependency(security, config, 'audit_profile_level/2 from config').
 agent_target_feature(rust, wasm_bindings, true).
 agent_target_feature(rust, ffi_bindings, false).
 agent_target_feature(elixir, nif_bindings, false).
+
+%% =============================================================================
+%% Context Profiles
+%% =============================================================================
+%%
+%% agent_context_profile(+ProfileName, +Methods)
+%%   Defines which shared_logic(context, ...) methods to include.
+%%   Used by emit_context_methods/3 to selectively emit methods.
+%%
+%% Profiles:
+%%   full      — all context methods (default for CLI agents)
+%%   embedded  — minimal for WASM/embedded: add, trim, build, clear
+%%   streaming — embedded + streaming buffer support
+%%   custom    — user-defined via assert
+%%
+%% Usage:
+%%   Set active profile: assert(agent_active_context_profile(embedded))
+%%   Default if unset: full
+
+:- discontiguous agent_context_profile/2.
+:- dynamic agent_active_context_profile/1.
+
+agent_context_profile(embedded, [
+    context_add, context_clear, context_len, context_is_empty,
+    context_needs_trim, trim_excess_count, context_drop_oldest,
+    estimate_tokens, context_message_count
+]).
+
+agent_context_profile(streaming, [
+    context_add, context_clear, context_len, context_is_empty,
+    context_needs_trim, trim_excess_count, context_drop_oldest,
+    estimate_tokens, context_message_count,
+    context_last_message, context_last_n,
+    on_token, streaming_reset, format_summary
+]).
+
+agent_context_profile(full, all).  % include everything
+
+%% active_context_profile(-Profile)
+%%   Returns the currently active profile (default: full).
+active_context_profile(Profile) :-
+    (   agent_active_context_profile(Profile)
+    ->  true
+    ;   Profile = full
+    ).
+
+%% context_method_included(+MethodName)
+%%   True if MethodName should be emitted under the active profile.
+context_method_included(MethodName) :-
+    active_context_profile(Profile),
+    (   agent_context_profile(Profile, all)
+    ->  true
+    ;   agent_context_profile(Profile, Methods),
+        member(MethodName, Methods)
+    ).
+
+%% =============================================================================
+%% Host Executor Separation (Core vs Host Components)
+%% =============================================================================
+%%
+%% agent_component(+ComponentName, +Layer, +Description)
+%%   Declares which layer a component belongs to.
+%%
+%% Layers:
+%%   core  — portable logic (context, costs, parsing, config)
+%%           No I/O, no filesystem, no network. Can run anywhere
+%%           (CLI, browser/WASM, embedded, tests).
+%%   host  — environment-specific (tool execution, file I/O, network,
+%%           sandboxing, sessions). Requires a runtime environment.
+%%
+%% Usage:
+%%   Query: agent_component(context, core, _)     → true
+%%   Query: agent_component(tools, host, _)       → true
+%%   Filter: findall(C, agent_component(C, core, _), CoreComponents)
+%%
+%% Generation can use component_in_layer/2 to conditionally emit code:
+%%   - Core-only build: skip all host components (for WASM, testing)
+%%   - Full build: emit everything (for CLI agents)
+
+:- discontiguous agent_component/3.
+:- dynamic agent_build_layer/1.  % core | full (default: full)
+
+%% --- Core layer: portable, no I/O ---
+agent_component(context,       core, 'Message history and context management').
+agent_component(costs,         core, 'Token usage tracking and cost calculation').
+agent_component(config,        core, 'Agent configuration and defaults').
+agent_component(types,         core, 'Message, ToolCall, AgentConfig structs').
+agent_component(output_parser, core, 'Response parsing (OpenAI/Anthropic/raw JSON)').
+agent_component(commands,      core, 'Slash command registry and dispatch').
+
+%% --- Host layer: environment-specific ---
+agent_component(tools,         host, 'Tool execution (bash, read, write, edit)').
+agent_component(tool_handler,  host, 'Tool dispatch and result collection').
+agent_component(backends,      host, 'LLM API/CLI backend implementations').
+agent_component(security,      host, 'Security profiles, sandboxing, audit').
+agent_component(sessions,      host, 'Session persistence (save/load/list)').
+agent_component(display,       host, 'Terminal display, spinners, rich output').
+agent_component(mcp_client,    host, 'MCP server connections').
+agent_component(proot_sandbox, host, 'proot filesystem sandboxing').
+
+%% component_in_layer(+ComponentName, +Layer)
+%%   True if the component should be included for the given build layer.
+component_in_layer(Component, full) :-
+    agent_component(Component, _, _).
+component_in_layer(Component, core) :-
+    agent_component(Component, core, _).
+
+%% active_build_layer(-Layer)
+active_build_layer(Layer) :-
+    (   agent_build_layer(Layer)
+    ->  true
+    ;   Layer = full
+    ).
+
+%% should_emit_component(+ComponentName)
+%%   True if this component should be emitted under the active build layer.
+should_emit_component(Component) :-
+    active_build_layer(Layer),
+    component_in_layer(Component, Layer).
+
+%% core_components(-Components)
+%%   List all core-layer components.
+core_components(Components) :-
+    findall(C, agent_component(C, core, _), Components).
+
+%% host_components(-Components)
+%%   List all host-layer components.
+host_components(Components) :-
+    findall(C, agent_component(C, host, _), Components).
 
 %% feature_enabled(+Target, +Feature)
 %%   Convenience check — true if feature is explicitly enabled.
@@ -2231,40 +2370,62 @@ generate_all :-
     generate_parity_report.
 
 generate_all(python) :-
-    write('Generating Python target...'), nl,
+    active_build_layer(Layer),
+    active_context_profile(CtxProfile),
+    format('Generating Python target (layer=~w, context=~w)...~n', [Layer, CtxProfile]),
     agent_loop_components:register_agent_loop_components,
     output_path(python, 'backends', BackendsDir),
     output_path(python, 'security', SecurityDir),
     make_directory_path(BackendsDir),
     make_directory_path(SecurityDir),
-    generate_module(backends_init),
-    generate_module(backends_base),
-    findall(BN, agent_backend(BN, _), BackendNames),
-    maplist(generate_backend, BackendNames),
-    generate_module(security_init),
-    generate_module(security_profiles),
+    %% Core layer — always emitted
     generate_module(costs),
-    generate_module(tools_generated),
     generate_module(context),
     generate_module(config),
-    generate_module(display),
-    generate_module(tools),
+    generate_module(output_parser),
+    generate_module(tools_generated),
+    %% Host layer — skipped for core-only builds
+    (   should_emit_component(backends)
+    ->  generate_module(backends_init),
+        generate_module(backends_base),
+        findall(BN, agent_backend(BN, _), BackendNames),
+        maplist(generate_backend, BackendNames),
+        generate_module(async_backend)
+    ;   format('  Skipped backends (not in active layer)~n', [])
+    ),
+    (   should_emit_component(security)
+    ->  generate_module(security_init),
+        generate_module(security_profiles),
+        generate_module(security_audit),
+        generate_module(security_proxy),
+        generate_module(security_path_proxy),
+        generate_module(security_proot_sandbox)
+    ;   format('  Skipped security (not in active layer)~n', [])
+    ),
+    (   should_emit_component(tools)
+    ->  generate_module(tools)
+    ;   format('  Skipped tools (not in active layer)~n', [])
+    ),
+    (   should_emit_component(display)
+    ->  generate_module(display)
+    ;   format('  Skipped display (not in active layer)~n', [])
+    ),
+    (   should_emit_component(sessions)
+    ->  generate_module(sessions),
+        generate_module(export),
+        generate_module(history),
+        generate_module(search)
+    ;   format('  Skipped sessions (not in active layer)~n', [])
+    ),
+    (   should_emit_component(mcp_client)
+    ->  generate_module(mcp_client)
+    ;   format('  Skipped mcp_client (not in active layer)~n', [])
+    ),
     generate_module(aliases),
-    generate_module(export),
-    generate_module(history),
     generate_module(multiline),
     generate_module(retry),
-    generate_module(search),
-    generate_module(sessions),
     generate_module(skills),
     generate_module(templates),
-    generate_module(async_backend),
-    generate_module(output_parser),
-    generate_module(mcp_client),
-    generate_module(security_audit),
-    generate_module(security_proxy),
-    generate_module(security_path_proxy),
-    generate_module(security_proot_sandbox),
     generate_module(agent_loop_main),
     generate_module(readme),
     agent_loop_components:emit_test_metadata,
@@ -2278,36 +2439,46 @@ generate_all(prolog) :-
     write('Prolog target done.'), nl.
 
 generate_all(rust) :-
-    write('Generating Rust target...'), nl,
+    active_build_layer(Layer),
+    active_context_profile(CtxProfile),
+    format('Generating Rust target (layer=~w, context=~w)...~n', [Layer, CtxProfile]),
     agent_loop_components:register_agent_loop_components,
     output_path(rust, '', RustSrc),
     make_directory_path(RustSrc),
-    %% Phase 1 — data layer
+    %% Phase 1 — core layer (always emitted)
     generate_rust_cargo_toml,
     generate_rust_lib,
-    generate_rust_config,
-    generate_rust_costs,
-    generate_rust_tools,
-    generate_rust_commands,
-    generate_rust_security,
-    generate_rust_proot_sandbox,
-    generate_rust_plugin_manager,
-    generate_rust_output_parser,
-    generate_rust_mcp_client,
+    emit_if_component(config,        generate_rust_config),
+    emit_if_component(costs,         generate_rust_costs),
+    emit_if_component(commands,      generate_rust_commands),
+    emit_if_component(output_parser, generate_rust_output_parser),
     generate_rust_wasm_bindings,
-    %% Phase 2 — imperative layer
-    generate_rust_types,
-    generate_rust_context,
-    generate_rust_backends,
-    generate_rust_tool_handler,
-    %% Phase 3 — CLI + sessions
-    generate_rust_sessions,
-    %% Phase 4 — config loading + streaming
+    %% Phase 1b — core types + context
+    emit_if_component(types,         generate_rust_types),
+    emit_if_component(context,       generate_rust_context),
+    %% Phase 2 — host layer (skipped for core-only builds)
+    emit_if_component(tools,         generate_rust_tools),
+    emit_if_component(security,      generate_rust_security),
+    emit_if_component(proot_sandbox, generate_rust_proot_sandbox),
+    emit_if_component(tool_handler,  generate_rust_tool_handler),
+    emit_if_component(backends,      generate_rust_backends),
+    emit_if_component(mcp_client,    generate_rust_mcp_client),
+    %% Phase 3 — host CLI + sessions
+    emit_if_component(sessions,      generate_rust_sessions),
+    generate_rust_plugin_manager,
     generate_rust_config_loader,
     generate_rust_main,
     generate_rust_integration_tests,
     generate_rust_makefile,
     write('Rust target done.'), nl.
+
+%% emit_if_component(+ComponentName, +GeneratorGoal)
+%%   Only call the generator if the component is included in the active build layer.
+emit_if_component(Component, Goal) :-
+    (   should_emit_component(Component)
+    ->  call(Goal)
+    ;   format('  Skipped ~w (not in active layer)~n', [Component])
+    ).
 
 %% =============================================================================
 %% Declarative Test Generation — Auto-generate tests from facts
