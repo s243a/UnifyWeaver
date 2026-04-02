@@ -186,6 +186,7 @@ Tables:
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_category_influence_cross_target.py` | Compare category influence propagation across Rust DFS and Go DFS |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
 
@@ -233,6 +234,11 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
 python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
+
+# Compare category influence propagation across Rust and Go
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets rust-dfs,go-dfs
 ```
 
 The current native-lowering comparison surface across non-query targets is:
@@ -241,10 +247,12 @@ The current native-lowering comparison surface across non-query targets is:
   - all-path effective distance
   - minimum hop distance
   - positive weighted minimum path distance
+  - category influence propagation
 - Go DFS:
   - all-path effective distance
   - minimum hop distance
   - positive weighted minimum path distance
+  - category influence propagation
 
 The benchmark split is now:
 
@@ -252,6 +260,7 @@ The benchmark split is now:
   - `benchmark_effective_distance.py`
   - `benchmark_shortest_path_cross_target.py`
   - `benchmark_weighted_shortest_path_cross_target.py`
+  - `benchmark_category_influence_cross_target.py`
 - C# query-engine internal mode comparison:
   - `benchmark_shortest_path_to_root.py`
   - `benchmark_weighted_shortest_path.py`
@@ -322,6 +331,47 @@ Comparison note:
 - the cross-target weighted benchmark now normalizes floating-point
   outputs with a tolerance appropriate for cross-language evaluation
   order differences
+
+### Cross-Target Category Influence Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Rust DFS | Go DFS | Outputs |
+|-------|---------:|-------:|---------|
+| 300 | 0.356s | 0.487s | match |
+| 1k | 1.447s | 2.112s | match |
+| 5k | 7.860s | 12.857s | match |
+| 10k | 14.604s | 20.421s | match |
+
+Rust speedup vs Go:
+
+| Scale | Speedup |
+|-------|--------:|
+| 300 | 1.37x |
+| 1k | 1.46x |
+| 5k | 1.64x |
+| 10k | 1.40x |
+
+Comparison note:
+
+- this benchmark currently compares Rust and Go only
+- C# is intentionally not part of this runner yet
+- reason:
+  there is not yet a like-for-like `category_influence` benchmark path in
+  the C# query-engine harness, so including C# here would mix execution
+  models rather than isolating target-pipeline behavior
+- the current purpose of this runner is to validate the newly added
+  grouped/correlated aggregate compilation surface across non-query
+  targets before deciding how C# should join the same workload
 
 ### Weighted `Min` Results
 

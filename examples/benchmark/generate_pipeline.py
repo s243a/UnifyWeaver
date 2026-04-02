@@ -1398,6 +1398,230 @@ fn main() {{
 '''
 
 
+def generate_go_category_influence(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    roots = sorted(root_cats) if root_cats else ["Physics"]
+    root_entries = ", ".join(f'"{root}": true' for root in roots)
+
+    return f'''// Category influence benchmark (Go)
+package main
+
+import (
+\t"bufio"
+\t"fmt"
+\t"math"
+\t"os"
+\t"sort"
+\t"strings"
+)
+
+const N = {float(n)}
+const MAX_DEPTH = {max_depth}
+
+var ROOTS = map[string]bool{{{root_entries}}}
+
+func loadTSVPairs(path string) map[string][]string {{
+\tm := make(map[string][]string)
+\tf, err := os.Open(path)
+\tif err != nil {{
+\t\tfmt.Fprintf(os.Stderr, "Cannot open %s: %v\\n", path, err)
+\t\tos.Exit(1)
+\t}}
+\tdefer f.Close()
+\tscanner := bufio.NewScanner(f)
+\tfirst := true
+\tfor scanner.Scan() {{
+\t\tline := scanner.Text()
+\t\tif first {{
+\t\t\tfirst = false
+\t\t\tif strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {{
+\t\t\t\tcontinue
+\t\t\t}}
+\t\t}}
+\t\tparts := strings.SplitN(line, "\\t", 2)
+\t\tif len(parts) == 2 {{
+\t\t\tm[parts[0]] = append(m[parts[0]], parts[1])
+\t\t}}
+\t}}
+\treturn m
+}}
+
+type pathResult struct {{
+\tancestor string
+\thops int
+}}
+
+func categoryAncestorPaths(cat string, visited map[string]bool, adj map[string][]string, depth int) []pathResult {{
+\tif visited[cat] || depth >= MAX_DEPTH {{
+\t\treturn nil
+\t}}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {{
+\t\tnewVisited[k] = v
+\t}}
+\tnewVisited[cat] = true
+
+\tvar results []pathResult
+\tfor _, parent := range adj[cat] {{
+\t\tif !newVisited[parent] {{
+\t\t\tresults = append(results, pathResult{{parent, 1}})
+\t\t\tfor _, sub := range categoryAncestorPaths(parent, newVisited, adj, depth+1) {{
+\t\t\t\tresults = append(results, pathResult{{sub.ancestor, sub.hops + 1}})
+\t\t\t}}
+\t\t}}
+\t}}
+\treturn results
+}}
+
+type rootScore struct {{
+\troot string
+\tscore float64
+}}
+
+func main() {{
+\tif len(os.Args) < 3 {{
+\t\tfmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\\n", os.Args[0])
+\t\tos.Exit(1)
+\t}}
+
+\tadj := loadTSVPairs(os.Args[1])
+\tartCats := loadTSVPairs(os.Args[2])
+\tinfluence := make(map[string]float64)
+
+\tfor article, cats := range artCats {{
+\t\t_ = article
+\t\tfor _, cat := range cats {{
+\t\t\tif ROOTS[cat] {{
+\t\t\t\tinfluence[cat] += 1.0
+\t\t\t}}
+\t\t\tfor _, pr := range categoryAncestorPaths(cat, map[string]bool{{}}, adj, 0) {{
+\t\t\t\tif ROOTS[pr.ancestor] {{
+\t\t\t\t\tdistance := float64(pr.hops + 1)
+\t\t\t\t\tinfluence[pr.ancestor] += math.Pow(distance, -N)
+\t\t\t\t}}
+\t\t\t}}
+\t\t}}
+\t}}
+
+\tvar results []rootScore
+\tfor root, score := range influence {{
+\t\tif score > 0 {{
+\t\t\tresults = append(results, rootScore{{root, score}})
+\t\t}}
+\t}}
+
+\tsort.Slice(results, func(i, j int) bool {{
+\t\tif results[i].score != results[j].score {{
+\t\t\treturn results[i].score > results[j].score
+\t\t}}
+\t\treturn results[i].root < results[j].root
+\t}})
+
+\tfmt.Println("root_category\\tinfluence_score")
+\tfor _, r := range results {{
+\t\tfmt.Printf("%s\\t%.12f\\n", r.root, r.score)
+\t}}
+}}
+'''
+
+
+def generate_rust_category_influence(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    roots = sorted(root_cats) if root_cats else ["Physics"]
+    root_lines = "\n".join(f'    roots.insert("{root}".to_string());' for root in roots)
+
+    return f'''// Category influence benchmark (Rust)
+use std::collections::{{HashMap, HashSet}};
+use std::env;
+use std::fs;
+use std::io::{{BufRead, BufReader}};
+
+const N: f64 = {float(n)};
+const MAX_DEPTH: usize = {max_depth};
+
+fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {{
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let file = fs::File::open(path).unwrap_or_else(|e| panic!("Cannot open {{}}: {{}}", path, e));
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {{
+        let line = line.unwrap();
+        if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {{
+            continue;
+        }}
+        let parts: Vec<&str> = line.splitn(2, '\\t').collect();
+        if parts.len() == 2 {{
+            map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
+        }}
+    }}
+    map
+}}
+
+fn category_ancestor_paths(
+    cat: &str,
+    visited: &HashSet<String>,
+    adj: &HashMap<String, Vec<String>>,
+    depth: usize,
+) -> Vec<(String, i32)> {{
+    if visited.contains(cat) || depth >= MAX_DEPTH {{
+        return Vec::new();
+    }}
+    let mut new_visited = visited.clone();
+    new_visited.insert(cat.to_string());
+
+    let mut results = Vec::new();
+    if let Some(neighbors) = adj.get(cat) {{
+        for nb in neighbors {{
+            if !new_visited.contains(nb.as_str()) {{
+                results.push((nb.clone(), 1));
+                for (ancestor, h) in category_ancestor_paths(nb, &new_visited, adj, depth + 1) {{
+                    results.push((ancestor, h + 1));
+                }}
+            }}
+        }}
+    }}
+    results
+}}
+
+fn main() {{
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {{
+        eprintln!("Usage: {{}} <category_parent.tsv> <article_category.tsv>", args[0]);
+        std::process::exit(1);
+    }}
+
+    let adj = load_tsv_pairs(&args[1]);
+    let art_cats = load_tsv_pairs(&args[2]);
+    let mut roots: HashSet<String> = HashSet::new();
+{root_lines}
+    let mut influence: HashMap<String, f64> = HashMap::new();
+
+    for (_article, cats) in &art_cats {{
+        for cat in cats {{
+            if roots.contains(cat) {{
+                *influence.entry(cat.clone()).or_insert(0.0) += 1.0;
+            }}
+            let visited = HashSet::new();
+            for (ancestor, h) in category_ancestor_paths(cat, &visited, &adj, 0) {{
+                if roots.contains(&ancestor) {{
+                    let distance = (h + 1) as f64;
+                    *influence.entry(ancestor).or_insert(0.0) += distance.powf(-N);
+                }}
+            }}
+        }}
+    }}
+
+    let mut results: Vec<(String, f64)> = influence
+        .into_iter()
+        .filter(|(_, score)| *score > 0.0)
+        .collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+
+    println!("root_category\\tinfluence_score");
+    for (root, score) in results {{
+        println!("{{}}\\t{{:.12}}", root, score);
+    }}
+}}
+'''
+
+
 def generate_csharp_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -1532,6 +1756,10 @@ GENERATORS = {
         'go': generate_go_weighted_shortest_path,
         'rust': generate_rust_weighted_shortest_path,
         'csharp': generate_csharp_weighted_shortest_path,
+    },
+    'category_influence': {
+        'go': generate_go_category_influence,
+        'rust': generate_rust_category_influence,
     },
 }
 
