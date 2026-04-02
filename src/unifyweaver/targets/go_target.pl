@@ -4117,48 +4117,25 @@ merge_go_options(RuntimeOpts, Constraints, Merged) :-
 %  Produces standalone Go program with Solve() iteration loop
 compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
     go_generator_config(Config),
-    
-    % Gather all clauses for this predicate (use copy_term to normalize)
-    functor(Head, Pred, Arity),
-    findall(HC-BC, 
-        (user:clause(Head, B), copy_term((Head, B), (HC, BC))), 
-        TargetClauses0),
-    remove_variant_duplicates(TargetClauses0, TargetClauses),
-    
-    % Also gather clauses for predicates referenced in rule bodies (dependency closure)
-    % This includes extracting inner goals from aggregate_all
-    findall(DepPred/DepArity,
-        (   member(_-Body, TargetClauses),
-            Body \= true,
-            body_to_list_go(Body, Goals),
-            member(Goal, Goals),
-            extract_goal_predicate(Goal, DepPred, DepArity),
-            DepPred/DepArity \= Pred/Arity  % Don't include self-references
-        ),
-        DepPredList0),
-    sort(DepPredList0, DepPredList),
-    
-    % Gather facts from dependencies
-    findall(DepHead,
-        (   member(DP/DA, DepPredList),
-            functor(DepHead, DP, DA),
-            user:clause(DepHead, true)
-        ),
-        DepFacts),
-    
-    % Combine target clauses with dependency facts
-    findall(FactHead, member(FactHead-true, TargetClauses), TargetFacts),
-    append(TargetFacts, DepFacts, AllFacts0),
+
+    % Gather target clauses plus dependency closure.
+    collect_go_generator_clauses([Pred/Arity], AllClauses),
+
+    % Compile facts from all reachable predicates.
+    findall(FactHead, member(FactHead-true, AllClauses), AllFacts0),
     remove_variant_duplicates_single(AllFacts0, AllFacts),
     
     % Compile facts
     compile_go_generator_facts(AllFacts, Config, FactsCode),
     
-    % Compile rules (only for target predicate, exclude facts)
-    findall(RuleClause, 
-        (member(RuleClause, TargetClauses), RuleClause = (_-RB), RB \= true),
-        TargetRuleClauses),
-    compile_go_generator_rules(TargetRuleClauses, Config, RulesCode, RuleNames),
+    % Compile rules for all reachable predicates, excluding facts.
+    findall(RuleClause,
+        ( member(RuleClause, AllClauses),
+          RuleClause = (_-RB),
+          RB \= true
+        ),
+        AllRuleClauses),
+    compile_go_generator_rules(AllRuleClauses, Config, RulesCode, RuleNames),
     
     % Compile execution (fixpoint loop)
     compile_go_generator_execution(Pred, RuleNames, Options, ExecutionCode),
@@ -4166,6 +4143,34 @@ compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
     % Assemble complete program
     go_generator_header(Pred, Options, Header),
     format(string(GoCode), "~w\n~w\n~w\n~w\n", [Header, FactsCode, RulesCode, ExecutionCode]).
+
+collect_go_generator_clauses(SeedPreds, Clauses) :-
+    collect_go_generator_clauses_queue(SeedPreds, [], [], Clauses0),
+    remove_variant_duplicates(Clauses0, Clauses).
+
+collect_go_generator_clauses_queue([], _Visited, Clauses, Clauses).
+collect_go_generator_clauses_queue([Pred/Arity|Rest], Visited, Clauses0, Clauses) :-
+    (   memberchk(Pred/Arity, Visited)
+    ->  collect_go_generator_clauses_queue(Rest, Visited, Clauses0, Clauses)
+    ;   functor(Head, Pred, Arity),
+        findall(HC-BC,
+            ( user:clause(Head, B),
+              copy_term((Head, B), (HC, BC))
+            ),
+            PredClauses0),
+        remove_variant_duplicates(PredClauses0, PredClauses),
+        findall(DepPred/DepArity,
+            ( member(_-Body, PredClauses),
+              Body \= true,
+              goal_dependency_predicate(Body, DepPred, DepArity),
+              \+ memberchk(DepPred/DepArity, [Pred/Arity|Visited])
+            ),
+            DepPreds0),
+        sort(DepPreds0, DepPreds),
+        append(Rest, DepPreds, Queue1),
+        append(Clauses0, PredClauses, Clauses1),
+        collect_go_generator_clauses_queue(Queue1, [Pred/Arity|Visited], Clauses1, Clauses)
+    ).
 
 %% remove_variant_duplicates(+List, -Unique)
 %  Remove duplicates where terms are variants (same structure, different vars)
@@ -4212,6 +4217,33 @@ extract_goal_predicate(Goal, Pred, Arity) :-
     \+ is_builtin_goal_go(Goal),
     Goal =.. [Pred|Args],
     length(Args, Arity).
+
+goal_dependency_predicate((A, B), Pred, Arity) :-
+    !,
+    ( goal_dependency_predicate(A, Pred, Arity)
+    ; goal_dependency_predicate(B, Pred, Arity)
+    ).
+goal_dependency_predicate((A ; B), Pred, Arity) :-
+    !,
+    ( goal_dependency_predicate(A, Pred, Arity)
+    ; goal_dependency_predicate(B, Pred, Arity)
+    ).
+goal_dependency_predicate((A -> B), Pred, Arity) :-
+    !,
+    ( goal_dependency_predicate(A, Pred, Arity)
+    ; goal_dependency_predicate(B, Pred, Arity)
+    ).
+goal_dependency_predicate(aggregate_all(_, InnerGoal, _), Pred, Arity) :-
+    !,
+    goal_dependency_predicate(InnerGoal, Pred, Arity).
+goal_dependency_predicate(aggregate_all(_, InnerGoal, _, _), Pred, Arity) :-
+    !,
+    goal_dependency_predicate(InnerGoal, Pred, Arity).
+goal_dependency_predicate(aggregate(_, InnerGoal, _), Pred, Arity) :-
+    !,
+    goal_dependency_predicate(InnerGoal, Pred, Arity).
+goal_dependency_predicate(Goal, Pred, Arity) :-
+    extract_goal_predicate(Goal, Pred, Arity).
 
 %% go_generator_header(+Pred, +Options, -Header)
 %  Generate Go boilerplate with Fact type
@@ -4598,8 +4630,8 @@ compile_go_trigger_block(TriggerGoal, OtherGoals, Builtins, HeadPred, HeadArgs, 
     
     (   OtherGoals == []
     ->  % Simple rule
-        compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
-        compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
+        compile_go_builtins_with_state(Builtins, VarMap0, Config, BuiltinCode, VarMap1),
+        compile_go_head_construction(HeadPred, HeadArgs, VarMap1, Config, HeadCode),
         format(string(BodyCode), "~w\n        ~w", [BuiltinCode, HeadCode])
     ;   % Join rule
         compile_go_join_with_result(OtherGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, BodyCode)
@@ -5169,7 +5201,7 @@ body_to_list_go(Goal, [Goal]).
 is_builtin_goal_go(Goal) :-
     Goal =.. [Functor|Args],
     (   % Standard builtins
-        member(Functor, [is, '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+'])
+        member(Functor, [is, '=', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+', true, fail, !])
     ;   % Check if there's a binding for this predicate
         length(Args, Arity),
         go_binding(Functor/Arity, _, _, _, _)
@@ -5179,7 +5211,7 @@ is_builtin_goal_go(Goal) :-
 %  Check if goal has a Go binding (not a standard builtin)
 is_binding_goal_go(Goal) :-
     Goal =.. [Functor|Args],
-    \+ member(Functor, [is, '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+']),
+    \+ member(Functor, [is, '=', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+', true, fail, !]),
     length(Args, Arity),
     go_binding(Functor/Arity, _, _, _, _).
 
@@ -5187,8 +5219,8 @@ is_binding_goal_go(Goal) :-
 %  Generate nested join loops with result emission inside innermost loop
 compile_go_join_with_result([], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
     % Base case: generate builtin checks and result emit
-    compile_go_builtins(Builtins, VarMap, Config, BuiltinCode),
-    compile_go_head_construction(HeadPred, HeadArgs, VarMap, Config, HeadCode),
+    compile_go_builtins_with_state(Builtins, VarMap, Config, BuiltinCode, VarMap1),
+    compile_go_head_construction(HeadPred, HeadArgs, VarMap1, Config, HeadCode),
     format(string(Code), "~w\n            ~w", [BuiltinCode, HeadCode]).
 
 compile_go_join_with_result([Goal|Rest], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
@@ -5310,16 +5342,29 @@ compile_go_join_condition(Args, VarMap, _Config, VarName, Condition) :-
 %  Generate builtin constraint checks
 compile_go_builtins([], _, _, "").
 compile_go_builtins(Builtins, VarMap, Config, Code) :-
-    findall(Check,
-        (   member(B, Builtins),
-            compile_go_single_builtin(B, VarMap, Config, Check)
-        ),
-        Checks),
-    (   Checks == []
+    compile_go_builtins_with_state(Builtins, VarMap, Config, Code, _).
+
+compile_go_builtins_with_state([], VarMap, _, "", VarMap).
+compile_go_builtins_with_state([Builtin|Rest], VarMap0, Config, Code, VarMapOut) :-
+    compile_go_single_builtin_state(Builtin, VarMap0, Config, Check, VarMap1),
+    compile_go_builtins_with_state(Rest, VarMap1, Config, RestCode, VarMapOut),
+    (   Check == "", RestCode == ""
     ->  Code = ""
-    ;   atomic_list_concat(Checks, "\n", ChecksStr),
-        format(string(Code), "\n    // Constraint checks\n~w\n", [ChecksStr])
+    ;   Check == ""
+    ->  Code = RestCode
+    ;   RestCode == ""
+    ->  format(string(Code), "\n    // Constraint checks\n~w\n", [Check])
+    ;   format(string(Code), "\n    // Constraint checks\n~w\n~w", [Check, RestCode])
     ).
+
+%% compile_go_single_builtin_state(+Builtin, +VarMapIn, +Config, -Code, -VarMapOut)
+%  Builtin compilation with support for computed variable bindings.
+compile_go_single_builtin_state(Var is Expr, VarMap, Config, "", [Var-expr(GoExpr)|VarMap]) :-
+    var(Var),
+    !,
+    translate_go_numeric_expr(Expr, VarMap, Config, GoExpr).
+compile_go_single_builtin_state(Goal, VarMap, Config, Check, VarMap) :-
+    compile_go_single_builtin(Goal, VarMap, Config, Check).
 
 %% compile_go_single_builtin(+Builtin, +VarMap, +Config, -Check)
 compile_go_single_builtin(Goal, VarMap, Config, Check) :-
@@ -5345,6 +5390,17 @@ compile_go_single_builtin(Goal, VarMap, Config, Check) :-
 compile_go_single_builtin(Goal, VarMap, Config, Check) :-
     Goal =.. [Op, Left, Right],
     member(Op-GoOp, ['>' - ">", '<' - "<", '>=' - ">=", '=<' - "<=", '=:=' - "==", '=\\=' - "!="]),
+    !,
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Check),
+"    if !(~w ~w ~w) {
+        return results
+    }", [LeftExpr, GoOp, RightExpr]).
+
+compile_go_single_builtin(Goal, VarMap, Config, Check) :-
+    Goal =.. [Op, Left, Right],
+    member(Op-GoOp, ['=' - "==", '==' - "==", '\\=' - "!="]),
     !,
     translate_go_expr(Left, VarMap, Config, LeftExpr),
     translate_go_expr(Right, VarMap, Config, RightExpr),
@@ -5497,6 +5553,9 @@ translate_go_expr(Var, VarMap, _, Expr) :-
     (   % Case 1: Direct mapping (Var, GoVarName) used in JSON mode
         member((V, GoVarName), VarMap), Var == V
     ->  atom_string(GoVarName, Expr)
+    ;   % Case 1b: computed expression binding
+        member(V-expr(GoExpr), VarMap), Var == V
+    ->  Expr = GoExpr
     ;   % Case 2: source mapping (Var, source(Source, Idx)) used in Datalog mode
         member(V-source(Source, Idx), VarMap), Var == V
     ->  format(string(Expr), "~w.Args[\"arg~w\"]", [Source, Idx])
@@ -5518,6 +5577,41 @@ translate_go_expr(Expr, VarMap, Config, GoExpr) :-
     translate_go_expr(Right, VarMap, Config, RightExpr),
     format(string(GoExpr), "(~w ~w ~w)", [LeftExpr, Op, RightExpr]).
 translate_go_expr(_, _, _, "nil").
+
+translate_go_numeric_expr(Var, VarMap, _, Expr) :-
+    var(Var),
+    !,
+    (   member(V-expr(GoExpr), VarMap), Var == V
+    ->  Expr = GoExpr
+    ;   member((V, GoVarName), VarMap), Var == V
+    ->  atom_string(GoVarName, Expr)
+    ;   member(V-source(Source, Idx), VarMap), Var == V
+    ->  format(string(Expr), "toFloat64Must(~w.Args[\"arg~w\"])", [Source, Idx])
+    ;   Expr = "0"
+    ).
+translate_go_numeric_expr(Num, _, _, Expr) :-
+    number(Num),
+    !,
+    format(string(Expr), "~w", [Num]).
+translate_go_numeric_expr(-(Expr0), VarMap, Config, Expr) :-
+    !,
+    translate_go_numeric_expr(Expr0, VarMap, Config, InnerExpr),
+    format(string(Expr), "(-(~w))", [InnerExpr]).
+translate_go_numeric_expr(Expr0, VarMap, Config, Expr) :-
+    Expr0 =.. [Op, Left, Right],
+    member(Op, [+, -, *, /]),
+    !,
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Expr), "(~w ~w ~w)", [LeftExpr, Op, RightExpr]).
+translate_go_numeric_expr(Left ** Right, VarMap, Config, Expr) :-
+    !,
+    collect_binding_import('math'),
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Expr), "math.Pow(~w, ~w)", [LeftExpr, RightExpr]).
+translate_go_numeric_expr(Expr0, VarMap, Config, Expr) :-
+    translate_go_expr(Expr0, VarMap, Config, Expr).
 
 %% compile_go_head_construction(+HeadPred, +HeadArgs, +VarMap, +Config, -Code)
 %  Generate code to construct result fact

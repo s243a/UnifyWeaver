@@ -7170,8 +7170,8 @@ compile_rust_pipeline(Predicates, Options, RustCode) :-
     % Extract stage names
     extract_rust_stage_names(Predicates, StageNames),
 
-    % Generate stage functions (placeholder implementations)
-    generate_rust_stage_functions(StageNames, StageFunctions),
+    % Generate stage functions
+    generate_rust_stage_functions(Predicates, StageFunctions),
 
     % Generate the pipeline connector (mode-aware)
     generate_rust_pipeline_connector(StageNames, PipelineName, PipelineMode, ConnectorCode),
@@ -7249,6 +7249,15 @@ fn write_jsonl_stream(records: &[HashMap<String, Value>]) {
             writeln!(handle, \"{}\", json).ok();
         }
     }
+}
+
+fn value_to_f64(value: Option<&Value>) -> f64 {
+    match value {
+        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+        Some(Value::String(s)) => s.parse::<f64>().unwrap_or(0.0),
+        Some(Value::Bool(b)) => if *b { 1.0 } else { 0.0 },
+        _ => 0.0,
+    }
 }", []).
 
 rust_pipeline_helpers(_, Helpers) :-
@@ -7293,20 +7302,577 @@ extract_rust_pred_name(_Target:Name/_Arity, NameStr) :-
 extract_rust_pred_name(Name/_Arity, NameStr) :-
     atom_string(Name, NameStr).
 
-%% generate_rust_stage_functions(+Names, -Code)
-%  Generate placeholder stage function implementations
+%% generate_rust_stage_functions(+Predicates, -Code)
+%  Generate pipeline stage implementations when a predicate matches a
+%  supported lowering shape, otherwise fall back to a placeholder.
 generate_rust_stage_functions([], "").
-generate_rust_stage_functions([Name|Rest], Code) :-
-    format(string(StageCode),
+generate_rust_stage_functions([PredIndicator|Rest], Code) :-
+    generate_rust_stage_function(PredIndicator, StageCode),
+    generate_rust_stage_functions(Rest, RestCode),
+    format(string(Code), "~w~w", [StageCode, RestCode]).
+
+generate_rust_stage_function(PredIndicator, StageCode) :-
+    extract_rust_pred_name(PredIndicator, Name),
+    (   rust_pipeline_stage_code(PredIndicator, Name, StageCode)
+    ->  true
+    ;   format(string(StageCode),
 "/// Stage: ~w
 fn stage_~w(input: Vec<HashMap<String, Value>>) -> Vec<HashMap<String, Value>> {
     // TODO: Implement stage logic
     input
 }
 
-", [Name, Name]),
-    generate_rust_stage_functions(Rest, RestCode),
-    format(string(Code), "~w~w", [StageCode, RestCode]).
+", [Name, Name])
+    ).
+
+rust_pipeline_stage_code(PredIndicator, Name, StageCode) :-
+    pred_indicator_parts(PredIndicator, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   Clauses = [Head-Body],
+        normalize_goals(Body, Goals),
+        append(BeforeAgg, [AggGoal|AfterAgg], Goals),
+        classify_aggregate(AggGoal, AggInfo),
+        BeforeAgg = [TriggerGoal],
+        include(rust_pipeline_builtin_goal, AfterAgg, HavingFilters),
+        exclude(rust_pipeline_builtin_goal, AfterAgg, UnsupportedAfterAgg),
+        UnsupportedAfterAgg == [],
+        rust_pipeline_correlated_aggregate_stage(Name, Head, TriggerGoal, AggInfo, HavingFilters, StageCode)
+    ;   Arity =:= 3,
+        is_general_recursive_pattern_rust(Pred, Arity, Clauses),
+        \+ rust_computed_increment_pattern(Pred, Clauses, _, _, _, _, _, _, _),
+        rust_pipeline_recursive_tc_stage(Name, Pred, Clauses, StageCode)
+    ;   rust_pipeline_join_stage(Name, Head, Clauses, StageCode)
+    ).
+
+rust_pipeline_recursive_tc_stage(Name, Pred, Clauses, StageCode) :-
+    partition(is_rec_clause_rust(Pred), Clauses, RecClauses, BaseClauses),
+    BaseClauses = [BaseHead-BaseBody|_],
+    RecClauses = [_RecHead-RecBody|_],
+    BaseHead =.. [HeadPred, _, _, BaseConst],
+    number(BaseConst),
+    extract_goals_list_rust(BaseBody, BaseGoals),
+    BaseGoals = [BaseStepGoal|_],
+    BaseStepGoal =.. [StepRel, _, _],
+    extract_goals_list_rust(RecBody, RecGoals),
+    member(_Hops is (_Prev + Incr), RecGoals),
+    number(Incr),
+    (   member(BoundGoal, RecGoals),
+        strip_module(BoundGoal, _, PlainBoundGoal),
+        functor(PlainBoundGoal, BoundRel, 1),
+        BoundRel \= Pred,
+        BoundRel \= StepRel,
+        member(Constraint0, RecGoals),
+        strip_module(Constraint0, _, Constraint),
+        Constraint =.. [Op, Left, Right],
+        member(Op, [=<, <, >=, >]),
+        term_variables(PlainBoundGoal, [BoundVar]),
+        (   Left == BoundVar
+        ;   Right == BoundVar
+        )
+    ->  atom_string(BoundRel, BoundRelStr),
+        format(string(BoundSetup),
+"    let mut recursion_bound: Option<f64> = None;
+    for bound_fact in &input {
+        if matches!(bound_fact.get(\"relation\"), Some(Value::String(rel)) if rel == \"~w\") {
+            recursion_bound = Some(value_to_f64(bound_fact.get(\"arg0\")));
+            break;
+        }
+    }
+", [BoundRelStr]),
+        rust_pipeline_tc_bound_condition(Op, Left, Right, BoundVar, 'next_depth', BoundCond)
+    ;   BoundSetup = "",
+        BoundCond = "true"
+    ),
+    atom_string(HeadPred, HeadPredStr),
+    atom_string(StepRel, StepRelStr),
+    rust_numeric_literal("f64", BaseConst, BaseConstStr),
+    rust_numeric_literal("f64", Incr, IncrStr),
+    format(string(StageCode),
+"/// Stage: ~w
+fn stage_~w(input: Vec<HashMap<String, Value>>) -> Vec<HashMap<String, Value>> {
+    let mut results: Vec<HashMap<String, Value>> = Vec::new();
+~w    for edge in &input {
+        if !matches!(edge.get(\"relation\"), Some(Value::String(rel)) if rel == \"~w\") {
+            continue;
+        }
+        let mut base_record = HashMap::new();
+        base_record.insert(\"relation\".to_string(), Value::String(\"~w\".to_string()));
+        base_record.insert(\"arg0\".to_string(), edge.get(\"arg0\").cloned().unwrap_or(Value::Null));
+        base_record.insert(\"arg1\".to_string(), edge.get(\"arg1\").cloned().unwrap_or(Value::Null));
+        if let Some(n) = serde_json::Number::from_f64(~w) {
+            base_record.insert(\"arg2\".to_string(), Value::Number(n));
+        } else {
+            base_record.insert(\"arg2\".to_string(), Value::Null);
+        }
+        results.push(base_record);
+
+        for prev in &input {
+            if !matches!(prev.get(\"relation\"), Some(Value::String(rel)) if rel == \"~w\") {
+                continue;
+            }
+            if edge.get(\"arg1\") != prev.get(\"arg0\") {
+                continue;
+            }
+            let next_depth = value_to_f64(prev.get(\"arg2\")) + ~w;
+            if ~w {
+                let mut record = HashMap::new();
+                record.insert(\"relation\".to_string(), Value::String(\"~w\".to_string()));
+                record.insert(\"arg0\".to_string(), edge.get(\"arg0\").cloned().unwrap_or(Value::Null));
+                record.insert(\"arg1\".to_string(), prev.get(\"arg1\").cloned().unwrap_or(Value::Null));
+                if let Some(n) = serde_json::Number::from_f64(next_depth) {
+                    record.insert(\"arg2\".to_string(), Value::Number(n));
+                } else {
+                    record.insert(\"arg2\".to_string(), Value::Null);
+                }
+                results.push(record);
+            }
+        }
+    }
+    results
+}
+
+", [Name, Name, BoundSetup, StepRelStr, HeadPredStr, BaseConstStr, HeadPredStr, IncrStr, BoundCond, HeadPredStr]).
+
+rust_pipeline_tc_bound_condition(Op, Left, Right, BoundVar, DepthExpr, Cond) :-
+    rust_pipeline_tc_bound_operand(Left, BoundVar, DepthExpr, LeftExpr),
+    rust_pipeline_tc_bound_operand(Right, BoundVar, DepthExpr, RightExpr),
+    member(Op-RustOp, [(=<)-"<=", (<)-"<", (>=)-">=", (>)-">"]),
+    format(string(Cond), "recursion_bound.map(|bound| ~w ~w ~w).unwrap_or(true)", [LeftExpr, RustOp, RightExpr]).
+
+rust_pipeline_tc_bound_operand(Term, BoundVar, _DepthExpr, "bound") :-
+    var(Term),
+    Term == BoundVar,
+    !.
+rust_pipeline_tc_bound_operand(Term, _BoundVar, DepthExpr, DepthExpr) :-
+    var(Term),
+    !.
+rust_pipeline_tc_bound_operand(Term, _BoundVar, _DepthExpr, Expr) :-
+    number(Term),
+    !,
+    rust_numeric_literal("f64", Term, Expr).
+
+rust_pipeline_join_stage(Name, _Head, Clauses, StageCode) :-
+    findall(ClauseCode,
+        ( member(ClauseHead-Body, Clauses),
+          ClauseHead =.. [HeadPred|HeadArgs],
+          normalize_goals(Body, Goals),
+          rust_pipeline_clause_block(Goals, HeadPred, HeadArgs, ClauseCode)
+        ),
+        ClauseBlocks),
+    ClauseBlocks \= [],
+    atomic_list_concat(ClauseBlocks, "", ClauseBody),
+    format(string(StageCode),
+"/// Stage: ~w
+fn stage_~w(input: Vec<HashMap<String, Value>>) -> Vec<HashMap<String, Value>> {
+    let mut results: Vec<HashMap<String, Value>> = Vec::new();
+~w    results
+}
+
+", [Name, Name, ClauseBody]).
+
+rust_pipeline_clause_block(Goals, HeadPred, HeadArgs, ClauseCode) :-
+    rust_pipeline_goal_walk(Goals, 0, [], HeadPred, HeadArgs, "    ", ClauseBody, _),
+    ClauseBody \= "",
+    format(string(ClauseCode), "~w", [ClauseBody]).
+
+rust_pipeline_goal_walk([], Counter, Env, HeadPred, HeadArgs, Indent, Code, Counter) :-
+    rust_pipeline_emit_record(HeadPred, HeadArgs, Env, Indent, Code).
+rust_pipeline_goal_walk([Goal0|Rest], Counter0, Env0, HeadPred, HeadArgs, Indent, Code, CounterOut) :-
+    strip_module(Goal0, _, Goal),
+    (   rust_pipeline_builtin_goal(Goal)
+    ->  rust_pipeline_builtin_block(Goal, Env0, Indent, Prefix, Env1),
+        rust_pipeline_goal_walk(Rest, Counter0, Env1, HeadPred, HeadArgs, Indent, InnerCode, CounterOut),
+        rust_pipeline_wrap_prefix(Prefix, InnerCode, Indent, Code)
+    ;   Goal =.. [Rel|Args],
+        format(string(LoopVar), "f~w", [Counter0]),
+        Counter1 is Counter0 + 1,
+        rust_pipeline_relation_condition(Args, LoopVar, Env0, Cond),
+        rust_pipeline_bind_new_vars(Args, LoopVar, Env0, Indent, BindingsCode, Env1),
+        atom_string(Rel, RelStr),
+        format(string(LoopHeader),
+"~wfor ~w in &input {
+~w    if !matches!(~w.get(\"relation\"), Some(Value::String(rel)) if rel == \"~w\") || !(~w) {
+~w        continue;
+~w    }
+~w",
+            [Indent, LoopVar, Indent, LoopVar, RelStr, Cond, Indent, Indent, BindingsCode]),
+        format(string(InnerIndent), "~w    ", [Indent]),
+        rust_pipeline_goal_walk(Rest, Counter1, Env1, HeadPred, HeadArgs, InnerIndent, InnerCode, CounterOut),
+        format(string(Code), "~w~w~w}\n", [LoopHeader, InnerCode, Indent])
+    ).
+
+rust_pipeline_relation_condition([], _LoopVar, _Env, "true").
+rust_pipeline_relation_condition(Args, LoopVar, Env, Cond) :-
+    findall(Part,
+        ( nth0(Index, Args, Arg),
+          rust_pipeline_relation_arg_condition(Arg, Index, LoopVar, Env, Part)
+        ),
+        Parts),
+    rust_combine_pipeline_conditions(Parts, Cond).
+
+rust_pipeline_relation_arg_condition(Arg, Index, LoopVar, Env, Cond) :-
+    var(Arg),
+    lookup_var(Arg, Env, Binding),
+    Binding = val(Name),
+    !,
+    format(string(Cond), "~w.get(\"arg~w\").cloned().unwrap_or(Value::Null) == ~w", [LoopVar, Index, Name]).
+rust_pipeline_relation_arg_condition(Arg, Index, LoopVar, _Env, Cond) :-
+    nonvar(Arg),
+    rust_pipeline_value_literal(Arg, Literal),
+    format(string(Cond), "~w.get(\"arg~w\").cloned().unwrap_or(Value::Null) == ~w", [LoopVar, Index, Literal]).
+
+rust_pipeline_bind_new_vars(Args, LoopVar, Env0, Indent, Code, EnvOut) :-
+    rust_pipeline_bind_new_vars_(Args, 0, LoopVar, Env0, Indent, Code, EnvOut).
+
+rust_pipeline_bind_new_vars_([], _Index, _LoopVar, Env, _Indent, "", Env).
+rust_pipeline_bind_new_vars_([Arg|Rest], Index, LoopVar, Env0, Indent, Code, EnvOut) :-
+    rust_pipeline_bind_new_var(Arg, Index, LoopVar, Env0, Indent, Code0, Env1),
+    NextIndex is Index + 1,
+    rust_pipeline_bind_new_vars_(Rest, NextIndex, LoopVar, Env1, Indent, RestCode, EnvOut),
+    format(string(Code), "~w~w", [Code0, RestCode]).
+
+rust_pipeline_bind_new_var(Arg, _Index, _LoopVar, Env, _Indent, "", Env) :-
+    nonvar(Arg),
+    !.
+rust_pipeline_bind_new_var(Arg, _Index, _LoopVar, Env, _Indent, "", Env) :-
+    lookup_var(Arg, Env, _),
+    !.
+rust_pipeline_bind_new_var(Arg, Index, LoopVar, Env0, Indent, Code, [Arg-val(Name)|Env0]) :-
+    gensym(rv_, NameAtom),
+    atom_string(NameAtom, Name),
+    format(string(Code), "~w    let ~w = ~w.get(\"arg~w\").cloned().unwrap_or(Value::Null);\n", [Indent, Name, LoopVar, Index]).
+
+rust_pipeline_builtin_block(is(Var, Expr), Env0, Indent, Prefix, [Var-num(Name)|Env0]) :-
+    var(Var),
+    !,
+    gensym(rn_, NameAtom),
+    atom_string(NameAtom, Name),
+    rust_pipeline_numeric_expr(Expr, Env0, ExprCode),
+    format(string(Prefix), "~wlet ~w = ~w;\n", [Indent, Name, ExprCode]).
+rust_pipeline_builtin_block(=(Left, Right), Env, Indent, Prefix, Env) :-
+    !,
+    rust_pipeline_equality_condition(Left, Right, Env, Cond),
+    format(string(Prefix), "~wif ~w {\n", [Indent, Cond]).
+rust_pipeline_builtin_block('\\='(Left, Right), Env, Indent, Prefix, Env) :-
+    !,
+    rust_pipeline_equality_condition(Left, Right, Env, EqCond),
+    format(string(Prefix), "~wif !(~w) {\n", [Indent, EqCond]).
+rust_pipeline_builtin_block(Goal, Env, Indent, Prefix, Env) :-
+    Goal =.. [Op, Left, Right],
+    member(Op-RustOp, [(>)-">", (<)-"<", (>=)-">=", (=<)-"<=", (=:=)-"==", (=\\=)-"!="]),
+    !,
+    rust_pipeline_numeric_expr(Left, Env, LeftExpr),
+    rust_pipeline_numeric_expr(Right, Env, RightExpr),
+    format(string(Prefix), "~wif ~w ~w ~w {\n", [Indent, LeftExpr, RustOp, RightExpr]).
+rust_pipeline_builtin_block(true, Env, _Indent, "", Env) :- !.
+
+rust_pipeline_wrap_prefix("", InnerCode, _Indent, InnerCode).
+rust_pipeline_wrap_prefix(Prefix, InnerCode, Indent, Code) :-
+    format(string(Code), "~w~w~w}\n", [Prefix, InnerCode, Indent]).
+
+rust_pipeline_equality_condition(Left, Right, Env, Cond) :-
+    rust_pipeline_comparable_expr(Left, Env, LeftExpr),
+    rust_pipeline_comparable_expr(Right, Env, RightExpr),
+    format(string(Cond), "~w == ~w", [LeftExpr, RightExpr]).
+
+rust_pipeline_comparable_expr(Term, Env, Expr) :-
+    var(Term),
+    lookup_var(Term, Env, Binding),
+    (   Binding = val(Name)
+    ->  Expr = Name
+    ;   Binding = num(Name)
+    ->  Expr = Name
+    ),
+    !.
+rust_pipeline_comparable_expr(Term, _Env, Expr) :-
+    number(Term),
+    !,
+    rust_numeric_literal("f64", Term, Expr).
+rust_pipeline_comparable_expr(Term, _Env, Expr) :-
+    rust_pipeline_value_literal(Term, Expr).
+
+rust_pipeline_numeric_expr(Expr, Env, RustExpr) :-
+    var(Expr),
+    lookup_var(Expr, Env, Binding),
+    !,
+    (   Binding = num(Name)
+    ->  RustExpr = Name
+    ;   Binding = val(Name)
+    ->  format(string(RustExpr), "value_to_f64(Some(&~w))", [Name])
+    ).
+rust_pipeline_numeric_expr(Expr, _Env, RustExpr) :-
+    number(Expr),
+    !,
+    rust_numeric_literal("f64", Expr, RustExpr).
+rust_pipeline_numeric_expr(-Expr, Env, RustExpr) :-
+    !,
+    rust_pipeline_numeric_expr(Expr, Env, Inner),
+    format(string(RustExpr), "(-~w)", [Inner]).
+rust_pipeline_numeric_expr(Left ** Right, Env, RustExpr) :-
+    !,
+    rust_pipeline_numeric_expr(Left, Env, LeftExpr),
+    rust_pipeline_numeric_expr(Right, Env, RightExpr),
+    format(string(RustExpr), "(~w).powf(~w)", [LeftExpr, RightExpr]).
+rust_pipeline_numeric_expr(Expr, Env, RustExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    member(Op-RustOp, [(+)-"+", (-)-"-", (*)-"*", (/)-"/"]),
+    !,
+    rust_pipeline_numeric_expr(Left, Env, LeftExpr),
+    rust_pipeline_numeric_expr(Right, Env, RightExpr),
+    format(string(RustExpr), "(~w ~w ~w)", [LeftExpr, RustOp, RightExpr]).
+
+rust_pipeline_emit_record(HeadPred, HeadArgs, Env, Indent, Code) :-
+    atom_string(HeadPred, HeadPredStr),
+    rust_pipeline_head_bindings(HeadArgs, Env, Indent, BindingsCode),
+    format(string(Code),
+"~wlet mut record = HashMap::new();
+~wrecord.insert(\"relation\".to_string(), Value::String(\"~w\".to_string()));
+~w
+~wresults.push(record);
+", [Indent, Indent, HeadPredStr, BindingsCode, Indent]).
+
+rust_pipeline_head_bindings(Args, Env, Indent, Code) :-
+    rust_pipeline_head_bindings_(0, Args, Env, Indent, Code).
+
+rust_pipeline_head_bindings_(Index, [], _Env, _Indent, "") :-
+    integer(Index).
+rust_pipeline_head_bindings_(Index, [Arg|Rest], Env, Indent, Code) :-
+    rust_pipeline_head_binding(Index, Arg, Env, Indent, Line),
+    NextIndex is Index + 1,
+    rust_pipeline_head_bindings_(NextIndex, Rest, Env, Indent, RestCode),
+    format(string(Code), "~w~w", [Line, RestCode]).
+
+rust_pipeline_head_binding(Index, Arg, Env, Indent, Line) :-
+    var(Arg),
+    lookup_var(Arg, Env, Binding),
+    !,
+    (   Binding = val(Name)
+    ->  format(string(Line), "~wrecord.insert(\"arg~w\".to_string(), ~w.clone());\n", [Indent, Index, Name])
+    ;   Binding = num(Name)
+    ->  format(string(Line),
+"~wif let Some(n) = serde_json::Number::from_f64(~w) {
+~w    record.insert(\"arg~w\".to_string(), Value::Number(n));
+~w} else {
+~w    record.insert(\"arg~w\".to_string(), Value::Null);
+~w}
+", [Indent, Name, Indent, Index, Indent, Indent, Index, Indent])
+    ).
+rust_pipeline_head_binding(Index, Arg, _Env, Indent, Line) :-
+    atom(Arg),
+    !,
+    format(string(Line), "~wrecord.insert(\"arg~w\".to_string(), Value::String(\"~w\".to_string()));\n", [Indent, Index, Arg]).
+rust_pipeline_head_binding(Index, Arg, _Env, Indent, Line) :-
+    number(Arg),
+    !,
+    rust_numeric_literal("f64", Arg, Literal),
+    format(string(Line),
+"~wif let Some(n) = serde_json::Number::from_f64(~w) {
+~w    record.insert(\"arg~w\".to_string(), Value::Number(n));
+~w} else {
+~w    record.insert(\"arg~w\".to_string(), Value::Null);
+~w}
+", [Indent, Literal, Indent, Index, Indent, Indent, Index, Indent]).
+
+rust_pipeline_value_literal(Atom, Expr) :-
+    atom(Atom),
+    !,
+    format(string(Expr), "Value::String(\"~w\".to_string())", [Atom]).
+rust_pipeline_value_literal(Number, Expr) :-
+    number(Number),
+    rust_numeric_literal("f64", Number, Literal),
+    format(string(Expr), "Value::Number(serde_json::Number::from_f64(~w).unwrap())", [Literal]).
+
+pred_indicator_parts(_Target:Pred/Arity, Pred, Arity) :- !.
+pred_indicator_parts(Pred/Arity, Pred, Arity).
+
+rust_pipeline_builtin_goal(Goal0) :-
+    strip_module(Goal0, _, Goal),
+    nonvar(Goal),
+    Goal =.. [Functor|_],
+    member(Functor, [is, '=', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+']).
+
+rust_pipeline_correlated_aggregate_stage(Name, Head, TriggerGoal, AggInfo, HavingFilters, StageCode) :-
+    Head =.. [HeadPred|HeadArgs],
+    TriggerGoal =.. [TriggerPred|TriggerArgs],
+    get_dict(type, AggInfo, all),
+    get_dict(op, AggInfo, Op),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(result, AggInfo, ResultVar),
+    get_dict(goal_info, AggInfo, GoalInfo),
+    GoalInfo.relations = [RelGoal],
+    GoalInfo.other = [],
+    RelGoal =.. [InnerPred|InnerArgs],
+    rust_build_correlation_conditions(TriggerArgs, InnerArgs, CorrelationCond),
+    rust_build_aggregate_filter_conditions(GoalInfo, InnerArgs, FilterCond0),
+    rust_combine_pipeline_conditions([CorrelationCond, FilterCond0], FilterCond),
+    rust_pipeline_aggregate_value_index(Op, Expr, InnerArgs, ValueIdx),
+    rust_pipeline_agg_compute(Op, ValueIdx, AggSetup, AggLoop, AggGuard),
+    rust_pipeline_agg_finish(Op, FinishExpr),
+    rust_pipeline_having_condition(HavingFilters, ResultVar, HavingCond),
+    rust_pipeline_output_bindings(HeadArgs, ResultVar, TriggerArgs, OutputBindings),
+    atom_string(HeadPred, HeadPredStr),
+    atom_string(TriggerPred, TriggerPredStr),
+    atom_string(InnerPred, InnerPredStr),
+    format(string(StageCode),
+"/// Stage: ~w
+fn stage_~w(input: Vec<HashMap<String, Value>>) -> Vec<HashMap<String, Value>> {
+    let mut results: Vec<HashMap<String, Value>> = Vec::new();
+    for fact in &input {
+        if !matches!(fact.get(\"relation\"), Some(Value::String(rel)) if rel == \"~w\") {
+            continue;
+        }
+~w
+        for f in &input {
+            if matches!(f.get(\"relation\"), Some(Value::String(rel)) if rel == \"~w\") && (~w) {
+~w
+            }
+        }
+        if ~w {
+            let agg = ~w;
+            if ~w {
+                let mut record = HashMap::new();
+                record.insert(\"relation\".to_string(), Value::String(\"~w\".to_string()));
+~w
+                results.push(record);
+            }
+        }
+    }
+    results
+}
+
+", [Name, Name, TriggerPredStr, AggSetup, InnerPredStr, FilterCond, AggLoop, AggGuard, FinishExpr, HavingCond, HeadPredStr, OutputBindings]).
+
+rust_pipeline_aggregate_value_index(count, _Expr, _Args, -1) :- !.
+rust_pipeline_aggregate_value_index(Op, Expr, Args, Index) :-
+    member(Op, [sum, avg, min, max]),
+    nth0(Index, Args, Arg),
+    Arg == Expr,
+    !.
+
+rust_pipeline_agg_compute(count, _ValueIdx, "        let mut agg_count: usize = 0;\n", "                agg_count += 1;\n", "agg_count > 0") :- !.
+rust_pipeline_agg_compute(sum, ValueIdx, "        let mut values: Vec<f64> = Vec::new();\n", Loop, "!values.is_empty()") :-
+    format(string(Loop), "                values.push(value_to_f64(f.get(\"arg~w\")));\n", [ValueIdx]).
+rust_pipeline_agg_compute(avg, ValueIdx, "        let mut values: Vec<f64> = Vec::new();\n", Loop, "!values.is_empty()") :-
+    format(string(Loop), "                values.push(value_to_f64(f.get(\"arg~w\")));\n", [ValueIdx]).
+rust_pipeline_agg_compute(min, ValueIdx, "        let mut values: Vec<f64> = Vec::new();\n", Loop, "!values.is_empty()") :-
+    format(string(Loop), "                values.push(value_to_f64(f.get(\"arg~w\")));\n", [ValueIdx]).
+rust_pipeline_agg_compute(max, ValueIdx, "        let mut values: Vec<f64> = Vec::new();\n", Loop, "!values.is_empty()") :-
+    format(string(Loop), "                values.push(value_to_f64(f.get(\"arg~w\")));\n", [ValueIdx]).
+
+rust_pipeline_agg_finish(count, "agg_count as f64") :- !.
+rust_pipeline_agg_finish(sum, "values.iter().copied().sum::<f64>()") :- !.
+rust_pipeline_agg_finish(avg, "values.iter().copied().sum::<f64>() / (values.len() as f64)") :- !.
+rust_pipeline_agg_finish(min, "values.iter().copied().fold(f64::INFINITY, f64::min)") :- !.
+rust_pipeline_agg_finish(max, "values.iter().copied().fold(f64::NEG_INFINITY, f64::max)") :- !.
+
+rust_pipeline_having_condition([], _ResultVar, "true") :- !.
+rust_pipeline_having_condition([Constraint0], ResultVar, Cond) :-
+    strip_module(Constraint0, _, Constraint),
+    Constraint =.. [Op, Left0, Right0],
+    rust_pipeline_having_operand(Left0, ResultVar, Left),
+    rust_pipeline_having_operand(Right0, ResultVar, Right),
+    member(Op-GoOp, [(>)-">", (<)-"<", (>=)-">=", (=<)-"<=", (=:=)-"==", (=\\=)-"!=", (==)-"=="]),
+    format(string(Cond), "~w ~w ~w", [Left, GoOp, Right]).
+
+rust_pipeline_having_operand(Operand0, ResultVar, "agg") :-
+    var(Operand0),
+    Operand0 == ResultVar,
+    !.
+rust_pipeline_having_operand(Operand, _ResultVar, Expr) :-
+    number(Operand),
+    !,
+    format(string(Expr), "~w", [Operand]).
+
+rust_build_correlation_conditions(TriggerArgs, InnerArgs, Condition) :-
+    findall(Part,
+        rust_correlation_condition(TriggerArgs, InnerArgs, Part),
+        Parts),
+    rust_combine_pipeline_conditions(Parts, Condition).
+
+rust_correlation_condition(TriggerArgs, InnerArgs, Cond) :-
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    var(TriggerArg),
+    nth0(InnerIndex, InnerArgs, InnerArg),
+    var(InnerArg),
+    TriggerArg == InnerArg,
+    format(string(Cond), "f.get(\"arg~w\") == fact.get(\"arg~w\")", [InnerIndex, TriggerIndex]).
+
+rust_build_aggregate_filter_conditions(GoalInfo, Args, Condition) :-
+    get_dict(constraints, GoalInfo, Constraints),
+    findall(Part,
+        ( member(Constraint, Constraints),
+          rust_aggregate_constraint_condition(Constraint, Args, Part)
+        ),
+        Parts),
+    rust_combine_pipeline_conditions(Parts, Condition).
+
+rust_aggregate_constraint_condition(Constraint0, Args, Cond) :-
+    strip_module(Constraint0, _, Constraint),
+    Constraint =.. [Op, Left, Right],
+    member(Op-GoOp, [(>)-">", (<)-"<", (>=)-">=", (=<)-"<=", (=:=)-"==", (=\\=)-"!="]),
+    rust_aggregate_operand(Left, Args, LeftExpr),
+    rust_aggregate_operand(Right, Args, RightExpr),
+    format(string(Cond), "~w ~w ~w", [LeftExpr, GoOp, RightExpr]).
+
+rust_aggregate_operand(Term, Args, Expr) :-
+    var(Term),
+    !,
+    nth0(Index, Args, Arg),
+    Arg == Term,
+    format(string(Expr), "value_to_f64(f.get(\"arg~w\"))", [Index]).
+rust_aggregate_operand(Term, _Args, Expr) :-
+    number(Term),
+    !,
+    format(string(Expr), "~w", [Term]).
+
+rust_combine_pipeline_conditions(Parts0, Condition) :-
+    exclude(=("true"), Parts0, Parts),
+    (   Parts == []
+    ->  Condition = "true"
+    ;   atomic_list_concat(Parts, " && ", Condition)
+    ).
+
+rust_pipeline_output_bindings(HeadArgs, ResultVar, TriggerArgs, BindingsCode) :-
+    findall(Line,
+        ( nth0(Index, HeadArgs, Arg),
+          rust_pipeline_output_binding(Index, Arg, ResultVar, TriggerArgs, Line)
+        ),
+        Lines),
+    atomic_list_concat(Lines, "", BindingsCode).
+
+rust_pipeline_output_binding(Index, Arg, ResultVar, _TriggerArgs, Line) :-
+    var(Arg),
+    Arg == ResultVar,
+    !,
+    format(string(Line),
+"                if let Some(n) = serde_json::Number::from_f64(agg) {
+                    record.insert(\"arg~w\".to_string(), Value::Number(n));
+                } else {
+                    record.insert(\"arg~w\".to_string(), Value::Null);
+                }
+", [Index, Index]).
+rust_pipeline_output_binding(Index, Arg, _ResultVar, TriggerArgs, Line) :-
+    var(Arg),
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    TriggerArg == Arg,
+    !,
+    format(string(Line), "                record.insert(\"arg~w\".to_string(), fact.get(\"arg~w\").cloned().unwrap_or(Value::Null));\n", [Index, TriggerIndex]).
+rust_pipeline_output_binding(Index, Arg, _ResultVar, _TriggerArgs, Line) :-
+    atom(Arg),
+    !,
+    format(string(Line), "                record.insert(\"arg~w\".to_string(), Value::String(\"~w\".to_string()));\n", [Index, Arg]).
+rust_pipeline_output_binding(Index, Arg, _ResultVar, _TriggerArgs, Line) :-
+    number(Arg),
+    !,
+    format(string(Line),
+"                if let Some(n) = serde_json::Number::from_f64(~w_f64) {
+                    record.insert(\"arg~w\".to_string(), Value::Number(n));
+                } else {
+                    record.insert(\"arg~w\".to_string(), Value::Null);
+                }
+", [Arg, Index, Index]).
 
 %% generate_rust_pipeline_connector(+StageNames, +PipelineName, +Mode, -Code)
 %  Generate the pipeline connector function (mode-aware)
@@ -7390,17 +7956,21 @@ generate_rust_fixpoint_chain([], Code) :-
     format(string(Code), "        let new_records = current;", []).
 generate_rust_fixpoint_chain(Names, Code) :-
     Names \= [],
-    generate_rust_fixpoint_stages(Names, "current", StageCode),
+    generate_rust_fixpoint_stages(Names, StageCode),
     format(string(Code), "~w", [StageCode]).
 
-generate_rust_fixpoint_stages([], Current, Code) :-
-    format(string(Code), "        let new_records = ~w;", [Current]).
-generate_rust_fixpoint_stages([Stage|Rest], Current, Code) :-
-    format(string(NextVar), "stage_~w_out", [Stage]),
-    format(string(StageCall), "        let ~w = stage_~w(~w);
-", [NextVar, Stage, Current]),
-    generate_rust_fixpoint_stages(Rest, NextVar, RestCode),
-    format(string(Code), "~w~w", [StageCall, RestCode]).
+generate_rust_fixpoint_stages(Names, Code) :-
+    findall(StageCall,
+        ( member(Stage, Names),
+          format(string(StageCall),
+"        new_records.extend(stage_~w(current.clone()));
+", [Stage])
+        ),
+        StageCalls),
+    atomic_list_concat(StageCalls, "", StageCallsCode),
+    format(string(Code),
+"        let mut new_records: Vec<HashMap<String, Value>> = Vec::new();
+~w", [StageCallsCode]).
 
 %% generate_rust_main_block(+PipelineName, +Format, -Code)
 %  Generate main execution block
