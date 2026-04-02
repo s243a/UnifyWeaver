@@ -18,7 +18,7 @@
     compile_tree_recursion_jamaica/3,
     compile_multicall_recursion_jamaica/3,
     compile_direct_multicall_jamaica/3,
-    compile_mutual_recursion_jamaica/2,
+    compile_mutual_recursion_jamaica/3,
     % Component system
     jamaica_type_info/1,
     jamaica_validate_config/1,
