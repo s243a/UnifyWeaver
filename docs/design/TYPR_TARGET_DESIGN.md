@@ -529,6 +529,10 @@ Current wrapped-fallback boundary note:
 - current CLI boundary: `infer` and `off` are validated with `typr check`;
   the current `typr build` path remains stricter about typed function
   signatures
+- per-path unique-path work has a dedicated TypR design note in
+  [TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md](/home/s243a/Projects/UnifyWeaver/context/antigravity/UnifyWeaver/docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md),
+  which defines the next TypR step as invariant-input helper/guard support
+  ahead of broader path-aware aggregation
 - the remaining wrapped fallback boundary is now beyond that first
   producer-follow-on slice
 - if this area is revisited again, the next real audit target is the next
