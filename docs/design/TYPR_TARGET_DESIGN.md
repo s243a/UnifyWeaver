@@ -518,6 +518,9 @@ Current wrapped-fallback boundary note:
 - the next narrowed substring-style slice is also native when it stays within
   constant-parameter substring producers such as `sub_atom/5` and
   `string_substr/4`, followed by a simple alias tail
+- the next audited extra-parameter string producer family is also native for
+  simple alias tails, including representative `string_replace/4`,
+  `string_sub/4`, `string_format/3`, and `string_grepl/3`
 - the remaining wrapped fallback boundary is now beyond that first
   producer-follow-on slice
 - if this area is revisited again, the next real audit target is the next

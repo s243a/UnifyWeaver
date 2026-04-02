@@ -171,7 +171,9 @@ bring-up.
     string-transform or length-producing step
   - simple alias tails after native conversion, list, and path producers such
     as `to_numeric/2`, `reverse/2`, `dirname/2`, `atom_string/2`, narrowed
-    `sub_atom/5`, and `string_substr/4`
+    `sub_atom/5`, `string_substr/4`, and representative extra-parameter
+    string producers such as `string_replace/4`, `string_sub/4`,
+    `string_format/3`, and `string_grepl/3`
   - guard-style command predicates lowered into clause conditions
   - sequential native control-flow chains where earlier outputs feed later
     guards and outputs
