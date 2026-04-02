@@ -4402,6 +4402,9 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
         (   BeforeAgg == [],
             UnsupportedAfterAgg == []
         ->  compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, HavingFilters, Config, Code)
+        ;   BeforeAgg = [TriggerGoal],
+            UnsupportedAfterAgg == []
+        ->  compile_go_correlated_aggregate_rule(Index, HeadPred, HeadArgs, TriggerGoal, AggGoal, HavingFilters, Config, Code)
         ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     // Unsupported correlated aggregate form
@@ -4432,6 +4435,158 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
     return results
 }", [RuleName, AllBlocks])
         )
+    ).
+
+compile_go_correlated_aggregate_rule(Index, HeadPred, HeadArgs, TriggerGoal, AggGoal0, HavingFilters, _Config, Code) :-
+    format(string(RuleName), "ApplyRule_~w", [Index]),
+    normalize_aggregate_goal_go(AggGoal0, AggGoal),
+    classify_aggregate(AggGoal, AggInfo),
+    get_dict(type, AggInfo, Type),
+    get_dict(goal_info, AggInfo, GoalInfo),
+    get_dict(group, AggInfo, GroupVar),
+    get_dict(op, AggInfo, Op),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(result, AggInfo, Result),
+    TriggerGoal =.. [TriggerPred|TriggerArgs],
+    (   Type = all,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = []
+    ->  RelGoal =.. [Pred|Args],
+        build_go_correlation_conditions(TriggerArgs, Args, CorrelationCond),
+        build_go_aggregate_filter_conditions(GoalInfo, Args, FilterCond0),
+        combine_go_inline_conditions([CorrelationCond, FilterCond0], FilterCond),
+        go_correlated_output_args(HeadArgs, Result, TriggerArgs, ArgsStr),
+        (   HavingFilters \= []
+        ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+            format(string(HavingIfStart), "
+        // HAVING clause filter
+        if ~w {", [HavingCond]),
+            HavingIfEnd = "
+        }"
+        ;   HavingIfStart = "",
+            HavingIfEnd = ""
+        ),
+        (   Op == count
+        ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    count := 0.0
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            count += 1.0
+        }
+    }
+    if count > 0 {
+        agg := count~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+        ;   find_var_index_go(Expr, Args, ValueIdx),
+            go_agg_code(Op, AggCode),
+            format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    var values []float64
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                values = append(values, val)
+            }
+        }
+    }
+    if len(values) > 0 {
+        ~w~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+        )
+    ;   Type = group,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = []
+    ->  RelGoal =.. [Pred|Args],
+        build_go_correlation_conditions(TriggerArgs, Args, CorrelationCond),
+        build_go_aggregate_filter_conditions(GoalInfo, Args, FilterCond0),
+        combine_go_inline_conditions([CorrelationCond, FilterCond0], FilterCond),
+        find_var_index_go(GroupVar, Args, GroupIdx),
+        go_grouped_correlated_output_args(HeadArgs, GroupVar, Result, TriggerArgs, ArgsStr),
+        (   HavingFilters \= []
+        ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+            format(string(HavingCode), "
+            // HAVING clause filter
+            if !(~w) {
+                continue
+            }", [HavingCond])
+        ;   HavingCode = ""
+        ),
+        (   Op == count
+        ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    groups := make(map[interface{}]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            key := f.Args[\"arg~w\"]
+            groups[key] += 1.0
+        }
+    }
+    for key, agg := range groups {
+        if agg > 0 {
+            ~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{~w},
+            })
+        }
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, GroupIdx, HavingCode, HeadPred, ArgsStr])
+        ;   find_var_index_go(Expr, Args, ValueIdx),
+            go_agg_code(Op, AggCode),
+            format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    groups := make(map[interface{}][]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            key := f.Args[\"arg~w\"]
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                groups[key] = append(groups[key], val)
+            }
+        }
+    }
+    for key, values := range groups {
+        if len(values) > 0 {
+            ~w~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{~w},
+            })
+        }
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred, ArgsStr])
+        )
+    ;   format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    // Unsupported correlated aggregate form
+    return nil
+}", [RuleName])
     ).
 
 %% compile_go_trigger_block(+TriggerGoal, +OtherGoals, +Builtins, +HeadPred, +HeadArgs, +Config, -BlockCode)
@@ -4871,6 +5026,88 @@ go_aggregate_operand(Term, _Args, Expr) :-
     number(Term),
     !,
     format(string(Expr), "~w", [Term]).
+
+build_go_correlation_conditions(TriggerArgs, AggArgs, Condition) :-
+    findall(Part,
+        go_correlation_condition(TriggerArgs, AggArgs, Part),
+        Parts),
+    combine_go_inline_conditions(Parts, Condition).
+
+go_correlation_condition(TriggerArgs, AggArgs, Cond) :-
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    var(TriggerArg),
+    nth0(AggIndex, AggArgs, AggArg),
+    var(AggArg),
+    TriggerArg == AggArg,
+    format(string(Cond), 'f.Args["arg~w"] == fact.Args["arg~w"]', [AggIndex, TriggerIndex]).
+
+combine_go_inline_conditions(Parts0, Condition) :-
+    exclude(=("true"), Parts0, Parts),
+    (   Parts == []
+    ->  Condition = "true"
+    ;   atomic_list_concat(Parts, " && ", Condition)
+    ).
+
+go_correlated_output_args(HeadArgs, ResultVar, TriggerArgs, ArgsStr) :-
+    findall(Part,
+        (   nth0(Index, HeadArgs, Arg),
+            go_correlated_output_arg(Index, Arg, ResultVar, TriggerArgs, Part)
+        ),
+        Parts),
+    atomic_list_concat(Parts, ", ", ArgsStr).
+
+go_correlated_output_arg(Index, Arg, ResultVar, _TriggerArgs, Part) :-
+    var(Arg),
+    Arg == ResultVar,
+    !,
+    format(string(Part), '"arg~w": agg', [Index]).
+go_correlated_output_arg(Index, Arg, _ResultVar, TriggerArgs, Part) :-
+    var(Arg),
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    TriggerArg == Arg,
+    !,
+    format(string(Part), '"arg~w": fact.Args["arg~w"]', [Index, TriggerIndex]).
+go_correlated_output_arg(Index, Arg, _ResultVar, _TriggerArgs, Part) :-
+    number(Arg),
+    !,
+    format(string(Part), '"arg~w": ~w', [Index, Arg]).
+go_correlated_output_arg(Index, Arg, _ResultVar, _TriggerArgs, Part) :-
+    atom(Arg),
+    !,
+    format(string(Part), '"arg~w": "~w"', [Index, Arg]).
+
+go_grouped_correlated_output_args(HeadArgs, GroupVar, ResultVar, TriggerArgs, ArgsStr) :-
+    findall(Part,
+        (   nth0(Index, HeadArgs, Arg),
+            go_grouped_correlated_output_arg(Index, Arg, GroupVar, ResultVar, TriggerArgs, Part)
+        ),
+        Parts),
+    atomic_list_concat(Parts, ", ", ArgsStr).
+
+go_grouped_correlated_output_arg(Index, Arg, GroupVar, _ResultVar, _TriggerArgs, Part) :-
+    var(Arg),
+    Arg == GroupVar,
+    !,
+    format(string(Part), '"arg~w": key', [Index]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, ResultVar, _TriggerArgs, Part) :-
+    var(Arg),
+    Arg == ResultVar,
+    !,
+    format(string(Part), '"arg~w": agg', [Index]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, _ResultVar, TriggerArgs, Part) :-
+    var(Arg),
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    TriggerArg == Arg,
+    !,
+    format(string(Part), '"arg~w": fact.Args["arg~w"]', [Index, TriggerIndex]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, _ResultVar, _TriggerArgs, Part) :-
+    number(Arg),
+    !,
+    format(string(Part), '"arg~w": ~w', [Index, Arg]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, _ResultVar, _TriggerArgs, Part) :-
+    atom(Arg),
+    !,
+    format(string(Part), '"arg~w": "~w"', [Index, Arg]).
 
 %% generate_having_conditions(+HavingFilters, +ResultVar, -GoCondition)
 %  Translate HAVING filter builtins to Go conditions
