@@ -31,7 +31,14 @@ cleanup_all :-
     catch(abolish(user:sale/1), _, true),
     catch(abolish(user:total_sales/1), _, true),
     catch(abolish(user:salary/2), _, true),
-    catch(abolish(user:dept_total/2), _, true).
+    catch(abolish(user:dept_total/2), _, true),
+    catch(abolish(user:r_edge/2), _, true),
+    catch(abolish(user:r_reach/3), _, true),
+    catch(abolish(user:r_count/2), _, true),
+    catch(abolish(user:wa_edge/2), _, true),
+    catch(abolish(user:wa_cost/2), _, true),
+    catch(abolish(user:wa_path/3), _, true),
+    catch(abolish(user:wa_sum/2), _, true).
 
 :- begin_tests(rust_generator_aggregates).
 
@@ -63,6 +70,36 @@ test(compile_grouped_aggregate, [
     sub_string(Code, _, _, _, "\"eng\".to_string()"),
     sub_string(Code, _, _, _, "\"sales\".to_string()"),
     sub_string(Code, _, _, _, "*entry += value;").
+
+test(compile_recursive_count_aggregate, [
+    cleanup(cleanup_all)
+]) :-
+    assertz(user:r_edge(a, b)),
+    assertz(user:r_edge(b, c)),
+    assertz(user:(r_reach(X, Y, H) :- r_edge(X, Y), H is 1)),
+    assertz(user:(r_reach(X, Z, H) :- r_edge(X, Y), r_reach(Y, Z, H1), H is H1 + 1)),
+    assertz(user:(r_count(X, N) :- aggregate_all(count, r_reach(X, _, _), N))),
+    once(rust_target:compile_predicate_to_rust_normal(r_count, 2, [include_main(false)], Code)),
+    sub_string(Code, _, _, _, "aggregate_all over recursive predicate"),
+    sub_string(Code, _, _, _, "fn r_reach_worker"),
+    sub_string(Code, _, _, _, "fn r_count(arg1: &str) -> usize"),
+    sub_string(Code, _, _, _, "agg += 1;").
+
+test(compile_recursive_weighted_sum_aggregate, [
+    cleanup(cleanup_all)
+]) :-
+    assertz(user:wa_edge(a, b)),
+    assertz(user:wa_edge(b, c)),
+    assertz(user:wa_cost(a, 2)),
+    assertz(user:wa_cost(b, 5)),
+    assertz(user:(wa_path(X, Y, Acc) :- wa_edge(X, Y), wa_cost(X, Cost), Acc is Cost)),
+    assertz(user:(wa_path(X, Z, Acc) :- wa_edge(X, Y), wa_cost(X, Cost), wa_path(Y, Z, PrevAcc), Acc is PrevAcc + Cost)),
+    assertz(user:(wa_sum(X, Total) :- aggregate_all(sum(Acc), wa_path(X, _, Acc), Total))),
+    once(rust_target:compile_predicate_to_rust_normal(wa_sum, 2, [include_main(false)], Code)),
+    sub_string(Code, _, _, _, "aggregate_all over recursive accumulation predicate"),
+    sub_string(Code, _, _, _, "fn wa_path_worker"),
+    sub_string(Code, _, _, _, "fn wa_sum(arg1: &str) -> f64"),
+    sub_string(Code, _, _, _, "agg += (row.1 as f64);").
 
 :- end_tests(rust_generator_aggregates).
 

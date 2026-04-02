@@ -3409,24 +3409,29 @@ compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCo
             FactHead =.. [_|FactArgs]
         ),
         FactRows),
-    FactRows \= [],
     get_dict(type, AggInfo, Type),
     get_dict(op, AggInfo, Op),
     get_dict(expr, AggInfo, Expr),
     get_dict(group, AggInfo, GroupTerm),
     aggregate_value_index(Op, Expr, GoalArgs, ValueIndex),
-    (   Type == all
-    ->  compile_rust_scalar_aggregate(Pred, Arity, Head, Op, ValueIndex, FactRows, IncludeMain, RustCode)
-    ;   compile_rust_grouped_aggregate(Pred, Arity, Head, Op, GoalArgs, GroupTerm, ValueIndex, FactRows, IncludeMain, RustCode)
+    (   FactRows \= [],
+        Type == all
+    ->  compile_rust_scalar_aggregate(Pred, Op, ValueIndex, FactRows, IncludeMain, RustCode)
+    ;   FactRows \= []
+    ->  compile_rust_grouped_aggregate(Pred, Op, GoalArgs, GroupTerm, ValueIndex, FactRows, IncludeMain, RustCode)
+    ;   Type == all
+    ->  compile_rust_recursive_aggregate(Pred, Goal, InnerPred, InnerArity, GoalArgs, Op, ValueIndex, IncludeMain, RustCode)
+    ;   fail
     ).
 
 aggregate_value_index(count, _Expr, _Args, -1) :- !.
 aggregate_value_index(Op, Expr, Args, Index) :-
     member(Op, [sum, avg, min, max, set, bag]),
-    nth0(Index, Args, Expr),
+    nth0(Index, Args, Arg),
+    Arg == Expr,
     !.
 
-compile_rust_scalar_aggregate(Pred, _Arity, _Head, Op, ValueIndex, FactRows, IncludeMain, RustCode) :-
+compile_rust_scalar_aggregate(Pred, Op, ValueIndex, FactRows, IncludeMain, RustCode) :-
     atom_string(Pred, PredStr),
     rust_scalar_return_type(Op, ReturnType),
     rust_scalar_seed(Op, SeedExpr),
@@ -3458,7 +3463,7 @@ fn main() {
     ;   RustCode = FuncCode
     ).
 
-compile_rust_grouped_aggregate(Pred, _Arity, _Head, Op, GoalArgs, GroupTerm, ValueIndex, FactRows, IncludeMain, RustCode) :-
+compile_rust_grouped_aggregate(Pred, Op, GoalArgs, GroupTerm, ValueIndex, FactRows, IncludeMain, RustCode) :-
     atom_string(Pred, PredStr),
     parse_group_term_rust(GroupTerm, GroupVars),
     GroupVars = [GroupVar],
@@ -3619,6 +3624,308 @@ rust_term_string(Value, Expr) :-
     number(Value),
     !,
     format(string(Expr), '"~w".to_string()', [Value]).
+
+compile_rust_recursive_aggregate(Pred, Goal, InnerPred, InnerArity, GoalArgs, Op, ValueIndex, IncludeMain, RustCode) :-
+    functor(InnerHead, InnerPred, InnerArity),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    term_variables(Goal, GoalVars),
+    GoalVars = [InputVar|_],
+    nth0(0, GoalArgs, InputVar),
+    (   rust_computed_increment_pattern(InnerPred, Clauses, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven)
+    ->  compile_rust_recursive_accumulation_aggregate(Pred, InnerPred, InnerArity, Op, ValueIndex, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven, IncludeMain, RustCode)
+    ;   is_general_recursive_pattern_rust(InnerPred, InnerArity, Clauses)
+    ->  compile_rust_recursive_tc_aggregate(Pred, InnerPred, InnerArity, Op, ValueIndex, Clauses, IncludeMain, RustCode)
+    ).
+
+compile_rust_recursive_tc_aggregate(Pred, InnerPred, InnerArity, Op, ValueIndex, Clauses, IncludeMain, RustCode) :-
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    rust_declared_table_mode(InnerPred/InnerArity, TableMode),
+    partition(is_rec_clause_rust(InnerPred), Clauses, RecClauses, BaseClauses),
+    extract_tc_pattern_rust(BaseClauses, RecClauses, _StepRel, BaseConstStr, IncrStr, FactBlock),
+    rust_recursive_aggregate_return_type(Op, ReturnType),
+    rust_recursive_aggregate_seed(Op, SeedExpr),
+    rust_recursive_aggregate_update_from_tuple(Op, ValueIndex, UpdateExpr),
+    rust_recursive_aggregate_finish(Op, FinishExpr),
+    (   TableMode == min
+    ->  format(string(SupportCode),
+'use std::collections::{HashMap, VecDeque};
+
+fn ~w_min(start: &str, adj: &HashMap<String, Vec<String>>) -> Vec<(String, i32)> {
+    let mut best: HashMap<String, i32> = HashMap::new();
+    let mut queue: VecDeque<(String, i32)> = VecDeque::new();
+    if let Some(neighbors) = adj.get(start) {
+        for nb in neighbors {
+            queue.push_back((nb.clone(), ~w));
+        }
+    }
+    while let Some((node, depth)) = queue.pop_front() {
+        if let Some(existing) = best.get(&node) {
+            if depth >= *existing {
+                continue;
+            }
+        }
+        best.insert(node.clone(), depth);
+        if let Some(neighbors) = adj.get(&node) {
+            for nb in neighbors {
+                queue.push_back((nb.clone(), depth + ~w));
+            }
+        }
+    }
+    let mut results: Vec<(String, i32)> = best.into_iter().collect();
+    results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    results
+}', [InnerPredStr, BaseConstStr, IncrStr]),
+        format(string(WorkerCall), '~w_min(arg1, &adj)', [InnerPredStr])
+    ;   format(string(SupportCode),
+'use std::collections::{HashMap, HashSet};
+
+fn ~w_worker(arg1: &str, visited: &HashSet<String>, adj: &HashMap<String, Vec<String>>) -> Vec<(String, i32)> {
+    if visited.contains(arg1) {
+        return Vec::new();
+    }
+    let mut new_visited = visited.clone();
+    new_visited.insert(arg1.to_string());
+    let mut results = Vec::new();
+    if let Some(neighbors) = adj.get(arg1) {
+        for nb in neighbors {
+            if !new_visited.contains(nb.as_str()) {
+                results.push((nb.clone(), ~w));
+                for (ancestor, h) in ~w_worker(nb, &new_visited, adj) {
+                    results.push((ancestor, h + ~w));
+                }
+            }
+        }
+    }
+    results
+}', [InnerPredStr, BaseConstStr, InnerPredStr, IncrStr]),
+        format(string(WorkerCall), '{ let visited = HashSet::new(); ~w_worker(arg1, &visited, &adj) }', [InnerPredStr])
+    ),
+    format(string(FuncCode),
+'// aggregate_all over recursive predicate
+~w
+
+fn ~w(arg1: &str) -> ~w {
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+~w
+    let inner_results = ~w;
+    let rows = inner_results.iter();
+    let mut agg = ~w;
+    for row in rows {
+        ~w
+    }
+    ~w
+}', [SupportCode, PredStr, ReturnType, FactBlock, WorkerCall, SeedExpr, UpdateExpr, FinishExpr]),
+    rust_wrap_function_with_main(PredStr, FuncCode, IncludeMain, RustCode).
+
+compile_rust_recursive_accumulation_aggregate(Pred, InnerPred, InnerArity, Op, ValueIndex, StepRel, AuxRel, AuxValue, PrevAcc, BaseExpr, RecExpr, PositiveStepGuardProven, IncludeMain, RustCode) :-
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    rust_declared_table_mode(InnerPred/InnerArity, TableMode),
+    (   (PositiveStepGuardProven == true ; rust_positive_step_metadata(InnerPred/InnerArity, InnerArity))
+    ->  PositiveStepProven = true
+    ;   PositiveStepProven = false
+    ),
+    rust_accumulation_numeric_type(BaseExpr, RecExpr, AccType),
+    rust_accumulation_expr(BaseExpr, [AuxValue-'*step_cost'], AccType, BaseExprCode),
+    rust_accumulation_expr(RecExpr, [PrevAcc-acc, AuxValue-'*step_cost'], AccType, RecExprCode),
+    rust_accumulation_expr(RecExpr, [PrevAcc-cost, AuxValue-'*step_cost'], AccType, MinRecExprCode),
+    functor(StepHead, StepRel, 2),
+    findall(StepLine,
+        (   user:clause(StepHead, true),
+            StepHead =.. [_, K, V],
+            format(string(StepLine), '    adj.entry("~w".to_string()).or_insert_with(Vec::new).push("~w".to_string());', [K, V])
+        ),
+        StepLines),
+    atomic_list_concat(StepLines, '\n', StepBlock),
+    functor(AuxHead, AuxRel, 2),
+    findall(AuxLine,
+        (   user:clause(AuxHead, true),
+            AuxHead =.. [_, K, V],
+            rust_numeric_literal(AccType, V, AuxLiteral),
+            format(string(AuxLine), '    aux.insert("~w".to_string(), ~w);', [K, AuxLiteral])
+        ),
+        AuxLines),
+    atomic_list_concat(AuxLines, '\n', AuxBlock),
+    rust_recursive_aggregate_return_type(Op, ReturnType),
+    rust_recursive_aggregate_seed(Op, SeedExpr),
+    rust_recursive_aggregate_update_from_tuple(Op, ValueIndex, UpdateExpr),
+    rust_recursive_aggregate_finish(Op, FinishExpr),
+    (   TableMode == min,
+        PositiveStepProven == true
+    ->  format(string(SupportCode),
+'use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
+
+#[derive(Clone, Debug)]
+struct State {
+    cost: ~w,
+    node: String,
+}
+impl PartialEq for State {
+    fn eq(&self, other: &Self) -> bool { self.node == other.node && self.cost == other.cost }
+}
+impl Eq for State {}
+impl Ord for State {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.cost.partial_cmp(&self.cost).unwrap_or(Ordering::Equal).then_with(|| self.node.cmp(&other.node))
+    }
+}
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+fn ~w_min(start: &str, adj: &HashMap<String, Vec<String>>, aux: &HashMap<String, ~w>) -> Vec<(String, ~w)> {
+    let mut best: HashMap<String, ~w> = HashMap::new();
+    let mut heap: BinaryHeap<State> = BinaryHeap::new();
+    if let (Some(neighbors), Some(step_cost)) = (adj.get(start), aux.get(start)) {
+        for nb in neighbors {
+            heap.push(State { cost: ~w, node: nb.clone() });
+        }
+    }
+    while let Some(State { cost, node }) = heap.pop() {
+        if let Some(existing) = best.get(&node) {
+            if cost >= *existing {
+                continue;
+            }
+        }
+        best.insert(node.clone(), cost);
+        if let (Some(neighbors), Some(step_cost)) = (adj.get(&node), aux.get(&node)) {
+            for nb in neighbors {
+                heap.push(State { cost: ~w, node: nb.clone() });
+            }
+        }
+    }
+    let mut results: Vec<(String, ~w)> = best.into_iter().collect();
+    results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal)));
+    results
+}', [AccType, InnerPredStr, AccType, AccType, AccType, BaseExprCode, MinRecExprCode, AccType]),
+        format(string(WorkerCall), '~w_min(arg1, &adj, &aux)', [InnerPredStr])
+    ;   format(string(SupportCode),
+'use std::collections::{HashMap, HashSet};
+
+fn ~w_worker(current: &str, visited: &HashSet<String>, adj: &HashMap<String, Vec<String>>, aux: &HashMap<String, ~w>) -> Vec<(String, ~w)> {
+    if visited.contains(current) { return Vec::new(); }
+    let mut new_visited = visited.clone();
+    new_visited.insert(current.to_string());
+    let mut results = Vec::new();
+    if let (Some(neighbors), Some(step_cost)) = (adj.get(current), aux.get(current)) {
+        for nb in neighbors {
+            if !new_visited.contains(nb.as_str()) {
+                results.push((nb.clone(), ~w));
+                for (ancestor, acc) in ~w_worker(nb, &new_visited, adj, aux) {
+                    results.push((ancestor, ~w));
+                }
+            }
+        }
+    }
+    results
+}', [InnerPredStr, AccType, AccType, BaseExprCode, InnerPredStr, RecExprCode]),
+        format(string(WorkerCall), '{ let visited = HashSet::new(); ~w_worker(arg1, &visited, &adj, &aux) }', [InnerPredStr])
+    ),
+    format(string(FuncCode),
+'// aggregate_all over recursive accumulation predicate
+~w
+
+fn ~w(arg1: &str) -> ~w {
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+~w
+    let mut aux: HashMap<String, ~w> = HashMap::new();
+~w
+    let inner_results = ~w;
+    let rows = inner_results.iter();
+    let mut agg = ~w;
+    for row in rows {
+        ~w
+    }
+    ~w
+}', [SupportCode, PredStr, ReturnType, StepBlock, AccType, AuxBlock, WorkerCall, SeedExpr, UpdateExpr, FinishExpr]),
+    rust_wrap_function_with_main(PredStr, FuncCode, IncludeMain, RustCode).
+
+extract_tc_pattern_rust(BaseClauses, RecClauses, StepRel, BaseConstStr, IncrStr, FactBlock) :-
+    BaseClauses = [_-BaseBody|_],
+    extract_goals_list_rust(BaseBody, BaseGoals),
+    (   BaseGoals = [StepGoal|_],
+        StepGoal =.. [StepRel|_]
+    ->  true
+    ;   StepRel = step
+    ),
+    (   BaseClauses = [BH-_|_],
+        BH =.. [_|BArgs],
+        length(BArgs, 3),
+        nth1(3, BArgs, BaseConst),
+        number(BaseConst)
+    ->  format(string(BaseConstStr), "~w", [BaseConst])
+    ;   BaseConstStr = "1"
+    ),
+    (   RecClauses = [_-RecBody|_],
+        extract_goals_list_rust(RecBody, RecGoals),
+        member((_ is ArithExpr), RecGoals),
+        ArithExpr = (_ + Incr),
+        number(Incr)
+    ->  format(string(IncrStr), "~w", [Incr])
+    ;   IncrStr = "1"
+    ),
+    functor(StepHead, StepRel, 2),
+    findall(FactLine,
+        (   user:clause(StepHead, true),
+            StepHead =.. [_, K, V],
+            format(string(FactLine), '    adj.entry("~w".to_string()).or_insert_with(Vec::new).push("~w".to_string());', [K, V])
+        ),
+        FactLines),
+    atomic_list_concat(FactLines, '\n', FactBlock).
+
+rust_recursive_aggregate_return_type(count, 'usize').
+rust_recursive_aggregate_return_type(sum, 'f64').
+rust_recursive_aggregate_return_type(avg, 'f64').
+rust_recursive_aggregate_return_type(min, 'f64').
+rust_recursive_aggregate_return_type(max, 'f64').
+
+rust_recursive_aggregate_seed(count, '0usize').
+rust_recursive_aggregate_seed(sum, '0.0_f64').
+rust_recursive_aggregate_seed(avg, '(0.0_f64, 0usize)').
+rust_recursive_aggregate_seed(min, 'f64::INFINITY').
+rust_recursive_aggregate_seed(max, 'f64::NEG_INFINITY').
+
+rust_recursive_aggregate_update_from_tuple(count, _ValueIndex, 'agg += 1;').
+rust_recursive_aggregate_update_from_tuple(sum, ValueIndex, UpdateExpr) :-
+    rust_recursive_tuple_value_expr(ValueIndex, ValueExpr),
+    format(string(UpdateExpr), 'agg += (~w as f64);', [ValueExpr]).
+rust_recursive_aggregate_update_from_tuple(avg, ValueIndex, UpdateExpr) :-
+    rust_recursive_tuple_value_expr(ValueIndex, ValueExpr),
+    format(string(UpdateExpr), 'agg.0 += (~w as f64); agg.1 += 1;', [ValueExpr]).
+rust_recursive_aggregate_update_from_tuple(min, ValueIndex, UpdateExpr) :-
+    rust_recursive_tuple_value_expr(ValueIndex, ValueExpr),
+    format(string(UpdateExpr), 'agg = agg.min((~w as f64));', [ValueExpr]).
+rust_recursive_aggregate_update_from_tuple(max, ValueIndex, UpdateExpr) :-
+    rust_recursive_tuple_value_expr(ValueIndex, ValueExpr),
+    format(string(UpdateExpr), 'agg = agg.max((~w as f64));', [ValueExpr]).
+
+rust_recursive_tuple_value_expr(0, 'row.0').
+rust_recursive_tuple_value_expr(1, 'row.0').
+rust_recursive_tuple_value_expr(2, 'row.1').
+
+rust_recursive_aggregate_finish(count, 'agg').
+rust_recursive_aggregate_finish(sum, 'agg').
+rust_recursive_aggregate_finish(avg, 'if agg.1 == 0 { 0.0 } else { agg.0 / (agg.1 as f64) }').
+rust_recursive_aggregate_finish(min, 'agg').
+rust_recursive_aggregate_finish(max, 'agg').
+
+rust_wrap_function_with_main(PredStr, FuncCode, IncludeMain, RustCode) :-
+    (   IncludeMain
+    ->  format(string(RustCode),
+'// Generated by UnifyWeaver Rust Target - aggregate_all lowering
+
+~w
+
+fn main() {
+    let result = ~w("test");
+    println!("{:?}", result);
+}
+', [FuncCode, PredStr])
+    ;   RustCode = FuncCode
+    ).
 
 % ============================================================================
 % GENERAL (NON-TAIL) RECURSION — Arity 2-3
