@@ -724,10 +724,12 @@ is_per_path_visited_pattern(Name, Arity, Clauses, VisitedPos) :-
     between(1, Arity, VisitedPos),
     nth1(VisitedPos, RecArgs, VisitedVar),
     var(VisitedVar),
-    % Check: body has \+ member(_, VisitedVar)
-    body_has_negated_member(RecBody, VisitedVar),
-    % Check: body has [_|VisitedVar] passed to recursive call
-    body_has_cons_in_recursive_call(RecBody, Name, VisitedPos, VisitedVar),
+    % Check: body has the ordered unique-path shape
+    %   StepGoal,
+    %   PreGoals...,
+    %   \+ member(_, Visited),
+    %   pred(..., [_|Visited]),
+    body_has_ordered_per_path_shape(RecBody, Name, VisitedPos, VisitedVar),
     !.
 
 %% is_recursive_clause_for_ppv(+Name, +Clause)
@@ -747,6 +749,42 @@ body_has_negated_member(\+ member(_, Var), ListVar) :-
 %%   True if the recursive call to Name has [_|VisitedVar] at position Pos.
 body_has_cons_in_recursive_call(Body, Name, Pos, VisitedVar) :-
     extract_goals_ppv(Body, Goals),
+    member(RecCall, Goals),
+    RecCall =.. [Name|CallArgs],
+    nth1(Pos, CallArgs, CallArg),
+    nonvar(CallArg),
+    CallArg = [_|Tail],
+    Tail == VisitedVar.
+
+%% body_has_ordered_per_path_shape(+Body, +Name, +Pos, +VisitedVar)
+%%   True if Body has a non-recursive step goal, optional helper goals,
+%%   then \+ member(_, VisitedVar), and later a recursive call passing
+%%   [_|VisitedVar] at position Pos.
+body_has_ordered_per_path_shape(Body, Name, Pos, VisitedVar) :-
+    extract_goals_ppv(Body, Goals),
+    append(BeforeNeg, [NegGoal|AfterNeg], Goals),
+    BeforeNeg \= [],
+    negated_member_goal_for_ppv(NegGoal, VisitedVar),
+    has_step_goal_before_neg(BeforeNeg, Name, VisitedVar),
+    goals_have_cons_in_recursive_call(AfterNeg, Name, Pos, VisitedVar).
+
+negated_member_goal_for_ppv(\+ member(_, Var), VisitedVar) :-
+    Var == VisitedVar.
+
+has_step_goal_before_neg([Goal|_], Name, VisitedVar) :-
+    step_goal_for_ppv(Goal, Name, VisitedVar),
+    !.
+has_step_goal_before_neg([_|Rest], Name, VisitedVar) :-
+    has_step_goal_before_neg(Rest, Name, VisitedVar).
+
+step_goal_for_ppv(Goal, Name, _VisitedVar) :-
+    callable(Goal),
+    Goal \= (\+ _),
+    Goal =.. [Functor|_],
+    Functor \= Name,
+    Functor \= member.
+
+goals_have_cons_in_recursive_call(Goals, Name, Pos, VisitedVar) :-
     member(RecCall, Goals),
     RecCall =.. [Name|CallArgs],
     nth1(Pos, CallArgs, CallArg),

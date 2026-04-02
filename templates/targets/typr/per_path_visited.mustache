@@ -25,7 +25,7 @@ let {{pred}}_worker <- function(current, visited{{invariant_param_suffix}}, from
 	neighbors <- {{base}}_neighbors(current, from_nodes, to_nodes);
 
 	for (next_node in neighbors) {
-		if (!any(visited == next_node)) {
+{{pre_loop_lines}}		if (({{loop_guard_expr}}) && !any(visited == next_node)) {
 			results <- c(results, {{base_result_expr}});
 			sub_results <- {{pred}}_worker(next_node, c(visited, next_node){{invariant_param_suffix}}, from_nodes, to_nodes);
 

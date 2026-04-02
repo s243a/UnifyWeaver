@@ -5035,6 +5035,8 @@ typr_per_path_visited_spec(
         from_nodes_expr=FromNodesExpr,
         to_nodes_expr=ToNodesExpr,
         invariant_param_suffix=InvariantParamSuffix,
+        pre_loop_lines=PreLoopLinesText,
+        loop_guard_expr=LoopGuardExpr,
         base_result_expr=BaseResultExpr,
         recursive_result_expr=RecursiveResultExpr
     ]
@@ -5051,7 +5053,9 @@ typr_per_path_visited_spec(
         DriverPos,
         InvariantPositions,
         NodeOutputPos,
-        BaseAccumulatorPairs
+        BaseAccumulatorPairs,
+        BasePreGoals,
+        BaseStepVar
     ),
     typr_per_path_visited_recursive_clause(
         RecClause,
@@ -5062,7 +5066,9 @@ typr_per_path_visited_spec(
         VisitedPos,
         OutputPositions,
         NodeOutputPos,
-        RecursiveAccumulatorPairs
+        RecursiveAccumulatorPairs,
+        RecursivePreGoals,
+        RecursiveStepVar
     ),
     resolve_node_type(Pred/Arity, BasePred/2, NodeTypeTerm),
     typr_per_path_visited_supported_node_type(NodeTypeTerm),
@@ -5075,6 +5081,17 @@ typr_per_path_visited_spec(
     base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr),
     typr_per_path_visited_invariant_arg_names(InvariantPositions, InvariantArgNames),
     typr_per_path_visited_param_suffix(InvariantArgNames, InvariantParamSuffix),
+    typr_per_path_visited_shared_pre_loop(
+        BasePreGoals,
+        BaseStepVar,
+        RecursivePreGoals,
+        RecursiveStepVar,
+        BaseClause,
+        RecClause,
+        InvariantPositions,
+        PreLoopLinesText,
+        LoopGuardExpr
+    ),
     typr_per_path_visited_base_output_exprs(OutputPositions, NodeOutputPos, BaseAccumulatorPairs, BaseOutputExprs),
     typr_per_path_visited_recursive_output_exprs(OutputPositions, NodeOutputPos, RecursiveAccumulatorPairs, RecursiveOutputExprs),
     typr_per_path_visited_result_expr(BaseOutputExprs, BaseResultExpr),
@@ -5148,21 +5165,25 @@ typr_per_path_visited_base_clause(
     DriverPos,
     InvariantPositions,
     NodeOutputPos,
-    BaseAccumulatorPairs
+    BaseAccumulatorPairs,
+    BasePreGoals,
+    BaseStepVar
 ) :-
     Head =.. [Pred|HeadArgs],
     nth1(VisitedPos, HeadArgs, VisitedVar),
     var(VisitedVar),
     typr_mutual_goal_list(Body0, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
-    typr_per_path_visited_base_goals(Goals, StepInputVar, VisitedVar, BasePred, StepOutputVar),
+    typr_per_path_visited_base_goals(Goals, StepInputVar, VisitedVar, BasePred, StepOutputVar, BasePreGoals),
+    BaseStepVar = StepOutputVar,
     typr_per_path_visited_driver_and_invariants(InputPositions, HeadArgs, StepInputVar, DriverPos, InvariantPositions),
     typr_per_path_visited_node_output_position(HeadArgs, OutputPositions, StepOutputVar, NodeOutputPos),
     typr_per_path_visited_base_accumulator_pairs(HeadArgs, OutputPositions, NodeOutputPos, BaseAccumulatorPairs).
 
-typr_per_path_visited_base_goals([StepGoal], InputVar, _VisitedVar, BasePred, OutputVar) :-
+typr_per_path_visited_base_goals([StepGoal], InputVar, _VisitedVar, BasePred, OutputVar, []) :-
     typr_per_path_visited_step_goal(StepGoal, InputVar, OutputVar, BasePred).
-typr_per_path_visited_base_goals([StepGoal, NegGoal], InputVar, VisitedVar, BasePred, OutputVar) :-
+typr_per_path_visited_base_goals(Goals, InputVar, VisitedVar, BasePred, OutputVar, PreGoals) :-
+    append([StepGoal|PreGoals], [NegGoal], Goals),
     typr_per_path_visited_step_goal(StepGoal, InputVar, OutputVar, BasePred),
     typr_per_path_visited_negated_member_goal(NegGoal, OutputVar, VisitedVar).
 
@@ -5175,7 +5196,9 @@ typr_per_path_visited_recursive_clause(
     VisitedPos,
     OutputPositions,
     NodeOutputPos,
-    RecursiveAccumulatorPairs
+    RecursiveAccumulatorPairs,
+    RecursivePreGoals,
+    RecursiveStepVar
 ) :-
     Head =.. [Pred|HeadArgs],
     nth1(DriverPos, HeadArgs, InputVar),
@@ -5184,9 +5207,12 @@ typr_per_path_visited_recursive_clause(
     var(VisitedVar),
     typr_mutual_goal_list(Body0, Goals0),
     maplist(typr_strip_module_goal, Goals0, Goals),
-    append([StepGoal, NegGoal, RecCallGoal], AccumulatorGoals, Goals),
+    append([StepGoal|PreAndRestGoals], GoalsTail, Goals),
+    append(RecursivePreGoals, [NegGoal, RecCallGoal], PreAndRestGoals),
+    append(AccumulatorGoals, [], GoalsTail),
     AccumulatorGoals \= [],
     typr_per_path_visited_mid_step_goal(StepGoal, InputVar, MidVar, BasePred),
+    RecursiveStepVar = MidVar,
     typr_per_path_visited_negated_member_goal(NegGoal, MidVar, VisitedVar),
     typr_per_path_visited_recursive_call(
         RecCallGoal,
@@ -5360,6 +5386,55 @@ typr_per_path_visited_param_suffix([], '').
 typr_per_path_visited_param_suffix(Names, Suffix) :-
     atomic_list_concat(Names, ', ', Inner),
     format(string(Suffix), ', ~w', [Inner]).
+
+typr_per_path_visited_shared_pre_loop(
+    BasePreGoals,
+    BaseStepVar,
+    RecursivePreGoals,
+    RecursiveStepVar,
+    BaseHead-_BaseBody,
+    RecHead-_RecBody,
+    InvariantPositions,
+    PreLoopLinesText,
+    LoopGuardExpr
+) :-
+    typr_per_path_visited_pre_loop_text(BasePreGoals, BaseHead, InvariantPositions, BaseStepVar, BaseLinesText, BaseGuardExpr),
+    typr_per_path_visited_pre_loop_text(RecursivePreGoals, RecHead, InvariantPositions, RecursiveStepVar, RecursiveLinesText, RecursiveGuardExpr),
+    BaseLinesText = RecursiveLinesText,
+    BaseGuardExpr = RecursiveGuardExpr,
+    PreLoopLinesText = BaseLinesText,
+    LoopGuardExpr = BaseGuardExpr.
+
+typr_per_path_visited_pre_loop_text([], _BaseHead, _InvariantPositions, _StepVar, '', 'TRUE') :-
+    !.
+typr_per_path_visited_pre_loop_text(PreGoals, BaseHead, InvariantPositions, StepVar, PreLoopLinesText, LoopGuardExpr) :-
+    BaseHead =.. [_|HeadArgs],
+    typr_per_path_visited_pre_goal_varmap(HeadArgs, InvariantPositions, StepVar, VarMap0),
+    typr_goals_to_body(PreGoals, PreBody),
+    compile_tail_recursive_pre_goals(PreBody, VarMap0, _VarMap, GuardConditions, StepLines0),
+    raw_guard_expr(GuardConditions, LoopGuardExpr),
+    typr_per_path_visited_pre_lines_text(StepLines0, PreLoopLinesText).
+
+typr_per_path_visited_pre_goal_varmap(HeadArgs, InvariantPositions, StepVar, [StepVar-"next_node"|InvariantVarMap]) :-
+    typr_per_path_visited_invariant_varmap(InvariantPositions, HeadArgs, InvariantVarMap).
+
+typr_per_path_visited_invariant_varmap([], _HeadArgs, []).
+typr_per_path_visited_invariant_varmap([Pos|Rest], HeadArgs, [HeadVar-Name|RestMap]) :-
+    nth1(Pos, HeadArgs, HeadVar),
+    format(string(Name), 'arg~w', [Pos]),
+    typr_per_path_visited_invariant_varmap(Rest, HeadArgs, RestMap).
+
+typr_per_path_visited_pre_lines_text([], '').
+typr_per_path_visited_pre_lines_text(Lines0, Text) :-
+    maplist(typr_per_path_visited_trim_pre_line, Lines0, Lines),
+    atomic_list_concat(Lines, '\n', Joined),
+    format(string(Text), '~w\n', [Joined]).
+
+typr_per_path_visited_trim_pre_line(Line0, Line) :-
+    (   sub_string(Line0, 0, 8, _, "        ")
+    ->  sub_string(Line0, 8, _, 0, Line)
+    ;   Line = Line0
+    ).
 
 typr_per_path_visited_result_extract_expr(ResultExpr, 1, 1, ResultExpr) :- !.
 typr_per_path_visited_result_extract_expr(ResultExpr, 1, _OutputCount, ExtractExpr) :-

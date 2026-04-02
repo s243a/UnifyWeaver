@@ -441,13 +441,14 @@ Current implementation note:
   moved-input variants, weighted variants such as
   `category_ancestor_weight/5`, and conservative invariant-input variants,
   with a compile-time-seeded step relation, one recursion-driving input plus
-  conservative invariant non-visited inputs, one direct node output, one or
-  more additive numeric outputs, a native recursive worker that returns
-  nested pair results without raw R, a native `*_from_vectors` runtime
-  helper, native `input(stdin|file|vfs|function)` wrappers, and declared
-  scalar or conservative pair-shaped runtime node parsing such as `integer`,
-  `number`, `pair(integer, integer)`, and `pair(number, number)` over the
-  same step-relation shape
+  conservative invariant non-visited inputs, including one helper/guard
+  segment between the step relation and recursive call, one direct node
+  output, one or more additive numeric outputs, a native recursive worker
+  that returns nested pair results without raw R, a native `*_from_vectors`
+  runtime helper, native `input(stdin|file|vfs|function)` wrappers, and
+  declared scalar or conservative pair-shaped runtime node parsing such as
+  `integer`, `number`, `pair(integer, integer)`, and
+  `pair(number, number)` over the same step-relation shape
 - the native generic TypR path is intentionally conservative and currently
   targets simple output-producing binding chains, guard-style command
   predicates, including unary TypR-safe I/O commands such as `cat/1` and
@@ -531,8 +532,7 @@ Current wrapped-fallback boundary note:
   signatures
 - per-path unique-path work has a dedicated TypR design note in
   [TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md](/home/s243a/Projects/UnifyWeaver/context/antigravity/UnifyWeaver/docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md),
-  which defines the next TypR step as invariant-input helper/guard support
-  ahead of broader path-aware aggregation
+  which now defines path-aware aggregation as the next TypR step
 - the remaining wrapped fallback boundary is now beyond that first
   producer-follow-on slice
 - if this area is revisited again, the next real audit target is the next
