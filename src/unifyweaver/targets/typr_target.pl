@@ -7619,7 +7619,7 @@ typr_vector_literal(_NodeTypeTerm, Items, Expr) :-
         r_literal(Item, Literal)
     ), Literals),
     atomic_list_concat(Literals, ', ', LiteralText),
-    format(string(Expr), '[~w]', [LiteralText]).
+    format(string(Expr), 'c(~w)', [LiteralText]).
 
 empty_collection_expr(atom, 'character()').
 empty_collection_expr(string, 'character()').
