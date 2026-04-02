@@ -31,11 +31,49 @@
     % Mode-directed tabling
     declared_table_modes/3,                % +Pred, +Arity, -TableModes
     parse_table_spec/2,                    % +TableSpec, -TableModes
+    % Aggregate classification
+    classify_aggregate/2,                  % +AggTerm, -AggInfo
+    parse_aggregate_template/3,            % +Template, -Op, -Expr
     test_pattern_matchers/0         % Test predicate
 ]).
 
 :- use_module(library(lists)).
 :- use_module('purity_analysis').
+
+%% classify_aggregate(+AggTerm, -AggInfo)
+%  Shared aggregate_all/aggregate parsing for targets that need a common
+%  classification pass before lowering.
+classify_aggregate(Term0, AggInfo) :-
+    strip_module(Term0, _, Term),
+    (   Term = aggregate_all(Template, Goal, Result)
+    ->  Type = all,
+        Group = none
+    ;   Term = aggregate_all(Template, Goal, Group, Result)
+    ->  Type = group
+    ;   Term = aggregate(Template, Goal, Result)
+    ->  Type = all,
+        Group = none
+    ;   Term = aggregate(Template, Goal, Group, Result)
+    ->  Type = group
+    ),
+    nonvar(Goal),
+    parse_aggregate_template(Template, Op, Expr),
+    AggInfo = agg_info{
+        type: Type,
+        op: Op,
+        expr: Expr,
+        goal: Goal,
+        group: Group,
+        result: Result
+    }.
+
+parse_aggregate_template(sum(Expr), sum, Expr).
+parse_aggregate_template(count, count, 1).
+parse_aggregate_template(min(Expr), min, Expr).
+parse_aggregate_template(max(Expr), max, Expr).
+parse_aggregate_template(avg(Expr), avg, Expr).
+parse_aggregate_template(set(Expr), set, Expr).
+parse_aggregate_template(bag(Expr), bag, Expr).
 
 %% is_tail_recursive_accumulator(+Pred/Arity, -AccInfo)
 %  Detect tail recursion with accumulator pattern
