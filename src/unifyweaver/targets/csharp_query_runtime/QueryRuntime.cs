@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
 using System.IO;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Globalization;
@@ -230,6 +231,16 @@ namespace UnifyWeaver.QueryRuntime
         PredicateId EdgeRelation,
         PredicateId Predicate,
         IReadOnlyList<int> GroupIndices
+    ) : PlanNode;
+
+    /// <summary>
+    /// Propagates group labels from an external seed relation across a plain
+    /// transitive closure edge relation, producing (group, reachable) rows.
+    /// </summary>
+    public sealed record SeedGroupedTransitiveClosureNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId Predicate
     ) : PlanNode;
 
     /// <summary>
@@ -846,6 +857,7 @@ namespace UnifyWeaver.QueryRuntime
                     case UnitNode:
                     case TransitiveClosureNode:
                     case GroupedTransitiveClosureNode:
+                    case SeedGroupedTransitiveClosureNode:
                     case PathAwareTransitiveClosureNode:
                     case PathAwareAccumulationNode:
                         return;
@@ -983,6 +995,7 @@ namespace UnifyWeaver.QueryRuntime
                 OffsetNode offset => $"Offset count={offset.Count}",
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
+                SeedGroupedTransitiveClosureNode closure => $"SeedGroupedTransitiveClosure edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
                 PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
                 PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode} positiveStep={closure.PositiveStepProven}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
@@ -1186,6 +1199,20 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(groupedClosure, rows);
                 }
 
+                if (plan.Root is SeedGroupedTransitiveClosureNode seedGroupedClosure)
+                {
+                    var rows = ExecuteSeedGroupedTransitiveClosure(seedGroupedClosure, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedClosure);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedClosure, rows);
+                }
+
                 if (plan.Root is PathAwareTransitiveClosureNode pathAwareClosure)
                 {
                     IEnumerable<object[]> rows;
@@ -1379,6 +1406,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 case GroupedTransitiveClosureNode closure:
                     result = ExecuteGroupedTransitiveClosure(closure, context);
+                    break;
+
+                case SeedGroupedTransitiveClosureNode closure:
+                    result = ExecuteSeedGroupedTransitiveClosure(closure, context);
                     break;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -1814,6 +1845,11 @@ namespace UnifyWeaver.QueryRuntime
 
                 case GroupedTransitiveClosureNode closure:
                     predicates.Add(closure.EdgeRelation);
+                    return;
+
+                case SeedGroupedTransitiveClosureNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
                     return;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -7951,6 +7987,389 @@ namespace UnifyWeaver.QueryRuntime
             finally
             {
                 context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedTransitiveClosure(SeedGroupedTransitiveClosureNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 2)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosure");
+
+                var predicate = closure.Predicate;
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={closure.SeedRelation.Name}/{closure.SeedRelation.Arity}";
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var seeds = GetFactsList(closure.SeedRelation, context);
+
+                const int MaxDagNodeCount = 16384;
+                const int MaxDagGroupCount = 4096;
+                const int MinDagGroupCount = 64;
+                const int MinDagEdgeCount = 8192;
+                if (seeds.Count >= MinDagGroupCount &&
+                    edges.Count >= MinDagEdgeCount &&
+                    TryBuildProjectGroupedDagReachRows(edges, seeds, MaxDagNodeCount, MaxDagGroupCount, out var dagRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosure", traceKey, hit: false, built: true);
+                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureDag");
+                    return dagRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedTransitiveClosure", traceKey, hit: false, built: true);
+
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+                var visited = new HashSet<RowWrapper>(wrapperComparer);
+                var totalRows = new List<object[]>();
+                var delta = new List<object[]>();
+
+                foreach (var seed in seeds)
+                {
+                    if (seed is null || seed.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var group = seed[0];
+                    var node = seed[1];
+                    var key = new object[] { group!, node! };
+                    if (visited.Add(new RowWrapper(key)))
+                    {
+                        totalRows.Add((object[])key.Clone());
+                        delta.Add(key);
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<object[]>();
+
+                    foreach (var pair in delta)
+                    {
+                        var node = pair[1];
+                        var lookupKey = node ?? NullFactIndexKey;
+                        if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var next = edge[1];
+                            var nextKey = new object[] { pair[0], next! };
+                            if (visited.Add(new RowWrapper(nextKey)))
+                            {
+                                totalRows.Add((object[])nextKey.Clone());
+                                nextDelta.Add(nextKey);
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static bool TryBuildProjectGroupedDagReachRows(
+            IReadOnlyList<object[]> edges,
+            IReadOnlyList<object[]> seeds,
+            int maxNodeCount,
+            int maxGroupCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            if (edges.Count == 0 || seeds.Count == 0)
+            {
+                return false;
+            }
+
+            var globalNodeIds = new Dictionary<object?, int>();
+            var globalSuccessors = new List<List<int>>();
+            var nodeValues = new List<object?>();
+
+            int GetGlobalNodeId(object? value)
+            {
+                if (globalNodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = nodeValues.Count;
+                globalNodeIds.Add(value, id);
+                nodeValues.Add(value);
+                globalSuccessors.Add(new List<int>());
+                return id;
+            }
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                var fromId = GetGlobalNodeId(edge[0]);
+                var toId = GetGlobalNodeId(edge[1]);
+                globalSuccessors[fromId].Add(toId);
+            }
+
+            if (nodeValues.Count == 0 || nodeValues.Count > maxNodeCount)
+            {
+                return false;
+            }
+
+            var globalIndegree = new int[nodeValues.Count];
+            for (var i = 0; i < globalSuccessors.Count; i++)
+            {
+                foreach (var next in globalSuccessors[i])
+                {
+                    globalIndegree[next]++;
+                }
+            }
+
+            var groupIds = new Dictionary<object?, int>();
+            var groupValues = new List<object?>();
+            var seedPairs = new List<(int GroupId, int NodeId)>();
+            foreach (var seed in seeds)
+            {
+                if (seed is null || seed.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!globalNodeIds.TryGetValue(seed[1], out var nodeId))
+                {
+                    continue;
+                }
+
+                if (!groupIds.TryGetValue(seed[0], out var groupId))
+                {
+                    groupId = groupValues.Count;
+                    if (groupId >= maxGroupCount)
+                    {
+                        return false;
+                    }
+
+                    groupIds.Add(seed[0], groupId);
+                    groupValues.Add(seed[0]);
+                }
+
+                seedPairs.Add((groupId, nodeId));
+            }
+
+            if (seedPairs.Count == 0)
+            {
+                return true;
+            }
+
+            var included = new bool[nodeValues.Count];
+            var queue = new Queue<int>();
+            foreach (var (_, nodeId) in seedPairs)
+            {
+                if (included[nodeId])
+                {
+                    continue;
+                }
+
+                included[nodeId] = true;
+                queue.Enqueue(nodeId);
+            }
+
+            while (queue.Count > 0)
+            {
+                var nodeId = queue.Dequeue();
+                foreach (var next in globalSuccessors[nodeId])
+                {
+                    if (included[next])
+                    {
+                        continue;
+                    }
+
+                    included[next] = true;
+                    queue.Enqueue(next);
+                }
+            }
+
+            var includedCount = 0;
+            foreach (var isIncluded in included)
+            {
+                if (isIncluded)
+                {
+                    includedCount++;
+                }
+            }
+
+            if (includedCount == 0 || includedCount > maxNodeCount)
+            {
+                return false;
+            }
+
+            var localIds = new int[nodeValues.Count];
+            Array.Fill(localIds, -1);
+            var localNodeValues = new object?[includedCount];
+            var localSuccessors = new List<List<int>>(includedCount);
+            var localIndegree = new int[includedCount];
+            var nextLocalId = 0;
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                localIds[globalId] = nextLocalId;
+                localNodeValues[nextLocalId] = nodeValues[globalId];
+                localSuccessors.Add(new List<int>());
+                nextLocalId++;
+            }
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                var fromLocalId = localIds[globalId];
+                foreach (var nextGlobalId in globalSuccessors[globalId])
+                {
+                    if (!included[nextGlobalId])
+                    {
+                        continue;
+                    }
+
+                    var toLocalId = localIds[nextGlobalId];
+                    localSuccessors[fromLocalId].Add(toLocalId);
+                    localIndegree[toLocalId]++;
+                }
+            }
+
+            var topoQueue = new Queue<int>();
+            for (var i = 0; i < localIndegree.Length; i++)
+            {
+                if (localIndegree[i] == 0)
+                {
+                    topoQueue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(includedCount);
+            while (topoQueue.Count > 0)
+            {
+                var localId = topoQueue.Dequeue();
+                topo.Add(localId);
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    localIndegree[successorLocalId]--;
+                    if (localIndegree[successorLocalId] == 0)
+                    {
+                        topoQueue.Enqueue(successorLocalId);
+                    }
+                }
+            }
+
+            if (topo.Count != includedCount)
+            {
+                return false;
+            }
+
+            var wordCount = (groupValues.Count + 63) >> 6;
+            var nodeGroupBits = new ulong[includedCount][];
+            for (var i = 0; i < includedCount; i++)
+            {
+                nodeGroupBits[i] = new ulong[wordCount];
+            }
+
+            foreach (var (groupId, nodeId) in seedPairs)
+            {
+                var localNodeId = localIds[nodeId];
+                nodeGroupBits[localNodeId][groupId >> 6] |= 1UL << (groupId & 63);
+            }
+
+            foreach (var localId in topo)
+            {
+                var sourceBits = nodeGroupBits[localId];
+                if (IsZeroWordArray(sourceBits))
+                {
+                    continue;
+                }
+
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    OrInto(nodeGroupBits[successorLocalId], sourceBits);
+                }
+            }
+
+            rows = new List<object[]>(Math.Max(includedCount, seedPairs.Count));
+            for (var localId = 0; localId < includedCount; localId++)
+            {
+                var nodeValue = localNodeValues[localId];
+                var bits = nodeGroupBits[localId];
+                for (var wordIndex = 0; wordIndex < bits.Length; wordIndex++)
+                {
+                    var word = bits[wordIndex];
+                    while (word != 0)
+                    {
+                        var bit = BitOperations.TrailingZeroCount(word);
+                        var groupId = (wordIndex << 6) + bit;
+                        if (groupId < groupValues.Count)
+                        {
+                            rows.Add(new object[] { groupValues[groupId]!, nodeValue! });
+                        }
+
+                        word &= word - 1;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsZeroWordArray(ulong[] words)
+        {
+            for (var i = 0; i < words.Length; i++)
+            {
+                if (words[i] != 0UL)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static void OrInto(ulong[] target, ulong[] source)
+        {
+            for (var i = 0; i < target.Length; i++)
+            {
+                target[i] |= source[i];
             }
         }
 
