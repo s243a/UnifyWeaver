@@ -219,6 +219,8 @@ impl WamState {
             if let Some(instr) = Self::parse_single_instruction(trimmed) {
                 code.push(instr);
                 pc += 1;
+            } else {
+                eprintln!("WAM parser: skipping unrecognized line: {}", trimmed);
             }
         }
         (code, labels)
