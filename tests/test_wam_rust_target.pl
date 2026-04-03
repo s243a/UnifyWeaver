@@ -123,7 +123,7 @@ test_builtin_dispatch :-
     (   compile_wam_helpers_to_rust([], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'is/2'),
-        sub_string(S, _, _, _, 'Value::Integer(result as i64)'),
+        sub_string(S, _, _, _, 'result.round()'),
         sub_string(S, _, _, _, '>/2'),
         sub_string(S, _, _, _, '==/2'),
         sub_string(S, _, _, _, 'true/0'),
@@ -135,7 +135,8 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'atom/1'),
         sub_string(S, _, _, _, 'number/1'),
         sub_string(S, _, _, _, 'member/2'),
-        sub_string(S, _, _, _, 'Semi-deterministic')
+        sub_string(S, _, _, _, 'backtracking use'),
+        sub_string(S, _, _, _, 'eprintln!')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
     ).

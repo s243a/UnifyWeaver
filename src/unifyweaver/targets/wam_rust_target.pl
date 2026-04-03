@@ -464,9 +464,9 @@ compile_execute_builtin_to_rust(Code) :-
                 let expr = self.regs.get("A2").cloned().unwrap_or(Value::Integer(0));
                 if let Some(result) = self.eval_arith(&expr) {
                     let lhs = self.regs.get("A1").cloned();
-                    // Bind as integer if result is whole number, otherwise float
-                    let final_val = if result.fract() == 0.0 {
-                        Value::Integer(result as i64)
+                    // Bind as integer if result is very close to a whole number
+                    let final_val = if (result.round() - result).abs() < f64::EPSILON {
+                        Value::Integer(result.round() as i64)
                     } else {
                         Value::Float(result)
                     };
@@ -511,6 +511,8 @@ compile_execute_builtin_to_rust(Code) :-
             "fail/0" => false,
             "!/0" => { self.choice_points.clear(); self.pc += 1; true }
             "write/1" | "display/1" => {
+                // Both use Display for now. Standard Prolog differentiates them:
+                // write/1 suppresses quoting, display/1 uses functional notation.
                 if let Some(val) = self.regs.get("A1").cloned() {
                     let derefed = self.deref_heap(&val);
                     print!("{}", derefed);
@@ -536,13 +538,13 @@ compile_execute_builtin_to_rust(Code) :-
                                 match op {
                                     "member/2" => {
                                         // Semi-deterministic: returns true once for any matching element.
+                                        // TODO: Requires choicepoint support for relational/backtracking use.
                                         if let Value::List(items) = self.deref_heap(&val2) {
                                             items.iter().any(|x| x == &val)
                                         } else { false }
                                     }
                                     "append/3" => {
-                                        // Silent failure for now (complex for inline builtin).
-                                        // TODO: Promote to a WAM-level library call.
+                                        eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
                                         false
                                     }
                                     _ => false,
