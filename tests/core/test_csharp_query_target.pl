@@ -100,6 +100,11 @@
 :- dynamic user:test_sale_customers_bag/1.
 :- dynamic user:test_sale_alice_or_bob_count/1.
 :- dynamic user:test_sale_alice_or_bob_nested_count/1.
+:- dynamic user:test_ci_root_category/1.
+:- dynamic user:test_ci_article_category/2.
+:- dynamic user:test_ci_category_ancestor/3.
+:- dynamic user:test_ci_article_root_weight/3.
+:- dynamic user:test_ci_category_influence/2.
 :- dynamic user:test_banned/1.
 :- dynamic user:test_allowed/1.
 :- dynamic user:test_blocked/1.
@@ -262,6 +267,7 @@ test_csharp_query_target :-
         verify_aggregate_subplan_avg_with_constraint_plan,
         verify_aggregate_subplan_set_with_negation_plan,
         verify_aggregate_subplan_grouped_sum_with_negation_plan,
+        verify_category_influence_aggregate_subplan_plan,
         verify_negation_plan,
         verify_non_stratified_negation_cycle_rejected,
         verify_stratified_negation_derived_runtime,
@@ -752,6 +758,29 @@ setup_test_data :-
     )),
     assertz(user:(test_non_banned_sale_sum_grouped(Customer, Sum) :-
         aggregate_all(sum(Amount), (test_sale(Customer, Amount), \+ test_banned(Customer)), Customer, Sum)
+    )),
+    assertz(user:test_ci_root_category(science)),
+    assertz(user:test_ci_article_category(a1, science)),
+    assertz(user:test_ci_article_category(a2, physics)),
+    assertz(user:test_ci_category_ancestor(physics, science, 1)),
+    assertz(user:(test_ci_article_root_weight(Article, Root, Weight) :-
+        test_ci_article_category(Article, Cat),
+        test_ci_root_category(Root),
+        Cat = Root,
+        Weight is 1.0
+    )),
+    assertz(user:(test_ci_article_root_weight(Article, Root, Weight) :-
+        test_ci_article_category(Article, Cat),
+        test_ci_root_category(Root),
+        Cat \= Root,
+        test_ci_category_ancestor(Cat, Root, Hops),
+        Hops = 1,
+        Weight is 0.5
+    )),
+    assertz(user:(test_ci_category_influence(Root, Score) :-
+        test_ci_root_category(Root),
+        aggregate_all(sum(W), test_ci_article_root_weight(_, Root, W), Score),
+        Score > 0
     )),
     assertz(user:test_banned(bob)),
     assertz(user:(test_allowed(X) :- test_fact(X, _), \+ test_banned(X))),
@@ -1369,6 +1398,11 @@ cleanup_test_data :-
     retractall(user:test_banned_sale_count(_)),
     retractall(user:test_sale_alice_or_bob_count(_)),
     retractall(user:test_sale_alice_or_bob_nested_count(_)),
+    retractall(user:test_ci_root_category(_)),
+    retractall(user:test_ci_article_category(_, _)),
+    retractall(user:test_ci_category_ancestor(_, _, _)),
+    retractall(user:test_ci_article_root_weight(_, _, _)),
+    retractall(user:test_ci_category_influence(_, _)),
     retractall(user:test_sale_count_filtered_by_customer(_, _)),
     retractall(user:test_non_banned_sale_count_grouped(_, _)),
     retractall(user:test_sale_filtered_sum(_)),
@@ -2194,6 +2228,21 @@ verify_aggregate_subplan_grouped_sum_with_negation_plan :-
     sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
     sub_string(Source, _, _, _, 'NegationNode'),
     maybe_run_query_runtime(Plan, ['alice,15']).
+
+verify_category_influence_aggregate_subplan_plan :-
+    csharp_query_target:build_query_plan(test_ci_category_influence/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Agg, Root),
+    is_dict(Agg, aggregate),
+    get_dict(op, Agg, sum),
+    get_dict(predicate, Agg, predicate{name:test_ci_article_root_weight, arity:3}),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, 2),
+    sub_term(define_relation{type:define_relation, predicate:predicate{name:test_ci_article_root_weight, arity:3}, plan:_}, Root),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'DefineRelationNode'),
+    sub_string(Source, _, _, _, 'AggregateNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum').
 
 verify_parameterized_multi_key_join_runtime :-
     csharp_query_target:build_query_plan(test_sale_item_param/3, [target(csharp_query)], Plan),

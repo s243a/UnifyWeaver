@@ -247,14 +247,22 @@ class Program
             bucket.Add((ancestor, hops));
         }}
 
-        var influence = new Dictionary<string, double>(StringComparer.Ordinal);
+        var rootId = new PredicateId("root_category", 1);
+        var weightId = new PredicateId("article_root_weight", 3);
+        var resultId = new PredicateId("category_influence", 2);
+
+        foreach (var root in ROOTS.OrderBy(x => x, StringComparer.Ordinal))
+        {{
+            provider.AddFact(rootId, root);
+        }}
+
         foreach (var (_, categories) in articleCategories.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
         {{
             foreach (var category in categories)
             {{
                 if (ROOTS.Contains(category))
                 {{
-                    influence[category] = influence.TryGetValue(category, out var score) ? score + 1.0 : 1.0;
+                    provider.AddFact(weightId, "_", category, 1.0);
                 }}
 
                 if (!ancestorIndex.TryGetValue(category, out var ancestors))
@@ -271,23 +279,45 @@ class Program
 
                     var distance = hops + 1;
                     var weight = Math.Pow(distance, -N);
-                    influence[ancestor] = influence.TryGetValue(ancestor, out var score) ? score + weight : weight;
+                    provider.AddFact(weightId, "_", ancestor, weight);
                 }}
             }}
         }}
+
+        var aggregatePlan = new QueryPlan(
+            resultId,
+            new ProjectionNode(
+                new SelectionNode(
+                    new AggregateNode(
+                        new RelationScanNode(rootId),
+                        weightId,
+                        AggregateOperation.Sum,
+                        tuple => new object[] {{ Wildcard.Value, tuple[0], Wildcard.Value }},
+                        Array.Empty<int>(),
+                        2,
+                        2),
+                    tuple => QueryExecutor.CompareValues(tuple[1], 0) > 0),
+                tuple => new object[] {{ tuple[0], tuple[1] }}),
+            false,
+            null
+        );
+
+        var aggregateRows = executor.Execute(aggregatePlan).ToList();
         swAgg.Stop();
         swTotal.Stop();
 
-        var results = influence
-            .Where(kvp => kvp.Value > 0.0)
-            .OrderByDescending(kvp => kvp.Value)
-            .ThenBy(kvp => kvp.Key, StringComparer.Ordinal)
+        var results = aggregateRows
+            .Select(row => (
+                Root: row[0]?.ToString() ?? "",
+                Score: Convert.ToDouble(row[1], CultureInfo.InvariantCulture)))
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Root, StringComparer.Ordinal)
             .ToList();
 
         Console.WriteLine("root_category\\tinfluence_score");
-        foreach (var (root, score) in results)
+        foreach (var item in results)
         {{
-            Console.WriteLine($"{{root}}\\t{{score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{item.Root}}\\t{{item.Score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
