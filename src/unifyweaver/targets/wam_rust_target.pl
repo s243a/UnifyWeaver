@@ -504,8 +504,22 @@ compile_execute_builtin_to_rust(Code) :-
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
             "!/0" => { self.choice_points.clear(); self.pc += 1; true }
+            "write/1" => {
+                if let Some(val) = self.regs.get("A1").cloned() {
+                    let derefed = self.deref_heap(&val);
+                    print!("{}", derefed);
+                    self.pc += 1; true
+                } else { false }
+            }
+            "nl/0" => { println!(); self.pc += 1; true }
+            "display/1" => {
+                if let Some(val) = self.regs.get("A1").cloned() {
+                    print!("{:?}", val);
+                    self.pc += 1; true
+                } else { false }
+            }
             _ => {
-                // Check type checks
+                // Check type checks and other unary/binary ops
                 if let Some(val) = self.regs.get("A1").cloned() {
                     let ok = match op {
                         "atom/1" => matches!(val, Value::Atom(_)),
@@ -516,7 +530,20 @@ compile_execute_builtin_to_rust(Code) :-
                         "var/1" => val.is_unbound(),
                         "nonvar/1" => !val.is_unbound(),
                         "is_list/1" => val.is_list(),
-                        _ => false,
+                        _ => {
+                            // Support for basic list/term ops
+                            if let Some(val2) = self.regs.get("A2").cloned() {
+                                match op {
+                                    "member/2" => {
+                                        if let Value::List(items) = self.deref_heap(&val2) {
+                                            items.iter().any(|x| x == &val)
+                                        } else { false }
+                                    }
+                                    "append/3" => false, // complex for inline builtin
+                                    _ => false,
+                                }
+                            } else { false }
+                        }
                     };
                     if ok { self.pc += 1; true } else { false }
                 } else { false }
