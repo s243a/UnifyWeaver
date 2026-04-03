@@ -366,6 +366,79 @@ test_cargo_check_not_available :-
     ;   fail_test(Test, 'cargo_check_project failed ungracefully')
     ).
 
+%% Runtime parser tests
+
+test_state_template_has_parser :-
+    Test = 'WAM-Rust: state.rs template includes parse_instructions',
+    (   read_file_to_string(
+            'templates/targets/rust_wam/state.rs.mustache', Content, []),
+        sub_string(Content, _, _, _, 'parse_instructions'),
+        sub_string(Content, _, _, _, 'from_str'),
+        sub_string(Content, _, _, _, 'parse_single_instruction'),
+        sub_string(Content, _, _, _, 'parse_value')
+    ->  pass(Test)
+    ;   fail_test(Test, 'state.rs template missing parser functions')
+    ).
+
+test_parser_handles_all_instructions :-
+    Test = 'WAM-Rust: parser template covers all instruction opcodes',
+    (   read_file_to_string(
+            'templates/targets/rust_wam/state.rs.mustache', Content, []),
+        % Head unification
+        sub_string(Content, _, _, _, '"get_constant"'),
+        sub_string(Content, _, _, _, '"get_variable"'),
+        sub_string(Content, _, _, _, '"get_value"'),
+        sub_string(Content, _, _, _, '"get_structure"'),
+        sub_string(Content, _, _, _, '"get_list"'),
+        sub_string(Content, _, _, _, '"unify_variable"'),
+        sub_string(Content, _, _, _, '"unify_value"'),
+        sub_string(Content, _, _, _, '"unify_constant"'),
+        % Body construction
+        sub_string(Content, _, _, _, '"put_constant"'),
+        sub_string(Content, _, _, _, '"put_variable"'),
+        sub_string(Content, _, _, _, '"put_value"'),
+        sub_string(Content, _, _, _, '"put_structure"'),
+        sub_string(Content, _, _, _, '"put_list"'),
+        sub_string(Content, _, _, _, '"set_variable"'),
+        sub_string(Content, _, _, _, '"set_value"'),
+        sub_string(Content, _, _, _, '"set_constant"'),
+        % Control
+        sub_string(Content, _, _, _, '"allocate"'),
+        sub_string(Content, _, _, _, '"deallocate"'),
+        sub_string(Content, _, _, _, '"call"'),
+        sub_string(Content, _, _, _, '"execute"'),
+        sub_string(Content, _, _, _, '"proceed"'),
+        sub_string(Content, _, _, _, '"builtin_call"'),
+        % Choice points
+        sub_string(Content, _, _, _, '"try_me_else"'),
+        sub_string(Content, _, _, _, '"retry_me_else"'),
+        sub_string(Content, _, _, _, '"trust_me"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Parser template missing instruction opcodes')
+    ).
+
+test_generated_project_has_parser :-
+    Test = 'WAM-Rust: generated project state.rs includes parser',
+    TmpDir = 'output/test_wam_rust_parser',
+    (   (   exists_directory(TmpDir)
+        ->  catch(delete_directory_and_contents(TmpDir), _, true)
+        ;   true
+        ),
+        write_wam_rust_project(
+            [user:test_simple_fact/2],
+            [module_name('parser_test')],
+            TmpDir),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'state.rs', StatePath),
+        read_file_to_string(StatePath, StateStr, []),
+        sub_string(StateStr, _, _, _, 'parse_instructions'),
+        sub_string(StateStr, _, _, _, 'from_str'),
+        catch(delete_directory_and_contents(TmpDir), _, true)
+    ->  pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Generated state.rs missing parser')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -391,6 +464,9 @@ run_tests :-
     test_instruction_parser_labels,
     test_instruction_parser_resistant,
     test_cargo_check_not_available,
+    test_state_template_has_parser,
+    test_parser_handles_all_instructions,
+    test_generated_project_has_parser,
 
     format('~n========================================~n'),
     (   test_failed
