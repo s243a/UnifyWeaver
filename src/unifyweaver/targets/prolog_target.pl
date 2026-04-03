@@ -262,8 +262,9 @@ strip_codegen_module_qualifiers(Goal0, Goal) :-
     Goal0 = Module:Inner0,
     !,
     strip_codegen_module_qualifiers(Inner0, Inner),
-    (   Module == prolog_target
-    ;   Module == user
+    (   (   Module == prolog_target
+        ;   Module == user
+        )
     ->  Goal = Inner
     ;   Goal = Module:Inner
     ).
@@ -369,7 +370,11 @@ contains_predicate_call(Goal0, Pred) :-
     ;   false
     ).
 
-branch_pruning_driver_position(Pred, Arity, [Head-Body|_], DriverPos) :-
+branch_pruning_driver_position(Pred, Arity, RecClauses, DriverPos) :-
+    maplist(branch_pruning_clause_driver_position(Pred, Arity), RecClauses, DriverPositions),
+    sort(DriverPositions, [DriverPos]).
+
+branch_pruning_clause_driver_position(Pred, Arity, Head-Body, DriverPos) :-
     Head =.. [Pred|HeadArgs],
     body_goals(Body, [StepGoal|_]),
     step_goal_input_var(StepGoal, StepInputVar),
@@ -544,8 +549,9 @@ rename_recursive_calls(Goal0, Pred, Arity, NewName, Goal) :-
     Goal0 = Module:Inner0,
     !,
     rename_recursive_calls(Inner0, Pred, Arity, NewName, Renamed),
-    (   Module == user
-    ;   Module == prolog_target
+    (   (   Module == user
+        ;   Module == prolog_target
+        )
     ->  Goal = Renamed
     ;   Goal = Module:Renamed
     ).

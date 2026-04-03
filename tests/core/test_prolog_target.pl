@@ -51,4 +51,25 @@ test(skips_branch_pruning_without_mode_signal,
     \+ sub_atom(Code, _, _, _, 'test_ppv_reach$prune'),
     \+ sub_atom(Code, _, _, _, 'test_ppv_reach$pruned').
 
+test(skips_branch_pruning_for_non_swi_dialect,
+        [setup(setup_branch_pruning_fixture),
+         cleanup(cleanup_branch_pruning_fixture)]) :-
+    once(generate_prolog_script([test_ppv_reach/4], [dialect(gnu)], Code)),
+    \+ sub_atom(Code, _, _, _, 'test_ppv_reach$prune'),
+    \+ sub_atom(Code, _, _, _, 'test_ppv_reach$pruned').
+
+test(strips_only_codegen_module_qualifiers) :-
+    prolog_target:strip_codegen_module_qualifiers(user:(foo(X), prolog_target:bar(X), other:baz(X)), Goal),
+    Goal = (foo(X), bar(X), other:baz(X)).
+
+test(rename_recursive_calls_preserves_foreign_module_qualifiers) :-
+    prolog_target:rename_recursive_calls(
+        (user:test_ppv_reach(A, B, C, D), other:test_ppv_reach(A, B, C, D)),
+        test_ppv_reach,
+        4,
+        'test_ppv_reach$worker',
+        Goal
+    ),
+    Goal = ('test_ppv_reach$worker'(A, B, C, D), other:'test_ppv_reach$worker'(A, B, C, D)).
+
 :- end_tests(prolog_target).
