@@ -1447,7 +1447,8 @@ class Program
 
         var provider = new InMemoryRelationProvider();
         var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("dependency_reach", 3);
+        var seedId = new PredicateId("project_dependency", 2);
+        var predId = new PredicateId("dependency_reach", 2);
         var projectDeps = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
         foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
@@ -1484,67 +1485,31 @@ class Program
             }}
 
             deps.Add(parts[1]);
+            provider.AddFact(seedId, parts[0], parts[1]);
         }}
         swLoad.Stop();
 
         var plan = new QueryPlan(
             predId,
-            new TransitiveClosureNode(edgeId, predId),
-            true,
-            new int[] {{ 0 }}
+            new SeedGroupedTransitiveClosureNode(edgeId, seedId, predId),
+            true
         );
-
-        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var deps in projectDeps.Values)
-        {{
-            foreach (var dep in deps)
-            {{
-                uniqueSeeds.Add(dep);
-            }}
-        }}
-
-        var seedParams = uniqueSeeds
-            .OrderBy(dep => dep, StringComparer.Ordinal)
-            .Select(dep => new object[] {{ dep }})
-            .ToList();
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));
-        var rows = executor.Execute(plan, seedParams).ToList();
+        var rows = executor.Execute(plan).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
-        var reachIndex = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var reachCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var row in rows)
         {{
-            var source = row[0]?.ToString() ?? "";
-            var dep = row[1]?.ToString() ?? "";
-            if (!reachIndex.TryGetValue(source, out var bucket))
-            {{
-                bucket = new HashSet<string>(StringComparer.Ordinal);
-                reachIndex[source] = bucket;
-            }}
-            bucket.Add(dep);
+            var project = row[0]?.ToString() ?? "";
+            reachCounts[project] = reachCounts.TryGetValue(project, out var count) ? count + 1 : 1;
         }}
-
-        var results = new List<(int Count, string Project)>();
-        foreach (var project in projectDeps.Keys.OrderBy(x => x, StringComparer.Ordinal))
-        {{
-            var allDeps = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var dep in projectDeps[project])
-            {{
-                allDeps.Add(dep);
-                if (reachIndex.TryGetValue(dep, out var closure))
-                {{
-                    foreach (var item in closure)
-                    {{
-                        allDeps.Add(item);
-                    }}
-                }}
-            }}
-
-            results.Add((allDeps.Count, project));
-        }}
+        var results = reachCounts
+            .Select(kvp => (Count: kvp.Value, Project: kvp.Key))
+            .ToList();
         swAgg.Stop();
         swTotal.Stop();
 
@@ -1564,7 +1529,7 @@ class Program
         Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
+        Console.Error.WriteLine($"seed_count={{projectDeps.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
     }}
