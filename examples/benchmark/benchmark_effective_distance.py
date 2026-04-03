@@ -28,9 +28,15 @@ from benchmark_common import (
     build_csharp_package,
     build_go_binary,
     build_rust_binary,
+    find_result,
+    group_results_by_scale,
+    print_match_status,
+    print_pair_match_status,
+    print_phase_metrics,
+    print_result_table,
+    print_speedup,
     require_file,
     run_command,
-    scale_sort_key,
 )
 
 
@@ -129,42 +135,21 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
 
 
 def print_summary(results: list[RunResult]) -> None:
-    by_scale: dict[str, list[RunResult]] = {}
-    for result in results:
-        by_scale.setdefault(result.scale, []).append(result)
-
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
-    for scale in sorted(by_scale.keys(), key=scale_sort_key):
-        for result in sorted(by_scale[scale], key=lambda item: item.target):
-            print(
-                f"{scale}\t{result.target}\t{result.median:.3f}\t"
-                f"{min(result.times):.3f}\t{max(result.times):.3f}\t"
-                f"{result.row_count}\t{result.stdout_sha256[:12]}"
-            )
+    for scale, entries in group_results_by_scale(results, sort_key=scale_sort_key):
+        print_result_table(entries, scale)
 
-        qe = next((item for item in by_scale[scale] if item.target == "csharp-query"), None)
-        csharp_dfs = next((item for item in by_scale[scale] if item.target == "csharp-dfs"), None)
-        rust_dfs = next((item for item in by_scale[scale] if item.target == "rust-dfs"), None)
-        dfs_like = [item for item in by_scale[scale] if item.target != "csharp-query"]
+        qe = find_result(entries, "csharp-query")
+        csharp_dfs = find_result(entries, "csharp-dfs")
+        rust_dfs = find_result(entries, "rust-dfs")
+        dfs_like = [item for item in entries if item.target != "csharp-query"]
 
         if len(dfs_like) > 1:
-            dfs_hashes = {item.stdout_sha256 for item in dfs_like}
-            status = "match" if len(dfs_hashes) == 1 else "MISMATCH"
-            print(f"{scale}\tdfs_outputs\t{status}")
-
-        if qe and csharp_dfs:
-            same = "match" if qe.stdout_sha256 == csharp_dfs.stdout_sha256 else "DIFFERENT"
-            print(f"{scale}\tquery_vs_csharp_dfs\t{same}")
-
-        if qe and csharp_dfs:
-            print(f"{scale}\tspeedup_vs_csharp_dfs\t{csharp_dfs.median / qe.median:.2f}x")
-        if qe and rust_dfs:
-            print(f"{scale}\tspeedup_vs_rust_dfs\t{rust_dfs.median / qe.median:.2f}x")
-
-        if qe and qe.stderr:
-            phase_lines = [line.strip() for line in qe.stderr.splitlines() if "=" in line]
-            if phase_lines:
-                print(f"{scale}\tcsharp-query-metrics\t" + " ".join(phase_lines))
+            print_match_status(scale, "dfs_outputs", dfs_like)
+        print_pair_match_status(scale, "query_vs_csharp_dfs", qe, csharp_dfs)
+        print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
+        print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
+        print_phase_metrics(scale, "csharp-query-metrics", qe)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:

@@ -7,7 +7,6 @@ generated Rust/Go binaries.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import statistics
 import tempfile
 import time
@@ -19,6 +18,13 @@ from benchmark_common import (
     build_csharp_package,
     build_go_binary,
     build_rust_binary,
+    digest_normalized_output,
+    find_result,
+    group_results_by_scale,
+    print_match_status,
+    print_phase_metrics,
+    print_result_table,
+    print_speedup,
     require_file,
     run_command,
     scale_sort_key,
@@ -110,45 +116,27 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
         stderr = result.stderr
 
     normalized = normalize_output(stdout)
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    row_count = max(0, len(normalized.splitlines()) - 1)
+    digest, row_count = digest_normalized_output(normalized)
     return RunResult(target, scale, times, digest, row_count, stderr)
 
 
 def print_summary(results: list[RunResult]) -> None:
-    by_scale: dict[str, list[RunResult]] = {}
-    for result in results:
-        by_scale.setdefault(result.scale, []).append(result)
-
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
-    for scale in sorted(by_scale.keys(), key=scale_sort_key):
-        entries = sorted(by_scale[scale], key=lambda item: item.target)
-        for result in entries:
-            print(
-                f"{scale}\t{result.target}\t{result.median:.3f}\t"
-                f"{min(result.times):.3f}\t{max(result.times):.3f}\t"
-                f"{result.row_count}\t{result.stdout_sha256[:12]}"
-            )
-
+    for scale, entries in group_results_by_scale(results):
+        print_result_table(entries, scale)
         if len(entries) > 1:
-            hashes = {item.stdout_sha256 for item in entries}
-            print(f"{scale}\toutputs\t{'match' if len(hashes) == 1 else 'MISMATCH'}")
-            csharp = next((item for item in entries if item.target == "csharp-query"), None)
-            rust = next((item for item in entries if item.target == "rust-dfs"), None)
-            go = next((item for item in entries if item.target == "go-dfs"), None)
-            if csharp and rust:
-                print(f"{scale}\tspeedup_vs_rust_dfs\t{rust.median / csharp.median:.2f}x")
-            if csharp and go:
-                print(f"{scale}\tspeedup_vs_go_dfs\t{go.median / csharp.median:.2f}x")
+            print_match_status(scale, "outputs", entries)
+            csharp = find_result(entries, "csharp-query")
+            rust = find_result(entries, "rust-dfs")
+            go = find_result(entries, "go-dfs")
+            print_speedup(scale, "speedup_vs_rust_dfs", rust, csharp)
+            print_speedup(scale, "speedup_vs_go_dfs", go, csharp)
             if rust and go:
                 faster = "rust-dfs" if rust.median < go.median else "go-dfs"
                 speedup = (go.median / rust.median) if faster == "rust-dfs" else (rust.median / go.median)
                 print(f"{scale}\tfaster_target\t{faster}")
                 print(f"{scale}\tspeedup\t{speedup:.2f}x")
-            if csharp and csharp.stderr:
-                phase_lines = [line.strip() for line in csharp.stderr.splitlines() if "=" in line]
-                if phase_lines:
-                    print(f"{scale}\tcsharp-query-metrics\t" + " ".join(phase_lines))
+            print_phase_metrics(scale, "csharp-query-metrics", csharp)
 
 
 def main() -> int:

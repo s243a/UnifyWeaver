@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -186,3 +187,51 @@ def build_go_binary(
     env = dict(os.environ, GOCACHE=str(go_cache))
     run_command(["go", "build", "-o", str(binary), str(source)], env=env)
     return [str(binary)]
+
+
+def digest_normalized_output(normalized: str) -> tuple[str, int]:
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    row_count = max(0, len(normalized.splitlines()) - 1)
+    return digest, row_count
+
+
+def group_results_by_scale(results: list[object], sort_key=scale_sort_key) -> list[tuple[str, list[object]]]:
+    by_scale: dict[str, list[object]] = {}
+    for result in results:
+        by_scale.setdefault(result.scale, []).append(result)
+    return [(scale, by_scale[scale]) for scale in sorted(by_scale.keys(), key=sort_key)]
+
+
+def print_result_table(entries: list[object], scale: str) -> None:
+    for result in sorted(entries, key=lambda item: item.target):
+        print(
+            f"{scale}\t{result.target}\t{result.median:.3f}\t"
+            f"{min(result.times):.3f}\t{max(result.times):.3f}\t"
+            f"{result.row_count}\t{result.stdout_sha256[:12]}"
+        )
+
+
+def find_result(entries: list[object], target: str) -> object | None:
+    return next((item for item in entries if item.target == target), None)
+
+
+def print_match_status(scale: str, label: str, entries: list[object]) -> None:
+    hashes = {item.stdout_sha256 for item in entries}
+    print(f"{scale}\t{label}\t{'match' if len(hashes) == 1 else 'MISMATCH'}")
+
+
+def print_pair_match_status(scale: str, label: str, left: object | None, right: object | None) -> None:
+    if left and right:
+        print(f"{scale}\t{label}\t{'match' if left.stdout_sha256 == right.stdout_sha256 else 'DIFFERENT'}")
+
+
+def print_speedup(scale: str, label: str, faster_baseline: object | None, measured: object | None) -> None:
+    if faster_baseline and measured:
+        print(f"{scale}\t{label}\t{faster_baseline.median / measured.median:.2f}x")
+
+
+def print_phase_metrics(scale: str, label: str, result: object | None) -> None:
+    if result and result.stderr:
+        phase_lines = [line.strip() for line in result.stderr.splitlines() if "=" in line]
+        if phase_lines:
+            print(f"{scale}\t{label}\t" + " ".join(phase_lines))

@@ -7,7 +7,6 @@ and generated DFS binaries for C#, Rust, and Go.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import statistics
 import tempfile
 import time
@@ -19,6 +18,13 @@ from benchmark_common import (
     build_csharp_package,
     build_go_binary,
     build_rust_binary,
+    digest_normalized_output,
+    find_result,
+    group_results_by_scale,
+    print_match_status,
+    print_pair_match_status,
+    print_result_table,
+    print_speedup,
     require_file,
     run_command,
     scale_sort_key,
@@ -118,42 +124,27 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
         stderr = result.stderr
 
     normalized = normalize_output(stdout)
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    row_count = max(0, len(normalized.splitlines()) - 1)
+    digest, row_count = digest_normalized_output(normalized)
     return RunResult(target, scale, times, digest, row_count, stderr)
 
 
 def print_summary(results: list[RunResult]) -> None:
-    by_scale: dict[str, list[RunResult]] = {}
-    for result in results:
-        by_scale.setdefault(result.scale, []).append(result)
-
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
-    for scale in sorted(by_scale.keys(), key=scale_sort_key):
-        entries = sorted(by_scale[scale], key=lambda item: item.target)
-        for result in entries:
-            print(
-                f"{scale}\t{result.target}\t{result.median:.3f}\t"
-                f"{min(result.times):.3f}\t{max(result.times):.3f}\t"
-                f"{result.row_count}\t{result.stdout_sha256[:12]}"
-            )
+    for scale, entries in group_results_by_scale(results):
+        print_result_table(entries, scale)
 
-        qe = next((item for item in entries if item.target == "csharp-query"), None)
-        csharp_dfs = next((item for item in entries if item.target == "csharp-dfs"), None)
-        rust_dfs = next((item for item in entries if item.target == "rust-dfs"), None)
-        go_dfs = next((item for item in entries if item.target == "go-dfs"), None)
+        qe = find_result(entries, "csharp-query")
+        csharp_dfs = find_result(entries, "csharp-dfs")
+        rust_dfs = find_result(entries, "rust-dfs")
+        go_dfs = find_result(entries, "go-dfs")
         dfs_like = [item for item in entries if item.target != "csharp-query"]
 
         if len(dfs_like) > 1:
-            dfs_hashes = {item.stdout_sha256 for item in dfs_like}
-            print(f"{scale}\tdfs_outputs\t{'match' if len(dfs_hashes) == 1 else 'MISMATCH'}")
-        if qe and csharp_dfs:
-            print(f"{scale}\tquery_vs_csharp_dfs\t{'match' if qe.stdout_sha256 == csharp_dfs.stdout_sha256 else 'DIFFERENT'}")
-            print(f"{scale}\tspeedup_vs_csharp_dfs\t{csharp_dfs.median / qe.median:.2f}x")
-        if qe and rust_dfs:
-            print(f"{scale}\tspeedup_vs_rust_dfs\t{rust_dfs.median / qe.median:.2f}x")
-        if qe and go_dfs:
-            print(f"{scale}\tspeedup_vs_go_dfs\t{go_dfs.median / qe.median:.2f}x")
+            print_match_status(scale, "dfs_outputs", dfs_like)
+        print_pair_match_status(scale, "query_vs_csharp_dfs", qe, csharp_dfs)
+        print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
+        print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
+        print_speedup(scale, "speedup_vs_go_dfs", go_dfs, qe)
 
 
 def main() -> int:
