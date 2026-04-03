@@ -52,13 +52,13 @@ Primary implementation points:
 
 ## Current Boundary
 
-The next unsupported TypR slice is not loader-related. It is richer path-state
-control between the step relation and the recursive call.
+The first helper/guard slice between the step relation and the recursive call
+now stays native in TypR.
 
-The first real missing cases are:
+The next real missing cases are:
 
-- helper or guard goals over invariant inputs between step and recursive call
 - broader invariant-input threading beyond the current conservative shape
+- multiple helper/guard stages or richer branch-local path-state control
 - runtime-backed step relations that still preserve path-local uniqueness
 
 Examples:
@@ -138,26 +138,10 @@ worker(State, Invariants, Visited) ->
 That is enough to cover the next slice without committing yet to a full generic
 path-state IR.
 
-## Recommended Next Implementation Slice
-
-Recommended branch:
-
-- `feature/typr-per-path-invariant-guards-audit`
-
-Scope:
-
-- compile-time-seeded step relation first
-- scalar node IDs first
-- native TypR worker path only
-- one helper/guard segment between step and recursive call
-- no broader runtime loader expansion in the same branch
-
-That is the smallest slice that actually moves the boundary.
-
 ## Aggregation-Oriented Follow-Up
 
-After invariant guards, the next high-signal per-path extension should not be
-more loader work. It should be the first path-aware aggregation shape.
+With invariant guards in place, the next high-signal per-path extension should
+not be more loader work. It should be the first path-aware aggregation shape.
 
 Conservative candidates:
 
