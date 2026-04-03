@@ -310,6 +310,62 @@ test_project_with_wam_fallback :-
         fail_test(Test, 'WAM fallback predicate not in generated project')
     ).
 
+%% Instruction parser tests
+
+test_instruction_parser :-
+    Test = 'WAM-Rust: WAM code → Rust instruction literals',
+    (   % Compile a simple predicate to WAM, then to Rust instructions
+        wam_target:compile_facts_to_wam(user:test_simple_fact, 2, WamCode),
+        compile_wam_predicate_to_rust(test_simple_fact/2, WamCode, [], RustCode),
+        atom_string(RustCode, S),
+        % Should have real instructions, not TODOs
+        sub_string(S, _, _, _, 'Instruction::GetConstant'),
+        sub_string(S, _, _, _, 'Instruction::Proceed'),
+        sub_string(S, _, _, _, 'vec!['),
+        sub_string(S, _, _, _, 'vm.run()'),
+        % Should NOT have the old TODO
+        \+ sub_string(S, _, _, _, 'TODO')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Instruction parser output incorrect')
+    ).
+
+test_instruction_parser_labels :-
+    Test = 'WAM-Rust: label map generation',
+    (   wam_target:compile_facts_to_wam(user:test_simple_fact, 2, WamCode),
+        compile_wam_predicate_to_rust(test_simple_fact/2, WamCode, [], RustCode),
+        atom_string(RustCode, S),
+        sub_string(S, _, _, _, 'labels.insert'),
+        sub_string(S, _, _, _, 'test_simple_fact/2')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Label map not generated correctly')
+    ).
+
+test_instruction_parser_resistant :-
+    Test = 'WAM-Rust: resistant predicate generates full WAM code',
+    (   wam_target:compile_predicate_to_wam(user:test_resistant/3, [], WamCode),
+        compile_wam_predicate_to_rust(test_resistant/3, WamCode, [], RustCode),
+        atom_string(RustCode, S),
+        sub_string(S, _, _, _, 'Instruction::TryMeElse'),
+        sub_string(S, _, _, _, 'Instruction::Allocate'),
+        sub_string(S, _, _, _, 'Instruction::Call'),
+        sub_string(S, _, _, _, 'vm.run()')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Resistant predicate WAM code incomplete')
+    ).
+
+test_cargo_check_not_available :-
+    Test = 'WAM-Rust: cargo_check handles missing cargo gracefully',
+    (   % On systems without cargo, should return not_available
+        % On systems with cargo, should return ok or error
+        cargo_check_project('nonexistent_dir', Result),
+        (   Result = not_available -> true
+        ;   Result = error(_, _) -> true
+        ;   Result = ok -> true
+        )
+    ->  pass(Test)
+    ;   fail_test(Test, 'cargo_check_project failed ungracefully')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -331,6 +387,10 @@ run_tests :-
     test_write_wam_rust_project,
     test_project_cargo_content,
     test_project_with_wam_fallback,
+    test_instruction_parser,
+    test_instruction_parser_labels,
+    test_instruction_parser_resistant,
+    test_cargo_check_not_available,
 
     format('~n========================================~n'),
     (   test_failed
