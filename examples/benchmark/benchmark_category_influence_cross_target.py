@@ -21,13 +21,13 @@ from benchmark_common import (
     digest_normalized_output,
     find_result,
     group_results_by_scale,
+    normalize_two_column_float_rows,
     print_match_status,
     print_phase_metrics,
     print_result_table,
     print_speedup,
     require_file,
     run_command,
-    scale_sort_key,
 )
 
 
@@ -83,21 +83,7 @@ def build_go_dfs(root: Path) -> list[str]:
 
 
 def normalize_output(output: str) -> str:
-    lines = output.splitlines()
-    if not lines:
-        return ""
-    header = lines[0]
-    rows: list[tuple[str, float]] = []
-    for line in lines[1:]:
-        parts = line.split("\t")
-        if len(parts) != 2:
-            continue
-        rows.append((parts[0], round(float(parts[1]), 9)))
-    rows.sort(key=lambda item: (-item[1], item[0]))
-    normalized = [header]
-    for root, score in rows:
-        normalized.append(f"{root}\t{score:.9f}")
-    return "\n".join(normalized)
+    return normalize_two_column_float_rows(output, decimals=9, descending_numeric=True)
 
 
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:

@@ -195,6 +195,58 @@ def digest_normalized_output(normalized: str) -> tuple[str, int]:
     return digest, row_count
 
 
+def normalize_sorted_lines(output: str) -> str:
+    lines = output.splitlines()
+    header = lines[:1]
+    body = sorted(lines[1:])
+    return "\n".join(header + body)
+
+
+def normalize_two_column_float_rows(
+    output: str,
+    *,
+    decimals: int = 9,
+    descending_numeric: bool = False,
+) -> str:
+    lines = output.splitlines()
+    if not lines:
+        return ""
+    header = lines[0]
+    rows: list[tuple[str, float]] = []
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        rows.append((parts[0], round(float(parts[1]), decimals)))
+    rows.sort(key=lambda item: ((-item[1]) if descending_numeric else item[1], item[0]))
+    normalized = [header]
+    for label, value in rows:
+        normalized.append(f"{label}\t{value:.{decimals}f}")
+    return "\n".join(normalized)
+
+
+def normalize_three_column_float_rows(
+    output: str,
+    *,
+    decimals: int = 9,
+) -> str:
+    lines = output.splitlines()
+    if not lines:
+        return ""
+    header = lines[0]
+    rows: list[tuple[str, str, float]] = []
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        rows.append((parts[0], parts[1], round(float(parts[2]), decimals)))
+    rows.sort(key=lambda item: (item[2], item[0], item[1]))
+    normalized = [header]
+    for col1, col2, value in rows:
+        normalized.append(f"{col1}\t{col2}\t{value:.{decimals}f}")
+    return "\n".join(normalized)
+
+
 def group_results_by_scale(results: list[object], sort_key=scale_sort_key) -> list[tuple[str, list[object]]]:
     by_scale: dict[str, list[object]] = {}
     for result in results:
