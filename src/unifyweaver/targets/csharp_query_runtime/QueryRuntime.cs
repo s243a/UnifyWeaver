@@ -4,6 +4,7 @@
 // emitted by the forthcoming csharp_query target.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
@@ -10787,6 +10788,61 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
 
+                const int MaxDagBitsetNodeCount = 16384;
+                const int MinDagBitsetSeedCount = 128;
+                const int MinDagBitsetEdgeCount = 8192;
+                if (seeds.Count >= MinDagBitsetSeedCount &&
+                    edges.Count >= MinDagBitsetEdgeCount &&
+                    TryBuildDagReachabilityBitsets(edges, MaxDagBitsetNodeCount, out var dagNodeIds, out var dagNodesById, out var dagReachability))
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosureSeededDagBitset");
+                    var dagRows = new List<object[]>();
+
+                    foreach (var seed in seeds)
+                    {
+                        if (!dagNodeIds.TryGetValue(seed, out var seedId))
+                        {
+                            continue;
+                        }
+
+                        var reachable = dagReachability[seedId];
+                        for (var targetId = 0; targetId < reachable.Length; targetId++)
+                        {
+                            if (!reachable[targetId])
+                            {
+                                continue;
+                            }
+
+                            dagRows.Add(new object[] { seed!, dagNodesById[targetId]! });
+                        }
+                    }
+
+                    if (canReuseSeededCache)
+                    {
+                        if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var dagStoreBySeed))
+                        {
+                            dagStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            context.TransitiveClosureSeededResults.Add(cacheKey, dagStoreBySeed);
+                        }
+
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            dagRows.Count,
+                            seeds.Count,
+                            useRowsPerSeedGate: true);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
+                            dagStoreBySeed,
+                            new RowWrapper(seedsKey),
+                            dagRows,
+                            _seededCacheMaxEntries,
+                            admitSeededCache,
+                            trace,
+                            "TransitiveClosureSeeded",
+                            traceKey);
+                    }
+
+                    return dagRows;
+                }
+
                 const int MaxMemoizedSeedCount = 32;
                 var canMemoizeSeeds =
                     _cacheContext is not null &&
@@ -11018,6 +11074,111 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private static bool TryBuildDagReachabilityBitsets(
+            IReadOnlyList<object[]> edges,
+            int maxNodeCount,
+            out Dictionary<object?, int> nodeIds,
+            out object?[] nodesById,
+            out BitArray[] reachability)
+        {
+            var localNodeIds = new Dictionary<object?, int>();
+            nodeIds = localNodeIds;
+            nodesById = Array.Empty<object?>();
+            reachability = Array.Empty<BitArray>();
+
+            if (edges.Count == 0)
+            {
+                return false;
+            }
+
+            var successors = new List<List<int>>();
+            var indegree = new List<int>();
+            var nodeValues = new List<object?>();
+
+            int GetNodeId(object? value)
+            {
+                if (localNodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = nodeValues.Count;
+                localNodeIds.Add(value, id);
+                nodeValues.Add(value);
+                successors.Add(new List<int>());
+                indegree.Add(0);
+                return id;
+            }
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                var fromId = GetNodeId(edge[0]);
+                var toId = GetNodeId(edge[1]);
+                successors[fromId].Add(toId);
+                indegree[toId]++;
+            }
+
+            if (nodeValues.Count == 0 || nodeValues.Count > maxNodeCount)
+            {
+                return false;
+            }
+
+            var queue = new Queue<int>();
+            for (var i = 0; i < indegree.Count; i++)
+            {
+                if (indegree[i] == 0)
+                {
+                    queue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(nodeValues.Count);
+            while (queue.Count > 0)
+            {
+                var id = queue.Dequeue();
+                topo.Add(id);
+                foreach (var next in successors[id])
+                {
+                    indegree[next]--;
+                    if (indegree[next] == 0)
+                    {
+                        queue.Enqueue(next);
+                    }
+                }
+            }
+
+            if (topo.Count != nodeValues.Count)
+            {
+                return false;
+            }
+
+            reachability = new BitArray[nodeValues.Count];
+            for (var i = 0; i < reachability.Length; i++)
+            {
+                reachability[i] = new BitArray(nodeValues.Count);
+            }
+
+            for (var index = topo.Count - 1; index >= 0; index--)
+            {
+                var nodeId = topo[index];
+                var bits = reachability[nodeId];
+                foreach (var next in successors[nodeId])
+                {
+                    bits[next] = true;
+                    bits.Or(reachability[next]);
+                }
+            }
+
+            nodesById = nodeValues.ToArray();
+            nodeIds = localNodeIds;
+            return true;
         }
 
         private IEnumerable<object[]> ExecuteSeededTransitiveClosureByTarget(
