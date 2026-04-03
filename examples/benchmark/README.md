@@ -353,30 +353,33 @@ Latest local results:
 
 | Scale | C# Query | Rust DFS | Go DFS | Outputs |
 |-------|---------:|---------:|-------:|---------|
-| 300 | 0.673s | 0.384s | 0.488s | match |
-| 1k | 0.484s | 1.500s | 2.022s | match |
-| 5k | 1.399s | 8.036s | 12.318s | match |
-| 10k | 3.861s | 14.450s | 19.990s | match |
+| 300 | 0.662s | 0.394s | 0.490s | match |
+| 1k | 0.517s | 1.531s | 2.125s | match |
+| 5k | 1.695s | 7.854s | 12.580s | match |
+| 10k | 4.661s | 15.703s | 21.378s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs Rust DFS | vs Go DFS |
 |-------|------------:|----------:|
-| 300 | 0.57x | 0.72x |
-| 1k | 3.10x | 4.18x |
-| 5k | 5.74x | 8.80x |
-| 10k | 3.74x | 5.18x |
+| 300 | 0.59x | 0.74x |
+| 1k | 2.96x | 4.11x |
+| 5k | 4.63x | 7.42x |
+| 10k | 3.37x | 4.59x |
 
 Comparison note:
 
 - the benchmark now includes a dedicated C# query-engine path
-- that path uses `QueryRuntime` for the recursive `category_ancestor`
-  expansion and performs the outer grouped sum in-process
+- that path now uses `QueryRuntime` for both:
+  - the recursive `category_ancestor` expansion
+  - the outer grouped influence sum via `AggregateNode`
 - Rust and Go remain generated DFS/pipeline binaries
 - so this runner is intentionally a mixed execution-model comparison:
   query engine versus non-query target pipelines
-- the current C# path is weaker than Rust/Go at `300`, but clearly faster
-  from `1k` onward on the current workload
+- pushing the outer grouped sum into query-runtime aggregate machinery did
+  add some overhead versus the earlier ad hoc dictionary aggregation, but
+  the C# path is still weaker only at `300` and clearly faster from `1k`
+  onward on the current workload
 
 ### Weighted `Min` Results
 
