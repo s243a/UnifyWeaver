@@ -21,14 +21,13 @@ from benchmark_common import (
     digest_normalized_output,
     find_result,
     group_results_by_scale,
+    normalize_sorted_lines,
     print_match_status,
     print_pair_match_status,
-    print_phase_metrics,
     print_result_table,
     print_speedup,
     require_file,
     run_command,
-    scale_sort_key,
 )
 
 
@@ -90,10 +89,7 @@ def build_go_dfs(root: Path) -> list[str]:
 
 
 def normalize_output(output: str) -> str:
-    lines = output.splitlines()
-    header = lines[:1]
-    body = sorted(lines[1:])
-    return "\n".join(header + body)
+    return normalize_sorted_lines(output)
 
 
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:

@@ -207,6 +207,11 @@ Packaging note:
 - `benchmark_common.py` now also carries shared output-digest and summary
   helpers, so only workload-specific normalization and extra reporting
   stay in the individual runners
+- safe shared normalization helpers also live there now for:
+  - exact sorted-line outputs
+  - rounded float row outputs in common 2-column and 3-column forms
+- workloads can still keep custom normalization when their semantics or
+  ordering rules are genuinely different
 
 ## Usage
 

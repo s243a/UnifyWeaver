@@ -21,13 +21,13 @@ from benchmark_common import (
     digest_normalized_output,
     find_result,
     group_results_by_scale,
+    normalize_three_column_float_rows,
     print_match_status,
     print_pair_match_status,
     print_result_table,
     print_speedup,
     require_file,
     run_command,
-    scale_sort_key,
 )
 
 
@@ -89,23 +89,7 @@ def build_go_dfs(root: Path) -> list[str]:
 
 
 def normalize_output(output: str) -> str:
-    lines = output.splitlines()
-    if not lines:
-        return ""
-    header = lines[0]
-    rows: list[tuple[str, str, float]] = []
-    for line in lines[1:]:
-        parts = line.split("\t")
-        if len(parts) != 3:
-            continue
-        # Cross-target weighted runs can differ by ~1e-12 due to floating-point
-        # formatting/evaluation order while still being semantically identical.
-        rows.append((parts[0], parts[1], round(float(parts[2]), 9)))
-    rows.sort(key=lambda item: (item[2], item[0], item[1]))
-    normalized = [header]
-    for article, root, value in rows:
-        normalized.append(f"{article}\t{root}\t{value:.9f}")
-    return "\n".join(normalized)
+    return normalize_three_column_float_rows(output, decimals=9)
 
 
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
