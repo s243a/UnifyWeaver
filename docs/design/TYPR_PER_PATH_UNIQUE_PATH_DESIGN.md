@@ -143,15 +143,23 @@ path-state IR.
 With invariant guards in place, the next high-signal per-path extension should
 not be more loader work. It should be the first path-aware aggregation shape.
 
-Conservative candidates:
+The first conservative aggregation slice now lands for counted unique-path
+reachability wrappers of the form:
 
-- counted unique-path reachability
+- `aggregate_all(count, per_path_goal, N)`
+
+where the inner per-path goal already stays native in the current TypR worker
+path.
+
+The next conservative candidates are:
+
+- grouped counted unique-path reachability
 - min-cost unique-path reachability
 - grouped path-aware accumulation over a seeded relation
 
-If TypR can carry path-local state cleanly into one conservative aggregation
-slice, that will tell us whether the current worker model is enough or whether
-a broader IR is actually required.
+If TypR can carry path-local state cleanly into those next aggregation slices,
+that will tell us whether the current worker model is enough or whether a
+broader IR is actually required.
 
 ## Non-Goals
 

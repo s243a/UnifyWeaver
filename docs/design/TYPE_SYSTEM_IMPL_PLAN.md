@@ -154,7 +154,10 @@ bring-up.
   slice now also emits a native `*_from_vectors` runtime helper, native
   `input(stdin|file|vfs|function)` wrappers, and declared scalar or
   conservative pair-shaped runtime node parsing such as `integer`, `number`,
-  `pair(integer, integer)`, and `pair(number, number)`
+  `pair(integer, integer)`, and `pair(number, number)`; the first
+  conservative path-aware aggregation slice also now stays native for
+  `aggregate_all(count, per_path_goal, N)` wrappers over that supported
+  per-path worker path
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,
