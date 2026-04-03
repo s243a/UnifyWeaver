@@ -204,6 +204,9 @@ Packaging note:
 - shared Rust/Go/C# runner utilities now live in `benchmark_common.py`
   so new workload runners do not need to reimplement the same temp/build
   scaffolding
+- `benchmark_common.py` now also carries shared output-digest and summary
+  helpers, so only workload-specific normalization and extra reporting
+  stay in the individual runners
 
 ## Usage
 
