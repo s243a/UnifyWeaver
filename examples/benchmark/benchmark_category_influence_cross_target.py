@@ -21,20 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
-QRY_RUNTIME = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 FACTS_PATH = BENCH_DIR / "10k" / "facts.pl"
-
-CSHARP_PROJECT = """\
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-</Project>
-"""
 
 
 @dataclass
@@ -126,8 +114,6 @@ def generate_pipeline_source(root: Path, target: str) -> Path:
 
 def build_csharp_query(root: Path) -> list[str]:
     project_dir = root / "csharp_query"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    output = project_dir / "Program.cs"
     run(
         [
             sys.executable,
@@ -138,12 +124,10 @@ def build_csharp_query(root: Path) -> list[str]:
             "category_influence",
             "--target",
             "csharp_query",
-            "--output",
-            str(output),
+            "--output-dir",
+            str(project_dir),
         ]
     )
-    (project_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
-    (project_dir / "benchmark_qe.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
     run(["dotnet", "build", "benchmark_qe.csproj", "-c", "Release"], cwd=project_dir)
     return [
         "dotnet",
