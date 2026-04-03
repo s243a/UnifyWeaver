@@ -1,0 +1,140 @@
+package {{package_name}}
+
+import "fmt"
+
+type TrailEntry struct {
+	Var string
+}
+
+type ChoicePoint struct {
+	NextPC    int
+	CP        int
+	Regs      map[string]Value
+	TrailMark int
+}
+
+type EnvFrame struct {
+	CP int
+}
+
+type UnifyCtx struct {
+	Args []Value
+}
+
+type WriteCtx struct {
+	N int
+}
+
+type StackEntry interface {
+	stackTag()
+}
+
+func (e *EnvFrame) stackTag() {}
+func (e *UnifyCtx) stackTag() {}
+func (e *WriteCtx) stackTag() {}
+
+type WamState struct {
+	Code         []Instruction
+	Labels       map[string]int
+	PC           int
+	CP           int
+	Regs         map[string]Value
+	Heap         []Value
+	Stack        []StackEntry
+	Trail        []TrailEntry
+	ChoicePoints []ChoicePoint
+}
+
+func NewWamState(code []Instruction, labels map[string]int) *WamState {
+	return &WamState{
+		Code:   code,
+		Labels: labels,
+		Regs:   make(map[string]Value),
+	}
+}
+
+func (vm *WamState) putReg(name string, val Value) {
+	vm.Regs[name] = val
+}
+
+func (vm *WamState) getReg(name string) Value {
+	return vm.Regs[name]
+}
+
+func (vm *WamState) trailBinding(name string) {
+	vm.Trail = append(vm.Trail, TrailEntry{Var: name})
+}
+
+func (vm *WamState) pushChoicePoint(nextPC int) {
+	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+		NextPC:    nextPC,
+		CP:        vm.CP,
+		Regs:      copyMap(vm.Regs),
+		TrailMark: len(vm.Trail),
+	})
+}
+
+func (vm *WamState) popEnvFrame() *EnvFrame {
+	for i := len(vm.Stack) - 1; i >= 0; i-- {
+		if f, ok := vm.Stack[i].(*EnvFrame); ok {
+			vm.Stack = vm.Stack[:i]
+			return f
+		}
+	}
+	return nil
+}
+
+func (vm *WamState) peekUnifyCtx() *UnifyCtx {
+	if len(vm.Stack) == 0 { return nil }
+	if ctx, ok := vm.Stack[len(vm.Stack)-1].(*UnifyCtx); ok {
+		return ctx
+	}
+	return nil
+}
+
+func (vm *WamState) peekWriteCtx() *WriteCtx {
+	if len(vm.Stack) == 0 { return nil }
+	if ctx, ok := vm.Stack[len(vm.Stack)-1].(*WriteCtx); ok {
+		return ctx
+	}
+	return nil
+}
+
+func (vm *WamState) popStack() {
+	if len(vm.Stack) > 0 {
+		vm.Stack = vm.Stack[:len(vm.Stack)-1]
+	}
+}
+
+func (vm *WamState) heapSubargs(start, n int) []Value {
+	if start+n > len(vm.Heap) { return nil }
+	return vm.Heap[start : start+n]
+}
+
+func copyMap(m map[string]Value) map[string]Value {
+	m2 := make(map[string]Value)
+	for k, v := range m {
+		m2[k] = v
+	}
+	return m2
+}
+
+func parseFunctorArity(f string) int {
+	var name string
+	var arity int
+	fmt.Sscanf(f, "%s/%d", &name, &arity)
+	return arity
+}
+
+func decompose(v Value) (string, []Value) {
+	// Simple implementation for now
+	if a, ok := v.(*Atom); ok {
+		return a.Name, nil
+	}
+	return "", nil
+}
+
+func (vm *WamState) executeBuiltin(op string, arity int) bool {
+	// TODO: implement builtins
+	return false
+}

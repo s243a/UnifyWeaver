@@ -1,0 +1,100 @@
+package {{package_name}}
+
+type Instruction interface {
+	instrTag()
+}
+
+// Data structures for Switch instructions
+type ConstCase struct {
+	Val   Value
+	Label string
+}
+
+type StructCase struct {
+	Functor string
+	Label   string
+}
+
+type GetConstant struct { C Value; Ai string }
+func (i *GetConstant) instrTag() {}
+
+type GetVariable struct { Xn string; Ai string }
+func (i *GetVariable) instrTag() {}
+
+type GetValue struct { Xn string; Ai string }
+func (i *GetValue) instrTag() {}
+
+type GetStructure struct { Functor string; Ai string }
+func (i *GetStructure) instrTag() {}
+
+type GetList struct { Ai string }
+func (i *GetList) instrTag() {}
+
+type UnifyVariable struct { Xn string }
+func (i *UnifyVariable) instrTag() {}
+
+type UnifyValue struct { Xn string }
+func (i *UnifyValue) instrTag() {}
+
+type UnifyConstant struct { C Value }
+func (i *UnifyConstant) instrTag() {}
+
+type PutConstant struct { C Value; Ai string }
+func (i *PutConstant) instrTag() {}
+
+type PutVariable struct { Xn string; Ai string }
+func (i *PutVariable) instrTag() {}
+
+type PutValue struct { Xn string; Ai string }
+func (i *PutValue) instrTag() {}
+
+type PutStructure struct { Functor string; Ai string }
+func (i *PutStructure) instrTag() {}
+
+type PutList struct { Ai string }
+func (i *PutList) instrTag() {}
+
+type SetVariable struct { Xn string }
+func (i *SetVariable) instrTag() {}
+
+type SetValue struct { Xn string }
+func (i *SetValue) instrTag() {}
+
+type SetConstant struct { C Value }
+func (i *SetConstant) instrTag() {}
+
+type Allocate struct{}
+func (i *Allocate) instrTag() {}
+
+type Deallocate struct{}
+func (i *Deallocate) instrTag() {}
+
+type Call struct { Pred string; Arity int }
+func (i *Call) instrTag() {}
+
+type Execute struct { Pred string }
+func (i *Execute) instrTag() {}
+
+type Proceed struct{}
+func (i *Proceed) instrTag() {}
+
+type BuiltinCall struct { Op string; Arity int }
+func (i *BuiltinCall) instrTag() {}
+
+type TryMeElse struct { Label string }
+func (i *TryMeElse) instrTag() {}
+
+type RetryMeElse struct { Label string }
+func (i *RetryMeElse) instrTag() {}
+
+type TrustMe struct{}
+func (i *TrustMe) instrTag() {}
+
+type SwitchOnConstant struct { Cases []ConstCase }
+func (i *SwitchOnConstant) instrTag() {}
+
+type SwitchOnStructure struct { Cases []StructCase }
+func (i *SwitchOnStructure) instrTag() {}
+
+type SwitchOnConstantA2 struct { Cases []ConstCase }
+func (i *SwitchOnConstantA2) instrTag() {}

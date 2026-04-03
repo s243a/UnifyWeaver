@@ -282,15 +282,15 @@ is straightforward (WaitGroup + goroutines).
 
 ## Phase Summary
 
-| Phase | Description | Effort | Depends On |
-|-------|------------|--------|------------|
-| 0 | Go WAM bindings registry | Medium | — |
-| 1 | Mustache templates for Go package | Medium | — |
-| 2 | WAM instruction → Go literals | Low | Phase 0 |
-| 3 | step_wam/3 → Go type switch | High | Phase 0, 1 |
-| 4 | Hybrid module assembly | Medium | Phase 2, 3 |
-| 5a | Goroutine WAM parallel search | High | Phase 4 |
-| 5b | Order-independent goal parallelism | Medium | Phase 0 (no WAM needed) |
+| Phase | Description | Status | Effort | Depends On |
+|-------|-------------|--------|--------|------------|
+| 0 | Go WAM bindings registry | **Completed** | Medium | — |
+| 1 | Mustache templates for Go package | **Completed** | Medium | — |
+| 2 | WAM instruction → Go literals | **Completed** | Low | Phase 0 |
+| 3 | step_wam/3 → Go type switch | **Completed** | High | Phase 0, 1 |
+| 4 | Hybrid module assembly | **Completed** | Medium | Phase 2, 3 |
+| 5a | Goroutine WAM parallel search | Planned | High | Phase 4 |
+| 5b | Order-independent goal parallelism | Planned | Medium | Phase 0 (no WAM needed) |
 
 ## Differences from Rust Implementation Plan
 
