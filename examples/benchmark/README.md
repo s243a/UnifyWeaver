@@ -184,10 +184,12 @@ Tables:
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
 | `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs C#/Rust/Go DFS binaries |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, and Go DFS |
+| `generate_dependency_benchmark_data.py` | Generate deterministic synthetic package-DAG benchmark data |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
 
@@ -245,6 +247,11 @@ python examples/benchmark/benchmark_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
 
+# Compare dependency reach count across query engine and DFS targets
+python examples/benchmark/benchmark_dependency_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
+
 # Measure overhead of the generalized path-aware accumulation runtime
 python examples/benchmark/benchmark_path_aware_accumulation.py \
     --scales 300,1k,5k,10k
@@ -269,17 +276,20 @@ The current comparison surface across query and non-query targets is:
 - C# query:
   - all-path effective distance
   - minimum hop distance
+  - dependency reach count
   - positive weighted minimum path distance
   - category influence propagation
 
 - Rust DFS:
   - all-path effective distance
   - minimum hop distance
+  - dependency reach count
   - positive weighted minimum path distance
   - category influence propagation
 - Go DFS:
   - all-path effective distance
   - minimum hop distance
+  - dependency reach count
   - positive weighted minimum path distance
   - category influence propagation
 
@@ -288,6 +298,7 @@ The benchmark split is now:
 - cross-target:
   - `benchmark_effective_distance.py`
   - `benchmark_shortest_path_cross_target.py`
+  - `benchmark_dependency_depth_cross_target.py`
   - `benchmark_weighted_shortest_path_cross_target.py`
   - `benchmark_category_influence_cross_target.py`
 - C# query-engine internal mode comparison:
@@ -360,6 +371,53 @@ Comparison note:
 - the cross-target weighted benchmark now normalizes floating-point
   outputs with a tolerance appropriate for cross-language evaluation
   order differences
+
+### Cross-Target Dependency Reach Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_dependency_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+This workload uses a deterministic synthetic package DAG and reports, for
+each project, the size of its unique transitive dependency closure. It is
+named `dependency_depth` in the generator and runner for continuity with
+the original benchmark idea, but the current metric is more precisely a
+dependency **reach count** than a maximum-chain depth.
+
+Latest local results:
+
+| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
+|-------|---------:|--------:|---------:|-------:|-----------------|
+| 300 | 0.074s | 0.044s | 0.002s | 0.003s | match |
+| 1k | 0.151s | 0.050s | 0.007s | 0.007s | match |
+| 5k | 1.952s | 0.168s | 0.140s | 0.107s | match |
+| 10k | 8.736s | 0.539s | 0.631s | 0.459s | match |
+
+Speedups of C# query engine:
+
+| Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------:|------------:|----------:|
+| 300 | 0.59x | 0.03x | 0.04x |
+| 1k | 0.33x | 0.04x | 0.05x |
+| 5k | 0.09x | 0.07x | 0.05x |
+| 10k | 0.06x | 0.07x | 0.05x |
+
+Comparison note:
+
+- this workload currently favors the plain DFS targets over the C#
+  query-engine path
+- the C# query implementation is still semantically correct and matches
+  the DFS outputs, but this benchmark is a useful counterexample showing
+  that not every recursive DAG-count workload benefits from the current
+  query-engine execution model
+- the current C# query path is already improved over the initial version
+  by using plain `TransitiveClosureNode` rather than path-aware closure,
+  which is a better fit for acyclic unique-reachability
 
 ### Cross-Target Category Influence Results
 

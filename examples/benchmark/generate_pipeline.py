@@ -1165,6 +1165,413 @@ class ShortestPathBenchmark
 '''
 
 
+def generate_go_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return f'''// Dependency reach-count benchmark (Go)
+package main
+
+import (
+\t"bufio"
+\t"fmt"
+\t"os"
+\t"sort"
+\t"strings"
+)
+
+func loadTSVPairs(path string) map[string][]string {{
+\tm := make(map[string][]string)
+\tf, err := os.Open(path)
+\tif err != nil {{
+\t\tfmt.Fprintf(os.Stderr, "Cannot open %s: %v\\n", path, err)
+\t\tos.Exit(1)
+\t}}
+\tdefer f.Close()
+\tscanner := bufio.NewScanner(f)
+\tfirst := true
+\tfor scanner.Scan() {{
+\t\tline := scanner.Text()
+\t\tif first {{
+\t\t\tfirst = false
+\t\t\tif strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {{
+\t\t\t\tcontinue
+\t\t\t}}
+\t\t}}
+\t\tparts := strings.SplitN(line, "\\t", 2)
+\t\tif len(parts) == 2 {{
+\t\t\tm[parts[0]] = append(m[parts[0]], parts[1])
+\t\t}}
+\t}}
+\treturn m
+}}
+
+func collectDependencies(node string, adj map[string][]string, seen map[string]bool) {{
+\tif seen[node] {{
+\t\treturn
+\t}}
+\tseen[node] = true
+\tfor _, dep := range adj[node] {{
+\t\tcollectDependencies(dep, adj, seen)
+\t}}
+}}
+
+type projectResult struct {{
+\tproject string
+\tcount   int
+}}
+
+func main() {{
+\tif len(os.Args) < 3 {{
+\t\tfmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\\n", os.Args[0])
+\t\tos.Exit(1)
+\t}}
+
+\tadj := loadTSVPairs(os.Args[1])
+\tprojectDeps := loadTSVPairs(os.Args[2])
+
+\tvar projects []string
+\tfor project := range projectDeps {{
+\t\tprojects = append(projects, project)
+\t}}
+\tsort.Strings(projects)
+
+\tresults := make([]projectResult, 0, len(projects))
+\tfor _, project := range projects {{
+\t\tseen := make(map[string]bool)
+\t\tfor _, dep := range projectDeps[project] {{
+\t\t\tcollectDependencies(dep, adj, seen)
+\t\t}}
+\t\tresults = append(results, projectResult{{project: project, count: len(seen)}})
+\t}}
+
+\tresults = results[:0+len(results)]
+\tsort.Slice(results, func(i, j int) bool {{
+\t\tif results[i].count != results[j].count {{
+\t\t\treturn results[i].count < results[j].count
+\t\t}}
+\t\treturn results[i].project < results[j].project
+\t}})
+
+\tfmt.Println("project\\tdependency_reach_count")
+\tfor _, result := range results {{
+\t\tfmt.Printf("%s\\t%d\\n", result.project, result.count)
+\t}}
+}}
+'''
+
+
+def generate_rust_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return '''// Dependency reach-count benchmark (Rust)
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fs;
+use std::io::{BufRead, BufReader};
+
+fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let file = fs::File::open(path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path, e));
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.unwrap();
+        if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(2, '\\t').collect();
+        if parts.len() == 2 {
+            map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
+        }
+    }
+    map
+}
+
+fn collect_dependencies(node: &str, adj: &HashMap<String, Vec<String>>, seen: &mut HashSet<String>) {
+    if !seen.insert(node.to_string()) {
+        return;
+    }
+    if let Some(deps) = adj.get(node) {
+        for dep in deps {
+            collect_dependencies(dep, adj, seen);
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: {} <category_parent.tsv> <article_category.tsv>", args[0]);
+        std::process::exit(1);
+    }
+
+    let adj = load_tsv_pairs(&args[1]);
+    let project_deps = load_tsv_pairs(&args[2]);
+
+    let mut projects: Vec<&String> = project_deps.keys().collect();
+    projects.sort();
+
+    let mut results: Vec<(i32, String)> = Vec::new();
+    for project in projects {
+        let mut seen = HashSet::new();
+        if let Some(deps) = project_deps.get(project) {
+            for dep in deps {
+                collect_dependencies(dep, &adj, &mut seen);
+            }
+        }
+        results.push((seen.len() as i32, project.to_string()));
+    }
+
+    results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    println!("project\tdependency_reach_count");
+    for (count, project) in results {
+        println!("{}\t{}", project, count);
+    }
+}
+'''
+
+
+def generate_csharp_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return '''// Dependency reach-count benchmark (C#)
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+
+class Program
+{
+    static Dictionary<string, List<string>> LoadTsvPairs(string path)
+    {
+        var map = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var (line, i) in File.ReadLines(path).Select((l, i) => (l, i)))
+        {
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            {
+                continue;
+            }
+
+            var parts = line.Split('\t', 2);
+            if (parts.Length != 2)
+            {
+                continue;
+            }
+
+            if (!map.TryGetValue(parts[0], out var bucket))
+            {
+                bucket = new List<string>();
+                map[parts[0]] = bucket;
+            }
+
+            bucket.Add(parts[1]);
+        }
+
+        return map;
+    }
+
+    static void CollectDependencies(string node, Dictionary<string, List<string>> adj, HashSet<string> seen)
+    {
+        if (!seen.Add(node))
+        {
+            return;
+        }
+
+        if (!adj.TryGetValue(node, out var deps))
+        {
+            return;
+        }
+
+        foreach (var dep in deps)
+        {
+            CollectDependencies(dep, adj, seen);
+        }
+    }
+
+    static void Main(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }
+
+        var adj = LoadTsvPairs(args[0]);
+        var projectDeps = LoadTsvPairs(args[1]);
+        var results = new List<(int Count, string Project)>();
+
+        foreach (var project in projectDeps.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var dep in projectDeps[project])
+            {
+                CollectDependencies(dep, adj, seen);
+            }
+
+            results.Add((seen.Count, project));
+        }
+
+        results.Sort((a, b) =>
+        {
+            var cmp = a.Count.CompareTo(b.Count);
+            return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
+        });
+
+        Console.WriteLine("project\tdependency_reach_count");
+        foreach (var (count, project) in results)
+        {
+            Console.WriteLine($"{project}\t{count}");
+        }
+    }
+}
+'''
+
+
+def generate_csharp_query_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    depth_bound = max(max_depth, 20000)
+    return f'''// Dependency reach-count benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const int MAX_DEPTH = {depth_bound};
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var predId = new PredicateId("dependency_reach", 3);
+        var projectDeps = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length == 2)
+            {{
+                provider.AddFact(edgeId, parts[0], parts[1]);
+            }}
+        }}
+
+        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length != 2)
+            {{
+                continue;
+            }}
+
+            if (!projectDeps.TryGetValue(parts[0], out var deps))
+            {{
+                deps = new List<string>();
+                projectDeps[parts[0]] = deps;
+            }}
+
+            deps.Add(parts[1]);
+        }}
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            predId,
+            new TransitiveClosureNode(edgeId, predId),
+            true,
+            new int[] {{ 0 }}
+        );
+
+        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var deps in projectDeps.Values)
+        {{
+            foreach (var dep in deps)
+            {{
+                uniqueSeeds.Add(dep);
+            }}
+        }}
+
+        var seedParams = uniqueSeeds
+            .OrderBy(dep => dep, StringComparer.Ordinal)
+            .Select(dep => new object[] {{ dep }})
+            .ToList();
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));
+        var rows = executor.Execute(plan, seedParams).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var reachIndex = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {{
+            var source = row[0]?.ToString() ?? "";
+            var dep = row[1]?.ToString() ?? "";
+            if (!reachIndex.TryGetValue(source, out var bucket))
+            {{
+                bucket = new HashSet<string>(StringComparer.Ordinal);
+                reachIndex[source] = bucket;
+            }}
+            bucket.Add(dep);
+        }}
+
+        var results = new List<(int Count, string Project)>();
+        foreach (var project in projectDeps.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {{
+            var allDeps = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var dep in projectDeps[project])
+            {{
+                allDeps.Add(dep);
+                if (reachIndex.TryGetValue(dep, out var closure))
+                {{
+                    foreach (var item in closure)
+                    {{
+                        allDeps.Add(item);
+                    }}
+                }}
+            }}
+
+            results.Add((allDeps.Count, project));
+        }}
+        swAgg.Stop();
+        swTotal.Stop();
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Count.CompareTo(b.Count);
+            return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("project\\tdependency_reach_count");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Project}}\\t{{item.Count}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"project_count={{results.Count}}");
+    }}
+}}
+'''
+
+
 def generate_go_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -2511,6 +2918,12 @@ GENERATORS = {
         'rust': generate_rust_shortest_path,
         'csharp': generate_csharp_shortest_path,
         'csharp_query': generate_csharp_query_shortest_path,
+    },
+    'dependency_depth': {
+        'go': generate_go_dependency_depth,
+        'rust': generate_rust_dependency_depth,
+        'csharp': generate_csharp_dependency_depth,
+        'csharp_query': generate_csharp_query_dependency_depth,
     },
     'weighted_shortest_path': {
         'go': generate_go_weighted_shortest_path,
