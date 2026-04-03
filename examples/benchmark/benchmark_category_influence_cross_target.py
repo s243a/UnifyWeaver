@@ -51,16 +51,6 @@ class RunResult:
         return statistics.median(self.times)
 
 
-def load_root_categories(facts_path: Path) -> list[str]:
-    roots: set[str] = set()
-    for line in facts_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("root_category("):
-            inner = line[len("root_category("):-2]
-            roots.add(inner.strip("'"))
-    return sorted(roots) or ["Physics"]
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default="300,1k,5k,10k")
@@ -114,7 +104,7 @@ def available_targets(requested: list[str]) -> list[str]:
 
 
 def generate_pipeline_source(root: Path, target: str) -> Path:
-    ext = {"rust": ".rs", "go": ".go"}[target]
+    ext = {"csharp_query": ".cs", "rust": ".rs", "go": ".go"}[target]
     filename = f"category_influence{ext}"
     output = root / filename
     run(
@@ -134,209 +124,24 @@ def generate_pipeline_source(root: Path, target: str) -> Path:
     return output
 
 
-def generate_csharp_query_program(root_categories: list[str]) -> str:
-    root_entries = ", ".join(f'"{root}"' for root in root_categories)
-    return f"""// Category influence benchmark (C# query engine)
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using UnifyWeaver.QueryRuntime;
-
-class Program
-{{
-    const double N = 5.0;
-    const int MAX_DEPTH = 10;
-    static readonly HashSet<string> ROOTS = new(new[] {{ {root_entries} }}, StringComparer.Ordinal);
-
-    static void Main(string[] args)
-    {{
-        if (args.Length < 2)
-        {{
-            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
-            Environment.Exit(1);
-        }}
-
-        var swTotal = Stopwatch.StartNew();
-        var swLoad = Stopwatch.StartNew();
-
-        var provider = new InMemoryRelationProvider();
-        var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_ancestor", 3);
-        var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length == 2)
-            {{
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }}
-        }}
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {{
-                continue;
-            }}
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {{
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }}
-
-            categories.Add(parts[1]);
-        }}
-
-        swLoad.Stop();
-
-        var plan = new QueryPlan(
-            predId,
-            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH, TableMode.All),
-            true,
-            new int[] {{ 0 }}
-        );
-
-        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var categories in articleCategories.Values)
-        {{
-            foreach (var category in categories)
-            {{
-                uniqueSeeds.Add(category);
-            }}
-        }}
-
-        var seedParams = uniqueSeeds
-            .OrderBy(category => category, StringComparer.Ordinal)
-            .Select(category => new object[] {{ category }})
-            .ToList();
-
-        var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
-        swQuery.Stop();
-
-        var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>(StringComparer.Ordinal);
-        foreach (var row in rows)
-        {{
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var hops = Convert.ToInt32(row[2], CultureInfo.InvariantCulture);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {{
-                bucket = new List<(string, int)>();
-                ancestorIndex[source] = bucket;
-            }}
-
-            bucket.Add((ancestor, hops));
-        }}
-
-        var rootId = new PredicateId("root_category", 1);
-        var weightId = new PredicateId("article_root_weight", 3);
-        var resultId = new PredicateId("category_influence", 2);
-
-        foreach (var root in ROOTS.OrderBy(x => x, StringComparer.Ordinal))
-        {{
-            provider.AddFact(rootId, root);
-        }}
-
-        foreach (var (_, categories) in articleCategories.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
-        {{
-            foreach (var category in categories)
-            {{
-                if (ROOTS.Contains(category))
-                {{
-                    provider.AddFact(weightId, "_", category, 1.0);
-                }}
-
-                if (!ancestorIndex.TryGetValue(category, out var ancestors))
-                {{
-                    continue;
-                }}
-
-                foreach (var (ancestor, hops) in ancestors)
-                {{
-                    if (!ROOTS.Contains(ancestor))
-                    {{
-                        continue;
-                    }}
-
-                    var distance = hops + 1;
-                    var weight = Math.Pow(distance, -N);
-                    provider.AddFact(weightId, "_", ancestor, weight);
-                }}
-            }}
-        }}
-
-        var aggregatePlan = new QueryPlan(
-            resultId,
-            new ProjectionNode(
-                new SelectionNode(
-                    new AggregateNode(
-                        new RelationScanNode(rootId),
-                        weightId,
-                        AggregateOperation.Sum,
-                        tuple => new object[] {{ Wildcard.Value, tuple[0], Wildcard.Value }},
-                        Array.Empty<int>(),
-                        2,
-                        2),
-                    tuple => QueryExecutor.CompareValues(tuple[1], 0) > 0),
-                tuple => new object[] {{ tuple[0], tuple[1] }}),
-            false,
-            null
-        );
-
-        var aggregateRows = executor.Execute(aggregatePlan).ToList();
-        swAgg.Stop();
-        swTotal.Stop();
-
-        var results = aggregateRows
-            .Select(row => (
-                Root: row[0]?.ToString() ?? "",
-                Score: Convert.ToDouble(row[1], CultureInfo.InvariantCulture)))
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Root, StringComparer.Ordinal)
-            .ToList();
-
-        Console.WriteLine("root_category\\tinfluence_score");
-        foreach (var item in results)
-        {{
-            Console.WriteLine($"{{item.Root}}\\t{{item.Score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
-        }}
-
-        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
-        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
-        Console.Error.WriteLine($"root_count={{results.Count}}");
-    }}
-}}
-"""
-
-
 def build_csharp_query(root: Path) -> list[str]:
     project_dir = root / "csharp_query"
     project_dir.mkdir(parents=True, exist_ok=True)
-    roots = load_root_categories(FACTS_PATH)
-    (project_dir / "Program.cs").write_text(generate_csharp_query_program(roots), encoding="utf-8")
+    output = project_dir / "Program.cs"
+    run(
+        [
+            sys.executable,
+            str(GENERATOR),
+            "--facts",
+            str(FACTS_PATH),
+            "--workload",
+            "category_influence",
+            "--target",
+            "csharp_query",
+            "--output",
+            str(output),
+        ]
+    )
     (project_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
     (project_dir / "benchmark_qe.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
     run(["dotnet", "build", "benchmark_qe.csproj", "-c", "Release"], cwd=project_dir)

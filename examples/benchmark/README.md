@@ -353,19 +353,19 @@ Latest local results:
 
 | Scale | C# Query | Rust DFS | Go DFS | Outputs |
 |-------|---------:|---------:|-------:|---------|
-| 300 | 0.662s | 0.394s | 0.490s | match |
-| 1k | 0.517s | 1.531s | 2.125s | match |
-| 5k | 1.695s | 7.854s | 12.580s | match |
-| 10k | 4.661s | 15.703s | 21.378s | match |
+| 300 | 0.675s | 0.387s | 0.502s | match |
+| 1k | 0.574s | 1.571s | 2.148s | match |
+| 5k | 1.714s | 7.786s | 12.386s | match |
+| 10k | 4.063s | 15.057s | 20.739s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs Rust DFS | vs Go DFS |
 |-------|------------:|----------:|
-| 300 | 0.59x | 0.74x |
-| 1k | 2.96x | 4.11x |
-| 5k | 4.63x | 7.42x |
-| 10k | 3.37x | 4.59x |
+| 300 | 0.57x | 0.74x |
+| 1k | 2.74x | 3.74x |
+| 5k | 4.54x | 7.22x |
+| 10k | 3.71x | 5.10x |
 
 Comparison note:
 
@@ -373,12 +373,16 @@ Comparison note:
 - that path now uses `QueryRuntime` for both:
   - the recursive `category_ancestor` expansion
   - the outer grouped influence sum via `AggregateNode`
+- the C# benchmark source is now generated through `generate_pipeline.py`
+  as `target=csharp_query`, instead of being embedded only inside the
+  benchmark runner
 - Rust and Go remain generated DFS/pipeline binaries
 - so this runner is intentionally a mixed execution-model comparison:
   query engine versus non-query target pipelines
-- pushing the outer grouped sum into query-runtime aggregate machinery did
-  add some overhead versus the earlier ad hoc dictionary aggregation, but
-  the C# path is still weaker only at `300` and clearly faster from `1k`
+- the remaining benchmark-only orchestration is therefore smaller now:
+  project wiring plus runtime file inclusion, not a one-off embedded C#
+  workload implementation
+- the C# path is still weaker only at `300` and clearly faster from `1k`
   onward on the current workload
 
 ### Weighted `Min` Results
