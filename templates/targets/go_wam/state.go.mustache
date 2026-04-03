@@ -1,0 +1,208 @@
+package {{package_name}}
+
+import "fmt"
+
+type TrailEntry struct {
+	Var string
+}
+
+type ChoicePoint struct {
+	NextPC    int
+	CP        int
+	Regs      map[string]Value
+	TrailMark int
+}
+
+type EnvFrame struct {
+	CP int
+}
+
+type UnifyCtx struct {
+	Args []Value
+}
+
+type WriteCtx struct {
+	N int
+}
+
+type StackEntry interface {
+	stackTag()
+}
+
+func (e *EnvFrame) stackTag() {}
+func (e *UnifyCtx) stackTag() {}
+func (e *WriteCtx) stackTag() {}
+
+type WamState struct {
+	Code         []Instruction
+	Labels       map[string]int
+	PC           int
+	CP           int
+	Regs         map[string]Value
+	Heap         []Value
+	Stack        []StackEntry
+	Trail        []TrailEntry
+	ChoicePoints []ChoicePoint
+}
+
+func NewWamState(code []Instruction, labels map[string]int) *WamState {
+	return &WamState{
+		Code:   code,
+		Labels: labels,
+		Regs:   make(map[string]Value),
+	}
+}
+
+func (vm *WamState) putReg(name string, val Value) {
+	vm.Regs[name] = val
+}
+
+func (vm *WamState) getReg(name string) Value {
+	return vm.Regs[name]
+}
+
+func (vm *WamState) trailBinding(name string) {
+	vm.Trail = append(vm.Trail, TrailEntry{Var: name})
+}
+
+func (vm *WamState) pushChoicePoint(nextPC int) {
+	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+		NextPC:    nextPC,
+		CP:        vm.CP,
+		Regs:      copyMap(vm.Regs),
+		TrailMark: len(vm.Trail),
+	})
+}
+
+func (vm *WamState) popEnvFrame() *EnvFrame {
+	for i := len(vm.Stack) - 1; i >= 0; i-- {
+		if f, ok := vm.Stack[i].(*EnvFrame); ok {
+			vm.Stack = vm.Stack[:i]
+			return f
+		}
+	}
+	return nil
+}
+
+func (vm *WamState) peekUnifyCtx() *UnifyCtx {
+	if len(vm.Stack) == 0 { return nil }
+	if ctx, ok := vm.Stack[len(vm.Stack)-1].(*UnifyCtx); ok {
+		return ctx
+	}
+	return nil
+}
+
+func (vm *WamState) peekWriteCtx() *WriteCtx {
+	if len(vm.Stack) == 0 { return nil }
+	if ctx, ok := vm.Stack[len(vm.Stack)-1].(*WriteCtx); ok {
+		return ctx
+	}
+	return nil
+}
+
+func (vm *WamState) popStack() {
+	if len(vm.Stack) > 0 {
+		vm.Stack = vm.Stack[:len(vm.Stack)-1]
+	}
+}
+
+func (vm *WamState) heapSubargs(start, n int) []Value {
+	if start+n > len(vm.Heap) { return nil }
+	return vm.Heap[start : start+n]
+}
+
+func (vm *WamState) Clone() *WamState {
+	newState := &WamState{
+		Code:         vm.Code,
+		Labels:       vm.Labels,
+		PC:           vm.PC,
+		CP:           vm.CP,
+		Regs:         copyMap(vm.Regs),
+		Heap:         make([]Value, len(vm.Heap)),
+		Stack:        make([]StackEntry, len(vm.Stack)),
+		Trail:        make([]TrailEntry, len(vm.Trail)),
+		ChoicePoints: make([]ChoicePoint, len(vm.ChoicePoints)),
+	}
+	copy(newState.Heap, vm.Heap)
+	copy(newState.Stack, vm.Stack)
+	copy(newState.Trail, vm.Trail)
+	copy(newState.ChoicePoints, vm.ChoicePoints)
+	return newState
+}
+
+func (vm *WamState) ForkAtChoicePoint() *WamState {
+	if len(vm.ChoicePoints) == 0 {
+		return nil
+	}
+	// The forked state will start from the last choice point
+	clone := vm.Clone()
+	if clone.backtrack() {
+		// Remove the choice point from the ORIGINAL VM so it doesn't try it too
+		vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+		return clone
+	}
+	return nil
+}
+
+func copyMap(m map[string]Value) map[string]Value {
+	m2 := make(map[string]Value)
+	for k, v := range m {
+		m2[k] = v
+	}
+	return m2
+}
+
+func parseFunctorArity(f string) int {
+	var name string
+	var arity int
+	fmt.Sscanf(f, "%s/%d", &name, &arity)
+	return arity
+}
+
+func decompose(v Value) (string, []Value) {
+	switch t := v.(type) {
+	case *Atom:
+		return t.Name, nil
+	case *Compound:
+		return t.Functor, t.Args
+	case *List:
+		if len(t.Elements) > 0 {
+			head := t.Elements[0]
+			tail := &List{Elements: t.Elements[1:]}
+			return ".", []Value{head, tail}
+		}
+		return "[]", nil
+	}
+	return "", nil
+}
+
+func (vm *WamState) executeBuiltin(op string, arity int) bool {
+	switch op {
+	case "write/1":
+		arg1 := vm.getReg("A1")
+		fmt.Print(arg1.String())
+		return true
+	case "nl/0":
+		fmt.Println()
+		return true
+	case "</2":
+		arg1 := vm.getReg("A1")
+		arg2 := vm.getReg("A2")
+		v1, ok1 := arg1.(*Integer)
+		v2, ok2 := arg2.(*Integer)
+		if ok1 && ok2 {
+			return v1.Val < v2.Val
+		}
+		return false
+	case ">/2":
+		arg1 := vm.getReg("A1")
+		arg2 := vm.getReg("A2")
+		v1, ok1 := arg1.(*Integer)
+		v2, ok2 := arg2.(*Integer)
+		if ok1 && ok2 {
+			return v1.Val > v2.Val
+		}
+		return false
+	}
+	return false
+}
