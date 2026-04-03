@@ -402,19 +402,19 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.074s | 0.044s | 0.002s | 0.003s | match |
-| 1k | 0.151s | 0.050s | 0.007s | 0.007s | match |
-| 5k | 1.952s | 0.168s | 0.140s | 0.107s | match |
-| 10k | 8.736s | 0.539s | 0.631s | 0.459s | match |
+| 300 | 0.071s | 0.043s | 0.002s | 0.003s | match |
+| 1k | 0.147s | 0.048s | 0.007s | 0.007s | match |
+| 5k | 0.565s | 0.162s | 0.123s | 0.104s | match |
+| 10k | 1.962s | 0.499s | 0.532s | 0.471s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.59x | 0.03x | 0.04x |
-| 1k | 0.33x | 0.04x | 0.05x |
-| 5k | 0.09x | 0.07x | 0.05x |
-| 10k | 0.06x | 0.07x | 0.05x |
+| 300 | 0.61x | 0.03x | 0.04x |
+| 1k | 0.33x | 0.05x | 0.05x |
+| 5k | 0.29x | 0.22x | 0.18x |
+| 10k | 0.25x | 0.27x | 0.24x |
 
 Comparison note:
 
@@ -427,6 +427,8 @@ Comparison note:
 - the current C# query path is already improved over the initial version
   by using plain `TransitiveClosureNode` rather than path-aware closure,
   which is a better fit for acyclic unique-reachability
+- a gated DAG bitset fast path now reduces the large-scale C# query cost
+  substantially, especially at `5k` and `10k`, without changing outputs
 
 ### Cross-Target Dependency Longest-Depth Results
 
