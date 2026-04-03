@@ -153,52 +153,57 @@ key engineering challenge.
 
 **Effort:** Medium — assembly and routing logic.
 
-## Phase 5: Goroutine-Based Parallel Search (Optional)
+## Phase 5: Goroutine-Based Parallel Search
 
 **Goal:** Use Go's concurrency for parallel choice point exploration.
 
 **Design:**
 ```go
 func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
-    results := make(chan []Value, 100)
-    sem := make(chan struct{}, maxWorkers)
+	results := make(chan []Value, 100)
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
 
-    var explore func(state WamState)
-    explore = func(state WamState) {
-        sem <- struct{}{} // acquire
-        defer func() { <-sem }() // release
+	var explore func(state *WamState, hasToken bool)
+	explore = func(state *WamState, hasToken bool) {
+		defer wg.Done()
+		if !hasToken {
+			sem <- struct{}{}
+		}
+		defer func() { <-sem }()
 
-        for {
-            if !state.Step(state.Code[state.PC]) {
-                return // this branch failed
-            }
-            if state.IsProceeded() {
-                results <- state.CollectResults()
-                return
-            }
-            if state.HasChoicePoint() {
-                // Fork: explore alternative in goroutine
-                alt := state.ForkAtChoicePoint()
-                go explore(alt)
-            }
-        }
-    }
-
-    go func() {
-        explore(*vm)
-        close(results)
-    }()
-
-    return results
+		for {
+			if state.Halted {
+				results <- state.CollectResults()
+				return
+			}
+			// ... step and backtrack ...
+			if len(state.ChoicePoints) > 0 {
+				select {
+				case sem <- struct{}{}:
+					// Pass token to forked child to avoid race conditions
+					if alt := state.ForkAtChoicePoint(); alt != nil {
+						wg.Add(1)
+						go explore(alt, true)
+					} else {
+						<-sem
+					}
+				default:
+				}
+			}
+		}
+	}
+	// ...
 }
 ```
 
-**This is a Go-unique feature** — not available in the Rust design.
-It leverages Go's lightweight goroutines to explore the search tree
-concurrently.
+**Key Features:**
+- **Recursive Structural Unification:** Added `WamState.Unify()` to handle complex term unification.
+- **Robust Parallelism:** Fixed race conditions in worker allocation by passing semaphore tokens.
+- **Halt State:** Replaced PC sentinel with a explicit `Halted` field.
 
 **Effort:** High — requires careful state cloning and synchronization.
-**Priority:** Low — implement after sequential WAM works correctly.
+**Status:** **Completed**
 
 ## Phase 5b: Order-Independent Goal Parallelism
 
