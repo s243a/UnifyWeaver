@@ -300,8 +300,49 @@ impl WamState {
                 Some(Instruction::RetryMeElse(args[0].clone())),
             "trust_me" => Some(Instruction::TrustMe),
 
-            // Indexing — skip (handled by try/retry/trust)
-            "switch_on_constant" | "switch_on_structure" | "switch_on_constant_a2" => None,
+            // Indexing
+            "switch_on_constant" => {
+                let table = args.iter()
+                    .map(|entry| {
+                        if let Some(colon_idx) = entry.rfind(':') {
+                            let val_str = &entry[..colon_idx];
+                            let label = &entry[colon_idx + 1..];
+                            (Self::parse_value(val_str), label.to_string())
+                        } else {
+                            (Value::Atom(entry.to_string()), "unknown".to_string())
+                        }
+                    })
+                    .collect();
+                Some(Instruction::SwitchOnConstant(table))
+            }
+            "switch_on_structure" => {
+                let table = args.iter()
+                    .map(|entry| {
+                        if let Some(colon_idx) = entry.rfind(':') {
+                            let fn_str = &entry[..colon_idx];
+                            let label = &entry[colon_idx + 1..];
+                            (fn_str.to_string(), label.to_string())
+                        } else {
+                            (entry.to_string(), "unknown".to_string())
+                        }
+                    })
+                    .collect();
+                Some(Instruction::SwitchOnStructure(table))
+            }
+            "switch_on_constant_a2" => {
+                let table = args.iter()
+                    .map(|entry| {
+                        if let Some(colon_idx) = entry.rfind(':') {
+                            let val_str = &entry[..colon_idx];
+                            let label = &entry[colon_idx + 1..];
+                            (Self::parse_value(val_str), label.to_string())
+                        } else {
+                            (Value::Atom(entry.to_string()), "unknown".to_string())
+                        }
+                    })
+                    .collect();
+                Some(Instruction::SwitchOnConstantA2(table))
+            }
 
             _ => None,
         }
@@ -310,12 +351,18 @@ impl WamState {
     /// Parse a string value into a Value enum.
     /// Numbers become Value::Integer, everything else becomes Value::Atom.
     fn parse_value(s: &str) -> Value {
-        if let Ok(n) = s.parse::<i64>() {
-            Value::Integer(n)
-        } else if let Ok(f) = s.parse::<f64>() {
-            Value::Float(f)
-        } else {
-            Value::Atom(s.to_string())
+        match s {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => {
+                if let Ok(n) = s.parse::<i64>() {
+                    Value::Integer(n)
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Value::Float(f)
+                } else {
+                    Value::Atom(s.to_string())
+                }
+            }
         }
     }
 }

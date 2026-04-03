@@ -412,7 +412,16 @@ test_parser_handles_all_instructions :-
         % Choice points
         sub_string(Content, _, _, _, '"try_me_else"'),
         sub_string(Content, _, _, _, '"retry_me_else"'),
-        sub_string(Content, _, _, _, '"trust_me"')
+        sub_string(Content, _, _, _, '"trust_me"'),
+        % Indexing
+        sub_string(Content, _, _, _, '"switch_on_constant"'),
+        sub_string(Content, _, _, _, '"switch_on_structure"'),
+        sub_string(Content, _, _, _, '"switch_on_constant_a2"'),
+        sub_string(Content, _, _, _, 'Instruction::SwitchOnConstant'),
+        sub_string(Content, _, _, _, 'entry.rfind(\':\')'),
+        % Value parsing
+        sub_string(Content, _, _, _, '"true" => Value::Bool(true)'),
+        sub_string(Content, _, _, _, '"false" => Value::Bool(false)')
     ->  pass(Test)
     ;   fail_test(Test, 'Parser template missing instruction opcodes')
     ).
