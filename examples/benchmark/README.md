@@ -180,6 +180,7 @@ Tables:
 | `generate_facts_from_db.py` | Extract facts from SQLite → Prolog/TSV (no crawling) |
 | `generate_facts.py` | Alternative: fetch from Wikipedia API (for small datasets) |
 | `generate_pipeline.py` | Generate self-contained pipeline per target |
+| `benchmark_common.py` | Shared build/run utilities for cross-target benchmark runners |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
 | `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs C#/Rust/Go DFS binaries |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, C# DFS, Rust DFS, and Go DFS |
@@ -200,6 +201,9 @@ Packaging note:
 - the benchmark runners are correspondingly narrower now: they mainly
   generate, build, run, and compare, rather than assembling one-off C#
   projects in-script
+- shared Rust/Go/C# runner utilities now live in `benchmark_common.py`
+  so new workload runners do not need to reimplement the same temp/build
+  scaffolding
 
 ## Usage
 

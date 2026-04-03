@@ -16,15 +16,22 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
-import shutil
 import statistics
-import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from benchmark_common import (
+    available_targets,
+    build_csharp_package,
+    build_go_binary,
+    build_rust_binary,
+    require_file,
+    run_command,
+    scale_sort_key,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,128 +79,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run(
-    cmd: list[str],
-    *,
-    cwd: Path | None = None,
-    check: bool = True,
-    capture_output: bool = True,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        check=check,
-        capture_output=capture_output,
-        text=True,
-        env=env,
-    )
-
-
-def require_file(path: Path) -> Path:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path
-
-
-def available_targets(requested: list[str]) -> list[str]:
-    targets: list[str] = []
-    for target in requested:
-        if target == "rust-dfs" and shutil.which("rustc") is None:
-            print("skip rust-dfs: rustc not found", file=sys.stderr)
-            continue
-        if target == "go-dfs" and shutil.which("go") is None:
-            print("skip go-dfs: go not found", file=sys.stderr)
-            continue
-        if target.startswith("csharp-") and shutil.which("dotnet") is None:
-            print(f"skip {target}: dotnet not found", file=sys.stderr)
-            continue
-        targets.append(target)
-    return targets
-
-
-def generate_pipeline_source(root: Path, target: str) -> Path:
-    ext = {"csharp": ".cs", "rust": ".rs", "go": ".go"}[target]
-    filename = "Program.cs" if target == "csharp" else f"effective_distance{ext}"
-    output = root / filename
-    run(
-        [
-            sys.executable,
-            str(GENERATOR),
-            "--facts",
-            str(BENCH_DIR / "10k" / "facts.pl"),
-            "--root",
-            "Physics",
-            "--workload",
-            "effective_distance",
-            "--target",
-            target,
-            "--output",
-            str(output),
-        ]
-    )
-    return output
-
-
-def generate_pipeline_package(root: Path, target: str) -> Path:
-    run(
-        [
-            sys.executable,
-            str(GENERATOR),
-            "--facts",
-            str(BENCH_DIR / "10k" / "facts.pl"),
-            "--root",
-            "Physics",
-            "--workload",
-            "effective_distance",
-            "--target",
-            target,
-            "--output-dir",
-            str(root),
-        ]
-    )
-    return root
-
-
 def build_csharp_query(root: Path) -> list[str]:
-    project_dir = root / "csharp_query"
-    generate_pipeline_package(project_dir, "csharp_query")
-    run(["dotnet", "build", "benchmark.csproj", "-c", "Release"], cwd=project_dir)
-    return [
-        "dotnet",
-        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark.dll"),
-    ]
+    return build_csharp_package(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", "csharp_query", root / "csharp_query", root="Physics"
+    )
 
 
 def build_csharp_dfs(root: Path) -> list[str]:
-    project_dir = root / "csharp_dfs"
-    generate_pipeline_package(project_dir, "csharp")
-    run(["dotnet", "build", "benchmark.csproj", "-c", "Release"], cwd=project_dir)
-    return [
-        "dotnet",
-        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark.dll"),
-    ]
+    return build_csharp_package(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", "csharp", root / "csharp_dfs", root="Physics"
+    )
 
 
 def build_rust_dfs(root: Path) -> list[str]:
-    project_dir = root / "rust_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source = generate_pipeline_source(project_dir, "rust")
-    binary = project_dir / "effective_distance_rust"
-    run(["rustc", "-O", str(source), "-o", str(binary)])
-    return [str(binary)]
+    return build_rust_binary(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", root / "rust_dfs", "effective_distance_rust", root="Physics"
+    )
 
 
 def build_go_dfs(root: Path) -> list[str]:
-    project_dir = root / "go_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source = generate_pipeline_source(project_dir, "go")
-    binary = project_dir / "effective_distance_go"
-    go_cache = project_dir / ".gocache"
-    go_cache.mkdir(exist_ok=True)
-    env = dict(os.environ, GOCACHE=str(go_cache))
-    run(["go", "build", "-o", str(binary), str(source)], env=env)
-    return [str(binary)]
+    return build_go_binary(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", root / "go_dfs", "effective_distance_go", root="Physics"
+    )
 
 
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
@@ -206,7 +113,7 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
     last_stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = run(command + [str(edge_path), str(article_path)])
+        result = run_command(command + [str(edge_path), str(article_path)])
         elapsed = time.perf_counter() - started
         times.append(elapsed)
         last_stdout = result.stdout
