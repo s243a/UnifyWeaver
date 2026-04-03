@@ -31,11 +31,10 @@ Successfully implemented the core WAM-to-Go transpilation pipeline, including pa
 
 ## Files Created/Modified
 - `src/unifyweaver/targets/wam_go_target.pl`: Main transpilation logic, project orchestration, and parallel helper generation.
-- `templates/targets/go_wam/go.mod.mustache`: Go module definition template.
-- `templates/targets/go_wam/value.go.mustache`: WAM Value interface and types (Integer, Atom, Compound, Ref, etc.).
-- `templates/targets/go_wam/instructions.go.mustache`: Instruction interface and struct definitions.
-- `templates/targets/go_wam/state.go.mustache`: WamState struct and helper methods (Heap, Stack, Trail, Fork, Builtins).
-- `templates/targets/go_wam/runtime.go.mustache`: `Step()`, `Run()`, and `RunParallel()` loop templates.
+- `templates/targets/go_wam/`: Go module templates (`go.mod`, `value.go`, `state.go`, `instructions.go`, `runtime.go`).
+- `tests/test_wam_go_generator.pl`: Unit tests for instruction lowering and parser robustness.
+- `PHASE_WAM_GO_COMPLETED.md`: This completion report.
+- `docs/design/WAM_GO_TRANSPILATION_IMPLEMENTATION_PLAN.md`: Updated design plan.
 
 ## Verification Results
 - Generated a complete Go project from a test predicate.
