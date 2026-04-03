@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
-Benchmark category influence propagation across generated Go and Rust binaries.
-
-This runner intentionally excludes the C# query engine for now. The current
-category-influence comparison is about cross-target aggregate/pipeline support,
-and there is not yet a directly comparable C# query-engine workload in the same
-benchmark harness.
+Benchmark category influence propagation across the C# query engine and
+generated Rust/Go binaries.
 """
 
 from __future__ import annotations
@@ -25,8 +21,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
+QRY_RUNTIME = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 FACTS_PATH = BENCH_DIR / "10k" / "facts.pl"
+
+CSHARP_PROJECT = """\
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>
+"""
 
 
 @dataclass
@@ -43,13 +51,23 @@ class RunResult:
         return statistics.median(self.times)
 
 
+def load_root_categories(facts_path: Path) -> list[str]:
+    roots: set[str] = set()
+    for line in facts_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("root_category("):
+            inner = line[len("root_category("):-2]
+            roots.add(inner.strip("'"))
+    return sorted(roots) or ["Physics"]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default="300,1k,5k,10k")
     parser.add_argument(
         "--targets",
-        default="rust-dfs,go-dfs",
-        help="Comma-separated targets: rust-dfs,go-dfs",
+        default="csharp-query,rust-dfs,go-dfs",
+        help="Comma-separated targets: csharp-query,rust-dfs,go-dfs",
     )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
@@ -82,6 +100,9 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
 def available_targets(requested: list[str]) -> list[str]:
     targets: list[str] = []
     for target in requested:
+        if target == "csharp-query" and shutil.which("dotnet") is None:
+            print("skip csharp-query: dotnet not found", file=sys.stderr)
+            continue
         if target == "rust-dfs" and shutil.which("rustc") is None:
             print("skip rust-dfs: rustc not found", file=sys.stderr)
             continue
@@ -111,6 +132,188 @@ def generate_pipeline_source(root: Path, target: str) -> Path:
         ]
     )
     return output
+
+
+def generate_csharp_query_program(root_categories: list[str]) -> str:
+    root_entries = ", ".join(f'"{root}"' for root in root_categories)
+    return f"""// Category influence benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const double N = 5.0;
+    const int MAX_DEPTH = 10;
+    static readonly HashSet<string> ROOTS = new(new[] {{ {root_entries} }}, StringComparer.Ordinal);
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var predId = new PredicateId("category_ancestor", 3);
+        var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length == 2)
+            {{
+                provider.AddFact(edgeId, parts[0], parts[1]);
+            }}
+        }}
+
+        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length != 2)
+            {{
+                continue;
+            }}
+
+            if (!articleCategories.TryGetValue(parts[0], out var categories))
+            {{
+                categories = new List<string>();
+                articleCategories[parts[0]] = categories;
+            }}
+
+            categories.Add(parts[1]);
+        }}
+
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            predId,
+            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH, TableMode.All),
+            true,
+            new int[] {{ 0 }}
+        );
+
+        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var categories in articleCategories.Values)
+        {{
+            foreach (var category in categories)
+            {{
+                uniqueSeeds.Add(category);
+            }}
+        }}
+
+        var seedParams = uniqueSeeds
+            .OrderBy(category => category, StringComparer.Ordinal)
+            .Select(category => new object[] {{ category }})
+            .ToList();
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var rows = executor.Execute(plan, seedParams).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {{
+            var source = row[0]?.ToString() ?? "";
+            var ancestor = row[1]?.ToString() ?? "";
+            var hops = Convert.ToInt32(row[2], CultureInfo.InvariantCulture);
+            if (!ancestorIndex.TryGetValue(source, out var bucket))
+            {{
+                bucket = new List<(string, int)>();
+                ancestorIndex[source] = bucket;
+            }}
+
+            bucket.Add((ancestor, hops));
+        }}
+
+        var influence = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var (_, categories) in articleCategories.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
+        {{
+            foreach (var category in categories)
+            {{
+                if (ROOTS.Contains(category))
+                {{
+                    influence[category] = influence.TryGetValue(category, out var score) ? score + 1.0 : 1.0;
+                }}
+
+                if (!ancestorIndex.TryGetValue(category, out var ancestors))
+                {{
+                    continue;
+                }}
+
+                foreach (var (ancestor, hops) in ancestors)
+                {{
+                    if (!ROOTS.Contains(ancestor))
+                    {{
+                        continue;
+                    }}
+
+                    var distance = hops + 1;
+                    var weight = Math.Pow(distance, -N);
+                    influence[ancestor] = influence.TryGetValue(ancestor, out var score) ? score + weight : weight;
+                }}
+            }}
+        }}
+        swAgg.Stop();
+        swTotal.Stop();
+
+        var results = influence
+            .Where(kvp => kvp.Value > 0.0)
+            .OrderByDescending(kvp => kvp.Value)
+            .ThenBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .ToList();
+
+        Console.WriteLine("root_category\\tinfluence_score");
+        foreach (var (root, score) in results)
+        {{
+            Console.WriteLine($"{{root}}\\t{{score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"root_count={{results.Count}}");
+    }}
+}}
+"""
+
+
+def build_csharp_query(root: Path) -> list[str]:
+    project_dir = root / "csharp_query"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    roots = load_root_categories(FACTS_PATH)
+    (project_dir / "Program.cs").write_text(generate_csharp_query_program(roots), encoding="utf-8")
+    (project_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
+    (project_dir / "benchmark_qe.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
+    run(["dotnet", "build", "benchmark_qe.csproj", "-c", "Release"], cwd=project_dir)
+    return [
+        "dotnet",
+        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_qe.dll"),
+    ]
 
 
 def build_rust_dfs(root: Path) -> list[str]:
@@ -191,13 +394,22 @@ def print_summary(results: list[RunResult]) -> None:
         if len(entries) > 1:
             hashes = {item.stdout_sha256 for item in entries}
             print(f"{scale}\toutputs\t{'match' if len(hashes) == 1 else 'MISMATCH'}")
+            csharp = next((item for item in entries if item.target == "csharp-query"), None)
             rust = next((item for item in entries if item.target == "rust-dfs"), None)
             go = next((item for item in entries if item.target == "go-dfs"), None)
+            if csharp and rust:
+                print(f"{scale}\tspeedup_vs_rust_dfs\t{rust.median / csharp.median:.2f}x")
+            if csharp and go:
+                print(f"{scale}\tspeedup_vs_go_dfs\t{go.median / csharp.median:.2f}x")
             if rust and go:
                 faster = "rust-dfs" if rust.median < go.median else "go-dfs"
                 speedup = (go.median / rust.median) if faster == "rust-dfs" else (rust.median / go.median)
                 print(f"{scale}\tfaster_target\t{faster}")
                 print(f"{scale}\tspeedup\t{speedup:.2f}x")
+            if csharp and csharp.stderr:
+                phase_lines = [line.strip() for line in csharp.stderr.splitlines() if "=" in line]
+                if phase_lines:
+                    print(f"{scale}\tcsharp-query-metrics\t" + " ".join(phase_lines))
 
 
 def main() -> int:
@@ -218,7 +430,9 @@ def main() -> int:
     try:
         commands: dict[str, list[str]] = {}
         for target in targets:
-            if target == "rust-dfs":
+            if target == "csharp-query":
+                commands[target] = build_csharp_query(temp_root)
+            elif target == "rust-dfs":
                 commands[target] = build_rust_dfs(temp_root)
             elif target == "go-dfs":
                 commands[target] = build_go_dfs(temp_root)
