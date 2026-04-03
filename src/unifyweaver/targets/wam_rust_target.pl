@@ -464,10 +464,16 @@ compile_execute_builtin_to_rust(Code) :-
                 let expr = self.regs.get("A2").cloned().unwrap_or(Value::Integer(0));
                 if let Some(result) = self.eval_arith(&expr) {
                     let lhs = self.regs.get("A1").cloned();
+                    // Bind as integer if result is whole number, otherwise float
+                    let final_val = if result.fract() == 0.0 {
+                        Value::Integer(result as i64)
+                    } else {
+                        Value::Float(result)
+                    };
                     match lhs {
                         Some(v) if v.is_unbound() => {
                             self.trail_binding("A1");
-                            self.regs.insert("A1".to_string(), Value::Float(result));
+                            self.regs.insert("A1".to_string(), final_val);
                             self.pc += 1; true
                         }
                         Some(Value::Integer(n)) if (n as f64) == result => {
@@ -504,7 +510,7 @@ compile_execute_builtin_to_rust(Code) :-
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
             "!/0" => { self.choice_points.clear(); self.pc += 1; true }
-            "write/1" => {
+            "write/1" | "display/1" => {
                 if let Some(val) = self.regs.get("A1").cloned() {
                     let derefed = self.deref_heap(&val);
                     print!("{}", derefed);
@@ -512,12 +518,6 @@ compile_execute_builtin_to_rust(Code) :-
                 } else { false }
             }
             "nl/0" => { println!(); self.pc += 1; true }
-            "display/1" => {
-                if let Some(val) = self.regs.get("A1").cloned() {
-                    print!("{:?}", val);
-                    self.pc += 1; true
-                } else { false }
-            }
             _ => {
                 // Check type checks and other unary/binary ops
                 if let Some(val) = self.regs.get("A1").cloned() {
@@ -535,11 +535,16 @@ compile_execute_builtin_to_rust(Code) :-
                             if let Some(val2) = self.regs.get("A2").cloned() {
                                 match op {
                                     "member/2" => {
+                                        // Semi-deterministic: returns true once for any matching element.
                                         if let Value::List(items) = self.deref_heap(&val2) {
                                             items.iter().any(|x| x == &val)
                                         } else { false }
                                     }
-                                    "append/3" => false, // complex for inline builtin
+                                    "append/3" => {
+                                        // Silent failure for now (complex for inline builtin).
+                                        // TODO: Promote to a WAM-level library call.
+                                        false
+                                    }
                                     _ => false,
                                 }
                             } else { false }
@@ -548,8 +553,9 @@ compile_execute_builtin_to_rust(Code) :-
                     if ok { self.pc += 1; true } else { false }
                 } else { false }
             }
-        }
-    }'.
+            }
+            }
+'.
 
 compile_eval_arith_to_rust(Code) :-
     Code = '    /// Evaluate an arithmetic expression to a float.
