@@ -29,6 +29,7 @@
 :- use_module(library(option)).
 :- use_module(prolog_dialects).
 :- use_module(prolog_constraints).
+:- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 %% ============================================
 %% MAIN ENTRY POINT
@@ -217,8 +218,12 @@ generate_predicate_code(Pred/Arity, Options, Code) :-
     % Get dialect for constraint handling
     option(dialect(Dialect), Options, swi),
 
-    % Copy predicate clauses verbatim
-    copy_predicate_clauses(Pred/Arity, BaseCode),
+    % Copy predicate clauses verbatim, or generate an optimized worker when
+    % the source matches a parameterized per-path recursion shape.
+    (   maybe_generate_branch_pruned_predicate(Pred/Arity, Options, OptimizedCode)
+    ->  BaseCode = OptimizedCode
+    ;   copy_predicate_clauses(Pred/Arity, BaseCode)
+    ),
 
     % Apply constraints if specified
     (   option(constraints(Constraints), Options)
@@ -233,7 +238,8 @@ copy_predicate_clauses(Pred/Arity, Code) :-
 
     % Find all clauses
     findall(ClauseStr, (
-        clause(Head, Body),
+        user:clause(Head, Body0),
+        strip_codegen_module_qualifiers(Body0, Body),
         clause_to_string((Head :- Body), ClauseStr)
     ), ClauseStrs),
 
@@ -250,6 +256,356 @@ clause_to_string(Clause, String) :-
     with_output_to(atom(String),
         portray_clause(Clause)
     ).
+
+strip_codegen_module_qualifiers(Goal0, Goal) :-
+    nonvar(Goal0),
+    Goal0 = Module:Inner0,
+    !,
+    strip_codegen_module_qualifiers(Inner0, Inner),
+    (   Module == prolog_target
+    ;   Module == user
+    ->  Goal = Inner
+    ;   Goal = Module:Inner
+    ).
+strip_codegen_module_qualifiers(true, true) :- !.
+strip_codegen_module_qualifiers((A0, B0), (A, B)) :-
+    !,
+    strip_codegen_module_qualifiers(A0, A),
+    strip_codegen_module_qualifiers(B0, B).
+strip_codegen_module_qualifiers((A0 ; B0), (A ; B)) :-
+    !,
+    strip_codegen_module_qualifiers(A0, A),
+    strip_codegen_module_qualifiers(B0, B).
+strip_codegen_module_qualifiers((A0 -> B0 ; C0), (A -> B ; C)) :-
+    !,
+    strip_codegen_module_qualifiers(A0, A),
+    strip_codegen_module_qualifiers(B0, B),
+    strip_codegen_module_qualifiers(C0, C).
+strip_codegen_module_qualifiers((A0 -> B0), (A -> B)) :-
+    !,
+    strip_codegen_module_qualifiers(A0, A),
+    strip_codegen_module_qualifiers(B0, B).
+strip_codegen_module_qualifiers(Goal, Goal).
+
+%% maybe_generate_branch_pruned_predicate(+Pred/Arity, +Options, -Code)
+%  For recursive per-path predicates with a concrete mode/1 declaration,
+%  generate a standard Prolog wrapper plus helper predicates that prune
+%  impossible branches before entering the recursive worker.
+maybe_generate_branch_pruned_predicate(Pred/Arity, Options, Code) :-
+    option(branch_pruning(Setting), Options, auto),
+    Setting \= false,
+    option(dialect(Dialect), Options, swi),
+    Dialect == swi,
+    findall(Head-Body,
+        (   functor(Head, Pred, Arity),
+            user:clause(Head, Body0),
+            strip_codegen_module_qualifiers(Body0, Body)
+        ),
+        Clauses),
+    Clauses \= [],
+    clauses_to_pattern_pairs(Clauses, ClausePairs),
+    is_per_path_visited_pattern(Pred, Arity, ClausePairs, VisitedPos),
+    branch_pruning_mode_positions(Pred/Arity, VisitedPos, InputPositions),
+    partition(is_recursive_clause_for_pred(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    branch_pruning_driver_position(Pred, Arity, RecClauses, DriverPos),
+    delete(InputPositions, DriverPos, InvariantPositions),
+    branch_pruning_invariants_static(Pred, Arity, RecClauses, VisitedPos, InvariantPositions),
+    build_branch_pruning_code(Pred/Arity, Clauses, BaseClauses, RecClauses,
+        VisitedPos, DriverPos, InputPositions, InvariantPositions, Code).
+
+clauses_to_pattern_pairs([], []).
+clauses_to_pattern_pairs([Head-Body|Rest], [(Head, Body)|Pairs]) :-
+    clauses_to_pattern_pairs(Rest, Pairs).
+
+branch_pruning_mode_positions(Pred/Arity, VisitedPos, InputPositions) :-
+    current_predicate(user:mode/1),
+    user:mode(ModeSpec),
+    mode_term_signature(ModeSpec, Pred/Arity),
+    parse_mode_spec(ModeSpec, Modes),
+    \+ member(any, Modes),
+    nth1(VisitedPos, Modes, input),
+    findall(Pos,
+        (   nth1(Pos, Modes, input),
+            Pos =\= VisitedPos
+        ),
+        InputPositions),
+    InputPositions \= [],
+    !.
+
+mode_term_signature(Term, Pred/Arity) :-
+    compound(Term),
+    Term =.. [Pred|Args],
+    length(Args, Arity).
+
+parse_mode_spec(Term, Modes) :-
+    Term =.. [_|Args],
+    maplist(parse_mode_symbol, Args, Modes).
+
+parse_mode_symbol(+, input) :- !.
+parse_mode_symbol(-, output) :- !.
+parse_mode_symbol(?, any) :- !.
+
+is_recursive_clause_for_pred(Pred, _Head-Body) :-
+    contains_predicate_call(Body, Pred).
+
+contains_predicate_call(Goal0, Pred) :-
+    strip_module(Goal0, _, Goal),
+    (   compound(Goal),
+        Goal =.. [Pred|_]
+    ->  true
+    ;   Goal = (A, B)
+    ->  (contains_predicate_call(A, Pred) ; contains_predicate_call(B, Pred))
+    ;   Goal = (A ; B)
+    ->  (contains_predicate_call(A, Pred) ; contains_predicate_call(B, Pred))
+    ;   Goal = (A -> B)
+    ->  (contains_predicate_call(A, Pred) ; contains_predicate_call(B, Pred))
+    ;   Goal = (A -> B ; C)
+    ->  ( contains_predicate_call(A, Pred)
+        ; contains_predicate_call(B, Pred)
+        ; contains_predicate_call(C, Pred)
+        )
+    ;   false
+    ).
+
+branch_pruning_driver_position(Pred, Arity, [Head-Body|_], DriverPos) :-
+    Head =.. [Pred|HeadArgs],
+    body_goals(Body, [StepGoal|_]),
+    step_goal_input_var(StepGoal, StepInputVar),
+    findall(Pos,
+        (   between(1, Arity, Pos),
+            nth1(Pos, HeadArgs, Arg),
+            Arg == StepInputVar
+        ),
+        [DriverPos]).
+
+step_goal_input_var(Goal0, InputVar) :-
+    strip_module(Goal0, _, Goal),
+    compound(Goal),
+    \+ branch_pruning_negated_member_goal(Goal, _),
+    arg(1, Goal, InputVar),
+    var(InputVar).
+
+branch_pruning_invariants_static(_, _, [], _, _).
+branch_pruning_invariants_static(Pred, Arity, [Head-Body|Rest], VisitedPos, InvariantPositions) :-
+    Head =.. [Pred|HeadArgs],
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    body_goals(Body, Goals),
+    recursive_prefix_goals(Pred, Arity, Goals, VisitedVar, _PrefixGoals, RecCall),
+    RecCall =.. [_|RecArgs],
+    forall(member(Pos, InvariantPositions),
+        (   nth1(Pos, HeadArgs, HeadArg),
+            nth1(Pos, RecArgs, RecArg),
+            HeadArg == RecArg
+        )),
+    branch_pruning_invariants_static(Pred, Arity, Rest, VisitedPos, InvariantPositions).
+
+build_branch_pruning_code(Pred/Arity, Clauses, BaseClauses, RecClauses,
+        VisitedPos, DriverPos, InputPositions, InvariantPositions, Code) :-
+    atom_concat(Pred, '$worker', WorkerName),
+    atom_concat(Pred, '$pruned', PrunedName),
+    atom_concat(Pred, '$prune', PruneName),
+    atom_concat(Pred, '$prune_guard', PruneGuardName),
+    atom_concat(Pred, '$prune_cache', PruneCacheName),
+    branch_pruning_signature_positions(DriverPos, InvariantPositions, SignaturePositions),
+    length(SignaturePositions, PruneArity),
+    build_branch_pruning_wrapper(Pred/Arity, WorkerName, PrunedName, InputPositions, WrapperClause),
+    build_branch_pruning_guard(PruneGuardName, PruneName, PruneCacheName, PruneArity, GuardClauses),
+    maplist(build_prune_base_clause(Pred, PruneName, SignaturePositions, VisitedPos), BaseClauses, PruneBaseClauses),
+    maplist(build_prune_recursive_clause(Pred, Arity, PruneName, PruneGuardName,
+            SignaturePositions, VisitedPos), RecClauses, PruneRecClauses),
+    append(PruneBaseClauses, PruneRecClauses, PruneClauses),
+    maplist(rename_clause_for_worker(Pred, Arity, WorkerName, none), Clauses, WorkerClauses),
+    guard_spec(SignaturePositions, PruneGuardName, GuardSpec),
+    maplist(rename_clause_for_worker(Pred, Arity, PrunedName, GuardSpec), Clauses, PrunedClauses),
+    format(atom(TableDeclCode), ':- table ~q/~d.', [PruneName, PruneArity]),
+    format(atom(CacheDeclCode), ':- dynamic ~q/~d.', [PruneCacheName, PruneArity]),
+    clauses_to_code(GuardClauses, GuardCode),
+    clauses_to_code(PruneClauses, PruneCode),
+    clauses_to_code(WorkerClauses, WorkerCode),
+    clauses_to_code(PrunedClauses, PrunedCode),
+    clause_to_string(WrapperClause, WrapperCode),
+    atomic_list_concat([
+        '% Branch-pruned Prolog generated from a parameterized per-path recursion.',
+        TableDeclCode,
+        CacheDeclCode,
+        GuardCode,
+        PruneCode,
+        WorkerCode,
+        PrunedCode,
+        WrapperCode
+    ], '\n\n', Code).
+
+branch_pruning_signature_positions(DriverPos, InvariantPositions, [DriverPos|InvariantPositions]).
+
+build_branch_pruning_wrapper(Pred/Arity, WorkerName, PrunedName, InputPositions, ClauseTerm) :-
+    functor(Head, Pred, Arity),
+    Head =.. [Pred|Args],
+    build_nonvar_guard(InputPositions, Args, BoundGoal),
+    WorkerCall =.. [WorkerName|Args],
+    PrunedCall =.. [PrunedName|Args],
+    ClauseTerm = (Head :- (BoundGoal -> PrunedCall ; WorkerCall)).
+
+build_nonvar_guard([Pos], Args, nonvar(Arg)) :-
+    !,
+    nth1(Pos, Args, Arg).
+build_nonvar_guard([Pos|Rest], Args, (nonvar(Arg), Tail)) :-
+    nth1(Pos, Args, Arg),
+    build_nonvar_guard(Rest, Args, Tail).
+
+build_branch_pruning_guard(GuardName, PruneName, CacheName, Arity, [ClauseTerm]) :-
+    functor(Head, GuardName, Arity),
+    Head =.. [GuardName|Args],
+    CacheCall =.. [CacheName|Args],
+    RawCall =.. [PruneName|Args],
+    GroundCheck = ground(Args),
+    Body =
+        (   GroundCheck
+        ->  (   CacheCall
+            ->  true
+            ;   once(RawCall),
+                (   CacheCall
+                ->  true
+                ;   assertz(CacheCall)
+                )
+            )
+        ;   RawCall
+        ),
+    ClauseTerm = (Head :- Body).
+
+build_prune_base_clause(Pred, PruneName, SignaturePositions, VisitedPos, Head-Body, ClauseTerm) :-
+    Head =.. [Pred|HeadArgs],
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    body_goals(Body, Goals),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), Goals, BodyGoals),
+    BodyGoals \= [],
+    select_positions_1based(SignaturePositions, HeadArgs, PruneArgs),
+    PruneHead =.. [PruneName|PruneArgs],
+    goals_to_body(BodyGoals, PruneBody),
+    clause_term(PruneHead, PruneBody, ClauseTerm).
+
+build_prune_recursive_clause(Pred, Arity, PruneName, PruneGuardName,
+        SignaturePositions, VisitedPos, Head-Body, ClauseTerm) :-
+    Head =.. [Pred|HeadArgs],
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    body_goals(Body, Goals),
+    recursive_prefix_goals(Pred, Arity, Goals, VisitedVar, PrefixGoals, RecCall),
+    PrefixGoals \= [],
+    RecCall =.. [_|RecArgs],
+    select_positions_1based(SignaturePositions, HeadArgs, PruneHeadArgs),
+    select_positions_1based(SignaturePositions, RecArgs, NextPruneArgs),
+    PruneGuardCall =.. [PruneGuardName|NextPruneArgs],
+    append(PrefixGoals, [PruneGuardCall], PruneGoals),
+    PruneHead =.. [PruneName|PruneHeadArgs],
+    goals_to_body(PruneGoals, PruneBody),
+    clause_term(PruneHead, PruneBody, ClauseTerm).
+
+recursive_prefix_goals(Pred, Arity, Goals, VisitedVar, PrefixGoals, RecCall) :-
+    append(Prefix0, [RecCall|_], Goals),
+    branch_pruning_recursive_goal(Pred, Arity, RecCall),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), Prefix0, PrefixGoals).
+
+branch_pruning_recursive_goal(Pred, Arity, Goal0) :-
+    strip_module(Goal0, _, Goal),
+    compound(Goal),
+    functor(Goal, Pred, GoalArity),
+    GoalArity =:= Arity.
+
+branch_pruning_negated_member_goal_for(VisitedVar, Goal) :-
+    branch_pruning_negated_member_goal(Goal, VisitedVar).
+
+branch_pruning_negated_member_goal(Goal0, VisitedVar) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. ['\\+', Inner],
+        Inner =.. [member, _, Var]
+    ;   Goal =.. [not, Inner],
+        Inner =.. [member, _, Var]
+    ),
+    Var == VisitedVar.
+
+rename_clause_for_worker(Pred, Arity, NewName, GuardSpec, Head-Body0, ClauseTerm) :-
+    Head =.. [_|HeadArgs],
+    NewHead =.. [NewName|HeadArgs],
+    rename_recursive_calls(Body0, Pred, Arity, NewName, Body1),
+    (   GuardSpec = none
+    ->  FinalBody = Body1
+    ;   GuardSpec = guard(SignaturePositions, GuardName),
+        select_positions_1based(SignaturePositions, HeadArgs, GuardArgs),
+        GuardCall =.. [GuardName|GuardArgs],
+        prepend_goal(GuardCall, Body1, FinalBody)
+    ),
+    clause_term(NewHead, FinalBody, ClauseTerm).
+
+guard_spec(SignaturePositions, GuardName, guard(SignaturePositions, GuardName)).
+
+rename_recursive_calls(Goal0, Pred, Arity, NewName, Goal) :-
+    nonvar(Goal0),
+    Goal0 = Module:Inner0,
+    !,
+    rename_recursive_calls(Inner0, Pred, Arity, NewName, Renamed),
+    (   Module == user
+    ;   Module == prolog_target
+    ->  Goal = Renamed
+    ;   Goal = Module:Renamed
+    ).
+rename_recursive_calls(Goal0, Pred, Arity, NewName, Goal) :-
+    rename_recursive_calls_plain(Goal0, Pred, Arity, NewName, Goal).
+
+rename_recursive_calls_plain(true, _Pred, _Arity, _NewName, true) :- !.
+rename_recursive_calls_plain((A0, B0), Pred, Arity, NewName, (A, B)) :-
+    !,
+    rename_recursive_calls(A0, Pred, Arity, NewName, A),
+    rename_recursive_calls(B0, Pred, Arity, NewName, B).
+rename_recursive_calls_plain((A0 ; B0), Pred, Arity, NewName, (A ; B)) :-
+    !,
+    rename_recursive_calls(A0, Pred, Arity, NewName, A),
+    rename_recursive_calls(B0, Pred, Arity, NewName, B).
+rename_recursive_calls_plain((A0 -> B0), Pred, Arity, NewName, (A -> B)) :-
+    !,
+    rename_recursive_calls(A0, Pred, Arity, NewName, A),
+    rename_recursive_calls(B0, Pred, Arity, NewName, B).
+rename_recursive_calls_plain(Goal0, Pred, Arity, NewName, Goal) :-
+    compound(Goal0),
+    functor(Goal0, Pred, GoalArity),
+    GoalArity =:= Arity,
+    !,
+    Goal0 =.. [_|Args],
+    Goal =.. [NewName|Args].
+rename_recursive_calls_plain(Goal, _Pred, _Arity, _NewName, Goal).
+
+prepend_goal(Goal, true, Goal) :- !.
+prepend_goal(Goal, Body, (Goal, Body)).
+
+body_goals(true, []) :- !.
+body_goals(Body0, Goals) :-
+    strip_module(Body0, _, Body),
+    body_goals_plain(Body, Goals).
+
+body_goals_plain(true, []) :- !.
+body_goals_plain((A, B), Goals) :-
+    !,
+    body_goals_plain(A, GoalsA),
+    body_goals_plain(B, GoalsB),
+    append(GoalsA, GoalsB, Goals).
+body_goals_plain(Goal, [Goal]).
+
+goals_to_body([], true).
+goals_to_body([Goal], Goal) :- !.
+goals_to_body([Goal|Rest], (Goal, Tail)) :-
+    goals_to_body(Rest, Tail).
+
+clause_term(Head, true, Head) :- !.
+clause_term(Head, Body, (Head :- Body)).
+
+clauses_to_code(Clauses, Code) :-
+    maplist(clause_to_string, Clauses, ClauseStrings),
+    atomic_list_concat(ClauseStrings, '\n', Code).
+
+select_positions_1based([], _List, []).
+select_positions_1based([Pos|Rest], List, [Elem|Elems]) :-
+    nth1(Pos, List, Elem),
+    select_positions_1based(Rest, List, Elems).
 
 %% generate_entry_point(+Options, -Code)
 %  Generate main entry point and initialization
