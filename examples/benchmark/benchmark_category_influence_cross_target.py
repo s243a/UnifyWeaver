@@ -8,15 +8,21 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
-import shutil
 import statistics
-import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from benchmark_common import (
+    available_targets,
+    build_csharp_package,
+    build_go_binary,
+    build_rust_binary,
+    require_file,
+    run_command,
+    scale_sort_key,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,108 +58,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run(
-    cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True, env=env)
-
-
-def require_file(path: Path) -> Path:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path
-
-
-def scale_sort_key(scale: str) -> tuple[int, str]:
-    digits = "".join(ch for ch in scale if ch.isdigit())
-    suffix = "".join(ch for ch in scale if not ch.isdigit())
-    if not digits:
-        return (0, scale)
-    value = int(digits)
-    if suffix.lower() == "k":
-        value *= 1000
-    return (value, scale)
-
-
-def available_targets(requested: list[str]) -> list[str]:
-    targets: list[str] = []
-    for target in requested:
-        if target == "csharp-query" and shutil.which("dotnet") is None:
-            print("skip csharp-query: dotnet not found", file=sys.stderr)
-            continue
-        if target == "rust-dfs" and shutil.which("rustc") is None:
-            print("skip rust-dfs: rustc not found", file=sys.stderr)
-            continue
-        if target == "go-dfs" and shutil.which("go") is None:
-            print("skip go-dfs: go not found", file=sys.stderr)
-            continue
-        targets.append(target)
-    return targets
-
-
-def generate_pipeline_source(root: Path, target: str) -> Path:
-    ext = {"csharp_query": ".cs", "rust": ".rs", "go": ".go"}[target]
-    filename = f"category_influence{ext}"
-    output = root / filename
-    run(
-        [
-            sys.executable,
-            str(GENERATOR),
-            "--facts",
-            str(FACTS_PATH),
-            "--workload",
-            "category_influence",
-            "--target",
-            target,
-            "--output",
-            str(output),
-        ]
-    )
-    return output
-
-
 def build_csharp_query(root: Path) -> list[str]:
-    project_dir = root / "csharp_query"
-    run(
-        [
-            sys.executable,
-            str(GENERATOR),
-            "--facts",
-            str(FACTS_PATH),
-            "--workload",
-            "category_influence",
-            "--target",
-            "csharp_query",
-            "--output-dir",
-            str(project_dir),
-        ]
+    return build_csharp_package(
+        GENERATOR, FACTS_PATH, "category_influence", "csharp_query", root / "csharp_query"
     )
-    run(["dotnet", "build", "benchmark_qe.csproj", "-c", "Release"], cwd=project_dir)
-    return [
-        "dotnet",
-        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_qe.dll"),
-    ]
 
 
 def build_rust_dfs(root: Path) -> list[str]:
-    project_dir = root / "rust_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source = generate_pipeline_source(project_dir, "rust")
-    binary = project_dir / "category_influence_rust"
-    run(["rustc", "-O", str(source), "-o", str(binary)])
-    return [str(binary)]
+    return build_rust_binary(
+        GENERATOR, FACTS_PATH, "category_influence", root / "rust_dfs", "category_influence_rust"
+    )
 
 
 def build_go_dfs(root: Path) -> list[str]:
-    project_dir = root / "go_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source = generate_pipeline_source(project_dir, "go")
-    binary = project_dir / "category_influence_go"
-    go_cache = project_dir / ".gocache"
-    go_cache.mkdir(exist_ok=True)
-    env = dict(os.environ, GOCACHE=str(go_cache))
-    run(["go", "build", "-o", str(binary), str(source)], env=env)
-    return [str(binary)]
+    return build_go_binary(
+        GENERATOR, FACTS_PATH, "category_influence", root / "go_dfs", "category_influence_go"
+    )
 
 
 def normalize_output(output: str) -> str:
@@ -184,7 +104,7 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
     stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = run(command + [str(edge_path), str(article_path)])
+        result = run_command(command + [str(edge_path), str(article_path)])
         times.append(time.perf_counter() - started)
         stdout = result.stdout
         stderr = result.stderr
