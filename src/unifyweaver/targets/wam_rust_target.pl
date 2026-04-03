@@ -553,8 +553,8 @@ compile_execute_builtin_to_rust(Code) :-
                     if ok { self.pc += 1; true } else { false }
                 } else { false }
             }
-            }
-            }
+        }
+    }
 '.
 
 compile_eval_arith_to_rust(Code) :-
