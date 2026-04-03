@@ -393,19 +393,19 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.084s | 0.047s | 0.002s | 0.003s | match |
-| 1k | 0.216s | 0.050s | 0.006s | 0.007s | match |
-| 5k | 5.264s | 0.172s | 0.128s | 0.108s | match |
-| 10k | 42.881s | 0.520s | 0.625s | 0.457s | match |
+| 300 | 0.074s | 0.044s | 0.002s | 0.003s | match |
+| 1k | 0.151s | 0.050s | 0.007s | 0.007s | match |
+| 5k | 1.952s | 0.168s | 0.140s | 0.107s | match |
+| 10k | 8.736s | 0.539s | 0.631s | 0.459s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.56x | 0.03x | 0.04x |
-| 1k | 0.23x | 0.03x | 0.03x |
-| 5k | 0.03x | 0.02x | 0.02x |
-| 10k | 0.01x | 0.01x | 0.01x |
+| 300 | 0.59x | 0.03x | 0.04x |
+| 1k | 0.33x | 0.04x | 0.05x |
+| 5k | 0.09x | 0.07x | 0.05x |
+| 10k | 0.06x | 0.07x | 0.05x |
 
 Comparison note:
 
@@ -415,6 +415,9 @@ Comparison note:
   the DFS outputs, but this benchmark is a useful counterexample showing
   that not every recursive DAG-count workload benefits from the current
   query-engine execution model
+- the current C# query path is already improved over the initial version
+  by using plain `TransitiveClosureNode` rather than path-aware closure,
+  which is a better fit for acyclic unique-reachability
 
 ### Cross-Target Category Influence Results
 

@@ -1489,7 +1489,7 @@ class Program
 
         var plan = new QueryPlan(
             predId,
-            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH, TableMode.Min),
+            new TransitiveClosureNode(edgeId, predId),
             true,
             new int[] {{ 0 }}
         );
