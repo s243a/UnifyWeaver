@@ -185,6 +185,7 @@ Tables:
 | `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs C#/Rust/Go DFS binaries |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
@@ -252,6 +253,11 @@ python examples/benchmark/benchmark_dependency_depth_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
 
+# Compare true DAG longest dependency depth across DFS targets
+python examples/benchmark/benchmark_dependency_longest_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-dfs,rust-dfs,go-dfs
+
 # Measure overhead of the generalized path-aware accumulation runtime
 python examples/benchmark/benchmark_path_aware_accumulation.py \
     --scales 300,1k,5k,10k
@@ -284,12 +290,14 @@ The current comparison surface across query and non-query targets is:
   - all-path effective distance
   - minimum hop distance
   - dependency reach count
+  - dependency longest depth
   - positive weighted minimum path distance
   - category influence propagation
 - Go DFS:
   - all-path effective distance
   - minimum hop distance
   - dependency reach count
+  - dependency longest depth
   - positive weighted minimum path distance
   - category influence propagation
 
@@ -299,6 +307,7 @@ The benchmark split is now:
   - `benchmark_effective_distance.py`
   - `benchmark_shortest_path_cross_target.py`
   - `benchmark_dependency_depth_cross_target.py`
+  - `benchmark_dependency_longest_depth_cross_target.py`
   - `benchmark_weighted_shortest_path_cross_target.py`
   - `benchmark_category_influence_cross_target.py`
 - C# query-engine internal mode comparison:
@@ -418,6 +427,39 @@ Comparison note:
 - the current C# query path is already improved over the initial version
   by using plain `TransitiveClosureNode` rather than path-aware closure,
   which is a better fit for acyclic unique-reachability
+
+### Cross-Target Dependency Longest-Depth Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_dependency_longest_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-dfs,rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+This workload is the true DAG longest-path version of the dependency
+benchmark family. For each project, it reports the maximum dependency
+chain length over the synthetic package DAG.
+
+Latest local results:
+
+| Scale | C# DFS | Rust DFS | Go DFS | Outputs |
+|-------|--------:|---------:|-------:|---------|
+| 300 | 0.091s | 0.003s | 0.003s | match |
+| 1k | 0.139s | 0.004s | 0.003s | match |
+| 5k | 0.055s | 0.006s | 0.006s | match |
+| 10k | 0.059s | 0.012s | 0.011s | match |
+
+Comparison note:
+
+- this benchmark currently compares the DFS-style targets only
+- a like-for-like `csharp-query` longest-depth path is not yet included,
+  because the current query engine does not have a clean max-depth DAG
+  execution mode comparable to the DFS dynamic-programming formulation
+- that makes this benchmark a useful marker for future DAG-specialized
+  query-engine work rather than a finished query-vs-DFS comparison
 
 ### Cross-Target Category Influence Results
 
