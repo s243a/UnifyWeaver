@@ -23,8 +23,11 @@ Successfully implemented the core WAM-to-Go transpilation pipeline, including pa
 ### Phase 5a: Goroutine-Based Parallel Search
 - Implemented `WamState.Clone()` and `WamState.ForkAtChoicePoint()` for state branching.
 - Added `WamState.RunParallel(maxWorkers)` using goroutines and a worker semaphore to explore choice points concurrently.
+- Fixed a race condition in `RunParallel` by ensuring semaphore tokens are passed through to child goroutines.
 - Added `WamState.CollectResults()` to gather values from argument registers.
 - Improved the WAM runtime with `Compound` term support and basic builtin execution (`write/1`, `nl/0`, numeric comparisons).
+- Implemented robust recursive structural unification (`WamState.Unify`) for complex terms.
+- Refined halt logic using a dedicated `Halted` field instead of a PC sentinel.
 
 ## Files Created/Modified
 - `src/unifyweaver/targets/wam_go_target.pl`: Main transpilation logic, project orchestration, and parallel helper generation.
@@ -38,6 +41,7 @@ Successfully implemented the core WAM-to-Go transpilation pipeline, including pa
 - Generated a complete Go project from a test predicate.
 - Verified that the generated code is syntactically correct and compiles using `go build`.
 - Confirmed that parallel search helpers are correctly generated and the project is self-contained.
+- Added a new unit test suite `tests/test_wam_go_generator.pl` covering instruction lowering and parser robustness.
 
 ## Next Steps
 - **Phase 5b:** Implement order-independent goal parallelism.
