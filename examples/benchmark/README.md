@@ -353,19 +353,19 @@ Latest local results:
 
 | Scale | C# Query | Rust DFS | Go DFS | Outputs |
 |-------|---------:|---------:|-------:|---------|
-| 300 | 0.675s | 0.387s | 0.502s | match |
-| 1k | 0.574s | 1.571s | 2.148s | match |
-| 5k | 1.714s | 7.786s | 12.386s | match |
-| 10k | 4.063s | 15.057s | 20.739s | match |
+| 300 | 0.715s | 0.371s | 0.487s | match |
+| 1k | 0.554s | 1.484s | 2.141s | match |
+| 5k | 1.673s | 7.905s | 12.509s | match |
+| 10k | 4.080s | 14.932s | 20.369s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs Rust DFS | vs Go DFS |
 |-------|------------:|----------:|
-| 300 | 0.57x | 0.74x |
-| 1k | 2.74x | 3.74x |
-| 5k | 4.54x | 7.22x |
-| 10k | 3.71x | 5.10x |
+| 300 | 0.52x | 0.68x |
+| 1k | 2.68x | 3.87x |
+| 5k | 4.72x | 7.47x |
+| 10k | 3.66x | 4.99x |
 
 Comparison note:
 
@@ -373,15 +373,16 @@ Comparison note:
 - that path now uses `QueryRuntime` for both:
   - the recursive `category_ancestor` expansion
   - the outer grouped influence sum via `AggregateNode`
-- the C# benchmark source is now generated through `generate_pipeline.py`
-  as `target=csharp_query`, instead of being embedded only inside the
-  benchmark runner
+- the C# benchmark package is now generated through
+  `generate_pipeline.py` as `target=csharp_query`, including:
+  - `Program.cs`
+  - `QueryRuntime.cs`
+  - `benchmark_qe.csproj`
 - Rust and Go remain generated DFS/pipeline binaries
 - so this runner is intentionally a mixed execution-model comparison:
   query engine versus non-query target pipelines
-- the remaining benchmark-only orchestration is therefore smaller now:
-  project wiring plus runtime file inclusion, not a one-off embedded C#
-  workload implementation
+- the remaining benchmark-only orchestration is now just build/run
+  invocation in the runner, not embedded C# workload or package wiring
 - the C# path is still weaker only at `300` and clearly faster from `1k`
   onward on the current workload
 

@@ -25,6 +25,20 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+QRY_RUNTIME = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
+
+CSHARP_BENCHMARK_PROJECT = """\
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>
+"""
+
 
 def load_facts(facts_path):
     """Load facts from Prolog file."""
@@ -1965,6 +1979,27 @@ GENERATORS = {
 }
 
 
+def write_output_artifacts(target, code, output=None, output_dir=None):
+    if output_dir:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if target == "csharp_query":
+            (out_dir / "Program.cs").write_text(code, encoding="utf-8")
+            (out_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
+            (out_dir / "benchmark_qe.csproj").write_text(CSHARP_BENCHMARK_PROJECT, encoding="utf-8")
+            return
+
+        ext = {"go": ".go", "rust": ".rs"}.get(target)
+        if ext is None:
+            raise ValueError(f"Unsupported packaged target: {target}")
+        (out_dir / f"generated{ext}").write_text(code, encoding="utf-8")
+        return
+
+    out_path = Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(code, encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate self-contained benchmark pipeline per target"
@@ -1978,7 +2013,8 @@ def main():
         help="Benchmark workload to generate",
     )
     parser.add_argument("--target", required=True, help="Target language")
-    parser.add_argument("--output", required=True, help="Output file path")
+    parser.add_argument("--output", help="Output file path")
+    parser.add_argument("--output-dir", help="Output directory for packaged targets")
     parser.add_argument("--n", type=float, default=5, help="Dimensionality parameter")
     parser.add_argument("--max-depth", type=int, default=10,
                         help="Max DFS depth (paths beyond this are trimmed; "
@@ -2000,11 +2036,13 @@ def main():
     code = generator(article_cats, category_parents, root_cats,
                      n=int(args.n), max_depth=args.max_depth)
 
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, 'w') as f:
-        f.write(code)
+    if bool(args.output) == bool(args.output_dir):
+        print("Exactly one of --output or --output-dir is required", file=sys.stderr)
+        sys.exit(2)
 
-    print(f"Generated {args.target} pipeline: {args.output}")
+    write_output_artifacts(args.target, code, args.output, args.output_dir)
+
+    print(f"Generated {args.target} pipeline: {args.output_dir or args.output}")
     print(f"  Articles: {len(article_cats)}")
     print(f"  Category edges: {sum(len(v) for v in category_parents.values())}")
     print(f"  Root: {args.root}")
