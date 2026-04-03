@@ -32,6 +32,23 @@ func (v *Atom) Equals(other Value) bool {
 	return ok && v.Name == o.Name
 }
 
+type Compound struct {
+	Functor string
+	Args    []Value
+}
+func (v *Compound) valueTag() {}
+func (v *Compound) String() string {
+	return fmt.Sprintf("%s(%v)", v.Functor, v.Args)
+}
+func (v *Compound) Equals(other Value) bool {
+	o, ok := other.(*Compound)
+	if !ok || v.Functor != o.Functor || len(v.Args) != len(o.Args) { return false }
+	for i := range v.Args {
+		if !v.Args[i].Equals(o.Args[i]) { return false }
+	}
+	return true
+}
+
 type List struct { Elements []Value }
 func (v *List) valueTag() {}
 func (v *List) String() string { return fmt.Sprintf("%v", v.Elements) }

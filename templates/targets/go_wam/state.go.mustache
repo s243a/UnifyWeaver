@@ -111,6 +111,39 @@ func (vm *WamState) heapSubargs(start, n int) []Value {
 	return vm.Heap[start : start+n]
 }
 
+func (vm *WamState) Clone() *WamState {
+	newState := &WamState{
+		Code:         vm.Code,
+		Labels:       vm.Labels,
+		PC:           vm.PC,
+		CP:           vm.CP,
+		Regs:         copyMap(vm.Regs),
+		Heap:         make([]Value, len(vm.Heap)),
+		Stack:        make([]StackEntry, len(vm.Stack)),
+		Trail:        make([]TrailEntry, len(vm.Trail)),
+		ChoicePoints: make([]ChoicePoint, len(vm.ChoicePoints)),
+	}
+	copy(newState.Heap, vm.Heap)
+	copy(newState.Stack, vm.Stack)
+	copy(newState.Trail, vm.Trail)
+	copy(newState.ChoicePoints, vm.ChoicePoints)
+	return newState
+}
+
+func (vm *WamState) ForkAtChoicePoint() *WamState {
+	if len(vm.ChoicePoints) == 0 {
+		return nil
+	}
+	// The forked state will start from the last choice point
+	clone := vm.Clone()
+	if clone.backtrack() {
+		// Remove the choice point from the ORIGINAL VM so it doesn't try it too
+		vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+		return clone
+	}
+	return nil
+}
+
 func copyMap(m map[string]Value) map[string]Value {
 	m2 := make(map[string]Value)
 	for k, v := range m {
@@ -127,14 +160,49 @@ func parseFunctorArity(f string) int {
 }
 
 func decompose(v Value) (string, []Value) {
-	// Simple implementation for now
-	if a, ok := v.(*Atom); ok {
-		return a.Name, nil
+	switch t := v.(type) {
+	case *Atom:
+		return t.Name, nil
+	case *Compound:
+		return t.Functor, t.Args
+	case *List:
+		if len(t.Elements) > 0 {
+			head := t.Elements[0]
+			tail := &List{Elements: t.Elements[1:]}
+			return ".", []Value{head, tail}
+		}
+		return "[]", nil
 	}
 	return "", nil
 }
 
 func (vm *WamState) executeBuiltin(op string, arity int) bool {
-	// TODO: implement builtins
+	switch op {
+	case "write/1":
+		arg1 := vm.getReg("A1")
+		fmt.Print(arg1.String())
+		return true
+	case "nl/0":
+		fmt.Println()
+		return true
+	case "</2":
+		arg1 := vm.getReg("A1")
+		arg2 := vm.getReg("A2")
+		v1, ok1 := arg1.(*Integer)
+		v2, ok2 := arg2.(*Integer)
+		if ok1 && ok2 {
+			return v1.Val < v2.Val
+		}
+		return false
+	case ">/2":
+		arg1 := vm.getReg("A1")
+		arg2 := vm.getReg("A2")
+		v1, ok1 := arg1.(*Integer)
+		v2, ok2 := arg2.(*Integer)
+		if ok1 && ok2 {
+			return v1.Val > v2.Val
+		}
+		return false
+	}
 	return false
 }

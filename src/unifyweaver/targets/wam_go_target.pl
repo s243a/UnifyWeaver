@@ -109,7 +109,7 @@ compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
     (   % Try native Go lowering first
         catch(
             go_target:compile_predicate_to_go(Module:Pred/Arity,
-                [include_main(false)|Options], PredCode),
+                [include_package(false)|Options], PredCode),
             _, fail)
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
         Strategy = native
@@ -766,6 +766,75 @@ func (vm *WamState) Run() bool {
             }
         }
     }
+}
+
+// RunParallel executes the WAM search in parallel using goroutines.
+func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
+	results := make(chan []Value, 100)
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
+	var explore func(state *WamState)
+	explore = func(state *WamState) {
+		defer wg.Done()
+		sem <- struct{}{}
+		defer func() { <-sem }()
+
+		for {
+			if state.PC == 0 {
+				results <- state.CollectResults()
+				return
+			}
+			instr := state.fetch()
+			if instr == nil {
+				return
+			}
+
+			if !state.Step(instr) {
+				if !state.backtrack() {
+					return
+				}
+			}
+
+			// Fork choice points if we have workers available
+			if len(state.ChoicePoints) > 0 {
+				select {
+				case sem <- struct{}{}:
+					<-sem // Release because explore will acquire
+					if alt := state.ForkAtChoicePoint(); alt != nil {
+						wg.Add(1)
+						go explore(alt)
+					}
+				default:
+					// No worker available, continue sequentially
+				}
+			}
+		}
+	}
+
+	wg.Add(1)
+	go explore(vm)
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	return results
+}
+
+// CollectResults gathers values from A registers.
+func (vm *WamState) CollectResults() []Value {
+	results := make([]Value, 0)
+	for i := 1; ; i++ {
+		name := fmt.Sprintf("A%d", i)
+		val, ok := vm.Regs[name]
+		if !ok {
+			break
+		}
+		results = append(results, val)
+	}
+	return results
 }
 
 // backtrack restores state from the most recent choice point.

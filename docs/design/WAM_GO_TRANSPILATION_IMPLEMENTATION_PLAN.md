@@ -289,7 +289,7 @@ is straightforward (WaitGroup + goroutines).
 | 2 | WAM instruction → Go literals | **Completed** | Low | Phase 0 |
 | 3 | step_wam/3 → Go type switch | **Completed** | High | Phase 0, 1 |
 | 4 | Hybrid module assembly | **Completed** | Medium | Phase 2, 3 |
-| 5a | Goroutine WAM parallel search | Planned | High | Phase 4 |
+| 5a | Goroutine WAM parallel search | **Completed** | High | Phase 4 |
 | 5b | Order-independent goal parallelism | Planned | Medium | Phase 0 (no WAM needed) |
 
 ## Differences from Rust Implementation Plan
