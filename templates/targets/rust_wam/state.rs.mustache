@@ -181,8 +181,8 @@ impl WamState {
         }
     }
 
-    // The step() and run() methods will be transpiled from
-    // step_wam/3 and run_loop/2 in Phase 2.
+    // The step() and run() methods are transpiled from
+    // step_wam/3 and run_loop/2 in the WAM-to-Rust pipeline.
     // Placeholder:
     // {{step_wam_match_arms}}
     // {{run_loop_body}}
@@ -233,6 +233,9 @@ impl WamState {
     /// Parse a single WAM instruction line into an Instruction enum.
     fn parse_single_instruction(line: &str) -> Option<Instruction> {
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        if parts.is_empty() {
+            return None;
+        }
         let opcode = parts[0];
         let args_str = if parts.len() > 1 { parts[1].trim() } else { "" };
         let args: Vec<String> = if args_str.is_empty() {
@@ -282,14 +285,14 @@ impl WamState {
             "allocate" => Some(Instruction::Allocate),
             "deallocate" => Some(Instruction::Deallocate),
             "call" if args.len() == 2 => {
-                let arity = args[1].parse::<usize>().unwrap_or(0);
+                let arity = args[1].parse::<usize>().ok()?;
                 Some(Instruction::Call(args[0].clone(), arity))
             }
             "execute" if args.len() == 1 =>
                 Some(Instruction::Execute(args[0].clone())),
             "proceed" => Some(Instruction::Proceed),
             "builtin_call" if args.len() == 2 => {
-                let arity = args[1].parse::<usize>().unwrap_or(0);
+                let arity = args[1].parse::<usize>().ok()?;
                 Some(Instruction::BuiltinCall(args[0].clone(), arity))
             }
 
@@ -304,6 +307,8 @@ impl WamState {
             "switch_on_constant" => {
                 let table = args.iter()
                     .map(|entry| {
+                        // Use rfind to support atoms containing colons (e.g. module:val)
+                        // assuming labels do not contain colons.
                         if let Some(colon_idx) = entry.rfind(':') {
                             let val_str = &entry[..colon_idx];
                             let label = &entry[colon_idx + 1..];
@@ -349,7 +354,8 @@ impl WamState {
     }
 
     /// Parse a string value into a Value enum.
-    /// Numbers become Value::Integer, everything else becomes Value::Atom.
+    /// Order: Boolean -> Integer -> Float -> Atom.
+    /// Integer must be parsed before Float to avoid losing precision.
     fn parse_value(s: &str) -> Value {
         match s {
             "true" => Value::Bool(true),

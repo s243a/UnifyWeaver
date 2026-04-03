@@ -448,6 +448,18 @@ test_generated_project_has_parser :-
         fail_test(Test, 'Generated state.rs missing parser')
     ).
 
+test_parser_resilience :-
+    Test = 'WAM-Rust: parser handles malformed input gracefully',
+    (   read_file_to_string(
+            'templates/targets/rust_wam/state.rs.mustache', Content, []),
+        % Verify parts.is_empty() check exists
+        sub_string(Content, _, _, _, 'if parts.is_empty() {'),
+        % Verify ok()? for arity parsing exists
+        sub_string(Content, _, _, _, 'args[1].parse::<usize>().ok()?')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Parser missing resilience checks for malformed input')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -476,6 +488,7 @@ run_tests :-
     test_state_template_has_parser,
     test_parser_handles_all_instructions,
     test_generated_project_has_parser,
+    test_parser_resilience,
 
     format('~n========================================~n'),
     (   test_failed
