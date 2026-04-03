@@ -154,6 +154,8 @@ cleanup_typr_test :-
     retractall(user:asym_rec_a(_, _, _)),
     retractall(user:count_occ(_, _, _)),
     retractall(user:count_weighted(_, _, _)),
+    retractall(user:category_ancestor_countable(_, _, _, _)),
+    retractall(user:category_path_count(_, _)),
     retractall(user:asym_rec_c(_, _, _)),
     retractall(user:list_length_from(_, _, _)),
     retractall(user:alternative_assign_chain(_, _)),
@@ -5751,6 +5753,40 @@ test(recursive_compiler_supports_typr_invariant_guarded_per_path_visited_recursi
     once(sub_string(Code, _, _, _, "if ((next_node <= step_1) && !any(visited == next_node)) {")),
     once(sub_string(Code, _, _, _, "sub_results <- category_ancestor_guarded_worker(next_node, c(visited, next_node), arg2, from_nodes, to_nodes);")),
     \+ sub_string(Code, _, _, _, "@{"),
+    generated_typr_is_valid(Code, exit(0)).
+
+test(compile_predicate_to_typr_per_path_count_aggregate) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_countable(_, _, _, _)),
+    retractall(user:category_path_count(_, _)),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(a, c)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:(category_ancestor_countable(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor_countable(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor_countable(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(user:(category_path_count(Cat, Count) :-
+        aggregate_all(count, category_ancestor_countable(Cat, _, _, [Cat]), Count)
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    assertz(type_declarations:uw_type(category_path_count/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_path_count/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(category_path_count/2, integer)),
+    once(compile_predicate_to_typr(category_path_count/2, [typed_mode(explicit)], Code)),
+    once(sub_string(Code, _, _, _, "let category_ancestor_countable_worker <- function(current, visited, from_nodes, to_nodes)")),
+    once(sub_string(Code, _, _, _, "let category_path_count <- fn(arg1: char, arg2: int): int")),
+    once(sub_string(Code, _, _, _, "let rows <- category_ancestor_countable(arg1);")),
+    once(sub_string(Code, _, _, _, "arg2 <- length(rows);")),
+    \+ sub_string(Code, _, _, _, "result <- @{"),
     generated_typr_is_valid(Code, exit(0)).
 
 :- end_tests(typr_target).

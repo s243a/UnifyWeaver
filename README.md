@@ -254,7 +254,10 @@ includes:
   `*_from_vectors` runtime helper, native `input(stdin|file|vfs|function)`
   wrappers, and declared scalar or conservative pair-shaped runtime node
   parsing such as `integer`, `number`, `pair(integer, integer)`, and
-  `pair(number, number)` over the same step-relation shape
+  `pair(number, number)` over the same step-relation shape; the first
+  conservative path-aware aggregation slice also now stays native for
+  `aggregate_all(count, per_path_goal, N)` wrappers over that supported
+  per-path worker path
 - accumulator-style tail-recursive predicates such as `factorial_acc/3`,
   lowered to TypR functions that use native TypR loop bodies instead of
   relabeled standalone R scripts
@@ -407,7 +410,8 @@ TypR annotation modes are regression-covered too:
   signatures more often than the checker does
 - per-path unique-path work also has a dedicated TypR design note:
   [docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md](docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md)
-  which now records path-aware aggregation as the next intended TypR move
+  which now records the first counted aggregation slice as landed and points
+  next toward grouped or min-style path-aware aggregation
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)
