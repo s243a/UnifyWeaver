@@ -190,6 +190,17 @@ Tables:
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
 
+Packaging note:
+
+- the shared `generate_pipeline.py` generator now owns packaged C#
+  benchmark output for the cross-target runners, including:
+  - `Program.cs`
+  - `QueryRuntime.cs` where needed for `csharp_query`
+  - `benchmark.csproj`
+- the benchmark runners are correspondingly narrower now: they mainly
+  generate, build, run, and compare, rather than assembling one-off C#
+  projects in-script
+
 ## Usage
 
 ```bash

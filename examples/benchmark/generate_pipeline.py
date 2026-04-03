@@ -1836,6 +1836,550 @@ class Program
 '''
 
 
+def generate_csharp_query_effective_distance(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = sorted(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Effective distance benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const string ROOT_CATEGORY = "{root}";
+    const double N = {float(n)};
+    const int MAX_DEPTH = {max_depth};
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var predId = new PredicateId("category_ancestor", 3);
+        var articleCategories = new Dictionary<string, List<string>>();
+
+        var swLoad = Stopwatch.StartNew();
+        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length == 2)
+            {{
+                provider.AddFact(edgeId, parts[0], parts[1]);
+            }}
+        }}
+
+        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length != 2)
+            {{
+                continue;
+            }}
+
+            if (!articleCategories.TryGetValue(parts[0], out var categories))
+            {{
+                categories = new List<string>();
+                articleCategories[parts[0]] = categories;
+            }}
+
+            categories.Add(parts[1]);
+        }}
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            predId,
+            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH),
+            true,
+            new int[] {{ 0 }}
+        );
+
+        var uniqueSeeds = new HashSet<string>();
+        foreach (var categories in articleCategories.Values)
+        {{
+            foreach (var category in categories)
+            {{
+                uniqueSeeds.Add(category);
+            }}
+        }}
+
+        var seedParams = uniqueSeeds.Select(category => new object[] {{ category }}).ToList();
+
+        var swExec = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider);
+        var rows = executor.Execute(plan, seedParams).ToList();
+        swExec.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>();
+        foreach (var row in rows)
+        {{
+            var source = row[0]?.ToString() ?? "";
+            var ancestor = row[1]?.ToString() ?? "";
+            var hops = Convert.ToInt32(row[2]);
+            if (!ancestorIndex.TryGetValue(source, out var bucket))
+            {{
+                bucket = new List<(string, int)>();
+                ancestorIndex[source] = bucket;
+            }}
+
+            bucket.Add((ancestor, hops));
+        }}
+
+        var results = new List<(double Deff, string Article)>();
+        foreach (var article in articleCategories.Keys.OrderBy(x => x))
+        {{
+            var allHops = new List<int>();
+            foreach (var category in articleCategories[article])
+            {{
+                if (category == ROOT_CATEGORY)
+                {{
+                    allHops.Add(1);
+                }}
+
+                if (ancestorIndex.TryGetValue(category, out var ancestors))
+                {{
+                    foreach (var (ancestor, hops) in ancestors)
+                    {{
+                        if (ancestor == ROOT_CATEGORY)
+                        {{
+                            allHops.Add(hops + 1);
+                        }}
+                    }}
+                }}
+            }}
+
+            if (allHops.Count > 0)
+            {{
+                results.Add((ComputeDeff(allHops), article));
+            }}
+        }}
+        swAgg.Stop();
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Deff.CompareTo(b.Deff);
+            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("article\\troot_category\\teffective_distance");
+        foreach (var (deff, article) in results)
+        {{
+            Console.WriteLine($"{{article}}\\t{{ROOT_CATEGORY}}\\t{{deff:F6}}");
+        }}
+
+        swTotal.Stop();
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swExec.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"article_count={{results.Count}}");
+    }}
+
+    static double ComputeDeff(List<int> hops)
+    {{
+        if (hops.Count == 0)
+        {{
+            return double.PositiveInfinity;
+        }}
+
+        var weightSum = hops.Sum(h => Math.Pow(h, -N));
+        return weightSum > 0 ? Math.Pow(weightSum, -1.0 / N) : double.PositiveInfinity;
+    }}
+}}
+'''
+
+
+def generate_csharp_query_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = sorted(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Shortest path to root benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const string ROOT_CATEGORY = "{root}";
+    const int MAX_DEPTH = {max_depth};
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var predId = new PredicateId("category_ancestor", 3);
+        var articleCategories = new Dictionary<string, List<string>>();
+
+        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length == 2)
+            {{
+                provider.AddFact(edgeId, parts[0], parts[1]);
+            }}
+        }}
+
+        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length != 2)
+            {{
+                continue;
+            }}
+
+            if (!articleCategories.TryGetValue(parts[0], out var categories))
+            {{
+                categories = new List<string>();
+                articleCategories[parts[0]] = categories;
+            }}
+
+            categories.Add(parts[1]);
+        }}
+
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            predId,
+            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH, TableMode.Min),
+            true,
+            new int[] {{ 0 }}
+        );
+
+        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var categories in articleCategories.Values)
+        {{
+            foreach (var category in categories)
+            {{
+                uniqueSeeds.Add(category);
+            }}
+        }}
+
+        var seedParams = uniqueSeeds
+            .OrderBy(category => category, StringComparer.Ordinal)
+            .Select(category => new object[] {{ category }})
+            .ToList();
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var rows = executor.Execute(plan, seedParams).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {{
+            var source = row[0]?.ToString() ?? "";
+            var ancestor = row[1]?.ToString() ?? "";
+            var hops = Convert.ToInt32(row[2]);
+            if (!ancestorIndex.TryGetValue(source, out var bucket))
+            {{
+                bucket = new List<(string, int)>();
+                ancestorIndex[source] = bucket;
+            }}
+
+            bucket.Add((ancestor, hops));
+        }}
+
+        var results = new List<(int Distance, string Article)>();
+        foreach (var article in articleCategories.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {{
+            int? best = null;
+            foreach (var category in articleCategories[article])
+            {{
+                if (category == ROOT_CATEGORY)
+                {{
+                    best = best is null ? 1 : Math.Min(best.Value, 1);
+                }}
+
+                if (!ancestorIndex.TryGetValue(category, out var ancestors))
+                {{
+                    continue;
+                }}
+
+                foreach (var (ancestor, hops) in ancestors)
+                {{
+                    if (ancestor != ROOT_CATEGORY)
+                    {{
+                        continue;
+                    }}
+
+                    var dist = hops + 1;
+                    best = best is null ? dist : Math.Min(best.Value, dist);
+                }}
+            }}
+
+            if (best is not null)
+            {{
+                results.Add((best.Value, article));
+            }}
+        }}
+        swAgg.Stop();
+        swTotal.Stop();
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Distance.CompareTo(b.Distance);
+            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("article\\troot_category\\tshortest_path");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Article}}\\t{{ROOT_CATEGORY}}\\t{{item.Distance}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"article_count={{results.Count}}");
+    }}
+}}
+'''
+
+
+def generate_csharp_query_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = sorted(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Weighted shortest path to root benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const string ROOT_CATEGORY = "{root}";
+    const int MAX_DEPTH = {max_depth};
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var predId = new PredicateId("category_weighted_shortest", 3);
+        var weightId = new PredicateId("category_weight", 2);
+        var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var outDegree = new Dictionary<string, int>(StringComparer.Ordinal);
+        var sourceNodes = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length != 2)
+            {{
+                continue;
+            }}
+
+            provider.AddFact(edgeId, parts[0], parts[1]);
+            sourceNodes.Add(parts[0]);
+            outDegree[parts[0]] = outDegree.TryGetValue(parts[0], out var degree) ? degree + 1 : 1;
+        }}
+
+        foreach (var source in sourceNodes)
+        {{
+            outDegree.TryGetValue(source, out var degree);
+            var weight = 1.0 + Math.Log(Math.Max(1, degree), 5.0);
+            provider.AddFact(weightId, source, weight);
+        }}
+
+        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\\t', 2);
+            if (parts.Length != 2)
+            {{
+                continue;
+            }}
+
+            if (!articleCategories.TryGetValue(parts[0], out var categories))
+            {{
+                categories = new List<string>();
+                articleCategories[parts[0]] = categories;
+            }}
+
+            categories.Add(parts[1]);
+        }}
+
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            predId,
+            new PathAwareAccumulationNode(
+                edgeId,
+                predId,
+                weightId,
+                new ColumnExpression(3),
+                new BinaryArithmeticExpression(
+                    ArithmeticBinaryOperator.Add,
+                    new ColumnExpression(2),
+                    new ColumnExpression(3)),
+                MAX_DEPTH,
+                TableMode.Min,
+                true),
+            true,
+            new int[] {{ 0 }}
+        );
+
+        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var categories in articleCategories.Values)
+        {{
+            foreach (var category in categories)
+            {{
+                uniqueSeeds.Add(category);
+            }}
+        }}
+
+        var seedParams = uniqueSeeds
+            .OrderBy(category => category, StringComparer.Ordinal)
+            .Select(category => new object[] {{ category }})
+            .ToList();
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var rows = executor.Execute(plan, seedParams).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var ancestorIndex = new Dictionary<string, List<(string Ancestor, double Weight)>>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {{
+            var source = row[0]?.ToString() ?? "";
+            var ancestor = row[1]?.ToString() ?? "";
+            var weight = Convert.ToDouble(row[2], CultureInfo.InvariantCulture);
+            if (!ancestorIndex.TryGetValue(source, out var bucket))
+            {{
+                bucket = new List<(string, double)>();
+                ancestorIndex[source] = bucket;
+            }}
+
+            bucket.Add((ancestor, weight));
+        }}
+
+        var results = new List<(double Distance, string Article)>();
+        foreach (var article in articleCategories.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {{
+            double? best = null;
+            foreach (var category in articleCategories[article])
+            {{
+                if (category == ROOT_CATEGORY)
+                {{
+                    best = best is null ? 0.0 : Math.Min(best.Value, 0.0);
+                }}
+
+                if (!ancestorIndex.TryGetValue(category, out var ancestors))
+                {{
+                    continue;
+                }}
+
+                foreach (var (ancestor, weight) in ancestors)
+                {{
+                    if (ancestor != ROOT_CATEGORY)
+                    {{
+                        continue;
+                    }}
+
+                    best = best is null ? weight : Math.Min(best.Value, weight);
+                }}
+            }}
+
+            if (best is not null)
+            {{
+                results.Add((best.Value, article));
+            }}
+        }}
+        swAgg.Stop();
+        swTotal.Stop();
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Distance.CompareTo(b.Distance);
+            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("article\\troot_category\\tweighted_shortest_path");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Article}}\\t{{ROOT_CATEGORY}}\\t{{item.Distance.ToString("F12", CultureInfo.InvariantCulture)}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"article_count={{results.Count}}");
+    }}
+}}
+'''
+
+
 def generate_csharp_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -1960,16 +2504,19 @@ GENERATORS = {
         'go': generate_go_effective_distance,
         'rust': generate_rust_effective_distance,
         'csharp': generate_csharp_effective_distance,
+        'csharp_query': generate_csharp_query_effective_distance,
     },
     'shortest_path_to_root': {
         'go': generate_go_shortest_path,
         'rust': generate_rust_shortest_path,
         'csharp': generate_csharp_shortest_path,
+        'csharp_query': generate_csharp_query_shortest_path,
     },
     'weighted_shortest_path': {
         'go': generate_go_weighted_shortest_path,
         'rust': generate_rust_weighted_shortest_path,
         'csharp': generate_csharp_weighted_shortest_path,
+        'csharp_query': generate_csharp_query_weighted_shortest_path,
     },
     'category_influence': {
         'csharp_query': generate_csharp_query_category_influence,
@@ -1983,10 +2530,11 @@ def write_output_artifacts(target, code, output=None, output_dir=None):
     if output_dir:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        if target == "csharp_query":
+        if target in {"csharp", "csharp_query"}:
             (out_dir / "Program.cs").write_text(code, encoding="utf-8")
-            (out_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
-            (out_dir / "benchmark_qe.csproj").write_text(CSHARP_BENCHMARK_PROJECT, encoding="utf-8")
+            if target == "csharp_query":
+                (out_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
+            (out_dir / "benchmark.csproj").write_text(CSHARP_BENCHMARK_PROJECT, encoding="utf-8")
             return
 
         ext = {"go": ".go", "rust": ".rs"}.get(target)

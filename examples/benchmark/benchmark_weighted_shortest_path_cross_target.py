@@ -21,213 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
-QRY_RUNTIME = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 FACTS_PATH = BENCH_DIR / "10k" / "facts.pl"
-
-CSHARP_PROJECT = """\
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-</Project>
-"""
-
-QE_PROGRAM = """\
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using UnifyWeaver.QueryRuntime;
-
-class Program
-{
-    const string ROOT_CATEGORY = "Physics";
-    const int MAX_DEPTH = 10;
-
-    static void Main(string[] args)
-    {
-        if (args.Length < 2)
-        {
-            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
-            Environment.Exit(1);
-        }
-
-        var swTotal = Stopwatch.StartNew();
-        var swLoad = Stopwatch.StartNew();
-
-        var provider = new InMemoryRelationProvider();
-        var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_weighted_shortest", 3);
-        var weightId = new PredicateId("category_weight", 2);
-        var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        var outDegree = new Dictionary<string, int>(StringComparer.Ordinal);
-        var sourceNodes = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
-        {
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {
-                continue;
-            }
-
-            provider.AddFact(edgeId, parts[0], parts[1]);
-            sourceNodes.Add(parts[0]);
-            outDegree[parts[0]] = outDegree.TryGetValue(parts[0], out var degree) ? degree + 1 : 1;
-        }
-
-        foreach (var source in sourceNodes)
-        {
-            outDegree.TryGetValue(source, out var degree);
-            var weight = 1.0 + Math.Log(Math.Max(1, degree), 5.0);
-            provider.AddFact(weightId, source, weight);
-        }
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {
-                continue;
-            }
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }
-
-            categories.Add(parts[1]);
-        }
-
-        swLoad.Stop();
-
-        var plan = new QueryPlan(
-            predId,
-            new PathAwareAccumulationNode(
-                edgeId,
-                predId,
-                weightId,
-                new ColumnExpression(3),
-                new BinaryArithmeticExpression(
-                    ArithmeticBinaryOperator.Add,
-                    new ColumnExpression(2),
-                    new ColumnExpression(3)),
-                MAX_DEPTH,
-                TableMode.Min,
-                true),
-            true,
-            new int[] { 0 }
-        );
-
-        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var categories in articleCategories.Values)
-        {
-            foreach (var category in categories)
-            {
-                uniqueSeeds.Add(category);
-            }
-        }
-
-        var seedParams = uniqueSeeds
-            .OrderBy(category => category, StringComparer.Ordinal)
-            .Select(category => new object[] { category })
-            .ToList();
-
-        var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
-        swQuery.Stop();
-
-        var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, double Weight)>>(StringComparer.Ordinal);
-        foreach (var row in rows)
-        {
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var weight = Convert.ToDouble(row[2], CultureInfo.InvariantCulture);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {
-                bucket = new List<(string, double)>();
-                ancestorIndex[source] = bucket;
-            }
-
-            bucket.Add((ancestor, weight));
-        }
-
-        var results = new List<(double Distance, string Article)>();
-        foreach (var article in articleCategories.Keys.OrderBy(x => x, StringComparer.Ordinal))
-        {
-            double? best = null;
-            foreach (var category in articleCategories[article])
-            {
-                if (category == ROOT_CATEGORY)
-                {
-                    best = best is null ? 0.0 : Math.Min(best.Value, 0.0);
-                }
-
-                if (!ancestorIndex.TryGetValue(category, out var ancestors))
-                {
-                    continue;
-                }
-
-                foreach (var (ancestor, weight) in ancestors)
-                {
-                    if (ancestor != ROOT_CATEGORY)
-                    {
-                        continue;
-                    }
-
-                    best = best is null ? weight : Math.Min(best.Value, weight);
-                }
-            }
-
-            if (best is not null)
-            {
-                results.Add((best.Value, article));
-            }
-        }
-        swAgg.Stop();
-        swTotal.Stop();
-
-        results.Sort((a, b) =>
-        {
-            var cmp = a.Distance.CompareTo(b.Distance);
-            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
-        });
-
-        Console.WriteLine("article\\troot_category\\tweighted_shortest_path");
-        foreach (var (distance, article) in results)
-        {
-            Console.WriteLine($"{article}\\t{ROOT_CATEGORY}\\t{distance.ToString("F12", CultureInfo.InvariantCulture)}");
-        }
-
-        Console.Error.WriteLine($"load_ms={swLoad.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"query_ms={swQuery.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"aggregation_ms={swAgg.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"total_ms={swTotal.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"seed_count={seedParams.Count}");
-        Console.Error.WriteLine($"tuple_count={rows.Count}");
-        Console.Error.WriteLine($"article_count={results.Count}");
-    }
-}
-"""
 
 
 @dataclass
@@ -319,23 +114,38 @@ def generate_pipeline_source(root: Path, target: str) -> Path:
     return output
 
 
+def generate_pipeline_package(root: Path, target: str) -> Path:
+    run(
+        [
+            sys.executable,
+            str(GENERATOR),
+            "--facts",
+            str(FACTS_PATH),
+            "--root",
+            "Physics",
+            "--workload",
+            "weighted_shortest_path",
+            "--target",
+            target,
+            "--output-dir",
+            str(root),
+        ]
+    )
+    return root
+
+
 def build_csharp_query(root: Path) -> list[str]:
     project_dir = root / "csharp_query"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "Program.cs").write_text(QE_PROGRAM, encoding="utf-8")
-    (project_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
-    (project_dir / "benchmark_weighted_shortest_path_query.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
-    run(["dotnet", "build", "benchmark_weighted_shortest_path_query.csproj", "-c", "Release"], cwd=project_dir)
-    return ["dotnet", str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_weighted_shortest_path_query.dll")]
+    generate_pipeline_package(project_dir, "csharp_query")
+    run(["dotnet", "build", "benchmark.csproj", "-c", "Release"], cwd=project_dir)
+    return ["dotnet", str(project_dir / "bin" / "Release" / "net9.0" / "benchmark.dll")]
 
 
 def build_csharp_dfs(root: Path) -> list[str]:
     project_dir = root / "csharp_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    generate_pipeline_source(project_dir, "csharp")
-    (project_dir / "benchmark_weighted_shortest_path_dfs.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
-    run(["dotnet", "build", "benchmark_weighted_shortest_path_dfs.csproj", "-c", "Release"], cwd=project_dir)
-    return ["dotnet", str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_weighted_shortest_path_dfs.dll")]
+    generate_pipeline_package(project_dir, "csharp")
+    run(["dotnet", "build", "benchmark.csproj", "-c", "Release"], cwd=project_dir)
+    return ["dotnet", str(project_dir / "bin" / "Release" / "net9.0" / "benchmark.dll")]
 
 
 def build_rust_dfs(root: Path) -> list[str]:

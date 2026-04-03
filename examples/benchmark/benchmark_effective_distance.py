@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import statistics
 import subprocess
@@ -28,189 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
-QRY_RUNTIME = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
-
-QE_PROGRAM = """\
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using UnifyWeaver.QueryRuntime;
-
-class Program
-{
-    const string ROOT_CATEGORY = "Physics";
-    const double N = 5.0;
-    const int MAX_DEPTH = 10;
-
-    static void Main(string[] args)
-    {
-        if (args.Length < 2)
-        {
-            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
-            Environment.Exit(1);
-        }
-
-        var swTotal = Stopwatch.StartNew();
-
-        var provider = new InMemoryRelationProvider();
-        var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_ancestor", 3);
-        var articleCategories = new Dictionary<string, List<string>>();
-
-        var swLoad = Stopwatch.StartNew();
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
-        {
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length == 2)
-            {
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }
-        }
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {
-                continue;
-            }
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }
-
-            categories.Add(parts[1]);
-        }
-        swLoad.Stop();
-
-        var plan = new QueryPlan(
-            predId,
-            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH),
-            true,
-            new int[] { 0 }
-        );
-
-        var uniqueSeeds = new HashSet<string>();
-        foreach (var categories in articleCategories.Values)
-        {
-            foreach (var category in categories)
-            {
-                uniqueSeeds.Add(category);
-            }
-        }
-
-        var seedParams = uniqueSeeds.Select(category => new object[] { category }).ToList();
-
-        var swExec = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider);
-        var rows = executor.Execute(plan, seedParams).ToList();
-        swExec.Stop();
-
-        var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>();
-        foreach (var row in rows)
-        {
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var hops = Convert.ToInt32(row[2]);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {
-                bucket = new List<(string, int)>();
-                ancestorIndex[source] = bucket;
-            }
-
-            bucket.Add((ancestor, hops));
-        }
-
-        var results = new List<(double Deff, string Article)>();
-        foreach (var article in articleCategories.Keys.OrderBy(x => x))
-        {
-            var allHops = new List<int>();
-            foreach (var category in articleCategories[article])
-            {
-                if (category == ROOT_CATEGORY)
-                {
-                    allHops.Add(1);
-                }
-
-                if (ancestorIndex.TryGetValue(category, out var ancestors))
-                {
-                    foreach (var (ancestor, hops) in ancestors)
-                    {
-                        if (ancestor == ROOT_CATEGORY)
-                        {
-                            allHops.Add(hops + 1);
-                        }
-                    }
-                }
-            }
-
-            if (allHops.Count > 0)
-            {
-                results.Add((ComputeDeff(allHops), article));
-            }
-        }
-        swAgg.Stop();
-
-        results.Sort((a, b) =>
-        {
-            var cmp = a.Deff.CompareTo(b.Deff);
-            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
-        });
-
-        Console.WriteLine("article\\troot_category\\teffective_distance");
-        foreach (var (deff, article) in results)
-        {
-            Console.WriteLine($"{article}\\t{ROOT_CATEGORY}\\t{deff:F6}");
-        }
-
-        swTotal.Stop();
-        Console.Error.WriteLine($"load_ms={swLoad.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"query_ms={swExec.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"aggregation_ms={swAgg.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"total_ms={swTotal.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"seed_count={seedParams.Count}");
-        Console.Error.WriteLine($"tuple_count={rows.Count}");
-        Console.Error.WriteLine($"article_count={results.Count}");
-    }
-
-    static double ComputeDeff(List<int> hops)
-    {
-        if (hops.Count == 0)
-        {
-            return double.PositiveInfinity;
-        }
-
-        var weightSum = hops.Sum(h => Math.Pow(h, -N));
-        return weightSum > 0 ? Math.Pow(weightSum, -1.0 / N) : double.PositiveInfinity;
-    }
-}
-"""
-
-CSHARP_PROJECT = """\
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-</Project>
-"""
+GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 
 
 @dataclass
@@ -259,6 +78,7 @@ def run(
     cwd: Path | None = None,
     check: bool = True,
     capture_output: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
@@ -266,6 +86,7 @@ def run(
         check=check,
         capture_output=capture_output,
         text=True,
+        env=env,
     )
 
 
@@ -291,36 +112,73 @@ def available_targets(requested: list[str]) -> list[str]:
     return targets
 
 
+def generate_pipeline_source(root: Path, target: str) -> Path:
+    ext = {"csharp": ".cs", "rust": ".rs", "go": ".go"}[target]
+    filename = "Program.cs" if target == "csharp" else f"effective_distance{ext}"
+    output = root / filename
+    run(
+        [
+            sys.executable,
+            str(GENERATOR),
+            "--facts",
+            str(BENCH_DIR / "10k" / "facts.pl"),
+            "--root",
+            "Physics",
+            "--workload",
+            "effective_distance",
+            "--target",
+            target,
+            "--output",
+            str(output),
+        ]
+    )
+    return output
+
+
+def generate_pipeline_package(root: Path, target: str) -> Path:
+    run(
+        [
+            sys.executable,
+            str(GENERATOR),
+            "--facts",
+            str(BENCH_DIR / "10k" / "facts.pl"),
+            "--root",
+            "Physics",
+            "--workload",
+            "effective_distance",
+            "--target",
+            target,
+            "--output-dir",
+            str(root),
+        ]
+    )
+    return root
+
+
 def build_csharp_query(root: Path) -> list[str]:
     project_dir = root / "csharp_query"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "Program.cs").write_text(QE_PROGRAM, encoding="utf-8")
-    (project_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
-    (project_dir / "benchmark_qe.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
-    run(["dotnet", "build", "benchmark_qe.csproj", "-c", "Release"], cwd=project_dir)
+    generate_pipeline_package(project_dir, "csharp_query")
+    run(["dotnet", "build", "benchmark.csproj", "-c", "Release"], cwd=project_dir)
     return [
         "dotnet",
-        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_qe.dll"),
+        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark.dll"),
     ]
 
 
 def build_csharp_dfs(root: Path) -> list[str]:
     project_dir = root / "csharp_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source = require_file(BENCH_DIR / "10k" / "pipelines" / "EffectiveDistance.cs")
-    (project_dir / "Program.cs").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    (project_dir / "benchmark_dfs.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
-    run(["dotnet", "build", "benchmark_dfs.csproj", "-c", "Release"], cwd=project_dir)
+    generate_pipeline_package(project_dir, "csharp")
+    run(["dotnet", "build", "benchmark.csproj", "-c", "Release"], cwd=project_dir)
     return [
         "dotnet",
-        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_dfs.dll"),
+        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark.dll"),
     ]
 
 
 def build_rust_dfs(root: Path) -> list[str]:
     project_dir = root / "rust_dfs"
     project_dir.mkdir(parents=True, exist_ok=True)
-    source = require_file(BENCH_DIR / "10k" / "pipelines" / "effective_distance.rs")
+    source = generate_pipeline_source(project_dir, "rust")
     binary = project_dir / "effective_distance_rust"
     run(["rustc", "-O", str(source), "-o", str(binary)])
     return [str(binary)]
@@ -329,9 +187,12 @@ def build_rust_dfs(root: Path) -> list[str]:
 def build_go_dfs(root: Path) -> list[str]:
     project_dir = root / "go_dfs"
     project_dir.mkdir(parents=True, exist_ok=True)
-    source = require_file(BENCH_DIR / "10k" / "pipelines" / "effective_distance.go")
+    source = generate_pipeline_source(project_dir, "go")
     binary = project_dir / "effective_distance_go"
-    run(["go", "build", "-o", str(binary), str(source)])
+    go_cache = project_dir / ".gocache"
+    go_cache.mkdir(exist_ok=True)
+    env = dict(os.environ, GOCACHE=str(go_cache))
+    run(["go", "build", "-o", str(binary), str(source)], env=env)
     return [str(binary)]
 
 
