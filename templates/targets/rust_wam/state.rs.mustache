@@ -181,9 +181,196 @@ impl WamState {
         }
     }
 
-    // The step() and run() methods will be transpiled from
-    // step_wam/3 and run_loop/2 in Phase 2.
+    // The step() and run() methods are transpiled from
+    // step_wam/3 and run_loop/2 in the WAM-to-Rust pipeline.
     // Placeholder:
     // {{step_wam_match_arms}}
     // {{run_loop_body}}
+
+    /// Parse a WAM instruction string into code + labels.
+    /// Accepts the text format produced by wam_target.pl:
+    /// ```text
+    /// pred/2:
+    ///     get_constant alice, A1
+    ///     get_constant bob, A2
+    ///     proceed
+    /// ```
+    pub fn parse_instructions(input: &str) -> (Vec<Instruction>, HashMap<String, usize>) {
+        let mut code = Vec::new();
+        let mut labels = HashMap::new();
+        let mut pc: usize = 1;
+
+        for line in input.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Skip comment lines
+            if trimmed.starts_with(";;;") || trimmed.starts_with("//") {
+                continue;
+            }
+            // Label line: ends with ':'
+            if trimmed.ends_with(':') {
+                let label = &trimmed[..trimmed.len() - 1];
+                labels.insert(label.to_string(), pc);
+                continue;
+            }
+            // Instruction line
+            if let Some(instr) = Self::parse_single_instruction(trimmed) {
+                code.push(instr);
+                pc += 1;
+            } else {
+                eprintln!("WAM parser: skipping unrecognized line: {}", trimmed);
+            }
+        }
+        (code, labels)
+    }
+
+    /// Load WAM code from a string and initialize state.
+    pub fn from_str(input: &str) -> Self {
+        let (code, labels) = Self::parse_instructions(input);
+        Self::new(code, labels)
+    }
+
+    /// Parse a single WAM instruction line into an Instruction enum.
+    fn parse_single_instruction(line: &str) -> Option<Instruction> {
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        if parts.is_empty() {
+            return None;
+        }
+        let opcode = parts[0];
+        let args_str = if parts.len() > 1 { parts[1].trim() } else { "" };
+        let args: Vec<String> = if args_str.is_empty() {
+            vec![]
+        } else {
+            args_str.split(',').map(|s| s.trim().to_string()).collect()
+        };
+
+        match opcode {
+            // Head unification
+            "get_constant" if args.len() == 2 =>
+                Some(Instruction::GetConstant(Self::parse_value(&args[0]), args[1].clone())),
+            "get_variable" if args.len() == 2 =>
+                Some(Instruction::GetVariable(args[0].clone(), args[1].clone())),
+            "get_value" if args.len() == 2 =>
+                Some(Instruction::GetValue(args[0].clone(), args[1].clone())),
+            "get_structure" if args.len() == 2 =>
+                Some(Instruction::GetStructure(args[0].clone(), args[1].clone())),
+            "get_list" if args.len() == 1 =>
+                Some(Instruction::GetList(args[0].clone())),
+            "unify_variable" if args.len() == 1 =>
+                Some(Instruction::UnifyVariable(args[0].clone())),
+            "unify_value" if args.len() == 1 =>
+                Some(Instruction::UnifyValue(args[0].clone())),
+            "unify_constant" if args.len() == 1 =>
+                Some(Instruction::UnifyConstant(Self::parse_value(&args[0]))),
+
+            // Body construction
+            "put_constant" if args.len() == 2 =>
+                Some(Instruction::PutConstant(Self::parse_value(&args[0]), args[1].clone())),
+            "put_variable" if args.len() == 2 =>
+                Some(Instruction::PutVariable(args[0].clone(), args[1].clone())),
+            "put_value" if args.len() == 2 =>
+                Some(Instruction::PutValue(args[0].clone(), args[1].clone())),
+            "put_structure" if args.len() == 2 =>
+                Some(Instruction::PutStructure(args[0].clone(), args[1].clone())),
+            "put_list" if args.len() == 1 =>
+                Some(Instruction::PutList(args[0].clone())),
+            "set_variable" if args.len() == 1 =>
+                Some(Instruction::SetVariable(args[0].clone())),
+            "set_value" if args.len() == 1 =>
+                Some(Instruction::SetValue(args[0].clone())),
+            "set_constant" if args.len() == 1 =>
+                Some(Instruction::SetConstant(Self::parse_value(&args[0]))),
+
+            // Control
+            "allocate" => Some(Instruction::Allocate),
+            "deallocate" => Some(Instruction::Deallocate),
+            "call" if args.len() == 2 => {
+                let arity = args[1].parse::<usize>().ok()?;
+                Some(Instruction::Call(args[0].clone(), arity))
+            }
+            "execute" if args.len() == 1 =>
+                Some(Instruction::Execute(args[0].clone())),
+            "proceed" => Some(Instruction::Proceed),
+            "builtin_call" if args.len() == 2 => {
+                let arity = args[1].parse::<usize>().ok()?;
+                Some(Instruction::BuiltinCall(args[0].clone(), arity))
+            }
+
+            // Choice points
+            "try_me_else" if args.len() == 1 =>
+                Some(Instruction::TryMeElse(args[0].clone())),
+            "retry_me_else" if args.len() == 1 =>
+                Some(Instruction::RetryMeElse(args[0].clone())),
+            "trust_me" => Some(Instruction::TrustMe),
+
+            // Indexing
+            "switch_on_constant" => {
+                let table = args.iter()
+                    .map(|entry| {
+                        // Use rfind to support atoms containing colons (e.g. module:val)
+                        // assuming labels do not contain colons.
+                        if let Some(colon_idx) = entry.rfind(':') {
+                            let val_str = &entry[..colon_idx];
+                            let label = &entry[colon_idx + 1..];
+                            (Self::parse_value(val_str), label.to_string())
+                        } else {
+                            (Value::Atom(entry.to_string()), "unknown".to_string())
+                        }
+                    })
+                    .collect();
+                Some(Instruction::SwitchOnConstant(table))
+            }
+            "switch_on_structure" => {
+                let table = args.iter()
+                    .map(|entry| {
+                        if let Some(colon_idx) = entry.rfind(':') {
+                            let fn_str = &entry[..colon_idx];
+                            let label = &entry[colon_idx + 1..];
+                            (fn_str.to_string(), label.to_string())
+                        } else {
+                            (entry.to_string(), "unknown".to_string())
+                        }
+                    })
+                    .collect();
+                Some(Instruction::SwitchOnStructure(table))
+            }
+            "switch_on_constant_a2" => {
+                let table = args.iter()
+                    .map(|entry| {
+                        if let Some(colon_idx) = entry.rfind(':') {
+                            let val_str = &entry[..colon_idx];
+                            let label = &entry[colon_idx + 1..];
+                            (Self::parse_value(val_str), label.to_string())
+                        } else {
+                            (Value::Atom(entry.to_string()), "unknown".to_string())
+                        }
+                    })
+                    .collect();
+                Some(Instruction::SwitchOnConstantA2(table))
+            }
+
+            _ => None,
+        }
+    }
+
+    /// Parse a string value into a Value enum.
+    /// Order: Boolean -> Integer -> Float -> Atom.
+    /// Integer must be parsed before Float to avoid losing precision.
+    fn parse_value(s: &str) -> Value {
+        match s {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => {
+                if let Ok(n) = s.parse::<i64>() {
+                    Value::Integer(n)
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Value::Float(f)
+                } else {
+                    Value::Atom(s.to_string())
+                }
+            }
+        }
+    }
 }
