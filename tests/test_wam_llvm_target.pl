@@ -278,4 +278,59 @@ test(builtin_arith_ne_in_dispatch) :-
     assertion(sub_atom(Code, _, _, _, 'builtin_arith_ne')),
     assertion(sub_atom(Code, _, _, _, 'i32 6, label %builtin_arith_ne')).
 
+% ============================================================================
+% Phase 7: WASM variant
+% ============================================================================
+
+test(wasm_runtime_uses_loop_not_musttail) :-
+    % Read the WASM runtime template
+    wam_llvm_target:read_template_file(
+        'templates/targets/llvm_wam_wasm/runtime.ll.mustache', Template),
+    % Should NOT contain 'musttail call' (the actual IR instruction)
+    assertion(\+ sub_atom(Template, _, _, _, 'musttail call')),
+    % Should contain a loop-based run_loop
+    assertion(sub_atom(Template, _, _, _, 'br label %loop')).
+
+test(wasm_types_use_wasm32) :-
+    wam_llvm_target:read_template_file(
+        'templates/targets/llvm_wam_wasm/types.ll.mustache', Template),
+    assertion(sub_atom(Template, _, _, _, 'wasm32')).
+
+test(wasm_allocator_has_bump_alloc) :-
+    wam_llvm_target:read_template_file(
+        'templates/targets/llvm_wam_wasm/allocator.ll.mustache', Template),
+    assertion(sub_atom(Template, _, _, _, '@wam_heap_ptr')),
+    assertion(sub_atom(Template, _, _, _, 'define i32 @wam_alloc')),
+    assertion(sub_atom(Template, _, _, _, 'define void @wam_alloc_rewind')),
+    assertion(sub_atom(Template, _, _, _, 'define void @wam_memcpy')).
+
+test(wasm_module_template_structure) :-
+    wam_llvm_target:read_template_file(
+        'templates/targets/llvm_wam_wasm/module.ll.mustache', Template),
+    assertion(sub_atom(Template, _, _, _, 'wasm32-unknown-unknown')),
+    assertion(sub_atom(Template, _, _, _, '{{allocator_functions}}')),
+    assertion(sub_atom(Template, _, _, _, '{{wasm_exports}}')).
+
+test(wasm_build_commands) :-
+    build_wam_wasm_module('test.ll', 'test_out', Commands),
+    assertion(sub_atom(Commands, _, _, _, 'llc -march=wasm32')),
+    assertion(sub_atom(Commands, _, _, _, 'wasm-ld')),
+    assertion(sub_atom(Commands, _, _, _, '--no-entry')),
+    assertion(sub_atom(Commands, _, _, _, '--export-all')).
+
+test(wasm_exports_generation) :-
+    wam_llvm_target:generate_wasm_exports([parent/2, ancestor/2], ExportCode),
+    assertion(sub_atom(ExportCode, _, _, _, '@parent_wasm')),
+    assertion(sub_atom(ExportCode, _, _, _, '@ancestor_wasm')),
+    assertion(sub_atom(ExportCode, _, _, _, 'ret i32')).
+
+% ============================================================================
+% Fix #3: lookup_label_index warning
+% ============================================================================
+
+test(lookup_label_warns_on_unknown, [true]) :-
+    % Should succeed with Index=0 (and print a warning to stderr)
+    wam_llvm_target:lookup_label_index('nonexistent_label', [], Index),
+    assertion(Index == 0).
+
 :- end_tests(wam_llvm_target).

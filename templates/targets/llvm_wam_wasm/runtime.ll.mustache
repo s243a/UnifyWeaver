@@ -1,0 +1,38 @@
+; === WAM Runtime for WASM ===
+; Key difference from native: no musttail (WASM doesn't support it).
+; run_loop uses a while loop instead.
+
+; Step: execute a single WAM instruction via switch dispatch
+{{step_function}}
+
+; Run loop: iterative (no musttail on WASM)
+define i1 @run_loop(%WamState* %vm) {
+entry:
+  br label %loop
+
+loop:
+  %halted = call i1 @wam_is_halted(%WamState* %vm)
+  br i1 %halted, label %success, label %fetch_instr
+
+fetch_instr:
+  %instr = call %Instruction* @wam_fetch(%WamState* %vm)
+  %null_check = icmp eq %Instruction* %instr, null
+  br i1 %null_check, label %failure, label %do_step
+
+do_step:
+  %ok = call i1 @step(%WamState* %vm, %Instruction* %instr)
+  br i1 %ok, label %loop, label %try_backtrack
+
+try_backtrack:
+  %bt_ok = call i1 @backtrack(%WamState* %vm)
+  br i1 %bt_ok, label %loop, label %failure
+
+success:
+  ret i1 true
+
+failure:
+  ret i1 false
+}
+
+; Helpers
+{{helper_functions}}
