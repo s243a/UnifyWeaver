@@ -56,6 +56,9 @@ def available_targets(requested: list[str]) -> list[str]:
         if target.startswith("go-") and shutil.which("go") is None:
             print(f"skip {target}: go not found", file=sys.stderr)
             continue
+        if target.startswith("prolog-") and shutil.which("swipl") is None:
+            print(f"skip {target}: swipl not found", file=sys.stderr)
+            continue
         targets.append(target)
     return targets
 
