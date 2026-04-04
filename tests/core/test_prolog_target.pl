@@ -2,6 +2,7 @@
 
 :- use_module(library(plunit)).
 :- use_module(library(gensym)).
+:- use_module('../../src/unifyweaver/core/constraint_analyzer').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 
 run_prolog_target_tests :-
@@ -108,6 +109,92 @@ cleanup_min_closure_fixture :-
     retractall(user:test_min_ppv_reach(_, _, _, _)),
     retractall(user:mode(test_min_ppv_reach(_, _, _, _))).
 
+setup_weighted_min_closure_fixture :-
+    cleanup_weighted_min_closure_fixture,
+    assertz(user:test_weighted_min_edge(a, b)),
+    assertz(user:test_weighted_min_edge(a, c)),
+    assertz(user:test_weighted_min_edge(b, d)),
+    assertz(user:test_weighted_min_edge(c, d)),
+    assertz(user:test_weighted_min_cost(a, 1)),
+    assertz(user:test_weighted_min_cost(b, 5)),
+    assertz(user:test_weighted_min_cost(c, 2)),
+    assertz(user:max_depth(4)),
+    assertz(user:(test_weighted_min_ppv_reach(Cat, Parent, Cost, Visited) :-
+        test_weighted_min_edge(Cat, Parent),
+        test_weighted_min_cost(Cat, Step),
+        Step > 0,
+        Cost is Step,
+        \+ member(Parent, Visited))),
+    assertz(user:(test_weighted_min_ppv_reach(Cat, Ancestor, Cost, Visited) :-
+        max_depth(MaxD),
+        length(Visited, Depth), Depth < MaxD, !,
+        test_weighted_min_edge(Cat, Mid),
+        test_weighted_min_cost(Cat, Step),
+        Step > 0,
+        \+ member(Mid, Visited),
+        test_weighted_min_ppv_reach(Mid, Ancestor, PrevCost, [Mid|Visited]),
+        Cost is PrevCost + Step)),
+    assertz(user:mode(test_weighted_min_ppv_reach(-, +, -, +))).
+
+cleanup_weighted_min_closure_fixture :-
+    retractall(user:test_weighted_min_edge(_, _)),
+    retractall(user:test_weighted_min_cost(_, _)),
+    retractall(user:max_depth(_)),
+    retractall(user:test_weighted_min_ppv_reach(_, _, _, _)),
+    retractall(user:mode(test_weighted_min_ppv_reach(_, _, _, _))),
+    clear_constraints(test_weighted_min_ppv_reach/4).
+
+setup_weighted_min_metadata_fixture :-
+    cleanup_weighted_min_closure_fixture,
+    assertz(user:test_weighted_min_edge(a, b)),
+    assertz(user:test_weighted_min_edge(a, c)),
+    assertz(user:test_weighted_min_edge(b, d)),
+    assertz(user:test_weighted_min_edge(c, d)),
+    assertz(user:test_weighted_min_cost(a, 1)),
+    assertz(user:test_weighted_min_cost(b, 5)),
+    assertz(user:test_weighted_min_cost(c, 2)),
+    assertz(user:max_depth(4)),
+    assertz(user:(test_weighted_min_ppv_reach(Cat, Parent, Cost, Visited) :-
+        test_weighted_min_edge(Cat, Parent),
+        test_weighted_min_cost(Cat, Step),
+        Cost is Step,
+        \+ member(Parent, Visited))),
+    assertz(user:(test_weighted_min_ppv_reach(Cat, Ancestor, Cost, Visited) :-
+        max_depth(MaxD),
+        length(Visited, Depth), Depth < MaxD, !,
+        test_weighted_min_edge(Cat, Mid),
+        test_weighted_min_cost(Cat, Step),
+        \+ member(Mid, Visited),
+        test_weighted_min_ppv_reach(Mid, Ancestor, PrevCost, [Mid|Visited]),
+        Cost is PrevCost + Step)),
+    assertz(user:mode(test_weighted_min_ppv_reach(-, +, -, +))),
+    declare_constraint(test_weighted_min_ppv_reach/4, [positive_step(3)]).
+
+setup_weighted_min_unproven_fixture :-
+    cleanup_weighted_min_closure_fixture,
+    assertz(user:test_weighted_min_edge(a, b)),
+    assertz(user:test_weighted_min_edge(a, c)),
+    assertz(user:test_weighted_min_edge(b, d)),
+    assertz(user:test_weighted_min_edge(c, d)),
+    assertz(user:test_weighted_min_cost(a, 1)),
+    assertz(user:test_weighted_min_cost(b, 5)),
+    assertz(user:test_weighted_min_cost(c, 2)),
+    assertz(user:max_depth(4)),
+    assertz(user:(test_weighted_min_ppv_reach(Cat, Parent, Cost, Visited) :-
+        test_weighted_min_edge(Cat, Parent),
+        test_weighted_min_cost(Cat, Step),
+        Cost is Step,
+        \+ member(Parent, Visited))),
+    assertz(user:(test_weighted_min_ppv_reach(Cat, Ancestor, Cost, Visited) :-
+        max_depth(MaxD),
+        length(Visited, Depth), Depth < MaxD, !,
+        test_weighted_min_edge(Cat, Mid),
+        test_weighted_min_cost(Cat, Step),
+        \+ member(Mid, Visited),
+        test_weighted_min_ppv_reach(Mid, Ancestor, PrevCost, [Mid|Visited]),
+        Cost is PrevCost + Step)),
+    assertz(user:mode(test_weighted_min_ppv_reach(-, +, -, +))).
+
 build_execution_runtime_source(ModuleName, PredicateCode, Source) :-
     atomic_list_concat([
         'test_exec_edge(a, b).',
@@ -169,6 +256,36 @@ collect_generated_min_hops(Options, PredicateCode, Hops) :-
             Goal =.. ['test_min_ppv_reach$min', a, c, H],
             findall(H, ModuleName:Goal, Hops0),
             sort(Hops0, Hops)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
+build_weighted_min_runtime_source(ModuleName, PredicateCode, Source) :-
+    atomic_list_concat([
+        'test_weighted_min_edge(a, b).',
+        'test_weighted_min_edge(a, c).',
+        'test_weighted_min_edge(b, d).',
+        'test_weighted_min_edge(c, d).',
+        'test_weighted_min_cost(a, 1).',
+        'test_weighted_min_cost(b, 5).',
+        'test_weighted_min_cost(c, 2).',
+        'max_depth(4).'
+    ], '\n', FactsCode),
+    format(atom(Source),
+        ':- module(~q, []).~n:- use_module(library(lists)).~n~w~n~n~w~n',
+        [ModuleName, FactsCode, PredicateCode]).
+
+collect_generated_weighted_min_costs(Options, PredicateCode, Costs) :-
+    once(prolog_target:generate_predicate_code(test_weighted_min_ppv_reach/4, Options, PredicateCode)),
+    gensym(test_weighted_min_ppv_runtime_, ModuleName),
+    build_weighted_min_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_weighted_min_ppv_reach$min', a, d, Cost],
+            findall(Cost, ModuleName:Goal, Costs0),
+            sort(Costs0, Costs)
         ),
         cleanup_temp_module_source(Path)
     ).
@@ -258,5 +375,26 @@ test(skips_min_closure_helper_when_disabled_explicitly,
          cleanup(cleanup_min_closure_fixture)]) :-
     once(generate_prolog_script([test_min_ppv_reach/4], [dialect(swi), min_closure(false)], Code)),
     \+ sub_atom(Code, _, _, _, 'test_min_ppv_reach$min').
+
+test(emits_weighted_min_closure_helper_for_positive_weighted_ppv,
+        [setup(setup_weighted_min_closure_fixture),
+         cleanup(cleanup_weighted_min_closure_fixture)]) :-
+    collect_generated_weighted_min_costs([dialect(swi)], PredicateCode, Actual),
+    once(sub_atom(PredicateCode, _, _, _, 'test_weighted_min_ppv_reach$min')),
+    once(sub_atom(PredicateCode, _, _, _, 'test_weighted_min_ppv_reach$min_budget')),
+    Actual == [3].
+
+test(emits_weighted_min_closure_helper_from_positive_step_metadata,
+        [setup(setup_weighted_min_metadata_fixture),
+         cleanup(cleanup_weighted_min_closure_fixture)]) :-
+    collect_generated_weighted_min_costs([dialect(swi)], PredicateCode, Actual),
+    once(sub_atom(PredicateCode, _, _, _, 'test_weighted_min_ppv_reach$min')),
+    Actual == [3].
+
+test(skips_weighted_min_closure_without_positive_step_proof,
+        [setup(setup_weighted_min_unproven_fixture),
+         cleanup(cleanup_weighted_min_closure_fixture)]) :-
+    once(generate_prolog_script([test_weighted_min_ppv_reach/4], [dialect(swi)], Code)),
+    \+ sub_atom(Code, _, _, _, 'test_weighted_min_ppv_reach$min').
 
 :- end_tests(prolog_target).
