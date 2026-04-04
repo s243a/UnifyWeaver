@@ -24,7 +24,8 @@
     compile_wam_helpers_to_llvm/2,       % +Options, -LLVMCode
     compile_wam_runtime_to_llvm/2,       % +Options, -LLVMCode (step + helpers combined)
     compile_wam_predicate_to_llvm/4,     % +Pred/Arity, +WamCode, +Options, -LLVMCode
-    wam_instruction_to_llvm_literal/2,   % +WamInstr, -LLVMLiteral
+    wam_instruction_to_llvm_literal/2,   % +WamInstr, -LLVMLiteral (errors on label-ref instrs)
+    wam_instruction_to_llvm_literal/3,   % +WamInstr, +LabelMap, -LLVMLiteral
     wam_line_to_llvm_literal/2,          % +Parts, -LLVMLit
     write_wam_llvm_project/3,            % +Predicates, +Options, +OutputFile
     builtin_op_to_id/2                   % +OpName, -IntId
@@ -108,31 +109,38 @@ read_template_file(Path, Content) :-
     ).
 
 %% compile_predicates_for_llvm(+Predicates, +Options, -NativeCode, -WamCode)
-compile_predicates_for_llvm([], _, "", "").
-compile_predicates_for_llvm([PredIndicator|Rest], Options, NativeCode, WamCode) :-
+%  Collects all predicate code into lists, then joins once (O(n) concatenation).
+compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
+    compile_predicates_collect(Predicates, Options, NativeParts, WamParts),
+    atomic_list_concat(NativeParts, '\n\n', NativeCode),
+    atomic_list_concat(WamParts, '\n\n', WamCode).
+
+compile_predicates_collect([], _, [], []).
+compile_predicates_collect([PredIndicator|Rest], Options, NativeParts, WamParts) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    compile_predicates_for_llvm(Rest, Options, RestNative, RestWam),
+    compile_predicates_collect(Rest, Options, RestNative, RestWam),
     (   % Try native LLVM lowering first
         catch(
             llvm_target:compile_predicate_to_llvm(Module:Pred/Arity, Options, PredCode),
             _, fail)
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
-        format(atom(NativeCode), "~w\n\n~w", [PredCode, RestNative]),
-        WamCode = RestWam
+        NativeParts = [PredCode | RestNative],
+        WamParts = RestWam
     ;   % Fall back to WAM compilation
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
         wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamRaw),
         compile_wam_predicate_to_llvm(Pred/Arity, WamRaw, Options, PredCode)
     ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
-        NativeCode = RestNative,
-        format(atom(WamCode), "~w\n\n~w", [PredCode, RestWam])
+        NativeParts = RestNative,
+        WamParts = [PredCode | RestWam]
     ;   % Neither worked
         format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity]),
-        NativeCode = RestNative,
-        format(atom(WamCode), "; ~w/~w: compilation failed\n~w", [Pred, Arity, RestWam])
+        NativeParts = RestNative,
+        format(atom(FailComment), '; ~w/~w: compilation failed', [Pred, Arity]),
+        WamParts = [FailComment | RestWam]
     ).
 
 % ============================================================================
@@ -321,31 +329,42 @@ wam_llvm_case('allocate',
   ret i1 true').
 
 wam_llvm_case('deallocate',
-'  ; Pop environment frame: restore CP from stack
+'  ; Pop environment frame: scan backward for EnvFrame (type == 0), restore CP
   %dealloc.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %dealloc.ss = load i32, i32* %dealloc.ss_ptr
   %dealloc.has_frames = icmp sgt i32 %dealloc.ss, 0
-  br i1 %dealloc.has_frames, label %dealloc.pop, label %dealloc.done
+  br i1 %dealloc.has_frames, label %dealloc.scan, label %dealloc.done
 
-dealloc.pop:
-  %dealloc.top_idx = sub i32 %dealloc.ss, 1
+dealloc.scan:
+  ; Scan backward from top of stack looking for EnvFrame
   %dealloc.stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
   %dealloc.stack = load %StackEntry*, %StackEntry** %dealloc.stack_ptr
-  ; Scan backward for an EnvFrame (type == 0)
-  %dealloc.entry = getelementptr %StackEntry, %StackEntry* %dealloc.stack, i32 %dealloc.top_idx
+  br label %dealloc.loop
+
+dealloc.loop:
+  %dealloc.idx = phi i32 [%dealloc.ss, %dealloc.scan], [%dealloc.prev_idx, %dealloc.skip]
+  %dealloc.prev_idx = sub i32 %dealloc.idx, 1
+  %dealloc.exhausted = icmp slt i32 %dealloc.prev_idx, 0
+  br i1 %dealloc.exhausted, label %dealloc.done, label %dealloc.check
+
+dealloc.check:
+  %dealloc.entry = getelementptr %StackEntry, %StackEntry* %dealloc.stack, i32 %dealloc.prev_idx
   %dealloc.type_ptr = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 0
   %dealloc.type = load i32, i32* %dealloc.type_ptr
   %dealloc.is_env = icmp eq i32 %dealloc.type, 0
-  br i1 %dealloc.is_env, label %dealloc.restore, label %dealloc.done
+  br i1 %dealloc.is_env, label %dealloc.restore, label %dealloc.skip
+
+dealloc.skip:
+  br label %dealloc.loop
 
 dealloc.restore:
-  ; Restore CP from saved value
+  ; Restore CP from saved value in the EnvFrame
   %dealloc.aux_ptr = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 1
   %dealloc.saved_cp = load i64, i64* %dealloc.aux_ptr
   %dealloc.cp = trunc i64 %dealloc.saved_cp to i32
   call void @wam_set_cp(%WamState* %vm, i32 %dealloc.cp)
-  ; Pop stack frame
-  store i32 %dealloc.top_idx, i32* %dealloc.ss_ptr
+  ; Pop stack down to this frame (exclusive)
+  store i32 %dealloc.prev_idx, i32* %dealloc.ss_ptr
   br label %dealloc.done
 
 dealloc.done:
@@ -880,20 +899,45 @@ wam_instruction_to_llvm_literal(set_constant(C), Lit) :-
 
 wam_instruction_to_llvm_literal(allocate, '{ i32 16, i64 0, i64 0 }').
 wam_instruction_to_llvm_literal(deallocate, '{ i32 17, i64 0, i64 0 }').
-wam_instruction_to_llvm_literal(call(P, N), Lit) :-
-    format(atom(Lit), '{ i32 18, i64 0, i64 ~w } ; call ~w', [N, P]).
-wam_instruction_to_llvm_literal(execute(P), Lit) :-
-    format(atom(Lit), '{ i32 19, i64 0, i64 0 } ; execute ~w', [P]).
 wam_instruction_to_llvm_literal(proceed, '{ i32 20, i64 0, i64 0 }').
 wam_instruction_to_llvm_literal(builtin_call(Op, N), Lit) :-
     builtin_op_to_id(Op, OpId),
     format(atom(Lit), '{ i32 21, i64 ~w, i64 ~w } ; builtin_call ~w', [OpId, N, Op]).
-
-wam_instruction_to_llvm_literal(try_me_else(Label), Lit) :-
-    format(atom(Lit), '{ i32 22, i64 0, i64 0 } ; try_me_else ~w', [Label]).
-wam_instruction_to_llvm_literal(retry_me_else(Label), Lit) :-
-    format(atom(Lit), '{ i32 23, i64 0, i64 0 } ; retry_me_else ~w', [Label]).
 wam_instruction_to_llvm_literal(trust_me, '{ i32 24, i64 0, i64 0 }').
+
+% Label-referencing instructions: the /2 form cannot resolve labels.
+% Callers must use wam_instruction_to_llvm_literal/3 with a LabelMap,
+% or the text-parser path (wam_line_to_llvm_literal_resolved/3).
+wam_instruction_to_llvm_literal(call(P, _N), _) :-
+    throw(error(label_resolution_required(call, P),
+          'Use wam_instruction_to_llvm_literal/3 with a LabelMap for call/execute/try_me_else/retry_me_else')).
+wam_instruction_to_llvm_literal(execute(P), _) :-
+    throw(error(label_resolution_required(execute, P),
+          'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
+wam_instruction_to_llvm_literal(try_me_else(L), _) :-
+    throw(error(label_resolution_required(try_me_else, L),
+          'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
+wam_instruction_to_llvm_literal(retry_me_else(L), _) :-
+    throw(error(label_resolution_required(retry_me_else, L),
+          'Use wam_instruction_to_llvm_literal/3 with a LabelMap')).
+
+%% wam_instruction_to_llvm_literal(+WamInstr, +LabelMap, -LLVMLiteral)
+%  Label-aware variant. LabelMap is a list of LabelName-Index pairs.
+wam_instruction_to_llvm_literal(call(P, N), LabelMap, Lit) :- !,
+    lookup_label_index(P, LabelMap, LabelIdx),
+    format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w } ; call ~w', [LabelIdx, N, P]).
+wam_instruction_to_llvm_literal(execute(P), LabelMap, Lit) :- !,
+    lookup_label_index(P, LabelMap, LabelIdx),
+    format(atom(Lit), '{ i32 19, i64 ~w, i64 0 } ; execute ~w', [LabelIdx, P]).
+wam_instruction_to_llvm_literal(try_me_else(Label), LabelMap, Lit) :- !,
+    lookup_label_index(Label, LabelMap, LabelIdx),
+    format(atom(Lit), '{ i32 22, i64 ~w, i64 0 } ; try_me_else ~w', [LabelIdx, Label]).
+wam_instruction_to_llvm_literal(retry_me_else(Label), LabelMap, Lit) :- !,
+    lookup_label_index(Label, LabelMap, LabelIdx),
+    format(atom(Lit), '{ i32 23, i64 ~w, i64 0 } ; retry_me_else ~w', [LabelIdx, Label]).
+% Non-label instructions delegate to the /2 form
+wam_instruction_to_llvm_literal(Instr, _LabelMap, Lit) :-
+    wam_instruction_to_llvm_literal(Instr, Lit).
 
 wam_instruction_to_llvm_literal(switch_on_constant(_), '; switch_on_constant handled via labels').
 wam_instruction_to_llvm_literal(switch_on_structure(_), '; switch_on_structure handled via labels').
@@ -923,8 +967,8 @@ intern_atom(AtomName, Id) :-
     ->  true
     ;   retract(atom_table_next_id(Id)),
         NextId is Id + 1,
-        assert(atom_table_next_id(NextId)),
-        assert(atom_table_entry(AtomName, Id))
+        assertz(atom_table_next_id(NextId)),
+        assertz(atom_table_entry(AtomName, Id))
     ).
 
 % --- Value packing helpers ---

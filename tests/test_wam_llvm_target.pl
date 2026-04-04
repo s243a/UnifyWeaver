@@ -89,6 +89,29 @@ test(llvm_builtin_call) :-
     wam_instruction_to_llvm_literal(builtin_call('>/2', 2), Lit),
     assertion(sub_atom(Lit, _, _, _, '{ i32 21, i64 1, i64 2 }')).  % >/2 → id 1
 
+% Label-referencing instructions error on /2, work on /3
+test(llvm_call_errors_without_labelmap, [throws(error(label_resolution_required(call, _), _))]) :-
+    wam_instruction_to_llvm_literal(call('parent/2', 2), _).
+
+test(llvm_call_with_labelmap) :-
+    LabelMap = ['parent/2'-0, 'ancestor/2'-1],
+    wam_instruction_to_llvm_literal(call('parent/2', 2), LabelMap, Lit),
+    assertion(sub_atom(Lit, _, _, _, '{ i32 18, i64 0, i64 2 }')).
+
+test(llvm_try_me_else_with_labelmap) :-
+    LabelMap = ['L_alt'-0, 'L_clause2'-1],
+    wam_instruction_to_llvm_literal(try_me_else('L_clause2'), LabelMap, Lit),
+    assertion(sub_atom(Lit, _, _, _, '{ i32 22, i64 1, i64 0 }')).
+
+test(llvm_execute_with_labelmap) :-
+    LabelMap = ['main/0'-0],
+    wam_instruction_to_llvm_literal(execute('main/0'), LabelMap, Lit),
+    assertion(sub_atom(Lit, _, _, _, '{ i32 19, i64 0, i64 0 }')).
+
+test(llvm_non_label_instr_works_with_labelmap) :-
+    wam_instruction_to_llvm_literal(allocate, [], Lit),
+    assertion(Lit == '{ i32 16, i64 0, i64 0 }').
+
 % ============================================================================
 % Phase 2: WAM text line parsing
 % ============================================================================
@@ -213,8 +236,12 @@ test(allocate_pushes_env_frame) :-
     assertion(sub_atom(StepCode, _, _, _, 'alloc.ss_ptr')),
     assertion(sub_atom(StepCode, _, _, _, 'alloc.cp')).
 
-test(deallocate_restores_cp) :-
+test(deallocate_scans_backward) :-
     compile_step_wam_to_llvm([], StepCode),
+    % Should have a backward scan loop, not just top-of-stack check
+    assertion(sub_atom(StepCode, _, _, _, 'dealloc.loop')),
+    assertion(sub_atom(StepCode, _, _, _, 'dealloc.check')),
+    assertion(sub_atom(StepCode, _, _, _, 'dealloc.skip')),
     assertion(sub_atom(StepCode, _, _, _, 'dealloc.restore')),
     assertion(sub_atom(StepCode, _, _, _, 'dealloc.saved_cp')).
 
