@@ -593,33 +593,36 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.067s | 0.046s | 0.003s | 0.007s | match |
-| 1k | 0.086s | 0.051s | 0.008s | 0.007s | match |
-| 5k | 0.088s | 0.180s | 0.143s | 0.113s | match |
-| 10k | 0.103s | 0.516s | 0.546s | 0.469s | match |
+| 300 | 0.064s | 0.044s | 0.002s | 0.002s | match |
+| 1k | 0.082s | 0.048s | 0.007s | 0.008s | match |
+| 5k | 0.072s | 0.172s | 0.157s | 0.109s | match |
+| 10k | 0.073s | 0.528s | 0.733s | 0.481s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.69x | 0.04x | 0.10x |
-| 1k | 0.59x | 0.09x | 0.09x |
-| 5k | 2.04x | 1.61x | 1.27x |
-| 10k | 4.99x | 5.28x | 4.54x |
+| 300 | 0.68x | 0.03x | 0.04x |
+| 1k | 0.59x | 0.08x | 0.10x |
+| 5k | 2.39x | 2.18x | 1.52x |
+| 10k | 7.20x | 10.01x | 6.57x |
 
 Comparison note:
 
-- the current C# query path now uses a project-grouped reachability node
-  rather than raw per-seed closure followed by regrouping
-- the latest runtime-overhead pass pushes the final count aggregation
-  into the query runtime too, so the benchmark no longer materializes the
-  full `(project, reachable_dependency)` relation just to count it
+- the current C# query path uses a project-grouped reachability node
+  with direct count aggregation inside the query runtime
+- the latest change also moves relation ingestion/materialization for the
+  benchmark inputs into the query runtime via delimited-source streaming,
+  instead of eagerly loading all edge and seed facts into the benchmark
+  program first
 - for the one-shot generated benchmark programs, disabling query-runtime
-  cache reuse also helped slightly by removing cache bookkeeping that is
-  not reused within a single run
-- this changed the cost profile materially: the query engine is still
-  behind at `300` and `1k`, but is now clearly ahead of all DFS targets
-  from `5k` onward
+  cache reuse still helps slightly by removing bookkeeping that is not
+  reused within a single run
+- this pushes the benchmark closer to the intended ownership boundary:
+  the parser streams tuples, and the engine decides what state to retain
+  for the operator
+- the query engine is still behind at `300` and `1k`, but is now clearly
+  ahead of all DFS targets from `5k` onward
 - outputs still match across all four targets
 
 ### Cross-Target Dependency Longest-Depth Results
@@ -641,38 +644,38 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.057s | 0.043s | 0.002s | 0.002s | match |
-| 1k | 0.056s | 0.045s | 0.002s | 0.003s | match |
-| 5k | 0.087s | 0.056s | 0.006s | 0.006s | match |
-| 10k | 0.091s | 0.055s | 0.013s | 0.012s | match |
+| 300 | 0.056s | 0.041s | 0.002s | 0.002s | match |
+| 1k | 0.053s | 0.044s | 0.004s | 0.003s | match |
+| 5k | 0.070s | 0.053s | 0.007s | 0.006s | match |
+| 10k | 0.077s | 0.053s | 0.012s | 0.011s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.75x | 0.03x | 0.04x |
-| 1k | 0.81x | 0.04x | 0.05x |
-| 5k | 0.64x | 0.07x | 0.07x |
-| 10k | 0.60x | 0.14x | 0.14x |
+| 300 | 0.74x | 0.03x | 0.04x |
+| 1k | 0.83x | 0.07x | 0.05x |
+| 5k | 0.76x | 0.10x | 0.08x |
+| 10k | 0.68x | 0.16x | 0.14x |
 
 Comparison note:
 
-- this benchmark now includes a real `csharp-query` DAG longest-depth
-  path built on a dedicated query-runtime node
-- the latest runtime-overhead passes remove some setup overhead inside
-  the longest-depth node, disable cache reuse for the one-shot generated
-  benchmark program, and make phase tracing opt-in instead of always-on
+- this benchmark includes a real `csharp-query` DAG longest-depth path
+  built on a dedicated query-runtime node
+- the latest change moves edge and seed fact ingestion/materialization
+  into the query runtime via delimited-source streaming, instead of
+  eagerly loading all rows into the benchmark program first
 - set `UNIFYWEAVER_BENCH_TRACE=1` when you want the generated
   `csharp-query` longest-depth benchmark to print per-phase timings to
   `stderr`
-- the hand-written C# DFS baseline is now cheaper too, after moving it to a
-  lighter-weight custom TSV loader with manual tab scanning and better
-  pre-sizing
-- the query engine still matches all DFS outputs and remains somewhat
-  behind the hand-written C# DFS baseline, so longest depth is still a
-  separate optimization track from reach-count
-- that makes it a good DAG benchmark baseline for further query-runtime
-  optimization rather than a finished performance story
+- cache reuse remains disabled for these one-shot generated benchmark
+  programs, and trace creation is now opt-in rather than always-on
+- the hand-written C# DFS baseline is still cheaper after its lighter
+  custom TSV loader work, but the query engine now sits closer to that
+  baseline than before while keeping the intended retention boundary in
+  the engine rather than the loader
+- outputs still match across all four targets, and longest depth remains
+  a separate optimization track from reach-count
 
 ### Cross-Target Category Influence Results
 
