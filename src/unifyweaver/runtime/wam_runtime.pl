@@ -33,24 +33,25 @@ prepare_code(Raw, Instructions, Labels) :-
     (   is_list(Raw) -> Lines = Raw
     ;   atomic_list_concat(Lines, '\n', Raw)
     ),
-    parse_lines(Lines, 1, Instructions, Labels).
+    empty_assoc(L0),
+    parse_lines(Lines, 1, Instructions, L0, Labels).
 
-parse_lines([], _, [], Labels) :- empty_assoc(Labels).
-parse_lines([Line|Rest], PC, Instrs, Labels) :-
-    (   compound(Line), \+ is_label_term(Line) ->
-        Instrs = [Line|IRest],
+parse_lines([], _, [], L, L).
+parse_lines([Line|Rest], PC, Instrs, LIn, LOut) :-
+    (   (compound(Line), \+ is_label_term(Line))
+    ->  Instrs = [Line|IRest],
         NPC is PC + 1,
-        parse_lines(Rest, NPC, IRest, Labels)
+        parse_lines(Rest, NPC, IRest, LIn, LOut)
     ;   normalize_line(Line, Normalized),
-        (   Normalized == "" -> parse_lines(Rest, PC, Instrs, Labels)
+        (   Normalized == "" -> parse_lines(Rest, PC, Instrs, LIn, LOut)
         ;   is_label(Normalized, Label) ->
-            parse_lines(Rest, PC, Instrs, L0),
-            put_assoc(Label, L0, PC, Labels)
+            put_assoc(Label, LIn, PC, L1),
+            parse_lines(Rest, PC, Instrs, L1, LOut)
         ;   parse_instr(Normalized, Instr) ->
             Instrs = [Instr|IRest],
             NPC is PC + 1,
-            parse_lines(Rest, NPC, IRest, Labels)
-        ;   parse_lines(Rest, PC, Instrs, Labels)
+            parse_lines(Rest, NPC, IRest, LIn, LOut)
+        ;   parse_lines(Rest, PC, Instrs, LIn, LOut)
         )
     ).
 
@@ -61,9 +62,10 @@ is_label_term(Line) :-
 normalize_line(Line, Normalized) :-
     (   atom(Line) -> Str = Line
     ;   string(Line) -> atom_string(Str, Line)
+    ;   is_list(Line) -> atomic_list_concat(Line, ' ', Str)
     ;   term_string(Line, S), atom_string(Str, S)
     ),
-    split_string(Str, " ", " \t\n\r", Parts),
+    split_string(Str, " \t\n\r", " \t\n\r", Parts),
     delete(Parts, "", CleanParts),
     atomic_list_concat(CleanParts, ' ', Normalized).
 
@@ -82,7 +84,6 @@ parse_instr(Str, Term) :-
     ;   atom_string(Term, Str)
     ).
 
-%% parse_arg(+String, -Value)
 parse_arg(Str, Val) :-
     (   number_string(Num, Str)
     ->  Val = Num
@@ -227,6 +228,7 @@ step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), Sta
     ;   Val = ref(Addr)
     ->  nth0(Addr, H, Entry), (Entry = str(FN); Entry = FN),
         get_arity(FN, Arity),
+        Arity > 0,
         StartIdx is Addr + 1,
         heap_subargs(H, StartIdx, Arity, SubArgs),
         NPC is PC + 1,
@@ -395,7 +397,11 @@ step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_
     (CPS = [_|Rest] -> NCPS = [cp(NextPC, R, S, H, CP, T, _)|Rest] ; NCPS = [cp(NextPC, R, S, H, CP, T, _)]),
     NPC is PC + 1.
 
-step_wam(switch_on_constant(Entries), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+%% Indexing instructions — handle both list and variadic forms
+step_wam(Instr, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    Instr =.. [Op|Args],
+    (Op == switch_on_constant ; Op == switch_on_structure ; Op == switch_on_constant_a2),
+    (Args = [Entries], is_list(Entries) -> true ; Entries = Args),
     (get_assoc('A1', R, Val), \+ is_unbound_var(Val), lookup_index(Val, Entries, L, TargetPC) -> NPC = TargetPC ; NPC is PC + 1).
 
 lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
@@ -432,6 +438,9 @@ step_wam(builtin_call('member/2', 2), StateIn, StateOut) :-
         ; backtrack(State1, StateOut))
     ; fail).
 
+step_wam(builtin_call('\\+/1', 1), _, _) :-
+    throw(error(not_supported(negation_as_failure), wam_runtime)).
+
 %% unify_wam(+V1, +V2, +StateIn, -StateOut)
 unify_wam(V1, V2, StateIn, StateOut) :-
     deref_wam(V1, StateIn, DV1), deref_wam(V2, StateIn, DV2),
@@ -461,25 +470,51 @@ deref_wam(Val, State, Derefed) :-
 
 deref_heap(ref(Addr), State, Term) :- !,
     State = wam_state(_, _, _, Heap, _, _, _, _, _),
-    nth0(Addr, Heap, Entry), (Entry = str(FN) -> true ; Entry = FN),
-    atom_string(FN, FNStr),
-    ((sub_string(FNStr, 0, 4, _, "str("), sub_string(FNStr, _, 1, 0, ")")) -> sub_string(FNStr, 4, _, 1, Inner) ; Inner = FNStr),
-    (sub_string(Inner, Before, 1, After, "/") -> sub_string(Inner, 0, Before, _, FStr), sub_string(Inner, _, After, 0, ArStr), atom_string(F, FStr), number_string(HArity, ArStr) ; atom_string(F, Inner), HArity = 0),
-    (HArity > 0 -> StartIdx is Addr + 1, heap_subargs(Heap, StartIdx, HArity, SubArgs), maplist({State}/[A, D]>>deref_wam(A, State, D), SubArgs, DerefArgs) ; DerefArgs = []),
-    ((F == '.'; F == '[|]') -> (DerefArgs = [Head, Tail] -> (Tail == [] -> Term = [Head] ; is_list(Tail) -> Term = [Head|Tail] ; Term = [Head|Tail]) ; Term =.. [F|DerefArgs]) ; Term =.. [F|DerefArgs]).
+    nth0(Addr, Heap, Entry),
+    (   (Entry = str(FN) ; Entry = FN)
+    ->  (   (atom(Entry) ; (Entry = str(AN), atom(AN)))
+        ->  atom_string(FN, FNStr),
+            (   sub_atom(FNStr, _, 1, After, '/')
+            ->  sub_atom(FNStr, _, After, 0, ArStr),
+                atom_number(ArStr, Arity),
+                (   sub_atom(FNStr, Before, 1, _, '/')
+                ->  sub_atom(FNStr, 0, Before, _, F)
+                ;   F = FN
+                ),
+                (   Arity > 0
+                ->  StartIdx is Addr + 1,
+                    heap_subargs(Heap, StartIdx, Arity, SubArgs),
+                    maplist({State}/[A, D]>>deref_wam(A, State, D), SubArgs, DerefArgs)
+                ;   DerefArgs = []
+                ),
+                (   (F == '.'; F == '[|]')
+                ->  (   DerefArgs = [Head, Tail]
+                    ->  (   Tail == [] -> Term = [Head]
+                        ;   is_list(Tail) -> Term = [Head|Tail]
+                        ;   Term = [Head|Tail]
+                        )
+                    ;   Term =.. [F|DerefArgs]
+                    )
+                ;   Term =.. [F|DerefArgs]
+                )
+            ;   Term = FN
+            )
+        ;   Term = Entry
+        )
+    ;   Term = Entry
+    ).
 deref_heap(Val, _, Val).
 
 heap_subargs(_, _, 0, []) :- !.
 heap_subargs(Heap, Idx, N, [Val|Rest]) :- nth0(Idx, Heap, Val), NextIdx is Idx + 1, N1 is N - 1, heap_subargs(Heap, NextIdx, N1, Rest).
 
+is_unbound_var(Val) :- var(Val), !.
 is_unbound_var(Val) :- atom(Val), (sub_atom(Val, 0, 2, _, '_V') ; sub_atom(Val, 0, 2, _, '_H') ; sub_atom(Val, 0, 2, _, '_Q')).
 
 trail_binding(Key, Regs, Trail, [trail(Key, OldValue)|Trail]) :- (get_assoc(Key, Regs, OldValue) -> true ; OldValue = unbound).
 
 is_y_reg(Reg) :- atom(Reg), sub_atom(Reg, 0, 1, _, 'Y').
 
-%% get_reg_val(+Reg, +Regs, +Stack, -Value)
-%  Helper to handle missing registers gracefully.
 get_reg_val(Reg, R, S, Val) :-
     (   get_reg(Reg, R, S, V)
     ->  Val = V
@@ -497,7 +532,12 @@ put_reg(Reg, Val, R, R, Stack, NewStack) :- is_y_reg(Reg), !, update_top_env(Sta
 put_reg(Reg, Val, R, NR, Stack, Stack) :- put_assoc(Reg, R, Val, NR).
 update_top_env([env(CP, YRegs)|Rest], Reg, Val, [env(CP, NewYRegs)|Rest]) :- put_assoc(Reg, YRegs, Val, NewYRegs).
 
-get_arity(FN, Arity) :- atom_string(FN, S), (sub_string(S, _, 1, After, "/") -> sub_string(S, _, After, 0, ArStr), number_string(Arity, ArStr) ; Arity = 0).
+get_arity(FN, Arity) :-
+    (   sub_atom(FN, _, 1, After, '/')
+    ->  sub_atom(FN, _, After, 0, ArStr),
+        atom_number(ArStr, Arity)
+    ;   Arity = 0
+    ).
 
 is_comparison_op('>/2'). is_comparison_op('</2'). is_comparison_op('>=/2'). is_comparison_op('=</2'). is_comparison_op('=:=/2'). is_comparison_op('=\\=/2').
 apply_comparison('>/2', N1, N2) :- N1 > N2. apply_comparison('</2', N1, N2) :- N1 < N2. apply_comparison('>=/2', N1, N2) :- N1 >= N2.
@@ -517,18 +557,41 @@ apply_arith_op(+, A, B, R) :- R is A + B. apply_arith_op(-, A, B, R) :- R is A -
 apply_arith_op(/, A, B, R) :- B =\= 0, R is A / B. apply_arith_op(//, A, B, R) :- B =\= 0, R is A // B. apply_arith_op(mod, A, B, R) :- B =\= 0, R is A mod B. apply_arith_op(div, A, B, R) :- B =\= 0, R is A div B.
 apply_arith_unary(-, A, R) :- R is -A. apply_arith_unary(abs, A, R) :- R is abs(A).
 
-solve_wam(Instructions, Query, VarNames, Bindings) :- prepare_code(Instructions, Code, Labels), prepare_query(Query, VarNames, QSymbolic, VNSymbolic), init_state(QSymbolic, Code, Labels, S0), run_loop(S0, Sf), Sf = wam_state(_, FinalRegs, _, Heap, _, _, _, _, _), extract_bindings(VNSymbolic, QSymbolic, FinalRegs, Heap, Bindings).
-prepare_query(Query, VarNames, QSymbolic, VNSymbolic) :- copy_term(Query-VarNames, QSymbolic-VNSymbolic), term_variables(QSymbolic, Vars), map_query_vars(Vars, 1).
-map_query_vars([], _). map_query_vars([V|Vs], I) :- format(atom(V), "_Q~w", [I]), NI is I + 1, map_query_vars(Vs, NI).
-extract_bindings([], _, _, _, []). extract_bindings([Name=Var|Rest], Query, Regs, Heap, [Name=Value|RestBindings]) :- Query =.. [_|Args], (nth1(Idx, Args, A), A == Var -> format(atom(RegKey), "A~w", [Idx]), (get_assoc(RegKey, Regs, RawValue) -> deref_wam(RawValue, wam_state(0, Regs, [], Heap, [], 0, [], [], _), Value) ; Value = Var) ; Value = Var), extract_bindings(Rest, Query, Regs, Heap, RestBindings).
-findall_wam(Instructions, Query, VarNames, AllBindings) :- prepare_code(Instructions, Code, Labels), prepare_query(Query, VarNames, QSymbolic, VNSymbolic), init_state(QSymbolic, Code, Labels, S0), run_all_solutions(S0, QSymbolic, VNSymbolic, AllBindings).
-run_all_solutions(S0, Query, VarNames, AllBindings) :- run_all_acc(S0, Query, VarNames, [], RevBindings), reverse(RevBindings, AllBindings).
+solve_wam(Instructions, Query, VarNames, Bindings) :-
+    prepare_code(Instructions, Code, Labels),
+    prepare_query(Query, VarNames, QSymbolic, VNSymbolic),
+    init_state(QSymbolic, Code, Labels, S0),
+    run_loop(S0, Sf),
+    extract_bindings(VNSymbolic, QSymbolic, Sf, Bindings).
+
+prepare_query(Query, VarNames, QSymbolic, VNSymbolic) :-
+    copy_term(Query-VarNames, QSymbolic-VNSymbolic),
+    term_variables(QSymbolic, Vars),
+    map_query_vars(Vars, 1).
+
+map_query_vars([], _).
+map_query_vars([V|Vs], I) :-
+    format(atom(V), "_Q~w", [I]),
+    NI is I + 1,
+    map_query_vars(Vs, NI).
+
+findall_wam(Instructions, Query, VarNames, AllBindings) :-
+    prepare_code(Instructions, Code, Labels),
+    prepare_query(Query, VarNames, QSymbolic, VNSymbolic),
+    init_state(QSymbolic, Code, Labels, S0),
+    run_all_solutions(S0, QSymbolic, VNSymbolic, AllBindings).
+
+run_all_solutions(S0, Query, VarNames, AllBindings) :-
+    run_all_acc(S0, Query, VarNames, [], RevBindings),
+    reverse(RevBindings, AllBindings).
+
 run_all_acc(State, Query, VarNames, Acc, AllBindings) :- 
-    (   run_loop(State, Sf), Sf = wam_state(_, FinalRegs, _, Heap, _, _, CPS, _, _) -> 
-        extract_bindings(VarNames, Query, FinalRegs, Heap, Bindings),
+    (   run_loop(State, Sf)
+    ->  extract_bindings(VarNames, Query, Sf, Bindings),
+        Sf = wam_state(_, _, _, _, _, _, CPS, _, _),
         NewAcc = [Bindings|Acc],
-        (   CPS = [_|_] -> 
-            (   backtrack(Sf, SBT) -> run_all_acc(SBT, Query, VarNames, NewAcc, AllBindings)
+        (   CPS = [_|_]
+        ->  (   backtrack(Sf, SBT) -> run_all_acc(SBT, Query, VarNames, NewAcc, AllBindings)
             ;   AllBindings = NewAcc
             )
         ;   AllBindings = NewAcc
@@ -536,11 +599,38 @@ run_all_acc(State, Query, VarNames, Acc, AllBindings) :-
     ;   AllBindings = Acc
     ).
 
+extract_bindings(VarNames, Query, wam_state(_, Regs, _, Heap, _, _, _, _, _), Bindings) :-
+    extract_bindings_iter(VarNames, Query, Regs, Heap, Bindings).
+
+extract_bindings_iter([], _, _, _, []).
+extract_bindings_iter([Name=Var|Rest], Query, Regs, Heap, [Name=Value|RestBindings]) :-
+    Query =.. [_|Args],
+    (   nth1(Idx, Args, A), A == Var
+    ->  format(atom(RegKey), "A~w", [Idx]),
+        (   get_assoc(RegKey, Regs, RawValue)
+        ->  deref_wam(RawValue, wam_state(0, Regs, [], Heap, [], 0, [], [], _), Value)
+        ;   Value = Var
+        )
+    ;   Value = Var
+    ),
+    extract_bindings_iter(Rest, Query, Regs, Heap, RestBindings).
+
 test_wam_runtime :-
     Test1 = 'WAM Runtime: basic parent/2',
     Code1 = ['parent/2:', get_constant(alice, 'A1'), get_constant(bob, 'A2'), proceed],
     (execute_wam(Code1, parent(alice, bob), _) -> format('[PASS] ~w~n', [Test1]) ; format('[FAIL] ~w~n', [Test1])),
     Test2 = 'WAM Runtime: relational member/2',
-    Code2 = ['test_member/1:', put_list('A2'), set_constant(1), set_variable('X3'), put_structure('[|]/2', 'X3'), set_constant(2), set_constant([]), builtin_call('member/2', 2), proceed],
+    Code2 = [
+        'test_member/1:',
+        put_list('A2'),
+        set_constant(1),
+        set_variable('X3'),
+        put_structure('[|]/2', 'X3'),
+        set_constant(2),
+        set_constant([]),
+        put_variable('X1', 'A1'),
+        builtin_call('member/2', 2),
+        proceed
+    ],
     (findall_wam(Code2, test_member(X), ['X'=X], Sols) -> (Sols == [['X'=1], ['X'=2]] -> format('[PASS] ~w~n', [Test2]) ; format('[FAIL] ~w: expected [[X=1], [X=2]], got ~w~n', [Test2, Sols])) ; format('[FAIL] ~w: findall failed~n', [Test2])),
     format('WAM Runtime Tests Complete~n').
