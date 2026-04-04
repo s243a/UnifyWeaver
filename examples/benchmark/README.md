@@ -192,6 +192,8 @@ Tables:
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, and Go DFS |
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
 | `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
+| `generate_prolog_shortest_path_seeded_benchmark.pl` | Generate standalone SWI-Prolog shortest-path scripts for seeded `all` vs mode-directed `min` closure, loading `facts.pl` at runtime |
+| `benchmark_prolog_seeded_min_closure.py` | Compare seeded Prolog `all` vs `min` closure and report `load_ms`, `query_ms`, `aggregation_ms`, and work metrics |
 | `generate_dependency_benchmark_data.py` | Generate deterministic synthetic package-DAG benchmark data |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
@@ -217,6 +219,10 @@ Packaging note:
   - rounded float row outputs in common 2-column and 3-column forms
 - workloads can still keep custom normalization when their semantics or
   ordering rules are genuinely different
+- the seeded Prolog shortest-path benchmark now loads `facts.pl` at
+  runtime from a small generated driver instead of inlining facts into
+  the generated script, so `load_ms` is reported separately from
+  `query_ms`
 
 ## Usage
 
