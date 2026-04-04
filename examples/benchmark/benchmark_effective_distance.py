@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Benchmark the effective-distance workload for the C# query engine and the
-compiled DFS pipelines.
+Benchmark the effective-distance workload for the C# query engine, seeded
+Prolog, and the compiled DFS pipelines.
 
 Default targets:
   - csharp-query  : current C# query runtime using PathAwareTransitiveClosureNode
+  - prolog-seeded : generated Prolog using seeded counted-closure reuse
   - csharp-dfs    : generated C# DFS pipeline
   - rust-dfs      : generated Rust DFS pipeline
 
@@ -15,7 +16,6 @@ benchmark scales, and reports median wall-clock times plus output agreement.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import statistics
 import sys
 import tempfile
@@ -28,8 +28,10 @@ from benchmark_common import (
     build_csharp_package,
     build_go_binary,
     build_rust_binary,
+    digest_normalized_output,
     find_result,
     group_results_by_scale,
+    normalize_three_column_float_rows,
     print_match_status,
     print_pair_match_status,
     print_phase_metrics,
@@ -43,6 +45,7 @@ from benchmark_common import (
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
+PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
 
 
 @dataclass
@@ -68,8 +71,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--targets",
-        default="csharp-query,csharp-dfs,rust-dfs",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs",
+        default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned",
     )
     parser.add_argument(
         "--repetitions",
@@ -109,28 +112,45 @@ def build_go_dfs(root: Path) -> list[str]:
     )
 
 
-def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
-    scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
-    edge_path = scale_dir / "category_parent.tsv"
-    article_path = scale_dir / "article_category.tsv"
+def build_prolog_effective_distance(root: Path, scale: str, variant: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    script_path = root / f"prolog_{variant}" / scale / f"effective_distance_{variant}.pl"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(PROLOG_GENERATOR),
+            "--",
+            str(facts_path),
+            str(script_path),
+            variant,
+        ]
+    )
+    return ["swipl", "-q", "-s", str(script_path)]
 
+
+def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
     times: list[float] = []
     last_stdout = ""
     last_stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = run_command(command + [str(edge_path), str(article_path)])
+        if target.startswith("prolog-"):
+            result = run_command(command)
+        else:
+            scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+            edge_path = scale_dir / "category_parent.tsv"
+            article_path = scale_dir / "article_category.tsv"
+            result = run_command(command + [str(edge_path), str(article_path)])
         elapsed = time.perf_counter() - started
         times.append(elapsed)
         last_stdout = result.stdout
         last_stderr = result.stderr
 
-    lines = last_stdout.splitlines()
-    header = lines[:1]
-    body = sorted(lines[1:])
-    normalized = "\n".join(header + body)
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    rows = len(body)
+    normalized = normalize_three_column_float_rows(last_stdout, decimals=6)
+    digest, rows = digest_normalized_output(normalized)
     return RunResult(target=target, scale=scale, times=times, stdout_sha256=digest, row_count=rows, stderr=last_stderr)
 
 
@@ -142,14 +162,22 @@ def print_summary(results: list[RunResult]) -> None:
         qe = find_result(entries, "csharp-query")
         csharp_dfs = find_result(entries, "csharp-dfs")
         rust_dfs = find_result(entries, "rust-dfs")
-        dfs_like = [item for item in entries if item.target != "csharp-query"]
+        prolog_seeded = find_result(entries, "prolog-seeded")
+        prolog_pruned = find_result(entries, "prolog-pruned")
+        dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
 
         if len(dfs_like) > 1:
             print_match_status(scale, "dfs_outputs", dfs_like)
         print_pair_match_status(scale, "query_vs_csharp_dfs", qe, csharp_dfs)
+        print_pair_match_status(scale, "query_vs_prolog_seeded", qe, prolog_seeded)
+        print_pair_match_status(scale, "query_vs_prolog_pruned", qe, prolog_pruned)
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
         print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
+        print_speedup(scale, "speedup_vs_prolog_seeded", prolog_seeded, qe)
+        print_speedup(scale, "speedup_vs_prolog_pruned", prolog_pruned, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
+        print_phase_metrics(scale, "prolog-seeded-metrics", prolog_seeded)
+        print_phase_metrics(scale, "prolog-pruned-metrics", prolog_pruned)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
@@ -190,13 +218,23 @@ def main() -> int:
                 commands[target] = build_rust_dfs(temp_root)
             elif target == "go-dfs":
                 commands[target] = build_go_dfs(temp_root)
+            elif target == "prolog-seeded":
+                continue
+            elif target == "prolog-pruned":
+                continue
             else:
                 raise ValueError(f"unsupported target: {target}")
 
         results: list[RunResult] = []
         for scale in scales:
             for target in targets:
-                results.append(benchmark_target(commands[target], scale, args.repetitions, target))
+                if target == "prolog-seeded":
+                    command = build_prolog_effective_distance(temp_root, scale, "seeded")
+                elif target == "prolog-pruned":
+                    command = build_prolog_effective_distance(temp_root, scale, "pruned")
+                else:
+                    command = commands[target]
+                results.append(benchmark_target(command, scale, args.repetitions, target))
 
         print_summary(results)
         if args.keep_temp:
