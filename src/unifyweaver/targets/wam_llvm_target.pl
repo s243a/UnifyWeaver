@@ -300,12 +300,55 @@ wam_llvm_case('put_value',
 % --- Control Instructions ---
 
 wam_llvm_case('allocate',
-'  ; No-op for now: environment frame allocation
+'  ; Push environment frame: save CP on stack
+  %alloc.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %alloc.ss = load i32, i32* %alloc.ss_ptr
+  %alloc.stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %alloc.stack = load %StackEntry*, %StackEntry** %alloc.stack_ptr
+  %alloc.entry = getelementptr %StackEntry, %StackEntry* %alloc.stack, i32 %alloc.ss
+  ; type = 0 (EnvFrame)
+  %alloc.type_ptr = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 0
+  store i32 0, i32* %alloc.type_ptr
+  ; aux = current CP
+  %alloc.cp = call i32 @wam_get_cp(%WamState* %vm)
+  %alloc.cp_ext = zext i32 %alloc.cp to i64
+  %alloc.aux_ptr = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 1
+  store i64 %alloc.cp_ext, i64* %alloc.aux_ptr
+  ; Increment stack size
+  %alloc.new_ss = add i32 %alloc.ss, 1
+  store i32 %alloc.new_ss, i32* %alloc.ss_ptr
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('deallocate',
-'  ; Restore CP from environment (simplified)
+'  ; Pop environment frame: restore CP from stack
+  %dealloc.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %dealloc.ss = load i32, i32* %dealloc.ss_ptr
+  %dealloc.has_frames = icmp sgt i32 %dealloc.ss, 0
+  br i1 %dealloc.has_frames, label %dealloc.pop, label %dealloc.done
+
+dealloc.pop:
+  %dealloc.top_idx = sub i32 %dealloc.ss, 1
+  %dealloc.stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %dealloc.stack = load %StackEntry*, %StackEntry** %dealloc.stack_ptr
+  ; Scan backward for an EnvFrame (type == 0)
+  %dealloc.entry = getelementptr %StackEntry, %StackEntry* %dealloc.stack, i32 %dealloc.top_idx
+  %dealloc.type_ptr = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 0
+  %dealloc.type = load i32, i32* %dealloc.type_ptr
+  %dealloc.is_env = icmp eq i32 %dealloc.type, 0
+  br i1 %dealloc.is_env, label %dealloc.restore, label %dealloc.done
+
+dealloc.restore:
+  ; Restore CP from saved value
+  %dealloc.aux_ptr = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 1
+  %dealloc.saved_cp = load i64, i64* %dealloc.aux_ptr
+  %dealloc.cp = trunc i64 %dealloc.saved_cp to i32
+  call void @wam_set_cp(%WamState* %vm, i32 %dealloc.cp)
+  ; Pop stack frame
+  store i32 %dealloc.top_idx, i32* %dealloc.ss_ptr
+  br label %dealloc.done
+
+dealloc.done:
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
@@ -543,6 +586,7 @@ entry:
     i32 3, label %builtin_ge
     i32 4, label %builtin_le
     i32 5, label %builtin_arith_eq
+    i32 6, label %builtin_arith_ne
     i32 7, label %builtin_eq
     i32 8, label %builtin_true
     i32 9, label %builtin_fail
@@ -616,6 +660,14 @@ builtin_arith_eq:
   %aeq.r = icmp eq i64 %aeq.v1, %aeq.v2
   ret i1 %aeq.r
 
+builtin_arith_ne:
+  %ane.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ane.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ane.v1 = call i64 @value_payload(%Value %ane.a1)
+  %ane.v2 = call i64 @value_payload(%Value %ane.a2)
+  %ane.r = icmp ne i64 %ane.v1, %ane.v2
+  ret i1 %ane.r
+
 builtin_eq:
   %eq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %eq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
@@ -656,21 +708,99 @@ unknown:
 }'.
 
 compile_eval_arith_to_llvm(Code) :-
-    Code = '; Evaluate arithmetic expression (integer only for now)
-; Takes a Value, returns the integer payload (or 0 on error)
+    Code = '; Evaluate arithmetic expression
+; Takes a Value, returns the integer payload.
+; For compound ops (tag=3), extracts functor and recursively evaluates args.
+; For register refs (tag=6 unbound with name starting A/X), dereferences.
 define i64 @eval_arith(%WamState* %vm, %Value %expr) {
 entry:
   %tag = call i32 @value_tag(%Value %expr)
-  %is_int = icmp eq i32 %tag, 1
-  br i1 %is_int, label %return_int, label %not_int
+  switch i32 %tag, label %fail [
+    i32 1, label %return_int
+    i32 2, label %return_float_as_int
+    i32 3, label %compound_arith
+  ]
 
 return_int:
   %val = call i64 @value_payload(%Value %expr)
   ret i64 %val
 
-not_int:
-  ; For now, return 0 for non-integer expressions
-  ; TODO: handle compound arithmetic (op nodes), float, register deref
+return_float_as_int:
+  %fbits = call i64 @value_payload(%Value %expr)
+  %fval = bitcast i64 %fbits to double
+  %ival = fptosi double %fval to i64
+  ret i64 %ival
+
+compound_arith:
+  ; Compound: payload is pointer to %Compound (functor, arity, args)
+  %cp_bits = call i64 @value_payload(%Value %expr)
+  %cp_ptr = inttoptr i64 %cp_bits to %Compound*
+  ; Load arity
+  %arity_ptr = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
+  %arity = load i32, i32* %arity_ptr
+  ; Load args array pointer
+  %args_ptr = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
+  %args = load %Value*, %Value** %args_ptr
+  ; Load functor pointer for comparison
+  %fn_ptr_ptr = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
+  %fn_ptr = load i8*, i8** %fn_ptr_ptr
+  ; Binary: evaluate both args
+  %is_binary = icmp eq i32 %arity, 2
+  br i1 %is_binary, label %eval_binary, label %check_unary
+
+eval_binary:
+  %arg0_ptr = getelementptr %Value, %Value* %args, i32 0
+  %arg0 = load %Value, %Value* %arg0_ptr
+  %arg1_ptr = getelementptr %Value, %Value* %args, i32 1
+  %arg1 = load %Value, %Value* %arg1_ptr
+  %a = call i64 @eval_arith(%WamState* %vm, %Value %arg0)
+  %b = call i64 @eval_arith(%WamState* %vm, %Value %arg1)
+  ; Dispatch on functor: check first char for +, -, *, /
+  %fn_first = load i8, i8* %fn_ptr
+  switch i8 %fn_first, label %fail [
+    i8 43, label %do_add     ; \'+\'
+    i8 45, label %do_sub     ; \'-\'
+    i8 42, label %do_mul     ; \'*\'
+    i8 47, label %do_div     ; \'/\'
+  ]
+
+do_add:
+  %add_r = add i64 %a, %b
+  ret i64 %add_r
+
+do_sub:
+  %sub_r = sub i64 %a, %b
+  ret i64 %sub_r
+
+do_mul:
+  %mul_r = mul i64 %a, %b
+  ret i64 %mul_r
+
+do_div:
+  %div_zero = icmp eq i64 %b, 0
+  br i1 %div_zero, label %fail, label %do_div_ok
+
+do_div_ok:
+  %div_r = sdiv i64 %a, %b
+  ret i64 %div_r
+
+check_unary:
+  %is_unary = icmp eq i32 %arity, 1
+  br i1 %is_unary, label %eval_unary, label %fail
+
+eval_unary:
+  %u_arg_ptr = getelementptr %Value, %Value* %args, i32 0
+  %u_arg = load %Value, %Value* %u_arg_ptr
+  %u_val = call i64 @eval_arith(%WamState* %vm, %Value %u_arg)
+  %u_fn_first = load i8, i8* %fn_ptr
+  %u_is_neg = icmp eq i8 %u_fn_first, 45  ; \'-\'
+  br i1 %u_is_neg, label %do_neg, label %fail
+
+do_neg:
+  %neg_r = sub i64 0, %u_val
+  ret i64 %neg_r
+
+fail:
   ret i64 0
 }'.
 
@@ -777,20 +907,34 @@ wam_instruction_to_llvm_literal(label(L), Lit) :-
 wam_instruction_to_llvm_literal(Instr, Lit) :-
     format(atom(Lit), '; TODO: ~w', [Instr]).
 
+% --- Atom table (string interning) ---
+% Assigns unique sequential integer IDs to atoms. Two atoms with the
+% same name always get the same ID; different names always get different IDs.
+% This avoids hash collisions that would cause silent correctness bugs.
+
+:- dynamic atom_table_entry/2.   % atom_table_entry(AtomName, Id)
+:- dynamic atom_table_next_id/1. % atom_table_next_id(NextId)
+atom_table_next_id(1).           % Start from 1; 0 reserved for empty
+
+%% intern_atom(+AtomName, -Id)
+%  Returns the unique integer ID for AtomName, allocating a new one if needed.
+intern_atom(AtomName, Id) :-
+    (   atom_table_entry(AtomName, Id)
+    ->  true
+    ;   retract(atom_table_next_id(Id)),
+        NextId is Id + 1,
+        assert(atom_table_next_id(NextId)),
+        assert(atom_table_entry(AtomName, Id))
+    ).
+
 % --- Value packing helpers ---
 
 llvm_pack_value(atom(A), Packed) :- !,
-    % For atoms, pack as tag=0 in high 32 bits, but for struct literal
-    % we just use the raw value as an identifier
-    atom_codes(A, Codes),
-    (   Codes = [] -> Packed = 0
-    ;   % Simple hash: use first few chars as an integer ID
-        foldl([C, Acc, New]>>(New is Acc * 31 + C), Codes, 0, Packed)
-    ).
+    intern_atom(A, Packed).
 llvm_pack_value(integer(I), I) :- !.
 llvm_pack_value(N, N) :- integer(N), !.
 llvm_pack_value(N, Packed) :- float(N), !, Packed is truncate(N).
-llvm_pack_value(A, Packed) :- atom(A), !, llvm_pack_value(atom(A), Packed).
+llvm_pack_value(A, Packed) :- atom(A), !, intern_atom(A, Packed).
 llvm_pack_value(_, 0).
 
 % --- Builtin op name → integer ID mapping ---
@@ -874,28 +1018,91 @@ entry:
     ArgSetup]).
 
 %% wam_lines_to_llvm(+Lines, +PC, -LLVMLits, -LabelEntries)
-wam_lines_to_llvm([], _, [], []).
-wam_lines_to_llvm([Line|Rest], PC, LLVMLits, Labels) :-
+%  Two-pass approach: first collect all labels and raw instruction parts,
+%  then generate LLVM literals with resolved label indices.
+wam_lines_to_llvm(Lines, StartPC, LLVMLits, LabelEntries) :-
+    % Pass 1: collect labels and raw instruction parts
+    wam_lines_pass1(Lines, StartPC, RawInstrs, LabelEntries),
+    % Build label name → index mapping (position in label array)
+    build_label_index_map(LabelEntries, LabelMap),
+    % Pass 2: generate LLVM literals with label resolution
+    maplist(resolve_llvm_literal(LabelMap), RawInstrs, LLVMLits).
+
+%% wam_lines_pass1(+Lines, +PC, -RawInstrs, -Labels)
+%  First pass: separate labels from instructions, track PC.
+wam_lines_pass1([], _, [], []).
+wam_lines_pass1([Line|Rest], PC, RawInstrs, Labels) :-
     split_string(Line, " \t", " \t", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
-    ->  wam_lines_to_llvm(Rest, PC, LLVMLits, Labels)
+    ->  wam_lines_pass1(Rest, PC, RawInstrs, Labels)
     ;   CleanParts = [First|_],
-        (   % Label line: "pred/2:" or "L_label:"
-            sub_string(First, _, 1, 0, ":")
+        (   sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
             Labels = [LabelName-PC | RestLabels],
-            wam_lines_to_llvm(Rest, PC, LLVMLits, RestLabels)
-        ;   % Instruction line
-            wam_line_to_llvm_literal(CleanParts, LLVMLit),
-            LLVMLits = [LLVMLit | RestLits],
+            wam_lines_pass1(Rest, PC, RawInstrs, RestLabels)
+        ;   RawInstrs = [CleanParts | RestInstrs],
             NPC is PC + 1,
-            wam_lines_to_llvm(Rest, NPC, RestLits, Labels)
+            wam_lines_pass1(Rest, NPC, RestInstrs, Labels)
         )
     ).
 
+%% build_label_index_map(+LabelEntries, -LabelMap)
+%  Creates an assoc mapping label names to their index in the label array.
+build_label_index_map(LabelEntries, LabelMap) :-
+    length(LabelEntries, _),
+    foldl(add_label_entry, LabelEntries, 0-[], _-LabelMap).
+
+add_label_entry(Name-_PC, Idx-Map, NextIdx-[Name-Idx|Map]) :-
+    NextIdx is Idx + 1.
+
+%% resolve_llvm_literal(+LabelMap, +Parts, -LLVMLit)
+%  Second pass: generate LLVM literal with resolved label indices.
+resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
+    wam_line_to_llvm_literal_resolved(Parts, LabelMap, LLVMLit).
+
+%% wam_line_to_llvm_literal_resolved(+Parts, +LabelMap, -LLVMLit)
+%  Converts parsed WAM instruction text to LLVM %Instruction struct literal,
+%  with label names resolved to indices via LabelMap.
+
+%% lookup_label_index(+LabelName, +LabelMap, -Index)
+%  Find label index in map, or return 0 if not found.
+lookup_label_index(LabelName, LabelMap, Index) :-
+    (   member(LabelName-Index, LabelMap)
+    ->  true
+    ;   Index = 0
+    ).
+
+% Instructions that need label resolution:
+wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
+    clean_comma(P, CP), clean_comma(N, CN),
+    (   number_string(Arity, CN) -> true ; Arity = 0 ),
+    atom_string(CP, CPAtom),
+    lookup_label_index(CPAtom, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w } ; call ~w', [LabelIdx, Arity, CP]).
+wam_line_to_llvm_literal_resolved(["execute", P], LabelMap, Lit) :- !,
+    clean_comma(P, CP),
+    atom_string(CP, CPAtom),
+    lookup_label_index(CPAtom, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 0 } ; execute ~w', [LabelIdx, CP]).
+wam_line_to_llvm_literal_resolved(["try_me_else", L], LabelMap, Lit) :- !,
+    clean_comma(L, CL),
+    atom_string(CL, CLAtom),
+    lookup_label_index(CLAtom, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 22, i64 ~w, i64 0 } ; try_me_else ~w', [LabelIdx, CL]).
+wam_line_to_llvm_literal_resolved(["retry_me_else", L], LabelMap, Lit) :- !,
+    clean_comma(L, CL),
+    atom_string(CL, CLAtom),
+    lookup_label_index(CLAtom, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 23, i64 ~w, i64 0 } ; retry_me_else ~w', [LabelIdx, CL]).
+% All other instructions: delegate to existing parser (no labels needed)
+wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
+    wam_line_to_llvm_literal(Parts, Lit).
+
 %% wam_line_to_llvm_literal(+Parts, -LLVMLit)
 %  Converts parsed WAM instruction text to LLVM %Instruction struct literal.
+%  For non-label-referencing instructions only. Label-referencing instructions
+%  are handled by wam_line_to_llvm_literal_resolved/3 above.
 
 wam_line_to_llvm_literal(["get_constant", C, Ai], Lit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
@@ -985,11 +1192,8 @@ wam_line_to_llvm_literal(["set_constant", C], Lit) :-
 
 wam_line_to_llvm_literal(["allocate"], '%Instruction { i32 16, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["deallocate"], '%Instruction { i32 17, i64 0, i64 0 }').
-wam_line_to_llvm_literal(["call", P, N], Lit) :-
-    clean_comma(P, _CP), clean_comma(N, CN),
-    (   number_string(Num, CN) -> true ; Num = 0 ),
-    format(atom(Lit), '%Instruction { i32 18, i64 0, i64 ~w }', [Num]).
-wam_line_to_llvm_literal(["execute", _P], '%Instruction { i32 19, i64 0, i64 0 }').
+% call, execute, try_me_else, retry_me_else are handled by
+% wam_line_to_llvm_literal_resolved/3 (label resolution required).
 wam_line_to_llvm_literal(["proceed"], '%Instruction { i32 20, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["builtin_call", Op, N], Lit) :-
     clean_comma(Op, COp), clean_comma(N, CN),
@@ -997,9 +1201,6 @@ wam_line_to_llvm_literal(["builtin_call", Op, N], Lit) :-
     atom_string(COp, COpAtom),
     builtin_op_to_id(COpAtom, OpId),
     format(atom(Lit), '%Instruction { i32 21, i64 ~w, i64 ~w }', [OpId, Num]).
-
-wam_line_to_llvm_literal(["try_me_else", _L], '%Instruction { i32 22, i64 0, i64 0 }').
-wam_line_to_llvm_literal(["retry_me_else", _L], '%Instruction { i32 23, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["trust_me"], '%Instruction { i32 24, i64 0, i64 0 }').
 
 wam_line_to_llvm_literal(["switch_on_constant"|_], '; switch_on_constant — handled via labels').

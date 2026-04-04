@@ -187,4 +187,68 @@ test(builtin_op_unknown) :-
     builtin_op_to_id('unknown/3', Id),
     assertion(Id == 99).
 
+% ============================================================================
+% Review fixes: label resolution in text parser
+% ============================================================================
+
+test(label_resolution_try_me_else) :-
+    WamCode = "parent/2:\n    try_me_else L_alt\nL_alt:\n    proceed",
+    compile_wam_predicate_to_llvm(parent/2, WamCode, [], LLVMCode),
+    % try_me_else should have label index 1 (L_alt is the 2nd label)
+    assertion(sub_atom(LLVMCode, _, _, _, 'i32 22, i64 1')).
+
+test(label_resolution_call) :-
+    WamCode = "main/0:\n    call main/0, 0\n    proceed",
+    compile_wam_predicate_to_llvm(main/0, WamCode, [], LLVMCode),
+    % call should resolve main/0 to label index 0
+    assertion(sub_atom(LLVMCode, _, _, _, 'i32 18, i64 0')).
+
+% ============================================================================
+% Review fixes: allocate/deallocate are not stubs
+% ============================================================================
+
+test(allocate_pushes_env_frame) :-
+    compile_step_wam_to_llvm([], StepCode),
+    % Should reference stack operations, not just inc_pc
+    assertion(sub_atom(StepCode, _, _, _, 'alloc.ss_ptr')),
+    assertion(sub_atom(StepCode, _, _, _, 'alloc.cp')).
+
+test(deallocate_restores_cp) :-
+    compile_step_wam_to_llvm([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'dealloc.restore')),
+    assertion(sub_atom(StepCode, _, _, _, 'dealloc.saved_cp')).
+
+% ============================================================================
+% Review fixes: eval_arith handles compound expressions
+% ============================================================================
+
+test(eval_arith_has_compound_handling) :-
+    compile_wam_helpers_to_llvm([], Code),
+    assertion(sub_atom(Code, _, _, _, 'compound_arith')),
+    assertion(sub_atom(Code, _, _, _, 'do_add')),
+    assertion(sub_atom(Code, _, _, _, 'do_sub')),
+    assertion(sub_atom(Code, _, _, _, 'do_mul')),
+    assertion(sub_atom(Code, _, _, _, 'do_div')).
+
+% ============================================================================
+% Review fixes: atom interning (no hash collisions)
+% ============================================================================
+
+test(atom_interning_unique_ids) :-
+    wam_llvm_target:intern_atom(test_atom_a, IdA),
+    wam_llvm_target:intern_atom(test_atom_b, IdB),
+    assertion(IdA \== IdB),
+    % Same atom gets same ID
+    wam_llvm_target:intern_atom(test_atom_a, IdA2),
+    assertion(IdA == IdA2).
+
+% ============================================================================
+% Review fixes: =\=/2 in execute_builtin
+% ============================================================================
+
+test(builtin_arith_ne_in_dispatch) :-
+    compile_wam_helpers_to_llvm([], Code),
+    assertion(sub_atom(Code, _, _, _, 'builtin_arith_ne')),
+    assertion(sub_atom(Code, _, _, _, 'i32 6, label %builtin_arith_ne')).
+
 :- end_tests(wam_llvm_target).

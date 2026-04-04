@@ -66,8 +66,10 @@ llvm_wam_type_map(wam_state, '%WamState*').
 % ============================================================================
 
 %% reg_name_to_index(+Name, -Index)
-%  Maps WAM register names to fixed array indices.
-%  A1..A16 → 0..15, X1..X16 → 16..31
+%  Maps WAM register names to fixed array indices in the [32 x %Value] array.
+%  Register ABI: argument registers A1..A16 occupy slots 0..15,
+%  temporary registers X1..X16 occupy slots 16..31.
+%  A1→0, A2→1, ..., A16→15, X1→16, X2→17, ..., X16→31
 reg_name_to_index(Name, Index) :-
     atom_string(Name, Str),
     (   string_concat("A", NumStr, Str)
