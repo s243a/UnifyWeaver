@@ -6023,8 +6023,8 @@ build_go_arg_list(N, ArgList) :-
 
 % Single clause
 native_go_clause_body(PredSpec, [Head-Body], Code) :-
-    (   classify_parallelism(PredSpec, [Head-Body], goal_parallel(Head, ParallelGoals, ResultGoal))
-    ->  compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoal, Code)
+    (   classify_parallelism(PredSpec, [Head-Body], goal_parallel(Head, ParallelGoals, ResultGoals))
+    ->  compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoals, Code)
     ;   native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
         !,
         (   Condition == "true"
@@ -20965,13 +20965,13 @@ mutual_dispatch_go(Predicates, Code) :-
     ), Lines),
     atomic_list_concat(Lines, '\n', Code).
 
-%% compile_goal_parallel_to_go(+PredSpec, +Head, +ParallelGoals, +ResultGoal, -Code)
-compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoal, Code) :-
+%% compile_goal_parallel_to_go(+PredSpec, +Head, +ParallelGoals, +ResultGoals, -Code)
+compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoals, Code) :-
     PredSpec = _Pred/_Arity,
     Head =.. [_|HeadArgs],
     build_head_varmap(HeadArgs, 1, VarMap0),
     
-    % Prepare variable map for result goal (includes outputs from parallel goals)
+    % Prepare variable map for result goals (includes outputs from parallel goals)
     maplist(goal_output_vars, ParallelGoals, OutputVarsList),
     flatten(OutputVarsList, AllOutputVars),
     unique_vars_by_identity(AllOutputVars, UniqueOutputVars),
@@ -20985,8 +20985,8 @@ compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoal, Code) :-
     maplist(compile_parallel_goal_wrapper(VarMapFinal), ParallelGoals, ParallelGoalCodes),
     atomic_list_concat(ParallelGoalCodes, '\n', ParallelBlock),
     
-    % Compile result goal
-    native_go_goal_sequence([ResultGoal], VarMapFinal, _Cond, ResultCode),
+    % Compile result goals
+    native_go_goal_sequence(ResultGoals, VarMapFinal, _Cond, ResultCode),
     
     length(ParallelGoals, N),
     format(string(Code),

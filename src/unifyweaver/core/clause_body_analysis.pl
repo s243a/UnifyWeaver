@@ -934,11 +934,11 @@ ensure_var_name_from(_, _, "_").
 
 %% classify_parallelism(+PredIndicator, +Clauses, -Strategy)
 %  Determine the parallelism strategy for a predicate.
-classify_parallelism(_PredIndicator, [Head-Body], goal_parallel(Head, ParallelGoals, ResultGoal)) :-
+classify_parallelism(_PredIndicator, [Head-Body], goal_parallel(Head, ParallelGoals, ResultGoals)) :-
     % Only single-clause predicates for goal parallelism for now
     normalize_goals(Body, Goals),
-    % Expect at least 3 goals: G1, G2, Result
-    append(ParallelGoals, [ResultGoal], Goals),
+    term_variables(Head, HeadVars),
+    partition_parallel_goals(Goals, HeadVars, [], ParallelGoals, ResultGoals),
     ParallelGoals = [_,_|_],
     goals_are_independent(ParallelGoals),
     !.
@@ -947,14 +947,32 @@ classify_parallelism(PredIndicator, _Clauses, clause_parallel) :-
     !.
 classify_parallelism(_, _, sequential).
 
+%% partition_parallel_goals(+Goals, +HeadVars, +SeenVars, -Parallel, -Result)
+%  Collect goals into Parallel list until a data dependency or impurity is found.
+partition_parallel_goals([], _, _, [], []).
+partition_parallel_goals([G|Rest], HeadVars, SeenVars, Parallel, Result) :-
+    is_pure_goal(G),
+    term_variables(G, GVars),
+    % Variables introduced in this goal list (excluding head inputs)
+    exclude_vars_by_identity(GVars, HeadVars, IntroVars),
+    % Check for dependencies: IntroVars must not intersect with SeenVars
+    (   intersection_by_identity(IntroVars, SeenVars, [])
+    ->  Parallel = [G|RestParallel],
+        append(IntroVars, SeenVars, NewSeenVars),
+        partition_parallel_goals(Rest, HeadVars, NewSeenVars, RestParallel, Result)
+    ;   Parallel = [],
+        Result = [G|Rest]
+    ).
+
 %% is_order_independent(+PredIndicator, -Reason)
 %  True if the predicate's clauses can be evaluated in any order.
 is_order_independent(PredIndicator, declared) :-
     order_independent(PredIndicator),
     !.
-is_order_independent(Pred/Arity, proven(Reasons)) :-
+is_order_independent(Module:Pred/Arity, proven(Reasons)) :-
+    !,
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    findall(Head-Body, clause(Module:Head, Body), Clauses),
     Clauses \= [],
     % Static analysis for order independence: all goals must be pure
     forall(member(_-Body, Clauses), (
@@ -962,6 +980,8 @@ is_order_independent(Pred/Arity, proven(Reasons)) :-
         forall(member(G, Goals), is_pure_goal(G))
     )),
     Reasons = [pure_goals].
+is_order_independent(Pred/Arity, Reason) :-
+    is_order_independent(user:Pred/Arity, Reason).
 
 %% goals_are_independent(+Goals)
 %  True if a list of goals can be executed in parallel.
@@ -972,16 +992,34 @@ goals_are_independent(Goals) :-
 %% is_pure_goal(+Goal)
 %  True if the goal has no side effects.
 is_pure_goal(Goal) :-
+    Goal =.. [Pred|_],
+    parallel_safe(Pred),
+    !.
+is_pure_goal(Goal) :-
     \+ is_impure_builtin(Goal).
 
+% I/O Impure
 is_impure_builtin(write(_)).
 is_impure_builtin(nl).
 is_impure_builtin(format(_,_)).
+is_impure_builtin(read(_)).
+is_impure_builtin(read_term(_,_)).
+is_impure_builtin(get_char(_)).
+is_impure_builtin(get_code(_)).
+is_impure_builtin(peek_char(_)).
+is_impure_builtin(peek_code(_)).
+% Database Impure
 is_impure_builtin(assert(_)).
 is_impure_builtin(asserta(_)).
 is_impure_builtin(assertz(_)).
 is_impure_builtin(retract(_)).
 is_impure_builtin(retractall(_)).
+% Global Variable Impure
+is_impure_builtin(nb_setval(_,_)).
+is_impure_builtin(b_setval(_,_)).
+% Target-specific / Domain-specific
+is_impure_builtin(send_message(_,_)).
+is_impure_builtin(succ_or_zero(_,_)).
 
 %% goals_have_disjoint_bindings(+Goals)
 %  Conservative check for disjoint bindings.
