@@ -616,28 +616,22 @@ entry:
   ]
 
 builtin_is:
-  ; A1 is result, A2 is expression — evaluate A2 and unify with A1
+  ; A1 is result, A2 is expression — evaluate A2 via eval_arith and unify with A1
   %is.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
-  %is.tag = call i32 @value_tag(%Value %is.a2)
-  %is.is_int = icmp eq i32 %is.tag, 1
-  br i1 %is.is_int, label %is.bind, label %is.fail
-
-is.bind:
+  %is.result = call i64 @eval_arith(%WamState* %vm, %Value %is.a2)
+  %is.result_val = call %Value @value_integer(i64 %is.result)
   %is.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %is.a1_unb = call i1 @value_is_unbound(%Value %is.a1)
   br i1 %is.a1_unb, label %is.do_bind, label %is.check_eq
 
 is.do_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %is.a2)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %is.result_val)
   ret i1 true
 
 is.check_eq:
-  %is.eq = call i1 @value_equals(%Value %is.a1, %Value %is.a2)
+  %is.eq = call i1 @value_equals(%Value %is.a1, %Value %is.result_val)
   ret i1 %is.eq
-
-is.fail:
-  ret i1 false
 
 builtin_gt:
   %gt.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
