@@ -29,10 +29,18 @@ Successfully implemented the core WAM-to-Go transpilation pipeline, including pa
 - Implemented robust recursive structural unification (`WamState.Unify`) for complex terms.
 - Refined halt logic using a dedicated `Halted` field instead of a PC sentinel.
 
+### Phase 5b: Order-Independent Goal Parallelism
+- Added support for `:- order_independent/1` and `:- parallel_safe/1` directives in the clause body analysis pipeline.
+- Implemented `classify_parallelism/3` to determine if a predicate's goals can be run in parallel based on purity and disjoint variable bindings.
+- Updated Go native lowering logic to emit `sync.WaitGroup` and goroutines for predicates classified as `goal_parallel`.
+- Improved output variable detection in `goal_output_var_simple/2` to support general predicate calls.
+
 ## Files Created/Modified
-- `src/unifyweaver/targets/wam_go_target.pl`: Main transpilation logic, project orchestration, and parallel helper generation.
-- `templates/targets/go_wam/`: Go module templates (`go.mod`, `value.go`, `state.go`, `instructions.go`, `runtime.go`).
-- `tests/test_wam_go_generator.pl`: Unit tests for instruction lowering and parser robustness.
+- `src/unifyweaver/core/clause_body_analysis.pl`: Analysis logic for goal parallelism and directives.
+- `src/unifyweaver/targets/go_target.pl`: Go code generation for goroutine-based goal parallelism.
+- `templates/targets/go_wam/`: Go module templates.
+- `tests/test_wam_go_generator.pl`: Unit tests for instruction lowering.
+- `tests/test_go_goal_parallel.pl`: Unit tests for goal parallelism analysis and code generation.
 - `PHASE_WAM_GO_COMPLETED.md`: This completion report.
 - `docs/design/WAM_GO_TRANSPILATION_IMPLEMENTATION_PLAN.md`: Updated design plan.
 

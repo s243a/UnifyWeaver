@@ -8,6 +8,7 @@
 
 :- module(go_target, [
     compile_predicate_to_go/3,      % +Predicate, +Options, -GoCode
+    compile_goal_parallel_to_go/5,  % +PredSpec, +Head, +ParallelGoals, +ResultGoal, -Code
     compile_facts_to_go/3,          % +Pred, +Arity, -GoCode  -- NEW
     compile_go_pipeline/3,          % +Predicates, +Options, -GoCode
     write_go_program/2,             % +GoCode, +FilePath
@@ -5983,10 +5984,18 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
         ;   NeedsStrconv = false
         ),
 
+        % Determine if we need sync import
+        (   (   classify_parallelism(Pred/Arity, Clauses, goal_parallel(_, _, _))
+            ;   classify_parallelism(Pred/Arity, Clauses, clause_parallel)
+            )
+        ->  NeedsSync = true
+        ;   NeedsSync = false
+        ),
+
         % Generate complete Go program
         (   IncludePackage ->
             generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
-                               EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, ScriptBody, GoCode)
+                               EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, NeedsSync, ScriptBody, GoCode)
         ;   GoCode = ScriptBody
         )
     ),
@@ -6014,16 +6023,19 @@ build_go_arg_list(N, ArgList) :-
 
 % Single clause
 native_go_clause_body(PredSpec, [Head-Body], Code) :-
-    native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
-    !,
-    (   Condition == "true"
-    ->  Code = ClauseCode
-    ;   format(string(Code),
+    (   classify_parallelism(PredSpec, [Head-Body], goal_parallel(Head, ParallelGoals, ResultGoal))
+    ->  compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoal, Code)
+    ;   native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
+        !,
+        (   Condition == "true"
+        ->  Code = ClauseCode
+        ;   format(string(Code),
 '\tif ~w {
 ~w
 \t} else {
 \t\tpanic("No matching clause for ~w")
 \t}', [Condition, ClauseCode, PredSpec])
+        )
     ).
 
 % Multi-clause
@@ -9079,10 +9091,10 @@ ternary_step_op_to_go(_, 'currentAcc += 1').  % Fallback
 %% GO PROGRAM GENERATION
 %% ============================================
 
-%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +NeedsStdin, +NeedsRegexp, +NeedsStrings, +NeedsStrconv, +Body, -GoCode)
+%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +NeedsStdin, +NeedsRegexp, +NeedsStrings, +NeedsStrconv, +NeedsSync, +Body, -GoCode)
 %  Generate complete Go program with imports and main function
 %
-generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, Body, GoCode) :-
+generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, NeedsSync, Body, GoCode) :-
     atom_string(Pred, PredStr),
 
     % Generate imports based on what's needed
@@ -9097,12 +9109,16 @@ generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, N
                 format(atom(Import), '\t"strings"', [])
             ;   NeedsStrconv,
                 format(atom(Import), '\t"strconv"', [])
+            ;   NeedsSync,
+                format(atom(Import), '\t"sync"', [])
             ),
             ImportList),
         list_to_set(ImportList, UniqueImports),  % Remove duplicates
         atomic_list_concat(UniqueImports, '\n', Imports)
     ;   NeedsRegexp ->
         Imports = '\t"fmt"\n\t"regexp"'
+    ;   NeedsSync ->
+        Imports = '\t"fmt"\n\t"sync"'
     ;   % Facts only need fmt
         Imports = '\t"fmt"'
     ),
@@ -20948,3 +20964,60 @@ mutual_dispatch_go(Predicates, Code) :-
             [PredStr, PredStr])
     ), Lines),
     atomic_list_concat(Lines, '\n', Code).
+
+%% compile_goal_parallel_to_go(+PredSpec, +Head, +ParallelGoals, +ResultGoal, -Code)
+compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoal, Code) :-
+    PredSpec = _Pred/_Arity,
+    Head =.. [_|HeadArgs],
+    build_head_varmap(HeadArgs, 1, VarMap0),
+    
+    % Prepare variable map for result goal (includes outputs from parallel goals)
+    maplist(goal_output_vars, ParallelGoals, OutputVarsList),
+    flatten(OutputVarsList, AllOutputVars),
+    unique_vars_by_identity(AllOutputVars, UniqueOutputVars),
+    ensure_vars(UniqueOutputVars, VarMap0, _OutputVarPairs, VarMapFinal),
+    
+    % Generate variable declarations for output variables
+    maplist(gen_var_declaration(VarMapFinal), UniqueOutputVars, Decls),
+    atomic_list_concat(Decls, '\n', DeclsCode),
+    
+    % Compile parallel goals into goroutines
+    maplist(compile_parallel_goal_wrapper(VarMapFinal), ParallelGoals, ParallelGoalCodes),
+    atomic_list_concat(ParallelGoalCodes, '\n', ParallelBlock),
+    
+    % Compile result goal
+    native_go_goal_sequence([ResultGoal], VarMapFinal, _Cond, ResultCode),
+    
+    length(ParallelGoals, N),
+    format(string(Code),
+'~w
+\tvar wg sync.WaitGroup
+\twg.Add(~w)
+~w
+\twg.Wait()
+~w', [DeclsCode, N, ParallelBlock, ResultCode]).
+
+gen_var_declaration(VarMap, Var, Code) :-
+    lookup_var(Var, VarMap, Name),
+    format(string(Code), '\tvar ~w interface{}', [Name]).
+
+compile_parallel_goal_wrapper(VarMap, Goal, Code) :-
+    (   Goal = (Var = Expr)
+    ->  go_expr(Expr, VarMap, GoExpr),
+        lookup_var(Var, VarMap, Name),
+        format(string(Code), '\tgo func() { defer wg.Done(); ~w = ~w }()', [Name, GoExpr])
+    ;   Goal = is(Var, Expr)
+    ->  go_expr(Expr, VarMap, GoExpr),
+        lookup_var(Var, VarMap, Name),
+        format(string(Code), '\tgo func() { defer wg.Done(); ~w = ~w }()', [Name, GoExpr])
+    ;   % Predicate call: p(X, Y) where Y is output
+        Goal =.. [Pred|Args],
+        last(Args, OutVar),
+        append(InArgs, [OutVar], Args),
+        maplist(go_expr_wrapper(VarMap), InArgs, GoInArgs),
+        atomic_list_concat(GoInArgs, ', ', ArgsList),
+        (   lookup_var(OutVar, VarMap, OutName) -> true ; OutName = "_" ),
+        format(string(Code), '\tgo func() { defer wg.Done(); ~w = ~w(~w) }()', [OutName, Pred, ArgsList])
+    ).
+
+go_expr_wrapper(VarMap, Arg, GoExpr) :- go_expr(Arg, VarMap, GoExpr).
