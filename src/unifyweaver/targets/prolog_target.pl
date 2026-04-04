@@ -30,6 +30,7 @@
 :- use_module(library(debug)).
 :- use_module(prolog_dialects).
 :- use_module(prolog_constraints).
+:- use_module('../core/constraint_analyzer', [get_constraints/2]).
 :- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 %% ============================================
@@ -51,9 +52,10 @@
 %         helpers (default: auto). Use false when benchmarking the
 %         non-pruned baseline or when comparing generated variants.
 %       - min_closure(auto/false) - Emit a SWI mode-directed min helper
-%         for canonical counted PPV recursion when available (default:
-%         auto). This preserves the original predicate and adds a
-%         separate '$min' helper for bound shortest-path style queries.
+%         for canonical counted or positive-weighted PPV recursion when
+%         available (default: auto). This preserves the original
+%         predicate and adds a separate '$min' helper for bound
+%         shortest-path style queries.
 %  @arg ScriptCode Generated script as atom
 %
 %  @example Generate script for user predicates
@@ -381,6 +383,12 @@ maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode, Code) :-
 maybe_generate_min_closure_helper(Pred/Arity, Options, Code) :-
     option(dialect(Dialect), Options, swi),
     Dialect == swi,
+    (   maybe_generate_counted_min_closure_helper(Pred/Arity, Code)
+    ;   maybe_generate_weighted_min_closure_helper(Pred/Arity, Code)
+    ),
+    !.
+
+maybe_generate_counted_min_closure_helper(Pred/Arity, Code) :-
     findall(Head-Body,
         (   functor(Head, Pred, Arity),
             user:clause(Head, Body0),
@@ -405,6 +413,47 @@ maybe_generate_min_closure_helper(Pred/Arity, Options, Code) :-
             StepIncrement, BudgetMode, RecClause)),
     build_min_closure_code(Pred/Arity, BaseClauses, RecClauses, SignaturePositions,
         MetricPos, VisitedPos, BaseDepth, StepIncrement, BudgetMode, Code).
+
+maybe_generate_weighted_min_closure_helper(Pred/Arity, Code) :-
+    findall(Head-Body,
+        (   functor(Head, Pred, Arity),
+            user:clause(Head, Body0),
+            strip_codegen_module_qualifiers(Body0, Body)
+        ),
+        Clauses),
+    Clauses \= [],
+    partition(is_recursive_clause_for_pred(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    counted_ppv_visited_position(Pred, Arity, RecClauses, VisitedPos),
+    counted_ppv_driver_position(Pred, Arity, RecClauses, VisitedPos, DriverPos),
+    branch_pruning_mode_positions(Pred/Arity, VisitedPos, InvariantPositions),
+    branch_pruning_signature_positions(DriverPos, InvariantPositions, SignaturePositions),
+    min_closure_metric_position(Arity, VisitedPos, SignaturePositions, MetricPos),
+    findall(BasePositive,
+        (   member(BaseClause, BaseClauses),
+            weighted_min_base_clause_shape(MetricPos, VisitedPos, BaseClause, BasePositive)
+        ),
+        BasePositives),
+    length(BasePositives, BaseCount),
+    length(BaseClauses, BaseCount),
+    RecClauses = [FirstRec|RestRecClauses],
+    weighted_min_recursive_shape(Pred, Arity, VisitedPos, MetricPos, FirstRec,
+        BudgetMode, FirstRecPositive),
+    BudgetMode = budget(_),
+    findall(RestPositive,
+        (   member(RecClause, RestRecClauses),
+            weighted_min_recursive_shape(Pred, Arity, VisitedPos, MetricPos, RecClause,
+                ClauseBudgetMode, RestPositive),
+            budget_mode_compatible(BudgetMode, ClauseBudgetMode)
+        ),
+        RestRecPositives),
+    length(RestRecPositives, RestCount),
+    length(RestRecClauses, RestCount),
+    weighted_positive_step_proven(Pred/Arity, MetricPos, BasePositives,
+        [FirstRecPositive|RestRecPositives]),
+    build_min_closure_code(Pred/Arity, BaseClauses, RecClauses, SignaturePositions,
+        MetricPos, VisitedPos, 1, 1, BudgetMode, Code).
 
 counted_ppv_visited_position(Pred, Arity, RecClauses, VisitedPos) :-
     member(Head-Body, RecClauses),
@@ -563,6 +612,110 @@ strip_counted_ppv_setup_goals(Goals, VisitedVar, BudgetMode, CleanGoals) :-
         CleanGoals = GoalsNoCuts
     ).
 
+weighted_positive_step_proven(Pred/Arity, MetricPos, _BasePositives, _RecPositives) :-
+    weighted_positive_step_metadata(Pred/Arity, MetricPos),
+    !.
+weighted_positive_step_proven(_PredArity, _MetricPos, BasePositives, RecPositives) :-
+    forall(member(Positive, BasePositives), Positive == true),
+    forall(member(Positive, RecPositives), Positive == true).
+
+weighted_positive_step_metadata(Pred/Arity, Position) :-
+    get_constraints(Pred/Arity, Constraints),
+    member(positive_step(Position), Constraints).
+
+weighted_min_base_clause_shape(MetricPos, VisitedPos, Head-Body, PositiveStepProven) :-
+    Head =.. [_|HeadArgs],
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    nth1(MetricPos, HeadArgs, MetricArg),
+    body_goals(Body, Goals0),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), Goals0, Goals1),
+    strip_counted_ppv_setup_goals(Goals1, VisitedVar, _IgnoredBudgetMode, Goals2),
+    select(MetricGoal, Goals2, Goals3),
+    weighted_metric_base_goal(MetricArg, MetricGoal, StepVar),
+    weighted_extract_positive_step_guard(Goals3, StepVar, Goals, PositiveStepProven),
+    \+ goals_reference_samevar(Goals, VisitedVar),
+    weighted_step_auxiliary_goal(HeadArgs, StepVar, Goals).
+
+weighted_metric_base_goal(MetricArg, Goal0, StepVar) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [is, MetricArg, StepVar]
+    ;   Goal =.. ['=', MetricArg, StepVar]
+    ),
+    var(StepVar),
+    StepVar \== MetricArg.
+
+weighted_min_recursive_shape(Pred, Arity, VisitedPos, MetricPos, Head-Body,
+        BudgetMode, PositiveStepProven) :-
+    counted_ppv_clause_parts(Pred, Arity, VisitedPos, Head-Body,
+        HeadArgs, PreRecGoals0, RecCall, PostGoals0, _StepGoal, _NextVar, VisitedVar),
+    strip_counted_ppv_setup_goals(PreRecGoals0, VisitedVar, BudgetMode, PreRecGoals1),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), PreRecGoals1, PreRecGoals2),
+    RecCall =.. [_|RecArgs],
+    nth1(MetricPos, HeadArgs, HeadMetric),
+    nth1(MetricPos, RecArgs, RecMetric),
+    select(MetricGoal, PostGoals0, PostGoals),
+    weighted_metric_recursive_goal(HeadMetric, RecMetric, MetricGoal, StepVar),
+    weighted_extract_positive_step_guard(PreRecGoals2, StepVar, PreRecGoals, PositiveStepProven),
+    weighted_step_auxiliary_goal(HeadArgs, StepVar, PreRecGoals),
+    \+ goals_reference_samevar(PreRecGoals, VisitedVar),
+    \+ goals_reference_samevar(PostGoals, VisitedVar).
+
+weighted_metric_recursive_goal(HeadMetric, RecMetric, Goal0, StepVar) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [is, HeadMetric, Expr]
+    ;   Goal =.. ['=', HeadMetric, Expr]
+    ),
+    Expr =.. [+, Left, Right],
+    (   Left == RecMetric,
+        var(Right),
+        StepVar = Right
+    ;   Right == RecMetric,
+        var(Left),
+        StepVar = Left
+    ),
+    StepVar \== RecMetric.
+
+weighted_extract_positive_step_guard(Terms, StepVar, RemainingTerms, true) :-
+    select(Guard0, Terms, RemainingTerms),
+    weighted_positive_step_guard(Guard0, StepVar),
+    !.
+weighted_extract_positive_step_guard(Terms, _StepVar, Terms, false).
+
+weighted_positive_step_guard(Goal0, StepVar) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [>, StepVar, Value],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [<, Value, StepVar],
+        number(Value),
+        Value >= 0
+    ;   Goal =.. [>=, StepVar, Value],
+        number(Value),
+        Value > 0
+    ;   Goal =.. [=<, Value, StepVar],
+        number(Value),
+        Value > 0
+    ).
+
+weighted_step_auxiliary_goal(HeadArgs, StepVar, Goals) :-
+    member(Goal, Goals),
+    weighted_step_auxiliary_goal_shape(HeadArgs, StepVar, Goal),
+    !.
+
+weighted_step_auxiliary_goal_shape(HeadArgs, StepVar, Goal0) :-
+    strip_module(Goal0, _, Goal),
+    callable(Goal),
+    Goal \= (\+ _),
+    Goal \= not(_),
+    Goal \= !,
+    Goal =.. [Functor, DriverVar, AuxValue],
+    Functor \= member,
+    var(DriverVar),
+    member_samevar(DriverVar, HeadArgs),
+    AuxValue == StepVar,
+    var(StepVar),
+    StepVar \== DriverVar.
+
 is_cut_goal(!).
 
 max_depth_budget_goal(Goal0, MaxVar) :-
@@ -602,7 +755,7 @@ build_min_closure_code(Pred/Arity, BaseClauses, RecClauses, SignaturePositions,
     clauses_to_code(InnerClauses, InnerCode),
     clauses_to_code(OuterClauseTerms, OuterCode),
     atomic_list_concat([
-        '% Mode-directed min helper for canonical counted per-path recursion.',
+        '% Mode-directed min helper for canonical shortest-path style per-path recursion.',
         TableDeclCode,
         InnerCode,
         OuterCode

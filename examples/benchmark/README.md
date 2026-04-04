@@ -188,12 +188,14 @@ Tables:
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
-| `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, and Go DFS |
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
 | `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
 | `generate_prolog_shortest_path_seeded_benchmark.pl` | Generate standalone SWI-Prolog shortest-path scripts for seeded `all` vs mode-directed `min` closure, loading `facts.pl` at runtime |
 | `benchmark_prolog_seeded_min_closure.py` | Compare seeded Prolog `all` vs `min` closure and report `load_ms`, `query_ms`, `aggregation_ms`, and work metrics |
+| `generate_prolog_weighted_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog weighted-shortest-path scripts for seeded `all` vs mode-directed `min` closure |
+| `benchmark_prolog_weighted_min_closure.py` | Compare seeded Prolog weighted `all` vs `min` closure and report `load_ms`, `query_ms`, `aggregation_ms`, and work metrics |
 | `generate_dependency_benchmark_data.py` | Generate deterministic synthetic package-DAG benchmark data |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
@@ -219,10 +221,10 @@ Packaging note:
   - rounded float row outputs in common 2-column and 3-column forms
 - workloads can still keep custom normalization when their semantics or
   ordering rules are genuinely different
-- the seeded Prolog shortest-path benchmark now loads `facts.pl` at
-  runtime from a small generated driver instead of inlining facts into
-  the generated script, so `load_ms` is reported separately from
-  `query_ms`
+- the seeded Prolog shortest-path and weighted-shortest-path benchmarks
+  now load `facts.pl` at runtime from a small generated driver instead
+  of inlining facts into the generated script, so `load_ms` is reported
+  separately from `query_ms`
 
 ## Usage
 
@@ -277,7 +279,7 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
 # Compare positive weighted minimum path distance across query engine and DFS targets
 python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min
 
 # Compare category influence propagation across the C# query engine, Rust, and Go
 python examples/benchmark/benchmark_category_influence_cross_target.py \
@@ -291,6 +293,11 @@ python examples/benchmark/benchmark_prolog_branch_pruning.py \
 
 # Compare seeded Prolog all-path closure vs mode-directed min closure
 python examples/benchmark/benchmark_prolog_seeded_min_closure.py \
+    --scales 300,1k,5k,10k \
+    --targets prolog-all,prolog-min
+
+# Compare seeded Prolog weighted all-path closure vs mode-directed min closure
+python examples/benchmark/benchmark_prolog_weighted_min_closure.py \
     --scales 300,1k,5k,10k \
     --targets prolog-all,prolog-min
 ```
@@ -320,6 +327,7 @@ The current comparison surface across query and non-query targets is:
   - category influence propagation
 - Prolog seeded `min`:
   - minimum hop distance
+  - positive weighted minimum path distance
 
 The benchmark split is now:
 
@@ -333,6 +341,7 @@ The benchmark split is now:
 - Prolog target:
   - `benchmark_prolog_branch_pruning.py`
   - `benchmark_prolog_seeded_min_closure.py`
+  - `benchmark_prolog_weighted_min_closure.py`
 - C# query-engine internal mode comparison:
   - `benchmark_shortest_path_to_root.py`
   - `benchmark_weighted_shortest_path.py`
@@ -450,36 +459,82 @@ Command:
 ```bash
 python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min \
     --repetitions 1
 ```
 
 Latest local results:
 
-| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
-|-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.181s | 0.466s | 0.353s | 0.487s | match |
-| 1k | 0.142s | 1.409s | 1.447s | 2.206s | match |
-| 5k | 0.250s | 5.957s | 7.994s | 12.404s | match |
-| 10k | 0.381s | 10.593s | 14.234s | 19.460s | match |
+| Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
+|-------|---------:|-----------:|--------:|---------:|-------:|---------|
+| 300 | 0.180s | 0.118s | 0.497s | 0.363s | 0.540s | match |
+| 1k | 0.137s | 0.140s | 1.352s | 1.526s | 2.238s | match |
+| 5k | 0.217s | 0.280s | 5.973s | 7.869s | 12.033s | match |
+| 10k | 0.391s | 0.509s | 10.975s | 14.789s | 19.974s | match |
+
+Direct C# query vs Prolog seeded `min`:
+
+| Scale | Faster target | Speedup |
+|-------|---------------|--------:|
+| 300 | Prolog Min | 1.52x |
+| 1k | C# Query | 1.02x |
+| 5k | C# Query | 1.29x |
+| 10k | C# Query | 1.30x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 2.57x | 1.95x | 2.69x |
-| 1k | 9.91x | 10.18x | 15.51x |
-| 5k | 23.81x | 31.94x | 49.57x |
-| 10k | 23.57x | 33.02x | 44.65x |
+| 300 | 2.77x | 2.02x | 3.01x |
+| 1k | 9.84x | 11.10x | 16.28x |
+| 5k | 27.55x | 36.29x | 55.49x |
+| 10k | 28.08x | 37.84x | 51.11x |
 
 Comparison note:
 
-- the earlier apparent weighted `10k` mismatch turned out to be
-  benchmark normalization sensitivity at roughly `1e-12`, not a semantic
-  query-engine bug
-- the cross-target weighted benchmark now normalizes floating-point
-  outputs with a tolerance appropriate for cross-language evaluation
-  order differences
+- seeded Prolog `min` is now competitive with the C# query engine on
+  the weighted shortest-path workload too: it wins at `300`, is
+  effectively tied at `1k`, and remains within about `1.29x` to `1.30x`
+  of the C# query engine at `5k` and `10k`
+- the cross-target weighted benchmark normalizes floating-point outputs
+  with a tolerance appropriate for cross-language evaluation order
+  differences
+
+### Prolog Weighted Min-Closure Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_weighted_min_closure.py \
+    --scales 300,1k,5k,10k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Prolog All | Prolog Min | Output Match |
+|-------|-----------:|-----------:|--------------|
+| 300 | 0.441s | 0.117s | match |
+| 1k | 0.303s | 0.129s | match |
+| 5k | 1.189s | 0.292s | match |
+| 10k | 2.762s | 0.552s | match |
+
+Speedups of seeded Prolog weighted `min` over seeded `all`:
+
+| Scale | Speedup |
+|-------|--------:|
+| 300 | 3.78x |
+| 1k | 2.35x |
+| 5k | 4.08x |
+| 10k | 5.01x |
+
+The retained work also drops sharply:
+
+| Scale | `all` tuple count | `min` tuple count |
+|-------|------------------:|------------------:|
+| 300 | 11172 | 213 |
+| 1k | 10976 | 48 |
+| 5k | 41132 | 151 |
+| 10k | 105287 | 462 |
 
 ### Cross-Target Dependency Reach Results
 
