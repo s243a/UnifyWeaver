@@ -447,27 +447,29 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.059s | 0.043s | 0.002s | 0.002s | match |
-| 1k | 0.061s | 0.043s | 0.003s | 0.003s | match |
-| 5k | 0.089s | 0.051s | 0.006s | 0.006s | match |
-| 10k | 0.105s | 0.059s | 0.010s | 0.011s | match |
+| 300 | 0.052s | 0.045s | 0.002s | 0.002s | match |
+| 1k | 0.058s | 0.051s | 0.003s | 0.004s | match |
+| 5k | 0.097s | 0.057s | 0.006s | 0.006s | match |
+| 10k | 0.090s | 0.060s | 0.019s | 0.011s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.74x | 0.03x | 0.04x |
-| 1k | 0.71x | 0.04x | 0.05x |
-| 5k | 0.57x | 0.07x | 0.07x |
-| 10k | 0.56x | 0.10x | 0.11x |
+| 300 | 0.85x | 0.03x | 0.04x |
+| 1k | 0.87x | 0.06x | 0.06x |
+| 5k | 0.59x | 0.06x | 0.06x |
+| 10k | 0.67x | 0.21x | 0.12x |
 
 Comparison note:
 
 - this benchmark now includes a real `csharp-query` DAG longest-depth
   path built on a dedicated query-runtime node
-- the query engine matches all DFS outputs and is now in the right
-  algorithmic family, but it still carries more runtime overhead than the
-  hand-written DFS targets
+- the latest runtime-overhead pass removes local-id subgraph rebuilding
+  and avoids runtime-side row sorting inside the longest-depth node
+- the query engine matches all DFS outputs and is now somewhat closer to
+  the hand-written C# DFS baseline, but it still carries more runtime
+  overhead than the hand-written DFS targets
 - that makes it a good DAG benchmark baseline for further query-runtime
   optimization rather than a finished performance story
 

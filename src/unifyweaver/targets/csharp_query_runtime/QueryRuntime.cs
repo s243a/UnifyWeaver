@@ -8850,7 +8850,6 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             var nodeIds = new Dictionary<object?, int>();
-            var nodeValues = new List<object?>();
             var successors = new List<List<int>>();
 
             int GetNodeId(object? value)
@@ -8860,9 +8859,8 @@ namespace UnifyWeaver.QueryRuntime
                     return id;
                 }
 
-                id = nodeValues.Count;
+                id = successors.Count;
                 nodeIds.Add(value, id);
-                nodeValues.Add(value);
                 successors.Add(new List<int>());
                 return id;
             }
@@ -8879,13 +8877,14 @@ namespace UnifyWeaver.QueryRuntime
                 successors[fromId].Add(toId);
             }
 
-            if (nodeValues.Count == 0 || nodeValues.Count > maxNodeCount)
+            if (successors.Count == 0 || successors.Count > maxNodeCount)
             {
                 return false;
             }
 
-            var reachable = new bool[nodeValues.Count];
-            var queue = new Queue<int>();
+            var groupIds = new Dictionary<object?, int>();
+            var groupValues = new List<object?>();
+            var seedPairs = new List<(int GroupId, int NodeId)>();
             foreach (var seed in seeds)
             {
                 if (seed is null || seed.Length < 2)
@@ -8893,7 +8892,31 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                if (!nodeIds.TryGetValue(seed[1], out var nodeId) || reachable[nodeId])
+                if (!nodeIds.TryGetValue(seed[1], out var nodeId))
+                {
+                    continue;
+                }
+
+                if (!groupIds.TryGetValue(seed[0], out var groupId))
+                {
+                    groupId = groupValues.Count;
+                    groupIds.Add(seed[0], groupId);
+                    groupValues.Add(seed[0]);
+                }
+
+                seedPairs.Add((groupId, nodeId));
+            }
+
+            if (seedPairs.Count == 0)
+            {
+                return true;
+            }
+
+            var reachable = new bool[successors.Count];
+            var queue = new Queue<int>(seedPairs.Count);
+            foreach (var (_, nodeId) in seedPairs)
+            {
+                if (reachable[nodeId])
                 {
                     continue;
                 }
@@ -8931,34 +8954,14 @@ namespace UnifyWeaver.QueryRuntime
                 return true;
             }
 
-            var localIds = new int[nodeValues.Count];
-            Array.Fill(localIds, -1);
-            var localSuccessors = new List<List<int>>(includedCount);
-            var localNodeValues = new object?[includedCount];
-            var indegree = new int[includedCount];
-            var nextLocalId = 0;
-
-            for (var globalId = 0; globalId < reachable.Length; globalId++)
+            var indegree = new int[successors.Count];
+            for (var globalId = 0; globalId < successors.Count; globalId++)
             {
                 if (!reachable[globalId])
                 {
                     continue;
                 }
 
-                localIds[globalId] = nextLocalId;
-                localNodeValues[nextLocalId] = nodeValues[globalId];
-                localSuccessors.Add(new List<int>());
-                nextLocalId++;
-            }
-
-            for (var globalId = 0; globalId < reachable.Length; globalId++)
-            {
-                if (!reachable[globalId])
-                {
-                    continue;
-                }
-
-                var fromLocalId = localIds[globalId];
                 foreach (var nextGlobalId in successors[globalId])
                 {
                     if (!reachable[nextGlobalId])
@@ -8966,16 +8969,14 @@ namespace UnifyWeaver.QueryRuntime
                         continue;
                     }
 
-                    var toLocalId = localIds[nextGlobalId];
-                    localSuccessors[fromLocalId].Add(toLocalId);
-                    indegree[toLocalId]++;
+                    indegree[nextGlobalId]++;
                 }
             }
 
-            var topoQueue = new Queue<int>();
-            for (var i = 0; i < indegree.Length; i++)
+            var topoQueue = new Queue<int>(includedCount);
+            for (var i = 0; i < successors.Count; i++)
             {
-                if (indegree[i] == 0)
+                if (reachable[i] && indegree[i] == 0)
                 {
                     topoQueue.Enqueue(i);
                 }
@@ -8984,14 +8985,19 @@ namespace UnifyWeaver.QueryRuntime
             var topo = new List<int>(includedCount);
             while (topoQueue.Count > 0)
             {
-                var localId = topoQueue.Dequeue();
-                topo.Add(localId);
-                foreach (var successorLocalId in localSuccessors[localId])
+                var nodeId = topoQueue.Dequeue();
+                topo.Add(nodeId);
+                foreach (var successorId in successors[nodeId])
                 {
-                    indegree[successorLocalId]--;
-                    if (indegree[successorLocalId] == 0)
+                    if (!reachable[successorId])
                     {
-                        topoQueue.Enqueue(successorLocalId);
+                        continue;
+                    }
+
+                    indegree[successorId]--;
+                    if (indegree[successorId] == 0)
+                    {
+                        topoQueue.Enqueue(successorId);
                     }
                 }
             }
@@ -9001,47 +9007,49 @@ namespace UnifyWeaver.QueryRuntime
                 return false;
             }
 
-            var depths = new int[includedCount];
+            var depths = new int[successors.Count];
             for (var i = topo.Count - 1; i >= 0; i--)
             {
-                var localId = topo[i];
+                var nodeId = topo[i];
                 var best = 1;
-                foreach (var successorLocalId in localSuccessors[localId])
+                foreach (var successorId in successors[nodeId])
                 {
-                    var candidate = depths[successorLocalId] + 1;
+                    if (!reachable[successorId])
+                    {
+                        continue;
+                    }
+
+                    var candidate = depths[successorId] + 1;
                     if (candidate > best)
                     {
                         best = candidate;
                     }
                 }
 
-                depths[localId] = best;
+                depths[nodeId] = best;
             }
 
-            var groupBest = new Dictionary<object?, int>();
-            foreach (var seed in seeds)
+            var groupBest = new int[groupValues.Count];
+            foreach (var (groupId, nodeId) in seedPairs)
             {
-                if (seed is null || seed.Length < 2)
+                if (!reachable[nodeId])
                 {
                     continue;
                 }
 
-                if (!nodeIds.TryGetValue(seed[1], out var globalId) || !reachable[globalId])
+                var depth = depths[nodeId];
+                if (depth > groupBest[groupId])
                 {
-                    continue;
-                }
-
-                var depth = depths[localIds[globalId]];
-                if (!groupBest.TryGetValue(seed[0], out var best) || depth > best)
-                {
-                    groupBest[seed[0]] = depth;
+                    groupBest[groupId] = depth;
                 }
             }
 
-            rows = groupBest
-                .OrderBy(kvp => kvp.Key?.ToString() ?? string.Empty, StringComparer.Ordinal)
-                .Select(kvp => new object[] { kvp.Key!, kvp.Value })
-                .ToList();
+            rows = new List<object[]>(groupValues.Count);
+            for (var groupId = 0; groupId < groupValues.Count; groupId++)
+            {
+                rows.Add(new object[] { groupValues[groupId]!, groupBest[groupId] });
+            }
+
             return true;
         }
 
