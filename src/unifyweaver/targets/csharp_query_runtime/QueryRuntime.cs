@@ -448,6 +448,13 @@ namespace UnifyWeaver.QueryRuntime
         int TotalRows
     );
 
+    public sealed record QueryPhaseTrace(
+        int NodeId,
+        string NodeType,
+        string Phase,
+        TimeSpan Elapsed
+    );
+
     public sealed class QueryExecutionTrace
     {
         private sealed class NodeStats
@@ -500,6 +507,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly Dictionary<(string Cache, string Key), CacheStats> _cacheStats = new();
         private readonly Dictionary<(PlanNode Node, string Strategy), long> _strategies = new(new PlanNodeStrategyComparer());
         private readonly List<QueryFixpointIterationTrace> _fixpointIterations = new();
+        private readonly Dictionary<(PlanNode Node, string Phase), TimeSpan> _phases = new(new PlanNodeStrategyComparer());
         private int _nextId = 1;
 
         private NodeStats GetOrAdd(PlanNode node)
@@ -618,6 +626,27 @@ namespace UnifyWeaver.QueryRuntime
                 totalRows));
         }
 
+        internal void RecordPhase(PlanNode node, string phase, TimeSpan elapsed)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (phase is null) throw new ArgumentNullException(nameof(phase));
+            if (elapsed <= TimeSpan.Zero)
+            {
+                return;
+            }
+
+            _ = GetOrAdd(node);
+            var key = (node, phase);
+            if (_phases.TryGetValue(key, out var existing))
+            {
+                _phases[key] = existing + elapsed;
+            }
+            else
+            {
+                _phases.Add(key, elapsed);
+            }
+        }
+
         internal IEnumerable<object[]> WrapEnumeration(PlanNode node, IEnumerable<object[]> source)
         {
             if (node is null) throw new ArgumentNullException(nameof(node));
@@ -711,6 +740,23 @@ namespace UnifyWeaver.QueryRuntime
                 .OrderBy(s => s.NodeId)
                 .ThenBy(s => s.Predicate, StringComparer.Ordinal)
                 .ThenBy(s => s.Iteration)
+                .ToList();
+        }
+
+        public IReadOnlyList<QueryPhaseTrace> SnapshotPhases()
+        {
+            return _phases
+                .Select(kvp =>
+                {
+                    var node = kvp.Key.Node;
+                    return new QueryPhaseTrace(
+                        GetOrAdd(node).Id,
+                        node.GetType().Name,
+                        kvp.Key.Phase,
+                        kvp.Value);
+                })
+                .OrderBy(s => s.NodeId)
+                .ThenBy(s => s.Phase, StringComparer.Ordinal)
                 .ToList();
         }
 
@@ -8319,7 +8365,7 @@ namespace UnifyWeaver.QueryRuntime
                 var edges = GetFactsList(closure.EdgeRelation, context);
                 var seeds = GetFactsList(closure.SeedRelation, context);
                 const int MaxDagNodeCount = 65536;
-                if (!TryBuildSeedGroupedDagLongestDepthRows(edges, seeds, MaxDagNodeCount, out var rows))
+                if (!TryBuildSeedGroupedDagLongestDepthRows(closure, trace, edges, seeds, MaxDagNodeCount, out var rows))
                 {
                     throw new InvalidOperationException("SeedGroupedDagLongestDepthNode requires an acyclic edge relation.");
                 }
@@ -8838,6 +8884,8 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static bool TryBuildSeedGroupedDagLongestDepthRows(
+            PlanNode traceNode,
+            QueryExecutionTrace? trace,
             IReadOnlyList<object[]> edges,
             IReadOnlyList<object[]> seeds,
             int maxNodeCount,
@@ -8849,6 +8897,7 @@ namespace UnifyWeaver.QueryRuntime
                 return false;
             }
 
+            var phaseStopwatch = Stopwatch.StartNew();
             var nodeIds = new Dictionary<object?, int>();
             var successors = new List<List<int>>();
 
@@ -8881,7 +8930,10 @@ namespace UnifyWeaver.QueryRuntime
             {
                 return false;
             }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "build_graph", phaseStopwatch.Elapsed);
 
+            phaseStopwatch.Restart();
             var groupIds = new Dictionary<object?, int>();
             var groupValues = new List<object?>();
             var seedPairs = new List<(int GroupId, int NodeId)>();
@@ -8911,7 +8963,10 @@ namespace UnifyWeaver.QueryRuntime
             {
                 return true;
             }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "seed_grouping", phaseStopwatch.Elapsed);
 
+            phaseStopwatch.Restart();
             var reachable = new bool[successors.Count];
             var queue = new Queue<int>(seedPairs.Count);
             foreach (var (_, nodeId) in seedPairs)
@@ -8953,7 +9008,10 @@ namespace UnifyWeaver.QueryRuntime
             {
                 return true;
             }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "reachable_cone", phaseStopwatch.Elapsed);
 
+            phaseStopwatch.Restart();
             var indegree = new int[successors.Count];
             for (var globalId = 0; globalId < successors.Count; globalId++)
             {
@@ -9006,7 +9064,10 @@ namespace UnifyWeaver.QueryRuntime
             {
                 return false;
             }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "topological_order", phaseStopwatch.Elapsed);
 
+            phaseStopwatch.Restart();
             var depths = new int[successors.Count];
             for (var i = topo.Count - 1; i >= 0; i--)
             {
@@ -9028,7 +9089,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 depths[nodeId] = best;
             }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "suffix_depth_dp", phaseStopwatch.Elapsed);
 
+            phaseStopwatch.Restart();
             var groupBest = new int[groupValues.Count];
             foreach (var (groupId, nodeId) in seedPairs)
             {
@@ -9049,6 +9113,8 @@ namespace UnifyWeaver.QueryRuntime
             {
                 rows.Add(new object[] { groupValues[groupId]!, groupBest[groupId] });
             }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "group_reduction", phaseStopwatch.Elapsed);
 
             return true;
         }
