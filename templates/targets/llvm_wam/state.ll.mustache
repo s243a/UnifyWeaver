@@ -1,0 +1,223 @@
+; === WAM State Management ===
+
+declare i8* @malloc(i64)
+declare void @free(i8*)
+declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
+
+; Create a new WamState with given code and labels
+define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %labels, i32 %label_count) {
+  %size = ptrtoint %WamState* getelementptr (%WamState, %WamState* null, i32 1) to i64
+  %mem = call i8* @malloc(i64 %size)
+  %vm = bitcast i8* %mem to %WamState*
+
+  ; Initialize pc = 0
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  store i32 0, i32* %pc_ptr
+
+  ; Initialize registers to zero
+  %regs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %regs_raw = bitcast %Value* %regs_ptr to i8*
+  %regs_size = mul i64 32, 16  ; 32 x sizeof(%Value) = 32 x {i32, i64} ≈ 32*16
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %regs_raw, i8* zeroinitializer, i64 %regs_size, i1 false)
+
+  ; Allocate stack (initial capacity 256)
+  %stack_mem = call i8* @malloc(i64 6144)  ; 256 * sizeof(StackEntry)
+  %stack_typed = bitcast i8* %stack_mem to %StackEntry*
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  store %StackEntry* %stack_typed, %StackEntry** %stack_ptr
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 0, i32* %ss_ptr
+  %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
+  store i32 256, i32* %sc_ptr
+
+  ; Allocate heap (initial capacity 4096)
+  %heap_mem = call i8* @malloc(i64 65536)  ; 4096 * sizeof(Value)
+  %heap_typed = bitcast i8* %heap_mem to %Value*
+  %hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  store %Value* %heap_typed, %Value** %hp_ptr
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  store i32 0, i32* %hs_ptr
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  store i32 4096, i32* %hc_ptr
+
+  ; Allocate trail (initial capacity 256)
+  %trail_mem = call i8* @malloc(i64 6144)
+  %trail_typed = bitcast i8* %trail_mem to %TrailEntry*
+  %tp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  store %TrailEntry* %trail_typed, %TrailEntry** %tp_ptr
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  store i32 0, i32* %ts_ptr
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  store i32 256, i32* %tc_ptr
+
+  ; Initialize cp = 0
+  %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  store i32 0, i32* %cp_ptr
+
+  ; Allocate choice points (initial capacity 64)
+  %cpp_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 64) to i64
+  %cp_mem = call i8* @malloc(i64 %cpp_size)
+  %cp_typed = bitcast i8* %cp_mem to %ChoicePoint*
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  store %ChoicePoint* %cp_typed, %ChoicePoint** %cps_ptr
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  store i32 0, i32* %cpn_ptr
+  %cpc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
+  store i32 64, i32* %cpc_ptr
+
+  ; Store code pointer and length
+  %code_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 15
+  store %Instruction* %code, %Instruction** %code_ptr
+  %cl_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 16
+  store i32 %code_len, i32* %cl_ptr
+
+  ; Store labels
+  %labels_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 17
+  store i32* %labels, i32** %labels_ptr
+  %lc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 18
+  store i32 %label_count, i32* %lc_ptr
+
+  ; halted = false
+  %halt_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
+  store i1 false, i1* %halt_ptr
+
+  ret %WamState* %vm
+}
+
+; Get register value by index
+define %Value @wam_get_reg(%WamState* %vm, i32 %idx) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %val = load %Value, %Value* %reg_ptr
+  ret %Value %val
+}
+
+; Set register value by index
+define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  store %Value %val, %Value* %reg_ptr
+  ret void
+}
+
+; Increment PC
+define void @wam_inc_pc(%WamState* %vm) {
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  %pc = load i32, i32* %pc_ptr
+  %new_pc = add i32 %pc, 1
+  store i32 %new_pc, i32* %pc_ptr
+  ret void
+}
+
+; Get current PC
+define i32 @wam_get_pc(%WamState* %vm) {
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  %pc = load i32, i32* %pc_ptr
+  ret i32 %pc
+}
+
+; Set PC
+define void @wam_set_pc(%WamState* %vm, i32 %pc) {
+  %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
+  store i32 %pc, i32* %pc_ptr
+  ret void
+}
+
+; Push trail entry
+define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) {
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_ptr
+  %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
+  %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
+
+  ; Save register index
+  %idx_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 0
+  store i32 %reg_idx, i32* %idx_ptr
+
+  ; Save current value
+  %old_val = call %Value @wam_get_reg(%WamState* %vm, i32 %reg_idx)
+  %val_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 1
+  store %Value %old_val, %Value* %val_ptr
+
+  ; Increment trail size
+  %new_ts = add i32 %ts, 1
+  store i32 %new_ts, i32* %ts_ptr
+  ret void
+}
+
+; Push value onto heap, return address
+define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap_arr = load %Value*, %Value** %heap_arr_ptr
+  %slot = getelementptr %Value, %Value* %heap_arr, i32 %hs
+  store %Value %val, %Value* %slot
+  %new_hs = add i32 %hs, 1
+  store i32 %new_hs, i32* %hs_ptr
+  ret i32 %hs
+}
+
+; Set halted flag
+define void @wam_set_halted(%WamState* %vm, i1 %val) {
+  %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
+  store i1 %val, i1* %h_ptr
+  ret void
+}
+
+; Check halted flag
+define i1 @wam_is_halted(%WamState* %vm) {
+  %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
+  %h = load i1, i1* %h_ptr
+  ret i1 %h
+}
+
+; Get/set continuation pointer
+define i32 @wam_get_cp(%WamState* %vm) {
+  %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %cp = load i32, i32* %cp_ptr
+  ret i32 %cp
+}
+
+define void @wam_set_cp(%WamState* %vm, i32 %cp) {
+  %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  store i32 %cp, i32* %cp_ptr
+  ret void
+}
+
+; Fetch instruction at current PC
+define %Instruction* @wam_fetch(%WamState* %vm) {
+entry:
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  %cl_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 16
+  %cl = load i32, i32* %cl_ptr
+  %in_bounds = icmp slt i32 %pc, %cl
+  br i1 %in_bounds, label %fetch, label %out_of_bounds
+
+fetch:
+  %code_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 15
+  %code_arr = load %Instruction*, %Instruction** %code_arr_ptr
+  %instr_ptr = getelementptr %Instruction, %Instruction* %code_arr, i32 %pc
+  ret %Instruction* %instr_ptr
+
+out_of_bounds:
+  ret %Instruction* null
+}
+
+; Look up label → PC (returns -1 if not found)
+define i32 @wam_label_pc(%WamState* %vm, i32 %label_idx) {
+entry:
+  %lc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 18
+  %lc = load i32, i32* %lc_ptr
+  %valid = icmp slt i32 %label_idx, %lc
+  br i1 %valid, label %lookup, label %not_found
+
+lookup:
+  %labels_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 17
+  %labels = load i32*, i32** %labels_ptr
+  %pc_slot = getelementptr i32, i32* %labels, i32 %label_idx
+  %pc = load i32, i32* %pc_slot
+  ret i32 %pc
+
+not_found:
+  ret i32 -1
+}
