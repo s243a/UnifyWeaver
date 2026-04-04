@@ -50,6 +50,10 @@
 %       - branch_pruning(auto/false) - Enable or disable SWI PPV pruning
 %         helpers (default: auto). Use false when benchmarking the
 %         non-pruned baseline or when comparing generated variants.
+%       - min_closure(auto/false) - Emit a SWI mode-directed min helper
+%         for canonical counted PPV recursion when available (default:
+%         auto). This preserves the original predicate and adds a
+%         separate '$min' helper for bound shortest-path style queries.
 %  @arg ScriptCode Generated script as atom
 %
 %  @example Generate script for user predicates
@@ -225,9 +229,10 @@ generate_predicate_code(Pred/Arity, Options, Code) :-
     % Copy predicate clauses verbatim, or generate an optimized worker when
     % the source matches a parameterized per-path recursion shape.
     (   maybe_generate_branch_pruned_predicate(Pred/Arity, Options, OptimizedCode)
-    ->  BaseCode = OptimizedCode
-    ;   copy_predicate_clauses(Pred/Arity, BaseCode)
+    ->  BaseCode0 = OptimizedCode
+    ;   copy_predicate_clauses(Pred/Arity, BaseCode0)
     ),
+    maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode0, BaseCode),
 
     % Apply constraints if specified
     (   option(constraints(Constraints), Options)
@@ -363,6 +368,357 @@ maybe_generate_branch_pruned_predicate(Pred/Arity, Options, Code) :-
 branch_pruning_debug(Pred/Arity, Message, Args) :-
     atom_concat('Skipping branch pruning for ~w/~w: ', Message, Format),
     debug(prolog_branch_pruning, Format, [Pred, Arity|Args]).
+
+maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode, Code) :-
+    option(min_closure(Setting), Options, auto),
+    (   Setting == false
+    ->  Code = BaseCode
+    ;   maybe_generate_min_closure_helper(Pred/Arity, Options, HelperCode)
+    ->  atomic_list_concat([BaseCode, HelperCode], '\n\n', Code)
+    ;   Code = BaseCode
+    ).
+
+maybe_generate_min_closure_helper(Pred/Arity, Options, Code) :-
+    option(dialect(Dialect), Options, swi),
+    Dialect == swi,
+    findall(Head-Body,
+        (   functor(Head, Pred, Arity),
+            user:clause(Head, Body0),
+            strip_codegen_module_qualifiers(Body0, Body)
+        ),
+        Clauses),
+    Clauses \= [],
+    partition(is_recursive_clause_for_pred(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    counted_ppv_visited_position(Pred, Arity, RecClauses, VisitedPos),
+    counted_ppv_driver_position(Pred, Arity, RecClauses, VisitedPos, DriverPos),
+    branch_pruning_mode_positions(Pred/Arity, VisitedPos, InvariantPositions),
+    branch_pruning_signature_positions(DriverPos, InvariantPositions, SignaturePositions),
+    min_closure_metric_position(Arity, VisitedPos, SignaturePositions, MetricPos),
+    maplist(min_closure_base_depth(MetricPos, VisitedPos), BaseClauses, BaseDepths),
+    sort(BaseDepths, [BaseDepth]),
+    RecClauses = [FirstRec|RestRecClauses],
+    min_closure_recursive_shape(Pred, Arity, VisitedPos, MetricPos, FirstRec, StepIncrement, BudgetMode),
+    forall(member(RecClause, RestRecClauses),
+        min_closure_recursive_shape_compatible(Pred, Arity, VisitedPos, MetricPos,
+            StepIncrement, BudgetMode, RecClause)),
+    build_min_closure_code(Pred/Arity, BaseClauses, RecClauses, SignaturePositions,
+        MetricPos, VisitedPos, BaseDepth, StepIncrement, BudgetMode, Code).
+
+counted_ppv_visited_position(Pred, Arity, RecClauses, VisitedPos) :-
+    member(Head-Body, RecClauses),
+    Head =.. [Pred|HeadArgs],
+    between(1, Arity, VisitedPos),
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    var(VisitedVar),
+    counted_ppv_clause_parts(Pred, Arity, VisitedPos, Head-Body,
+        _HeadArgs, _PreRecGoals, _RecCall, _PostGoals, _StepGoal, _NextVar, VisitedVar),
+    !.
+
+counted_ppv_driver_position(Pred, Arity, RecClauses, VisitedPos, DriverPos) :-
+    maplist(counted_ppv_clause_driver_position(Pred, Arity, VisitedPos), RecClauses, DriverPositions),
+    sort(DriverPositions, [DriverPos]).
+
+counted_ppv_clause_driver_position(Pred, Arity, VisitedPos, Head-Body, DriverPos) :-
+    counted_ppv_clause_parts(Pred, Arity, VisitedPos, Head-Body,
+        HeadArgs, _PreRecGoals, _RecCall, _PostGoals, StepGoal, _NextVar, _VisitedVar),
+    step_goal_input_var(StepGoal, StepInputVar),
+    findall(Pos,
+        (   between(1, Arity, Pos),
+            nth1(Pos, HeadArgs, Arg),
+            Arg == StepInputVar
+        ),
+        [DriverPos]).
+
+counted_ppv_clause_parts(Pred, Arity, VisitedPos, Head-Body,
+        HeadArgs, PreRecGoals, RecCall, PostGoals, StepGoal, NextVar, VisitedVar) :-
+    Head =.. [Pred|HeadArgs],
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    body_goals(Body, Goals),
+    append(PreRecGoals, [RecCall|PostGoals], Goals),
+    branch_pruning_recursive_goal(Pred, Arity, RecCall),
+    RecCall =.. [_|RecArgs],
+    nth1(1, RecArgs, NextVar),
+    nth1(VisitedPos, RecArgs, VisitedArg),
+    nonvar(VisitedArg),
+    VisitedArg = [NextVar|Tail],
+    Tail == VisitedVar,
+    counted_ppv_step_goal(HeadArgs, PreRecGoals, NextVar, StepGoal).
+
+counted_ppv_step_goal(HeadArgs, Goals, NextVar, StepGoal) :-
+    member(StepGoal, Goals),
+    counted_ppv_step_goal_shape(StepGoal, HeadArgs, NextVar),
+    !.
+
+counted_ppv_step_goal_shape(Goal0, HeadArgs, NextVar) :-
+    strip_module(Goal0, _, Goal),
+    callable(Goal),
+    Goal \= (\+ _),
+    Goal \= not(_),
+    Goal \= !,
+    Goal =.. [Functor|Args],
+    Functor \= member,
+    Args = [DriverVar|RestArgs],
+    var(DriverVar),
+    member_samevar(DriverVar, HeadArgs),
+    member_samevar(NextVar, RestArgs),
+    var(NextVar),
+    NextVar \== DriverVar.
+
+member_samevar(Var, [Candidate|_]) :-
+    Candidate == Var,
+    !.
+member_samevar(Var, [_|Rest]) :-
+    member_samevar(Var, Rest).
+
+min_closure_metric_position(Arity, VisitedPos, SignaturePositions, MetricPos) :-
+    findall(Pos,
+        (   between(1, Arity, Pos),
+            Pos =\= VisitedPos,
+            \+ memberchk(Pos, SignaturePositions)
+        ),
+        [MetricPos]).
+
+min_closure_base_depth(MetricPos, VisitedPos, Head-Body, BaseDepth) :-
+    Head =.. [_|HeadArgs],
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    body_goals(Body, Goals0),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), Goals0, Goals1),
+    strip_counted_ppv_setup_goals(Goals1, VisitedVar, _BudgetMode, Goals),
+    min_closure_metric_constant(HeadArgs, MetricPos, Goals, BaseDepth),
+    number(BaseDepth),
+    BaseDepth > 0.
+
+min_closure_metric_constant(HeadArgs, MetricPos, _Goals, BaseDepth) :-
+    nth1(MetricPos, HeadArgs, BaseDepth),
+    number(BaseDepth),
+    !.
+min_closure_metric_constant(HeadArgs, MetricPos, Goals, BaseDepth) :-
+    nth1(MetricPos, HeadArgs, MetricVar),
+    member(Goal, Goals),
+    metric_constant_goal(MetricVar, Goal, BaseDepth),
+    !.
+
+metric_constant_goal(HeadVar, Goal0, Value) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [is, HeadVar, Expr]
+    ;   Goal =.. ['=', HeadVar, Expr]
+    ),
+    number(Expr),
+    Value = Expr.
+
+min_closure_recursive_shape(Pred, Arity, VisitedPos, MetricPos, Head-Body, StepIncrement, BudgetMode) :-
+    counted_ppv_clause_parts(Pred, Arity, VisitedPos, Head-Body,
+        HeadArgs, PreRecGoals0, RecCall, PostGoals, _StepGoal, _NextVar, VisitedVar),
+    strip_counted_ppv_setup_goals(PreRecGoals0, VisitedVar, BudgetMode, PreRecGoals),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), PreRecGoals, _UsefulPreGoals),
+    RecCall =.. [_|RecArgs],
+    nth1(MetricPos, HeadArgs, HeadMetric),
+    nth1(MetricPos, RecArgs, RecMetric),
+    member(MetricGoal, PostGoals),
+    metric_increment_goal(HeadMetric, RecMetric, MetricGoal, StepIncrement),
+    number(StepIncrement),
+    StepIncrement > 0.
+
+min_closure_recursive_shape_compatible(Pred, Arity, VisitedPos, MetricPos,
+        StepIncrement, BudgetMode, Clause) :-
+    min_closure_recursive_shape(Pred, Arity, VisitedPos, MetricPos, Clause,
+        StepIncrement, ClauseBudgetMode),
+    budget_mode_compatible(BudgetMode, ClauseBudgetMode).
+
+budget_mode_compatible(unbounded, unbounded).
+budget_mode_compatible(budget(GoalA), budget(GoalB)) :-
+    functor(GoalA, Functor, Arity),
+    functor(GoalB, Functor, Arity).
+
+metric_increment_goal(HeadVar, RecVar, Goal0, Increment) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [is, HeadVar, Expr]
+    ;   Goal =.. ['=', HeadVar, Expr]
+    ),
+    additive_metric_expr(Expr, RecVar, Increment).
+
+additive_metric_expr(Expr, RecVar, Increment) :-
+    Expr =.. [+, Left, Right],
+    (   Left == RecVar,
+        number(Right),
+        Increment = Right
+    ;   Right == RecVar,
+        number(Left),
+        Increment = Left
+    ).
+
+strip_counted_ppv_setup_goals(Goals, VisitedVar, BudgetMode, CleanGoals) :-
+    exclude(is_cut_goal, Goals, GoalsNoCuts),
+    (   select(MaxGoal, GoalsNoCuts, Goals1),
+        max_depth_budget_goal(MaxGoal, MaxVar),
+        select(LengthGoal, Goals1, Goals2),
+        length_visited_goal(LengthGoal, VisitedVar, DepthVar),
+        select(CompareGoal, Goals2, Goals3),
+        depth_less_goal(CompareGoal, DepthVar, MaxVar)
+    ->  BudgetMode = budget(MaxGoal),
+        CleanGoals = Goals3
+    ;   BudgetMode = unbounded,
+        CleanGoals = GoalsNoCuts
+    ).
+
+is_cut_goal(!).
+
+max_depth_budget_goal(Goal0, MaxVar) :-
+    strip_module(Goal0, _, Goal),
+    compound(Goal),
+    Goal =.. [max_depth, MaxVar],
+    var(MaxVar).
+
+length_visited_goal(Goal0, VisitedVar, DepthVar) :-
+    strip_module(Goal0, _, Goal),
+    Goal =.. [length, ListVar, DepthVar],
+    ListVar == VisitedVar,
+    var(DepthVar).
+
+depth_less_goal(Goal0, DepthVar, MaxVar) :-
+    strip_module(Goal0, _, Goal),
+    Goal =.. [<, Left, Right],
+    Left == DepthVar,
+    Right == MaxVar.
+
+build_min_closure_code(Pred/Arity, BaseClauses, RecClauses, SignaturePositions,
+        MetricPos, VisitedPos, BaseDepth, StepIncrement, BudgetMode, Code) :-
+    atom_concat(Pred, '$min', MinName),
+    (   BudgetMode = unbounded
+    ->  InnerName = MinName,
+        OuterClauseTerms = []
+    ;   atom_concat(Pred, '$min_budget', InnerName),
+        OuterClauseTerms = [OuterClause],
+        build_min_outer_clause(MinName, InnerName, SignaturePositions, BudgetMode, OuterClause)
+    ),
+    maplist(build_min_base_clause(InnerName, SignaturePositions, MetricPos, VisitedPos,
+            BaseDepth, BudgetMode), BaseClauses, MinBaseClauses),
+    maplist(build_min_recursive_clause(Pred, Arity, InnerName, SignaturePositions, MetricPos,
+            VisitedPos, BaseDepth, StepIncrement, BudgetMode), RecClauses, MinRecClauses),
+    append(MinBaseClauses, MinRecClauses, InnerClauses),
+    build_min_table_decl(InnerName, SignaturePositions, BudgetMode, TableDeclCode),
+    clauses_to_code(InnerClauses, InnerCode),
+    clauses_to_code(OuterClauseTerms, OuterCode),
+    atomic_list_concat([
+        '% Mode-directed min helper for canonical counted per-path recursion.',
+        TableDeclCode,
+        InnerCode,
+        OuterCode
+    ], '\n\n', Code).
+
+build_min_outer_clause(MinName, InnerName, SignaturePositions, budget(MaxGoalTemplate), ClauseTerm) :-
+    length(SignaturePositions, SigCount),
+    build_min_signature_vars(SigCount, SignatureArgs),
+    append(SignatureArgs, [MetricArg], MinHeadArgs),
+    MinHead =.. [MinName|MinHeadArgs],
+    copy_term(MaxGoalTemplate, MaxGoal),
+    MaxGoal =.. [_Functor, BudgetArg],
+    append(SignatureArgs, [BudgetArg, MetricArg], InnerCallArgs),
+    InnerCall =.. [InnerName|InnerCallArgs],
+    Body = (MaxGoal, InnerCall),
+    ClauseTerm = (MinHead :- Body).
+
+build_min_signature_vars(0, []).
+build_min_signature_vars(Count, [_|Rest]) :-
+    Count > 0,
+    NextCount is Count - 1,
+    build_min_signature_vars(NextCount, Rest).
+
+build_min_table_decl(InnerName, SignaturePositions, BudgetMode, Code) :-
+    length(SignaturePositions, SignatureCount),
+    (   BudgetMode = unbounded
+    ->  KeyCount = SignatureCount
+    ;   KeyCount is SignatureCount + 1
+    ),
+    build_plus_modes(KeyCount, KeyModes),
+    append(KeyModes, [min], Modes),
+    TableSpec =.. [InnerName|Modes],
+    format(atom(Code), ':- table ~q.', [TableSpec]).
+
+build_plus_modes(0, []) :- !.
+build_plus_modes(Count, [+|Rest]) :-
+    Count > 0,
+    NextCount is Count - 1,
+    build_plus_modes(NextCount, Rest).
+
+build_min_base_clause(InnerName, SignaturePositions, MetricPos, VisitedPos, BaseDepth,
+        BudgetMode, Head-Body, ClauseTerm) :-
+    Head =.. [_|HeadArgs],
+    nth1(VisitedPos, HeadArgs, VisitedVar),
+    body_goals(Body, Goals0),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), Goals0, Goals1),
+    strip_counted_ppv_setup_goals(Goals1, VisitedVar, _IgnoredBudgetMode, Goals),
+    \+ goals_reference_samevar(Goals, VisitedVar),
+    select_positions_1based(SignaturePositions, HeadArgs, SignatureArgs),
+    nth1(MetricPos, HeadArgs, MetricArg),
+    build_min_base_head(InnerName, SignatureArgs, MetricArg, BudgetMode, HeadTerm, BudgetArg),
+    (   BudgetMode = unbounded
+    ->  BodyGoals = Goals
+    ;   BudgetGuard = (BudgetArg >= BaseDepth),
+        BodyGoals = [BudgetGuard|Goals]
+    ),
+    goals_to_body(BodyGoals, BodyTerm),
+    clause_term(HeadTerm, BodyTerm, ClauseTerm).
+
+build_min_base_head(InnerName, SignatureArgs, MetricArg, unbounded, HeadTerm, _BudgetArg) :-
+    append(SignatureArgs, [MetricArg], Args),
+    HeadTerm =.. [InnerName|Args].
+build_min_base_head(InnerName, SignatureArgs, MetricArg, budget(_), HeadTerm, BudgetArg) :-
+    append(SignatureArgs, [BudgetArg, MetricArg], Args),
+    HeadTerm =.. [InnerName|Args].
+
+build_min_recursive_clause(Pred, Arity, InnerName, SignaturePositions, MetricPos, VisitedPos,
+        BaseDepth, StepIncrement, BudgetMode, Head-Body, ClauseTerm) :-
+    counted_ppv_clause_parts(Pred, Arity, VisitedPos, Head-Body,
+        HeadArgs, PreRecGoals0, RecCall0, PostGoals, _StepGoal, _NextVar, VisitedVar),
+    strip_counted_ppv_setup_goals(PreRecGoals0, VisitedVar, _IgnoredBudgetMode, PreRecGoals1),
+    exclude(branch_pruning_negated_member_goal_for(VisitedVar), PreRecGoals1, PreRecGoals),
+    \+ goals_reference_samevar(PreRecGoals, VisitedVar),
+    \+ goals_reference_samevar(PostGoals, VisitedVar),
+    RecCall0 =.. [_|RecArgs],
+    select_positions_1based(SignaturePositions, HeadArgs, SignatureArgs),
+    select_positions_1based(SignaturePositions, RecArgs, NextSignatureArgs),
+    nth1(MetricPos, HeadArgs, MetricArg),
+    nth1(MetricPos, RecArgs, RecMetricArg),
+    build_min_recursive_head(InnerName, SignatureArgs, MetricArg, BudgetMode, HeadTerm, BudgetArg),
+    build_min_recursive_call(InnerName, NextSignatureArgs, RecMetricArg, BudgetMode,
+        StepIncrement, BaseDepth, RecursiveGoals, BudgetArg),
+    append(PreRecGoals, RecursiveGoals, BodyGoals0),
+    append(BodyGoals0, PostGoals, BodyGoals),
+    goals_to_body(BodyGoals, BodyTerm),
+    clause_term(HeadTerm, BodyTerm, ClauseTerm).
+
+build_min_recursive_head(InnerName, SignatureArgs, MetricArg, unbounded, HeadTerm, _BudgetArg) :-
+    append(SignatureArgs, [MetricArg], Args),
+    HeadTerm =.. [InnerName|Args].
+build_min_recursive_head(InnerName, SignatureArgs, MetricArg, budget(_), HeadTerm, BudgetArg) :-
+    append(SignatureArgs, [BudgetArg, MetricArg], Args),
+    HeadTerm =.. [InnerName|Args].
+
+build_min_recursive_call(InnerName, NextSignatureArgs, RecMetricArg, unbounded,
+        _StepIncrement, _BaseDepth, [RecursiveCall], _BudgetArg) :-
+    append(NextSignatureArgs, [RecMetricArg], Args),
+    RecursiveCall =.. [InnerName|Args].
+build_min_recursive_call(InnerName, NextSignatureArgs, RecMetricArg, budget(_),
+        StepIncrement, BaseDepth, [BudgetCalc, BudgetGuard, RecursiveCall], BudgetArg) :-
+    BudgetCalc = (NextBudget is BudgetArg - StepIncrement),
+    BudgetGuard = (NextBudget >= BaseDepth),
+    append(NextSignatureArgs, [NextBudget, RecMetricArg], Args),
+    RecursiveCall =.. [InnerName|Args].
+
+goals_reference_samevar([Goal|_], Var) :-
+    term_contains_samevar(Goal, Var),
+    !.
+goals_reference_samevar([_|Rest], Var) :-
+    goals_reference_samevar(Rest, Var).
+
+term_contains_samevar(Term, Var) :-
+    term_variables(Term, Vars),
+    member(Candidate, Vars),
+    Candidate == Var,
+    !.
 
 clauses_to_pattern_pairs([], []).
 clauses_to_pattern_pairs([Head-Body|Rest], [(Head, Body)|Pairs]) :-

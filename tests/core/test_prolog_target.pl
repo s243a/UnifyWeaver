@@ -82,6 +82,32 @@ cleanup_noncanonical_step_fixture :-
     retractall(user:test_noncanonical_ppv_reach(_, _, _, _)),
     retractall(user:mode(test_noncanonical_ppv_reach(_, _, _, _))).
 
+setup_min_closure_fixture :-
+    cleanup_min_closure_fixture,
+    assertz(user:test_min_edge(a, b)),
+    assertz(user:test_min_edge(b, c)),
+    assertz(user:test_min_edge(a, d)),
+    assertz(user:test_min_edge(d, e)),
+    assertz(user:test_min_edge(e, c)),
+    assertz(user:max_depth(4)),
+    assertz(user:(test_min_ppv_reach(Cat, Parent, 1, Visited) :-
+        test_min_edge(Cat, Parent),
+        \+ member(Parent, Visited))),
+    assertz(user:(test_min_ppv_reach(Cat, Ancestor, Hops, Visited) :-
+        max_depth(MaxD),
+        length(Visited, Depth), Depth < MaxD, !,
+        test_min_edge(Cat, Mid),
+        \+ member(Mid, Visited),
+        test_min_ppv_reach(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1)),
+    assertz(user:mode(test_min_ppv_reach(-, +, -, +))).
+
+cleanup_min_closure_fixture :-
+    retractall(user:test_min_edge(_, _)),
+    retractall(user:max_depth(_)),
+    retractall(user:test_min_ppv_reach(_, _, _, _)),
+    retractall(user:mode(test_min_ppv_reach(_, _, _, _))).
+
 build_execution_runtime_source(ModuleName, PredicateCode, Source) :-
     atomic_list_concat([
         'test_exec_edge(a, b).',
@@ -113,6 +139,34 @@ collect_generated_execution_hops(Options, PredicateCode, Hops) :-
         load_files(Path, []),
         (
             Goal =.. [test_exec_ppv_reach, a, c, H, [a]],
+            findall(H, ModuleName:Goal, Hops0),
+            sort(Hops0, Hops)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
+build_min_runtime_source(ModuleName, PredicateCode, Source) :-
+    atomic_list_concat([
+        'test_min_edge(a, b).',
+        'test_min_edge(b, c).',
+        'test_min_edge(a, d).',
+        'test_min_edge(d, e).',
+        'test_min_edge(e, c).',
+        'max_depth(4).'
+    ], '\n', FactsCode),
+    format(atom(Source),
+        ':- module(~q, []).~n:- use_module(library(lists)).~n~w~n~n~w~n',
+        [ModuleName, FactsCode, PredicateCode]).
+
+collect_generated_min_hops(Options, PredicateCode, Hops) :-
+    once(prolog_target:generate_predicate_code(test_min_ppv_reach/4, Options, PredicateCode)),
+    gensym(test_min_ppv_runtime_, ModuleName),
+    build_min_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_min_ppv_reach$min', a, c, H],
             findall(H, ModuleName:Goal, Hops0),
             sort(Hops0, Hops)
         ),
@@ -190,5 +244,19 @@ test(exec_generated_disabled_branch_pruning_matches_enabled_results,
     \+ sub_atom(DisabledCode, _, _, _, 'test_exec_ppv_reach$pruned'),
     Enabled == [2, 3],
     Disabled == Enabled.
+
+test(emits_bounded_min_closure_helper_for_counted_ppv,
+        [setup(setup_min_closure_fixture),
+         cleanup(cleanup_min_closure_fixture)]) :-
+    collect_generated_min_hops([dialect(swi)], PredicateCode, Actual),
+    once(sub_atom(PredicateCode, _, _, _, 'test_min_ppv_reach$min')),
+    once(sub_atom(PredicateCode, _, _, _, 'test_min_ppv_reach$min_budget')),
+    Actual == [2].
+
+test(skips_min_closure_helper_when_disabled_explicitly,
+        [setup(setup_min_closure_fixture),
+         cleanup(cleanup_min_closure_fixture)]) :-
+    once(generate_prolog_script([test_min_ppv_reach/4], [dialect(swi), min_closure(false)], Code)),
+    \+ sub_atom(Code, _, _, _, 'test_min_ppv_reach$min').
 
 :- end_tests(prolog_target).
