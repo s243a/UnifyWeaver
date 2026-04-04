@@ -190,6 +190,8 @@ Tables:
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, and Go DFS |
+| `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
+| `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
 | `generate_dependency_benchmark_data.py` | Generate deterministic synthetic package-DAG benchmark data |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
@@ -275,6 +277,11 @@ python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
 python examples/benchmark/benchmark_category_influence_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,rust-dfs,go-dfs
+
+# Compare handwritten Prolog vs generated pruned and unpruned Prolog
+python examples/benchmark/benchmark_prolog_branch_pruning.py \
+    --scales 300,1k,5k,10k \
+    --targets prolog-source,prolog-pruned,prolog-unpruned
 ```
 
 The current comparison surface across query and non-query targets is:
@@ -310,9 +317,35 @@ The benchmark split is now:
   - `benchmark_dependency_longest_depth_cross_target.py`
   - `benchmark_weighted_shortest_path_cross_target.py`
   - `benchmark_category_influence_cross_target.py`
+- Prolog target:
+  - `benchmark_prolog_branch_pruning.py`
 - C# query-engine internal mode comparison:
   - `benchmark_shortest_path_to_root.py`
   - `benchmark_weighted_shortest_path.py`
+
+### Prolog Branch-Pruning Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_branch_pruning.py \
+    --scales 300,1k,5k,10k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Source | Pruned | Unpruned | Output Match | Note |
+|-------|--------|--------|----------|--------------|------|
+| 300 | 2.718s | 2.748s | 2.804s | match | pruning overhead slightly visible |
+| 1k | 1.694s | 1.786s | 1.776s | match | still slightly slower than source |
+| 5k | 8.916s | 8.968s | 8.915s | match | essentially neutral |
+| 10k | 17.530s | 17.490s | 17.475s | match | effectively tied |
+
+This is a useful validation result even though it is not yet a strong
+speedup result: the generated pruned and unpruned Prolog variants match
+the handwritten source output across all tested dataset scales, and the
+current shortest-path workload gives a stable baseline for future
+benchmarks that should stress pruning more directly.
 
 ### Cross-Target Shortest-Path Results
 
