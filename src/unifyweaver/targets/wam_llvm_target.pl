@@ -28,6 +28,8 @@
     wam_instruction_to_llvm_literal/3,   % +WamInstr, +LabelMap, -LLVMLiteral
     wam_line_to_llvm_literal/2,          % +Parts, -LLVMLit
     write_wam_llvm_project/3,            % +Predicates, +Options, +OutputFile
+    write_wam_llvm_wasm_project/3,       % +Predicates, +Options, +OutputFile (WASM variant)
+    build_wam_wasm_module/3,             % +LLFile, +OutputName, -Commands
     builtin_op_to_id/2                   % +OpName, -IntId
 ]).
 
@@ -100,6 +102,143 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         close(Stream)
     ),
     format('WAM LLVM module created at: ~w~n', [OutputFile]).
+
+% ============================================================================
+% PHASE 7: WASM Variant
+% ============================================================================
+
+%% write_wam_llvm_wasm_project(+Predicates, +Options, +OutputFile)
+%  Generates a WASM-compatible LLVM IR module.
+%  Key differences from native: wasm32 triple, bump allocator (no malloc),
+%  iterative run_loop (no musttail), i32 pointers.
+write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
+    option(module_name(ModuleName), Options, 'wam_wasm'),
+    get_time(TimeStamp),
+    format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+
+    % WASM type definitions
+    read_template_file('templates/targets/llvm_wam_wasm/types.ll.mustache', TypesTemplate),
+    render_template(TypesTemplate, [module_name=ModuleName, date=Date], TypesDef),
+
+    % Bump allocator (replaces malloc/free)
+    read_template_file('templates/targets/llvm_wam_wasm/allocator.ll.mustache', AllocTemplate),
+    render_template(AllocTemplate, [], AllocFuncs),
+
+    % Value functions (shared with native — %Value is the same)
+    read_template_file('templates/targets/llvm_wam/value.ll.mustache', ValueTemplate),
+    render_template(ValueTemplate, [], ValueFuncs),
+
+    % State functions (shared — uses %WamState pointers)
+    read_template_file('templates/targets/llvm_wam/state.ll.mustache', StateTemplate),
+    render_template(StateTemplate, [], StateFuncs),
+
+    % Runtime with iterative loop (no musttail)
+    compile_step_wam_to_llvm(Options, StepFunc),
+    compile_wam_helpers_to_llvm(Options, HelpersCode),
+    read_template_file('templates/targets/llvm_wam_wasm/runtime.ll.mustache', RuntimeTemplate),
+    render_template(RuntimeTemplate, [
+        step_function=StepFunc,
+        helper_functions=HelpersCode
+    ], RuntimeFuncs),
+
+    % Compile predicates
+    compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
+
+    % Generate WASM export declarations for WAM-compiled predicates
+    generate_wasm_exports(Predicates, WasmExports),
+
+    % Assemble
+    read_template_file('templates/targets/llvm_wam_wasm/module.ll.mustache', ModuleTemplate),
+    render_template(ModuleTemplate, [
+        module_name=ModuleName,
+        date=Date,
+        type_definitions=TypesDef,
+        allocator_functions=AllocFuncs,
+        value_functions=ValueFuncs,
+        state_functions=StateFuncs,
+        runtime_functions=RuntimeFuncs,
+        native_predicates=NativeCode,
+        wam_predicates=WamCode,
+        wasm_exports=WasmExports
+    ], FullModule),
+
+    setup_call_cleanup(
+        open(OutputFile, write, Stream),
+        format(Stream, "~w", [FullModule]),
+        close(Stream)
+    ),
+    format('WAM WASM module created at: ~w~n', [OutputFile]).
+
+%% generate_wasm_exports(+Predicates, -ExportCode)
+%  Generate WASM export wrappers that expose predicates as i32-returning functions.
+generate_wasm_exports([], "").
+generate_wasm_exports(Predicates, ExportCode) :-
+    findall(ExportFunc, (
+        member(PredIndicator, Predicates),
+        (   PredIndicator = _:Pred/Arity -> true
+        ;   PredIndicator = Pred/Arity
+        ),
+        atom_string(Pred, PredStr),
+        format(atom(ExportFunc),
+'; WASM export: ~w/~w
+; Visibility: dso_local ensures symbol is retained by wasm-ld.
+; The __export_name attribute maps to the WASM export name.
+define dso_local i32 @~w_wasm() #0 {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([0 x %Instruction], [0 x %Instruction]* null, i32 0, i32 0),
+    i32 0, i32* null, i32 0)
+  %result = call i1 @run_loop(%WamState* %vm)
+  %ret = zext i1 %result to i32
+  ret i32 %ret
+}', [PredStr, Arity, PredStr])
+    ), ExportFuncs),
+    atomic_list_concat(ExportFuncs, '\n\n', ExportFuncsStr),
+    % Add WASM export attribute group
+    format(atom(ExportCode),
+'~w
+
+; WASM export attributes
+attributes #0 = { "wasm-export-name"="query" }', [ExportFuncsStr]).
+
+%% build_wam_wasm_module(+LLFile, +OutputName, -Commands)
+%  Generate shell commands to build a WASM module from the generated .ll file.
+build_wam_wasm_module(LLFile, OutputName, Commands) :-
+    format(atom(Commands),
+'#!/bin/bash
+# Build WAM WASM module from LLVM IR
+# Requires: LLVM toolchain with WASM backend:
+#   - llc (LLVM static compiler)
+#   - wasm-ld (WebAssembly linker, part of lld)
+# Install: apt install llvm lld  (or brew install llvm)
+
+set -e
+
+# Toolchain check
+for tool in llc wasm-ld; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "Error: $tool not found. Install LLVM + lld." >&2
+        exit 1
+    fi
+done
+
+echo "Compiling ~w to WASM..."
+
+# Step 1: Compile to WASM object (explicit triple for reproducibility)
+llc --mtriple=wasm32-unknown-unknown -filetype=obj ~w -o ~w.o
+
+# Step 2: Link to WASM module (library mode, all symbols exported)
+wasm-ld --no-entry --export-all --allow-undefined ~w.o -o ~w.wasm
+
+# Step 3: Verify (optional)
+if command -v wasm-objdump >/dev/null 2>&1; then
+    echo "Exports:"
+    wasm-objdump -x ~w.wasm | grep "export" | head -10
+fi
+
+echo "Created: ~w.wasm"
+echo "Size: $(wc -c < ~w.wasm) bytes"
+', [LLFile, LLFile, OutputName, OutputName, OutputName, OutputName, OutputName, OutputName]).
 
 %% read_template_file(+Path, -Content)
 read_template_file(Path, Content) :-
@@ -1104,11 +1243,23 @@ resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
 %  with label names resolved to indices via LabelMap.
 
 %% lookup_label_index(+LabelName, +LabelMap, -Index)
-%  Find label index in map, or return 0 if not found.
+%  Find label index in map. Behaviour on unknown labels depends on context:
+%  - Default: warn on stderr, return 0 (for external predicate references)
+%  - With wam_strict_labels(true) in Options: throw an error
 lookup_label_index(LabelName, LabelMap, Index) :-
+    lookup_label_index(LabelName, LabelMap, [], Index).
+
+lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true
-    ;   Index = 0
+    ;   (   option(wam_strict_labels(true), Options)
+        ->  throw(error(unknown_label(LabelName),
+                'Label not found in LabelMap — enable wam_strict_labels(false) to allow fallback'))
+        ;   format(user_error,
+                'Warning: unknown label "~w" in WAM LLVM codegen, defaulting to index 0~n',
+                [LabelName]),
+            Index = 0
+        )
     ).
 
 % Instructions that need label resolution:
