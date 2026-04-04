@@ -195,11 +195,13 @@ Tables:
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
-| `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, and Go DFS |
+| `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, Go DFS, and an optional Prolog accumulated path |
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
 | `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
 | `generate_prolog_effective_distance_benchmark.pl` | Generate standalone SWI-Prolog effective-distance scripts for seeded closure reuse, generated accumulation helpers, and optional branch pruning |
 | `benchmark_prolog_effective_distance.py` | Compare seeded, pruned, and accumulated Prolog effective-distance scripts and report phase/work metrics |
+| `generate_prolog_category_influence_benchmark.pl` | Generate standalone SWI-Prolog category-influence scripts using the PPV `category_ancestor/4` closure with optional seeded accumulation helpers |
+| `benchmark_prolog_category_influence.py` | Compare seeded and accumulated Prolog category-influence scripts and report phase/work metrics |
 | `generate_prolog_shortest_path_seeded_benchmark.pl` | Generate standalone SWI-Prolog shortest-path scripts for seeded `all` vs mode-directed `min` closure, loading `facts.pl` at runtime |
 | `benchmark_prolog_seeded_min_closure.py` | Compare seeded Prolog `all` vs `min` closure and report `load_ms`, `query_ms`, `aggregation_ms`, and work metrics |
 | `generate_prolog_weighted_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog weighted-shortest-path scripts for seeded `all` vs mode-directed `min` closure |
@@ -298,6 +300,16 @@ python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
 python examples/benchmark/benchmark_category_influence_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,rust-dfs,go-dfs
+
+# Compare seeded vs accumulated Prolog category influence
+python examples/benchmark/benchmark_prolog_category_influence.py \
+    --scales 300,1k \
+    --targets prolog-seeded,prolog-accumulated
+
+# Optional: add the accumulated Prolog path to the category-influence cross-target run
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k \
+    --targets csharp-query,rust-dfs,go-dfs,prolog-accumulated
 
 # Compare handwritten Prolog vs generated pruned and unpruned Prolog
 python examples/benchmark/benchmark_prolog_branch_pruning.py \
@@ -733,6 +745,38 @@ Comparison note:
   invocation in the runner, not embedded C# workload or package wiring
 - the C# path is still weaker only at `300` and clearly faster from `1k`
   onward on the current workload
+
+### Prolog Category-Influence Accumulation Results
+
+The generalized seeded accumulation helper can now be exercised on the
+category-influence workload too, using the cycle-safe PPV
+`category_ancestor/4` closure from the effective-distance workload.
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_category_influence.py \
+    --scales 300,1k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Seeded | Accumulated | Output Match | Note |
+|-------|-------:|------------:|--------------|------|
+| 300 | 1.874s | 37.847s | match | accumulated helper is much slower |
+| 1k | 1.065s | 27.206s | match | grouped helper remains much slower |
+
+Current interpretation:
+
+- the generalized seeded accumulation helper is semantically correct on
+  category influence
+- but this grouped `power_sum` helper is the wrong retained-state shape
+  for the workload
+- it recomputes grouped aggregates per seed and pays heavily for that:
+  - `300`: `query_ms 1311 -> 36991`
+  - `1k`: `query_ms 714 -> 26380`
+- the accumulated Prolog path is therefore exposed as an optional
+  benchmark target here, not the new default category-influence path
 
 ### Weighted `Min` Results
 

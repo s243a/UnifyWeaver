@@ -56,10 +56,12 @@
 %         available (default: auto). This preserves the original
 %         predicate and adds a separate '$min' helper for bound
 %         shortest-path style queries.
-%       - effective_distance_accumulation(auto/false) - Emit a SWI
-%         helper for canonical counted PPV recursion that aggregates
-%         `sum((Metric+1)^(-N))` via `dimension_n/1` (default: auto).
-%         This is a narrow seeded accumulation helper used by the
+%       - seeded_accumulation(auto/false) - Emit SWI helper predicates
+%         for canonical counted recursive closures that aggregate over
+%         the derived metric (default: auto). This currently supports
+%         `power_sum` and `sum_metric` helper formulas.
+%       - effective_distance_accumulation(auto/false) - Legacy alias for
+%         seeded_accumulation/1 retained for compatibility with the
 %         effective-distance benchmark surface.
 %  @arg ScriptCode Generated script as atom
 %
@@ -241,7 +243,7 @@ generate_predicate_code(Pred/Arity, Options, Code) :-
     ;   copy_predicate_clauses(Pred/Arity, BaseCode0)
     ),
     maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode0, BaseCode1),
-    maybe_append_effective_distance_helper(Pred/Arity, Options, BaseCode1, BaseCode),
+    maybe_append_seeded_accumulation_helper(Pred/Arity, Options, BaseCode1, BaseCode),
 
     % Apply constraints if specified
     (   option(constraints(Constraints), Options)
@@ -387,13 +389,21 @@ maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode, Code) :-
     ;   Code = BaseCode
     ).
 
-maybe_append_effective_distance_helper(Pred/Arity, Options, BaseCode, Code) :-
-    option(effective_distance_accumulation(Setting), Options, auto),
+maybe_append_seeded_accumulation_helper(Pred/Arity, Options, BaseCode, Code) :-
+    seeded_accumulation_setting(Options, Setting),
     (   Setting == false
     ->  Code = BaseCode
-    ;   maybe_generate_effective_distance_accumulation_helper(Pred/Arity, Options, HelperCode)
+    ;   maybe_generate_seeded_accumulation_helper(Pred/Arity, Options, HelperCode)
     ->  atomic_list_concat([BaseCode, HelperCode], '\n\n', Code)
     ;   Code = BaseCode
+    ).
+
+seeded_accumulation_setting(Options, Setting) :-
+    (   option(seeded_accumulation(Setting0), Options)
+    ->  Setting = Setting0
+    ;   option(effective_distance_accumulation(Setting1), Options)
+    ->  Setting = Setting1
+    ;   Setting = auto
     ).
 
 maybe_generate_min_closure_helper(Pred/Arity, Options, Code) :-
@@ -471,10 +481,74 @@ maybe_generate_weighted_min_closure_helper(Pred/Arity, Code) :-
     build_min_closure_code(Pred/Arity, BaseClauses, RecClauses, SignaturePositions,
         MetricPos, VisitedPos, 1, 1, BudgetMode, Code).
 
-maybe_generate_effective_distance_accumulation_helper(Pred/Arity, Options, Code) :-
+maybe_generate_seeded_accumulation_helper(Pred/Arity, Options, Code) :-
     option(dialect(Dialect), Options, swi),
     Dialect == swi,
-    effective_distance_dimension_available(Options),
+    seeded_accumulation_formula(Pred/Arity, Options, Formula),
+    (   seeded_accumulation_ppv_shape(Pred/Arity, Shape)
+    ;   seeded_accumulation_counted_shape(Pred/Arity, Shape)
+    ),
+    build_seeded_accumulation_code(Pred/Arity, Shape, Formula, Code).
+
+seeded_accumulation_formula(Pred/Arity, Options, Formula) :-
+    (   current_predicate(user:accumulation_formula/2),
+        user:accumulation_formula(Pred/Arity, Formula0)
+    ->  normalize_seeded_accumulation_formula(Formula0, Formula),
+        seeded_accumulation_formula_available(Options, Formula)
+    ;   seeded_accumulation_default_formula(Options, Formula)
+    ).
+
+normalize_seeded_accumulation_formula(power_sum(ParamPred/1, Offset),
+        accumulation_formula(power_sum, ParamPred, Offset, power_sum, [])) :-
+    number(Offset).
+normalize_seeded_accumulation_formula(power_sum(ParamPred/1, Offset, Suffix),
+        accumulation_formula(power_sum, ParamPred, Offset, Suffix, [])) :-
+    number(Offset),
+    atom(Suffix).
+normalize_seeded_accumulation_formula(power_sum(ParamPred/1, Offset, Suffix, AliasSuffixes),
+        accumulation_formula(power_sum, ParamPred, Offset, Suffix, AliasSuffixes)) :-
+    number(Offset),
+    atom(Suffix),
+    is_list(AliasSuffixes),
+    forall(member(Alias, AliasSuffixes), atom(Alias)).
+normalize_seeded_accumulation_formula(sum_metric(Offset),
+        accumulation_formula(sum_metric, none, Offset, sum_metric, [])) :-
+    number(Offset).
+normalize_seeded_accumulation_formula(sum_metric(Offset, Suffix),
+        accumulation_formula(sum_metric, none, Offset, Suffix, [])) :-
+    number(Offset),
+    atom(Suffix).
+normalize_seeded_accumulation_formula(sum_metric(Offset, Suffix, AliasSuffixes),
+        accumulation_formula(sum_metric, none, Offset, Suffix, AliasSuffixes)) :-
+    number(Offset),
+    atom(Suffix),
+    is_list(AliasSuffixes),
+    forall(member(Alias, AliasSuffixes), atom(Alias)).
+
+seeded_accumulation_formula_available(_Options,
+        accumulation_formula(sum_metric, none, _Offset, _Suffix, _Aliases)).
+seeded_accumulation_formula_available(Options,
+        accumulation_formula(power_sum, ParamPred, _Offset, _Suffix, _Aliases)) :-
+    helper_predicate_available(Options, ParamPred/1).
+
+seeded_accumulation_default_formula(Options, Formula) :-
+    helper_predicate_available(Options, dimension_n/1),
+    !,
+    Formula = accumulation_formula(power_sum, dimension_n, 1, power_sum, [effective_distance_sum]).
+seeded_accumulation_default_formula(Options, Formula) :-
+    helper_predicate_available(Options, influence_dimension/1),
+    Formula = accumulation_formula(power_sum, influence_dimension, 1, power_sum, [influence_sum]).
+
+helper_predicate_available(Options, Pred/Arity) :-
+    option(predicates(UserPredicates), Options, []),
+    memberchk(Pred/Arity, UserPredicates),
+    !.
+helper_predicate_available(_Options, Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(user:Head, _).
+
+seeded_accumulation_ppv_shape(Pred/Arity,
+        accumulation_shape(SignaturePositions, DriverPos, MetricPos, visited(VisitedPos))) :-
     findall(Head-Body,
         (   functor(Head, Pred, Arity),
             user:clause(Head, Body0),
@@ -496,54 +570,186 @@ maybe_generate_effective_distance_accumulation_helper(Pred/Arity, Options, Code)
     min_closure_recursive_shape(Pred, Arity, VisitedPos, MetricPos, FirstRec, 1, BudgetMode),
     forall(member(RecClause, RestRecClauses),
         min_closure_recursive_shape_compatible(Pred, Arity, VisitedPos, MetricPos,
-            1, BudgetMode, RecClause)),
-    build_effective_distance_accumulation_code(Pred/Arity, SignaturePositions,
-        DriverPos, MetricPos, VisitedPos, Code).
+            1, BudgetMode, RecClause)).
 
-effective_distance_dimension_available(Options) :-
-    option(predicates(UserPredicates), Options, []),
-    memberchk(dimension_n/1, UserPredicates),
-    !.
-effective_distance_dimension_available(_Options) :-
-    current_predicate(user:dimension_n/1).
+seeded_accumulation_counted_shape(Pred/Arity,
+        accumulation_shape([1, 2], 1, 3, none)) :-
+    Arity =:= 3,
+    findall(Head-Body,
+        (   functor(Head, Pred, Arity),
+            user:clause(Head, Body0),
+            strip_codegen_module_qualifiers(Body0, Body)
+        ),
+        Clauses),
+    Clauses \= [],
+    partition(is_recursive_clause_for_pred(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    maplist(counted_accumulation_base_depth, BaseClauses, BaseDepths),
+    sort(BaseDepths, [1]),
+    forall(member(RecClause, RecClauses),
+        counted_accumulation_recursive_shape(Pred, RecClause, 1)).
 
-build_effective_distance_accumulation_code(Pred/Arity, SignaturePositions, DriverPos,
-        MetricPos, VisitedPos, Code) :-
-    atom_concat(Pred, '$effective_distance_sum', HelperName),
+build_seeded_accumulation_code(Pred/Arity,
+        accumulation_shape(SignaturePositions, DriverPos, MetricPos, VisitedInfo),
+        accumulation_formula(FormulaKind, ParamPred, Offset, PrimarySuffix, AliasSuffixes),
+        Code) :-
+    helper_name_for_suffix(Pred, PrimarySuffix, HelperName),
     length(SignaturePositions, SignatureCount),
     build_min_signature_vars(SignatureCount, SignatureArgs),
     append(SignatureArgs, [WeightSum], HeadArgs),
     HeadTerm =.. [HelperName|HeadArgs],
-    build_effective_distance_call_args(Arity, SignaturePositions, DriverPos,
-        MetricPos, VisitedPos, SignatureArgs, MetricVar, CallArgs),
+    build_seeded_accumulation_call_args(Arity, SignaturePositions, DriverPos,
+        MetricPos, VisitedInfo, SignatureArgs, MetricVar, CallArgs),
     PredCall =.. [Pred|CallArgs],
-    AggregateGoal = aggregate_all(sum(W),
-        (   PredCall,
-            TotalMetric is MetricVar + 1,
-            W is TotalMetric ** NegN
-        ),
-        WeightSum),
-    BodyGoals = [
-        dimension_n(N),
-        (NegN is -N),
-        AggregateGoal,
-        (WeightSum > 0)
-    ],
+    build_seeded_accumulation_key_goals(SignatureArgs, MetricVar, PredCall, KeyGoals),
+    build_seeded_accumulation_body_goals(FormulaKind, ParamPred, Offset,
+        PredCall, MetricVar, WeightSum, KeyGoals, BodyGoals),
     goals_to_body(BodyGoals, BodyTerm),
     clause_term(HeadTerm, BodyTerm, ClauseTerm),
-    clauses_to_code([ClauseTerm], ClauseCode),
+    build_seeded_accumulation_alias_clauses(Pred, HelperName, AliasSuffixes,
+        SignatureCount, AliasClauses),
+    append([ClauseTerm], AliasClauses, Clauses),
+    clauses_to_code(Clauses, ClauseCode),
     atomic_list_concat([
-        '% Mode-directed effective-distance accumulation helper for canonical counted per-path recursion.',
+        '% Mode-directed seeded accumulation helper for canonical counted recursion.',
         ClauseCode
     ], '\n\n', Code).
 
-build_effective_distance_call_args(Arity, SignaturePositions, DriverPos, MetricPos,
-        VisitedPos, SignatureArgs, MetricVar, CallArgs) :-
+helper_name_for_suffix(Pred, Suffix, HelperName) :-
+    format(atom(HelperName), '~w$~w', [Pred, Suffix]).
+
+build_seeded_accumulation_key_goals(SignatureArgs, MetricVar, PredCall, KeyGoals) :-
+    build_seeded_accumulation_key_term(SignatureArgs, KeyTerm),
+    KeyGoals = [
+        setof(KeyTerm, MetricVar^PredCall, KeyTerms),
+        member(KeyTerm, KeyTerms)
+    ].
+
+build_seeded_accumulation_key_term(SignatureArgs, KeyTerm) :-
+    length(SignatureArgs, SignatureCount),
+    format(atom(Functor), 'sig~w', [SignatureCount]),
+    KeyTerm =.. [Functor|SignatureArgs].
+
+build_seeded_accumulation_body_goals(power_sum, ParamPred, Offset,
+        PredCall, MetricVar, WeightSum, KeyGoals, BodyGoals) :-
+    ParamCall =.. [ParamPred, N],
+    accumulation_metric_with_offset_goal(MetricVar, Offset, WeightedMetric, OffsetGoals),
+    append([PredCall], OffsetGoals, AggregateGoals0),
+    append(AggregateGoals0, [(W is WeightedMetric ** NegN)], AggregateGoals),
+    goals_to_body(AggregateGoals, AggregateBody),
+    AggregateGoal = aggregate_all(sum(W), AggregateBody, WeightSum),
+    append([
+        ParamCall
+    ], KeyGoals, BodyGoals0),
+    append(BodyGoals0, [
+        (NegN is -N),
+        AggregateGoal,
+        (WeightSum > 0)
+    ], BodyGoals).
+build_seeded_accumulation_body_goals(sum_metric, _ParamPred, Offset,
+        PredCall, MetricVar, WeightSum, KeyGoals, BodyGoals) :-
+    accumulation_metric_with_offset_goal(MetricVar, Offset, WeightedMetric, OffsetGoals),
+    append([PredCall], OffsetGoals, AggregateGoals0),
+    append(AggregateGoals0, [(W is WeightedMetric)], AggregateGoals),
+    goals_to_body(AggregateGoals, AggregateBody),
+    AggregateGoal = aggregate_all(sum(W), AggregateBody, WeightSum),
+    append(KeyGoals, [
+        AggregateGoal,
+        (WeightSum > 0)
+    ], BodyGoals).
+
+accumulation_metric_with_offset_goal(MetricVar, Offset, WeightedMetric, Goals) :-
+    (   Offset =:= 0
+    ->  WeightedMetric = MetricVar,
+        Goals = []
+    ;   Goals = [(WeightedMetric is MetricVar + Offset)]
+    ).
+
+build_seeded_accumulation_alias_clauses(_Pred, _PrimaryName, [], _SignatureCount, []).
+build_seeded_accumulation_alias_clauses(Pred, PrimaryName, [Suffix|Rest],
+        SignatureCount, [ClauseTerm|ClauseTerms]) :-
+    helper_name_for_suffix(Pred, Suffix, AliasName),
+    build_min_signature_vars(SignatureCount, SignatureArgs),
+    append(SignatureArgs, [_WeightSum], HeadArgs),
+    AliasHead =.. [AliasName|HeadArgs],
+    PrimaryCall =.. [PrimaryName|HeadArgs],
+    ClauseTerm = (AliasHead :- PrimaryCall),
+    build_seeded_accumulation_alias_clauses(Pred, PrimaryName, Rest,
+        SignatureCount, ClauseTerms).
+
+build_seeded_accumulation_call_args(Arity, SignaturePositions, DriverPos, MetricPos,
+        VisitedInfo, SignatureArgs, MetricVar, CallArgs) :-
     length(CallArgs, Arity),
     bind_positions_1based(SignaturePositions, SignatureArgs, CallArgs),
     nth1(MetricPos, CallArgs, MetricVar),
-    nth1(DriverPos, CallArgs, DriverArg),
-    nth1(VisitedPos, CallArgs, [DriverArg]).
+    (   VisitedInfo = visited(VisitedPos)
+    ->  nth1(DriverPos, CallArgs, DriverArg),
+        nth1(VisitedPos, CallArgs, [DriverArg])
+    ;   true
+    ).
+
+counted_accumulation_base_depth(Head-Body, BaseDepth) :-
+    Head =.. [_Pred, From, To, MetricArg],
+    var(From),
+    var(To),
+    body_goals(Body, Goals0),
+    (   number(MetricArg)
+    ->  BaseDepth = MetricArg,
+        Goals = Goals0
+    ;   var(MetricArg),
+        select(MetricGoal, Goals0, Goals),
+        metric_constant_goal(MetricArg, MetricGoal, BaseDepth)
+    ),
+    Goals = [EdgeGoal],
+    counted_accumulation_edge_goal(From, To, EdgeGoal),
+    number(BaseDepth),
+    BaseDepth > 0.
+
+counted_accumulation_recursive_shape(Pred, Head-Body, StepIncrement) :-
+    Head =.. [Pred, From, To, MetricVar],
+    var(From),
+    var(To),
+    var(MetricVar),
+    body_goals(Body, Goals0),
+    strip_counted_accumulation_budget_goals(Goals0, MetricVar, Goals1),
+    select(EdgeGoal, Goals1, Goals2),
+    counted_accumulation_edge_goal(From, Mid, EdgeGoal),
+    select(RecGoal, Goals2, Goals3),
+    counted_accumulation_recursive_goal(Pred, Mid, To, PrevMetric, RecGoal),
+    select(MetricGoal, Goals3, RemainingGoals),
+    metric_increment_goal(MetricVar, PrevMetric, MetricGoal, StepIncrement),
+    number(StepIncrement),
+    StepIncrement > 0,
+    RemainingGoals == [].
+
+counted_accumulation_edge_goal(From, To, Goal0) :-
+    strip_module(Goal0, _, Goal),
+    functor(Goal, _Functor, 2),
+    arg(1, Goal, From),
+    arg(2, Goal, To).
+
+counted_accumulation_recursive_goal(Pred, From, To, MetricVar, Goal0) :-
+    strip_module(Goal0, _, Goal),
+    Goal =.. [Pred, From, To, MetricVar].
+
+strip_counted_accumulation_budget_goals(Goals0, MetricVar, Goals) :-
+    exclude(is_cut_goal, Goals0, GoalsNoCuts),
+    (   select(MaxGoal, GoalsNoCuts, Goals1),
+        max_depth_budget_goal(MaxGoal, MaxVar),
+        select(CompareGoal, Goals1, Goals2),
+        counted_accumulation_budget_goal(CompareGoal, MetricVar, MaxVar)
+    ->  Goals = Goals2
+    ;   Goals = GoalsNoCuts
+    ).
+
+counted_accumulation_budget_goal(Goal0, MetricVar, MaxVar) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal =.. [=<, Left, Right]
+    ;   Goal =.. [<, Left, Right]
+    ),
+    Left == MetricVar,
+    Right == MaxVar.
 
 counted_ppv_visited_position(Pred, Arity, RecClauses, VisitedPos) :-
     member(Head-Body, RecClauses),
@@ -1356,7 +1562,7 @@ augment_generated_dependencies(UserPredicates, Options, Dependencies0, Dependenc
 
 generated_helper_requires_aggregate(UserPredicates, Options) :-
     member(Pred/Arity, UserPredicates),
-    maybe_generate_effective_distance_accumulation_helper(Pred/Arity, Options, _),
+    maybe_generate_seeded_accumulation_helper(Pred/Arity, Options, _),
     !.
 
 %% extract_dependencies_from_body(+Body, -Dependency)
