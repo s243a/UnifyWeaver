@@ -1490,7 +1490,7 @@ class Program
         );
 
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
         var rows = executor.Execute(plan).ToList();
         swQuery.Stop();
 
@@ -1883,7 +1883,7 @@ class Program
         );
 
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
         var rows = executor.Execute(plan).ToList();
         swQuery.Stop();
 
