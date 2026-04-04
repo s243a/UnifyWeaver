@@ -49,9 +49,16 @@ namespace UnifyWeaver.QueryRuntime
         int SkipRows = 1,
         int ExpectedWidth = 2);
 
+    public interface IReplayableRelationSource
+    {
+        IEnumerable<object[]> Stream();
+        List<object[]> Materialize();
+    }
+
     public readonly record struct RelationBinding(
         RelationRetentionMode Mode,
-        DelimitedRelationSource? DelimitedSource = null);
+        DelimitedRelationSource? DelimitedSource = null,
+        IReplayableRelationSource? ReplayableSource = null);
 
     public interface IRetentionAwareRelationProvider : IRelationProvider
     {
@@ -1187,14 +1194,44 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    internal sealed class ReplayableRelationSource : IReplayableRelationSource
+    {
+        private readonly Func<IEnumerable<object[]>> _factory;
+        private readonly object _gate = new();
+        private List<object[]>? _buffer;
+
+        public ReplayableRelationSource(Func<IEnumerable<object[]>> factory)
+        {
+            _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+        }
+
+        public IEnumerable<object[]> Stream() => Materialize();
+
+        public List<object[]> Materialize()
+        {
+            if (_buffer is not null)
+            {
+                return _buffer;
+            }
+
+            lock (_gate)
+            {
+                _buffer ??= _factory().ToList();
+                return _buffer;
+            }
+        }
+    }
+
     public sealed class InMemoryRelationProvider : IRetentionAwareRelationProvider
     {
         private readonly Dictionary<PredicateId, List<object[]>> _store = new();
         private readonly Dictionary<PredicateId, DelimitedRelationSource> _delimitedSources = new();
+        private readonly Dictionary<PredicateId, IReplayableRelationSource> _replayableSources = new();
 
         public void RegisterDelimitedSource(PredicateId predicate, DelimitedRelationSource source)
         {
             _delimitedSources[predicate] = source;
+            _replayableSources.Remove(predicate);
         }
 
         public void AddFact(PredicateId predicate, params object[] values)
@@ -1221,6 +1258,7 @@ namespace UnifyWeaver.QueryRuntime
                 _store[predicate] = list;
             }
             list.Add(tuple);
+            _replayableSources.Remove(predicate);
         }
 
         public IEnumerable<object[]> GetFacts(PredicateId predicate)
@@ -1238,11 +1276,34 @@ namespace UnifyWeaver.QueryRuntime
 
         public bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
         {
-            if (preferredMode != RelationRetentionMode.ExternalMaterialized &&
-                _delimitedSources.TryGetValue(predicate, out var source))
+            if (preferredMode == RelationRetentionMode.Streaming &&
+                _delimitedSources.TryGetValue(predicate, out var streamingSource))
             {
-                binding = new RelationBinding(preferredMode, source);
+                binding = new RelationBinding(RelationRetentionMode.Streaming, streamingSource);
                 return true;
+            }
+
+            if (preferredMode == RelationRetentionMode.Replayable)
+            {
+                if (!_replayableSources.TryGetValue(predicate, out var replayableSource))
+                {
+                    if (_delimitedSources.TryGetValue(predicate, out var replayableDelimitedSource))
+                    {
+                        replayableSource = new ReplayableRelationSource(() => DelimitedRelationReader.ReadRows(replayableDelimitedSource));
+                        _replayableSources[predicate] = replayableSource;
+                    }
+                    else if (_store.TryGetValue(predicate, out var replayableList))
+                    {
+                        replayableSource = new ReplayableRelationSource(() => replayableList);
+                        _replayableSources[predicate] = replayableSource;
+                    }
+                }
+
+                if (replayableSource is not null)
+                {
+                    binding = new RelationBinding(RelationRetentionMode.Replayable, ReplayableSource: replayableSource);
+                    return true;
+                }
             }
 
             if (preferredMode == RelationRetentionMode.ExternalMaterialized && _store.ContainsKey(predicate))
@@ -1496,6 +1557,7 @@ namespace UnifyWeaver.QueryRuntime
 
             _cacheContext.Facts.Clear();
             _cacheContext.FactSources.Clear();
+            _cacheContext.ReplayableFactSources.Clear();
             _cacheContext.FactSets.Clear();
             _cacheContext.FactIndices.Clear();
             _cacheContext.JoinIndices.Clear();
@@ -1537,7 +1599,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 case RelationScanNode scan:
                     result = context is null
-                        ? GetFactStream(scan.Relation)
+                        ? GetFactStream(scan.Relation, context)
                         : GetFactsList(scan.Relation, context);
                     break;
 
@@ -1783,7 +1845,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is null)
             {
-                return GetFactStream(scan.Relation).Where(tuple =>
+                return GetFactStream(scan.Relation, context).Where(tuple =>
                     tuple is not null && TupleMatchesPattern(tuple, scan.Pattern));
             }
 
@@ -5561,21 +5623,55 @@ namespace UnifyWeaver.QueryRuntime
             return false;
         }
 
-        private IEnumerable<object[]> GetFactStream(PredicateId predicate)
+        private bool TryGetReplayableSource(PredicateId predicate, EvaluationContext? context, out IReplayableRelationSource source)
         {
+            if (context is not null && context.ReplayableFactSources.TryGetValue(predicate, out var cached))
+            {
+                source = cached;
+                return true;
+            }
+
+            if (TryBindRelation(predicate, RelationRetentionMode.Replayable, out var binding) &&
+                binding.ReplayableSource is { } replayableSource)
+            {
+                if (context is not null)
+                {
+                    context.ReplayableFactSources[predicate] = replayableSource;
+                }
+
+                source = replayableSource;
+                return true;
+            }
+
+            source = default!;
+            return false;
+        }
+
+        private IEnumerable<object[]> GetFactStream(PredicateId predicate, EvaluationContext? context = null)
+        {
+            if (context is not null && TryGetReplayableSource(predicate, context, out var replayableSource))
+            {
+                return replayableSource.Stream();
+            }
+
             if (TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var source))
             {
                 return DelimitedRelationReader.ReadRows(source);
             }
 
+            if (TryGetReplayableSource(predicate, context, out replayableSource))
+            {
+                return replayableSource.Stream();
+            }
+
             return _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
         }
 
-        private List<object[]> MaterializeFacts(PredicateId predicate)
+        private List<object[]> MaterializeFacts(PredicateId predicate, EvaluationContext? context)
         {
-            if (TryGetDelimitedSource(predicate, RelationRetentionMode.Replayable, out var source))
+            if (TryGetReplayableSource(predicate, context, out var replayableSource))
             {
-                return DelimitedRelationReader.ReadRows(source).ToList();
+                return replayableSource.Materialize();
             }
 
             var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
@@ -5586,7 +5682,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             if (context is null)
             {
-                return MaterializeFacts(predicate);
+                return MaterializeFacts(predicate, context);
             }
 
             if (context.Facts.TryGetValue(predicate, out var cached))
@@ -5606,7 +5702,7 @@ namespace UnifyWeaver.QueryRuntime
                 missTrace.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
             }
 
-            var facts = MaterializeFacts(predicate);
+            var facts = MaterializeFacts(predicate, context);
             context.Facts[predicate] = facts;
             return facts;
         }
@@ -5615,7 +5711,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             if (context is null)
             {
-                return new HashSet<object[]>(MaterializeFacts(predicate), StructuralArrayComparer.Instance);
+                return new HashSet<object[]>(MaterializeFacts(predicate, context), StructuralArrayComparer.Instance);
             }
 
             if (context.FactSets.TryGetValue(predicate, out var cached))
@@ -14622,6 +14718,7 @@ namespace UnifyWeaver.QueryRuntime
                 FixpointDepth = parent?.FixpointDepth ?? 0;
                 Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
                 FactSources = parent?.FactSources ?? new Dictionary<PredicateId, PlanNode>();
+                ReplayableFactSources = parent?.ReplayableFactSources ?? new Dictionary<PredicateId, IReplayableRelationSource>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
@@ -14677,6 +14774,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<PredicateId, List<object[]>> Facts { get; }
 
             public Dictionary<PredicateId, PlanNode> FactSources { get; }
+
+            public Dictionary<PredicateId, IReplayableRelationSource> ReplayableFactSources { get; }
 
             public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
 
