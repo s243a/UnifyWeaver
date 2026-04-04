@@ -1718,9 +1718,10 @@ fn main() {
 
 
 def generate_csharp_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
-    return '''// Dependency longest-depth benchmark (C#)
+    return """// Dependency longest-depth benchmark (C#)
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 
@@ -1736,7 +1737,7 @@ class Program
                 continue;
             }
 
-            var parts = line.Split('\t', 2);
+            var parts = line.Split('	', 2);
             if (parts.Length != 2)
             {
                 continue;
@@ -1786,6 +1787,15 @@ class Program
             Environment.Exit(1);
         }
 
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var gc0Before = GC.CollectionCount(0);
+        var gc1Before = GC.CollectionCount(1);
+        var gc2Before = GC.CollectionCount(2);
+        var allocatedBefore = GC.GetTotalAllocatedBytes(true);
+        var swTotal = Stopwatch.StartNew();
+
         var adj = LoadTsvPairs(args[0]);
         var projectDeps = LoadTsvPairs(args[1]);
         var memo = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -1812,19 +1822,28 @@ class Program
             return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
         });
 
-        Console.WriteLine("project\tdependency_longest_depth");
+        Console.WriteLine("project	dependency_longest_depth");
         foreach (var (depth, project) in results)
         {
-            Console.WriteLine($"{project}\t{depth}");
+            Console.WriteLine($"{project}	{depth}");
         }
+
+        swTotal.Stop();
+        Console.Error.WriteLine($"total_ms={swTotal.ElapsedMilliseconds}");
+        Console.Error.WriteLine($"gc0_collections={GC.CollectionCount(0) - gc0Before}");
+        Console.Error.WriteLine($"gc1_collections={GC.CollectionCount(1) - gc1Before}");
+        Console.Error.WriteLine($"gc2_collections={GC.CollectionCount(2) - gc2Before}");
+        Console.Error.WriteLine($"allocated_bytes={GC.GetTotalAllocatedBytes(false) - allocatedBefore}");
+        Console.Error.WriteLine($"project_count={results.Count}");
     }
 }
-'''
+"""
+
 
 
 def generate_csharp_query_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
     depth_bound = max(max_depth, 20000)
-    return f'''// Dependency longest-depth benchmark (C# query engine)
+    return f"""// Dependency longest-depth benchmark (C# query engine)
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1844,6 +1863,13 @@ class Program
             Environment.Exit(1);
         }}
 
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var gc0Before = GC.CollectionCount(0);
+        var gc1Before = GC.CollectionCount(1);
+        var gc2Before = GC.CollectionCount(2);
+        var allocatedBefore = GC.GetTotalAllocatedBytes(true);
         var swTotal = Stopwatch.StartNew();
         var swLoad = Stopwatch.StartNew();
 
@@ -1860,7 +1886,7 @@ class Program
                 continue;
             }}
 
-            var parts = line.Split('\\t', 2);
+            var parts = line.Split('	', 2);
             if (parts.Length == 2)
             {{
                 provider.AddFact(edgeId, parts[0], parts[1]);
@@ -1874,7 +1900,7 @@ class Program
                 continue;
             }}
 
-            var parts = line.Split('\\t', 2);
+            var parts = line.Split('	', 2);
             if (parts.Length != 2)
             {{
                 continue;
@@ -1915,16 +1941,20 @@ class Program
             return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
         }});
 
-        Console.WriteLine("project\\tdependency_longest_depth");
+        Console.WriteLine("project\tdependency_longest_depth");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Project}}\\t{{item.Depth}}");
+            Console.WriteLine($"{{item.Project}}\t{{item.Depth}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"gc0_collections={{GC.CollectionCount(0) - gc0Before}}");
+        Console.Error.WriteLine($"gc1_collections={{GC.CollectionCount(1) - gc1Before}}");
+        Console.Error.WriteLine($"gc2_collections={{GC.CollectionCount(2) - gc2Before}}");
+        Console.Error.WriteLine($"allocated_bytes={{GC.GetTotalAllocatedBytes(false) - allocatedBefore}}");
         Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
@@ -1937,7 +1967,7 @@ class Program
         }}
     }}
 }}
-'''
+"""
 
 
 def generate_go_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
