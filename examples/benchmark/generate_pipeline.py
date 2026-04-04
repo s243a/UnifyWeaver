@@ -1491,7 +1491,8 @@ class Program
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var trace = new QueryExecutionTrace();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
         var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
 
@@ -1525,9 +1526,12 @@ class Program
         Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
-        foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+        if (trace is not null)
         {{
-            Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+            foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+            {{
+                Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+            }}
         }}
     }}
 }}
@@ -1889,7 +1893,8 @@ class Program
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var trace = new QueryExecutionTrace();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
         var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
 
@@ -1923,9 +1928,12 @@ class Program
         Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
-        foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+        if (trace is not null)
         {{
-            Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+            foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+            {{
+                Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+            }}
         }}
     }}
 }}
