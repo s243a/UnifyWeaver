@@ -1449,7 +1449,7 @@ class Program
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("project_dependency", 2);
         var predId = new PredicateId("dependency_reach", 2);
-        var projectDeps = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var projects = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
         {{
@@ -1478,20 +1478,14 @@ class Program
                 continue;
             }}
 
-            if (!projectDeps.TryGetValue(parts[0], out var deps))
-            {{
-                deps = new List<string>();
-                projectDeps[parts[0]] = deps;
-            }}
-
-            deps.Add(parts[1]);
+            projects.Add(parts[0]);
             provider.AddFact(seedId, parts[0], parts[1]);
         }}
         swLoad.Stop();
 
         var plan = new QueryPlan(
             predId,
-            new SeedGroupedTransitiveClosureNode(edgeId, seedId, predId),
+            new SeedGroupedTransitiveClosureCountNode(edgeId, seedId, predId),
             true
         );
 
@@ -1501,15 +1495,13 @@ class Program
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
-        var reachCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var results = new List<(int Count, string Project)>(rows.Count);
         foreach (var row in rows)
         {{
             var project = row[0]?.ToString() ?? "";
-            reachCounts[project] = reachCounts.TryGetValue(project, out var count) ? count + 1 : 1;
+            var count = Convert.ToInt32(row[1]);
+            results.Add((count, project));
         }}
-        var results = reachCounts
-            .Select(kvp => (Count: kvp.Value, Project: kvp.Key))
-            .ToList();
         swAgg.Stop();
         swTotal.Stop();
 
@@ -1529,7 +1521,7 @@ class Program
         Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{projectDeps.Count}}");
+        Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
     }}
@@ -1850,7 +1842,7 @@ class Program
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("project_dependency", 2);
         var predId = new PredicateId("dependency_longest_depth", 2);
-        var projectDeps = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var projects = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
         {{
@@ -1879,13 +1871,7 @@ class Program
                 continue;
             }}
 
-            if (!projectDeps.TryGetValue(parts[0], out var deps))
-            {{
-                deps = new List<string>();
-                projectDeps[parts[0]] = deps;
-            }}
-
-            deps.Add(parts[1]);
+            projects.Add(parts[0]);
             provider.AddFact(seedId, parts[0], parts[1]);
         }}
         swLoad.Stop();
@@ -1928,7 +1914,7 @@ class Program
         Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{projectDeps.Count}}");
+        Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
     }}
