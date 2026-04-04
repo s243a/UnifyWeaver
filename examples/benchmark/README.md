@@ -14,17 +14,17 @@ and specification.
 
 ### Accumulated Prolog and Query Engine vs DFS Pipelines
 
-The effective-distance benchmark now has an accumulated Prolog path that
-reuses `category_ancestor/4` once per unique category seed and retains
-only per-seed summed path weights for article aggregation. On the
-current benchmark surface, that accumulated Prolog path is faster than
-the current C# query-engine path while still matching its output
-exactly.
+The effective-distance benchmark now has a generated accumulated Prolog
+path. It reuses `category_ancestor/4` once per unique category seed and
+uses a generated `'$effective_distance_sum'` helper to retain only
+per-seed summed path weights for article aggregation. On the current
+benchmark surface, that accumulated Prolog path is faster than the
+current C# query-engine path while still matching its output exactly.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
-| **Prolog accumulated** | **0.35s** | **0.25s** | **0.85s** | **2.06s** |
-| C# Query Engine | 0.68s | 0.50s | 1.34s | 3.20s |
+| **Prolog accumulated** | **0.353s** | **0.246s** | **0.852s** | **2.057s** |
+| C# Query Engine | 0.681s | 0.504s | 1.338s | 3.197s |
 | C# DFS pipeline | 0.48s | 1.27s | 5.48s | 10.15s |
 | Rust DFS pipeline | 0.35s | 1.47s | 7.30s | 13.67s |
 | Go DFS pipeline | 0.47s | 2.07s | 11.68s | 19.09s |
@@ -46,6 +46,8 @@ Semantic note:
 - `benchmark_effective_distance.py` now compares the query-engine output
   against both the C# DFS reference and accumulated Prolog, reporting
   `query_vs_csharp_dfs` and `query_vs_prolog_accumulated`.
+- the current `csharp-query` comparison is against the retention-mode-
+  updated runtime now merged on `main`.
 - Current post-fix runs report `query_vs_csharp_dfs = match` at
   `300`, `1k`, `5k`, and `10k`.
 - Current accumulated Prolog runs also report
@@ -196,7 +198,7 @@ Tables:
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, and Go DFS |
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
 | `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
-| `generate_prolog_effective_distance_benchmark.pl` | Generate standalone SWI-Prolog effective-distance scripts for seeded closure reuse with optional branch pruning |
+| `generate_prolog_effective_distance_benchmark.pl` | Generate standalone SWI-Prolog effective-distance scripts for seeded closure reuse, generated accumulation helpers, and optional branch pruning |
 | `benchmark_prolog_effective_distance.py` | Compare seeded, pruned, and accumulated Prolog effective-distance scripts and report phase/work metrics |
 | `generate_prolog_shortest_path_seeded_benchmark.pl` | Generate standalone SWI-Prolog shortest-path scripts for seeded `all` vs mode-directed `min` closure, loading `facts.pl` at runtime |
 | `benchmark_prolog_seeded_min_closure.py` | Compare seeded Prolog `all` vs `min` closure and report `load_ms`, `query_ms`, `aggregation_ms`, and work metrics |
@@ -372,15 +374,17 @@ Latest local results:
 
 | Scale | Seeded | Pruned | Accumulated | Output Match | Note |
 |-------|--------|--------|-------------|--------------|------|
-| 300 | 0.385s | 0.384s | 0.368s | match | effectively tied, accumulated slightly ahead |
-| 1k | 0.361s | 0.347s | 0.248s | match | accumulated wins clearly |
-| 5k | 1.152s | 1.114s | 0.940s | match | big aggregation win |
-| 10k | 2.562s | 2.732s | 2.455s | match | accumulated stays best, pruning still noisy |
+| 300 | 0.349s | 0.352s | 0.370s | match | accumulated is close, but the helper overhead is still visible at the smallest scale |
+| 1k | 0.283s | 0.305s | 0.238s | match | accumulated wins clearly |
+| 5k | 1.084s | 1.170s | 0.829s | match | generated accumulation helper cuts aggregation cost materially |
+| 10k | 2.563s | 2.453s | 2.134s | match | accumulated stays best, pruning remains mostly neutral |
 
 Current interpretation:
 
 - seeded closure reuse is the real win on effective distance
 - branch pruning does not currently reduce tuple count or inferences on this workload
+- the accumulated variant now uses a generated Prolog helper rather than
+  benchmark-side ad hoc aggregation
 - pre-aggregating per-seed weight sums materially reduces retained state:
   - `1k`: tuple count `10976 -> 48`
   - `5k`: tuple count `41132 -> 151`

@@ -50,7 +50,8 @@ parse_variant('accumulated', accumulated, [
         dialect(swi),
         entry_point(run_benchmark),
         branch_pruning(false),
-        min_closure(false)
+        min_closure(false),
+        effective_distance_accumulation(auto)
     ]) :-
     !.
 parse_variant(Atom, _, _) :-
@@ -63,6 +64,7 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
     format(atom(FactsPathLine), 'facts_path(~q).', [FactsPath]),
     benchmark_index_build_line(Variant, IndexBuildLine),
     benchmark_results_line(Variant, ResultsLine),
+    benchmark_weight_sum_query_line(Variant, WeightSumQueryLine),
     benchmark_mode_line(Variant, ModeLine),
     Lines = [
         ':- use_module(library(aggregate)).',
@@ -105,20 +107,11 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    clear_seed_indexes,',
         '    collect_seed_categories(Seeds),',
         '    length(Seeds, SeedCount),',
-        '    dimension_n(N),',
-        '    NegN is -N,',
         '    forall(',
         '        member(Cat, Seeds),',
-        '        (   aggregate_all(sum(W),',
-        '                (   seed_hops_query(Cat, Root, Hops),',
-        '                    TotalHops is Hops + 1,',
-        '                    W is TotalHops ** NegN',
-        '                ),',
-        '                WeightSum),',
-        '            (   WeightSum > 0',
-        '            ->  assertz(bench_seed_weight_sum(Cat, Root, WeightSum))',
-        '            ;   true',
-        '            )',
+        '        forall(',
+        '            seed_weight_sum_query(Cat, Root, WeightSum),',
+        '            assertz(bench_seed_weight_sum(Cat, Root, WeightSum))',
         '        )',
         '    ),',
         '    aggregate_all(count, bench_seed_weight_sum(_, _, _), TupleCount).',
@@ -137,6 +130,9 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    article_category(Article, Cat),',
         '    Cat \\= Root,',
         '    bench_seed_weight_sum(Cat, Root, Weight).',
+        '',
+        'seed_weight_sum_query(Cat, Root, WeightSum) :-',
+        WeightSumQueryLine,
         '',
         'compute_effective_distance_results_from_hops(Root, Results) :-',
         '    collect_articles(Articles),',
@@ -215,6 +211,10 @@ benchmark_index_build_line(accumulated, '    build_seed_weight_sum_index(Root, S
 benchmark_results_line(seeded, '    compute_effective_distance_results_from_hops(Root, Results),').
 benchmark_results_line(pruned, '    compute_effective_distance_results_from_hops(Root, Results),').
 benchmark_results_line(accumulated, '    compute_effective_distance_results_from_weight_sums(Root, Results),').
+
+benchmark_weight_sum_query_line(seeded, '    fail.').
+benchmark_weight_sum_query_line(pruned, '    fail.').
+benchmark_weight_sum_query_line(accumulated, '    ''category_ancestor$effective_distance_sum''(Cat, Root, WeightSum).').
 
 benchmark_mode_line(seeded, '    format(user_error, ''mode=seeded~n'', []),').
 benchmark_mode_line(pruned, '    format(user_error, ''mode=pruned~n'', []),').
