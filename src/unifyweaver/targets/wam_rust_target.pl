@@ -678,6 +678,7 @@ compile_resume_builtin_to_rust(Code) :-
 
 compile_eval_arith_to_rust(Code) :-
     Code = '    /// Evaluate an arithmetic expression to a float.
+    /// TODO: Implement a dual integer/float arithmetic path for better performance and precision.
     fn eval_arith(&self, expr: &Value) -> Option<f64> {
         match expr {
             Value::Integer(n) => Some(*n as f64),
