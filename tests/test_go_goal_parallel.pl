@@ -33,11 +33,11 @@ test(classify_declared_independent) :-
     retract(clause_body_analysis:order_independent(my_pred/2)).
 
 test(parallel_safe_hook) :-
-    assertz(clause_body_analysis:parallel_safe(my_impure_looking_pred)),
+    assertz(clause_body_analysis:parallel_safe(my_impure_looking_pred/2)),
     Clause = p(X, Y) - (my_impure_looking_pred(X, Y1), g2(X, Y2), Y is Y1 + Y2),
     classify_parallelism(p/2, [Clause], Strategy),
     assertion(Strategy = goal_parallel(_, [_,_], _)),
-    retract(clause_body_analysis:parallel_safe(my_impure_looking_pred)).
+    retract(clause_body_analysis:parallel_safe(my_impure_looking_pred/2)).
 
 test(compile_parallel_code) :-
     Clause = node_score(X, Y) - (feature_a(X, Y1), feature_b(X, Y2), Y is Y1 + Y2),

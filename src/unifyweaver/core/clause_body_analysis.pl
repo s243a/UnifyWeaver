@@ -949,6 +949,10 @@ classify_parallelism(_, _, sequential).
 
 %% partition_parallel_goals(+Goals, +HeadVars, +SeenVars, -Parallel, -Result)
 %  Collect goals into Parallel list until a data dependency or impurity is found.
+%  Invariant: A goal G is independent if its introduced variables (IntroVars = GVars - HeadVars)
+%  do not intersect with any variables seen in previous goals (SeenVars). 
+%  This catches both "output-after-input" and "input-after-output" dependencies because 
+%  SeenVars accumulates all variables from previous parallel goals.
 partition_parallel_goals([], _, _, [], []).
 partition_parallel_goals([G|Rest], HeadVars, SeenVars, Parallel, Result) :-
     is_pure_goal(G),
@@ -992,8 +996,8 @@ goals_are_independent(Goals) :-
 %% is_pure_goal(+Goal)
 %  True if the goal has no side effects.
 is_pure_goal(Goal) :-
-    Goal =.. [Pred|_],
-    parallel_safe(Pred),
+    functor(Goal, Pred, Arity),
+    parallel_safe(Pred/Arity),
     !.
 is_pure_goal(Goal) :-
     \+ is_impure_builtin(Goal).
