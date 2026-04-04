@@ -19,6 +19,21 @@ move toward.
 - external materialization: facts are fully built outside the engine and then
   handed in as in-memory relations
 
+## Current Runtime Hooks
+
+The current runtime now exposes a narrow explicit retention contract:
+
+- `RelationRetentionMode`
+  - `Streaming`
+  - `Replayable`
+  - `ExternalMaterialized`
+- `RelationBinding`
+- `IRetentionAwareRelationProvider`
+
+These hooks do not solve every ingestion case yet, but they make the
+retention choice explicit at the runtime/provider boundary instead of hiding it
+inside benchmark-specific wiring.
+
 ## Required Capabilities
 
 ### 1. Streaming-capable providers
@@ -82,11 +97,13 @@ engine, not the parser, should decide when that is warranted.
 
 ## Current Narrow Implementation Pattern
 
-For the current DAG benchmark operators, the streamed path is:
+For the current benchmark/runtime surface, the streamed path is:
 
 1. provider exposes delimited relation sources
-2. engine reads rows directly from those sources
-3. engine builds only the graph/group state needed by the DAG operator
-4. benchmark code avoids preloading raw facts into in-memory relations first
+2. the runtime requests either `Streaming` or `Replayable` access
+3. DAG and scan-oriented operators read rows through that retention boundary
+4. the operator builds only the retained state it actually needs
+5. benchmark code avoids preloading raw facts into in-memory relations first
 
-This is a first step, not the full endpoint.
+This is still a first step, not the full endpoint, but it is now broader than
+just the original DAG-only fast paths.

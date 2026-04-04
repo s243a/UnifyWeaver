@@ -2490,19 +2490,7 @@ class Program
         var predId = new PredicateId("category_ancestor", 3);
         var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length == 2)
-            {{
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }}
-        }}
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
 
         foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
         {{
@@ -2688,19 +2676,7 @@ class Program
         var articleCategories = new Dictionary<string, List<string>>();
 
         var swLoad = Stopwatch.StartNew();
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length == 2)
-            {{
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }}
-        }}
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
 
         foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
         {{
@@ -2862,19 +2838,7 @@ class Program
         var predId = new PredicateId("category_ancestor", 3);
         var articleCategories = new Dictionary<string, List<string>>();
 
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length == 2)
-            {{
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }}
-        }}
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
 
         foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
         {{
@@ -3038,6 +3002,7 @@ class Program
         var outDegree = new Dictionary<string, int>(StringComparer.Ordinal);
         var sourceNodes = new HashSet<string>(StringComparer.Ordinal);
 
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
         foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
         {{
             if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
@@ -3051,7 +3016,6 @@ class Program
                 continue;
             }}
 
-            provider.AddFact(edgeId, parts[0], parts[1]);
             sourceNodes.Add(parts[0]);
             outDegree[parts[0]] = outDegree.TryGetValue(parts[0], out var degree) ? degree + 1 : 1;
         }}

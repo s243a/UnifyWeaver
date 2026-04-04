@@ -36,15 +36,26 @@ namespace UnifyWeaver.QueryRuntime
         IEnumerable<object[]> GetFacts(PredicateId predicate);
     }
 
+    public enum RelationRetentionMode
+    {
+        Streaming,
+        Replayable,
+        ExternalMaterialized
+    }
+
     public readonly record struct DelimitedRelationSource(
         string InputPath,
         char Delimiter = '	',
         int SkipRows = 1,
         int ExpectedWidth = 2);
 
-    public interface IStreamingRelationProvider : IRelationProvider
+    public readonly record struct RelationBinding(
+        RelationRetentionMode Mode,
+        DelimitedRelationSource? DelimitedSource = null);
+
+    public interface IRetentionAwareRelationProvider : IRelationProvider
     {
-        bool TryGetDelimitedSource(PredicateId predicate, out DelimitedRelationSource source);
+        bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding);
     }
 
     /// <summary>
@@ -1131,7 +1142,52 @@ namespace UnifyWeaver.QueryRuntime
     /// Currently supports non-recursive plans; recursion-aware fixpoint
     /// iteration will be layered on later.
     /// </summary>
-    public sealed class InMemoryRelationProvider : IStreamingRelationProvider
+    internal static class DelimitedRelationReader
+    {
+        public static IEnumerable<object[]> ReadRows(DelimitedRelationSource source)
+        {
+            using var reader = OpenSequentialReader(source.InputPath);
+            for (var i = 0; i < source.SkipRows; i++)
+            {
+                if (reader.ReadLine() is null)
+                {
+                    yield break;
+                }
+            }
+
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (!TrySplitTwoColumnLine(line, source.Delimiter, out var left, out var right))
+                {
+                    continue;
+                }
+
+                yield return new object[] { left, right };
+            }
+        }
+
+        public static StreamReader OpenSequentialReader(string path) =>
+            new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
+
+        public static bool TrySplitTwoColumnLine(string line, char delimiter, out string left, out string right)
+        {
+            var span = line.AsSpan();
+            var split = span.IndexOf(delimiter);
+            if (split <= 0 || split >= span.Length - 1)
+            {
+                left = string.Empty;
+                right = string.Empty;
+                return false;
+            }
+
+            left = span.Slice(0, split).ToString();
+            right = span.Slice(split + 1).ToString();
+            return true;
+        }
+    }
+
+    public sealed class InMemoryRelationProvider : IRetentionAwareRelationProvider
     {
         private readonly Dictionary<PredicateId, List<object[]>> _store = new();
         private readonly Dictionary<PredicateId, DelimitedRelationSource> _delimitedSources = new();
@@ -1175,53 +1231,28 @@ namespace UnifyWeaver.QueryRuntime
             }
             if (_delimitedSources.TryGetValue(predicate, out var source))
             {
-                return ReadDelimitedSource(source);
+                return DelimitedRelationReader.ReadRows(source);
             }
             return Array.Empty<object[]>();
         }
 
-        public bool TryGetDelimitedSource(PredicateId predicate, out DelimitedRelationSource source) =>
-            _delimitedSources.TryGetValue(predicate, out source);
-
-        private static IEnumerable<object[]> ReadDelimitedSource(DelimitedRelationSource source)
+        public bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
         {
-            using var reader = OpenSequentialReader(source.InputPath);
-            for (var i = 0; i < source.SkipRows; i++)
+            if (preferredMode != RelationRetentionMode.ExternalMaterialized &&
+                _delimitedSources.TryGetValue(predicate, out var source))
             {
-                if (reader.ReadLine() is null)
-                {
-                    yield break;
-                }
+                binding = new RelationBinding(preferredMode, source);
+                return true;
             }
 
-            string? line;
-            while ((line = reader.ReadLine()) is not null)
+            if (preferredMode == RelationRetentionMode.ExternalMaterialized && _store.ContainsKey(predicate))
             {
-                if (!TrySplitTwoColumnLine(line, source.Delimiter, out var left, out var right))
-                {
-                    continue;
-                }
-                yield return new object[] { left, right };
-            }
-        }
-
-        private static StreamReader OpenSequentialReader(string path) =>
-            new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
-
-        private static bool TrySplitTwoColumnLine(string line, char delimiter, out string left, out string right)
-        {
-            var span = line.AsSpan();
-            var split = span.IndexOf(delimiter);
-            if (split <= 0 || split >= span.Length - 1)
-            {
-                left = string.Empty;
-                right = string.Empty;
-                return false;
+                binding = new RelationBinding(RelationRetentionMode.ExternalMaterialized);
+                return true;
             }
 
-            left = span.Slice(0, split).ToString();
-            right = span.Slice(split + 1).ToString();
-            return true;
+            binding = default;
+            return false;
         }
     }
 
@@ -1506,7 +1537,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 case RelationScanNode scan:
                     result = context is null
-                        ? _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()
+                        ? GetFactStream(scan.Relation)
                         : GetFactsList(scan.Relation, context);
                     break;
 
@@ -1752,7 +1783,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is null)
             {
-                return (_provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()).Where(tuple =>
+                return GetFactStream(scan.Relation).Where(tuple =>
                     tuple is not null && TupleMatchesPattern(tuple, scan.Pattern));
             }
 
@@ -5506,12 +5537,56 @@ namespace UnifyWeaver.QueryRuntime
             return output;
         }
 
+        private bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
+        {
+            if (_provider is IRetentionAwareRelationProvider retentionAwareProvider &&
+                retentionAwareProvider.TryBindRelation(predicate, preferredMode, out binding))
+            {
+                return true;
+            }
+
+            binding = default;
+            return false;
+        }
+
+        private bool TryGetDelimitedSource(PredicateId predicate, RelationRetentionMode preferredMode, out DelimitedRelationSource source)
+        {
+            if (TryBindRelation(predicate, preferredMode, out var binding) && binding.DelimitedSource is { } delimitedSource)
+            {
+                source = delimitedSource;
+                return true;
+            }
+
+            source = default;
+            return false;
+        }
+
+        private IEnumerable<object[]> GetFactStream(PredicateId predicate)
+        {
+            if (TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var source))
+            {
+                return DelimitedRelationReader.ReadRows(source);
+            }
+
+            return _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+        }
+
+        private List<object[]> MaterializeFacts(PredicateId predicate)
+        {
+            if (TryGetDelimitedSource(predicate, RelationRetentionMode.Replayable, out var source))
+            {
+                return DelimitedRelationReader.ReadRows(source).ToList();
+            }
+
+            var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+            return factsSource as List<object[]> ?? factsSource.ToList();
+        }
+
         private List<object[]> GetFactsList(PredicateId predicate, EvaluationContext? context)
         {
             if (context is null)
             {
-                var source = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
-                return source as List<object[]> ?? source.ToList();
+                return MaterializeFacts(predicate);
             }
 
             if (context.Facts.TryGetValue(predicate, out var cached))
@@ -5531,8 +5606,7 @@ namespace UnifyWeaver.QueryRuntime
                 missTrace.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
             }
 
-            var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
-            var facts = factsSource as List<object[]> ?? factsSource.ToList();
+            var facts = MaterializeFacts(predicate);
             context.Facts[predicate] = facts;
             return facts;
         }
@@ -5541,7 +5615,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             if (context is null)
             {
-                return new HashSet<object[]>(_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>(), StructuralArrayComparer.Instance);
+                return new HashSet<object[]>(MaterializeFacts(predicate), StructuralArrayComparer.Instance);
             }
 
             if (context.FactSets.TryGetValue(predicate, out var cached))
@@ -8310,9 +8384,8 @@ namespace UnifyWeaver.QueryRuntime
                 const int MaxDagGroupCount = 4096;
                 const int MinDagGroupCount = 64;
                 const int MinDagEdgeCount = 8192;
-                if (_provider is IStreamingRelationProvider streamingProvider &&
-                    streamingProvider.TryGetDelimitedSource(closure.EdgeRelation, out var edgeSource) &&
-                    streamingProvider.TryGetDelimitedSource(closure.SeedRelation, out var seedSource) &&
+                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
+                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
                     TryBuildProjectGroupedDagReachCountRowsFromDelimitedSources(edgeSource, seedSource, MinDagEdgeCount, MinDagGroupCount, MaxDagNodeCount, MaxDagGroupCount, out var streamedDagRows))
                 {
                     trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
@@ -8438,9 +8511,8 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedDagLongestDepth", traceKey, hit: false, built: true);
 
                 const int MaxDagNodeCount = 65536;
-                if (_provider is IStreamingRelationProvider streamingProvider &&
-                    streamingProvider.TryGetDelimitedSource(closure.EdgeRelation, out var edgeSource) &&
-                    streamingProvider.TryGetDelimitedSource(closure.SeedRelation, out var seedSource) &&
+                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
+                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
                     TryBuildSeedGroupedDagLongestDepthRowsFromDelimitedSources(closure, trace, edgeSource, seedSource, MaxDagNodeCount, out var streamedRows))
                 {
                     context.SeedGroupedDagLongestDepthResults[cacheKey] = streamedRows;
@@ -8490,7 +8562,7 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             var edgeCount = 0;
-            using (var reader = OpenSequentialReader(edgeSource.InputPath))
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(edgeSource.InputPath))
             {
                 for (var i = 0; i < edgeSource.SkipRows; i++)
                 {
@@ -8503,7 +8575,7 @@ namespace UnifyWeaver.QueryRuntime
                 string? line;
                 while ((line = reader.ReadLine()) is not null)
                 {
-                    if (!TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
                     {
                         continue;
                     }
@@ -8523,7 +8595,7 @@ namespace UnifyWeaver.QueryRuntime
             var groupIds = new Dictionary<string, int>(StringComparer.Ordinal);
             var groupValues = new List<string>();
             var seedPairs = new List<(int GroupId, int NodeId)>();
-            using (var reader = OpenSequentialReader(seedSource.InputPath))
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(seedSource.InputPath))
             {
                 for (var i = 0; i < seedSource.SkipRows; i++)
                 {
@@ -8536,7 +8608,7 @@ namespace UnifyWeaver.QueryRuntime
                 string? line;
                 while ((line = reader.ReadLine()) is not null)
                 {
-                    if (!TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
                     {
                         continue;
                     }
@@ -8772,7 +8844,7 @@ namespace UnifyWeaver.QueryRuntime
                 return id;
             }
 
-            using (var reader = OpenSequentialReader(edgeSource.InputPath))
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(edgeSource.InputPath))
             {
                 for (var i = 0; i < edgeSource.SkipRows; i++)
                 {
@@ -8785,7 +8857,7 @@ namespace UnifyWeaver.QueryRuntime
                 string? line;
                 while ((line = reader.ReadLine()) is not null)
                 {
-                    if (!TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
                     {
                         continue;
                     }
@@ -8807,7 +8879,7 @@ namespace UnifyWeaver.QueryRuntime
             var groupIds = new Dictionary<string, int>(StringComparer.Ordinal);
             var groupValues = new List<string>();
             var seedPairs = new List<(int GroupId, int NodeId)>();
-            using (var reader = OpenSequentialReader(seedSource.InputPath))
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(seedSource.InputPath))
             {
                 for (var i = 0; i < seedSource.SkipRows; i++)
                 {
@@ -8820,7 +8892,7 @@ namespace UnifyWeaver.QueryRuntime
                 string? line;
                 while ((line = reader.ReadLine()) is not null)
                 {
-                    if (!TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
                     {
                         continue;
                     }
@@ -9752,25 +9824,6 @@ namespace UnifyWeaver.QueryRuntime
             phaseStopwatch.Stop();
             trace?.RecordPhase(traceNode, "group_reduction", phaseStopwatch.Elapsed);
 
-            return true;
-        }
-
-        private static StreamReader OpenSequentialReader(string path) =>
-            new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
-
-        private static bool TrySplitTwoColumnLine(string line, char delimiter, out string left, out string right)
-        {
-            var span = line.AsSpan();
-            var split = span.IndexOf(delimiter);
-            if (split <= 0 || split >= span.Length - 1)
-            {
-                left = string.Empty;
-                right = string.Empty;
-                return false;
-            }
-
-            left = span.Slice(0, split).ToString();
-            right = span.Slice(split + 1).ToString();
             return true;
         }
 

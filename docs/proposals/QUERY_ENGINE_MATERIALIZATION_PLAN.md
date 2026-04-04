@@ -10,7 +10,7 @@ a supported fallback.
 
 Status:
 
-- in progress / partially implemented
+- implemented for the current DAG benchmark paths
 
 Work:
 
@@ -41,6 +41,8 @@ Success criteria:
 
 - fewer ambiguous materialization decisions outside the engine
 - clearer runtime contracts for new operators
+- explicit provider/runtime hooks for choosing streaming, replayable, or
+  external-materialized access
 
 ## Stage 3: Expand Streamed Ingestion Beyond Current DAG Cases
 
@@ -85,6 +87,8 @@ Success criteria:
 Near-term implementation work should continue to prefer:
 
 - streamed sources into the runtime
+- explicit runtime retention requests (`Streaming`, `Replayable`,
+  `ExternalMaterialized`)
 - operator-owned retained state
 - external materialization only when the streamed/operator-owned path is not yet
   available or is measurably worse
