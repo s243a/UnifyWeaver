@@ -12,7 +12,7 @@ main :-
     (   Argv = [FactsPath, OutputPath, VariantAtom]
     ->  true
     ;   format(user_error,
-            'Usage: swipl -q -s generate_prolog_effective_distance_benchmark.pl -- <facts.pl> <output-script> <seeded|pruned>~n',
+            'Usage: swipl -q -s generate_prolog_effective_distance_benchmark.pl -- <facts.pl> <output-script> <seeded|pruned|accumulated>~n',
             []),
         halt(1)
     ),
@@ -46,19 +46,29 @@ parse_variant('pruned', pruned, [
         min_closure(false)
     ]) :-
     !.
+parse_variant('accumulated', accumulated, [
+        dialect(swi),
+        entry_point(run_benchmark),
+        branch_pruning(false),
+        min_closure(false)
+    ]) :-
+    !.
 parse_variant(Atom, _, _) :-
     format(user_error,
-        'Unsupported effective-distance benchmark variant: ~w (expected seeded or pruned)~n',
+        'Unsupported effective-distance benchmark variant: ~w (expected seeded, pruned, or accumulated)~n',
         [Atom]),
     halt(1).
 
 benchmark_driver_code(Variant, FactsPath, Code) :-
     format(atom(FactsPathLine), 'facts_path(~q).', [FactsPath]),
+    benchmark_index_build_line(Variant, IndexBuildLine),
+    benchmark_results_line(Variant, ResultsLine),
     benchmark_mode_line(Variant, ModeLine),
     Lines = [
         ':- use_module(library(aggregate)).',
         ':- use_module(library(lists)).',
         ':- dynamic bench_seed_hops/3.',
+        ':- dynamic bench_seed_weight_sum/3.',
         FactsPathLine,
         '',
         'load_benchmark_facts :-',
@@ -71,14 +81,15 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         'collect_articles(Articles) :-',
         '    setof(Article, Cat^article_category(Article, Cat), Articles).',
         '',
-        'clear_seed_hops_index :-',
-        '    retractall(bench_seed_hops(_, _, _)).',
+        'clear_seed_indexes :-',
+        '    retractall(bench_seed_hops(_, _, _)),',
+        '    retractall(bench_seed_weight_sum(_, _, _)).',
         '',
         'seed_hops_query(Cat, Root, Hops) :-',
         '    category_ancestor(Cat, Root, Hops, [Cat]).',
         '',
         'build_seed_hops_index(Root, SeedCount, TupleCount) :-',
-        '    clear_seed_hops_index,',
+        '    clear_seed_indexes,',
         '    collect_seed_categories(Seeds),',
         '    length(Seeds, SeedCount),',
         '    forall(',
@@ -90,6 +101,28 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    ),',
         '    aggregate_all(count, bench_seed_hops(_, _, _), TupleCount).',
         '',
+        'build_seed_weight_sum_index(Root, SeedCount, TupleCount) :-',
+        '    clear_seed_indexes,',
+        '    collect_seed_categories(Seeds),',
+        '    length(Seeds, SeedCount),',
+        '    dimension_n(N),',
+        '    NegN is -N,',
+        '    forall(',
+        '        member(Cat, Seeds),',
+        '        (   aggregate_all(sum(W),',
+        '                (   seed_hops_query(Cat, Root, Hops),',
+        '                    TotalHops is Hops + 1,',
+        '                    W is TotalHops ** NegN',
+        '                ),',
+        '                WeightSum),',
+        '            (   WeightSum > 0',
+        '            ->  assertz(bench_seed_weight_sum(Cat, Root, WeightSum))',
+        '            ;   true',
+        '            )',
+        '        )',
+        '    ),',
+        '    aggregate_all(count, bench_seed_weight_sum(_, _, _), TupleCount).',
+        '',
         'seeded_article_root_hops(Article, Root, 1) :-',
         '    article_category(Article, Root).',
         'seeded_article_root_hops(Article, Root, Hops) :-',
@@ -98,7 +131,14 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    bench_seed_hops(Cat, Root, CatHops),',
         '    Hops is CatHops + 1.',
         '',
-        'compute_effective_distance_results(Root, Results) :-',
+        'seeded_article_root_weight(Article, Root, 1.0) :-',
+        '    article_category(Article, Root).',
+        'seeded_article_root_weight(Article, Root, Weight) :-',
+        '    article_category(Article, Cat),',
+        '    Cat \\= Root,',
+        '    bench_seed_weight_sum(Cat, Root, Weight).',
+        '',
+        'compute_effective_distance_results_from_hops(Root, Results) :-',
         '    collect_articles(Articles),',
         '    dimension_n(N),',
         '    NegN is -N,',
@@ -111,6 +151,21 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '                WeightSum),',
         '            WeightSum > 0,',
         '            InvN is -1 / N,',
+        '            Deff is WeightSum ** InvN',
+        '        ),',
+        '        Pairs),',
+        '    sort(Pairs, Results).',
+        '',
+        'compute_effective_distance_results_from_weight_sums(Root, Results) :-',
+        '    collect_articles(Articles),',
+        '    dimension_n(N),',
+        '    InvN is -1 / N,',
+        '    findall(Deff-Article,',
+        '        (   member(Article, Articles),',
+        '            aggregate_all(sum(W),',
+        '                seeded_article_root_weight(Article, Root, W),',
+        '                WeightSum),',
+        '            WeightSum > 0,',
         '            Deff is WeightSum ** InvN',
         '        ),',
         '        Pairs),',
@@ -129,9 +184,9 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    statistics(walltime, [LoadEndMs, _]),',
         '    statistics(inferences, InferencesBefore),',
         '    root_category(Root),',
-        '    build_seed_hops_index(Root, SeedCount, TupleCount),',
+        IndexBuildLine,
         '    statistics(walltime, [QueryEndMs, _]),',
-        '    compute_effective_distance_results(Root, Results),',
+        ResultsLine,
         '    statistics(walltime, [AggEndMs, _]),',
         '    print_effective_distance_results(Root, Results),',
         '    statistics(inferences, InferencesAfter),',
@@ -153,5 +208,14 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
     ],
     atomic_list_concat(Lines, '\n', Code).
 
+benchmark_index_build_line(seeded, '    build_seed_hops_index(Root, SeedCount, TupleCount),').
+benchmark_index_build_line(pruned, '    build_seed_hops_index(Root, SeedCount, TupleCount),').
+benchmark_index_build_line(accumulated, '    build_seed_weight_sum_index(Root, SeedCount, TupleCount),').
+
+benchmark_results_line(seeded, '    compute_effective_distance_results_from_hops(Root, Results),').
+benchmark_results_line(pruned, '    compute_effective_distance_results_from_hops(Root, Results),').
+benchmark_results_line(accumulated, '    compute_effective_distance_results_from_weight_sums(Root, Results),').
+
 benchmark_mode_line(seeded, '    format(user_error, ''mode=seeded~n'', []),').
 benchmark_mode_line(pruned, '    format(user_error, ''mode=pruned~n'', []),').
+benchmark_mode_line(accumulated, '    format(user_error, ''mode=accumulated~n'', []),').

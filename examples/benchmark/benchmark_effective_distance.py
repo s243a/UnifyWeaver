@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 Benchmark the effective-distance workload for the C# query engine, seeded
-Prolog, and the compiled DFS pipelines.
+Prolog, accumulated Prolog, and the compiled DFS pipelines.
 
 Default targets:
   - csharp-query  : current C# query runtime using PathAwareTransitiveClosureNode
   - prolog-seeded : generated Prolog using seeded counted-closure reuse
+  - prolog-accumulated : generated Prolog using seeded pre-aggregated weight sums
   - csharp-dfs    : generated C# DFS pipeline
   - rust-dfs      : generated Rust DFS pipeline
 
@@ -71,8 +72,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--targets",
-        default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned",
+        default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated",
     )
     parser.add_argument(
         "--repetitions",
@@ -164,6 +165,7 @@ def print_summary(results: list[RunResult]) -> None:
         rust_dfs = find_result(entries, "rust-dfs")
         prolog_seeded = find_result(entries, "prolog-seeded")
         prolog_pruned = find_result(entries, "prolog-pruned")
+        prolog_accumulated = find_result(entries, "prolog-accumulated")
         dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
 
         if len(dfs_like) > 1:
@@ -171,13 +173,16 @@ def print_summary(results: list[RunResult]) -> None:
         print_pair_match_status(scale, "query_vs_csharp_dfs", qe, csharp_dfs)
         print_pair_match_status(scale, "query_vs_prolog_seeded", qe, prolog_seeded)
         print_pair_match_status(scale, "query_vs_prolog_pruned", qe, prolog_pruned)
+        print_pair_match_status(scale, "query_vs_prolog_accumulated", qe, prolog_accumulated)
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
         print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
         print_speedup(scale, "speedup_vs_prolog_seeded", prolog_seeded, qe)
         print_speedup(scale, "speedup_vs_prolog_pruned", prolog_pruned, qe)
+        print_speedup(scale, "speedup_vs_prolog_accumulated", prolog_accumulated, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
         print_phase_metrics(scale, "prolog-seeded-metrics", prolog_seeded)
         print_phase_metrics(scale, "prolog-pruned-metrics", prolog_pruned)
+        print_phase_metrics(scale, "prolog-accumulated-metrics", prolog_accumulated)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
@@ -222,6 +227,8 @@ def main() -> int:
                 continue
             elif target == "prolog-pruned":
                 continue
+            elif target == "prolog-accumulated":
+                continue
             else:
                 raise ValueError(f"unsupported target: {target}")
 
@@ -232,6 +239,8 @@ def main() -> int:
                     command = build_prolog_effective_distance(temp_root, scale, "seeded")
                 elif target == "prolog-pruned":
                     command = build_prolog_effective_distance(temp_root, scale, "pruned")
+                elif target == "prolog-accumulated":
+                    command = build_prolog_effective_distance(temp_root, scale, "accumulated")
                 else:
                     command = commands[target]
                 results.append(benchmark_target(command, scale, args.repetitions, target))
