@@ -169,6 +169,87 @@ and less likely:
 
 - another shallow specialization of the same graph-build loop
 
+
+## Follow-Up Experiment: Allocation And GC Comparison
+
+A direct `10k` comparison was also run between the generated:
+
+- `csharp-dfs` benchmark program
+- `csharp-query` benchmark program
+
+with both programs instrumented to report:
+
+- total wall-clock time
+- `GC.CollectionCount(0/1/2)` deltas
+- total allocated bytes
+
+### 10k Comparison
+
+#### C# DFS
+
+- `total_ms=35`
+- `gc0_collections=0`
+- `gc1_collections=0`
+- `gc2_collections=0`
+- `allocated_bytes=7,880,720`
+- `project_count=500`
+
+#### C# Query
+
+- `load_ms=39`
+- `query_ms=22`
+- `aggregation_ms=0`
+- `total_ms=62`
+- `gc0_collections=0`
+- `gc1_collections=0`
+- `gc2_collections=0`
+- `allocated_bytes=8,952,104`
+- `seed_count=500`
+- `tuple_count=500`
+- `project_count=500`
+
+### Main Finding
+
+This is strong evidence that the remaining longest-depth gap is **not**
+currently being driven by garbage collection pauses.
+
+At `10k`:
+
+- both C# implementations completed with `0` GC collections
+- the query path does allocate somewhat more than the DFS path
+- but the bigger difference is still CPU/runtime overhead rather than GC
+  interruption
+
+So the current diagnosis becomes more precise:
+
+- **not**: "the query engine is slow because GC is firing repeatedly"
+- more likely: "the query engine still spends extra CPU time in managed
+  runtime/framework overhead, including graph ingestion and generic query
+  machinery"
+
+### Interpretation
+
+This matters because it narrows the next optimization track again.
+
+If GC were the dominant issue, the next work would focus on:
+
+- reducing collection frequency
+- reducing temporary object lifetimes
+- or reusing large buffers to avoid triggering collections
+
+But with `0` collections in both programs at `10k`, the more promising
+next targets are:
+
+- CPU cost of graph ingestion
+- generic tuple/object handling overhead
+- query-framework overhead that remains even after the dedicated DAG node
+  work
+
+That does **not** mean allocations are irrelevant. The query path still
+allocates more bytes than the DFS path, so lowering allocation pressure may
+still help CPU/cache behavior. But the evidence so far does not support GC
+itself as the main bottleneck.
+
 ## Questions Worth Handing To External Research
 
 If we want to ask Perplexity or another research assistant for ideas, the
