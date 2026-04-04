@@ -223,6 +223,52 @@ cleanup_effective_distance_accumulation_fixture :-
     retractall(user:test_effective_ppv_reach(_, _, _, _)),
     retractall(user:mode(test_effective_ppv_reach(_, _, _, _))).
 
+setup_category_influence_accumulation_fixture :-
+    cleanup_category_influence_accumulation_fixture,
+    assertz(user:test_influence_edge(a, b)),
+    assertz(user:test_influence_edge(b, c)),
+    assertz(user:test_influence_edge(a, d)),
+    assertz(user:test_influence_edge(d, c)),
+    assertz(user:influence_dimension(5)),
+    assertz(user:max_depth(4)),
+    assertz(user:(test_influence_reach(Cat, Parent, 1) :-
+        test_influence_edge(Cat, Parent))),
+    assertz(user:(test_influence_reach(Cat, Ancestor, Hops) :-
+        max_depth(MaxD),
+        test_influence_edge(Cat, Mid),
+        test_influence_reach(Mid, Ancestor, H1),
+        Hops is H1 + 1,
+        Hops =< MaxD)).
+
+cleanup_category_influence_accumulation_fixture :-
+    retractall(user:test_influence_edge(_, _)),
+    retractall(user:influence_dimension(_)),
+    retractall(user:max_depth(_)),
+    retractall(user:test_influence_reach(_, _, _)).
+
+setup_sum_metric_accumulation_fixture :-
+    cleanup_sum_metric_accumulation_fixture,
+    assertz(user:test_sum_metric_edge(a, b)),
+    assertz(user:test_sum_metric_edge(b, c)),
+    assertz(user:test_sum_metric_edge(a, d)),
+    assertz(user:test_sum_metric_edge(d, c)),
+    assertz(user:max_depth(4)),
+    assertz(user:accumulation_formula(test_sum_metric_reach/3, sum_metric(0))),
+    assertz(user:(test_sum_metric_reach(Cat, Parent, 1) :-
+        test_sum_metric_edge(Cat, Parent))),
+    assertz(user:(test_sum_metric_reach(Cat, Ancestor, Hops) :-
+        max_depth(MaxD),
+        test_sum_metric_edge(Cat, Mid),
+        test_sum_metric_reach(Mid, Ancestor, H1),
+        Hops is H1 + 1,
+        Hops =< MaxD)).
+
+cleanup_sum_metric_accumulation_fixture :-
+    retractall(user:test_sum_metric_edge(_, _)),
+    retractall(user:max_depth(_)),
+    retractall(user:test_sum_metric_reach(_, _, _)),
+    retractall(user:accumulation_formula(test_sum_metric_reach/3, _)).
+
 build_execution_runtime_source(ModuleName, PredicateCode, Source) :-
     atomic_list_concat([
         'test_exec_edge(a, b).',
@@ -347,6 +393,61 @@ collect_generated_effective_distance_sums(Options, PredicateCode, Sums) :-
         cleanup_temp_module_source(Path)
     ).
 
+build_category_influence_runtime_source(ModuleName, PredicateCode, Source) :-
+    atomic_list_concat([
+        'test_influence_edge(a, b).',
+        'test_influence_edge(b, c).',
+        'test_influence_edge(a, d).',
+        'test_influence_edge(d, c).',
+        'influence_dimension(5).',
+        'max_depth(4).'
+    ], '\n', FactsCode),
+    format(atom(Source),
+        ':- module(~q, []).~n:- use_module(library(aggregate)).~n~w~n~n~w~n',
+        [ModuleName, FactsCode, PredicateCode]).
+
+collect_generated_category_influence_sums(Options, PredicateCode, Sums) :-
+    once(prolog_target:generate_predicate_code(test_influence_reach/3, Options, PredicateCode)),
+    gensym(test_influence_runtime_, ModuleName),
+    build_category_influence_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_influence_reach$power_sum', a, c, Sum],
+            findall(Sum, ModuleName:Goal, Sums0),
+            sort(Sums0, Sums)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
+build_sum_metric_runtime_source(ModuleName, PredicateCode, Source) :-
+    atomic_list_concat([
+        'test_sum_metric_edge(a, b).',
+        'test_sum_metric_edge(b, c).',
+        'test_sum_metric_edge(a, d).',
+        'test_sum_metric_edge(d, c).',
+        'max_depth(4).'
+    ], '\n', FactsCode),
+    format(atom(Source),
+        ':- module(~q, []).~n:- use_module(library(aggregate)).~n~w~n~n~w~n',
+        [ModuleName, FactsCode, PredicateCode]).
+
+collect_generated_sum_metric_sums(Options, PredicateCode, Sums) :-
+    once(prolog_target:generate_predicate_code(test_sum_metric_reach/3, Options, PredicateCode)),
+    gensym(test_sum_metric_runtime_, ModuleName),
+    build_sum_metric_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_sum_metric_reach$sum_metric', a, c, Sum],
+            findall(Sum, ModuleName:Goal, Sums0),
+            sort(Sums0, Sums)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
 test(emits_branch_pruning_helpers_for_parameterized_ppv,
         [setup(setup_branch_pruning_fixture),
          cleanup(cleanup_branch_pruning_fixture)]) :-
@@ -465,6 +566,7 @@ test(emits_effective_distance_accumulation_helper_for_counted_ppv,
         predicates([dimension_n/1, max_depth/1, test_effective_ppv_reach/4])
     ],
     collect_generated_effective_distance_sums(Options, PredicateCode, [Actual]),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$power_sum')),
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum')),
     Expected is (3 ** -5) + (4 ** -5),
     Delta is abs(Actual - Expected),
@@ -478,5 +580,34 @@ test(skips_effective_distance_accumulation_helper_when_disabled_explicitly,
         [dialect(swi), effective_distance_accumulation(false)],
         Code)),
     \+ sub_atom(Code, _, _, _, 'test_effective_ppv_reach$effective_distance_sum').
+
+test(emits_power_sum_helper_for_counted_non_ppv_closure,
+        [setup(setup_category_influence_accumulation_fixture),
+         cleanup(cleanup_category_influence_accumulation_fixture)]) :-
+    Options = [
+        dialect(swi),
+        min_closure(false),
+        branch_pruning(false),
+        seeded_accumulation(auto),
+        predicates([influence_dimension/1, max_depth/1, test_influence_reach/3])
+    ],
+    collect_generated_category_influence_sums(Options, _PredicateCode, [Actual]),
+    Expected is (3 ** -5) + (3 ** -5),
+    Delta is abs(Actual - Expected),
+    Delta < 1.0e-12.
+
+test(emits_sum_metric_helper_from_formula_metadata,
+        [setup(setup_sum_metric_accumulation_fixture),
+         cleanup(cleanup_sum_metric_accumulation_fixture)]) :-
+    Options = [
+        dialect(swi),
+        min_closure(false),
+        branch_pruning(false),
+        seeded_accumulation(auto),
+        predicates([max_depth/1, test_sum_metric_reach/3])
+    ],
+    collect_generated_sum_metric_sums(Options, PredicateCode, [Actual]),
+    once(sub_atom(PredicateCode, _, _, _, 'test_sum_metric_reach$sum_metric')),
+    Actual =:= 4.
 
 :- end_tests(prolog_target).

@@ -12,7 +12,7 @@ main :-
     (   Argv = [FactsPath, OutputPath, VariantAtom]
     ->  true
     ;   format(user_error,
-            'Usage: swipl -q -s generate_prolog_effective_distance_benchmark.pl -- <facts.pl> <output-script> <seeded|pruned|accumulated>~n',
+            'Usage: swipl -q -s generate_prolog_category_influence_benchmark.pl -- <facts.pl> <output-script> <seeded|accumulated>~n',
             []),
         halt(1)
     ),
@@ -36,14 +36,8 @@ parse_variant('seeded', seeded, [
         dialect(swi),
         entry_point(run_benchmark),
         branch_pruning(false),
-        min_closure(false)
-    ]) :-
-    !.
-parse_variant('pruned', pruned, [
-        dialect(swi),
-        entry_point(run_benchmark),
-        branch_pruning(auto),
-        min_closure(false)
+        min_closure(false),
+        seeded_accumulation(false)
     ]) :-
     !.
 parse_variant('accumulated', accumulated, [
@@ -56,7 +50,7 @@ parse_variant('accumulated', accumulated, [
     !.
 parse_variant(Atom, _, _) :-
     format(user_error,
-        'Unsupported effective-distance benchmark variant: ~w (expected seeded, pruned, or accumulated)~n',
+        'Unsupported category-influence benchmark variant: ~w (expected seeded or accumulated)~n',
         [Atom]),
     halt(1).
 
@@ -80,9 +74,6 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         'collect_seed_categories(Seeds) :-',
         '    setof(Cat, Article^article_category(Article, Cat), Seeds).',
         '',
-        'collect_articles(Articles) :-',
-        '    setof(Article, Cat^article_category(Article, Cat), Articles).',
-        '',
         'clear_seed_indexes :-',
         '    retractall(bench_seed_hops(_, _, _)),',
         '    retractall(bench_seed_weight_sum(_, _, _)).',
@@ -90,7 +81,10 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         'seed_hops_query(Cat, Root, Hops) :-',
         '    category_ancestor(Cat, Root, Hops, [Cat]).',
         '',
-        'build_seed_hops_index(Root, SeedCount, TupleCount) :-',
+        'seed_weight_sum_query(Cat, Root, WeightSum) :-',
+        WeightSumQueryLine,
+        '',
+        'build_seed_hops_index(SeedCount, TupleCount) :-',
         '    clear_seed_indexes,',
         '    collect_seed_categories(Seeds),',
         '    length(Seeds, SeedCount),',
@@ -103,7 +97,7 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    ),',
         '    aggregate_all(count, bench_seed_hops(_, _, _), TupleCount).',
         '',
-        'build_seed_weight_sum_index(Root, SeedCount, TupleCount) :-',
+        'build_seed_weight_sum_index(SeedCount, TupleCount) :-',
         '    clear_seed_indexes,',
         '    collect_seed_categories(Seeds),',
         '    length(Seeds, SeedCount),',
@@ -116,62 +110,48 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    ),',
         '    aggregate_all(count, bench_seed_weight_sum(_, _, _), TupleCount).',
         '',
-        'seeded_article_root_hops(Article, Root, 1) :-',
+        'seeded_article_root_weight_from_hops(Article, Root, 1.0) :-',
         '    article_category(Article, Root).',
-        'seeded_article_root_hops(Article, Root, Hops) :-',
+        'seeded_article_root_weight_from_hops(Article, Root, Weight) :-',
+        '    dimension_n(N),',
         '    article_category(Article, Cat),',
         '    Cat \\= Root,',
-        '    bench_seed_hops(Cat, Root, CatHops),',
-        '    Hops is CatHops + 1.',
+        '    bench_seed_hops(Cat, Root, Hops),',
+        '    Distance is Hops + 1,',
+        '    Weight is Distance ** (-N).',
         '',
-        'seeded_article_root_weight(Article, Root, 1.0) :-',
+        'seeded_article_root_weight_from_sums(Article, Root, 1.0) :-',
         '    article_category(Article, Root).',
-        'seeded_article_root_weight(Article, Root, Weight) :-',
+        'seeded_article_root_weight_from_sums(Article, Root, Weight) :-',
         '    article_category(Article, Cat),',
         '    Cat \\= Root,',
         '    bench_seed_weight_sum(Cat, Root, Weight).',
         '',
-        'seed_weight_sum_query(Cat, Root, WeightSum) :-',
-        WeightSumQueryLine,
-        '',
-        'compute_effective_distance_results_from_hops(Root, Results) :-',
-        '    collect_articles(Articles),',
-        '    dimension_n(N),',
-        '    NegN is -N,',
-        '    findall(Deff-Article,',
-        '        (   member(Article, Articles),',
-        '            aggregate_all(sum(W),',
-        '                (   seeded_article_root_hops(Article, Root, Hops),',
-        '                    W is Hops ** NegN',
-        '                ),',
-        '                WeightSum),',
-        '            WeightSum > 0,',
-        '            InvN is -1 / N,',
-        '            Deff is WeightSum ** InvN',
+        'compute_category_influence_results_from_hops(Results) :-',
+        '    setof(Root, root_category(Root), Roots),',
+        '    findall(Score-Root,',
+        '        (   member(Root, Roots),',
+        '            aggregate_all(sum(W), seeded_article_root_weight_from_hops(_, Root, W), Score),',
+        '            Score > 0',
         '        ),',
         '        Pairs),',
-        '    sort(Pairs, Results).',
+        '    sort(1, @>=, Pairs, Results).',
         '',
-        'compute_effective_distance_results_from_weight_sums(Root, Results) :-',
-        '    collect_articles(Articles),',
-        '    dimension_n(N),',
-        '    InvN is -1 / N,',
-        '    findall(Deff-Article,',
-        '        (   member(Article, Articles),',
-        '            aggregate_all(sum(W),',
-        '                seeded_article_root_weight(Article, Root, W),',
-        '                WeightSum),',
-        '            WeightSum > 0,',
-        '            Deff is WeightSum ** InvN',
+        'compute_category_influence_results_from_sums(Results) :-',
+        '    setof(Root, root_category(Root), Roots),',
+        '    findall(Score-Root,',
+        '        (   member(Root, Roots),',
+        '            aggregate_all(sum(W), seeded_article_root_weight_from_sums(_, Root, W), Score),',
+        '            Score > 0',
         '        ),',
         '        Pairs),',
-        '    sort(Pairs, Results).',
+        '    sort(1, @>=, Pairs, Results).',
         '',
-        'print_effective_distance_results(Root, Results) :-',
-        '    format("article\\troot_category\\teffective_distance~n"),',
+        'print_category_influence_results(Results) :-',
+        '    format("root_category\\tinfluence_score~n"),',
         '    forall(',
-        '        member(Distance-Article, Results),',
-        '        format("~w\\t~w\\t~6f~n", [Article, Root, Distance])',
+        '        member(Score-Root, Results),',
+        '        format("~w\\t~12f~n", [Root, Score])',
         '    ).',
         '',
         'run_benchmark :-',
@@ -179,16 +159,15 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    load_benchmark_facts,',
         '    statistics(walltime, [_, LoadMs]),',
         '    statistics(inferences, InferencesBefore),',
-        '    root_category(Root),',
         IndexBuildLine,
         '    statistics(walltime, [_, QueryMs]),',
         ResultsLine,
         '    statistics(walltime, [_, AggregationMs]),',
-        '    print_effective_distance_results(Root, Results),',
+        '    print_category_influence_results(Results),',
         '    statistics(inferences, InferencesAfter),',
         '    TotalMs is LoadMs + QueryMs + AggregationMs,',
         '    Inferences is InferencesAfter - InferencesBefore,',
-        '    length(Results, ArticleCount),',
+        '    length(Results, RootCount),',
         ModeLine,
         '    format(user_error, ''load_ms=~w~n'', [LoadMs]),',
         '    format(user_error, ''query_ms=~w~n'', [QueryMs]),',
@@ -197,22 +176,18 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    format(user_error, ''inferences=~w~n'', [Inferences]),',
         '    format(user_error, ''seed_count=~w~n'', [SeedCount]),',
         '    format(user_error, ''tuple_count=~w~n'', [TupleCount]),',
-        '    format(user_error, ''article_count=~w~n'', [ArticleCount]).'
+        '    format(user_error, ''root_count=~w~n'', [RootCount]).'
     ],
     atomic_list_concat(Lines, '\n', Code).
 
-benchmark_index_build_line(seeded, '    build_seed_hops_index(Root, SeedCount, TupleCount),').
-benchmark_index_build_line(pruned, '    build_seed_hops_index(Root, SeedCount, TupleCount),').
-benchmark_index_build_line(accumulated, '    build_seed_weight_sum_index(Root, SeedCount, TupleCount),').
+benchmark_index_build_line(seeded, '    build_seed_hops_index(SeedCount, TupleCount),').
+benchmark_index_build_line(accumulated, '    build_seed_weight_sum_index(SeedCount, TupleCount),').
 
-benchmark_results_line(seeded, '    compute_effective_distance_results_from_hops(Root, Results),').
-benchmark_results_line(pruned, '    compute_effective_distance_results_from_hops(Root, Results),').
-benchmark_results_line(accumulated, '    compute_effective_distance_results_from_weight_sums(Root, Results),').
+benchmark_results_line(seeded, '    compute_category_influence_results_from_hops(Results),').
+benchmark_results_line(accumulated, '    compute_category_influence_results_from_sums(Results),').
 
 benchmark_weight_sum_query_line(seeded, '    fail.').
-benchmark_weight_sum_query_line(pruned, '    fail.').
 benchmark_weight_sum_query_line(accumulated, '    ''category_ancestor$power_sum''(Cat, Root, WeightSum).').
 
 benchmark_mode_line(seeded, '    format(user_error, ''mode=seeded~n'', []),').
-benchmark_mode_line(pruned, '    format(user_error, ''mode=pruned~n'', []),').
 benchmark_mode_line(accumulated, '    format(user_error, ''mode=accumulated~n'', []),').
