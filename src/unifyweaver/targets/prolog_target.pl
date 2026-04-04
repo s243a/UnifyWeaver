@@ -27,6 +27,7 @@
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 :- use_module(library(option)).
+:- use_module(library(debug)).
 :- use_module(prolog_dialects).
 :- use_module(prolog_constraints).
 :- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
@@ -294,27 +295,71 @@ strip_codegen_module_qualifiers(Goal, Goal).
 %  impossible branches before entering the recursive worker.
 maybe_generate_branch_pruned_predicate(Pred/Arity, Options, Code) :-
     option(branch_pruning(Setting), Options, auto),
-    Setting \= false,
+    (   Setting \= false
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'disabled by option', []),
+        fail
+    ),
     option(dialect(Dialect), Options, swi),
-    Dialect == swi,
+    (   Dialect == swi
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'dialect ~w is not supported', [Dialect]),
+        fail
+    ),
     findall(Head-Body,
         (   functor(Head, Pred, Arity),
             user:clause(Head, Body0),
             strip_codegen_module_qualifiers(Body0, Body)
         ),
         Clauses),
-    Clauses \= [],
+    (   Clauses \= []
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'no clauses found', []),
+        fail
+    ),
     clauses_to_pattern_pairs(Clauses, ClausePairs),
-    is_per_path_visited_pattern(Pred, Arity, ClausePairs, VisitedPos),
-    branch_pruning_mode_positions(Pred/Arity, VisitedPos, InputPositions),
+    (   is_per_path_visited_pattern(Pred, Arity, ClausePairs, VisitedPos)
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'predicate does not match canonical per-path visited recursion', []),
+        fail
+    ),
+    (   branch_pruning_mode_positions(Pred/Arity, VisitedPos, InputPositions)
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'missing concrete mode declaration for non-visited inputs', []),
+        fail
+    ),
     partition(is_recursive_clause_for_pred(Pred), Clauses, RecClauses, BaseClauses),
-    RecClauses \= [],
-    BaseClauses \= [],
-    branch_pruning_driver_position(Pred, Arity, RecClauses, DriverPos),
+    (   RecClauses \= []
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'no recursive clauses found after PPV matching', []),
+        fail
+    ),
+    (   BaseClauses \= []
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'no base clauses found after PPV matching', []),
+        fail
+    ),
+    (   branch_pruning_driver_position(Pred, Arity, RecClauses, DriverPos)
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'could not infer a unique driver position', []),
+        fail
+    ),
     delete(InputPositions, DriverPos, InvariantPositions),
-    branch_pruning_invariants_static(Pred, Arity, RecClauses, VisitedPos, InvariantPositions),
-    build_branch_pruning_code(Pred/Arity, Clauses, BaseClauses, RecClauses,
-        VisitedPos, DriverPos, InputPositions, InvariantPositions, Code).
+    (   branch_pruning_invariants_static(Pred, Arity, RecClauses, VisitedPos, InvariantPositions)
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'input invariants do not stay fixed across recursive clauses', []),
+        fail
+    ),
+    (   build_branch_pruning_code(Pred/Arity, Clauses, BaseClauses, RecClauses,
+            VisitedPos, DriverPos, InputPositions, InvariantPositions, Code)
+    ->  true
+    ;   branch_pruning_debug(Pred/Arity, 'failed while emitting pruned helper predicates', []),
+        fail
+    ).
+
+branch_pruning_debug(Pred/Arity, Message, Args) :-
+    atom_concat('Skipping branch pruning for ~w/~w: ', Message, Format),
+    debug(prolog_branch_pruning, Format, [Pred, Arity|Args]).
 
 clauses_to_pattern_pairs([], []).
 clauses_to_pattern_pairs([Head-Body|Rest], [(Head, Body)|Pairs]) :-
