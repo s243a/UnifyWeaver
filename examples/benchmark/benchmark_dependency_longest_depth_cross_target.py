@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Benchmark dependency longest-depth analysis across generated DFS binaries
-for C#, Rust, and Go.
+Benchmark dependency longest-depth analysis across generated C# query and
+DFS binaries for C#, Rust, and Go.
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scales", default="300,1k,5k,10k")
     parser.add_argument(
         "--targets",
-        default="csharp-dfs,rust-dfs,go-dfs",
-        help="Comma-separated targets: csharp-dfs,rust-dfs,go-dfs",
+        default="csharp-query,csharp-dfs,rust-dfs,go-dfs",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs",
     )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
@@ -126,12 +126,20 @@ def print_summary(results: list[RunResult]) -> None:
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
     for scale, entries in group_results_by_scale(results):
         print_result_table(entries, scale)
+        csharp_query = find_result(entries, "csharp-query")
         csharp_dfs = find_result(entries, "csharp-dfs")
         rust_dfs = find_result(entries, "rust-dfs")
         go_dfs = find_result(entries, "go-dfs")
-        dfs_like = list(entries)
+        dfs_like = [entry for entry in entries if entry.target != "csharp-query"]
         if len(dfs_like) > 1:
             print_match_status(scale, "dfs_outputs", dfs_like)
+        if csharp_query and csharp_dfs:
+            print_pair_match_status(scale, "query_vs_csharp_dfs", csharp_query, csharp_dfs)
+            print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, csharp_query)
+        if csharp_query and rust_dfs:
+            print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, csharp_query)
+        if csharp_query and go_dfs:
+            print_speedup(scale, "speedup_vs_go_dfs", go_dfs, csharp_query)
 
 
 def main() -> int:
@@ -158,14 +166,14 @@ def main() -> int:
 
         commands: dict[str, list[str]] = {}
         for target in targets:
-            if target == "csharp-dfs":
+            if target == "csharp-query":
+                commands[target] = build_csharp_query(temp_root, seed_facts)
+            elif target == "csharp-dfs":
                 commands[target] = build_csharp_dfs(temp_root, seed_facts)
             elif target == "rust-dfs":
                 commands[target] = build_rust_dfs(temp_root, seed_facts)
             elif target == "go-dfs":
                 commands[target] = build_go_dfs(temp_root, seed_facts)
-            elif target == "csharp-query":
-                raise ValueError("csharp-query longest-depth mode is not ready yet; use csharp-dfs,rust-dfs,go-dfs")
             else:
                 raise ValueError(f"unsupported target: {target}")
 

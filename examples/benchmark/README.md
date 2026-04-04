@@ -432,7 +432,7 @@ Command:
 ```bash
 python examples/benchmark/benchmark_dependency_longest_depth_cross_target.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-dfs,rust-dfs,go-dfs \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
     --repetitions 1
 ```
 
@@ -442,21 +442,31 @@ chain length over the synthetic package DAG.
 
 Latest local results:
 
-| Scale | C# DFS | Rust DFS | Go DFS | Outputs |
-|-------|--------:|---------:|-------:|---------|
-| 300 | 0.091s | 0.003s | 0.003s | match |
-| 1k | 0.139s | 0.004s | 0.003s | match |
-| 5k | 0.055s | 0.006s | 0.006s | match |
-| 10k | 0.059s | 0.012s | 0.011s | match |
+| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
+|-------|---------:|--------:|---------:|-------:|-----------------|
+| 300 | 0.063s | 0.041s | 0.002s | 0.002s | match |
+| 1k | 0.060s | 0.044s | 0.003s | 0.003s | match |
+| 5k | 0.098s | 0.051s | 0.006s | 0.006s | match |
+| 10k | 0.104s | 0.057s | 0.011s | 0.011s | match |
+
+Speedups of C# query engine:
+
+| Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------:|------------:|----------:|
+| 300 | 0.65x | 0.03x | 0.03x |
+| 1k | 0.73x | 0.05x | 0.05x |
+| 5k | 0.52x | 0.06x | 0.06x |
+| 10k | 0.55x | 0.10x | 0.11x |
 
 Comparison note:
 
-- this benchmark currently compares the DFS-style targets only
-- a like-for-like `csharp-query` longest-depth path is not yet included,
-  because the current query engine does not have a clean max-depth DAG
-  execution mode comparable to the DFS dynamic-programming formulation
-- that makes this benchmark a useful marker for future DAG-specialized
-  query-engine work rather than a finished query-vs-DFS comparison
+- this benchmark now includes a real `csharp-query` DAG longest-depth
+  path built on a dedicated query-runtime node
+- the query engine matches all DFS outputs and is now in the right
+  algorithmic family, but it still carries more runtime overhead than the
+  hand-written DFS targets
+- that makes it a good DAG benchmark baseline for further query-runtime
+  optimization rather than a finished performance story
 
 ### Cross-Target Category Influence Results
 
