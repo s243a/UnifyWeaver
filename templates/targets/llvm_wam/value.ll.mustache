@@ -1,0 +1,98 @@
+; === Value Constructors ===
+
+define %Value @value_integer(i64 %n) {
+  %v1 = insertvalue %Value { i32 1, i64 undef }, i64 %n, 1
+  ret %Value %v1
+}
+
+define %Value @value_float(double %f) {
+  %bits = bitcast double %f to i64
+  %v1 = insertvalue %Value { i32 2, i64 undef }, i64 %bits, 1
+  ret %Value %v1
+}
+
+define %Value @value_atom(i8* %name) {
+  %ptr = ptrtoint i8* %name to i64
+  %v1 = insertvalue %Value { i32 0, i64 undef }, i64 %ptr, 1
+  ret %Value %v1
+}
+
+define %Value @value_ref(i32 %addr) {
+  %ext = zext i32 %addr to i64
+  %v1 = insertvalue %Value { i32 5, i64 undef }, i64 %ext, 1
+  ret %Value %v1
+}
+
+define %Value @value_unbound(i8* %name) {
+  %ptr = ptrtoint i8* %name to i64
+  %v1 = insertvalue %Value { i32 6, i64 undef }, i64 %ptr, 1
+  ret %Value %v1
+}
+
+define %Value @value_bool(i1 %b) {
+  %ext = zext i1 %b to i64
+  %v1 = insertvalue %Value { i32 7, i64 undef }, i64 %ext, 1
+  ret %Value %v1
+}
+
+; === Value Inspectors ===
+
+define i32 @value_tag(%Value %v) {
+  %tag = extractvalue %Value %v, 0
+  ret i32 %tag
+}
+
+define i64 @value_payload(%Value %v) {
+  %p = extractvalue %Value %v, 1
+  ret i64 %p
+}
+
+define i1 @value_is_unbound(%Value %v) {
+  %tag = extractvalue %Value %v, 0
+  %is = icmp eq i32 %tag, 6
+  ret i1 %is
+}
+
+define i1 @value_is_number(%Value %v) {
+  %tag = extractvalue %Value %v, 0
+  %is_int = icmp eq i32 %tag, 1
+  %is_float = icmp eq i32 %tag, 2
+  %result = or i1 %is_int, %is_float
+  ret i1 %result
+}
+
+define i1 @value_equals(%Value %a, %Value %b) {
+entry:
+  %tag_a = extractvalue %Value %a, 0
+  %tag_b = extractvalue %Value %b, 0
+  %tags_eq = icmp eq i32 %tag_a, %tag_b
+  br i1 %tags_eq, label %check_payload, label %not_equal
+
+check_payload:
+  %pay_a = extractvalue %Value %a, 1
+  %pay_b = extractvalue %Value %b, 1
+  %pay_eq = icmp eq i64 %pay_a, %pay_b
+  ret i1 %pay_eq
+
+not_equal:
+  ret i1 false
+}
+
+; === Boxing/Unboxing Bridge ===
+
+define i64 @unbox_integer(%Value %v) {
+  %p = extractvalue %Value %v, 1
+  ret i64 %p
+}
+
+define double @unbox_float(%Value %v) {
+  %bits = extractvalue %Value %v, 1
+  %f = bitcast i64 %bits to double
+  ret double %f
+}
+
+define i8* @unbox_atom(%Value %v) {
+  %bits = extractvalue %Value %v, 1
+  %ptr = inttoptr i64 %bits to i8*
+  ret i8* %ptr
+}
