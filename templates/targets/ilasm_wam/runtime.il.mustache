@@ -1,0 +1,47 @@
+// === WAM Runtime: Step + Run Loop + Helpers ===
+// Transpiled from wam_runtime.pl step_wam/3 and run_loop/2
+
+// Step: execute a single WAM instruction via CIL switch dispatch
+{{step_method}}
+
+// Run loop: uses .tail call for constant-stack execution
+// Dispatch cycle: check halted → fetch → step → backtrack → loop
+// Choice point saves/restores are handled within step() and backtrack().
+.method public static bool run_loop(class WamState vm) cil managed {
+    .maxstack 4
+    // Check halted
+    ldarg.0
+    ldfld bool WamState::Halted
+    brtrue L_success
+    // Fetch instruction
+    ldarg.0
+    callvirt instance class Instruction WamState::Fetch()
+    dup
+    brfalse L_failure
+    stloc.0
+    // Step
+    ldarg.0
+    ldloc.0
+    call bool {{class_name}}::step(class WamState, class Instruction)
+    brtrue L_continue
+    // Step failed: try backtrack
+    ldarg.0
+    call bool {{class_name}}::backtrack(class WamState)
+    brfalse L_failure
+L_continue:
+    ldarg.0
+    .tail
+    call bool {{class_name}}::run_loop(class WamState)
+    ret
+L_success:
+    ldc.i4.1
+    ret
+L_failure:
+    pop
+    ldc.i4.0
+    ret
+    .locals init (class Instruction instr)
+}
+
+// Helper methods
+{{helper_methods}}

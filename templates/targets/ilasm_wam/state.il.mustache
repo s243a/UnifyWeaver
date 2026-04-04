@@ -1,0 +1,192 @@
+// === WAM State Management Methods ===
+
+// Constructor: create WamState with code and labels
+.method public instance void .ctor(class Instruction[] code, int32[] labels) cil managed {
+    .maxstack 4
+    ldarg.0
+    call instance void [mscorlib]System.Object::.ctor()
+    // PC = 0
+    ldarg.0
+    ldc.i4.0
+    stfld int32 WamState::PC
+    // Regs = new Value[32]
+    ldarg.0
+    ldc.i4 32
+    newarr Value
+    stfld class Value[] WamState::Regs
+    // Initialize all regs to UnboundValue
+    ldc.i4.0
+    stloc.0
+L_init_regs:
+    ldloc.0
+    ldc.i4 32
+    bge L_init_done
+    ldarg.0
+    ldfld class Value[] WamState::Regs
+    ldloc.0
+    ldloc.0
+    call string [mscorlib]System.Convert::ToString(int32)
+    newobj instance void UnboundValue::.ctor(string)
+    stelem.ref
+    ldloc.0
+    ldc.i4.1
+    add
+    stloc.0
+    br L_init_regs
+L_init_done:
+    // Stack = new List<StackEntry>()
+    ldarg.0
+    newobj instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::.ctor()
+    stfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    // Heap = new Value[4096]
+    ldarg.0
+    ldc.i4 4096
+    newarr Value
+    stfld class Value[] WamState::Heap
+    ldarg.0
+    ldc.i4.0
+    stfld int32 WamState::HeapSize
+    // Trail = new List<TrailEntry>()
+    ldarg.0
+    newobj instance void class [mscorlib]System.Collections.Generic.List`1<class TrailEntry>::.ctor()
+    stfld class [mscorlib]System.Collections.Generic.List`1<class TrailEntry> WamState::Trail
+    // CP = 0
+    ldarg.0
+    ldc.i4.0
+    stfld int32 WamState::CP
+    // ChoicePoints = new List<ChoicePoint>()
+    ldarg.0
+    newobj instance void class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint>::.ctor()
+    stfld class [mscorlib]System.Collections.Generic.List`1<class ChoicePoint> WamState::ChoicePoints
+    // Code and Labels
+    ldarg.0
+    ldarg.1
+    stfld class Instruction[] WamState::Code
+    ldarg.0
+    ldarg.1
+    ldlen
+    conv.i4
+    stfld int32 WamState::CodeLength
+    ldarg.0
+    ldarg.2
+    stfld int32[] WamState::Labels
+    ldarg.0
+    ldarg.2
+    ldlen
+    conv.i4
+    stfld int32 WamState::LabelCount
+    // Halted = false
+    ldarg.0
+    ldc.i4.0
+    stfld bool WamState::Halted
+    ret
+    .locals init (int32 v0)
+}
+
+// GetReg: load register by index
+.method public instance class Value GetReg(int32 idx) cil managed {
+    .maxstack 2
+    ldarg.0
+    ldfld class Value[] WamState::Regs
+    ldarg.1
+    ldelem.ref
+    ret
+}
+
+// SetReg: store register by index
+.method public instance void SetReg(int32 idx, class Value val) cil managed {
+    .maxstack 3
+    ldarg.0
+    ldfld class Value[] WamState::Regs
+    ldarg.1
+    ldarg.2
+    stelem.ref
+    ret
+}
+
+// IncPC: increment program counter
+.method public instance void IncPC() cil managed {
+    .maxstack 2
+    ldarg.0
+    dup
+    ldfld int32 WamState::PC
+    ldc.i4.1
+    add
+    stfld int32 WamState::PC
+    ret
+}
+
+// Fetch: get instruction at current PC (null if out of bounds)
+.method public instance class Instruction Fetch() cil managed {
+    .maxstack 2
+    ldarg.0
+    ldfld int32 WamState::PC
+    ldarg.0
+    ldfld int32 WamState::CodeLength
+    bge L_oob
+    ldarg.0
+    ldfld class Instruction[] WamState::Code
+    ldarg.0
+    ldfld int32 WamState::PC
+    ldelem.ref
+    ret
+L_oob:
+    ldnull
+    ret
+}
+
+// TrailBinding: record current register value on trail
+.method public instance void TrailBinding(int32 regIdx) cil managed {
+    .maxstack 4
+    newobj instance void TrailEntry::.ctor()
+    dup
+    ldarg.1
+    stfld int32 TrailEntry::RegIndex
+    dup
+    ldarg.0
+    ldarg.1
+    callvirt instance class Value WamState::GetReg(int32)
+    stfld class Value TrailEntry::OldValue
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class TrailEntry> WamState::Trail
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class TrailEntry>::Add(class TrailEntry)
+    ret
+}
+
+// LabelPC: look up label index → PC value
+.method public instance int32 LabelPC(int32 labelIdx) cil managed {
+    .maxstack 2
+    ldarg.1
+    ldarg.0
+    ldfld int32 WamState::LabelCount
+    bge L_not_found
+    ldarg.0
+    ldfld int32[] WamState::Labels
+    ldarg.1
+    ldelem.i4
+    ret
+L_not_found:
+    ldc.i4.m1
+    ret
+}
+
+// HeapPush: push value onto heap, return address
+.method public instance int32 HeapPush(class Value val) cil managed {
+    .maxstack 3
+    ldarg.0
+    ldfld int32 WamState::HeapSize
+    stloc.0
+    ldarg.0
+    ldfld class Value[] WamState::Heap
+    ldloc.0
+    ldarg.1
+    stelem.ref
+    ldarg.0
+    ldloc.0
+    ldc.i4.1
+    add
+    stfld int32 WamState::HeapSize
+    ldloc.0
+    ret
+    .locals init (int32 addr)
+}
