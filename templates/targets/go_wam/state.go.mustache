@@ -43,6 +43,7 @@ type WamState struct {
 	Stack        []StackEntry
 	Trail        []TrailEntry
 	ChoicePoints []ChoicePoint
+	Halted       bool
 }
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
@@ -122,6 +123,7 @@ func (vm *WamState) Clone() *WamState {
 		Stack:        make([]StackEntry, len(vm.Stack)),
 		Trail:        make([]TrailEntry, len(vm.Trail)),
 		ChoicePoints: make([]ChoicePoint, len(vm.ChoicePoints)),
+		Halted:       vm.Halted,
 	}
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
@@ -137,7 +139,9 @@ func (vm *WamState) ForkAtChoicePoint() *WamState {
 	// The forked state will start from the last choice point
 	clone := vm.Clone()
 	if clone.backtrack() {
-		// Remove the choice point from the ORIGINAL VM so it doesn't try it too
+		// Remove the alternative branch from ORIGINAL VM so it doesn't try it
+		// In WamState, backtrack() updates PC to NextPC.
+		// We want the original VM to KEEP its current branch but LOSE the choice point.
 		vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
 		return clone
 	}
@@ -155,7 +159,12 @@ func copyMap(m map[string]Value) map[string]Value {
 func parseFunctorArity(f string) int {
 	var name string
 	var arity int
-	fmt.Sscanf(f, "%s/%d", &name, &arity)
+	// Handle str(f/n) format used in WAM Go target
+	if n, _ := fmt.Sscanf(f, "str(%[^/]/%d)", &name, &arity); n == 2 {
+		return arity
+	}
+	// Fallback for plain f/n
+	fmt.Sscanf(f, "%[^/]/%d", &name, &arity)
 	return arity
 }
 
@@ -204,5 +213,50 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		}
 		return false
 	}
+	return false
+}
+
+func (vm *WamState) Unify(v1, v2 Value) bool {
+	if v1 == nil || v2 == nil {
+		return v1 == v2
+	}
+
+	// Follow references
+	if r1, ok := v1.(*Ref); ok {
+		return vm.Unify(vm.Heap[r1.Addr], v2)
+	}
+	if r2, ok := v2.(*Ref); ok {
+		return vm.Unify(v1, vm.Heap[r2.Addr])
+	}
+
+	// Handle unbound variables
+	if u1, ok := v1.(*Unbound); ok {
+		vm.trailBinding(u1.Name)
+		vm.putReg(u1.Name, v2)
+		return true
+	}
+	if u2, ok := v2.(*Unbound); ok {
+		vm.trailBinding(u2.Name)
+		vm.putReg(u2.Name, v1)
+		return true
+	}
+
+	// Atomic equality
+	if valueEquals(v1, v2) {
+		return true
+	}
+
+	// Structural unification
+	f1, args1 := decompose(v1)
+	f2, args2 := decompose(v2)
+	if f1 != "" && f1 == f2 && len(args1) == len(args2) {
+		for i := range args1 {
+			if !vm.Unify(args1[i], args2[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
 	return false
 }

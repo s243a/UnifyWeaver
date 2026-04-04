@@ -23,21 +23,24 @@ Successfully implemented the core WAM-to-Go transpilation pipeline, including pa
 ### Phase 5a: Goroutine-Based Parallel Search
 - Implemented `WamState.Clone()` and `WamState.ForkAtChoicePoint()` for state branching.
 - Added `WamState.RunParallel(maxWorkers)` using goroutines and a worker semaphore to explore choice points concurrently.
+- Fixed a race condition in `RunParallel` by ensuring semaphore tokens are passed through to child goroutines.
 - Added `WamState.CollectResults()` to gather values from argument registers.
 - Improved the WAM runtime with `Compound` term support and basic builtin execution (`write/1`, `nl/0`, numeric comparisons).
+- Implemented robust recursive structural unification (`WamState.Unify`) for complex terms.
+- Refined halt logic using a dedicated `Halted` field instead of a PC sentinel.
 
 ## Files Created/Modified
 - `src/unifyweaver/targets/wam_go_target.pl`: Main transpilation logic, project orchestration, and parallel helper generation.
-- `templates/targets/go_wam/go.mod.mustache`: Go module definition template.
-- `templates/targets/go_wam/value.go.mustache`: WAM Value interface and types (Integer, Atom, Compound, Ref, etc.).
-- `templates/targets/go_wam/instructions.go.mustache`: Instruction interface and struct definitions.
-- `templates/targets/go_wam/state.go.mustache`: WamState struct and helper methods (Heap, Stack, Trail, Fork, Builtins).
-- `templates/targets/go_wam/runtime.go.mustache`: `Step()`, `Run()`, and `RunParallel()` loop templates.
+- `templates/targets/go_wam/`: Go module templates (`go.mod`, `value.go`, `state.go`, `instructions.go`, `runtime.go`).
+- `tests/test_wam_go_generator.pl`: Unit tests for instruction lowering and parser robustness.
+- `PHASE_WAM_GO_COMPLETED.md`: This completion report.
+- `docs/design/WAM_GO_TRANSPILATION_IMPLEMENTATION_PLAN.md`: Updated design plan.
 
 ## Verification Results
 - Generated a complete Go project from a test predicate.
 - Verified that the generated code is syntactically correct and compiles using `go build`.
 - Confirmed that parallel search helpers are correctly generated and the project is self-contained.
+- Added a new unit test suite `tests/test_wam_go_generator.pl` covering instruction lowering and parser robustness.
 
 ## Next Steps
 - **Phase 5b:** Implement order-independent goal parallelism.

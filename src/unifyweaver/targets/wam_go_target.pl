@@ -227,13 +227,6 @@ wam_instruction_to_go_literal(label(L), GoLiteral) :-
 wam_instruction_to_go_literal(Instr, GoLiteral) :-
     format(atom(GoLiteral), '// TODO: ~w', [Instr]).
 
-% --- Value literal helpers ---
-
-go_value_literal(N, GoVal) :- integer(N), !, format(atom(GoVal), '&Integer{Val: ~w}', [N]).
-go_value_literal(N, GoVal) :- float(N), !, format(atom(GoVal), '&Float{Val: ~w}', [N]).
-go_value_literal(A, GoVal) :- atom(A), !, format(atom(GoVal), '&Atom{Name: "~w"}', [A]).
-go_value_literal(T, GoVal) :- format(atom(GoVal), '&Atom{Name: "~w"}', [T]).
-
 go_const_case(Val-Label, Case) :-
     go_value_literal(Val, GoVal),
     format(atom(Case), '{Val: ~w, Label: "~w"}', [GoVal, Label]).
@@ -389,13 +382,16 @@ format_switch_table(Table, CaseStr) :-
     atomic_list_concat(Cases, ", ", CaseStr).
 
 format_switch_case(Entry, Case) :-
-    split_string(Entry, ":", " ", [ValStr, LabelStr]),
-    clean_comma(LabelStr, Label),
-    (   number_string(N, ValStr)
-    ->  go_value_literal(N, GoVal)
-    ;   go_value_literal(ValStr, GoVal)
-    ),
-    format(atom(Case), '{Val: ~w, Label: "~w"}', [GoVal, Label]).
+    (   split_string(Entry, ":", " ", [ValStr, LabelStr])
+    ->  clean_comma(LabelStr, Label),
+        (   number_string(N, ValStr)
+        ->  go_value_literal(N, GoVal)
+        ;   go_value_literal(ValStr, GoVal)
+        ),
+        format(atom(Case), '{Val: ~w, Label: "~w"}', [GoVal, Label])
+    ;   % Robustness fallback for malformed entries
+        format(atom(Case), '{Val: &Atom{Name: "malformed"}, Label: "~w"}', [Entry])
+    ).
 
 % --- Value literal helpers ---
 
@@ -435,8 +431,9 @@ compile_go_step_case(CaseCode) :-
 wam_go_case('GetConstant', '        val, ok := vm.Regs[i.Ai]
         if !ok { return false }
         if isUnbound(val) {
-            vm.trailBinding(i.Ai)
-            vm.Regs[i.Ai] = i.C
+            u := val.(*Unbound)
+            vm.trailBinding(u.Name)
+            vm.Regs[u.Name] = i.C
             vm.PC++
             return true
         }
@@ -456,19 +453,7 @@ wam_go_case('GetVariable', '        val, ok := vm.Regs[i.Ai]
 wam_go_case('GetValue', '        valA, okA := vm.Regs[i.Ai]
         valX := vm.getReg(i.Xn)
         if !okA { return false }
-        if valueEquals(valA, valX) {
-            vm.PC++
-            return true
-        }
-        if isUnbound(valA) {
-            vm.trailBinding(i.Ai)
-            vm.Regs[i.Ai] = valX
-            vm.PC++
-            return true
-        }
-        if isUnbound(valX) {
-            vm.trailBinding(i.Xn)
-            vm.putReg(i.Xn, valA)
+        if vm.Unify(valA, valX) {
             vm.PC++
             return true
         }
@@ -665,7 +650,7 @@ wam_go_case('Execute', '        if pc, ok := vm.Labels[i.Pred]; ok {
 wam_go_case('Proceed', '        if vm.CP > 0 {
             vm.PC = vm.CP
         } else {
-            vm.PC = 0 // halt
+            vm.Halted = true
         }
         return true').
 
@@ -753,7 +738,7 @@ compile_wam_helpers_to_go(_Options, GoCode) :-
 '// Run executes the WAM instruction loop until halt or failure.
 func (vm *WamState) Run() bool {
     for {
-        if vm.PC == 0 {
+        if vm.Halted {
             return true
         }
         instr := vm.fetch()
@@ -774,14 +759,16 @@ func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
 
-	var explore func(state *WamState)
-	explore = func(state *WamState) {
+	var explore func(state *WamState, hasToken bool)
+	explore = func(state *WamState, hasToken bool) {
 		defer wg.Done()
-		sem <- struct{}{}
+		if !hasToken {
+			sem <- struct{}{}
+		}
 		defer func() { <-sem }()
 
 		for {
-			if state.PC == 0 {
+			if state.Halted {
 				results <- state.CollectResults()
 				return
 			}
@@ -800,10 +787,13 @@ func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
 			if len(state.ChoicePoints) > 0 {
 				select {
 				case sem <- struct{}{}:
-					<-sem // Release because explore will acquire
+					// We acquired a token, pass it to the child
 					if alt := state.ForkAtChoicePoint(); alt != nil {
 						wg.Add(1)
-						go explore(alt)
+						go explore(alt, true)
+					} else {
+						// Failed to fork
+						<-sem
 					}
 				default:
 					// No worker available, continue sequentially
@@ -813,7 +803,7 @@ func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
 	}
 
 	wg.Add(1)
-	go explore(vm)
+	go explore(vm, false)
 
 	go func() {
 		wg.Wait()
@@ -847,6 +837,7 @@ func (vm *WamState) backtrack() bool {
     vm.Regs = copyMap(cp.Regs)
     vm.PC = cp.NextPC
     vm.CP = cp.CP
+    vm.Halted = false
     return true
 }
 
