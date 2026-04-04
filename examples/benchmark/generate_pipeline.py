@@ -1780,7 +1780,7 @@ class Program
         var adj = LoadTsvPairs(args[0]);
         var projectDeps = LoadTsvPairs(args[1]);
         var memo = new Dictionary<string, int>(StringComparer.Ordinal);
-        var results = new List<(int Depth, string Project)>();
+        var results = new List<(int Depth, string Project)>(projectDeps.Count);
 
         foreach (var project in projectDeps.Keys.OrderBy(x => x, StringComparer.Ordinal))
         {
@@ -1888,7 +1888,7 @@ class Program
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
-        var results = new List<(int Depth, string Project)>();
+        var results = new List<(int Depth, string Project)>(rows.Count);
         foreach (var row in rows)
         {{
             var project = row[0]?.ToString() ?? "";
