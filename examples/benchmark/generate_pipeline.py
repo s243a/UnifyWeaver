@@ -1539,112 +1539,129 @@ class Program
 
 
 def generate_go_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
-    return '''// Dependency longest-depth benchmark (Go)
+    return r'''// Dependency longest-depth benchmark (Go)
 package main
 
 import (
-\t"bufio"
-\t"fmt"
-\t"os"
-\t"sort"
-\t"strings"
+	"bufio"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
 )
 
 func loadTSVPairs(path string) map[string][]string {
-\tm := make(map[string][]string)
-\tf, err := os.Open(path)
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Cannot open %s: %v\\n", path, err)
-\t\tos.Exit(1)
-\t}
-\tdefer f.Close()
-\tscanner := bufio.NewScanner(f)
-\tfirst := true
-\tfor scanner.Scan() {
-\t\tline := scanner.Text()
-\t\tif first {
-\t\t\tfirst = false
-\t\t\tif strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {
-\t\t\t\tcontinue
-\t\t\t}
-\t\t}
-\t\tparts := strings.SplitN(line, "\\t", 2)
-\t\tif len(parts) == 2 {
-\t\t\tm[parts[0]] = append(m[parts[0]], parts[1])
-\t\t}
-\t}
-\treturn m
+	m := make(map[string][]string)
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot open %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	first := true
+	for scanner.Scan() {
+		line := scanner.Text()
+		if first {
+			first = false
+			if strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {
+				continue
+			}
+		}
+		parts := strings.SplitN(line, "	", 2)
+		if len(parts) == 2 {
+			m[parts[0]] = append(m[parts[0]], parts[1])
+		}
+	}
+	return m
 }
 
 func longestDepth(node string, adj map[string][]string, memo map[string]int) int {
-\tif depth, ok := memo[node]; ok {
-\t\treturn depth
-\t}
-\tbest := 1
-\tfor _, dep := range adj[node] {
-\t\tcandidate := 1 + longestDepth(dep, adj, memo)
-\t\tif candidate > best {
-\t\t\tbest = candidate
-\t\t}
-\t}
-\tmemo[node] = best
-\treturn best
+	if depth, ok := memo[node]; ok {
+		return depth
+	}
+	best := 1
+	for _, dep := range adj[node] {
+		candidate := 1 + longestDepth(dep, adj, memo)
+		if candidate > best {
+			best = candidate
+		}
+	}
+	memo[node] = best
+	return best
 }
 
 type projectResult struct {
-\tproject string
-\tdepth   int
+	project string
+	depth   int
 }
 
 func main() {
-\tif len(os.Args) < 3 {
-\t\tfmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\\n", os.Args[0])
-\t\tos.Exit(1)
-\t}
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\n", os.Args[0])
+		os.Exit(1)
+	}
 
-\tadj := loadTSVPairs(os.Args[1])
-\tprojectDeps := loadTSVPairs(os.Args[2])
-\tmemo := make(map[string]int)
+	totalStart := time.Now()
+	loadStart := time.Now()
+	adj := loadTSVPairs(os.Args[1])
+	projectDeps := loadTSVPairs(os.Args[2])
+	loadElapsed := time.Since(loadStart)
 
-\tvar projects []string
-\tfor project := range projectDeps {
-\t\tprojects = append(projects, project)
-\t}
-\tsort.Strings(projects)
+	solveStart := time.Now()
+	memo := make(map[string]int)
+	var projects []string
+	for project := range projectDeps {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
 
-\tresults := make([]projectResult, 0, len(projects))
-\tfor _, project := range projects {
-\t\tbest := 0
-\t\tfor _, dep := range projectDeps[project] {
-\t\t\tdepth := longestDepth(dep, adj, memo)
-\t\t\tif depth > best {
-\t\t\t\tbest = depth
-\t\t\t}
-\t\t}
-\t\tresults = append(results, projectResult{project: project, depth: best})
-\t}
+	results := make([]projectResult, 0, len(projects))
+	for _, project := range projects {
+		best := 0
+		for _, dep := range projectDeps[project] {
+			depth := longestDepth(dep, adj, memo)
+			if depth > best {
+				best = depth
+			}
+		}
+		results = append(results, projectResult{project: project, depth: best})
+	}
+	solveElapsed := time.Since(solveStart)
 
-\tsort.Slice(results, func(i, j int) bool {
-\t\tif results[i].depth != results[j].depth {
-\t\t\treturn results[i].depth < results[j].depth
-\t\t}
-\t\treturn results[i].project < results[j].project
-\t})
+	emitStart := time.Now()
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].depth != results[j].depth {
+			return results[i].depth < results[j].depth
+		}
+		return results[i].project < results[j].project
+	})
 
-\tfmt.Println("project\\tdependency_longest_depth")
-\tfor _, result := range results {
-\t\tfmt.Printf("%s\\t%d\\n", result.project, result.depth)
-\t}
+	fmt.Println("project	dependency_longest_depth")
+	for _, result := range results {
+		fmt.Printf("%s\t%d\n", result.project, result.depth)
+	}
+	emitElapsed := time.Since(emitStart)
+	totalElapsed := time.Since(totalStart)
+
+	fmt.Fprintf(os.Stderr, "load_ms=%d\n", loadElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "solve_ms=%d\n", solveElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "emit_ms=%d\n", emitElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "total_ms=%d\n", totalElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "project_count=%d\n", len(results))
 }
 '''
 
 
+
 def generate_rust_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
-    return '''// Dependency longest-depth benchmark (Rust)
+    return r'''// Dependency longest-depth benchmark (Rust)
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::time::Instant;
 
 fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
@@ -1655,7 +1672,7 @@ fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {
         if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {
             continue;
         }
-        let parts: Vec<&str> = line.splitn(2, '\\t').collect();
+        let parts: Vec<&str> = line.splitn(2, '\t').collect();
         if parts.len() == 2 {
             map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
         }
@@ -1687,10 +1704,14 @@ fn main() {
         std::process::exit(1);
     }
 
+    let total_start = Instant::now();
+    let load_start = Instant::now();
     let adj = load_tsv_pairs(&args[1]);
     let project_deps = load_tsv_pairs(&args[2]);
-    let mut memo: HashMap<String, i32> = HashMap::new();
+    let load_elapsed = load_start.elapsed();
 
+    let solve_start = Instant::now();
+    let mut memo: HashMap<String, i32> = HashMap::new();
     let mut projects: Vec<&String> = project_deps.keys().collect();
     projects.sort();
 
@@ -1707,14 +1728,25 @@ fn main() {
         }
         results.push((best, project.to_string()));
     }
+    let solve_elapsed = solve_start.elapsed();
 
+    let emit_start = Instant::now();
     results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    println!("project\tdependency_longest_depth");
-    for (depth, project) in results {
-        println!("{}\t{}", project, depth);
+    println!("project	dependency_longest_depth");
+    for (depth, project) in results.iter() {
+        println!("{}	{}", project, depth);
     }
+    let emit_elapsed = emit_start.elapsed();
+    let total_elapsed = total_start.elapsed();
+
+    eprintln!("load_ms={}", load_elapsed.as_millis());
+    eprintln!("solve_ms={}", solve_elapsed.as_millis());
+    eprintln!("emit_ms={}", emit_elapsed.as_millis());
+    eprintln!("total_ms={}", total_elapsed.as_millis());
+    eprintln!("project_count={}", results.len());
 }
 '''
+
 
 
 def generate_csharp_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
@@ -1727,29 +1759,39 @@ using System.Linq;
 
 class Program
 {
+    static int EstimateRows(string path, int avgBytesPerRow)
+    {
+        var length = new FileInfo(path).Length;
+        var estimate = (int)Math.Max(16, length / Math.Max(1, avgBytesPerRow));
+        return estimate;
+    }
+
     static Dictionary<string, List<string>> LoadTsvPairs(string path)
     {
-        var map = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        foreach (var (line, i) in File.ReadLines(path).Select((l, i) => (l, i)))
+        var estimatedRows = EstimateRows(path, 24);
+        var map = new Dictionary<string, List<string>>(Math.Max(estimatedRows / 3, 16), StringComparer.Ordinal);
+        using var reader = new StreamReader(path);
+        _ = reader.ReadLine();
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
         {
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            var span = line.AsSpan();
+            var tab = span.IndexOf('	');
+            if (tab <= 0 || tab >= span.Length - 1)
             {
                 continue;
             }
 
-            var parts = line.Split('	', 2);
-            if (parts.Length != 2)
+            var left = span.Slice(0, tab).ToString();
+            var right = span.Slice(tab + 1).ToString();
+
+            if (!map.TryGetValue(left, out var bucket))
             {
-                continue;
+                bucket = new List<string>(4);
+                map[left] = bucket;
             }
 
-            if (!map.TryGetValue(parts[0], out var bucket))
-            {
-                bucket = new List<string>();
-                map[parts[0]] = bucket;
-            }
-
-            bucket.Add(parts[1]);
+            bucket.Add(right);
         }
 
         return map;
@@ -1796,12 +1838,18 @@ class Program
         var allocatedBefore = GC.GetTotalAllocatedBytes(true);
         var swTotal = Stopwatch.StartNew();
 
+        var swLoad = Stopwatch.StartNew();
         var adj = LoadTsvPairs(args[0]);
         var projectDeps = LoadTsvPairs(args[1]);
-        var memo = new Dictionary<string, int>(StringComparer.Ordinal);
-        var results = new List<(int Depth, string Project)>(projectDeps.Count);
+        swLoad.Stop();
 
-        foreach (var project in projectDeps.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        var swSolve = Stopwatch.StartNew();
+        var memo = new Dictionary<string, int>(adj.Count, StringComparer.Ordinal);
+        var projectIds = projectDeps.Keys.ToList();
+        projectIds.Sort(StringComparer.Ordinal);
+        var results = new List<(int Depth, string Project)>(projectIds.Count);
+
+        foreach (var project in projectIds)
         {
             var best = 0;
             foreach (var dep in projectDeps[project])
@@ -1821,14 +1869,20 @@ class Program
             var cmp = a.Depth.CompareTo(b.Depth);
             return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
         });
+        swSolve.Stop();
 
+        var swEmit = Stopwatch.StartNew();
         Console.WriteLine("project	dependency_longest_depth");
         foreach (var (depth, project) in results)
         {
             Console.WriteLine($"{project}	{depth}");
         }
 
+        swEmit.Stop();
         swTotal.Stop();
+        Console.Error.WriteLine($"load_ms={swLoad.ElapsedMilliseconds}");
+        Console.Error.WriteLine($"solve_ms={swSolve.ElapsedMilliseconds}");
+        Console.Error.WriteLine($"emit_ms={swEmit.ElapsedMilliseconds}");
         Console.Error.WriteLine($"total_ms={swTotal.ElapsedMilliseconds}");
         Console.Error.WriteLine($"gc0_collections={GC.CollectionCount(0) - gc0Before}");
         Console.Error.WriteLine($"gc1_collections={GC.CollectionCount(1) - gc1Before}");

@@ -550,19 +550,19 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.054s | 0.047s | 0.002s | 0.002s | match |
-| 1k | 0.055s | 0.044s | 0.003s | 0.003s | match |
-| 5k | 0.085s | 0.053s | 0.006s | 0.006s | match |
-| 10k | 0.094s | 0.060s | 0.011s | 0.012s | match |
+| 300 | 0.057s | 0.043s | 0.002s | 0.002s | match |
+| 1k | 0.056s | 0.045s | 0.002s | 0.003s | match |
+| 5k | 0.087s | 0.056s | 0.006s | 0.006s | match |
+| 10k | 0.091s | 0.055s | 0.013s | 0.012s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.88x | 0.03x | 0.04x |
-| 1k | 0.81x | 0.05x | 0.05x |
-| 5k | 0.63x | 0.07x | 0.07x |
-| 10k | 0.64x | 0.12x | 0.13x |
+| 300 | 0.75x | 0.03x | 0.04x |
+| 1k | 0.81x | 0.04x | 0.05x |
+| 5k | 0.64x | 0.07x | 0.07x |
+| 10k | 0.60x | 0.14x | 0.14x |
 
 Comparison note:
 
@@ -574,9 +574,12 @@ Comparison note:
 - set `UNIFYWEAVER_BENCH_TRACE=1` when you want the generated
   `csharp-query` longest-depth benchmark to print per-phase timings to
   `stderr`
-- the query engine matches all DFS outputs and is now somewhat closer to
-  the hand-written C# DFS baseline, but it still carries more runtime
-  overhead than the hand-written DFS targets
+- the hand-written C# DFS baseline is now cheaper too, after moving it to a
+  lighter-weight custom TSV loader with manual tab scanning and better
+  pre-sizing
+- the query engine still matches all DFS outputs and remains somewhat
+  behind the hand-written C# DFS baseline, so longest depth is still a
+  separate optimization track from reach-count
 - that makes it a good DAG benchmark baseline for further query-runtime
   optimization rather than a finished performance story
 
