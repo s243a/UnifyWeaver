@@ -1491,7 +1491,8 @@ class Program
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan).ToList();
+        var trace = new QueryExecutionTrace();
+        var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -1524,6 +1525,10 @@ class Program
         Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
+        foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+        {{
+            Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+        }}
     }}
 }}
 '''
@@ -1884,7 +1889,8 @@ class Program
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan).ToList();
+        var trace = new QueryExecutionTrace();
+        var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -1917,6 +1923,10 @@ class Program
         Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
+        foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+        {{
+            Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+        }}
     }}
 }}
 '''
