@@ -1451,35 +1451,15 @@ class Program
         var predId = new PredicateId("dependency_reach", 2);
         var projects = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        foreach (var line in File.ReadLines(args[1]).Skip(1))
         {{
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            var tab = line.IndexOf('\t');
+            if (tab > 0)
             {{
-                continue;
+                projects.Add(line[..tab]);
             }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length == 2)
-            {{
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }}
-        }}
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {{
-                continue;
-            }}
-
-            projects.Add(parts[0]);
-            provider.AddFact(seedId, parts[0], parts[1]);
         }}
         swLoad.Stop();
 
@@ -1933,35 +1913,15 @@ class Program
         var predId = new PredicateId("dependency_longest_depth", 2);
         var projects = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        foreach (var line in File.ReadLines(args[1]).Skip(1))
         {{
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            var tab = line.IndexOf('\t');
+            if (tab > 0)
             {{
-                continue;
+                projects.Add(line[..tab]);
             }}
-
-            var parts = line.Split('	', 2);
-            if (parts.Length == 2)
-            {{
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }}
-        }}
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('	', 2);
-            if (parts.Length != 2)
-            {{
-                continue;
-            }}
-
-            projects.Add(parts[0]);
-            provider.AddFact(seedId, parts[0], parts[1]);
         }}
         swLoad.Stop();
 
