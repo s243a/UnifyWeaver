@@ -55,11 +55,15 @@ Status:
 - started for scan-oriented and path-aware benchmark paths using the shared retention boundary
 - path-aware shortest-path operators now build compact operator-owned edge state
   instead of consuming generic replayed edge tuples
+- effective-distance and category-influence operators now build compact
+  operator-owned `(group, root, weight_sum)` state instead of consuming
+  generic path rows plus benchmark-side regrouping
 
 Work:
 
 - identify additional operators that can ingest directly from streamed sources
 - move retained-state construction into those operators where it pays off
+- keep replacing generic replay/path rows with narrower operator-owned summaries
 - avoid generic `object[]` fact preloading when a narrower retained form is
   sufficient
 
